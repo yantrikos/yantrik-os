@@ -1,0 +1,116 @@
+// One line of a reply's timeline (wire/lens_timeline.rs): what the mind did to answer, in the
+// reply itself, above its words.
+//
+// The block's kind says what the line is:
+//   thinking  "Thought for 5 s", folded; a click opens the thinking.
+//   step      ✓ or ✗, what it did in the Lens's plain words, and its one-line result; a click opens
+//             the call's arguments and output. ("tool" is the same, for a reply put back from
+//             before the timeline, or one whose own text told its calls.)
+//   question  waiting: the question's card, the one raised thing in a reply. Answered or closed:
+//             one line, "Answered: Sat 17 + Sun 18" or "Not answered: you stopped it".
+//   status    the one live line while the reply arrives, with a gentle pulse; gone when it ends.
+//
+// Every line but the card is quiet: caption size, the second text colour, no ground of its own.
+// The words are the shell's, from what the Agents store recorded; nothing here is the mind's own
+// account of itself.
+
+import { Theme } from "theme.slint";
+import { ContentBlock } from "message_bubble.slint";
+import { ToolCallCard } from "tool_call.slint";
+import { QuestionRequest, QuestionCard } from "question_card.slint";
+
+export component TimelineLine inherits VerticalLayout {
+    in property <ContentBlock> block;
+    // The questions waiting in the Lens: a waiting question's line finds its card here by request.
+    in property <[QuestionRequest]> questions: [];
+    callback answered(string, string, string, bool);   // agent id, request id, answer, pressed
+
+    property <string> kind: root.block.block-type;
+    property <string> state: root.block.call.status;
+    property <bool> card: root.kind == "question" && root.state == "waiting";
+    property <bool> live: root.kind == "status";
+    property <bool> can-open: root.kind == "thinking" ? root.block.call.output != ""
+        : (root.kind == "step" || root.kind == "tool") && (root.block.call.arguments != "" || root.block.call.output != "");
+    property <bool> open: false;
+    // 160 ms a step, the rate the Lens's other pulses use, and only on the live line.
+    property <float> pulse-phase: 0;
+
+    spacing: 2px;
+
+    Timer {
+        interval: 160ms;
+        running: root.live;
+        triggered => { root.pulse-phase = mod(root.pulse-phase + 0.08, 1.0); }
+    }
+
+    if root.card : VerticalLayout {
+        padding-top: Theme.sp-1;
+        padding-bottom: Theme.sp-1;
+        for q in root.questions : VerticalLayout {
+            if q.request == root.block.call.name : QuestionCard {
+                mind: q.mind;
+                prompt: q.prompt;
+                options: q.options;
+                asked: q.asked;
+                removes: q.removes;
+                recommended: q.recommended;
+                stacked: true;
+                answered(a, pressed) => { root.answered(q.agent, q.request, a, pressed); }
+            }
+        }
+    }
+
+    if !root.card : Rectangle {
+        height: line.preferred-height;
+        accessible-role: text;
+        accessible-label: root.block.text;
+        line := HorizontalLayout {
+            spacing: Theme.sp-1;
+            Text {
+                width: 14px;
+                text: root.kind == "thinking" ? (root.open ? "\u{25be}" : "\u{25b8}")
+                    : root.live ? "\u{2022}"
+                    : root.state == "failed" ? "\u{2717}"
+                    : root.kind == "question" && root.state == "closed" ? "\u{2013}"
+                    : "\u{2713}";
+                // The live line's dot in the mind's teal: the mind is at work, here, now.
+                color: root.state == "waiting" ? Theme.chat-needs-you : root.live ? Theme.chat-mind : Theme.chat-text-2;
+                font-size: root.live ? Theme.fs-body : Theme.fs-caption;
+                vertical-alignment: center;
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: root.block.text;
+                color: root.state == "waiting" ? Theme.chat-needs-you : root.live ? Theme.chat-text : Theme.chat-text-2;
+                font-size: root.live ? Theme.fs-body : Theme.fs-caption;
+                wrap: root.open ? word-wrap : no-wrap;
+                overflow: elide;
+                opacity: root.live ? 0.6 + 0.4 * (0.5 + 0.5 * sin(root.pulse-phase * 6.2832 * 1rad)) : 1.0;
+                vertical-alignment: center;
+            }
+        }
+        if root.can-open : TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open = !root.open; }
+        }
+    }
+
+    // Opened: the thinking as the mind wrote it, or the call as it made it.
+    if root.open && root.kind == "thinking" : HorizontalLayout {
+        padding-left: 14px + Theme.sp-1;
+        Text {
+            text: root.block.call.output;
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+    }
+    if root.open && root.kind != "thinking" : HorizontalLayout {
+        padding-left: 14px + Theme.sp-1;
+        padding-bottom: Theme.sp-1;
+        ToolCallCard {
+            call: root.block.call;
+            expanded: true;
+        }
+    }
+}

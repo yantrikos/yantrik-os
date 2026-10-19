@@ -23,6 +23,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod notice;
+
 // ── Methods ─────────────────────────────────────────────────────────────────────────────────
 
 /// Post a notification. Params: [`AddRequest`]. Answers the stored [`Notification`].
@@ -39,6 +41,23 @@ pub const DISMISS_ALL: &str = "notifications.dismiss_all";
 pub const MARK_READ: &str = "notifications.mark_read";
 /// Invoke an action a notification published. Params: `{ id, action_id }`.
 pub const ACTION: &str = "notifications.action";
+/// What the person said about a notice: a feedback button. Params: `{ id, kind }`. Desktop only.
+pub const NOTICE_FEEDBACK: &str = "notifications.notice_feedback";
+/// The shell showed a notice, or opened its button. Params: `{ id, shown_as?, opened? }`.
+/// Desktop only.
+pub const NOTICE_SHOWN: &str = "notifications.notice_shown";
+/// The feedback waiting for one harness, after acknowledging what it has read. Params:
+/// `{ harness, ack? }`. Answers `{ notice_feedback: [Feedback] }`. Desktop only: the harness
+/// host asks on the harness's behalf, and feedback goes to nobody else.
+pub const NOTICE_FEEDBACK_POLL: &str = "notifications.notice_feedback_poll";
+/// The person's initiative settings. Answers [`notice::Initiative`].
+pub const INITIATIVE: &str = "notifications.initiative";
+/// Change them. Params: `{ quiet? , family?, setting?, quiet_hours? }`. Desktop only.
+pub const INITIATIVE_SET: &str = "notifications.initiative_set";
+/// Forget which account and program a harness id belongs to, so the next notice under it binds
+/// it afresh. Params: `{ harness }`. Answers `{ forgotten: bool }`. Desktop only: the person
+/// presses Forget in Settings → Harnesses → Initiative.
+pub const NOTICE_UNBIND: &str = "notifications.notice_unbind";
 
 // ── Bounds ──────────────────────────────────────────────────────────────────────────────────
 
@@ -54,6 +73,8 @@ pub const MAX_ACTIONS: usize = 4;
 pub const MAX_ACTION_ID: usize = 64;
 /// Longest action label kept. A button, not a sentence.
 pub const MAX_ACTION_LABEL: usize = 48;
+/// Longest picture path kept: a path, not a payload.
+pub const MAX_IMAGE_PATH: usize = 512;
 /// How many notifications the store keeps. Oldest are dropped first.
 pub const MAX_STORED: usize = 500;
 /// How long a dismissed notification is kept before it is pruned. A week, so "what did that
@@ -222,6 +243,14 @@ pub struct Notification {
     /// freedesktop notification, whose door has not asked the bus who was behind it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<Sender>,
+    /// The picture the sender attached, as [`AddRequest::image`] describes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Set when a mind sent this as a notice ([`notice`]): its id, family, reason, button and what
+    /// the OS decided. Absent on every other notification, and on every record written before
+    /// notices existed, which load as they always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<notice::Notice>,
     /// The store revision at which this notification last changed. `since` compares against it.
     pub revision: u64,
 }
@@ -289,6 +318,17 @@ pub struct AddRequest {
     /// by the freedesktop `replaces_id` argument.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces_id: Option<String>,
+    /// A picture of what the notification is about, as an absolute path: a screenshot's
+    /// thumbnail. The shell draws it only on a notification the desktop itself sent, and only
+    /// for a capture it saved, so a caller cannot make the shell load any file it names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// A notice a harness sent, posted by the harness host on its behalf. Honoured only from a
+    /// caller the store judges to be the desktop; from anything else it is stripped and the
+    /// notification is stored plain, so `yos notify` from a mind's tool cannot forge another
+    /// harness's notice or spend the budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<notice::NoticePost>,
 }
 
 /// The answer to [`SINCE`]: where the store is now, and everything that changed to get there.
@@ -300,6 +340,15 @@ pub struct AddRequest {
 pub struct Since {
     pub revision: u64,
     pub changed: Vec<Notification>,
+    /// The person's initiative settings as the store holds them, so the shell's mirror (and the
+    /// harness host, which reads it) learns of a change within one poll. Absent from an older
+    /// service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative: Option<notice::Initiative>,
+    /// Which account and program each harness id belongs to, by id. Only for the desktop, which
+    /// shows them in Settings so the person can forget one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_bindings: Option<std::collections::BTreeMap<String, notice::HarnessBinding>>,
 }
 
 #[cfg(test)]
@@ -361,6 +410,51 @@ mod tests {
         let old_sender = r#"{"claimed":"Yantrik","verified":"yantrik-ui config.yaml (pid 7)","pid":7,"exe":"/opt/yantrik/bin/yantrik-ui"}"#;
         let s: Sender = serde_json::from_str(old_sender).expect("an old sender parses");
         assert!(!s.desktop);
+    }
+
+    #[test]
+    fn a_record_written_before_notices_existed_loads_unchanged() {
+        // The same record as above: every machine's store holds hundreds of these. One that
+        // failed to parse for want of `notice` would empty the store at the next start.
+        let old = r#"{"id":"134","app":"Yantrik","title":"Studio finished","body":"","urgency":"normal","created_at":"2026-09-23T00:43:53Z","read":true,"dismissed":true,"actions":[],"source":"yantrik","revision":237}"#;
+        let n: Notification = serde_json::from_str(old).expect("an old record parses");
+        assert_eq!(n.notice, None);
+        assert_eq!(serde_json::to_string(&n).unwrap(), old, "and is written back byte for byte");
+        // An older service's `since` answer has no settings in it.
+        let since: Since = serde_json::from_str(r#"{"revision":3,"changed":[]}"#).unwrap();
+        assert_eq!(since.initiative, None);
+        // And an older sender's request has no notice in it.
+        let req: AddRequest = serde_json::from_str(r#"{"app":"x","title":"y"}"#).unwrap();
+        assert!(req.notice.is_none());
+    }
+
+    #[test]
+    fn a_notice_record_round_trips() {
+        use notice::*;
+        let record = Notice {
+            notice_id: "rem-1".into(),
+            family: Family::Reminder,
+            why: "You asked for this reminder.".into(),
+            evidence: vec!["task:41".into()],
+            attention: Attention::Interrupt,
+            useful_until: Some("2026-10-16T19:30:00Z".into()),
+            supersedes: None,
+            action: Some(NoticeAction { label: "Open note".into(), kind: ActionKind::OpenNote, reference: "n-7f3a".into() }),
+            harness: NoticeHarness { id: "mind".into(), uid: Some(998), verified: "yantrik-mind (pid 77)".into(), name: "Yantrik Mind".into(), program: "yantrik-mind".into() },
+            granted: Attention::Interrupt,
+            grant_reason: GrantReason::Granted,
+            held_until: None,
+            shown_as: Some("toast".into()),
+            shown_at: Some("2026-10-16T19:03:11Z".into()),
+            opened_at: None,
+            clamped: vec!["body".into()],
+            feedback: vec![Feedback { seq: 12, notice_id: "rem-1".into(), kind: FeedbackKind::NotNow, seen_at: Some("2026-10-16T19:03:11Z".into()), opened_at: None, at: "2026-10-16T19:03:20Z".into() }],
+        };
+        let text = serde_json::to_string(&record).unwrap();
+        assert!(text.contains(r#""ref":"n-7f3a""#), "{text}");
+        assert!(text.contains(r#""kind":"not_now""#), "{text}");
+        let back: Notice = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, record);
     }
 
     #[test]

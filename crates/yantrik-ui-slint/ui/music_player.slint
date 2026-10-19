@@ -1,129 +1,58 @@
-// Music Player — library, playlists, queue and playback.
+// Music Player — a library from your folders, a queue, and a transport driven by mpv.
 //
-// Layout follows what a music player is actually for: the LIBRARY gets the room (it is the
-// thing you look at), the now-playing artwork sits in a fixed right column, and the transport
-// is a full-width bar pinned to the bottom so it is in the same place whatever you are doing.
-// The previous four-column split gave the library 260px and spent the centre of the window on
-// a placeholder square.
+// Every control on this screen does something the app backs: the library is what a scan of the
+// listed folders found, the queue is what plays next, and play, pause, stop, next, previous, seek,
+// volume and mute are commands to the app's own mpv, drawn from what mpv reports back. The old
+// screen (2,168 lines) also drew playlists, artist/album/genre browsing, shuffle, repeat, speed,
+// an equaliser, folder watching and an "Explain" button with nothing behind any of them; they are
+// gone until something backs them (design/apps-plan-2026-09-20.md, Wave 3).
 //
-// No timers and no animated glows: this screen has to be free on the software rasteriser.
+// No timers and no animations: mpv pushes the position, so the screen only redraws when it moves.
 import { Theme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
 import { YButton, YIconButton } from "components/y_button.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
+import { YNoticeBar } from "components/notice_bar.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
-import { AgentRail, AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
-import { AgentProposalCard, AgentProposal } from "components/agent_proposal.slint";
+import { AgentRail, AgentContextItem } from "components/agent_rail.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
 
-// Data model for a track in the library or queue
+// One track in the library or the queue.
 export struct MusicTrackData {
     title: string,
-    artist: string,
+    // The folder the file is in; the scan reads no tags.
     album: string,
-    genre: string,
-    duration-text: string,
-    duration-secs: float,
     path: string,
     is-current: bool,
-    format-info: string,    // e.g. "FLAC 44.1kHz"
-    bitrate: string,        // e.g. "320 kbps"
 }
 
-// Playlist data
-export struct MusicPlaylistData {
-    name: string,
-    track-count: int,
-    total-duration: string,
-    is-active: bool,
-}
-
-// Album data for grid view
-export struct MusicAlbumData {
-    name: string,
-    artist: string,
-    track-count: int,
-    year: string,
-}
-
-// Artist data
-export struct MusicArtistData {
-    name: string,
-    album-count: int,
-    track-count: int,
-}
-
-// Genre data
-export struct MusicGenreData {
-    name: string,
-    track-count: int,
-}
-
-// Scan folder data
+// One library folder and what its last scan found in it.
 export struct MusicScanFolderData {
     path: string,
     track-count: int,
-    is-scanning: bool,
-}
-
-// Library browse categories
-export enum MusicCategory {
-    all-songs,
-    artists,
-    albums,
-    genres,
-}
-
-// Repeat mode
-export enum MusicRepeatMode {
-    off,
-    one,
-    all,
 }
 
 export component MusicPlayerScreen inherits Rectangle {
-    // The app's window-bar (#256): this screen's header is its window's one title bar when
-    // the screen fills an app window; the shell's copy leaves it off.
+    // The app's window-bar (#256): this screen's header is its window's one title bar.
     in property <bool> window-bar: false;
-    // ── The agent layer ──
-    //
-    // Filled from what this app and the companion actually hold; every row says where it came
-    // from, and a section with nothing true to say does not draw. See agent_rail.slint.
+    // What this app holds, for the agent rail: the track mpv is playing.
     in property <[AgentContextItem]> agent-context: [];
-    in property <[AgentSuggestion]> agent-suggestions: [];
-    in property <string> agent-unavailable: "";
-    callback agent-context-activated(string);
-    callback agent-suggestion-activated(string);
-    in property <AgentProposal> proposal;
-    in property <bool> proposal-working: false;
-    callback proposal-applied();
-    callback proposal-dismissed();
 
     background: Theme.bg-deep;
 
-    // Library data
+    // Library — the tracks shown (after the search filter) and how many the library holds.
     in property <[MusicTrackData]> library-tracks: [];
-    in property <[MusicArtistData]> library-artists: [];
-    in property <[MusicAlbumData]> library-albums: [];
-    in property <[MusicGenreData]> library-genres: [];
     in property <int> library-track-count: 0;
-
-    // Browse state
-    in-out property <int> browse-category: 0;  // 0=songs, 1=artists, 2=albums, 3=genres
     in-out property <string> browse-filter: "";
-    in property <string> browse-sub-header: "";
 
-    // Now playing
+    // Now playing, as mpv reports it.
     in property <string> now-title: "";
-    in property <string> now-artist: "";
     in property <string> now-album: "";
-    in property <string> now-genre: "";
-    in property <string> now-format-info: "";
-    in property <string> now-bitrate: "";
     in property <bool> is-playing: false;
     in property <float> progress: 0.0;
-    in property <string> time-current: "0:00";
-    in property <string> time-total: "0:00";
+    in property <string> time-current: "";
+    in property <string> time-total: "";
     in property <float> volume: 0.8;
     in property <bool> volume-muted: false;
 
@@ -131,39 +60,17 @@ export component MusicPlayerScreen inherits Rectangle {
     in property <[MusicTrackData]> queue-tracks: [];
     in property <int> queue-current-index: -1;
 
-    // Modes
-    in property <bool> shuffle-on: false;
-    in property <int> repeat-mode: 0;  // 0=off, 1=one, 2=all
-    in property <float> playback-speed: 1.0;
-
-    // Playlists
-    in property <[MusicPlaylistData]> playlists: [];
-    in property <int> active-playlist-index: -1;
-    in-out property <bool> playlist-panel-open: true;
-
-    // Scan folders
+    // Folders and the scan
     in property <[MusicScanFolderData]> scan-folders: [];
     in property <bool> is-scanning: false;
-    in property <float> scan-progress: 0.0;
-    in property <string> scan-status: "";
+    // The last thing the app has to say: how a scan went, what is playing. Always drawn.
+    in property <string> status-text: "";
+    // What could not be done, in plain words: no mpv, mpv stopped, a file that would not play.
+    in property <string> notice: "";
 
-    // Folder watch
-    in property <bool> music-folder-watch-active: false;
-    in property <string> music-folder-watch-status: "";
-
-    // Equalizer presets
-    in property <int> music-equalizer-preset: 0;  // 0=flat, 1=bass boost, 2=vocal, 3=treble
-    in-out property <bool> music-show-equalizer: false;
-
-    // Internal UI state
-    in-out property <bool> show-add-playlist-dialog: false;
-    in-out property <string> new-playlist-name: "";
     in-out property <bool> show-scan-folders-dialog: false;
-    in-out property <bool> show-speed-popup: false;
-    in-out property <int> rename-playlist-index: -1;
-    in-out property <string> rename-playlist-text: "";
 
-    // Callbacks — playback
+    // Playback
     callback play-pause();
     callback stop();
     callback next-track();
@@ -171,503 +78,78 @@ export component MusicPlayerScreen inherits Rectangle {
     callback seek(float);
     callback volume-changed(float);
     callback toggle-mute();
-    callback toggle-shuffle();
-    callback cycle-repeat();     // cycles off -> all -> one -> off
-    callback set-playback-speed(float);
     callback play-track-index(int);
     callback queue-play-index(int);
-
-    // Callbacks — library browse
-    callback browse-category-changed(int);
+    // Library
     callback browse-filter-changed(string);
-    callback browse-item-selected(string);
-
-    // Callbacks — queue management
-    callback add-to-queue(int);
-    callback play-next(int);              // insert after current in queue
-    callback queue-remove(int);
-    callback queue-move-up(int);
-    callback queue-move-down(int);
-    callback queue-clear();
-
-    // Callbacks — playlists
-    callback playlist-create(string);
-    callback playlist-rename(int, string);
-    callback playlist-delete(int);
-    callback playlist-select(int);
-    callback playlist-add-track(int, int);   // playlist-idx, library-track-idx
-    callback playlist-remove-track(int, int); // playlist-idx, track-idx
-
-    // Callbacks — scan folders
     callback scan-add-folder(string);
     callback scan-remove-folder(int);
     callback scan-rescan();
+    callback dismiss-notice();
 
-    // Callbacks — folder watch + equalizer
-    callback music-toggle-folder-watch();
-    callback music-set-equalizer(int);
-
-    // AI Assist
-    in property <bool> ai-is-working: false;
-    in property <string> ai-response: "";
-    in-out property <bool> ai-panel-open: false;
-    callback ai-explain-pressed();
-    callback ai-dismiss();
-
-    // Internal — the scan dialog's path field
+    // The folders dialog's path field.
     property <string> new-folder-path: "";
-
-    pure function category-label(c: int) -> string {
-        c == 0 ? "Songs" : c == 1 ? "Artists" : c == 2 ? "Albums" : "Genres"
-    }
-    pure function eq-label(p: int) -> string {
-        p == 0 ? "Flat" : p == 1 ? "Bass" : p == 2 ? "Vocal" : "Treble"
-    }
 
     VerticalLayout {
         spacing: 0px;
 
-        // -- Header --
-        //
-        // The four ways of looking at the library are leading-actions -- they change what you
-        // are looking at -- and the library search is the frame's own search field, which is
-        // why it is now the same 240px box in the same place as in every other app.
         AppHeader {
             window-bar: root.window-bar;
             app-id: "music";
             icon: Icons.music;
             title: "Music";
-            subtitle: root.browse-sub-header;
+            subtitle: root.library-track-count == 1 ? "1 track" : "\{root.library-track-count} tracks";
             show-search: true;
             search-placeholder: "Search library";
-            leading-actions: [
-                { id: "cat-0", label: root.category-label(0), active: root.browse-category == 0 },
-                { id: "cat-1", label: root.category-label(1), active: root.browse-category == 1 },
-                { id: "cat-2", label: root.category-label(2), active: root.browse-category == 2 },
-                { id: "cat-3", label: root.category-label(3), active: root.browse-category == 3 },
-            ];
+            search-text <=> root.browse-filter;
             actions: [
                 { id: "folders", icon: Icons.folder, label: "Folders", active: root.show-scan-folders-dialog },
-                { id: "ai",      icon: Icons.spark,  label: root.ai-is-working ? "Working" : "Explain",
-                  emphasis: 1, loading: root.ai-is-working, active: root.ai-panel-open },
             ];
-            search-edited(t) => { root.browse-filter = t; }
+            search-edited(t) => { root.browse-filter-changed(t); }
             action(id) => {
-                if (id == "cat-0") { root.browse-category = 0; root.browse-category-changed(0); }
-                else if (id == "cat-1") { root.browse-category = 1; root.browse-category-changed(1); }
-                else if (id == "cat-2") { root.browse-category = 2; root.browse-category-changed(2); }
-                else if (id == "cat-3") { root.browse-category = 3; root.browse-category-changed(3); }
-                else if (id == "folders") { root.show-scan-folders-dialog = !root.show-scan-folders-dialog; }
-                else if (id == "ai") {
-                    if (root.ai-panel-open) { root.ai-dismiss(); root.ai-panel-open = false; }
-                    else { root.ai-explain-pressed(); root.ai-panel-open = true; }
-                }
+                if (id == "folders") { root.show-scan-folders-dialog = !root.show-scan-folders-dialog; }
             }
         }
 
-        // ══════════════ Scanning strip ══════════════
-        if root.is-scanning : Rectangle {
-            height: 30px;
+        // ══════════════ Status line ══════════════
+        //
+        // Outside any condition on scanning, so the sentence a scan ends with stays on screen.
+        if root.status-text != "" || root.is-scanning : Rectangle {
+            height: 28px;
             background: Theme.bg-card;
-
             Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
-
             HorizontalLayout {
                 padding-left: Theme.sp-4;
                 padding-right: Theme.sp-4;
-                spacing: Theme.sp-3;
-
-                Icon {
+                spacing: Theme.sp-2;
+                if root.is-scanning : Icon {
                     commands: Icons.refresh;
-                    size: 13px; tint: Theme.amber;
+                    size: 12px;
+                    tint: Theme.text-secondary;
                     y: (parent.height - self.height) / 2;
                 }
                 Text {
-                    text: root.scan-status != "" ? root.scan-status : "Scanning library\{"\u{2026}"}";
+                    text: root.status-text;
                     color: Theme.text-secondary;
                     font-size: Theme.fs-caption;
                     vertical-alignment: center;
-                }
-                Rectangle { horizontal-stretch: 1; }
-                Rectangle {
-                    width: 160px;
-                    height: 4px;
-                    y: (parent.height - 4px) / 2;
-                    border-radius: 2px;
-                    background: Theme.bg-input;
-                    Rectangle {
-                        x: 0;
-                        width: parent.width * root.scan-progress;
-                        height: 100%;
-                        border-radius: 2px;
-                        background: Theme.amber;
-                    }
-                }
-                Text {
-                    text: "\{round(root.scan-progress * 100)}%";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    font-family: Theme.font-mono;
-                    vertical-alignment: center;
-                    width: 34px;
-                    horizontal-alignment: right;
+                    overflow: elide;
+                    horizontal-stretch: 1;
                 }
             }
         }
 
-        // ══════════════ AI response ══════════════
-        if root.ai-panel-open && root.ai-response != "" : Rectangle {
-            height: min(160px, ai-col.preferred-height + 16px);
-            background: Theme.bg-overlay-panel;
-            border-width: 1px;
-            border-color: Theme.accent.transparentize(70%);
-
-            Flickable {
-                viewport-height: ai-col.preferred-height + 16px;
-
-                ai-col := VerticalLayout {
-                    alignment: start;
-                    padding: Theme.sp-3;
-                    spacing: Theme.sp-2;
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Icon {
-                            commands: Icons.spark;
-                            size: 14px; tint: Theme.accent;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: "About this music";
-                            color: Theme.accent;
-                            font-size: Theme.fs-caption;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                        Rectangle { horizontal-stretch: 1; }
-                        YIconButton {
-                            icon-path: Icons.close;
-                            variant: 1;
-                            clicked => {
-                                root.ai-panel-open = false;
-                                root.ai-dismiss();
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: root.ai-response;
-                        color: Theme.text-secondary;
-                        font-size: Theme.fs-caption;
-                        wrap: word-wrap;
-                    }
-                }
-            }
-        }
-
-        // ══════════════ Body ══════════════
-        // ── What the companion is proposing ──
-        if root.proposal.title != "" : AgentProposalCard {
-            data: root.proposal;
-            working: root.proposal-working;
-            apply => { root.proposal-applied(); }
-            dismiss => { root.proposal-dismissed(); }
+        if root.notice != "" : YNoticeBar {
+            text: root.notice;
+            tone: 1;
+            dismissed => { root.dismiss-notice(); }
         }
 
         HorizontalLayout {
             vertical-stretch: 1;
             spacing: 0px;
 
-            // ─── Playlists rail ───
-            if root.playlist-panel-open : Rectangle {
-                width: 208px;
-                background: Theme.bg-surface;
-
-                Rectangle { x: parent.width - 1px; width: 1px; height: 100%; background: Theme.separator; }
-
-                VerticalLayout {
-                    padding: Theme.sp-2;
-                    padding-top: Theme.sp-3;
-                    spacing: 1px;
-
-                    Text {
-                        x: Theme.sp-2;
-                        text: "LIBRARY";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-micro;
-                        font-weight: Theme.fw-micro;
-                        letter-spacing: 1px;
-                        height: 24px;
-                        vertical-alignment: center;
-                    }
-
-                    // All music
-                    Rectangle {
-                        property <bool> active: root.active-playlist-index == -1;
-                        height: 30px;
-                        border-radius: Theme.r-sm;
-                        background: active ? AppIdentity.tint
-                                  : all-ta.has-hover ? Theme.hover-fill : transparent;
-
-                        if active : Rectangle {
-                            x: 0; width: 3px; height: 16px;
-                            y: (parent.height - 16px) / 2;
-                            border-radius: 1.5px;
-                            background: Theme.accent;
-                        }
-
-                        all-ta := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.playlist-select(-1); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: Theme.sp-3;
-                            padding-right: Theme.sp-2;
-                            spacing: 9px;
-
-                            Icon {
-                                commands: Icons.music;
-                                size: 15px;
-                                tint: active ? AppIdentity.accent : Theme.text-secondary;
-                                y: (parent.height - self.height) / 2;
-                            }
-                            Text {
-                                text: "All music";
-                                color: active ? Theme.text-primary : Theme.text-secondary;
-                                font-size: Theme.font-label;
-                                font-weight: active ? 500 : Theme.fw-body;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.library-track-count;
-                                color: active ? AppIdentity.accent : Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                font-family: Theme.font-mono;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    Rectangle { height: Theme.sp-2; }
-
-                    // Playlists header + add
-                    Rectangle {
-                        height: 24px;
-                        Text {
-                            x: Theme.sp-2;
-                            text: "PLAYLISTS";
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            font-weight: Theme.fw-micro;
-                            letter-spacing: 1px;
-                            vertical-alignment: center;
-                        }
-                        add-pl-ta := TouchArea {
-                            x: parent.width - 26px;
-                            width: 22px; height: 22px;
-                            y: (parent.height - 22px) / 2;
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.new-playlist-name = "";
-                                root.show-add-playlist-dialog = true;
-                            }
-                            Rectangle {
-                                border-radius: Theme.r-sm;
-                                background: parent.has-hover ? Theme.hover-fill : transparent;
-                                Icon {
-                                    commands: Icons.plus;
-                                    size: 13px;
-                                    tint: parent.background == transparent ? Theme.text-dim : Theme.text-primary;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-                        }
-                    }
-
-                    // Playlist rows
-                    Rectangle {
-                        vertical-stretch: 1;
-                        clip: true;
-
-                        Flickable {
-                            viewport-height: pl-col.preferred-height;
-
-                            pl-col := VerticalLayout {
-                                alignment: start;
-                                spacing: 1px;
-
-                                for pl[pidx] in root.playlists : Rectangle {
-                                    property <bool> active: pidx == root.active-playlist-index;
-                                    property <bool> renaming: pidx == root.rename-playlist-index;
-                                    height: 30px;
-                                    border-radius: Theme.r-sm;
-                                    background: active ? AppIdentity.tint
-                                              : pl-ta.has-hover ? Theme.hover-fill : transparent;
-
-                                    if active : Rectangle {
-                                        x: 0; width: 3px; height: 16px;
-                                        y: (parent.height - 16px) / 2;
-                                        border-radius: 1.5px;
-                                        background: Theme.accent;
-                                    }
-
-                                    pl-ta := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.playlist-select(pidx); }
-                                    }
-
-                                    HorizontalLayout {
-                                        padding-left: Theme.sp-3;
-                                        padding-right: Theme.sp-2;
-                                        spacing: 9px;
-
-                                        Icon {
-                                            commands: Icons.list;
-                                            size: 15px;
-                                            tint: active ? AppIdentity.accent : Theme.text-secondary;
-                                            y: (parent.height - self.height) / 2;
-                                        }
-
-                                        if !renaming : Text {
-                                            text: pl.name;
-                                            color: active ? Theme.text-primary : Theme.text-secondary;
-                                            font-size: Theme.font-label;
-                                            font-weight: active ? 500 : Theme.fw-body;
-                                            vertical-alignment: center;
-                                            horizontal-stretch: 1;
-                                            overflow: elide;
-                                        }
-
-                                        if renaming : TextInput {
-                                            horizontal-stretch: 1;
-                                            vertical-alignment: center;
-                                            single-line: true;
-                                            font-size: Theme.font-label;
-                                            color: Theme.text-primary;
-                                            text <=> root.rename-playlist-text;
-                                            accepted => {
-                                                root.playlist-rename(pidx, self.text);
-                                                root.rename-playlist-index = -1;
-                                            }
-                                        }
-
-                                        // Rename / delete appear on hover
-                                        if pl-ta.has-hover && !renaming : TouchArea {
-                                            width: 20px; height: 20px;
-                                            y: (parent.height - 20px) / 2;
-                                            mouse-cursor: pointer;
-                                            clicked => {
-                                                root.rename-playlist-text = pl.name;
-                                                root.rename-playlist-index = pidx;
-                                            }
-                                            Icon {
-                                                commands: Icons.pencil;
-                                                size: 12px; tint: Theme.text-dim;
-                                                x: (parent.width - self.width) / 2;
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                        }
-                                        if pl-ta.has-hover && !renaming : TouchArea {
-                                            width: 20px; height: 20px;
-                                            y: (parent.height - 20px) / 2;
-                                            mouse-cursor: pointer;
-                                            clicked => { root.playlist-delete(pidx); }
-                                            Icon {
-                                                commands: Icons.trash;
-                                                size: 12px; tint: Theme.color-danger;
-                                                x: (parent.width - self.width) / 2;
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                        }
-
-                                        if !pl-ta.has-hover && !renaming : Text {
-                                            text: pl.track-count;
-                                            color: active ? AppIdentity.accent : Theme.text-dim;
-                                            font-size: Theme.fs-micro;
-                                            font-family: Theme.font-mono;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if root.playlists.length == 0 : Text {
-                            x: Theme.sp-3;
-                            y: Theme.sp-2;
-                            width: parent.width - Theme.sp-5;
-                            text: "No playlists yet. Use + to make one.";
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            wrap: word-wrap;
-                        }
-                    }
-
-                    // Folder watch
-                    Rectangle {
-                        height: 30px;
-                        border-radius: Theme.r-sm;
-                        background: watch-ta.has-hover ? Theme.hover-fill : transparent;
-
-                        watch-ta := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.music-toggle-folder-watch(); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: Theme.sp-3;
-                            padding-right: Theme.sp-2;
-                            spacing: 9px;
-
-                            Icon {
-                                commands: Icons.eye;
-                                size: 14px;
-                                tint: root.music-folder-watch-active ? Theme.color-success : Theme.text-dim;
-                                y: (parent.height - self.height) / 2;
-                            }
-                            Text {
-                                text: "Watch folders";
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-caption;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: root.music-folder-watch-active ? "on" : "off";
-                                color: root.music-folder-watch-active ? Theme.color-success : Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ─── Rail collapse handle ───
-            Rectangle {
-                width: 12px;
-                background: Theme.bg-surface;
-
-                handle-ta := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.playlist-panel-open = !root.playlist-panel-open; }
-                }
-
-                Icon {
-                    commands: root.playlist-panel-open ? Icons.chevron-left : Icons.chevron-right;
-                    size: 11px;
-                    tint: handle-ta.has-hover ? Theme.text-primary : Theme.text-dim;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
-            }
-
-            Rectangle { width: 1px; background: Theme.separator; }
-
-            // ─── Library (the main surface) ───
+            // ─── Library ───
             Rectangle {
                 horizontal-stretch: 1;
                 background: Theme.bg-deep;
@@ -675,60 +157,16 @@ export component MusicPlayerScreen inherits Rectangle {
                 VerticalLayout {
                     spacing: 0px;
 
-                    // Sub-header — what you are looking at, and how many
-                    Rectangle {
-                        height: 34px;
-                        background: Theme.bg-deep;
-
-                        Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
-
-                        HorizontalLayout {
-                            padding-left: Theme.sp-4;
-                            padding-right: Theme.sp-4;
-                            spacing: Theme.sp-2;
-
-                            Text {
-                                text: root.browse-sub-header != "" ? root.browse-sub-header
-                                    : root.active-playlist-index >= 0 && root.playlists.length > root.active-playlist-index
-                                        ? root.playlists[root.active-playlist-index].name
-                                        : root.category-label(root.browse-category);
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-micro;
-                                font-weight: Theme.fw-micro;
-                                letter-spacing: 1px;
-                                vertical-alignment: center;
-                            }
-
-                            Rectangle { horizontal-stretch: 1; }
-
-                            Text {
-                                text: root.browse-category == 0 ? "\{root.library-tracks.length} shown"
-                                    : root.browse-category == 1 ? "\{root.library-artists.length} artists"
-                                    : root.browse-category == 2 ? "\{root.library-albums.length} albums"
-                                    : "\{root.library-genres.length} genres";
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                font-family: Theme.font-mono;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    // Column header (songs only — the other views are not tabular)
-                    if root.browse-category == 0 && root.library-tracks.length > 0 : Rectangle {
+                    if root.library-tracks.length > 0 : Rectangle {
                         height: 28px;
-                        background: Theme.bg-deep;
-
                         Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
-
                         HorizontalLayout {
                             padding-left: Theme.sp-4;
                             padding-right: Theme.sp-4;
                             spacing: Theme.sp-3;
-
                             Text {
                                 text: "#";
-                                width: 30px;
+                                width: 36px;
                                 color: Theme.text-dim;
                                 font-size: Theme.fs-micro;
                                 font-family: Theme.font-mono;
@@ -744,379 +182,86 @@ export component MusicPlayerScreen inherits Rectangle {
                                 vertical-alignment: center;
                             }
                             Text {
-                                text: "ARTIST";
-                                width: 170px;
+                                text: "FOLDER";
+                                width: 200px;
                                 color: Theme.text-dim;
                                 font-size: Theme.fs-micro;
                                 letter-spacing: 0.8px;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: "ALBUM";
-                                width: 150px;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                letter-spacing: 0.8px;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: "TIME";
-                                width: 56px;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                letter-spacing: 0.8px;
-                                horizontal-alignment: right;
                                 vertical-alignment: center;
                             }
                         }
                     }
 
-                    // The list itself
                     Rectangle {
                         vertical-stretch: 1;
                         clip: true;
 
-                        // ── Songs ──
-                        if root.browse-category == 0 && root.library-tracks.length > 0 : Flickable {
-                            viewport-height: songs-col.preferred-height;
+                        if root.library-tracks.length > 0 : ListView {
+                            for tr[tidx] in root.library-tracks : Rectangle {
+                                height: 38px;
+                                background: tr.is-current ? AppIdentity.tint
+                                          : row-ta.has-hover ? Theme.hover-fill
+                                          : mod(tidx, 2) == 1 ? Theme.bg-surface.transparentize(60%)
+                                          : transparent;
+                                if tr.is-current : Rectangle { x: 0; width: 2px; height: 100%; background: Theme.accent; }
 
-                            songs-col := VerticalLayout {
-                                alignment: start;
-                                spacing: 0px;
-
-                                for tr[tidx] in root.library-tracks : Rectangle {
-                                    height: 40px;
-                                    background: tr.is-current ? AppIdentity.tint
-                                              : row-ta.has-hover ? Theme.hover-fill
-                                              : mod(tidx, 2) == 1 ? Theme.bg-surface.transparentize(60%)
-                                              : transparent;
-
-                                    if tr.is-current : Rectangle {
-                                        x: 0; width: 2px; height: 100%;
-                                        background: Theme.accent;
-                                    }
-
-                                    row-ta := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.play-track-index(tidx); }
-                                    }
-
-                                    HorizontalLayout {
-                                        padding-left: Theme.sp-4;
-                                        padding-right: Theme.sp-4;
-                                        spacing: Theme.sp-3;
-
-                                        // Index, or a play glyph on hover, or the state when current
-                                        Rectangle {
-                                            width: 30px;
-                                            if row-ta.has-hover && !tr.is-current : Icon {
-                                                commands: Icons.play;
-                                                size: 13px;
-                                                tint: Theme.text-primary;
-                                                fill: Theme.text-primary;
-                                                x: (parent.width - self.width) / 2;
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                            if tr.is-current : Icon {
-                                                commands: root.is-playing ? Icons.volume : Icons.pause;
-                                                size: 13px;
-                                                tint: Theme.accent;
-                                                x: (parent.width - self.width) / 2;
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                            if !row-ta.has-hover && !tr.is-current : Text {
-                                                text: tidx + 1;
-                                                color: Theme.text-dim;
-                                                font-size: Theme.fs-micro;
-                                                font-family: Theme.font-mono;
-                                                width: 100%;
-                                                horizontal-alignment: right;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        Text {
-                                            text: tr.title;
-                                            horizontal-stretch: 1;
-                                            color: tr.is-current ? AppIdentity.accent : Theme.text-primary;
-                                            font-size: Theme.fs-body;
-                                            font-weight: tr.is-current ? 500 : Theme.fw-body;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-
-                                        Text {
-                                            text: tr.artist;
-                                            width: 170px;
-                                            color: Theme.text-secondary;
-                                            font-size: Theme.fs-caption;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-
-                                        Text {
-                                            text: tr.album;
-                                            width: 150px;
-                                            color: Theme.text-dim;
-                                            font-size: Theme.fs-caption;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-
-                                        // Row actions replace the duration on hover
-                                        Rectangle {
-                                            width: 56px;
-
-                                            if !row-ta.has-hover : Text {
-                                                width: 100%;
-                                                text: tr.duration-text;
-                                                color: Theme.text-dim;
-                                                font-size: Theme.fs-caption;
-                                                font-family: Theme.font-mono;
-                                                horizontal-alignment: right;
-                                                vertical-alignment: center;
-                                            }
-
-                                            if row-ta.has-hover : HorizontalLayout {
-                                                alignment: end;
-                                                spacing: 2px;
-
-                                                queue-next-ta := TouchArea {
-                                                    width: 24px; height: 24px;
-                                                    y: (parent.height - 24px) / 2;
-                                                    mouse-cursor: pointer;
-                                                    clicked => { root.play-next(tidx); }
-                                                    Icon {
-                                                        commands: Icons.skip-forward;
-                                                        size: 12px;
-                                                        tint: queue-next-ta.has-hover ? AppIdentity.accent : Theme.text-dim;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                }
-                                                queue-add-ta := TouchArea {
-                                                    width: 24px; height: 24px;
-                                                    y: (parent.height - 24px) / 2;
-                                                    mouse-cursor: pointer;
-                                                    clicked => {
-                                                        if (root.active-playlist-index >= 0) {
-                                                            root.playlist-add-track(root.active-playlist-index, tidx);
-                                                        } else {
-                                                            root.add-to-queue(tidx);
-                                                        }
-                                                    }
-                                                    Icon {
-                                                        commands: Icons.plus;
-                                                        size: 13px;
-                                                        tint: queue-add-ta.has-hover ? AppIdentity.accent : Theme.text-dim;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                row-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.play-track-index(tidx); }
                                 }
-                            }
-                        }
 
-                        // ── Artists ──
-                        if root.browse-category == 1 && root.library-artists.length > 0 : Flickable {
-                            viewport-height: artists-col.preferred-height;
-
-                            artists-col := VerticalLayout {
-                                alignment: start;
-                                spacing: 0px;
-
-                                for ar[aidx] in root.library-artists : Rectangle {
-                                    height: 52px;
-                                    background: ar-ta.has-hover ? Theme.hover-fill : transparent;
-
-                                    Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
-
-                                    ar-ta := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.browse-item-selected(ar.name); }
-                                    }
-
-                                    HorizontalLayout {
-                                        padding-left: Theme.sp-4;
-                                        padding-right: Theme.sp-4;
-                                        spacing: Theme.sp-3;
-
-                                        Rectangle {
-                                            width: 34px; height: 34px;
-                                            y: (parent.height - 34px) / 2;
-                                            border-radius: 17px;
-                                            background: Theme.bg-elevated;
-                                            Icon {
-                                                commands: Icons.people;
-                                                size: 16px; tint: Theme.text-secondary;
-                                                x: (parent.width - self.width) / 2;
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                        }
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            spacing: 2px;
-                                            horizontal-stretch: 1;
-                                            Text {
-                                                text: ar.name;
-                                                color: Theme.text-primary;
-                                                font-size: Theme.fs-body;
-                                                overflow: elide;
-                                            }
-                                            Text {
-                                                text: ar.album-count == 1
-                                                    ? "1 album \{"\u{00b7}"} \{ar.track-count} tracks"
-                                                    : "\{ar.album-count} albums \{"\u{00b7}"} \{ar.track-count} tracks";
-                                                color: Theme.text-dim;
-                                                font-size: Theme.fs-micro;
-                                            }
-                                        }
-
-                                        Icon {
-                                            commands: Icons.chevron-right;
-                                            size: 14px; tint: Theme.text-dim;
+                                HorizontalLayout {
+                                    padding-left: Theme.sp-4;
+                                    padding-right: Theme.sp-4;
+                                    spacing: Theme.sp-3;
+                                    Rectangle {
+                                        width: 36px;
+                                        if row-ta.has-hover || tr.is-current : Icon {
+                                            commands: tr.is-current && root.is-playing ? Icons.volume : Icons.play;
+                                            size: 13px;
+                                            tint: tr.is-current ? Theme.accent : Theme.text-primary;
+                                            x: parent.width - self.width;
                                             y: (parent.height - self.height) / 2;
                                         }
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── Albums ──
-                        if root.browse-category == 2 && root.library-albums.length > 0 : Flickable {
-                            viewport-height: albums-col.preferred-height;
-
-                            albums-col := VerticalLayout {
-                                alignment: start;
-                                spacing: 0px;
-
-                                for al[alidx] in root.library-albums : Rectangle {
-                                    height: 52px;
-                                    background: al-ta.has-hover ? Theme.hover-fill : transparent;
-
-                                    Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
-
-                                    al-ta := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.browse-item-selected(al.name); }
-                                    }
-
-                                    HorizontalLayout {
-                                        padding-left: Theme.sp-4;
-                                        padding-right: Theme.sp-4;
-                                        spacing: Theme.sp-3;
-
-                                        Rectangle {
-                                            width: 34px; height: 34px;
-                                            y: (parent.height - 34px) / 2;
-                                            border-radius: Theme.r-sm;
-                                            background: Theme.bg-elevated;
-                                            Icon {
-                                                commands: Icons.disk;
-                                                size: 16px; tint: Theme.text-secondary;
-                                                x: (parent.width - self.width) / 2;
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                        }
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            spacing: 2px;
-                                            horizontal-stretch: 1;
-                                            Text {
-                                                text: al.name;
-                                                color: Theme.text-primary;
-                                                font-size: Theme.fs-body;
-                                                overflow: elide;
-                                            }
-                                            Text {
-                                                text: al.year != "" ? "\{al.artist} \{"\u{00b7}"} \{al.year}" : al.artist;
-                                                color: Theme.text-dim;
-                                                font-size: Theme.fs-micro;
-                                                overflow: elide;
-                                            }
-                                        }
-
-                                        Text {
-                                            text: "\{al.track-count}";
-                                            width: 40px;
+                                        if !row-ta.has-hover && !tr.is-current : Text {
+                                            text: tidx + 1;
                                             color: Theme.text-dim;
-                                            font-size: Theme.fs-caption;
+                                            font-size: Theme.fs-micro;
                                             font-family: Theme.font-mono;
+                                            width: 100%;
                                             horizontal-alignment: right;
                                             vertical-alignment: center;
                                         }
                                     }
-                                }
-                            }
-                        }
-
-                        // ── Genres ──
-                        if root.browse-category == 3 && root.library-genres.length > 0 : Flickable {
-                            viewport-height: genres-col.preferred-height;
-
-                            genres-col := VerticalLayout {
-                                alignment: start;
-                                spacing: 0px;
-
-                                for gn[gidx] in root.library-genres : Rectangle {
-                                    height: 44px;
-                                    background: gn-ta.has-hover ? Theme.hover-fill : transparent;
-
-                                    Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
-
-                                    gn-ta := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.browse-item-selected(gn.name); }
+                                    Text {
+                                        text: tr.title;
+                                        horizontal-stretch: 1;
+                                        color: tr.is-current ? AppIdentity.accent : Theme.text-primary;
+                                        font-size: Theme.fs-body;
+                                        overflow: elide;
+                                        vertical-alignment: center;
                                     }
-
-                                    HorizontalLayout {
-                                        padding-left: Theme.sp-4;
-                                        padding-right: Theme.sp-4;
-                                        spacing: Theme.sp-3;
-
-                                        Icon {
-                                            commands: Icons.tag;
-                                            size: 15px; tint: Theme.text-secondary;
-                                            y: (parent.height - self.height) / 2;
-                                        }
-                                        Text {
-                                            text: gn.name;
-                                            horizontal-stretch: 1;
-                                            color: Theme.text-primary;
-                                            font-size: Theme.fs-body;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-                                        Text {
-                                            text: "\{gn.track-count}";
-                                            color: Theme.text-dim;
-                                            font-size: Theme.fs-caption;
-                                            font-family: Theme.font-mono;
-                                            vertical-alignment: center;
-                                        }
+                                    Text {
+                                        text: tr.album;
+                                        width: 200px;
+                                        color: Theme.text-dim;
+                                        font-size: Theme.fs-caption;
+                                        overflow: elide;
+                                        vertical-alignment: center;
                                     }
                                 }
                             }
                         }
 
-                        // ── Empty ──
-                        if (root.browse-category == 0 && root.library-tracks.length == 0)
-                            || (root.browse-category == 1 && root.library-artists.length == 0)
-                            || (root.browse-category == 2 && root.library-albums.length == 0)
-                            || (root.browse-category == 3 && root.library-genres.length == 0) : YEmptyState {
+                        if root.library-tracks.length == 0 : YEmptyState {
                             icon-path: Icons.music;
-                            title: root.browse-filter != "" ? "Nothing matches that"
-                                 : root.is-scanning ? "Scanning\{"\u{2026}"}"
-                                 : "No music yet";
-                            description: root.browse-filter != "" ? "Try a shorter search."
-                                       : "Add a folder and Yantrik will index what is in it.";
-                            action-label: root.browse-filter != "" ? "" : "Add folder";
-                            action-clicked => { root.show-scan-folders-dialog = true; }
+                            title: root.is-scanning ? "Scanning your folders"
+                                 : root.library-track-count > 0 ? "Nothing matches the search"
+                                 : root.scan-folders.length == 0 ? "No library folders"
+                                 : "No music found";
+                            description: root.is-scanning ? "Tracks appear here when the scan finishes."
+                                    : root.library-track-count > 0 ? "Clear the search to see the whole library."
+                                    : "Open Folders and add a folder that holds music (mp3, flac, ogg, opus, wav, m4a).";
                         }
                     }
                 }
@@ -1124,117 +269,52 @@ export component MusicPlayerScreen inherits Rectangle {
 
             Rectangle { width: 1px; background: Theme.separator; }
 
-            // ─── Now playing + queue ───
+            // ─── Now playing and the queue ───
             Rectangle {
                 width: 300px;
                 background: Theme.bg-surface;
 
                 VerticalLayout {
                     spacing: 0px;
+                    padding-top: Theme.sp-4;
 
-                    // Artwork
-                    Rectangle {
-                        height: 300px;
-
-                        Rectangle {
-                            x: Theme.sp-4;
-                            y: Theme.sp-4;
-                            width: parent.width - Theme.sp-4 * 2;
-                            height: parent.height - Theme.sp-4 * 2;
-                            border-radius: Theme.r-lg;
-                            background: Theme.bg-card;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            clip: true;
-
-                            Icon {
-                                commands: Icons.music;
-                                size: 72px;
-                                thickness: 1.2px;
-                                tint: root.now-title != "" ? AppIdentity.accent.transparentize(25%) : Theme.text-dim.transparentize(30%);
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                            }
-                        }
-                    }
-
-                    // Track metadata
                     VerticalLayout {
                         padding-left: Theme.sp-4;
                         padding-right: Theme.sp-4;
                         padding-bottom: Theme.sp-3;
-                        spacing: 3px;
-
+                        spacing: 2px;
+                        Text {
+                            text: "NOW PLAYING";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            font-weight: Theme.fw-micro;
+                            letter-spacing: 1px;
+                        }
                         Text {
                             text: root.now-title != "" ? root.now-title : "Nothing playing";
                             color: root.now-title != "" ? Theme.text-primary : Theme.text-dim;
-                            font-size: Theme.fs-headline;
-                            font-weight: Theme.fw-headline;
+                            font-size: Theme.fs-body;
+                            font-weight: 500;
                             overflow: elide;
                         }
                         Text {
-                            text: root.now-artist;
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-caption;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: root.now-album != "" && root.now-genre != ""
-                                ? "\{root.now-album} \{"\u{00b7}"} \{root.now-genre}"
-                                : root.now-album != "" ? root.now-album : root.now-genre;
+                            text: root.now-album;
                             color: Theme.text-dim;
                             font-size: Theme.fs-micro;
                             overflow: elide;
-                        }
-
-                        if root.now-format-info != "" || root.now-bitrate != "" : HorizontalLayout {
-                            padding-top: 4px;
-                            spacing: 5px;
-                            alignment: start;
-
-                            if root.now-format-info != "" : Rectangle {
-                                width: fmt-txt.preferred-width + 12px;
-                                height: 18px;
-                                border-radius: Theme.r-sm;
-                                background: Theme.bg-input;
-                                fmt-txt := Text {
-                                    text: root.now-format-info;
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.fs-micro;
-                                    font-family: Theme.font-mono;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            if root.now-bitrate != "" : Rectangle {
-                                width: br-txt.preferred-width + 12px;
-                                height: 18px;
-                                border-radius: Theme.r-sm;
-                                background: Theme.bg-input;
-                                br-txt := Text {
-                                    text: root.now-bitrate;
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.fs-micro;
-                                    font-family: Theme.font-mono;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
                         }
                     }
 
                     Rectangle { height: 1px; background: Theme.separator; }
 
-                    // Queue header
                     Rectangle {
                         height: 30px;
                         HorizontalLayout {
                             padding-left: Theme.sp-4;
                             padding-right: Theme.sp-3;
                             spacing: Theme.sp-2;
-
                             Text {
-                                text: "UP NEXT";
+                                text: "QUEUE";
                                 color: Theme.text-dim;
                                 font-size: Theme.fs-micro;
                                 font-weight: Theme.fw-micro;
@@ -1242,236 +322,65 @@ export component MusicPlayerScreen inherits Rectangle {
                                 vertical-alignment: center;
                             }
                             Text {
-                                text: root.queue-tracks.length > 0 ? "\{root.queue-tracks.length}" : "";
+                                text: root.queue-tracks.length > 0 ? "\{root.queue-current-index + 1} of \{root.queue-tracks.length}" : "";
                                 color: Theme.text-dim;
                                 font-size: Theme.fs-micro;
                                 font-family: Theme.font-mono;
                                 vertical-alignment: center;
                             }
-                            Rectangle { horizontal-stretch: 1; }
-                            if root.queue-tracks.length > 0 : TouchArea {
-                                width: 44px; height: 22px;
-                                y: (parent.height - 22px) / 2;
-                                mouse-cursor: pointer;
-                                clicked => { root.queue-clear(); }
-                                Text {
-                                    text: "Clear";
-                                    color: parent.has-hover ? Theme.color-danger : Theme.text-dim;
-                                    font-size: Theme.fs-micro;
-                                    horizontal-alignment: right;
-                                    vertical-alignment: center;
-                                }
-                            }
                         }
                     }
 
-                    // Queue list
                     Rectangle {
                         vertical-stretch: 1;
                         clip: true;
 
-                        if root.queue-tracks.length > 0 : Flickable {
-                            viewport-height: queue-col.preferred-height;
-
-                            queue-col := VerticalLayout {
-                                alignment: start;
-                                spacing: 0px;
-
-                                for qt[qidx] in root.queue-tracks : Rectangle {
-                                    property <bool> current: qidx == root.queue-current-index;
-                                    height: 42px;
-                                    background: current ? AppIdentity.tint
-                                              : q-ta.has-hover ? Theme.hover-fill : transparent;
-
-                                    q-ta := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.queue-play-index(qidx); }
-                                    }
-
-                                    HorizontalLayout {
-                                        padding-left: Theme.sp-4;
-                                        padding-right: Theme.sp-2;
-                                        spacing: Theme.sp-2;
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            spacing: 1px;
-                                            horizontal-stretch: 1;
-                                            Text {
-                                                text: qt.title;
-                                                color: current ? AppIdentity.accent : Theme.text-primary;
-                                                font-size: Theme.fs-caption;
-                                                font-weight: current ? 500 : Theme.fw-body;
-                                                overflow: elide;
-                                            }
-                                            Text {
-                                                text: qt.artist;
-                                                color: Theme.text-dim;
-                                                font-size: Theme.fs-micro;
-                                                overflow: elide;
-                                            }
-                                        }
-
-                                        if !q-ta.has-hover : Text {
-                                            text: qt.duration-text;
-                                            color: Theme.text-dim;
-                                            font-size: Theme.fs-micro;
-                                            font-family: Theme.font-mono;
-                                            vertical-alignment: center;
-                                        }
-
-                                        if q-ta.has-hover : HorizontalLayout {
-                                            spacing: 0px;
-                                            alignment: end;
-
-                                            up-ta := TouchArea {
-                                                width: 20px; height: 22px;
-                                                y: (parent.height - 22px) / 2;
-                                                mouse-cursor: pointer;
-                                                clicked => { root.queue-move-up(qidx); }
-                                                Icon {
-                                                    commands: Icons.chevron-up;
-                                                    size: 12px;
-                                                    tint: up-ta.has-hover ? Theme.text-primary : Theme.text-dim;
-                                                    x: (parent.width - self.width) / 2;
-                                                    y: (parent.height - self.height) / 2;
-                                                }
-                                            }
-                                            down-ta := TouchArea {
-                                                width: 20px; height: 22px;
-                                                y: (parent.height - 22px) / 2;
-                                                mouse-cursor: pointer;
-                                                clicked => { root.queue-move-down(qidx); }
-                                                Icon {
-                                                    commands: Icons.chevron-down;
-                                                    size: 12px;
-                                                    tint: down-ta.has-hover ? Theme.text-primary : Theme.text-dim;
-                                                    x: (parent.width - self.width) / 2;
-                                                    y: (parent.height - self.height) / 2;
-                                                }
-                                            }
-                                            rm-ta := TouchArea {
-                                                width: 22px; height: 22px;
-                                                y: (parent.height - 22px) / 2;
-                                                mouse-cursor: pointer;
-                                                clicked => {
-                                                    if (root.active-playlist-index >= 0) {
-                                                        root.playlist-remove-track(root.active-playlist-index, qidx);
-                                                    }
-                                                    root.queue-remove(qidx);
-                                                }
-                                                Icon {
-                                                    commands: Icons.close;
-                                                    size: 11px;
-                                                    tint: rm-ta.has-hover ? Theme.color-danger : Theme.text-dim;
-                                                    x: (parent.width - self.width) / 2;
-                                                    y: (parent.height - self.height) / 2;
-                                                }
-                                            }
-                                        }
+                        if root.queue-tracks.length > 0 : ListView {
+                            for qt[qidx] in root.queue-tracks : Rectangle {
+                                property <bool> current: qidx == root.queue-current-index;
+                                height: 36px;
+                                background: current ? AppIdentity.tint : q-ta.has-hover ? Theme.hover-fill : transparent;
+                                q-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.queue-play-index(qidx); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: Theme.sp-4;
+                                    padding-right: Theme.sp-3;
+                                    Text {
+                                        text: qt.title;
+                                        color: current ? AppIdentity.accent : Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        overflow: elide;
+                                        vertical-alignment: center;
                                     }
                                 }
                             }
                         }
 
-                        if root.queue-tracks.length == 0 : VerticalLayout {
-                            alignment: center;
-                            spacing: 4px;
-                            padding: Theme.sp-5;
-
-                            Text {
-                                text: "Queue is empty";
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-caption;
-                                horizontal-alignment: center;
-                            }
-                            Text {
-                                text: "Hover a track and press + to add it.";
-                                color: Theme.text-dim.transparentize(30%);
-                                font-size: Theme.fs-micro;
-                                horizontal-alignment: center;
-                                wrap: word-wrap;
-                            }
+                        if root.queue-tracks.length == 0 : Text {
+                            x: Theme.sp-4;
+                            y: Theme.sp-2;
+                            width: parent.width - 2 * Theme.sp-4;
+                            text: "Pick a track in the library: the list it is in becomes the queue.";
+                            color: Theme.text-dim;
+                            font-size: Theme.fs-micro;
+                            wrap: word-wrap;
                         }
                     }
-                }
-            }
 
-            // ── What Yantrik knows about this ──
-            AgentRail {
-                context-items: root.agent-context;
-                suggestions: root.agent-suggestions;
-                unavailable: root.agent-unavailable;
-                context-activated(id) => { root.agent-context-activated(id); }
-                suggestion-activated(id) => { root.agent-suggestion-activated(id); }
-            }
-        }
-
-        // ══════════════ Equalizer strip (toggled) ══════════════
-        if root.music-show-equalizer : Rectangle {
-            height: 38px;
-            background: Theme.bg-card;
-
-            Rectangle { y: 0; height: 1px; width: 100%; background: Theme.separator; }
-
-            HorizontalLayout {
-                padding-left: Theme.sp-4;
-                padding-right: Theme.sp-4;
-                spacing: Theme.sp-2;
-                alignment: start;
-
-                Text {
-                    text: "EQUALIZER";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    font-weight: Theme.fw-micro;
-                    letter-spacing: 1px;
-                    vertical-alignment: center;
-                }
-
-                Rectangle { width: Theme.sp-2; }
-
-                for preset in [0, 1, 2, 3] : Rectangle {
-                    property <bool> active: root.music-equalizer-preset == preset;
-                    width: eq-txt.preferred-width + 22px;
-                    height: 24px;
-                    y: (parent.height - 24px) / 2;
-                    border-radius: self.height / 2;
-                    background: active ? AppIdentity.tint : eq-ta.has-hover ? Theme.hover-fill : transparent;
-                    border-width: 1px;
-                    border-color: active ? Theme.accent-dim : Theme.border-subtle;
-
-                    eq-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.music-set-equalizer(preset); }
+                    // ── What Yantrik knows about this ──
+                    AgentRail {
+                        context-items: root.agent-context;
                     }
-
-                    eq-txt := Text {
-                        text: root.eq-label(preset);
-                        color: active ? AppIdentity.accent : Theme.text-secondary;
-                        font-size: Theme.fs-micro;
-                        font-weight: active ? 600 : Theme.fw-body;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle { horizontal-stretch: 1; }
-
-                if root.music-folder-watch-status != "" : Text {
-                    text: root.music-folder-watch-status;
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    vertical-alignment: center;
                 }
             }
         }
 
-        // ══════════════ Transport bar ══════════════
+        // ══════════════ Transport ══════════════
         Rectangle {
-            height: 84px;
-            background: Theme.bg-surface;
-
+            height: 76px;
+            background: Theme.bg-card;
             Rectangle { y: 0; height: 1px; width: 100%; background: Theme.separator; }
 
             HorizontalLayout {
@@ -1479,250 +388,137 @@ export component MusicPlayerScreen inherits Rectangle {
                 padding-right: Theme.sp-4;
                 spacing: Theme.sp-4;
 
-                // ── Left: what is playing ──
+                // Buttons
                 HorizontalLayout {
-                    width: 260px;
-                    spacing: Theme.sp-3;
+                    spacing: 6px;
                     alignment: start;
 
-                    Rectangle {
-                        width: 48px; height: 48px;
-                        y: (parent.height - 48px) / 2;
-                        border-radius: Theme.r-sm;
-                        background: Theme.bg-card;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        Icon {
-                            commands: Icons.music;
-                            size: 20px;
-                            tint: root.now-title != "" ? AppIdentity.accent : Theme.text-dim;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
+                    prev-ta := TouchArea {
+                        width: 34px; height: 34px;
+                        y: (parent.height - 34px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.prev-track(); }
+                        Rectangle {
+                            border-radius: 17px;
+                            background: prev-ta.has-hover ? Theme.hover-fill : transparent;
+                            Icon {
+                                commands: Icons.skip-back;
+                                size: 17px;
+                                tint: Theme.text-secondary;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
-
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 2px;
-                        horizontal-stretch: 1;
-
-                        Text {
-                            text: root.now-title != "" ? root.now-title : "Nothing playing";
-                            color: root.now-title != "" ? Theme.text-primary : Theme.text-dim;
-                            font-size: Theme.fs-caption;
-                            font-weight: 500;
-                            overflow: elide;
+                    play-ta := TouchArea {
+                        width: 42px; height: 42px;
+                        y: (parent.height - 42px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.play-pause(); }
+                        Rectangle {
+                            border-radius: 21px;
+                            background: play-ta.has-hover ? Theme.accent-light : Theme.accent;
+                            Icon {
+                                commands: root.is-playing ? Icons.pause : Icons.play;
+                                size: 18px;
+                                thickness: 2px;
+                                tint: Theme.text-on-accent;
+                                fill: root.is-playing ? transparent : Theme.text-on-accent;
+                                x: (parent.width - self.width) / 2 + (root.is-playing ? 0px : 1px);
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
-                        Text {
-                            text: root.now-artist;
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            overflow: elide;
+                    }
+                    next-ta := TouchArea {
+                        width: 34px; height: 34px;
+                        y: (parent.height - 34px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.next-track(); }
+                        Rectangle {
+                            border-radius: 17px;
+                            background: next-ta.has-hover ? Theme.hover-fill : transparent;
+                            Icon {
+                                commands: Icons.skip-forward;
+                                size: 17px;
+                                tint: Theme.text-secondary;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                    stop-ta := TouchArea {
+                        width: 30px; height: 30px;
+                        y: (parent.height - 30px) / 2;
+                        mouse-cursor: pointer;
+                        clicked => { root.stop(); }
+                        Rectangle {
+                            border-radius: 15px;
+                            background: stop-ta.has-hover ? Theme.hover-fill : transparent;
+                            Icon {
+                                commands: Icons.stop;
+                                size: 13px;
+                                tint: Theme.text-dim;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
                 }
 
-                // ── Centre: transport + seek ──
-                VerticalLayout {
+                // Seek: the bar is mpv's time-pos over its duration. No `alignment: center`
+                // here: that hands a TouchArea its preferred size, which is zero.
+                HorizontalLayout {
                     horizontal-stretch: 1;
-                    alignment: center;
-                    spacing: 6px;
-                    padding-top: Theme.sp-2;
-                    padding-bottom: Theme.sp-2;
-
-                    // Buttons
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 6px;
-
-                        shuffle-ta := TouchArea {
-                            width: 30px; height: 30px;
-                            mouse-cursor: pointer;
-                            clicked => { root.toggle-shuffle(); }
-                            Rectangle {
-                                border-radius: 15px;
-                                background: root.shuffle-on ? AppIdentity.tint
-                                          : shuffle-ta.has-hover ? Theme.hover-fill : transparent;
-                                Icon {
-                                    commands: Icons.shuffle;
-                                    size: 15px;
-                                    tint: root.shuffle-on ? AppIdentity.accent : Theme.text-dim;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-                        }
-
-                        prev-ta := TouchArea {
-                            width: 34px; height: 34px;
-                            mouse-cursor: pointer;
-                            clicked => { root.prev-track(); }
-                            Rectangle {
-                                border-radius: 17px;
-                                background: prev-ta.has-hover ? Theme.hover-fill : transparent;
-                                Icon {
-                                    commands: Icons.skip-back;
-                                    size: 17px;
-                                    tint: Theme.text-secondary;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-                        }
-
-                        play-ta := TouchArea {
-                            width: 42px; height: 42px;
-                            mouse-cursor: pointer;
-                            clicked => { root.play-pause(); }
-                            Rectangle {
-                                border-radius: 21px;
-                                background: play-ta.has-hover ? Theme.accent-light : Theme.accent;
-                                Icon {
-                                    commands: root.is-playing ? Icons.pause : Icons.play;
-                                    size: 18px;
-                                    thickness: 2px;
-                                    tint: Theme.text-on-accent;
-                                    fill: root.is-playing ? transparent : Theme.text-on-accent;
-                                    x: (parent.width - self.width) / 2 + (root.is-playing ? 0px : 1px);
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-                        }
-
-                        next-ta := TouchArea {
-                            width: 34px; height: 34px;
-                            mouse-cursor: pointer;
-                            clicked => { root.next-track(); }
-                            Rectangle {
-                                border-radius: 17px;
-                                background: next-ta.has-hover ? Theme.hover-fill : transparent;
-                                Icon {
-                                    commands: Icons.skip-forward;
-                                    size: 17px;
-                                    tint: Theme.text-secondary;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-                        }
-
-                        stop-ta := TouchArea {
-                            width: 30px; height: 30px;
-                            mouse-cursor: pointer;
-                            clicked => { root.stop(); }
-                            Rectangle {
-                                border-radius: 15px;
-                                background: stop-ta.has-hover ? Theme.hover-fill : transparent;
-                                Icon {
-                                    commands: Icons.stop;
-                                    size: 13px;
-                                    tint: Theme.text-dim;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-                        }
-
-                        repeat-ta := TouchArea {
-                            width: 30px; height: 30px;
-                            mouse-cursor: pointer;
-                            clicked => { root.cycle-repeat(); }
-                            Rectangle {
-                                border-radius: 15px;
-                                background: root.repeat-mode > 0 ? AppIdentity.tint
-                                          : repeat-ta.has-hover ? Theme.hover-fill : transparent;
-                                Icon {
-                                    commands: Icons.repeat;
-                                    size: 15px;
-                                    tint: root.repeat-mode > 0 ? AppIdentity.accent : Theme.text-dim;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                                // "repeat one" carries a small 1
-                                if root.repeat-mode == 1 : Rectangle {
-                                    x: parent.width - 13px;
-                                    y: 3px;
-                                    width: 11px; height: 11px;
-                                    border-radius: 5.5px;
-                                    background: Theme.accent;
-                                    Text {
-                                        text: "1";
-                                        color: Theme.text-on-accent;
-                                        font-size: Theme.fs-micro;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
+                    spacing: Theme.sp-2;
+                    Text {
+                        text: root.time-current;
+                        width: 52px;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        font-family: Theme.font-mono;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
                     }
-
-                    // Seek. No `alignment: center` here: that hands every child its preferred
-                    // size, and a TouchArea prefers zero — the bar would vanish.
-                    HorizontalLayout {
-                        spacing: Theme.sp-2;
-
-                        Text {
-                            text: root.time-current;
-                            width: 40px;
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            font-family: Theme.font-mono;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                        }
-
-                        seek-ta := TouchArea {
-                            // stretch, never `parent.width - n`: a layout child that reads its
-                            // parent's width closes a binding loop through layoutinfo.
-                            horizontal-stretch: 1;
-                            height: 16px;
-                            mouse-cursor: pointer;
-                            clicked => { root.seek(self.mouse-x / self.width); }
-
+                    seek-ta := TouchArea {
+                        horizontal-stretch: 1;
+                        mouse-cursor: root.time-total != "" ? pointer : default;
+                        clicked => { root.seek(clamp(self.mouse-x / self.width, 0.0, 1.0)); }
+                        Rectangle {
+                            y: (parent.height - 4px) / 2;
+                            height: 4px;
+                            width: 100%;
+                            border-radius: 2px;
+                            background: Theme.bg-input;
                             Rectangle {
-                                y: (parent.height - 4px) / 2;
-                                height: 4px;
-                                width: 100%;
+                                x: 0;
+                                width: parent.width * clamp(root.progress, 0.0, 1.0);
+                                height: 100%;
                                 border-radius: 2px;
-                                background: Theme.bg-input;
-
-                                Rectangle {
-                                    x: 0;
-                                    width: parent.width * clamp(root.progress, 0.0, 1.0);
-                                    height: 100%;
-                                    border-radius: 2px;
-                                    background: Theme.accent;
-                                }
-                            }
-
-                            if seek-ta.has-hover : Rectangle {
-                                x: parent.width * clamp(root.progress, 0.0, 1.0) - 5px;
-                                y: (parent.height - 10px) / 2;
-                                width: 10px; height: 10px;
-                                border-radius: 5px;
                                 background: Theme.accent;
                             }
                         }
-
-                        Text {
-                            text: root.time-total;
-                            width: 40px;
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            font-family: Theme.font-mono;
-                            vertical-alignment: center;
+                        if seek-ta.has-hover && root.time-total != "" : Rectangle {
+                            x: parent.width * clamp(root.progress, 0.0, 1.0) - 5px;
+                            y: (parent.height - 10px) / 2;
+                            width: 10px; height: 10px;
+                            border-radius: 5px;
+                            background: Theme.accent;
                         }
+                    }
+                    Text {
+                        text: root.time-total;
+                        width: 52px;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-micro;
+                        font-family: Theme.font-mono;
+                        vertical-alignment: center;
                     }
                 }
 
-                // ── Right: volume, speed, equalizer ──
+                // Volume
                 HorizontalLayout {
-                    width: 240px;
+                    width: 170px;
                     spacing: Theme.sp-2;
-                    alignment: end;
-
                     mute-ta := TouchArea {
                         width: 28px; height: 28px;
                         y: (parent.height - 28px) / 2;
@@ -1737,21 +533,16 @@ export component MusicPlayerScreen inherits Rectangle {
                             y: (parent.height - self.height) / 2;
                         }
                     }
-
                     vol-ta := TouchArea {
-                        width: 88px;
-                        height: 16px;
-                        y: (parent.height - 16px) / 2;
+                        horizontal-stretch: 1;
                         mouse-cursor: pointer;
                         clicked => { root.volume-changed(clamp(self.mouse-x / self.width, 0.0, 1.0)); }
-
                         Rectangle {
                             y: (parent.height - 4px) / 2;
                             height: 4px;
                             width: 100%;
                             border-radius: 2px;
                             background: Theme.bg-input;
-
                             Rectangle {
                                 x: 0;
                                 width: parent.width * (root.volume-muted ? 0.0 : clamp(root.volume, 0.0, 1.0));
@@ -1761,198 +552,14 @@ export component MusicPlayerScreen inherits Rectangle {
                             }
                         }
                     }
-
                     Text {
                         text: "\{round((root.volume-muted ? 0.0 : root.volume) * 100)}%";
-                        width: 34px;
+                        width: 36px;
                         color: Theme.text-dim;
                         font-size: Theme.fs-micro;
                         font-family: Theme.font-mono;
                         horizontal-alignment: right;
                         vertical-alignment: center;
-                    }
-
-                    // Speed
-                    speed-ta := TouchArea {
-                        width: 40px; height: 24px;
-                        y: (parent.height - 24px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.show-speed-popup = !root.show-speed-popup; }
-                        Rectangle {
-                            border-radius: Theme.r-sm;
-                            background: root.show-speed-popup ? AppIdentity.tint
-                                      : speed-ta.has-hover ? Theme.hover-fill : transparent;
-                            Text {
-                                text: "\{root.playback-speed}x";
-                                color: root.playback-speed != 1.0 || root.show-speed-popup ? AppIdentity.accent : Theme.text-dim;
-                                font-size: Theme.fs-micro;
-                                font-family: Theme.font-mono;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    // Equalizer toggle
-                    eqt-ta := TouchArea {
-                        width: 30px; height: 24px;
-                        y: (parent.height - 24px) / 2;
-                        mouse-cursor: pointer;
-                        clicked => { root.music-show-equalizer = !root.music-show-equalizer; }
-                        Rectangle {
-                            border-radius: Theme.r-sm;
-                            background: root.music-show-equalizer ? AppIdentity.tint
-                                      : eqt-ta.has-hover ? Theme.hover-fill : transparent;
-                            Icon {
-                                commands: Icons.chart;
-                                size: 14px;
-                                tint: root.music-show-equalizer || root.music-equalizer-preset > 0
-                                    ? AppIdentity.accent : Theme.text-dim;
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ══════════════ Speed popup ══════════════
-    if root.show-speed-popup : Rectangle {
-        x: parent.width - 232px;
-        y: parent.height - 84px - 52px - (root.music-show-equalizer ? 38px : 0px);
-        width: 216px;
-        height: 44px;
-        border-radius: Theme.r-md;
-        background: Theme.bg-elevated;
-        border-width: 1px;
-        border-color: Theme.border-default;
-        drop-shadow-blur: 12px;
-        drop-shadow-color: Theme.overlay-shadow;
-
-        HorizontalLayout {
-            padding: Theme.sp-2;
-            spacing: 4px;
-            alignment: center;
-
-            for sp in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] : Rectangle {
-                property <bool> active: root.playback-speed == sp;
-                width: 30px;
-                height: 26px;
-                border-radius: Theme.r-sm;
-                background: active ? Theme.accent : sp-ta.has-hover ? Theme.hover-fill : transparent;
-
-                sp-ta := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.set-playback-speed(sp);
-                        root.show-speed-popup = false;
-                    }
-                }
-
-                Text {
-                    text: "\{sp}x";
-                    color: active ? Theme.text-on-accent : Theme.text-secondary;
-                    font-size: Theme.fs-micro;
-                    font-family: Theme.font-mono;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-        }
-    }
-
-    // ══════════════ New playlist dialog ══════════════
-    if root.show-add-playlist-dialog : Rectangle {
-        background: Theme.overlay-backdrop;
-
-        TouchArea {
-            clicked => { root.show-add-playlist-dialog = false; }
-        }
-
-        Rectangle {
-            x: (parent.width - 380px) / 2;
-            y: (parent.height - 160px) / 2;
-            width: 380px;
-            height: 160px;
-            border-radius: Theme.r-lg;
-            background: Theme.bg-elevated;
-            border-width: 1px;
-            border-color: Theme.border-default;
-
-            TouchArea { }  // swallow clicks so the backdrop does not close it
-
-            VerticalLayout {
-                padding: Theme.sp-5;
-                spacing: Theme.sp-3;
-
-                Text {
-                    text: "New playlist";
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-title-2;
-                    font-weight: Theme.fw-title-2;
-                }
-
-                Rectangle {
-                    height: Theme.h-regular;
-                    border-radius: Theme.r-md;
-                    background: Theme.bg-input;
-                    border-width: 1px;
-                    border-color: pl-name.has-focus ? Theme.accent-dim : Theme.border-default;
-                    clip: true;
-
-                    if root.new-playlist-name == "" : Text {
-                        x: 10px;
-                        height: 100%;
-                        text: "Playlist name";
-                        color: Theme.text-dim;
-                        font-size: Theme.fs-body;
-                        vertical-alignment: center;
-                    }
-
-                    pl-name := TextInput {
-                        x: 10px;
-                        width: parent.width - 20px;
-                        height: 100%;
-                        vertical-alignment: center;
-                        single-line: true;
-                        font-size: Theme.fs-body;
-                        color: Theme.text-primary;
-                        text <=> root.new-playlist-name;
-                        accepted => {
-                            if (self.text != "") {
-                                root.playlist-create(self.text);
-                                root.show-add-playlist-dialog = false;
-                            }
-                        }
-                    }
-                }
-
-                Rectangle { vertical-stretch: 1; }
-
-                HorizontalLayout {
-                    spacing: Theme.sp-2;
-                    alignment: end;
-
-                    YButton {
-                        label: "Cancel";
-                        variant: 1;
-                        size: 0;
-                        clicked => { root.show-add-playlist-dialog = false; }
-                    }
-                    YButton {
-                        label: "Create";
-                        icon-path: Icons.plus;
-                        variant: 0;
-                        size: 0;
-                        disabled: root.new-playlist-name == "";
-                        clicked => {
-                            if (root.new-playlist-name != "") {
-                                root.playlist-create(root.new-playlist-name);
-                                root.show-add-playlist-dialog = false;
-                            }
-                        }
                     }
                 }
             }
@@ -1962,10 +569,7 @@ export component MusicPlayerScreen inherits Rectangle {
     // ══════════════ Library folders dialog ══════════════
     if root.show-scan-folders-dialog : Rectangle {
         background: Theme.overlay-backdrop;
-
-        TouchArea {
-            clicked => { root.show-scan-folders-dialog = false; }
-        }
+        TouchArea { clicked => { root.show-scan-folders-dialog = false; } }
 
         Rectangle {
             x: (parent.width - 520px) / 2;
@@ -1976,7 +580,6 @@ export component MusicPlayerScreen inherits Rectangle {
             background: Theme.bg-elevated;
             border-width: 1px;
             border-color: Theme.border-default;
-
             TouchArea { }
 
             VerticalLayout {
@@ -2001,15 +604,14 @@ export component MusicPlayerScreen inherits Rectangle {
                 }
 
                 Text {
-                    text: "Yantrik indexes the audio it finds in these folders.";
+                    text: "Music lists the audio files it finds in these folders. Linked folders inside them are not followed.";
                     color: Theme.text-dim;
                     font-size: Theme.fs-caption;
+                    wrap: word-wrap;
                 }
 
-                // Add row
                 HorizontalLayout {
                     spacing: Theme.sp-2;
-
                     Rectangle {
                         horizontal-stretch: 1;
                         height: Theme.h-regular;
@@ -2018,7 +620,6 @@ export component MusicPlayerScreen inherits Rectangle {
                         border-width: 1px;
                         border-color: folder-input.has-focus ? Theme.accent-dim : Theme.border-default;
                         clip: true;
-
                         if root.new-folder-path == "" : Text {
                             x: 10px;
                             height: 100%;
@@ -2028,7 +629,6 @@ export component MusicPlayerScreen inherits Rectangle {
                             font-family: Theme.font-mono;
                             vertical-alignment: center;
                         }
-
                         folder-input := TextInput {
                             x: 10px;
                             width: parent.width - 20px;
@@ -2047,7 +647,6 @@ export component MusicPlayerScreen inherits Rectangle {
                             }
                         }
                     }
-
                     YButton {
                         label: "Add";
                         icon-path: Icons.plus;
@@ -2061,7 +660,6 @@ export component MusicPlayerScreen inherits Rectangle {
                     }
                 }
 
-                // Folder list
                 Rectangle {
                     vertical-stretch: 1;
                     border-radius: Theme.r-md;
@@ -2072,28 +670,22 @@ export component MusicPlayerScreen inherits Rectangle {
 
                     if root.scan-folders.length > 0 : Flickable {
                         viewport-height: folders-col.preferred-height;
-
                         folders-col := VerticalLayout {
                             alignment: start;
                             spacing: 0px;
-
                             for fo[fidx] in root.scan-folders : Rectangle {
                                 height: 40px;
                                 background: fo-ta.has-hover ? Theme.hover-fill : transparent;
-
                                 Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.separator; }
-
                                 fo-ta := TouchArea { }
-
                                 HorizontalLayout {
                                     padding-left: Theme.sp-3;
                                     padding-right: Theme.sp-2;
                                     spacing: Theme.sp-2;
-
                                     Icon {
                                         commands: Icons.folder;
                                         size: 14px;
-                                        tint: fo.is-scanning ? Theme.amber : Theme.text-secondary;
+                                        tint: Theme.text-secondary;
                                         y: (parent.height - self.height) / 2;
                                     }
                                     Text {
@@ -2106,8 +698,9 @@ export component MusicPlayerScreen inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                     Text {
-                                        text: fo.is-scanning ? "scanning" : "\{fo.track-count}";
-                                        color: fo.is-scanning ? Theme.amber : Theme.text-dim;
+                                        text: root.is-scanning ? "scanning"
+                                            : fo.track-count == 1 ? "1 track" : "\{fo.track-count} tracks";
+                                        color: Theme.text-dim;
                                         font-size: Theme.fs-micro;
                                         font-family: Theme.font-mono;
                                         vertical-alignment: center;
@@ -2141,16 +734,14 @@ export component MusicPlayerScreen inherits Rectangle {
 
                 HorizontalLayout {
                     spacing: Theme.sp-2;
-                    alignment: end;
-
-                    if root.music-folder-watch-status != "" : Text {
-                        text: root.music-folder-watch-status;
+                    Text {
+                        text: root.status-text;
                         color: Theme.text-dim;
                         font-size: Theme.fs-micro;
                         vertical-alignment: center;
+                        overflow: elide;
                         horizontal-stretch: 1;
                     }
-
                     YButton {
                         label: root.is-scanning ? "Scanning" : "Rescan";
                         icon-path: Icons.refresh;

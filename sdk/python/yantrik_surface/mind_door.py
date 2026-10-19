@@ -89,7 +89,12 @@ def serving_dir():
 
 
 def opens_a_door(socket_name):
-    """Which sockets open a door: the harness and the app surfaces, and nothing else by name."""
+    """Which sockets open a door: the harness and the app surfaces, and nothing else by name.
+
+    Narrower than the Rust table (`mind_door::DOORS`) on purpose. That table also admits
+    `calendar`, surface only (16 Oct 2026, VM 541), with the methods held at the door by the Rust
+    transport; this port has no such hold, so a Python server under any other name opens no door.
+    """
     if not socket_name.endswith(".sock"):
         return False
     service = socket_name[:-len(".sock")]

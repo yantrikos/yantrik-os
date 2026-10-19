@@ -13,8 +13,12 @@
 //! everything but judges nothing. It holds space for intentions without creating
 //! pressure.
 //!
-//! Example output: "A couple weeks ago you mentioned wanting to start running again.
-//! How's that going? No pressure — just remembered."
+//! Example output: "On 28 Sep you mentioned wanting to start running again. Want me to put a
+//! first run on the calendar?"
+//!
+//! Absorbs future_self (#755): when the record shows a steady pace on a stated goal, it may say
+//! where that pace leads. A stalled goal gets one concrete offer, never a count of how often the
+//! person said they'd start, and never guilt.
 
 use std::sync::Mutex;
 
@@ -81,17 +85,20 @@ impl Instinct for GoalKeeperInstinct {
                  - What goals has {user} stated? What events are coming up SOON?\n\
                  - Which seem unresolved? Has {user} achieved something recently?\n\
                  PRIORITIZE upcoming events over old intentions.\n\
-                 Pick ONE and compose a gentle, anticipatory 1-2 sentence message.\n\
-                 Be invitational, never naggy. Include specific details from memory.\n\
+                 Pick ONE and compose a gentle, anticipatory 1-2 sentence message that says when \
+                 {user} mentioned it and offers one concrete next step.\n\
+                 If the record shows steady progress on it, you may say where that pace leads.\n\
+                 Be invitational, never naggy: never count how often they said they'd start, never guilt.\n\
                  If no intentions found, just say \"No goal update today.\"",
             ),
             _ => format!(
                 "EXECUTE Check on {user}'s goals and upcoming commitments. \
                  Recall their stated intentions, plans, deadlines, and events. \
                  Prioritize things coming up soon (today, tomorrow, this week) over old goals. \
-                 If {user} achieved something recently, celebrate it. \
-                 Pick ONE and compose a gentle, anticipatory 1-2 sentence message — \
-                 be invitational, never naggy. Include specific details from memory. \
+                 If {user} achieved something recently, say so plainly. \
+                 Pick ONE and compose a gentle, anticipatory 1-2 sentence message that says when \
+                 they mentioned it and offers one concrete next step — \
+                 be invitational, never naggy, never guilt. \
                  If nothing found, just say \"No goal update today.\"",
             ),
         };

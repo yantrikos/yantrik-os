@@ -1,0 +1,28 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# /etc/grub.d/06_yantrik_ground — GRUB's terminal in the menu's ground (#0e1018), not black
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# After Enter, GRUB loads the kernel and the initrd (about 3 s on OVMF) with the menu gone and its
+# terminal window on the screen. gfxterm fills that window with its background colour, black
+# unless `background_color` says otherwise; the theme's terminal box is drawn under that fill and
+# does not show. On the OVMF film that was a black rectangle over the menu's ground (#820).
+#
+# build-debian-iso.sh puts this file in the image, so every installed machine has it and
+# update-grub writes it after 00_header, which has set gfxterm and the theme by then. It writes
+# nothing for a menu without the theme (GRUB_THEME unset or missing, or no gfxterm), so a plain
+# menu stays as it was. The live image's grub.cfg says the same (build-debian-iso.sh).
+set -e
+
+[ -n "${GRUB_THEME:-}" ] && [ -f "$GRUB_THEME" ] || exit 0
+case " ${GRUB_TERMINAL_OUTPUT:-} " in
+    *" gfxterm "*) ;;
+    *) exit 0 ;;
+esac
+
+cat <<'EOF'
+if [ "x${theme}" != x ]; then
+  insmod gfxterm_background
+  background_color "#0e1018"
+fi
+EOF

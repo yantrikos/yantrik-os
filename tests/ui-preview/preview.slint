@@ -179,6 +179,8 @@ export component ControlsProbe inherits Window {
 }
 
 export { KitControlsProbe } from "kit_controls_probe.slint";
+// The capture bar and the status bar's red dot (src/capture_bar_tests.rs).
+export { CaptureBarProbe, CaptureState } from "capture_bar_probe.slint";
 
 export component HeaderProbe inherits Window {
     width: 800px; height: 600px;
@@ -337,7 +339,7 @@ export component LensAgentsProbe inherits Window {
 // read how tall it laid itself out, and the whole Lens with the same turn, for the picture (#211).
 // Filled with fixture data by src/lens_tests.rs.
 export { MessageData, ContentBlock } from "components/message_bubble.slint";
-import { MessageData, MessageBubble } from "components/message_bubble.slint";
+import { MessageData, ContentBlock, MessageBubble } from "components/message_bubble.slint";
 export component MessageBubbleProbe inherits Window {
     width: 640px;
     height: 800px;
@@ -401,13 +403,15 @@ export component ApprovalLensProbe inherits Window {
     }
 }
 
-// Chat v2 (the conversation panel): the whole Lens in chat mode with the run cards, the strip, the
-// composer and the panel's own width, filled with fixture data by src/chat_tests.rs. What the person
-// sends is recorded there and never acted on.
-export { WorkCardData } from "components/work_card.slint";
-import { WorkCardData } from "components/work_card.slint";
+// Chat v2 (the conversation panel): the whole Lens in chat mode with a reply's timeline, a mind's
+// question as a card in it, a queued message, the composer and the panel's own width, filled with
+// fixture data by src/chat_tests.rs. What the person sends is recorded there and never acted on.
 import { QuestionRequest } from "components/question_card.slint";
 export { QuestionRequest }
+// The picker's state, which the shell fills: set by src/chat_tests.rs to what VM 541 showed, so
+// the composer row is drawn with real labels.
+import { PickerState } from "components/picker_state.slint";
+export { PickerState }
 export component ChatProbe inherits Window {
     width: 1280px;
     height: 800px;
@@ -416,8 +420,15 @@ export component ChatProbe inherits Window {
     in property <[MessageData]> messages;
     in property <[ApprovalRequest]> approvals;
     in property <[QuestionRequest]> questions;
-    in property <[WorkCardData]> work-cards;
-    in property <WorkCardData> strip;
+    in property <[ContentBlock]> live-steps;
+    in property <int> live-steps-row: -1;
+    in property <string> composer-mode: "";
+    in property <string> composer-placeholder: "";
+    in property <string> composer-asks: "";
+    in property <string> queued-mind: "";
+    in property <string> queued-note: "";
+    in-out property <string> answered;
+    in-out property <int> cancels: 0;
     in property <int> live-runs: 0;
     in property <int> waiting-runs: 0;
     in property <string> mind-name: "Yantrik Mind";
@@ -446,8 +457,15 @@ export component ChatProbe inherits Window {
         messages: root.messages;
         approvals: root.approvals;
         questions: root.questions;
-        work-cards: root.work-cards;
-        strip: root.strip;
+        live-steps: root.live-steps;
+        live-steps-row: root.live-steps-row;
+        composer-mode: root.composer-mode;
+        composer-placeholder: root.composer-placeholder;
+        composer-asks: root.composer-asks;
+        queued-mind: root.queued-mind;
+        queued-note: root.queued-note;
+        question-answer(agent, request, answer, pressed) => { root.answered = request + ":" + answer + (pressed ? ":pressed" : ":typed"); }
+        cancel-queued => { root.cancels += 1; }
         live-runs: root.live-runs;
         waiting-runs: root.waiting-runs;
         send-message(text) => { root.sent = text; root.sends += 1; }
@@ -669,6 +687,7 @@ export component InstallerProbe inherits Window {
     in property <bool> boot-first-offered;
     in-out property <bool> boot-first;
     out property <bool> disk-ok: screen.disk-ok;
+    in-out property <bool> encrypt: true;
     in-out property <string> timezone;
     in-out property <bool> installing;
     in-out property <int> install-progress;
@@ -692,6 +711,7 @@ export component InstallerProbe inherits Window {
     pure callback check-timezone(string) -> string;
     pure callback is-macos-disk(string, string) -> bool;
     pure callback target-listed(string, string) -> bool;
+    pure callback layout-after([KeyboardChoice], string, int) -> string;
 
     screen := InstallerScreen {
         width: 100%; height: 100%;
@@ -720,6 +740,7 @@ export component InstallerProbe inherits Window {
         install-target <=> root.install-target;
         boot-first-offered: root.boot-first-offered;
         boot-first <=> root.boot-first;
+        encrypt <=> root.encrypt;
         timezone <=> root.timezone;
         installing <=> root.installing;
         install-progress <=> root.install-progress;
@@ -738,6 +759,7 @@ export component InstallerProbe inherits Window {
         check-timezone(t) => { return root.check-timezone(t); }
         is-macos-disk(d, l) => { return root.is-macos-disk(d, l); }
         target-listed(t, l) => { return root.target-listed(t, l); }
+        layout-after(c, k, by) => { return root.layout-after(c, k, by); }
     }
 }
 
@@ -890,7 +912,7 @@ export component ProviderPanelProbe inherits Window {
     }
 }
 
-// Settings → Harnesses with the provider card open: the card must be drawn on the page it is
+// Settings → Minds with the provider card open: the card must be drawn on the page it is
 // opened from. It was placed inside the AI page and never appeared on Harnesses (VM 520).
 // Settings → AI & Intelligence with its "What runs on what" map, for verify-ai-map.
 export component AiMapProbe inherits Window {
@@ -987,4 +1009,243 @@ export component ApprovalCardProbe inherits Window {
     in property <ApprovalRequest> data;
     out property <length> card-h: card.preferred-height + 16px;
     card := ApprovalCard { x: 8px; y: 8px; width: parent.width - 16px; data: root.data; }
+}
+
+// The one picker for every mind (#673), as the Lens composer draws it, with fixture minds and
+// models: verify-picker switches mind and model with two clicks each (src/picker_tests.rs).
+import { ModelPicker, PickerMind, PickerModel, PickerFile, AttachmentChips } from "components/model_picker.slint";
+export { PickerMind, PickerModel, PickerFile }
+export component PickerProbe inherits Window {
+    width: 760px;
+    height: 560px;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in property <[PickerMind]> minds;
+    in property <[PickerModel]> models;
+    in property <[string]> efforts;
+    in property <[PickerFile]> files;
+    in-out property <string> chosen-mind;
+    in-out property <string> chosen-model;
+    in-out property <string> chosen-effort;
+    in-out property <int> opened-count;
+    out property <length> picker-x: picker.x;
+    out property <length> picker-y: picker.y;
+    Rectangle {
+        x: 16px;
+        y: root.height - 120px;
+        width: root.width - 32px;
+        height: 104px;
+        border-radius: 12px;
+        background: Theme.bg-card;
+        AttachmentChips { x: 12px; y: 10px; width: parent.width - 24px; files: root.files; }
+        Text { x: 12px; y: 44px; text: "Message Yantrik Mind…"; color: Theme.text-dim; }
+    }
+    picker := ModelPicker {
+        x: 28px;
+        y: root.height - 52px;
+        minds: root.minds;
+        mind-label: "Yantrik Mind";
+        models: root.models;
+        model-label: "gpt-oss-120b · Groq (free)";
+        efforts: root.efforts;
+        effort: "medium";
+        status-words: "connected · openai/gpt-oss-120b";
+        status-state: "connected";
+        choose-mind(id) => { root.chosen-mind = id; }
+        choose-model(id) => { root.chosen-model = id; }
+        choose-effort(e) => { root.chosen-effort = e; }
+        opened(w) => { root.opened-count += 1; }
+    }
+}
+
+// The first run (onboarding_first_run.slint), screen by screen, and the chat's first success.
+// src/first_run_tests.rs plays the shell: it answers each callback the way wire/onboarding.rs
+// does, with fixture cards and rows, and drives real key events.
+import { FirstRunScreen, FirstRunProvider, FirstRunModel, FirstRunCheck, FirstRunMind } from "onboarding_first_run.slint";
+import { TextScale } from "theme.slint";
+export { FirstRunProvider, FirstRunModel, FirstRunCheck, FirstRunMind }
+export component FirstRunProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in-out property <float> scale: 1.0;
+    changed scale => { TextScale.factor = root.scale; }
+    out property <float> scale-now: TextScale.factor;
+    in-out property <int> step <=> screen.step;
+    in property <bool> installer-chose;
+    in property <bool> ask-name;
+    in-out property <string> person-name <=> screen.person-name;
+    in-out property <string> named;
+    in property <[FirstRunModel]> models;
+    in-out property <string> chosen-model <=> screen.chosen-model;
+    in-out property <string> picked;
+    in-out property <int> retries;
+    in property <[FirstRunProvider]> featured;
+    in property <[FirstRunProvider]> every-provider;
+    in-out property <string> chosen-id <=> screen.chosen-id;
+    in-out property <string> chosen-name <=> screen.chosen-name;
+    in-out property <string> connect-mode <=> screen.connect-mode;
+    in-out property <string> key-input <=> screen.key-input;
+    in-out property <bool> show-every <=> screen.show-every;
+    in property <string> connect-status;
+    in property <string> connect-words;
+    in property <string> chosen-key-placeholder;
+    in property <bool> chosen-key-help;
+    in-out property <bool> share <=> screen.share;
+    in-out property <bool> private-lane <=> screen.private-lane;
+    in-out property <bool> show-shared <=> screen.show-shared;
+    in property <[string]> shared-items;
+    in property <string> private-lane-words;
+    in property <[FirstRunMind]> minds;
+    in property <bool> checks-done;
+    in property <string> nearby-status;
+    in property <string> nearby-words;
+    in-out property <int> nearby-looks;
+    in-out property <string> custom-url <=> screen.custom-url;
+    in-out property <string> custom-model <=> screen.custom-model;
+    in-out property <string> custom-submitted;
+    in property <string> default-mind-words;
+    callback choose-provider(string);
+    // Read this to me on whatever screen is up.
+    callback read();
+    read => { screen.read-me(); }
+    in-out property <string> spoken;
+    in-out property <string> submitted;
+    in-out property <string> sharing;
+    in-out property <int> check-starts;
+    in-out property <int> finishes;
+    out property <string> focused-label: screen.focused-label;
+    screen := FirstRunScreen {
+        width: 100%; height: 100%;
+        installer-chose: root.installer-chose;
+        ask-name: root.ask-name;
+        name-given(n) => { root.named = n; }
+        models: root.models;
+        pick-model(m) => { root.picked = m; root.chosen-model = m; }
+        retry-pick => { root.retries += 1; }
+        featured: root.featured;
+        every-provider: root.every-provider;
+        connect-status: root.connect-status;
+        connect-words: root.connect-words;
+        chosen-key-placeholder: root.chosen-key-placeholder;
+        chosen-key-help: root.chosen-key-help;
+        shared-items: root.shared-items;
+        private-lane-words: root.private-lane-words;
+        minds: root.minds;
+        checks-done: root.checks-done;
+        nearby-status: root.nearby-status;
+        nearby-words: root.nearby-words;
+        look-nearby => { root.nearby-looks += 1; }
+        default-mind-words: root.default-mind-words;
+        submit-custom(url, model, key) => { root.custom-submitted = url + "|" + model + "|" + key; }
+        read-aloud(t) => { root.spoken = t; }
+        choose-provider(id) => { root.choose-provider(id); }
+        submit-key(id, key) => { root.submitted = id + ":" + key; }
+        sharing-chosen(m) => { root.sharing = m; }
+        start-checks => { root.check-starts += 1; }
+        finished => { root.finishes += 1; }
+    }
+}
+
+// The desktop with the chat open over its right side: the home card must end before the chat
+// begins (13 Oct: "Open companion" was cut to "Open companio").
+export component DesktopChatProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <bool> chat-open: true;
+    out property <length> home-right: desk.home-right-edge;
+    out property <length> chat-left: desk.lens-left-edge;
+    desk := DesktopScreen {
+        x: 0px; y: 0px; width: 100%; height: 100%;
+        ambient-interval-ms: 0;
+        wallpaper-path: "lake";
+        greeting-text: "Good evening, Asha";
+        date-text: "Tuesday, October 13";
+        companion-online: true;
+        active-harness-name: "Yantrik Companion";
+        lens-open: root.chat-open;
+        lens-chat-mode: true;
+        first-run-chat: true;
+    }
+}
+
+export component FirstRunChatProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in property <[MessageData]> messages;
+    in property <bool> generating: false;
+    in property <string> outcome: "";
+    in property <string> failure: "";
+    in-out property <int> retries;
+    in-out property <int> talks;
+    in-out property <int> dones;
+    // What the chat sent: a first task pressed, or words typed in the composer.
+    in-out property <string> sent;
+    // Opened the way the first run opens it: chat mode first, then open (wire/onboarding.rs,
+    // hand_over_to_chat).
+    in-out property <bool> open: true;
+    IntentLens {
+        width: 100%;
+        height: 100%;
+        is-open: root.open;
+        chat-mode: true;
+        send-message(t) => { root.sent = t; }
+        mind-name: "Yantrik Mind";
+        messages: root.messages;
+        is-generating: root.generating;
+        first-run: true;
+        first-run-outcome: root.outcome;
+        first-run-failure: root.failure;
+        mic-pressed => { root.talks += 1; }
+        first-run-done => { root.dones += 1; }
+        first-run-retry => { root.retries += 1; }
+    }
+}
+
+// The For you inbox and Settings → Minds → Initiative (design/initiative-inbox-2026-10-16.md), the
+// production components as the Lens and the Harnesses page draw them, filled with fixture cards and
+// settings by src/for_you_tests.rs. `page` 0 draws both side by side; 1 and 2 draw one at a time
+// for a narrow window. Every press is recorded there and never acted on.
+import { ForYouSection } from "components/for_you.slint";
+import { InitiativeSettings } from "components/initiative_settings.slint";
+export { InboxState, NoticeCardData } from "components/for_you.slint";
+export { InitiativeState, FamilyRowData } from "components/initiative_settings.slint";
+export component ForYouProbe inherits Window {
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <bool> light: false;
+    changed light => { ThemeMode.dark = !root.light; }
+    in property <int> page: 0;
+    HorizontalLayout {
+        spacing: 0;
+        if root.page != 2 : Rectangle {
+            width: root.page == 0 ? 440px : root.width;
+            background: Theme.bg-surface;
+            VerticalLayout {
+                alignment: start;
+                padding-top: Theme.sp-3;
+                ForYouSection { }
+            }
+        }
+        if root.page != 1 : Rectangle {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding: Theme.sp-6;
+                InitiativeSettings { }
+            }
+        }
+    }
 }

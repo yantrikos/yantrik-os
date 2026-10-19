@@ -5325,6 +5325,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tracing",
  "yantrik-ipc-contracts",
  "yantrik-service-sdk",
 ]
@@ -11108,6 +11109,7 @@ dependencies = [
  "tracing-subscriber",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-shown-address",
  "yantrik-surface",
  "yantrik-version",
 ]
@@ -11187,6 +11189,7 @@ dependencies = [
  "tungstenite",
  "ureq 2.12.1",
  "yantrik-ml",
+ "yantrik-shown-address",
 ]
 
 [[package]]
@@ -11221,6 +11224,7 @@ dependencies = [
  "yantrik-ipc-transport",
  "yantrik-ml",
  "yantrik-os",
+ "yantrik-shown-address",
  "yantrikdb",
 ]
 
@@ -11281,6 +11285,7 @@ dependencies = [
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ml",
+ "yantrik-shown-address",
  "yantrikdb",
 ]
 
@@ -11434,6 +11439,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-gateway"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "ureq 2.12.1",
+ "yantrik-ml",
+ "yantrik-shown-address",
+]
+
+[[package]]
 name = "yantrik-harness"
 version = "0.1.0"
 dependencies = [
@@ -11447,6 +11466,7 @@ dependencies = [
  "unicode-normalization",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-shown-address",
 ]
 
 [[package]]
@@ -11566,12 +11586,14 @@ dependencies = [
  "tracing",
  "tts",
  "ureq 3.2.0",
+ "yantrik-shown-address",
 ]
 
 [[package]]
 name = "yantrik-music-player"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "slint",
@@ -11581,6 +11603,7 @@ dependencies = [
  "yantrik-design-tokens",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-surface",
  "yantrik-ui-kit",
 ]
 
@@ -11722,6 +11745,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-shown-address"
+version = "0.1.0"
+
+[[package]]
 name = "yantrik-snippet-manager"
 version = "0.1.0"
 dependencies = [
@@ -11749,6 +11776,8 @@ dependencies = [
 name = "yantrik-spreadsheet"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "png",
  "serde",
  "serde_json",
  "slint",
@@ -11759,6 +11788,7 @@ dependencies = [
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-ui-kit",
+ "zbus",
 ]
 
 [[package]]
@@ -11897,6 +11927,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "slint",
  "sysinfo",
  "tokio",
@@ -11911,6 +11942,7 @@ dependencies = [
  "yantrik-app-runtime",
  "yantrik-chat",
  "yantrik-companion",
+ "yantrik-gateway",
  "yantrik-harness",
  "yantrik-install-target",
  "yantrik-ipc-contracts",

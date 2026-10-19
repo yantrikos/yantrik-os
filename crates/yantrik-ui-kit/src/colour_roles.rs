@@ -21,7 +21,7 @@ fn teal_stays_off_screens_that_are_not_a_minds() {
     for file in [
         "container_manager.slint", "about.slint", "skill_store.slint", "settings.slint",
         "system_dashboard.slint", "system_monitor.slint", "recipes.slint", "permission_dashboard.slint",
-        "installer.slint", "onboarding.slint", "login.slint", "terminal.slint",
+        "installer.slint", "onboarding.slint", "onboarding_first_run.slint", "login.slint", "terminal.slint",
         "components/onboard_kit.slint", "components/app_ribbon.slint", "components/window_frame.slint",
         "components/model_tier_badge.slint",
     ] {
@@ -399,9 +399,10 @@ fn the_lines_that_say_what_and_where_are_readable() {
     let row = &composer[at..at + composer[at..].find("\n        }").unwrap()];
     assert!(row.contains("color: Theme.text-secondary;") && row.contains("font-size: Theme.fs-label;"), "{row}");
     assert!(row.contains("y: parent.height - 44px - root.destination-h;"), "directly above the row Send is on");
-    assert!(composer.find("destination-row").unwrap() < composer.find("label: root.run-active ? \"Send follow-up\" : \"Send\";").unwrap());
+    assert!(composer.find("destination-row").unwrap() < composer.find("label: root.mode == \"answer\" ? \"Answer\" : root.mode == \"queue\" ? \"Queue\" : \"Send\";").unwrap());
     let theme = read("crates/yantrik-design-tokens/slint/theme.slint");
-    assert!(theme.contains("out property <length> fs-label: 13px;") && theme.contains("out property <length> fs-caption: 12px;"));
+    assert!(theme.contains("out property <length> fs-label: 13px * TextScale.factor;")
+        && theme.contains("out property <length> fs-caption: 12px * TextScale.factor;"));
 }
 
 /// Decline is the outline kind, transparent at rest, so it shows the card's ground: on the light

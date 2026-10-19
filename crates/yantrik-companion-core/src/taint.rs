@@ -278,7 +278,11 @@ pub fn effective<'a>(name: &'a str, category: &'a str, args: &serde_json::Value)
         },
         "shell" => match action.as_str() {
             "decide" | "send_message" | "send_to_agent" | "new_agent" | "hand_off" => ("http_request", "network"),
-            "read_screen" | "read_mind_view" => ("analyze_screen", "vision"),
+            // A picture of a display is a read of it, and holds more than its text; so is a
+            // saved one, opened again (security review of #828, finding 1).
+            "read_screen" | "read_mind_view" | "screenshot_screen" | "screenshot_mind_view" | "open_capture" => {
+                ("analyze_screen", "vision")
+            }
             _ => (name, category),
         },
         _ => (name, category),
@@ -567,6 +571,12 @@ mod tests {
         assert_eq!(as_("shell", "decide"), Sensitivity::SendsOutward);
         assert_eq!(as_("app-shell", "send_to_agent"), Sensitivity::SendsOutward);
         assert_eq!(as_("shell", "read_screen"), Sensitivity::ReturnsUntrustedContent);
+        assert_eq!(as_("shell", "screenshot_screen"), Sensitivity::ReturnsUntrustedContent);
+        assert_eq!(as_("shell", "screenshot_mind_view"), Sensitivity::ReturnsUntrustedContent);
+        // A saved screenshot or recording, opened again, is the same picture (security review
+        // of #828, finding 1).
+        assert_eq!(as_("shell", "open_capture"), Sensitivity::ReturnsUntrustedContent);
+        assert_eq!(effective("app_action", "app", &serde_json::json!({"app": "shell", "action": "open_capture"})), ("analyze_screen", "vision"));
         assert_eq!(as_("notes", "new_note"), Sensitivity::Ordinary);
         assert_eq!(effective("vault_get", "vault", &serde_json::json!({})), ("vault_get", "vault"));
     }

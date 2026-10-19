@@ -101,7 +101,7 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     if ha.enabled {
         if let (Some(base_url), Some(token)) = (&ha.base_url, &ha.token) {
             yantrik_companion_tools::home_assistant::register(&mut reg, base_url, token);
-            tracing::info!("Home Assistant tools registered ({})", base_url);
+            tracing::info!("Home Assistant tools registered ({})", yantrik_shown_address::address_of(base_url));
         } else {
             tracing::warn!("Home Assistant enabled but base_url or token missing — skipping");
         }
@@ -169,7 +169,7 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
         yantrik_companion_tools::vision::register(&mut reg, &ollama_base, model);
         yantrik_companion_tools::canvas::register(&mut reg, &ollama_base, model);
         yantrik_companion_tools::browser::register_vision(&mut reg, &ollama_base, model);
-        tracing::info!(base = %ollama_base, model, "Vision & Canvas tools registered");
+        tracing::info!(base = %yantrik_shown_address::address_of(&ollama_base), model, "Vision & Canvas tools registered");
     }
 
     // GitHub API tools (works without auth for public repos)

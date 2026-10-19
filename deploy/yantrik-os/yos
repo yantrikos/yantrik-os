@@ -498,6 +498,8 @@ def request(name, method, params=None, timeout=40, waited=False):
 
     Raises `Unreachable` rather than exiting, so both kinds of caller can be written.
     """
+    if not waited:
+        start_if_on_demand(name, (params or {}).get("agent_token"))
     candidates = socket_candidates(name)
     if not candidates:
         surface = declared_surface(name)
@@ -712,7 +714,7 @@ def is_up(name):
 # from inside an app.
 
 
-def started_on_demand(name, wait=2.0):
+def started_on_demand(name, wait=2.0, token=None):
     """Ask the desktop to start a service, and say whether its socket answers afterwards.
 
     Reports rather than exiting, because for one caller a service that will not start is an
@@ -722,8 +724,15 @@ def started_on_demand(name, wait=2.0):
     """
     if is_up(name):
         return True
+    params = {"action": "start_service", "args": {"name": name}}
+    # Beside the arguments, as on every act: a mind (#411) acts on the shell only as an agent the
+    # shell attached, so without its token the shell refuses the start and the read never happens.
+    # The token the request itself carries (`--agent-token`), else the harness's environment.
+    token = token or take_agent_token([])[0]
+    if token:
+        params["agent_token"] = token
     try:
-        request("shell", "app.act", {"action": "start_service", "args": {"name": name}})
+        request("shell", "app.act", params)
     except Unreachable:
         # No desktop to ask, or it does not know this service. Either way it is not coming up on
         # this request, and the caller has its own words for that.
@@ -737,6 +746,25 @@ def started_on_demand(name, wait=2.0):
             return True
         time.sleep(0.1)
     return False
+
+
+# On-demand services whose surface is a door a mind may call at (#411; the transport's door table,
+# `mind_door::DOORS`, decides what it may call there: the surface and nothing else). Asking one is
+# the demand that starts it, as `perception` is started by being read: found 16 Oct 2026 on VM 541,
+# the Mind's `upcoming` asked the calendar and was told it was closed, and the only way in was to
+# open the Calendar window on the person's screen. Starting it is the shell's `start_service`,
+# `standard`, which runs unasked in every mode at the shell's own dispatch: it starts one of the
+# machine's registered services, which is what opening the app would have done. What the started
+# service then does is graded by its own surface, so a read stays a read and a write still asks.
+STARTED_ON_DEMAND = {"calendar"}
+
+
+def start_if_on_demand(name, token=None):
+    """Start the on-demand service `name` means when nothing for it answers. `app-calendar` is the
+    window, and naming the window starts nothing. `token` is the agent token the request carries."""
+    service = str(name or "").strip().lower().replace("_", "-").replace(" ", "-")
+    if service in STARTED_ON_DEMAND and not is_up(service):
+        started_on_demand(service, token=token)
 
 
 def ensure_service(name):

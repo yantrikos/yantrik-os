@@ -12,32 +12,42 @@ fn card_instance() -> &'static str {
     &rest[..rest.find("view-action =>").expect("and wires its View action")]
 }
 
-/// The strip appears when a run goes live, which is when requests arrive, and the reply box grows
-/// as a person types. A limit that read either moved the card's bottom edge, with its buttons,
-/// between a press and a release.
+/// The line naming a waiting question appears above the reply box when a run asks (the work strip
+/// did, when a run went live), which is when requests arrive, and the reply box grows as a person
+/// types. A limit that read either moved the card's bottom edge, with its buttons, between a press
+/// and a release; the question line has the strip's old room, and the limit reserves it.
 #[test]
-fn the_cards_height_does_not_read_the_strip_or_the_reply_box_as_they_are_now() {
+fn the_cards_height_does_not_read_the_question_line_or_the_reply_box_as_they_are_now() {
     let card = card_instance();
     let limit = &card[card.find("height-limit:").expect("the card is given a limit")..];
     assert!(!limit.contains("composer.bar-height -") && !limit.contains("composer.bar-height)"), "the reply box's current height: {limit}");
-    assert!(!limit.contains("strip-shown"), "whether the strip is drawn now: {limit}");
+    assert!(!limit.contains("composer-asks"), "whether the question line is drawn now: {limit}");
     assert!(limit.contains("composer.bar-height-max") && limit.contains("Theme.chat-strip-height"), "the worst case of both: {limit}");
 }
 
 /// Everything above the card must be a constant of the panel: the header. The transcript, the
-/// questions, the strip and the reply box all come after it.
+/// questions, the question line and the reply box all come after it.
 #[test]
 fn the_card_sits_directly_under_the_header_above_everything_that_changes() {
     let card = LENS.find("for item[idx] in root.approvals : ApprovalCard").unwrap();
     for later in [
         "ChatTranscript {",
-        "for q in root.questions : QuestionCard",
-        "if root.strip-shown : WorkStrip",
+        "for q in root.questions : VerticalLayout",
+        "if root.composer-asks != \"\" : Rectangle",
         "composer := ChatComposer",
     ] {
         let at = LENS.find(later).unwrap_or_else(|| panic!("the panel has {later}"));
         assert!(card < at, "{later} is drawn after the card, so it cannot move it");
     }
+}
+
+/// The line above the reply box fits in the room the limit reserves for it.
+#[test]
+fn the_question_line_is_no_taller_than_the_room_kept_for_it() {
+    let line = &LENS[LENS.find("if root.composer-asks != \"\" : Rectangle").unwrap()..];
+    assert!(line[..200].contains("height: 32px;"), "{}", &line[..200]);
+    let tokens = include_str!("../../../yantrik-design-tokens/slint/theme.slint");
+    assert!(tokens.contains("chat-strip-height: 48px;"), "32px fits in the 48px kept");
 }
 
 #[test]

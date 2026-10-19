@@ -90,7 +90,7 @@ mod tests {
     fn the_status_card_says_uptime_load_and_that_no_limit_was_reached() {
         let s = assess(&snap(20), Some("6d 5h 3m".into()), Some(1.15), 4);
         assert_eq!(s.line(), "Uptime 6d 5h 3m · Load 1.15 · No limits reached");
-        assert_eq!(s.thresholds, "Limits: / at 90% full, memory at 90% used, 1-minute load above 4 (the core count)");
+        assert_eq!(s.thresholds, "Limits: the disk at 90% full, memory at 90% used, 1-minute load above 4 (the core count)");
     }
 
     #[test]

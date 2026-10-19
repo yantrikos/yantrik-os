@@ -2,7 +2,8 @@
 //
 //   left    the Yantrik mark, then ONE Minds chip ("● Minds · 2 need you")
 //   centre  the clock, centred on the SCREEN
-//   right   the mind-mode chip, then the machine's indicators (do-not-disturb when on, network,
+//   right   a red dot with the elapsed time while the screen is recorded (click to stop), the
+//           mind-mode chip, then the machine's indicators (do-not-disturb when on, network,
 //           sound, battery) and Quick Settings, one 18px line-icon family with 8px between
 //
 // What used to be here and is not: the CPU and memory readouts (Settings and the System monitor
@@ -27,6 +28,8 @@ import { MindsChip } from "bar/minds_chip.slint";
 import { ModeChip } from "bar/mode_chip.slint";
 import { NoticeChip } from "bar/notice_chip.slint";
 import { BarClock } from "bar/bar_clock.slint";
+import { RecordingChip } from "bar/recording_chip.slint";
+import { CaptureState } from "bar/capture_state.slint";
 
 // A layout cell that keeps its child its own height and centres it on the bar. A bare child of the
 // bar's HorizontalLayout is stretched to the bar's height, and a 24px chip became a 36px slab.
@@ -156,6 +159,13 @@ export component StatusBar inherits Rectangle {
         spacing: Theme.bar-gap;
         alignment: end;
 
+        // The red dot, for every recording whoever started it; a click stops it.
+        if CaptureState.recording : BarSlot {
+            RecordingChip {
+                elapsed: CaptureState.elapsed;
+                clicked => { CaptureState.stop(); }
+            }
+        }
         BarSlot {
             ModeChip {
                 mode: root.mind-mode;

@@ -541,12 +541,14 @@ pub fn row_of(v: &RecipeView, now: f64) -> RecipeRowData {
 /// One step, opened.
 pub fn step_of(s: &StepView) -> RecipeStepData {
     let ran = matches!(s.state.as_str(), "done" | "failed" | "skipped" | "waiting");
-    let names = s.unbound.iter().map(|n| format!("{{{{{n}}}}}")).collect::<Vec<_>>().join(", ");
+    // Blanks by name ("topic"), not their {{template}} spelling, as the recipe card says them.
+    let names = s.unbound.iter().map(|n| format!("\u{201c}{}\u{201d}", n.replace(['_', '-'], " "))).collect::<Vec<_>>().join(", ");
     let unbound = match (s.unbound.len(), ran) {
         (0, _) => String::new(),
-        (_, true) => format!("{names} had no value when it ran"),
-        (1, false) => format!("{names} has no value, and no step before this one sets it"),
-        (_, false) => format!("{names} have no value, and no step before this one sets them"),
+        (1, true) => format!("The blank {names} was empty when it ran"),
+        (_, true) => format!("The blanks {names} were empty when it ran"),
+        (1, false) => format!("The blank {names} is empty, and no step before this one fills it"),
+        (_, false) => format!("The blanks {names} are empty, and no step before this one fills them"),
     };
     RecipeStepData {
         number: (s.index + 1).to_string().into(),
@@ -588,7 +590,9 @@ fn state_label(state: &str, kind: &str) -> String {
 /// with an unset input from running — the placeholder reaches the tool as the literal
 /// `{{name}}` (#88) — so the line says that too, rather than promising a run is held back.
 fn unbound_note(names: &[String]) -> String {
-    let mut shown: Vec<String> = names.iter().take(3).map(|n| format!("{{{{{n}}}}}")).collect();
+    // The blank's name in words ("person", "a date" reads as itself), not its {{template}}
+    // spelling, which the sweep of 17 October found on every recipe card.
+    let mut shown: Vec<String> = names.iter().take(3).map(|n| n.replace(['_', '-'], " ")).collect();
     let more = names.len().saturating_sub(3);
     if more > 0 {
         shown.push(format!("{more} more"));
@@ -598,7 +602,7 @@ fn unbound_note(names: &[String]) -> String {
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
     };
-    format!("Needs {list} \u{2014} sent as written until set")
+    format!("To fill in: {list}. Until then it is sent with the blanks as written.")
 }
 
 fn count(n: usize, what: &str) -> String {
@@ -671,10 +675,10 @@ mod tests {
     fn unset_inputs_read_as_a_precondition() {
         let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(unbound_note(&[]), "");
-        assert_eq!(unbound_note(&names(&["person", "date"])), "Needs {{person}} and {{date}} — sent as written until set");
+        assert_eq!(unbound_note(&names(&["person", "date"])), "To fill in: person and date. Until then it is sent with the blanks as written.");
         assert_eq!(
             unbound_note(&names(&["a", "b", "c", "d", "e"])),
-            "Needs {{a}}, {{b}}, {{c}} and 2 more — sent as written until set"
+            "To fill in: a, b, c and 2 more. Until then it is sent with the blanks as written."
         );
     }
 
@@ -696,11 +700,11 @@ mod tests {
         assert_eq!(row.question, "Move them where?");
         assert_eq!(row.choices.iter().map(|c| c.to_string()).collect::<Vec<_>>(), ["Archive", "Trash"]);
         assert_eq!(row.waiting_for, "Waiting for your answer");
-        assert_eq!(row.unbound, "Needs {{subfolder}} — sent as written until set");
+        assert_eq!(row.unbound, "To fill in: subfolder. Until then it is sent with the blanks as written.");
         assert!(row.when.starts_with("updated "), "{}", row.when);
 
         let step = step_of(&v.steps[0]);
-        assert_eq!(step.unbound, "{{subfolder}} had no value when it ran");
+        assert_eq!(step.unbound, "The blank \u{201c}subfolder\u{201d} was empty when it ran");
         assert_eq!(step.summary, r#"list_dir path="~/Downloads/{{subfolder}}""#);
         assert_eq!(step_of(&v.steps[1]).state_label, "waiting for you");
         assert_eq!(step_of(&v.steps[2]).state_label, "to come");

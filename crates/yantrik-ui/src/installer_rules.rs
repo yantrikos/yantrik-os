@@ -255,6 +255,18 @@ pub fn layout_choices(detected: &str) -> Vec<(String, String)> {
     out
 }
 
+/// The layout an arrow key moves the picker to from `current`: `step` places down the list, up
+/// when negative, stopping at either end. A current layout the list does not have moves to the
+/// first, so the keys always land somewhere the person can see.
+pub fn layout_after(codes: &[String], current: &str, step: i32) -> String {
+    let Some(last) = codes.len().checked_sub(1) else { return current.to_string() };
+    let at = match codes.iter().position(|c| c == current) {
+        Some(i) => (i as i64 + i64::from(step)).clamp(0, last as i64) as usize,
+        None => 0,
+    };
+    codes[at].clone()
+}
+
 /// The label a layout code is shown with.
 pub fn layout_label(code: &str) -> String {
     COMMON_LAYOUTS
@@ -336,6 +348,17 @@ pub fn root_by_device(grub_cfg: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_arrow_keys_step_through_the_layouts_and_stop_at_the_ends() {
+        let codes: Vec<String> = ["us", "gb", "de"].iter().map(|c| c.to_string()).collect();
+        assert_eq!(layout_after(&codes, "us", 1), "gb");
+        assert_eq!(layout_after(&codes, "gb", -1), "us");
+        assert_eq!(layout_after(&codes, "us", -1), "us", "Up at the top stays");
+        assert_eq!(layout_after(&codes, "de", 1), "de", "Down at the bottom stays");
+        assert_eq!(layout_after(&codes, "fr", 1), "us", "a layout not listed moves to the first");
+        assert_eq!(layout_after(&[], "us", 1), "us", "no list, no move");
+    }
 
     fn disk(name: &str) -> EraseCandidate<'_> {
         EraseCandidate { name, holds_macos: false, external: false, runs_installer: false }

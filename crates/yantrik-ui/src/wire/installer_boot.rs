@@ -163,3 +163,71 @@ pub fn write_macos_entry(mount_dir: &str, layout: &Layout) {
         tracing::warn!(error = %e, "could not add the macOS entry to the boot menu");
     }
 }
+
+/// What turns off GRUB's own lines in the installed menu's plain entry: the `sed` expression the
+/// image build, this installer and the text installer (yantrik-install.sh) all run over
+/// /etc/grub.d/10_linux.
+///
+/// Debian builds GRUB with `quiet_boot="0"` written into 10_linux, and no /etc/default/grub key
+/// changes it, so every entry it makes says "Loading Linux 6.12… ..." and "Loading initial
+/// ramdisk ...". Under the theme those were a black box of text for a moment before every start
+/// (14 Oct 2026). With `quiet_boot="1"` (what Ubuntu builds with) the plain entry says nothing,
+/// and the Advanced options entries, recovery mode among them, keep their lines: 10_linux decides
+/// it per entry, `quiet_boot = 0 || type != simple`.
+pub const QUIET_BOOT_SED: &str = r#"s/^quiet_boot="0"$/quiet_boot="1"/"#;
+
+/// The line 10_linux carries once it is quiet.
+pub const QUIET_BOOT_LINE: &str = r#"quiet_boot="1""#;
+
+/// Run [`QUIET_BOOT_SED`] over the installed system's 10_linux, before update-grub. `sed -i` keeps
+/// the script's mode, so it still runs. A failure costs the quiet, never the install: the menu
+/// still starts the machine, only with GRUB's lines on the way.
+pub fn quiet_linux_entries(mount_dir: &str) {
+    let script = "/etc/grub.d/10_linux";
+    let _ = chroot_cmd(mount_dir, &["sed", "-i", QUIET_BOOT_SED, script]);
+    let quiet = std::fs::read_to_string(format!("{mount_dir}{script}")).is_ok_and(|s| is_quiet(&s));
+    if !quiet {
+        tracing::warn!("the boot menu's entries will show GRUB's loading lines: {script} has no quiet_boot=\"0\" to switch");
+    }
+}
+
+/// Whether a 10_linux makes its plain entry without GRUB's loading lines.
+pub fn is_quiet(script: &str) -> bool {
+    script.lines().any(|l| l == QUIET_BOOT_LINE)
+}
+
+#[cfg(test)]
+mod quiet_boot_tests {
+    use super::*;
+
+    /// Debian 13's 10_linux, where it decides the lines: the switch near the top, and the test
+    /// each entry's `echo` sits behind.
+    const DEBIAN_10_LINUX: &str = "prefix=\"/usr\"\nquiet_boot=\"0\"\n\nif [ x\"$quiet_boot\" = x0 ] || [ x\"$type\" != xsimple ]; then\n";
+
+    #[test]
+    fn the_installed_menus_plain_entry_says_nothing_and_its_other_entries_keep_their_lines() {
+        // The real sed, as the installer runs it, over a copy of the script.
+        let path = std::env::temp_dir().join(format!("yantrik-10_linux-{}", std::process::id()));
+        std::fs::write(&path, DEBIAN_10_LINUX).expect("a scratch file");
+        let out = std::process::Command::new("sed").args(["-e", QUIET_BOOT_SED]).arg(&path).output().expect("sed runs");
+        let _ = std::fs::remove_file(&path);
+        let quiet = String::from_utf8(out.stdout).expect("text");
+        assert!(!is_quiet(DEBIAN_10_LINUX));
+        assert!(is_quiet(&quiet), "{quiet}");
+        // Only the switch: the per-entry test that keeps recovery mode's lines is untouched.
+        assert_eq!(quiet, DEBIAN_10_LINUX.replace("quiet_boot=\"0\"\n", "quiet_boot=\"1\"\n"));
+        assert!(quiet.contains("[ x\"$type\" != xsimple ]"));
+    }
+
+    /// The image build and the text installer quiet it with the same expression as this one.
+    #[test]
+    fn every_installed_menu_is_made_quiet_the_same_way() {
+        let build = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/build-debian-iso.sh"));
+        let text = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/yantrik-install.sh"));
+        let quoted = format!("'{QUIET_BOOT_SED}'");
+        for (name, script) in [("build-debian-iso.sh", build), ("yantrik-install.sh", text)] {
+            assert!(script.contains(&quoted), "{name} runs {quoted} over 10_linux");
+            assert!(script.contains(&format!("'{QUIET_BOOT_LINE}'")), "{name} checks the result");
+        }
+    }
+}

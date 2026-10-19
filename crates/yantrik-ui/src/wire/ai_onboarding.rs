@@ -1,22 +1,17 @@
-//! AI Onboarding wiring — first-boot hardware scan + provider setup.
+//! The first boot's hardware scan: what this machine has, measured, for the control surface's
+//! `describe` of the wizard (control_installer.rs) and a caller deciding where to install.
 //!
-//! Everything here runs exactly once, before the user has any other way to
-//! reach the system, so it must report what is actually true. Earlier
-//! revisions hardcoded every hardware check to `true`, simulated the
-//! connection test with a 2s sleep and an unconditional "success", and
-//! dropped the submitted API key on the floor — a user who typed a real key
-//! landed on a desktop that could not think, with nothing on screen saying so.
+//! The provider screens this file used to drive (onboarding.slint's AI mode, provider, key and
+//! connection test) are no longer mounted: the first run (onboarding_first_run.slint, wired by
+//! wire/onboarding.rs) asks who does the thinking now, lists the account's models and lets the
+//! person choose one. Nothing here saves a provider or a model any more.
 //!
-//! Detection and validation now share the same code paths Settings uses
-//! (`wire::provider_catalogue`, `wire::settings::test_provider_connection`,
-//! `ProviderStore`) so the two screens cannot drift apart.
+//! Everything here must report what is actually true. Earlier revisions hardcoded every hardware
+//! check to `true`.
 
 use slint::ComponentHandle;
 
 use crate::app_context::AppContext;
-use crate::wire::provider_catalogue::{auth_type_for, default_model_for, is_local_runtime, provider_preset};
-use crate::wire::provider_models::pick_model;
-use crate::wire::settings::{test_provider_connection, ProviderStore, ProviderStoreEntry};
 use crate::App;
 
 /// The minimums. The README's hardware table carries the same numbers in its
@@ -29,100 +24,8 @@ const MIN_CPU_CORES: usize = 2;
 const MIN_RAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MIN_DISK_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 
-/// Wire AI onboarding callbacks.
+/// Start the hardware scan.
 pub fn wire(ui: &App, ctx: &AppContext) {
-    // AI mode selected (local/cloud/later)
-    ui.on_onboard_ai_mode_selected(move |mode| {
-        tracing::info!(mode = %mode, "Onboarding: AI mode selected");
-    });
-
-    // Provider selected — persist it immediately. A local runtime has no API
-    // key step, so `on_onboard_ai_api_key_submitted` never fires for it; if
-    // selection did not save, "Test Connection" would find no provider and the
-    // user's choice would be lost on the way to the desktop.
-    let ui_weak = ui.as_weak();
-    let configured_for_select = ctx.llm_base_url.clone();
-    ui.on_onboard_ai_provider_selected(move |provider| {
-        let Some(ui) = ui_weak.upgrade() else { return };
-        let id = provider.to_string();
-        save_primary(&id, None, configured_for_select.as_deref());
-        ui.set_onboard_ai_test_status("".into());
-        ui.set_onboard_ai_test_model("".into());
-    });
-
-    // API key submitted — re-save the same provider, now carrying the key.
-    let ui_weak = ui.as_weak();
-    let configured_for_save = ctx.llm_base_url.clone();
-    ui.on_onboard_ai_api_key_submitted(move |provider, key| {
-        let Some(ui) = ui_weak.upgrade() else { return };
-        let id = provider.to_string();
-        let key_str = key.to_string();
-        let key_opt = if key_str.is_empty() { None } else { Some(key_str) };
-        if !save_primary(&id, key_opt, configured_for_save.as_deref()) {
-            ui.set_onboard_ai_test_status("error".into());
-        }
-    });
-
-    // Test AI connection — actually contact the provider.
-    let ui_weak = ui.as_weak();
-    ui.on_onboard_ai_test_connection(move || {
-        let Some(ui) = ui_weak.upgrade() else { return };
-        ui.set_onboard_ai_test_status("testing".into());
-
-        // Test whatever onboarding just saved as primary; fall back to the
-        // configured endpoint if the user has not chosen a provider yet.
-        let store = ProviderStore::load();
-        let Some(primary) = store.primary().cloned() else {
-            tracing::warn!("Onboarding: connection test with no provider configured");
-            ui.set_onboard_ai_test_status("error".into());
-            return;
-        };
-
-        let weak = ui.as_weak();
-        std::thread::spawn(move || {
-            let result = test_provider_connection(
-                &primary.base_url,
-                primary.api_key.as_deref(),
-                &primary.auth_type,
-            );
-            let _ = slint::invoke_from_event_loop(move || {
-                let Some(ui) = weak.upgrade() else { return };
-                if result.success {
-                    // The test listed the provider's models: start on the
-                    // catalogue's default when it is served, else the first.
-                    let model = pick_model(&result.models, &[default_model_for(&primary.provider_type)])
-                        .unwrap_or("")
-                        .to_string();
-                    remember_model(&primary.id, &model);
-                    ui.set_onboard_ai_test_status("success".into());
-                    ui.set_onboard_ai_test_latency_ms(result.latency_ms);
-                    ui.set_onboard_ai_test_privacy(privacy_of(&primary.base_url).into());
-                    ui.set_onboard_ai_test_model(
-                        if model.is_empty() { primary.name.clone() } else { model }.into(),
-                    );
-                    tracing::info!(
-                        provider = %primary.provider_type,
-                        latency_ms = result.latency_ms,
-                        "Onboarding: provider reachable"
-                    );
-                } else {
-                    ui.set_onboard_ai_test_status("error".into());
-                    ui.set_onboard_ai_test_model(result.message.clone().into());
-                    tracing::warn!(
-                        provider = %primary.provider_type,
-                        error = %result.message,
-                        "Onboarding: provider unreachable"
-                    );
-                }
-            });
-        });
-    });
-
-    // Skip AI setup
-    ui.on_onboard_ai_skip_setup(move || {
-        tracing::info!("Onboarding: AI setup skipped, using bundled fallback");
-    });
-
     // Hardware scan — real measurements from the system observer.
     let ui_weak = ui.as_weak();
     let configured_url = ctx.llm_base_url.clone();
@@ -369,83 +272,12 @@ fn probe_runtime(configured: Option<&str>) -> bool {
 
     for url in &candidates {
         if agent.get(url).call().is_ok() {
-            tracing::info!(endpoint = %url, "Onboarding: LLM runtime reachable");
+            tracing::info!(endpoint = %yantrik_app_runtime::place::address_of(url), "Onboarding: LLM runtime reachable");
             return true;
         }
     }
     tracing::info!(tried = candidates.len(), "Onboarding: no LLM runtime reachable");
     false
-}
-
-/// Persist `provider` as the primary, replacing any existing primary.
-/// Returns false when there is no endpoint to save.
-///
-/// Called both on selection (no key yet) and on key submission, so a local
-/// runtime — which never reaches the key step — is still saved.
-fn save_primary(provider: &str, api_key: Option<String>, configured: Option<&str>) -> bool {
-    let (name, preset_url) = provider_preset(provider);
-
-    // Local-runtime presets hardcode localhost. When the config points the
-    // companion elsewhere — the documented remote-Ollama setup — that is the
-    // endpoint that actually works, so prefer it. Otherwise onboarding would
-    // save an endpoint the hardware scan just proved unreachable.
-    let url: String = match (is_local_runtime(provider), configured) {
-        (true, Some(cfg)) if !cfg.is_empty() => cfg.to_string(),
-        _ => preset_url.to_string(),
-    };
-
-    if url.is_empty() {
-        tracing::warn!(provider, "Onboarding: no known endpoint for provider, not saving");
-        return false;
-    }
-
-    let has_key = api_key.is_some();
-    let entry = ProviderStoreEntry {
-        id: format!("{provider}-onboarding"),
-        name: name.to_string(),
-        provider_type: provider.to_string(),
-        base_url: url.clone(),
-        api_key,
-        auth_type: auth_type_for(provider).to_string(),
-        is_primary: true,
-        is_fallback: false,
-        // Chosen from the provider's own list once the connection test runs.
-        model: String::new(),
-    };
-
-    let mut store = ProviderStore::load();
-    store.entries.retain(|e| !e.is_primary);
-    store.entries.push(entry);
-    store.save();
-
-    // Log presence, never the key itself.
-    tracing::info!(provider, endpoint = %url, has_key, "Onboarding: provider saved as primary");
-    true
-}
-
-/// Keep `model` on the saved provider `id`, so the desktop starts on a model
-/// the provider actually serves.
-fn remember_model(id: &str, model: &str) {
-    if model.is_empty() {
-        return;
-    }
-    let mut store = ProviderStore::load();
-    let Some(entry) = store.entries.iter_mut().find(|e| e.id == id) else { return };
-    entry.model = model.to_string();
-    if store.save().is_ok() {
-        tracing::info!(model, "Onboarding: model chosen from the provider's list");
-    }
-}
-
-/// Whether requests to this endpoint leave the machine.
-fn privacy_of(base_url: &str) -> &'static str {
-    if base_url.contains("localhost") || base_url.contains("127.0.0.1") {
-        "local"
-    } else if base_url.starts_with("http://") {
-        "network"
-    } else {
-        "cloud"
-    }
 }
 
 #[cfg(test)]

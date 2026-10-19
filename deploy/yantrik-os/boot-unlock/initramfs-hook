@@ -3,8 +3,13 @@
 # yantrik-unlock (initramfs-tools hook) — the pre-boot unlock screen, in the initramfs
 # ═══════════════════════════════════════════════════════════════════════════════════════
 #
-# Only for a root whose crypttab names Yantrik's keyscript (askpass); anything else is left as
-# cryptsetup and plymouth make it. Then:
+# The boot splash, on any system whose plymouth theme is Yantrik's (the image sets it): plymouth,
+# the theme with its emblem, the script plugin and the renderers, whatever plymouth's own hook
+# chose to carry. Debian's and Ubuntu's hooks find the default theme in different places, and
+# without the theme an unencrypted install or the live ISO boots black until the shell draws.
+#
+# The rest only for a root whose crypttab names Yantrik's keyscript (askpass); anything else is
+# left as cryptsetup and plymouth make it. Then:
 #
 #   - the keyscript, and cryptsetup's console prompt it falls back to;
 #   - the Yantrik plymouth theme, with the person's name and keyboard layout written into it,
@@ -25,7 +30,59 @@ CONF=/etc/yantrik/boot-unlock.conf
 THEMES=/usr/share/plymouth/themes
 THEME=yantrik
 
-grep -qsE "^[^#]*keyscript=$KEYSCRIPT(,|[[:space:]]|\$)" /etc/crypttab || exit 0
+# Whether the system's default plymouth theme is this one, read both ways it is set.
+default_is_yantrik() {
+    grep -qsx "Theme=$THEME" /etc/plymouth/plymouthd.conf && return 0
+    [ "$(readlink -f "$THEMES/default.plymouth" 2>/dev/null)" = "$THEMES/$THEME/$THEME.plymouth" ]
+}
+
+# The splash alone: no prompt, so no label plugin, font or keymap. Anything missing, and plymouth's
+# own hook has the last word, as before there was a splash.
+# When the theme is Yantrik's and something is missing, the build says what (build-debian-iso.sh
+# prints these lines when the live initrd comes out without the splash).
+no_splash() {
+    echo "W: yantrik-unlock: no boot splash in this initramfs: $1" >&2
+    return 0
+}
+
+# The theme, and the splash at once: ShowDelay=0 whatever the distribution's plymouthd.defaults
+# says, since a delay is time on a black screen between GRUB and the emblem (#820). DeviceTimeout
+# is left alone: with plymouth.use-simpledrm the firmware's framebuffer is drawn on at once, and the
+# timeout only decides how long plymouth waits for a GPU driver before it gives up on one.
+plymouthd_conf() {
+    printf '[Daemon]\nTheme=%s\nShowDelay=0\n' "$THEME" > "$DESTDIR/etc/plymouth/plymouthd.conf"
+}
+
+splash_only() {
+    [ -x /usr/sbin/plymouthd ] && [ -x /usr/bin/plymouth ] || return 0
+    default_is_yantrik || return 0
+    [ -f "$THEMES/$THEME/$THEME.script" ] && [ -f "$THEMES/$THEME/$THEME.plymouth" ] \
+        && [ -f "$THEMES/$THEME/emblem.png" ] || { no_splash "the Yantrik theme or its emblem is not installed"; return 0; }
+    plugins="$(plymouth --get-splash-plugin-path 2>/dev/null)"
+    plugins="${plugins%/}"
+    [ -n "$plugins" ] && [ -f "$plugins/script.so" ] || { no_splash "plymouth has no script plugin"; return 0; }
+    copy_exec /usr/bin/plymouth
+    copy_exec /usr/sbin/plymouthd
+    [ -x /usr/libexec/plymouth/plymouthd-fd-escrow ] && copy_exec /usr/libexec/plymouth/plymouthd-fd-escrow
+    copy_exec "$plugins/script.so"
+    for p in details.so text.so; do
+        [ -f "$plugins/$p" ] && copy_exec "$plugins/$p"
+    done
+    for r in drm.so frame-buffer.so; do
+        [ -f "$plugins/renderers/$r" ] && copy_exec "$plugins/renderers/$r"
+    done
+    for t in details text; do
+        [ -d "$THEMES/$t" ] && mkdir -p "$DESTDIR$THEMES" && cp -a "$THEMES/$t" "$DESTDIR$THEMES/"
+    done
+    mkdir -p "$DESTDIR$THEMES/$THEME" "$DESTDIR/etc/plymouth"
+    cp -a "$THEMES/$THEME/." "$DESTDIR$THEMES/$THEME/"
+    ln -sfn "$THEMES/$THEME/$THEME.plymouth" "$DESTDIR$THEMES/default.plymouth"
+    plymouthd_conf
+    echo "I: yantrik-unlock: the boot splash (the Yantrik theme and its emblem) is in this initramfs" >&2
+    return 0
+}
+
+grep -qsE "^[^#]*keyscript=$KEYSCRIPT(,|[[:space:]]|\$)" /etc/crypttab || { splash_only; exit 0; }
 
 copy_exec "$KEYSCRIPT"
 [ -x /lib/cryptsetup/askpass ] && copy_exec /lib/cryptsetup/askpass
@@ -109,5 +166,5 @@ fi
     && cp -a /usr/share/X11/xkb "$DESTDIR/usr/share/X11/"
 
 mkdir -p "$DESTDIR/etc/plymouth"
-printf '[Daemon]\nTheme=%s\n' "$THEME" > "$DESTDIR/etc/plymouth/plymouthd.conf"
+plymouthd_conf
 exit 0

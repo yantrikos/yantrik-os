@@ -1451,6 +1451,54 @@ fn a_server_nobody_is_listening_on_is_reported_as_unreachable() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Review of #856: the backend's address is said (the notice, the state's `where`, the summary
+/// line, the approval sentence) only as `place::address_of` draws it. ureq's own error text
+/// begins with the whole URL, so it is not passed on either.
+#[test]
+fn a_backend_address_is_never_said_with_its_sign_in_details() {
+    const SECRETS: &[&str] = &["user", "pw", "p/w", "api-key", "u@", "u:p", "%40", "#f"];
+    let clean = |input: &str, shown: &str| {
+        for secret in SECRETS {
+            assert!(!shown.contains(secret), "{input} says {secret:?}: {shown}");
+        }
+    };
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let (dir, found) = world("signin");
+    let base = format!("http://user:pw@127.0.0.1:{port}/x?api-key=k#f");
+    let engine = an_engine(&format!(r#"{{"backend":{{"kind":"comfyui","base_url":"{base}"}}}}"#), &found);
+    let actions = surface(engine.clone());
+    call(&actions, "generate", json!({ "prompt": "a lighthouse in fog", "width": 64, "height": 64 })).unwrap();
+    let notice = settled(&engine);
+    assert!(notice.contains(&format!("http://127.0.0.1:{port}/x could not be reached")), "{notice}");
+    clean(&base, &notice);
+    let snapshot = engine.snapshot();
+    clean(&base, snapshot.state()["backend"]["where"].as_str().unwrap());
+    clean(&base, &snapshot.summary());
+    std::fs::remove_dir_all(&dir).ok();
+
+    for (base_url, said) in [
+        ("https://user:p/w@gpu.example/v1", "a ComfyUI server away from your network at an address not shown, as it may hold sign-in details"),
+        ("https://user:pw@gpu.example/v1?api-key=x#f", "a ComfyUI server away from your network at https://gpu.example/v1"),
+        ("http://u:p@[::1]:8188", "a ComfyUI server you reach at http://[::1]:8188"),
+    ] {
+        let config = config::Config::parse(&json!({ "backend": { "kind": "comfyui", "base_url": base_url } }).to_string()).unwrap();
+        assert_eq!(config.facts(true).place, said, "{base_url}");
+    }
+
+    // The approval sentence names where the call goes, and nothing of a URL whose host cannot be
+    // told from its sign-in details (`https://user:1/w@evil.example` parses to the host "user").
+    let set_backend = spec_of(&actions, "set_backend");
+    let explains = |args: Value| set_backend.explainer.as_ref().unwrap().sentence(&args);
+    assert_eq!(
+        explains(json!({ "kind": "openai-images", "base_url": "https://user:pw@images.example/v1?api-key=x" })),
+        "After this, prompts go to images.example and may cost money."
+    );
+    for odd in ["https://user:1/w@evil.example/v1", "https://user:p/w@evil.example/v1"] {
+        assert_eq!(explains(json!({ "kind": "openai-images", "base_url": odd })), "", "{odd}");
+        assert_eq!(explains(json!({ "kind": "comfyui", "base_url": odd })), "", "{odd}");
+    }
+}
+
 /// A key that is not a key. Named for this test alone, and read by nothing else in the binary, so
 /// moving it cannot change another test's answer — which is the bar the rest of this crate's tests
 /// hold by being handed their `Places` instead.

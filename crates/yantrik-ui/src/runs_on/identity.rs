@@ -16,7 +16,8 @@ use yantrik_ml::{ProviderDescriptor, ProviderKind, KNOWN_PROVIDERS};
 pub enum ProviderRef {
     /// One the catalogue knows.
     Known(&'static ProviderDescriptor),
-    /// An address the catalogue does not know, by its host.
+    /// An address the catalogue does not know, by its host as it may be drawn (`shown_host`):
+    /// empty when that cannot be told without showing part of the sign-in details.
     Custom(String),
     /// An address on this machine or the local network, by its host.
     Local(String),
@@ -41,6 +42,7 @@ impl ProviderRef {
     pub fn label(&self) -> String {
         match self {
             ProviderRef::Known(p) => p.display_name.to_string(),
+            ProviderRef::Custom(host) if host.is_empty() => "Custom endpoint".to_string(),
             ProviderRef::Custom(host) => format!("Custom endpoint · {host}"),
             ProviderRef::Local(host) => format!("This network · {host}"),
             ProviderRef::NotReported => "provider not reported".to_string(),
@@ -57,11 +59,20 @@ impl ProviderRef {
     }
 }
 
-/// The host (and port) of a URL, without scheme, userinfo or path.
+/// The host (and port) of a URL, without scheme, userinfo or path. What `is_local` and the
+/// catalogue match on; for anything drawn, `shown_host`.
 pub fn host(url: &str) -> String {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     authority.rsplit('@').next().unwrap_or(authority).to_string()
+}
+
+/// The host (and port) as it may be drawn: read from `place::address_of`, so no part of the
+/// sign-in details, query or fragment is ever in it. Empty when the URL's sign-in details cannot
+/// be told from its host (`https://user:p/w@aig.example/v1`, a key holding a `/`), where `host`
+/// would give "user:p" (review of #844, finding 2).
+pub fn shown_host(url: &str) -> String {
+    yantrik_app_runtime::place::shown_host(url)
 }
 
 /// The host without its port: "[::1]:11434" → "::1", "10.0.0.2:8000" → "10.0.0.2".
@@ -97,11 +108,19 @@ pub fn is_loopback(url_or_host: &str) -> bool {
     }
 }
 
-/// The provider a URL (or a bare host) points at.
+/// The provider a URL (or a bare host) points at. The host it keeps is the drawable one
+/// (`shown_host`), and for a URL whose host cannot be told apart from its sign-in details it is
+/// an unnamed custom endpoint: every face then says "A service you set up", never a guess.
+/// That includes an `@` only in the path or query (`http://127.0.0.1:11434/v1?x=a@b`): it reads
+/// the same as a key holding a `/` or `?`, so such an address is an unnamed custom endpoint, not
+/// Local or a catalogue provider (review of #856, finding 4; rare, and nothing is shown).
 pub fn from_url(url: &str) -> ProviderRef {
-    let h = host(url).to_ascii_lowercase();
-    if h.is_empty() {
+    if host(url).is_empty() {
         return ProviderRef::NotReported;
+    }
+    let h = shown_host(url).to_ascii_lowercase();
+    if h.is_empty() {
+        return ProviderRef::Custom(String::new());
     }
     if let Some(p) = by_host(&h) {
         return ProviderRef::Known(p);
@@ -131,7 +150,9 @@ pub fn from_reported(text: &str) -> (ProviderRef, Option<String>) {
             }
             if let Some((p, right)) = provider_prefix(word) {
                 provider = p;
-                model = Some(right.to_string());
+                // `aig.example/v1?api-key=x` is an address, not `host/model`: what follows a `?`,
+                // `#` or `@` is never a model name (review of #856).
+                model = (!right.contains(['?', '#', '@'])).then(|| right.to_string());
                 break 'found;
             }
             if is_host(word) {
@@ -146,7 +167,7 @@ pub fn from_reported(text: &str) -> (ProviderRef, Option<String>) {
         model = segments
             .iter()
             .filter(|s| !s.contains(char::is_whitespace))
-            .find(|s| !is_host(s) && !s.contains("://") && !is_version(s) && provider_prefix(s).is_none())
+            .find(|s| !is_host(s) && !s.contains("://") && !s.contains('@') && !is_version(s) && provider_prefix(s).is_none())
             .map(|s| s.to_string());
     }
     (provider, model)

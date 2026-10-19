@@ -1,0 +1,13 @@
+[Unit]
+Description=Reload Broadcom wl when its Wi-Fi scanning has wedged
+Documentation=file:///usr/lib/yantrik/yantrik-broadcom-wifi
+# Skipped without a word unless wl is loaded, so the timer costs nothing on every other machine.
+# The script checks again, and much more, before it touches anything.
+ConditionPathExists=/sys/module/wl
+After=NetworkManager.service yantrik-broadcom-wifi.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/yantrik/yantrik-broadcom-wifi recover
+# A reload, a few seconds for the interface to return and a minute for NetworkManager to rejoin.
+TimeoutStartSec=3min

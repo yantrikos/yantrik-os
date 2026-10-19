@@ -44,12 +44,21 @@ export component QuickSettings inherits YPopover {
 
     // Network: a Wi-Fi tile where there is a Wi-Fi device, otherwise a Wired tile for a live
     // cable, otherwise nothing.
+    //
+    // The Wi-Fi tile has three states, and its two lines are the state and what a press does:
+    // "Wi-Fi is off" / "Tap to turn on", "Not connected" / "Tap to reconnect", the network's name
+    // / "Tap to manage". A press used to be the radio switch, so with the radio on and nothing
+    // joined — the tile reading "Not connected" — it turned the radio OFF (the Mac mini, 14
+    // October 2026). The radio is now the Wi-Fi switch in the list the chevron opens, its own
+    // control; no press on this tile turns it off.
     in property <bool> wifi-present: false;
     in property <bool> wifi-radio-on: false;
     in property <bool> wifi-connected: false;
     in property <string> wifi-ssid: "";
+    in property <string> wifi-title: "Wi-Fi";
+    in property <string> wifi-hint: "";
     in property <bool> wired-online: false;
-    callback toggle-wifi();
+    callback wifi-pressed();
     callback network-details();
 
     // The machine
@@ -122,7 +131,6 @@ export component QuickSettings inherits YPopover {
 
     // ── Words ──
     property <string> mode-words: root.mind-mode-label;
-    property <string> wifi-words: !root.wifi-radio-on ? "Off" : root.wifi-connected && root.wifi-ssid != "" ? root.wifi-ssid : "Not connected";
     property <string> profile-words: root.power-profile == "power-saver" ? "Power saver"
         : root.power-profile == "performance" ? "Performance" : "Balanced";
     // Balanced is the daemon's ordinary state; the tile is lit when the person has moved off it.
@@ -216,12 +224,15 @@ export component QuickSettings inherits YPopover {
             slot: 3; cursor: root.cursor;
             x: parent.col-x(root.i-net); y: parent.row-y(root.i-net); width: parent.col-w;
             icon: root.wifi-present ? Icons.wifi : Icons.network;
-            title: root.wifi-present ? "Wi-Fi" : "Wired";
-            subtitle: root.wifi-present ? root.wifi-words : "Connected";
+            title: root.wifi-present ? root.wifi-title : "Wired";
+            subtitle: root.wifi-present ? root.wifi-hint : "Connected";
+            // Read out in place of the hint: the title alone ("Not connected") does not say it is
+            // the Wi-Fi tile, nor where the radio switch went.
+            description: root.wifi-present ? "Wi-Fi. " + root.wifi-hint + ". The arrow opens the network list, with the Wi-Fi switch." : "";
             on: root.wifi-present && root.wifi-radio-on;
             split: true;
             // A cable has no switch: its body opens the same list as its chevron.
-            toggled => { if (root.wifi-present) { root.toggle-wifi(); } else { root.network-details(); } }
+            toggled => { if (root.wifi-present) { root.wifi-pressed(); } else { root.network-details(); } }
             details-requested => { root.network-details(); }
             focus-arrived(s) => { root.cursor = s; }
         }

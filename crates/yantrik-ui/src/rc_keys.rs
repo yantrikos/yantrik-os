@@ -143,6 +143,13 @@ const HANDLED_IN_THE_WINDOW: &[(&str, &str)] = &[
     ("ui/terminal_workbench.slint", "ctrl+shift+f"),
     // Cancels a recording while the voice overlay has the keyboard.
     ("ui/voice_overlay.slint", "ctrl+space"),
+    // ySheets' file and history keys, read by the formula bar's capture-key-pressed: the
+    // spreadsheet's typing cursor is always there.
+    ("ui/spreadsheet.slint", "ctrl+o"),
+    ("ui/spreadsheet.slint", "ctrl+s"),
+    ("ui/spreadsheet.slint", "ctrl+shift+s"),
+    ("ui/spreadsheet.slint", "ctrl+z"),
+    ("ui/spreadsheet.slint", "ctrl+y"),
 ];
 
 /// A screen must not advertise a key the compositor does not bind.

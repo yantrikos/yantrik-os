@@ -1,0 +1,15 @@
+#!/bin/sh
+# The live instance (VM 561) only: the Mind's desktop bridge with its private-read taint off.
+#
+# 561 is sealed, holds no personal data and runs unattended (Pranab, 15 Oct 2026). With the taint
+# on, the Mind reads the desktop at the start of every turn (os_describe), and from then on every
+# command it runs is a card that cannot be allowed for the session, so nothing is ever built
+# unless someone is at the machine. Off here, a command asks the way Auto mode asks anything that
+# runs whatever it is given: once a shell session, answered by "Allow for this session".
+#
+# Root's file, installed by setup-director.sh. The Mind's commands run as the desktop's account
+# and can write neither here nor the Mind's own settings, where mcp.json names this file.
+# Undo: put back ~yantrik-mind/.config/yantrik-mind/mcp.json.before-sealed.
+YOS_MCP_NO_TAINT=1
+export YOS_MCP_NO_TAINT
+exec /opt/yantrik/bin/yos-mcp "$@"

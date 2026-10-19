@@ -32,9 +32,9 @@ use crate::agents::{self, feed, launch, AgentId, Store};
 use crate::app_context::AppContext;
 use super::agents_workroom as workroom;
 use crate::{
-    AccentPreset, AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
+    AgentDetailsData, AgentHeaderData, AgentItemData, AgentMindData, AgentRoleData,
     AgentRunData, AgentWindow, AgentsState, App, ApprovalRequest, ChangeRowData, ChildRunData, DecisionData,
-    DeskCardData, ResultData, RunFactData, ThemeMode, ThemeOverrides, ToolCallData, WorkCardData, WorkNavData,
+    DeskCardData, ResultData, RunFactData, ToolCallData, WorkNavData,
 };
 use super::lens_work;
 
@@ -305,7 +305,15 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 ui.set_lens_can_open_in_agents(lens_agent);
             }
             publish_lens_questions(&ui);
-            if ui.get_current_screen() == SCREEN {
+            publish_lens_composer(&ui);
+            let plan = tick_plan(ui.get_current_screen(), ui.get_lens_open(), ui.get_is_generating());
+            if plan.lens_cards {
+                agents::store().read(|s| publish_lens(&ui.global::<AgentsState>(), s));
+            }
+            if plan.lens_steps {
+                publish_lens_steps(&ui);
+            }
+            if plan.workroom {
                 refresh(&ui, &state, false);
             } else if beat.replace(beat.get().wrapping_add(1)) % 4 == 3 {
                 // The bar's Minds chip is on every screen and counts the same requests the
@@ -321,6 +329,26 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
     }
     // The timer lives as long as the shell, the idiom every wire module uses.
     std::mem::forget(timer);
+}
+
+/// What one tick redraws.
+#[derive(Debug, PartialEq, Eq)]
+struct TickPlan {
+    /// The workroom, which also publishes the Lens's cards.
+    workroom: bool,
+    /// The Lens's run counts and header words, when the workroom is not doing it.
+    lens_cards: bool,
+    /// The steps in the Lens's streaming bubble.
+    lens_steps: bool,
+}
+
+/// The workroom while the Agents screen is up; the Lens's cards whenever the Lens is open over any
+/// other screen. They were published only by the workroom's redraw, so a Lens open on the home
+/// screen (1) kept the card it was opened with. The steps are followed while the Lens is open or an
+/// answer is arriving, so a reply whose Lens was closed meanwhile still folds what it did.
+fn tick_plan(screen: i32, lens_open: bool, answering: bool) -> TickPlan {
+    let workroom = screen == SCREEN;
+    TickPlan { workroom, lens_cards: lens_open && !workroom, lens_steps: lens_open || answering }
 }
 
 /// Back to the page a run was opened from: nothing selected, and nothing half-asked.
@@ -618,9 +646,11 @@ fn refresh(ui: &App, state: &Shared, force: bool) {
     }
 }
 
-/// What the Lens's conversation shows of the runs it started (Chat v2): a card per run, the run the
-/// strip describes, and the counts. The runs are the active mind's own conversation, which is the
-/// one the Lens is. Set only where it changed, so a conversation in which nothing moves asks for no
+/// What the Lens's conversation knows of the runs it started: how many are live and how many wait
+/// on the person, and whose mind it is. The runs are the active mind's own conversation, which is
+/// the one the Lens is. Each reply draws its own run's work in its timeline (`lens_timeline`); the
+/// card under it and the strip above the composer said the same thing twice more, and are gone
+/// from the Lens. Set only where it changed, so a conversation in which nothing moves asks for no
 /// redraw.
 fn publish_lens(g: &AgentsState, s: &Store) {
     let host = crate::wire::harness::host();
@@ -629,14 +659,6 @@ fn publish_lens(g: &AgentsState, s: &Store) {
         .agent(&feed::main_agent(&active))
         .map(|a| lens_work::works_of(a, now()))
         .unwrap_or_default();
-    let cards: Vec<WorkCardData> = works.iter().map(work_card).collect();
-    if let Some(model) = crate::models::changed(g.get_lens_cards(), cards) {
-        g.set_lens_cards(model);
-    }
-    let strip = lens_work::strip_of(&works).map(work_card).unwrap_or_default();
-    if g.get_lens_strip() != strip {
-        g.set_lens_strip(strip);
-    }
     let live = works.iter().filter(|w| w.live).count() as i32;
     let waiting = works.iter().filter(|w| w.state == "needs-you").count() as i32;
     if g.get_lens_live() != live {
@@ -648,6 +670,34 @@ fn publish_lens(g: &AgentsState, s: &Store) {
     let identity = if active == crate::wire::harness::BUILTIN_ID { "Built-in mind" } else { "Attached mind" };
     if g.get_lens_identity() != identity {
         g.set_lens_identity(identity.into());
+    }
+}
+
+/// The active mind's id, as the host names it; the built-in when there is no host.
+fn lens_mind() -> String {
+    crate::wire::harness::host().map(|h| h.active_id()).unwrap_or_else(|| crate::wire::harness::BUILTIN_ID.to_string())
+}
+
+/// The live timeline of the Lens's open turn, for the bubble its answer streams into
+/// (`lens_timeline`). The row is the newest bubble still arriving when the turn is first seen, and
+/// the timeline stays on it until the turn ends. None shown (row -1) when nothing is open.
+fn publish_lens_steps(ui: &App) {
+    let g = ui.global::<AgentsState>();
+    let messages = ui.get_messages();
+    let arriving = |row: usize| messages.row_data(row).is_some_and(|m| m.is_streaming && m.role == "assistant");
+    let newest = (0..messages.row_count()).rev().find(|&row| arriving(row));
+    let has_words = |row: usize| messages.row_data(row).is_some_and(|m| !m.content.trim().is_empty());
+    let live = super::lens_timeline::live(&feed::main_agent(&lens_mind()), newest, has_words, now())
+        .filter(|(row, _)| arriving(*row));
+    let (row, blocks) = match live {
+        Some((row, entries)) => (row as i32, super::lens_timeline::blocks(&entries)),
+        None => (-1, Vec::new()),
+    };
+    if let Some(model) = crate::models::changed(g.get_lens_steps(), blocks) {
+        g.set_lens_steps(model);
+    }
+    if g.get_lens_steps_row() != row {
+        g.set_lens_steps_row(row);
     }
 }
 
@@ -667,19 +717,6 @@ pub fn latest_status() -> String {
 pub fn status_for_describe(raw: &str) -> String {
     let visible: String = raw.chars().filter(|c| !c.is_control() || c.is_whitespace()).filter(|c| !crate::approvals::is_format_char(*c)).collect();
     crate::agents::progress::brief(&visible, 120)
-}
-
-fn work_card(w: &lens_work::Work) -> WorkCardData {
-    WorkCardData {
-        run: w.run.as_str().into(),
-        title: w.title.as_str().into(),
-        mind: w.mind.as_str().into(),
-        state: w.state.into(),
-        label: w.label.into(),
-        activity: w.activity.as_str().into(),
-        can_view_desk: w.can_view_desk,
-        can_review: w.can_review,
-    }
 }
 
 /// The workroom as it stands: what the screen draws and `describe shell` says, from the one
@@ -1299,7 +1336,15 @@ fn publish_lens_questions(ui: &App) {
     let agent = feed::main_agent(&host.active_id());
     let questions: Vec<crate::QuestionRequest> = agents::store().read(|s| {
         let Some(a) = s.agent(&agent) else { return Vec::new() };
-        a.waiting_questions().map(|q| lens_question(&a.meta.id.0, &a.meta.mind, q)).collect()
+        a.waiting_questions()
+            .map(|q| crate::QuestionRequest {
+                // Drawn in the reply that asked it; pinned above the composer only when no reply
+                // the Lens is following holds it (one asked before a restart), so it is never
+                // unseen and never drawn twice.
+                in_reply: super::lens_timeline::in_reply(&a.meta.id, &q.request),
+                ..lens_question(&a.meta.id.0, &a.meta.mind, q)
+            })
+            .collect()
     });
     if let Some(model) = crate::models::changed(ui.get_lens_questions(), questions) {
         ui.set_lens_questions(model);
@@ -1347,6 +1392,28 @@ fn lens_question(agent: &str, mind: &str, q: &crate::agents::model::Question) ->
         )),
         asked: clock(q.asked).into(),
         removes: erase_removes(q).into(),
+        // Only an offered answer that is shown can be marked.
+        recommended: q.recommended.filter(|i| *i < QUESTION_OPTIONS).map_or(-1, |i| i as i32),
+        in_reply: false,
+    }
+}
+
+/// What the Lens's composer says Enter will do (`lens_queue`): send, queue for the busy mind, or
+/// answer its question, which is shown above the box. Set only where it changed.
+fn publish_lens_composer(ui: &App) {
+    let composer = super::lens_queue::Composer::active();
+    let g = ui.global::<AgentsState>();
+    let mode = composer.mode().word();
+    if g.get_lens_composer_mode() != mode {
+        g.set_lens_composer_mode(mode.into());
+    }
+    let placeholder = composer.placeholder();
+    if g.get_lens_composer_placeholder() != placeholder.as_str() {
+        g.set_lens_composer_placeholder(placeholder.into());
+    }
+    let asks = composer.asking.as_ref().map(|a| format!("{} asks: {}", composer.mind, clip(&a.prompt, QUESTION_CHARS))).unwrap_or_default();
+    if g.get_lens_composer_asks() != asks.as_str() {
+        g.set_lens_composer_asks(asks.into());
     }
 }
 
@@ -1440,6 +1507,14 @@ pub fn answer_question(agent: &str, request: &str, answer: &str, pressed: bool) 
             agents::store().question_closed(&id, request, crate::agents::model::Question::STOPPED_ASKING);
         }
     }
+}
+
+/// The person's own words from the Lens's reply box while their mind's run waits on a question
+/// (`lens_queue`): a typed answer, never a pressed one, so a typed "Erase" still lets no `redact`
+/// act. Its one caller is the person's composer (`chat::submit`, from `on_send_message`), which the
+/// control surface's `send_message` refuses to an agent, so a mind still cannot answer itself.
+pub fn answer_typed(agent: &str, request: &str, words: &str) {
+    answer_question(agent, request, words, false);
 }
 
 fn approval_of(a: &Agent, approval: &Approval, key: String, pending: &[crate::approvals::Card]) -> AgentItemData {
@@ -1997,30 +2072,10 @@ fn held_for_test(notice: &Notice, test_run: bool) -> bool {
     test_run && matches!(notice, Notice::Finished { .. })
 }
 
-/// A window has its own copy of every global, so it takes the shell's theme — dark or light, the
-/// accent, any community theme — from the shell, and keeps taking it.
+/// A window has its own copy of every global, so it takes the shell's theme from the shell, and
+/// keeps taking it. The copy is `wire::theme::sync_window_theme`, shared with the capture bar.
 fn sync_theme(ui: &App, window: &AgentWindow) {
-    macro_rules! copy {
-        ($global:ty, $get:ident, $set:ident) => {{
-            let want = ui.global::<$global>().$get();
-            if window.global::<$global>().$get() != want {
-                window.global::<$global>().$set(want);
-            }
-        }};
-    }
-    copy!(ThemeMode, get_dark, set_dark);
-    copy!(AccentPreset, get_index, set_index);
-    copy!(ThemeOverrides, get_enabled, set_enabled);
-    copy!(ThemeOverrides, get_bg_deep_override, set_bg_deep_override);
-    copy!(ThemeOverrides, get_bg_surface_override, set_bg_surface_override);
-    copy!(ThemeOverrides, get_bg_card_override, set_bg_card_override);
-    copy!(ThemeOverrides, get_bg_elevated_override, set_bg_elevated_override);
-    copy!(ThemeOverrides, get_amber_override, set_amber_override);
-    copy!(ThemeOverrides, get_cyan_override, set_cyan_override);
-    copy!(ThemeOverrides, get_text_primary_override, set_text_primary_override);
-    copy!(ThemeOverrides, get_text_secondary_override, set_text_secondary_override);
-    copy!(ThemeOverrides, get_text_dim_override, set_text_dim_override);
-    copy!(ThemeOverrides, get_accent_override, set_accent_override);
+    crate::wire::theme::sync_window_theme!(ui, window);
 }
 
 /// All of a call's output, in the Editor: written to a file beside the sessions and opened there.
@@ -2085,6 +2140,7 @@ mod tests {
             request_id: "q-describe-1".into(),
             prompt: "Delete the 3 old installers?".into(),
             options: vec!["Yes".into(), "No".into()],
+            recommended: None,
         };
         agents::store().event(&agent, &ask, agents::model::Provenance::Reported);
         let mine = |v: serde_json::Value| -> Vec<serde_json::Value> {
@@ -2110,6 +2166,7 @@ mod tests {
             request_id: "q-stale-1".into(),
             prompt: "Keep or Erase?".into(),
             options: vec!["Keep".into(), "Erase".into()],
+            recommended: None,
         };
         agents::store().event(&agent, &ask, agents::model::Provenance::Reported);
         let mine = || -> usize {
@@ -2412,6 +2469,7 @@ mod tests {
                 request_id: "forget".into(),
                 prompt: "Forget the code Zanzibar-7741?".into(),
                 options: vec!["Keep".into(), "Erase".into()],
+                recommended: None,
             },
             crate::agents::Provenance::Reported,
         );
@@ -2946,6 +3004,7 @@ mod first_prompt_attribution_tests {
             request: "forget".into(),
             prompt: prompt.into(),
             options: options.iter().map(|o| o.to_string()).collect(),
+            recommended: None,
             answer: String::new(),
             closed: String::new(),
             asked: 0,
@@ -2980,6 +3039,7 @@ mod first_prompt_attribution_tests {
             request: "r1".into(),
             prompt: "?".repeat(5_000),
             options: (0..20).map(|i| format!("{i}{}", "y".repeat(100))).collect(),
+            recommended: None,
             answer: String::new(),
             closed: String::new(),
             asked: 0,
@@ -2999,7 +3059,19 @@ mod first_prompt_attribution_tests {
         let desktop = read("../yantrik-ui-slint/ui/desktop.slint");
         assert!(desktop.contains("questions: root.questions;"), "the desktop screen hands the Lens its questions");
         let lens = read("../yantrik-ui-slint/ui/components/intent_lens.slint");
-        assert!(lens.contains("for q in root.questions : QuestionCard"), "the Lens draws them");
+        assert!(lens.contains("for q in root.questions : VerticalLayout"), "the Lens pins the ones no reply holds");
+        let timeline = read("../yantrik-ui-slint/ui/components/reply_timeline.slint");
+        assert!(timeline.contains("if q.request == root.block.call.name : QuestionCard"), "and draws the rest in the reply that asked");
+        // Under the reply's words, not over them, with the live line: above, the words that led
+        // up to it pushed the card out of view while the Lens followed the reply's end, and after
+        // a tap the live line that replaced it sat at the top (VM 541, 14 Oct).
+        let bubble = read("../yantrik-ui-slint/ui/components/chat_message.slint");
+        let now = "block.block-type == \"status\" || (block.block-type == \"question\" && block.call.status == \"waiting\")";
+        let above = bubble.find(&format!("if !({now}) : TimelineLine")).expect("the timeline over the words leaves what is happening now out");
+        let words = above + bubble[above..].find("text: root.data.content;").expect("the words under the timeline");
+        let below = bubble.find(&format!("if {now} : TimelineLine")).expect("and draws it on its own");
+        assert!(words < below, "the live line and a waiting question's card come after the words");
+        assert!(lens.contains("question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }"), "through the same callback");
     }
 
     #[test]
@@ -3008,6 +3080,7 @@ mod first_prompt_attribution_tests {
             request: "r1".into(),
             prompt: "Delete 3 installers?".into(),
             options: vec!["Yes".into(), "No".into()],
+            recommended: None,
             answer: String::new(),
             closed: String::new(),
             asked: 0,
@@ -3061,9 +3134,18 @@ mod first_prompt_attribution_tests {
         let wiring = read("src/wire/agents.rs");
         let wiring = wiring.split("#[cfg(test)]").next().unwrap();
         assert_eq!(wiring.matches("answer_for(").count(), 1, "one caller: the card's answer");
-        // Defined once, wired once (`g.on_answer_question(`), called once, from that callback.
-        assert_eq!(wiring.matches("answer_question(").count(), 3);
+        // Defined once, wired once (`g.on_answer_question(`), called once from that callback and
+        // once from `answer_typed`, the person's reply box answering a waiting question.
+        assert_eq!(wiring.matches("answer_question(").count(), 4);
         assert!(wiring.contains("g.on_answer_question("));
+        assert_eq!(wiring.matches("answer_typed(").count(), 1, "defined here, called elsewhere");
+        // The reply box is the person's: `send_message`, the one way the control surface types
+        // into it, refuses an agent before anything is sent.
+        let control = read("src/control.rs");
+        assert!(control.contains("if yantrik_app_runtime::control::agent_is_calling() {\n                    return Err(\"send_message puts words in the person's chat"));
+        let chat = read("src/wire/chat.rs");
+        let chat = chat.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(chat.matches("answer_typed(").count(), 1, "one caller: the composer's submit");
     }
 }
 
@@ -3077,5 +3159,30 @@ mod status_for_describe_tests {
         assert!(!said.contains('\u{202e}') && !said.contains('\u{7}') && !said.contains('\n'), "{said:?}");
         assert!(said.chars().count() <= 121, "{said:?}");
         assert!(said.starts_with("Thinking word"), "{said:?}");
+    }
+}
+
+#[cfg(test)]
+mod lens_tick_tests {
+    use super::{tick_plan, TickPlan, SCREEN};
+
+    /// The Lens is drawn over the home screen (1). Its cards and steps were published only by the
+    /// workroom's redraw, which runs on the Agents screen alone, so an open Lens kept what it was
+    /// opened with.
+    #[test]
+    fn the_lens_steps_and_cards_refresh_on_the_tick_with_the_lens_open_on_screen_1() {
+        assert_eq!(tick_plan(1, true, true), TickPlan { workroom: false, lens_cards: true, lens_steps: true });
+        assert_eq!(tick_plan(1, true, false), TickPlan { workroom: false, lens_cards: true, lens_steps: true });
+    }
+
+    #[test]
+    fn an_answer_arriving_behind_a_closed_lens_is_still_followed_for_its_fold() {
+        assert_eq!(tick_plan(1, false, true), TickPlan { workroom: false, lens_cards: false, lens_steps: true });
+        assert_eq!(tick_plan(1, false, false), TickPlan { workroom: false, lens_cards: false, lens_steps: false });
+    }
+
+    #[test]
+    fn on_the_agents_screen_the_workroom_publishes_the_cards_once() {
+        assert_eq!(tick_plan(SCREEN, true, true), TickPlan { workroom: true, lens_cards: false, lens_steps: true });
     }
 }

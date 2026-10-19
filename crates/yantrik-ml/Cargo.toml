@@ -11,6 +11,8 @@ tracing = "0.1"
 anyhow = "1"
 rand = "0.8"
 tts = "0.26"
+# An error or refusal names a provider's host only as it may be drawn.
+yantrik-shown-address = { path = "../yantrik-shown-address" }
 
 # Candle backends (optional)
 candle-core = { version = "0.9", optional = true }

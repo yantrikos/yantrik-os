@@ -5,6 +5,9 @@ edition = "2021"
 description = "How an agent harness attaches to Yantrik OS — the OS holds which mind is answering, and nothing else"
 
 [dependencies]
+# A notice is checked with the store's own rule, and answered in its words
+# (design/initiative-inbox-2026-10-16.md). Serde types only; nothing here dials a socket.
+yantrik-ipc-contracts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
@@ -19,12 +22,13 @@ rusqlite = { workspace = true }
 # needle.
 sha2 = { workspace = true }
 unicode-normalization = "0.1"
+# A mind's own line is kept as it may be drawn: no address in it keeps its sign-in details.
+yantrik-shown-address = { workspace = true }
 
 [dev-dependencies]
 # Only the examples need a socket; the host itself is deliberately transport-free so it can be
 # tested without a running shell.
 yantrik-ipc-transport = { workspace = true }
-yantrik-ipc-contracts = { workspace = true }
 tokio = { workspace = true }
 
 [[example]]

@@ -428,6 +428,36 @@ class TestRender(unittest.TestCase):
         self.assertEqual(str(caught.exception),
                          "`output` must end in .png; `/tmp/frame.exr` does not")
 
+    def test_mid_render_it_says_what_is_running_over_the_scene_as_of_then(self):
+        # #95: a render holds the main thread for as long as the scene takes, so a describe
+        # arriving mid-render cannot read the scene and used to be reported as a dead app. The
+        # moment to look is inside the render op — that window is where such a describe lands.
+        scene, fake = make_scene()
+        scene.run("add_primitive", {"kind": "cube", "name": "Box"})
+        seen = {}
+        real = fake.ops.render.render
+
+        def spy(write_still=False):
+            seen["mid"] = scene.busy_snapshot()
+            return real(write_still=write_still)
+
+        fake.ops.render.render = spy
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "x.png")
+            as_of = scene.snapshot()
+            scene.run("render", {"output": out})
+
+            self.assertIsNone(scene.busy_snapshot(),
+                              "the render is over; nothing is in flight to report")
+            summary, state = seen["mid"]
+            self.assertEqual(summary, "%s, rendering to x.png (0s)" % as_of[0],
+                             "the line is the scene as of the moment the render took the "
+                             "thread, plus what is running now")
+            self.assertEqual(state["rendering"], {"output": out, "seconds": 0})
+            self.assertEqual(state["objects_total"], 1,
+                             "the state is the as-of one; it cannot be more current than "
+                             "the last moment the scene could be read")
+
 
 class TestScreenshot(unittest.TestCase):
     def test_a_background_blender_says_what_to_do_instead(self):

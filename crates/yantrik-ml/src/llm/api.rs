@@ -6,13 +6,15 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 
 use crate::chat_template;
 use crate::chat_templates;
-use crate::capability::ModelFamily;
+use crate::capability::{ModelFamily, ModelTier};
 use crate::llm::strip_think_tags;
+use crate::thinking::{sends_chat_template_thinking, ThoughtWithoutAnswer};
 use crate::traits::LLMBackend;
 use crate::types::{ApiToolCall, ApiToolCallFunction, ChatMessage, GenerationConfig, LLMResponse, ToolCall};
 
@@ -25,6 +27,12 @@ pub struct ApiLLM {
     is_ollama: bool,
     /// Model family for family-aware template selection.
     family: ModelFamily,
+    /// Capability tier, decides full-JSON vs compact tool definitions.
+    tier: ModelTier,
+    /// Whether requests carry `chat_template_kwargs: {"enable_thinking": false}`: set for a
+    /// Qwen3 on a server the person runs ([`ApiLLM::for_provider`]), and cleared for good the
+    /// first time that server refuses the field, so it is asked about once and not every turn.
+    thinking_switch: AtomicBool,
 }
 
 /// A guess at whether a URL is an Ollama, for callers that were not told.
@@ -67,13 +75,25 @@ impl ApiLLM {
         let base_url: String = base_url.into();
         let model: String = model.into();
         let family = ModelFamily::from_model_name(&model);
+        let tier = ModelTier::from_model_name(&model);
         Self {
             base_url,
             api_key,
             is_ollama,
             family,
+            tier,
             model,
+            thinking_switch: AtomicBool::new(false),
         }
+    }
+
+    /// Say which kind of provider this is (`custom`, `llamacpp`, `groq`, …), so the request can
+    /// carry the switches that provider's servers read. Without it nothing provider-specific is
+    /// sent, which is the safe default for a hosted service.
+    pub fn for_provider(self, provider_type: &str) -> Self {
+        let switch = sends_chat_template_thinking(provider_type, &self.model);
+        self.thinking_switch.store(switch, Ordering::Relaxed);
+        self
     }
 
     /// Get the model name/identifier for capability profiling.
@@ -187,7 +207,7 @@ impl ApiLLM {
         let body_str = serde_json::to_string(body)?;
 
         let tool_count = body.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
-        tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %url, "Ollama request");
+        tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %yantrik_shown_address::address_of(&url), "Ollama request");
 
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
@@ -205,6 +225,7 @@ impl ApiLLM {
         let resp = agent_no_err.post(&url)
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .map_err(|e| {
                 tracing::error!(error = %e, body_bytes = body_str.len(), tools = tool_count, "Ollama API request failed");
                 e
@@ -461,7 +482,7 @@ impl ApiLLM {
         tools: &[serde_json::Value],
     ) -> Vec<ChatMessage> {
         let template = self.template();
-        let tool_block = template.format_tools(tools);
+        let tool_block = template.format_tools_compact(tools, self.tier);
         if tool_block.is_empty() {
             return messages.to_vec();
         }
@@ -532,6 +553,12 @@ impl ApiLLM {
         if self.template().disable_thinking() {
             body["think"] = serde_json::json!(false);
         }
+        // `think` is Ollama's word and the servers on this path do not read it. A Qwen3 template
+        // behind llama.cpp, vLLM, LM Studio or LocalAI reads this instead; without it the thinking
+        // can use up the whole `max_tokens` before any answer (VM 542, 13 Oct 2026).
+        if self.thinking_switch.load(Ordering::Relaxed) {
+            body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
+        }
 
         if let Some(tools) = final_tools {
             if !tools.is_empty() {
@@ -539,14 +566,61 @@ impl ApiLLM {
             }
         }
 
+        // What this provider takes: nothing the model refused, and on Anthropic's endpoint no
+        // sampling value nobody chose (crate::refusal, VM 542 16 Oct 2026).
+        crate::refusal::prepare(&self.base_url, &self.model, config, &mut body);
         body
+    }
+
+    /// The chat-completions body a turn with `config` sends, for a caller that sends it itself:
+    /// the first run's key test, so that a key that passes is a key a real turn works with.
+    pub fn chat_completions_body(&self, messages: &[ChatMessage], config: &GenerationConfig, stream: bool) -> serde_json::Value {
+        self.build_openai_body(messages, config, None, stream)
     }
 
     fn openai_endpoint_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
+    /// Send `body`, dropping what the server refuses: a sampling parameter the model will not take
+    /// ([`crate::refusal::send_dropping_refused`]), or the thinking switch.
+    ///
+    /// A server that does not know `chat_template_kwargs` may answer 400 rather than ignore it.
+    /// The switch is then dropped for this backend's life, so the next turn does not pay for
+    /// the refusal again. Any other refusal is [`crate::ProviderRefused`], in the provider's words.
     fn send_openai_request(&self, body: &serde_json::Value) -> Result<ureq::Body> {
+        let send = |b: &serde_json::Value| {
+            crate::refusal::send_dropping_refused(&self.base_url, &self.model, b, |b| self.post_openai(b))
+        };
+        let refusal = match send(body)? {
+            Ok(resp) => return Ok(resp),
+            Err((400, _)) if body.get("chat_template_kwargs").is_some() => {
+                tracing::warn!(
+                    model = %self.model,
+                    "the server refused chat_template_kwargs (400); asking once more without it"
+                );
+                self.thinking_switch.store(false, Ordering::Relaxed);
+                let mut without = body.clone();
+                if let Some(fields) = without.as_object_mut() {
+                    fields.remove("chat_template_kwargs");
+                }
+                match send(&without)? {
+                    Ok(resp) => return Ok(resp),
+                    Err(refusal) => refusal,
+                }
+            }
+            Err(refusal) => refusal,
+        };
+        let (status, text) = refusal;
+        match crate::ProviderRefused::of(status, &self.base_url, &text, self.api_key.as_deref()) {
+            Some(refused) => Err(refused.into()),
+            None => anyhow::bail!("API request failed: http status: {status}"),
+        }
+    }
+
+    /// One POST to the chat endpoint: the body to read on a 200, else the status and what the
+    /// server said (logged here, where it is still at hand).
+    fn post_openai(&self, body: &serde_json::Value) -> Result<std::result::Result<ureq::Body, (u16, String)>> {
         let url = self.openai_endpoint_url();
         let body_str = serde_json::to_string(body)?;
 
@@ -566,22 +640,23 @@ impl ApiLLM {
 
         let resp = req
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .context("API request failed")?;
 
         let status = resp.status();
         if status != 200 {
             let err_body = resp.into_body().read_to_string().unwrap_or_default();
-            let preview = &err_body[..err_body.len().min(1000)];
+            let preview = crate::refusal::excerpt(&err_body, self.api_key.as_deref());
             tracing::error!(
                 status = status.as_u16(),
                 body_bytes = body_str.len(),
                 error_response = %preview,
                 "OpenAI-compatible API returned error"
             );
-            anyhow::bail!("API request failed: http status: {}", status.as_u16());
+            return Ok(Err((status.as_u16(), err_body)));
         }
 
-        Ok(resp.into_body())
+        Ok(Ok(resp.into_body()))
     }
 
     /// Parse native tool_calls from the response JSON.
@@ -610,25 +685,9 @@ impl ApiLLM {
             })
             .collect()
     }
-}
 
-impl LLMBackend for ApiLLM {
-    fn chat(
-        &self,
-        messages: &[ChatMessage],
-        config: &GenerationConfig,
-        tools: Option<&[serde_json::Value]>,
-    ) -> Result<LLMResponse> {
-        // Use Ollama native API for proper think control
-        if self.is_ollama {
-            return self.ollama_chat(messages, config, tools);
-        }
-
-        let body = self.build_openai_body(messages, config, tools, false);
-        let mut resp_body = self.send_openai_request(&body)?;
-
-        let json: serde_json::Value = resp_body.read_json()?;
-
+    /// Read a whole (non-streamed) OpenAI-style reply.
+    fn read_openai_reply(&self, json: &serde_json::Value) -> Result<LLMResponse> {
         let message = &json["choices"][0]["message"];
 
         let text = strip_think_tags(
@@ -648,6 +707,13 @@ impl LLMBackend for ApiLLM {
             .to_string();
 
         let api_tool_calls = Self::parse_api_tool_calls(message);
+        let reasoning_chars = REASONING_FIELDS
+            .iter()
+            .filter_map(|k| message[*k].as_str())
+            .map(|r| r.chars().count())
+            .sum();
+        no_answer_after_thinking(&text, &api_tool_calls, reasoning_chars, &stop_reason)?;
+        warn_unreadable_calls(&api_tool_calls);
 
         let tool_calls = if !api_tool_calls.is_empty() {
             api_tool_calls
@@ -668,27 +734,21 @@ impl LLMBackend for ApiLLM {
         })
     }
 
-    fn chat_streaming(
+    /// Read an OpenAI-style server-sent-event stream, passing the answer's words to `on_token`.
+    ///
+    /// Thinking is never shown, wherever it arrives: inline in `<think>` tags, or (llama.cpp,
+    /// vLLM, LM Studio) in `delta.reasoning_content` beside the answer. It is counted, so a stream
+    /// that was all thinking ends as [`ThoughtWithoutAnswer`] and not as an empty answer.
+    fn read_openai_stream(
         &self,
-        messages: &[ChatMessage],
-        config: &GenerationConfig,
-        tools: Option<&[serde_json::Value]>,
+        reader: impl BufRead,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<LLMResponse> {
-        // Use Ollama native streaming for proper think control
-        if self.is_ollama {
-            return self.ollama_chat_streaming(messages, config, tools, on_token);
-        }
-
-        let body = self.build_openai_body(messages, config, tools, true);
-        let resp_body = self.send_openai_request(&body)?;
-
-        let reader = BufReader::new(resp_body.into_reader());
-
         let mut full_text = String::new();
         let mut stop_reason = "stop".to_string();
         let mut in_think = false;
         let mut think_buf = String::new();
+        let mut reasoning_chars = 0usize;
 
         let mut tc_ids: HashMap<usize, String> = HashMap::new();
         let mut tc_names: HashMap<usize, String> = HashMap::new();
@@ -712,12 +772,24 @@ impl LLMBackend for ApiLLM {
                 Err(_) => continue,
             };
 
+            // The server's own failure, sent as an event after its 200 (crate::stream_error).
+            if let Some(error) = chunk.get("error").filter(|e| !e.is_null()) {
+                return Err(crate::stream_error::StreamError::of(error).into());
+            }
+
             let delta = &chunk["choices"][0]["delta"];
+
+            for field in REASONING_FIELDS {
+                if let Some(r) = delta[field].as_str() {
+                    reasoning_chars += r.chars().count();
+                }
+            }
 
             if let Some(content) = delta["content"].as_str() {
                 if in_think {
                     think_buf.push_str(content);
                     if think_buf.contains("</think>") {
+                        reasoning_chars += think_buf.split("</think>").next().unwrap_or("").chars().count();
                         if let Some(after) = think_buf.split("</think>").last() {
                             let after = after.trim_start();
                             if !after.is_empty() {
@@ -738,6 +810,7 @@ impl LLMBackend for ApiLLM {
                     let after_tag = content.splitn(2, "<think>").nth(1).unwrap_or("");
                     think_buf.push_str(after_tag);
                     if think_buf.contains("</think>") {
+                        reasoning_chars += think_buf.split("</think>").next().unwrap_or("").chars().count();
                         if let Some(after) = think_buf.split("</think>").last() {
                             let after = after.trim_start();
                             if !after.is_empty() {
@@ -764,8 +837,14 @@ impl LLMBackend for ApiLLM {
                     if let Some(name) = tc_delta["function"]["name"].as_str() {
                         tc_names.entry(idx).or_default().push_str(name);
                     }
-                    if let Some(args) = tc_delta["function"]["arguments"].as_str() {
-                        tc_args.entry(idx).or_default().push_str(args);
+                    match &tc_delta["function"]["arguments"] {
+                        serde_json::Value::String(args) => tc_args.entry(idx).or_default().push_str(args),
+                        // llama.cpp after its autoparser rewrite sends the arguments as an object,
+                        // whole, rather than as a string in pieces (ggml-org/llama.cpp#20198).
+                        args @ (serde_json::Value::Object(_) | serde_json::Value::Array(_)) => {
+                            tc_args.insert(idx, args.to_string());
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -774,6 +853,8 @@ impl LLMBackend for ApiLLM {
                 stop_reason = reason.to_string();
             }
         }
+        // A `<think>` the stream never closed was thinking all the same.
+        reasoning_chars += think_buf.chars().count();
 
         let mut api_tool_calls = Vec::new();
         let max_idx = tc_names.keys().copied().max().unwrap_or(0);
@@ -793,6 +874,11 @@ impl LLMBackend for ApiLLM {
         }
 
         let full_text = strip_think_tags(&full_text);
+        no_answer_after_thinking(&full_text, &api_tool_calls, reasoning_chars, &stop_reason)?;
+        warn_unreadable_calls(&api_tool_calls);
+        if reasoning_chars > 0 {
+            tracing::debug!(reasoning_chars, finish_reason = %stop_reason, "the model thought before answering");
+        }
 
         let tool_calls = if !api_tool_calls.is_empty() {
             api_tool_calls
@@ -811,6 +897,76 @@ impl LLMBackend for ApiLLM {
             api_tool_calls,
             stop_reason,
         })
+    }
+}
+
+/// Where OpenAI-compatible servers put thinking: `reasoning_content` (llama.cpp, vLLM, LM Studio,
+/// DeepSeek) and `reasoning` (newer vLLM and some gateways).
+const REASONING_FIELDS: [&str; 2] = ["reasoning_content", "reasoning"];
+
+/// A reply with no answer and no tool call after the model thought is a failure, not an empty
+/// answer: an empty answer shows as an empty bubble, and nobody can tell what went wrong.
+fn no_answer_after_thinking(
+    text: &str,
+    tool_calls: &[ApiToolCall],
+    reasoning_chars: usize,
+    finish_reason: &str,
+) -> Result<()> {
+    if reasoning_chars == 0 || !text.trim().is_empty() || !tool_calls.is_empty() {
+        return Ok(());
+    }
+    let failure = ThoughtWithoutAnswer { finish_reason: finish_reason.to_string(), reasoning_chars };
+    tracing::warn!(
+        finish_reason = %failure.finish_reason,
+        reasoning_chars,
+        "the model thought but gave no answer"
+    );
+    Err(failure.into())
+}
+
+/// A native call whose arguments are not JSON drops out of `tool_calls`; until 14 Oct 2026 it
+/// did so without a word, and the turn ended as an empty answer nobody could explain.
+fn warn_unreadable_calls(calls: &[ApiToolCall]) {
+    for call in calls.iter().filter(|c| ToolCall::from_api(c).is_none()) {
+        let arguments: String = call.function.arguments.chars().take(200).collect();
+        tracing::warn!(tool = %call.function.name, %arguments, "the model's native tool call has arguments that are not JSON");
+    }
+}
+
+impl LLMBackend for ApiLLM {
+    fn chat(
+        &self,
+        messages: &[ChatMessage],
+        config: &GenerationConfig,
+        tools: Option<&[serde_json::Value]>,
+    ) -> Result<LLMResponse> {
+        // Use Ollama native API for proper think control
+        if self.is_ollama {
+            return self.ollama_chat(messages, config, tools);
+        }
+
+        let body = self.build_openai_body(messages, config, tools, false);
+        let mut resp_body = self.send_openai_request(&body)?;
+
+        let json: serde_json::Value = resp_body.read_json()?;
+        self.read_openai_reply(&json)
+    }
+
+    fn chat_streaming(
+        &self,
+        messages: &[ChatMessage],
+        config: &GenerationConfig,
+        tools: Option<&[serde_json::Value]>,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<LLMResponse> {
+        // Use Ollama native streaming for proper think control
+        if self.is_ollama {
+            return self.ollama_chat_streaming(messages, config, tools, on_token);
+        }
+
+        let body = self.build_openai_body(messages, config, tools, true);
+        let resp_body = self.send_openai_request(&body)?;
+        self.read_openai_stream(BufReader::new(resp_body.into_reader()), on_token)
     }
 
     fn count_tokens(&self, text: &str) -> Result<usize> {
@@ -862,5 +1018,271 @@ mod flavor_tests {
         for url in ["https://api.openai.com/v1", "https://api.deepseek.com", "http://localhost:8083/v1"] {
             assert!(!looks_like_ollama(url), "{url} is not an Ollama");
         }
+    }
+}
+
+#[cfg(test)]
+mod thinking_tests {
+    //! A Qwen3 behind llama.cpp, as VM 542 met it on 13 Oct 2026. The streams in `testdata/` are
+    //! in llama-server's own shape: thinking in `delta.reasoning_content`, the answer in
+    //! `delta.content`, the finish reason on a last empty delta.
+
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::thinking::{ThoughtWithoutAnswer, THOUGHT_WITHOUT_ANSWER};
+
+    const MODEL: &str = "qwen3.8-flash-next-unsloth-ud-iq4_xs";
+    const THINKS_THEN_ANSWERS: &str = include_str!("testdata/qwen3_thinks_then_answers.sse");
+    const THINKS_UNTIL_LENGTH: &str = include_str!("testdata/qwen3_thinks_until_length.sse");
+    const NATIVE_TOOL_CALL: &str = include_str!("testdata/qwen3_native_tool_call.sse");
+    // As VM 542's server sent it (15 Oct 2026, captured on the wire): a 200, one empty delta,
+    // keep-alive comments, then its own error event and [DONE].
+    const SERVER_ERROR_MID_STREAM: &str = include_str!("testdata/server_error_mid_stream.sse");
+
+    fn custom_qwen() -> ApiLLM {
+        ApiLLM::new("http://127.0.0.1:1/v1", None, MODEL).for_provider("custom")
+    }
+
+    fn stream(llm: &ApiLLM, recorded: &str) -> (Result<LLMResponse>, String) {
+        let mut shown = String::new();
+        let result = llm.read_openai_stream(recorded.as_bytes(), &mut |t| shown.push_str(t));
+        (result, shown)
+    }
+
+    #[test]
+    fn an_error_the_server_sends_inside_the_stream_is_the_replys_failure_and_not_an_empty_answer() {
+        let (result, shown) = stream(&custom_qwen(), SERVER_ERROR_MID_STREAM);
+        let err = result.expect_err("the server's error is not an empty answer");
+        let failure = err.downcast_ref::<crate::StreamError>().expect("the typed failure");
+        assert!(failure.message.starts_with("malformed tool call: {"), "{}", failure.message);
+        assert!(shown.is_empty(), "nothing was shown before it: {shown:?}");
+    }
+
+    #[test]
+    fn a_stream_that_thinks_and_then_answers_gives_the_answer() {
+        let (result, shown) = stream(&custom_qwen(), THINKS_THEN_ANSWERS);
+        let reply = result.expect("an answer");
+        assert!(reply.text.contains("I created the Groceries note"), "{}", reply.text);
+        assert!(!shown.contains("Okay, the user"), "the thinking is never shown: {shown}");
+        assert_eq!(reply.stop_reason, "stop");
+    }
+
+    #[test]
+    fn a_stream_that_thinks_until_length_is_a_failure_and_not_an_empty_answer() {
+        let (result, shown) = stream(&custom_qwen(), THINKS_UNTIL_LENGTH);
+        let err = result.expect_err("thinking alone is not an answer");
+        let failure = err.downcast_ref::<ThoughtWithoutAnswer>().expect("the typed failure");
+        assert_eq!(failure.finish_reason, "length");
+        assert!(failure.reasoning_chars > 100, "{failure:?}");
+        assert!(shown.is_empty(), "nothing was shown as if it were the answer: {shown:?}");
+        assert_eq!(THOUGHT_WITHOUT_ANSWER, "The model thought but gave no answer; try again or choose another model.");
+    }
+
+    #[test]
+    fn an_unclosed_inline_think_block_is_a_failure_too() {
+        let recorded = "data: {\"choices\":[{\"delta\":{\"content\":\"<think>Let me see\"}}]}\n\n\
+                        data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n";
+        let (result, _) = stream(&custom_qwen(), recorded);
+        assert!(result.unwrap_err().downcast_ref::<ThoughtWithoutAnswer>().is_some());
+    }
+
+    #[test]
+    fn a_reply_that_is_all_reasoning_content_is_a_failure_without_streaming_too() {
+        let reply = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "", "reasoning_content": "Okay, the user wants…"},
+                         "finish_reason": "length"}]
+        });
+        let err = custom_qwen().read_openai_reply(&reply).unwrap_err();
+        assert_eq!(err.downcast_ref::<ThoughtWithoutAnswer>().unwrap().finish_reason, "length");
+    }
+
+    #[test]
+    fn a_native_call_the_request_did_not_ask_for_is_read_as_a_call() {
+        // VM 542, 14 Oct 2026: no `tools` in the request, and the server answered natively.
+        let llm = ApiLLM::new("http://127.0.0.1:1/v1", None, MODEL).for_provider("llamacpp");
+        let (result, shown) = stream(&llm, NATIVE_TOOL_CALL);
+        let reply = result.expect("a call is not a failure");
+        assert_eq!(reply.stop_reason, "tool_calls");
+        assert!(reply.text.is_empty() && shown.is_empty(), "no words: {shown:?}");
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(reply.tool_calls[0].name, "calculate");
+        assert_eq!(reply.tool_calls[0].arguments, serde_json::json!({"expression": "17 * 23"}));
+        assert!(!reply.is_unread_tool_call());
+    }
+
+    #[test]
+    fn arguments_sent_as_an_object_are_read_too() {
+        let recorded = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\
+                        \"function\":{\"name\":\"calculate\",\"arguments\":{\"expression\":\"17 * 23\"}}}]}}]}\n\n\
+                        data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+        let reply = stream(&custom_qwen(), recorded).0.unwrap();
+        assert_eq!(reply.tool_calls[0].arguments, serde_json::json!({"expression": "17 * 23"}));
+    }
+
+    #[test]
+    fn a_native_call_with_arguments_that_are_not_json_is_an_unread_call_and_not_an_empty_answer() {
+        let recorded = "data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\n\
+                        data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\
+                        \"function\":{\"name\":\"calculate\",\"arguments\":\"{\\\"expression\\\": 17 * 23\"}}]}}]}\n\n\
+                        data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+        let reply = stream(&custom_qwen(), recorded).0.unwrap();
+        assert!(reply.tool_calls.is_empty(), "nothing a caller can run");
+        assert_eq!(reply.unread_tool_calls().len(), 1);
+        assert!(reply.is_unread_tool_call(), "the caller can tell it from an answer");
+    }
+
+    #[test]
+    fn a_qwen3_on_a_server_the_person_runs_is_sent_the_switch() {
+        for provider in ["custom", "llamacpp", "vllm", "lmstudio", "localai"] {
+            let llm = ApiLLM::new("http://127.0.0.1:8080/v1", None, MODEL).for_provider(provider);
+            let body = llm.build_openai_body(&[ChatMessage::user("hi")], &GenerationConfig::default(), None, true);
+            assert_eq!(body["chat_template_kwargs"], serde_json::json!({"enable_thinking": false}), "{provider}");
+        }
+    }
+
+    #[test]
+    fn the_switch_is_not_sent_to_a_hosted_service_or_to_another_model() {
+        let cases = [("groq", "qwen/qwen3-32b"), ("openrouter", "qwen/qwen3-32b"), ("custom", "llama-3.1-8b-instruct")];
+        for (provider, model) in cases {
+            let llm = ApiLLM::new("http://127.0.0.1:8080/v1", None, model).for_provider(provider);
+            let body = llm.build_openai_body(&[ChatMessage::user("hi")], &GenerationConfig::default(), None, true);
+            assert!(body.get("chat_template_kwargs").is_none(), "{provider} {model}");
+        }
+        // Not told the provider at all: nothing provider-specific is sent.
+        let untold = ApiLLM::new("http://127.0.0.1:8080/v1", None, MODEL);
+        let body = untold.build_openai_body(&[ChatMessage::user("hi")], &GenerationConfig::default(), None, true);
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    /// A server on a local port that answers each request with the next of `replies` (status,
+    /// body) and keeps every request body it was sent.
+    fn server(replies: Vec<(u16, String)>) -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        std::thread::spawn(move || {
+            for (status, body) in replies {
+                let Ok((mut conn, _)) = listener.accept() else { return };
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap();
+                    }
+                }
+                let mut request = vec![0u8; length];
+                reader.read_exact(&mut request).unwrap();
+                kept.lock().unwrap().push(serde_json::from_slice(&request).unwrap());
+                let kind = if status == 200 { "text/event-stream" } else { "application/json" };
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                conn.write_all(head.as_bytes()).unwrap();
+                conn.write_all(body.as_bytes()).unwrap();
+            }
+        });
+        (url, seen)
+    }
+
+    #[test]
+    fn a_server_that_refuses_the_switch_is_asked_once_more_without_it() {
+        let refusal = r#"{"error":{"code":400,"message":"Unrecognized request argument: chat_template_kwargs"}}"#;
+        let (url, seen) = server(vec![
+            (400, refusal.to_string()),
+            (200, THINKS_THEN_ANSWERS.to_string()),
+            (200, THINKS_THEN_ANSWERS.to_string()),
+        ]);
+        let llm = ApiLLM::new(url, None, MODEL).for_provider("custom");
+        let config = GenerationConfig::default();
+
+        let reply = llm.chat_streaming(&[ChatMessage::user("Make a note")], &config, None, &mut |_| {}).unwrap();
+        assert!(reply.text.contains("Groceries"));
+        // And the next turn does not pay for the refusal again.
+        llm.chat_streaming(&[ChatMessage::user("And another")], &config, None, &mut |_| {}).unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "the refusal, the retry, the next turn");
+        assert!(seen[0].get("chat_template_kwargs").is_some());
+        assert!(seen[1].get("chat_template_kwargs").is_none(), "the retry goes without the switch");
+        assert!(seen[2].get("chat_template_kwargs").is_none(), "and so does every turn after it");
+    }
+
+    #[test]
+    fn a_400_to_a_request_without_the_switch_is_not_retried() {
+        let (url, seen) = server(vec![(400, "{}".into()), (200, THINKS_THEN_ANSWERS.to_string())]);
+        let llm = ApiLLM::new(url, None, "llama-3.1-8b-instruct").for_provider("custom");
+        let result = llm.chat_streaming(&[ChatMessage::user("hi")], &GenerationConfig::default(), None, &mut |_| {});
+        assert!(result.is_err());
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    // Claude on Anthropic's OpenAI-compatible endpoint, as VM 542 met it on 16 Oct 2026.
+    const TEMPERATURE_DEPRECATED: &str = include_str!("testdata/anthropic_temperature_deprecated.json");
+
+    #[test]
+    fn a_model_that_refuses_temperature_is_asked_once_more_without_it_and_never_sent_it_again() {
+        let (url, seen) = server(vec![
+            (400, TEMPERATURE_DEPRECATED.to_string()),
+            (200, THINKS_THEN_ANSWERS.to_string()),
+            (200, THINKS_THEN_ANSWERS.to_string()),
+        ]);
+        let llm = ApiLLM::new(url, Some("sk-ant-test".into()), "claude-sonnet-5-5").for_provider("anthropic");
+        let chosen = GenerationConfig { temperature: 0.1, ..Default::default() };
+
+        let reply = llm.chat_streaming(&[ChatMessage::user("Make a note")], &chosen, None, &mut |_| {}).unwrap();
+        assert!(reply.text.contains("Groceries"));
+        llm.chat_streaming(&[ChatMessage::user("And another")], &chosen, None, &mut |_| {}).unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "the refusal, the retry, the next turn");
+        assert_eq!(seen[0]["temperature"], 0.1);
+        assert!(seen[1].get("temperature").is_none(), "the retry goes without it");
+        assert_eq!(seen[1]["messages"], seen[0]["messages"], "and is otherwise the same request");
+        assert!(seen[2].get("temperature").is_none(), "and so does every turn after it");
+    }
+
+    #[test]
+    fn any_other_refusal_is_the_providers_reason_and_not_an_offline_model() {
+        let refusal = r#"{"error":{"type":"invalid_request_error","message":"model: claude-sonnet-9 not found"}}"#;
+        let (url, seen) = server(vec![(404, refusal.to_string())]);
+        let llm = ApiLLM::new(url, None, "claude-sonnet-9");
+        let err = llm.chat_streaming(&[ChatMessage::user("hi")], &GenerationConfig::default(), None, &mut |_| {}).unwrap_err();
+        let refused = err.downcast_ref::<crate::ProviderRefused>().expect("the typed refusal");
+        assert_eq!(refused.status, 404);
+        assert_eq!(refused.reason, "model: claude-sonnet-9 not found");
+        assert_eq!(seen.lock().unwrap().len(), 1, "not retried");
+    }
+
+    #[test]
+    fn the_body_a_caller_sends_itself_is_the_body_a_turn_sends() {
+        let (url, seen) = server(vec![(200, THINKS_THEN_ANSWERS.to_string())]);
+        let llm = ApiLLM::new(url, None, "claude-sonnet-5-5").for_provider("anthropic");
+        let config = GenerationConfig { max_tokens: 1, ..Default::default() };
+        let asked = [ChatMessage::user("Reply with OK.")];
+        llm.chat_streaming(&asked, &config, None, &mut |_| {}).unwrap();
+        // As JSON on the wire: a float read back from text can differ in its last digit.
+        let wire = |v: &serde_json::Value| serde_json::from_str::<serde_json::Value>(&v.to_string()).unwrap();
+        assert_eq!(wire(&seen.lock().unwrap()[0]), wire(&llm.chat_completions_body(&asked, &config, true)));
+    }
+
+    #[test]
+    fn on_anthropics_endpoint_a_turn_sends_no_sampling_value_nobody_chose() {
+        let llm = ApiLLM::new("https://api.anthropic.com/v1", None, "claude-sonnet-5-5").for_provider("anthropic");
+        let body = llm.chat_completions_body(&[ChatMessage::user("hi")], &GenerationConfig::default(), true);
+        assert!(body.get("temperature").is_none() && body.get("top_p").is_none(), "{body}");
+        // Elsewhere the same turn still carries them.
+        let elsewhere = ApiLLM::new("https://api.openai.com/v1", None, "gpt-4o").for_provider("openai");
+        let body = elsewhere.chat_completions_body(&[ChatMessage::user("hi")], &GenerationConfig::default(), true);
+        assert!(body.get("temperature").is_some());
     }
 }

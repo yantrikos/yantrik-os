@@ -10,7 +10,7 @@ as it arrives.
 
 ## Install
 
-**Settings → Harnesses** lists DeepSeek whether or not it is configured. With no
+**Settings → Minds** lists DeepSeek whether or not it is configured. With no
 `~/.config/yantrik/deepseek.json` the row reads "Needs setup" and names that file; once it is
 there, *Start* enables the unit. What follows is the same thing by hand.
 
@@ -32,6 +32,15 @@ yos act shell use_harness id=deepseek            # once it appears in the picker
 
 Nothing is enabled by default. The image ships this as source and starts nothing: a machine that
 has never been configured never talks to a provider.
+
+## Yantrik models
+
+**Settings → Minds → DeepSeek → Use Yantrik models** points this harness at the desktop's model
+gateway (`http://127.0.0.1:7460/v1`, docs/harness.md): `base_url`, `"model": "picked"` and a
+gateway token of its own as `api_key` in `~/.config/yantrik/deepseek.json`, after a card naming the
+file. The key stays with the desktop. On the gateway, each turn's picked model (`options.model`) and
+effort (`options.effort`) are sent as the request's `model` and `effort`. Revert puts your own file
+back and withdraws the token.
 
 ## The config file
 

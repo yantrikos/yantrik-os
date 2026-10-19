@@ -111,8 +111,8 @@ DesktopEntry {
         // applications with windows of their own and ship .desktop files; the shell's copies of
         // all three are gone (#253). Sound and video open from Files in mpv's own window.
         DesktopEntry {
-            name: "Bond".into(), exec: "__builtin__".into(), icon: String::new(),
-            categories: "Utility;".into(), comment: "Companion bond tracker".into(),
+            name: "Interaction history".into(), exec: "__builtin__".into(), icon: String::new(),
+            categories: "Utility;".into(), comment: "How much you have talked with the companion".into(),
             app_id: "bond".into(), icon_char: "\u{2665}".into(), ..Default::default()
         },
         DesktopEntry {

@@ -1,0 +1,18 @@
+[
+  ["`temperature` and `top_p` cannot both be specified for this model.", []],
+  ["`temperature` and `top_p` cannot both be specified. `top_p` is deprecated.", ["top_p"]],
+  ["temperature values above 1 are not allowed", []],
+  ["temperature and top_p are not supported for this model", ["temperature", "top_p"]],
+  ["`top_k` is deprecated for this model.", ["top_k"]],
+  ["`frequency_penalty` is not supported with this model.", ["frequency_penalty"]],
+  ["Unrecognized request argument supplied: top_p", ["top_p"]],
+  ["Unrecognized request argument supplied: top_k", ["top_k"]],
+  ["Unknown parameter: top_p", ["top_p"]],
+  ["model does not support temperature", ["temperature"]],
+  ["`temperature` is deprecated for this model.", ["temperature"]],
+  ["`top_p` is deprecated for this model.", ["top_p"]],
+  ["temperature: range error, must be at most 1.0", []],
+  ["`temperatures` is not supported", []],
+  ["`presence_penalty` is not supported with this model.", []],
+  ["context length exceeded", []]
+]

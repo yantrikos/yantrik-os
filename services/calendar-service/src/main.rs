@@ -1672,6 +1672,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// The mind door (16 Oct 2026, VM 541; #411). The Mind runs as its own account and could not
+    /// read this calendar: the socket was not on the door. It is now, surface only, so a mind
+    /// reaches `app.describe` and `app.act` (graded as an app surface's are) and never the raw
+    /// methods, which answer by `/proc` name alone — and a mind's harness is a `yantrik-*` binary
+    /// that would pass that check. The door is composed here exactly as the transport composes it
+    /// for `calendar.sock`, from the one door table; the policy runs before the handler, so no
+    /// peer check of this service's is what stops a mind.
+    #[test]
+    fn at_the_mind_door_a_mind_reads_through_the_surface_and_reaches_no_raw_method() {
+        use yantrik_ipc_transport::{door_methods, mind_door};
+        let (handler, dir) = scratch();
+        an_event(&handler, "Trip reminder - Dallas tomorrow");
+        let methods = mind_door::mind_methods("calendar.sock").expect("calendar opens a door");
+        assert_eq!(methods, mind_door::MindMethods::SurfaceOnly);
+        let door = door_methods::hold_to(methods, Arc::new(handler));
+        let peer = Some(PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+
+        let described = door.handle_from("app.describe", serde_json::json!({}), peer).expect("describe");
+        assert_eq!(described["app"], "calendar");
+        let range = serde_json::json!({ "start_date": days_from_now(-1), "end_date": days_from_now(10) });
+        let listed = door
+            .handle_from("app.act", act_params("list_events", range.clone(), None), peer)
+            .expect("list_events is safe: it runs in every mode");
+        assert_eq!(listed["result"][0]["title"], "Trip reminder - Dallas tomorrow", "{listed}");
+
+        for raw in [
+            method::EVENTS, method::GET_EVENT, method::CREATE_EVENT, method::UPDATE_EVENT,
+            method::DELETE_EVENT, method::UPSERT_REMOTE, method::REVISION, "app.yos_check_no_such_method",
+        ] {
+            let id = listed["result"][0]["id"].clone();
+            let err = door
+                .handle_from(raw, serde_json::json!({ "id": id, "title": "x", "start_date": days_from_now(-1), "end_date": days_from_now(10) }), peer)
+                .unwrap_err();
+            assert_eq!(err.code, -32601, "{raw}: {}", err.message);
+            assert!(err.message.contains("not served to a mind at the calendar door"), "{raw}: {}", err.message);
+        }
+        let after = door.handle_from("app.act", act_params("list_events", range, None), peer).unwrap();
+        assert_eq!(after["result"].as_array().unwrap().len(), 1, "nothing was created or deleted: {after}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// What counts as one of this OS's own binaries: an absolute path whose last segment is a
     /// `yantrik-` name — including a binary replaced mid-run, which the kernel reports with a
     /// " (deleted)" suffix — and nothing else. A relative path is not the kernel's answer.

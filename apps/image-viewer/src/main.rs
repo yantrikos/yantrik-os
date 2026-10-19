@@ -15,21 +15,24 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use yantrik_app_runtime::prelude::*;
 use yantrik_image_core::{dimensions_from_size, read_info, Gallery, ImageInfo};
 
 slint::include_modules!();
 
 mod agent_rule;
+mod orient;
+
+use orient::Orientation;
 
 /// Fill the agent rail from the picture on screen.
 ///
 /// Name and dimensions, both of which the app read off the file. No suggestion: what would be
 /// useful here is describing the IMAGE, and that needs a vision model this OS does not attach —
 /// the header's Describe button asks about what the file records instead, and says so. Offering
-/// a full captioning anyway is the fifty-five-dead-buttons mistake, so the NEXT section stays
-/// empty.
+/// a full captioning anyway is the fifty-five-dead-buttons mistake, so this window's rail has
+/// no NEXT section and no proposal card at all (image_viewer.slint).
 fn refresh_agent_rail(ui: &ImageViewerApp) {
     let name = ui.get_file_name().to_string();
     let mut context: Vec<AgentContextItem> = Vec::new();
@@ -42,11 +45,78 @@ fn refresh_agent_rail(ui: &ImageViewerApp) {
         });
     }
     ui.set_agent_context(ModelRc::new(VecModel::from(context)));
-    ui.set_agent_suggestions(ModelRc::new(VecModel::from(Vec::<AgentSuggestion>::new())));
     ui.set_agent_unavailable(SharedString::new());
 }
 
 type State = Rc<RefCell<Gallery>>;
+
+/// The picture on screen as it was loaded, and how the view has turned it.
+#[derive(Default)]
+struct Shown {
+    /// As loaded from the file; drawn as is when the view is not turned.
+    original: slint::Image,
+    /// The original's pixels, read out the first time the picture is turned.
+    pixels: Option<SharedPixelBuffer<Rgba8Pixel>>,
+    orientation: Orientation,
+}
+
+type Screen = Rc<RefCell<Shown>>;
+
+/// Turn or mirror the picture on screen, and say how it now lies.
+///
+/// The one path for the toolbar's four buttons and the `rotate` and `flip` actions. The file is
+/// never touched: this redraws what is shown, and the next picture is shown as it is stored.
+fn reorient(
+    ui: &ImageViewerApp,
+    screen: &Screen,
+    change: fn(Orientation) -> Orientation,
+) -> Result<Orientation, String> {
+    picture_shown(ui)?;
+    let mut shown = screen.borrow_mut();
+    let next = change(shown.orientation);
+    let image = if next.is_identity() {
+        shown.original.clone()
+    } else {
+        if shown.pixels.is_none() {
+            shown.pixels = shown.original.to_rgba8();
+        }
+        let Some(pixels) = &shown.pixels else {
+            return Err("this picture's pixels cannot be read, so it cannot be turned".into());
+        };
+        let (turned, width, height) =
+            next.apply(pixels.as_slice(), pixels.width() as usize, pixels.height() as usize);
+        let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width as u32, height as u32);
+        buffer.make_mut_slice().copy_from_slice(&turned);
+        slint::Image::from_rgba8(buffer)
+    };
+    shown.orientation = next;
+    ui.set_current_image(image);
+    show_orientation(ui, next);
+    Ok(next)
+}
+
+/// What one of the toolbar's rotate or flip buttons does when pressed.
+fn turn_button(
+    app: &ImageViewerApp,
+    screen: &Screen,
+    change: fn(Orientation) -> Orientation,
+) -> impl Fn() + 'static {
+    let weak = app.as_weak();
+    let screen = screen.clone();
+    move || {
+        let Some(ui) = weak.upgrade() else { return };
+        if let Err(e) = reorient(&ui, &screen, change) {
+            tracing::warn!(error = %e, "could not turn the picture");
+        }
+    }
+}
+
+/// The toolbar's lit buttons and the corner badge follow the view's orientation.
+fn show_orientation(ui: &ImageViewerApp, o: Orientation) {
+    ui.set_viewer_rotation(o.rotation);
+    ui.set_viewer_flip_h(o.flip_h);
+    ui.set_viewer_flip_v(o.flip_v);
+}
 
 /// Why a view control is off: nothing is on screen to zoom, turn, describe or read the facts of.
 /// The window's buttons say it on hover (`no-picture` in image_viewer.slint) and the control
@@ -117,25 +187,30 @@ fn main() {
         None => Gallery::empty(),
     }));
 
-    wire(&app, &state);
-    publish_control(&app, state.clone());
-    show_current(&app, &state);
+    let screen: Screen = Rc::default();
+
+    wire(&app, &state, &screen);
+    publish_control(&app, state.clone(), screen.clone());
+    show_current(&app, &state, &screen);
 
     run_until_closed(&app, "yantrik-image-viewer");
 }
 
 /// Put the selected picture on screen, with what its file says about it.
-fn show_current(ui: &ImageViewerApp, state: &State) {
+fn show_current(ui: &ImageViewerApp, state: &State, screen: &Screen) {
     // Whatever was said about the last picture is not about this one: the panel would otherwise
     // carry the old description over the new file, which reads as a caption of it.
     ui.set_ai_response(SharedString::new());
     ui.set_ai_is_working(false);
+    // A new picture is shown as it is stored, not as the last one was turned.
+    *screen.borrow_mut() = Shown::default();
+    show_orientation(ui, Orientation::default());
     let path = { state.borrow().current().cloned() };
     let Some(path) = path else {
         ui.set_current_image(slint::Image::default());
         ui.set_file_name(SharedString::new());
         ui.set_counter_text(SharedString::new());
-        ui.set_notice("Open a picture from Files, or pass one on the command line.".into());
+        ui.set_notice("Open a picture from Files to see it here.".into());
         apply_info(ui, &ImageInfo::default());
         refresh_agent_rail(ui);
         return;
@@ -145,6 +220,7 @@ fn show_current(ui: &ImageViewerApp, state: &State) {
     match slint::Image::load_from_path(&path) {
         Ok(image) => {
             let size = image.size();
+            screen.borrow_mut().original = image.clone();
             ui.set_current_image(image);
             if info.dimensions.is_empty() {
                 info.dimensions = dimensions_from_size(size.width, size.height);
@@ -163,11 +239,6 @@ fn show_current(ui: &ImageViewerApp, state: &State) {
     apply_info(ui, &info);
     ui.set_file_name(path.file_name().unwrap_or_default().to_string_lossy().to_string().into());
     ui.set_counter_text(state.borrow().counter_text().into());
-
-    // A new picture is shown as it is stored, not as the last one was turned.
-    ui.set_viewer_rotation(0);
-    ui.set_viewer_flip_h(false);
-    ui.set_viewer_flip_v(false);
     refresh_agent_rail(ui);
 }
 
@@ -208,39 +279,44 @@ fn describe_prompt(name: &str, facts: &[(&str, String)]) -> String {
     )
 }
 
-fn wire(app: &ImageViewerApp, state: &State) {
+fn wire(app: &ImageViewerApp, state: &State, screen: &Screen) {
     // ── Navigation ──
     {
         let weak = app.as_weak();
         let st = state.clone();
+        let sc = screen.clone();
         app.on_nav_prev(move || {
             let Some(ui) = weak.upgrade() else { return };
             st.borrow_mut().prev();
-            show_current(&ui, &st);
+            show_current(&ui, &st, &sc);
         });
     }
     {
         let weak = app.as_weak();
         let st = state.clone();
+        let sc = screen.clone();
         app.on_nav_next(move || {
             let Some(ui) = weak.upgrade() else { return };
             st.borrow_mut().next();
-            show_current(&ui, &st);
+            show_current(&ui, &st, &sc);
         });
     }
 
-    // ── Fit, rotation and flip ──
+    // ── Fit ──
     //
-    // The component already applies these to its own properties when its buttons are pressed,
-    // and the callback is the notification that it did. Applying them again here turned every
-    // rotate button press through 180 degrees and made the fit button do nothing at all. The
-    // control-surface actions below set the same properties directly, because no button was
-    // pressed in that case.
-    app.on_toggle_fit(|| {});
-    app.on_viewer_rotate_left(|| {});
-    app.on_viewer_rotate_right(|| {});
-    app.on_viewer_flip_horizontal(|| {});
-    app.on_viewer_flip_vertical(|| {});
+    // The screen does this itself (`toggle-fit-mode` in image_viewer.slint): back to the whole
+    // picture from a zoom, otherwise between fitting it in the window and filling the window.
+    // `toggle-fit` only says it happened, so it has no handler here.
+
+    // ── Rotation and flip ──
+    //
+    // The buttons only ask; the turn is done here, to the pixels (orient.rs). The screen used to
+    // set the properties itself and draw only the rotation, so both flip buttons lit up and left
+    // the picture as it was.
+    app.on_viewer_rotate_left(turn_button(app, screen, Orientation::rotate_left));
+    app.on_viewer_rotate_right(turn_button(app, screen, Orientation::rotate_right));
+    app.on_viewer_flip_horizontal(turn_button(app, screen, Orientation::flip_horizontal));
+    app.on_viewer_flip_vertical(turn_button(app, screen, Orientation::flip_vertical));
 
     // ── What the file says ──
     {
@@ -351,22 +427,10 @@ fn wire(app: &ImageViewerApp, state: &State) {
         });
     }
     std::mem::forget(rail_timer);
-
-    app.on_agent_suggestion_activated(|_| {});
-    app.on_agent_context_activated(|_| {});
-    app.on_proposal_applied(|| {});
-    {
-        let weak = app.as_weak();
-        app.on_proposal_dismissed(move || {
-            if let Some(ui) = weak.upgrade() {
-                ui.set_proposal(AgentProposal::default());
-            }
-        });
-    }
 }
 
 /// Publish the window on the bus, so Files, the launcher and a mind all reach this one.
-fn publish_control(app: &ImageViewerApp, state: State) {
+fn publish_control(app: &ImageViewerApp, state: State, screen: Screen) {
     use yantrik_app_runtime::control::{Action, App, Param, View};
 
     let weak = app.as_weak();
@@ -403,7 +467,8 @@ fn publish_control(app: &ImageViewerApp, state: State) {
             .with("rotation", ui.get_viewer_rotation() as i64)
             .with("flipped_horizontally", ui.get_viewer_flip_h())
             .with("flipped_vertically", ui.get_viewer_flip_v())
-            .with("fit_to_window", ui.get_fit_contain())
+            .with("fit_to_window", ui.get_fit_contain() && !ui.get_zoomed())
+            .with("zoomed", ui.get_zoomed())
             .with("info_panel", ui.get_viewer_info_open())
             .with("slideshow", ui.get_viewer_slideshow_active())
             .with("notice", ui.get_notice().to_string())
@@ -421,13 +486,19 @@ fn publish_control(app: &ImageViewerApp, state: State) {
 
     let open_ui = ui_for.clone();
     let open_state = state.clone();
+    let open_screen = screen.clone();
     let show_ui = ui_for.clone();
     let show_state = state.clone();
     let next_ui = ui_for.clone();
     let next_state = state.clone();
+    let next_screen = screen.clone();
     let prev_ui = ui_for.clone();
     let prev_state = state.clone();
+    let prev_screen = screen.clone();
     let rotate_ui = ui_for.clone();
+    let rotate_screen = screen.clone();
+    let flip_ui = ui_for.clone();
+    let flip_screen = screen;
     let fit_ui = ui_for.clone();
     let info_ui = ui_for;
 
@@ -455,7 +526,7 @@ fn publish_control(app: &ImageViewerApp, state: State) {
                         *g = Gallery::open(&path);
                     }
                 }
-                show_current(&ui, &open_state);
+                show_current(&ui, &open_state, &open_screen);
                 ui.window().set_minimized(false);
                 Ok(serde_json::json!({
                     "showing": ui.get_file_name().to_string(),
@@ -477,7 +548,7 @@ fn publish_control(app: &ImageViewerApp, state: State) {
             // Stepping through a folder an agent may not see names its pictures one by one.
             agent_rule::may_step(next_state.borrow().current().map(|p| p.as_path()))?;
             next_state.borrow_mut().next();
-            show_current(&ui, &next_state);
+            show_current(&ui, &next_state, &next_screen);
             let g = next_state.borrow();
             Ok(agent_rule::answer(g.current().map(|p| p.as_path()), ui.get_file_name().to_string(), Some(g.index() + 1)))
         })
@@ -488,7 +559,7 @@ fn publish_control(app: &ImageViewerApp, state: State) {
             }
             agent_rule::may_step(prev_state.borrow().current().map(|p| p.as_path()))?;
             prev_state.borrow_mut().prev();
-            show_current(&ui, &prev_state);
+            show_current(&ui, &prev_state, &prev_screen);
             let g = prev_state.borrow();
             Ok(agent_rule::answer(g.current().map(|p| p.as_path()), ui.get_file_name().to_string(), Some(g.index() + 1)))
         })
@@ -498,24 +569,40 @@ fn publish_control(app: &ImageViewerApp, state: State) {
             move |args| {
                 let ui = rotate_ui()?;
                 picture_shown(&ui)?;
-                let step = match args["direction"].as_str().unwrap_or_default().to_lowercase().as_str() {
-                    "left" | "anticlockwise" | "counterclockwise" => 270,
-                    "right" | "clockwise" => 90,
-                    other => return Err(format!("unknown direction `{other}`; use left or right")),
-                };
-                let rotation = (ui.get_viewer_rotation() + step) % 360;
-                ui.set_viewer_rotation(rotation);
+                let change: fn(Orientation) -> Orientation =
+                    match args["direction"].as_str().unwrap_or_default().to_lowercase().as_str() {
+                        "left" | "anticlockwise" | "counterclockwise" => Orientation::rotate_left,
+                        "right" | "clockwise" => Orientation::rotate_right,
+                        other => return Err(format!("unknown direction `{other}`; use left or right")),
+                    };
+                let o = reorient(&ui, &rotate_screen, change)?;
                 // Turning it on screen does not rewrite the file, and saying so keeps a caller
                 // from believing the picture on disk has changed.
-                Ok(serde_json::json!({ "rotation": rotation, "file_unchanged": true }))
+                Ok(orientation_json(o))
             },
         )
-        .action(Action::new("fit", "Fit the picture to the window, or show it at full size"), move |_| {
+        .action(
+            Action::new("flip", "Mirror the picture on screen")
+                .arg(Param::text("direction").describe("horizontal | vertical")),
+            move |args| {
+                let ui = flip_ui()?;
+                picture_shown(&ui)?;
+                let change: fn(Orientation) -> Orientation =
+                    match args["direction"].as_str().unwrap_or_default().to_lowercase().as_str() {
+                        "horizontal" | "horizontally" | "left-right" => Orientation::flip_horizontal,
+                        "vertical" | "vertically" | "top-bottom" => Orientation::flip_vertical,
+                        other => return Err(format!("unknown direction `{other}`; use horizontal or vertical")),
+                    };
+                let o = reorient(&ui, &flip_screen, change)?;
+                Ok(orientation_json(o))
+            },
+        )
+        .action(Action::new("fit", "Fit the picture to the window, or fill the window with it"), move |_| {
             let ui = fit_ui()?;
             picture_shown(&ui)?;
-            let fit = !ui.get_fit_contain();
-            ui.set_fit_contain(fit);
-            Ok(serde_json::json!({ "fit_to_window": fit }))
+            // The fit button's own step: from a zoom, back to the whole picture.
+            ui.invoke_toggle_fit_mode();
+            Ok(serde_json::json!({ "fit_to_window": ui.get_fit_contain() && !ui.get_zoomed() }))
         })
         .action(Action::new("toggle_info", "Show or hide what the file says about the picture"), move |_| {
             let ui = info_ui()?;
@@ -525,6 +612,16 @@ fn publish_control(app: &ImageViewerApp, state: State) {
             Ok(serde_json::json!({ "info_panel": open }))
         })
         .serve();
+}
+
+/// How the picture on screen lies, as the `rotate` and `flip` actions answer it.
+fn orientation_json(o: Orientation) -> serde_json::Value {
+    serde_json::json!({
+        "rotation": o.rotation,
+        "flipped_horizontally": o.flip_h,
+        "flipped_vertically": o.flip_v,
+        "file_unchanged": true,
+    })
 }
 
 #[cfg(test)]
@@ -560,7 +657,12 @@ mod describe_tests {
     #[test]
     fn the_control_surface_refuses_what_the_window_has_switched_off() {
         let src = main_source();
-        for action in ["Action::new(\"rotate\"", "Action::new(\"fit\"", "Action::new(\"toggle_info\""] {
+        for action in [
+            "Action::new(\"rotate\"",
+            "Action::new(\"flip\"",
+            "Action::new(\"fit\"",
+            "Action::new(\"toggle_info\"",
+        ] {
             let at = src.find(action).unwrap_or_else(|| panic!("{action} is gone"));
             let handler = &src[at..];
             let end = handler[1..].find(".action(").map(|e| e + 1).unwrap_or(handler.len());
@@ -576,6 +678,44 @@ mod describe_tests {
             "the window and the control surface must give the same reason"
         );
         assert_eq!(screen.matches("enabled: root.has-picture; off-reason: root.no-picture;").count(), 9, "every view control");
+    }
+
+    /// The defect: both flip buttons lit up and left the picture as it was. The screen set the
+    /// properties itself and drew only the rotation, and the Rust handlers were empty.
+    #[test]
+    fn the_rotate_and_flip_buttons_turn_the_picture() {
+        let src = main_source();
+        for (callback, change) in [
+            ("on_viewer_rotate_left(", "Orientation::rotate_left"),
+            ("on_viewer_rotate_right(", "Orientation::rotate_right"),
+            ("on_viewer_flip_horizontal(", "Orientation::flip_horizontal"),
+            ("on_viewer_flip_vertical(", "Orientation::flip_vertical"),
+        ] {
+            let at = src.find(callback).unwrap_or_else(|| panic!("{callback} is unwired"));
+            let line = src[at..].lines().next().unwrap_or_default();
+            assert!(line.contains(&format!("turn_button(app, screen, {change})")), "{callback} does not turn");
+        }
+        let screen = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/yantrik-ui-slint/ui/image_viewer.slint"
+        ))
+        .expect("the screen");
+        // The pixels arrive turned; a transform on top would turn them twice.
+        assert!(!screen.contains("transform-rotation"), "the screen must not turn the picture again");
+        for prop in ["root.viewer-rotation =", "root.viewer-flip-h =", "root.viewer-flip-v ="] {
+            assert!(!screen.contains(prop), "the screen sets {prop} itself, out of step with the pixels");
+        }
+    }
+
+    /// The next picture is shown as it is stored, not as the last one was turned.
+    #[test]
+    fn a_new_picture_is_shown_unturned() {
+        let src = main_source();
+        let at = src.find("fn show_current(").expect("show_current");
+        let body = &src[at..];
+        let body = &body[..body[1..].find("\nfn ").map_or(body.len(), |e| e + 1)];
+        assert!(body.contains("*screen.borrow_mut() = Shown::default();"));
+        assert!(body.contains("show_orientation(ui, Orientation::default());"));
     }
 
     #[test]

@@ -38,7 +38,7 @@ dock.browser: "브라우저"
 dock.files: "파일"
 dock.notes: "메모"
 dock.editor: "편집기"
-dock.bond: "유대"
+dock.bond: "상호작용 기록"
 dock.memory: "메모리"
 dock.alerts: "알림"
 dock.system: "시스템"
@@ -373,12 +373,9 @@ notifications.no_notifications: "알림이 없습니다"
 notifications.clear_all: "모두 지우기"
 
 # ── Bond ──
-bond.title: "유대"
-bond.score: "유대 점수"
-bond.level: "레벨"
+bond.title: "상호작용 기록"
 bond.interactions: "총 상호작용"
-bond.days: "함께한 날"
-bond.streak: "현재 연속 기록"
+bond.days: "첫 대화 이후 일수"
 
 # ── Power ──
 power.shutdown: "종료"

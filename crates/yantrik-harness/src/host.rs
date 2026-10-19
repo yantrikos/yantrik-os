@@ -61,6 +61,7 @@ use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
 mod erase;
+mod notice;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
@@ -214,6 +215,8 @@ impl Flight {
                 }
             },
             Event::Thinking { .. } | Event::Status { .. } | Event::Usage { .. } | Event::Request { .. } => Ok(()),
+            // Taken before a turn's stream is looked at (`Host::event`); never one of its events.
+            Event::Notice { .. } => Err("a `notice` is not part of a turn's stream".to_string()),
             // Taken before a turn's stream is looked at (`Host::redact`); never one of its events.
             Event::Redact { .. } => Err("a `redact` is not part of a turn's stream".to_string()),
         }
@@ -478,6 +481,24 @@ fn pid_alive(_pid: u32) -> bool {
     true
 }
 
+/// The agents that count toward [`protocol::MAX_LIVE_AGENTS`]: every agent except the `main` a
+/// presence-only attach is given at attach. Those are made for every terminal session
+/// the bridge attaches, so counting them would let terminal sessions starve everyone's
+/// `start_agent`, the Mind's included (yantrik-mind-72). Every other agent, a single-conversation
+/// harness's `main` included, counts as it always did. One rule, used by the host and the recipe
+/// runner alike.
+fn counted_live(attached: &HashMap<String, Attached>) -> usize {
+    attached
+        .values()
+        .map(|a| {
+            // Only a presence-only mind's `main` is free: it does no work the desktop asked for.
+            // A shared mind that takes turns does real work in its `main`, so that counts.
+            let free_main = !a.announced.takes_turns;
+            a.agents.keys().filter(|c| !(free_main && c.as_str() == AgentId::MAIN)).count()
+        })
+        .sum()
+}
+
 /// How far up the process tree [`pid_descends`] walks before it gives up. A harness's worker is a
 /// few generations below it, never hundreds.
 const ANCESTRY_BOUND: usize = 64;
@@ -539,6 +560,12 @@ pub struct Entry {
     /// the kernel could not speak for (the TCP dev path). The shell matches an approval's
     /// caller against it: a caller descending from that process is that mind (#206).
     pub pid: Option<u32>,
+    /// Whether this attach sits beside others under its id rather than replacing them.
+    pub shared: bool,
+    /// Whether the desktop queues turns for this mind. `false` is presence-only.
+    pub takes_turns: bool,
+    /// The id the harness announced, so a shared key `hermes.1` still says `hermes`.
+    pub says_id: String,
 }
 
 /// What an agent is doing, as far as the host can see from the wire.
@@ -616,6 +643,9 @@ struct State {
     /// Turns a re-attaching harness picked back up, waiting for the shell to take their
     /// answers ([`Host::take_resumed`]).
     resumed: Vec<Resumed>,
+    /// The next `<n>` for a shared attach under each id, starting at 1. Never reused while this
+    /// host lives; it restarts only with a new [`Host`].
+    shared_counters: HashMap<String, u32>,
 }
 
 /// A turn a harness was still answering when it lost this desktop, taken back on its re-attach
@@ -652,6 +682,9 @@ pub struct Host {
     /// Erases the shell's own copy of a conversation (the agent's pane transcript) once a `redact`
     /// is accepted, when the shell said how: see [`Host::with_redactor`].
     redactor: Option<Redactor>,
+    /// Where notices go and where their feedback comes from, when the shell gave the host one:
+    /// see [`Host::with_notice_desk`].
+    notice_desk: Option<Arc<dyn crate::notice::NoticeDesk>>,
 }
 
 /// How the host decides who carries a memory credential, and how it digests one. The decision
@@ -682,6 +715,7 @@ impl Host {
                 issued: HashSet::new(),
                 events: EventCounts::default(),
                 resumed: Vec::new(),
+                shared_counters: HashMap::new(),
             })),
             liveness: Arc::new(pid_alive),
             descends: Arc::new(pid_descends),
@@ -690,6 +724,7 @@ impl Host {
             paused: Arc::new(std::sync::RwLock::new(None)),
             late_answer: None,
             redactor: None,
+            notice_desk: None,
         }
     }
 
@@ -917,24 +952,30 @@ impl Host {
                 active: h.id() == active,
                 capabilities: h.capabilities(),
                 pid: None,
+                shared: false,
+                takes_turns: true,
+                says_id: h.id().to_string(),
             })
             .collect();
 
-        let mut attached: Vec<&Attached> = state.attached.values().collect();
-        attached.sort_by(|a, b| a.announced.id.cmp(&b.announced.id));
-        for a in attached {
+        let mut attached: Vec<(&String, &Attached)> = state.attached.iter().collect();
+        attached.sort_by(|a, b| a.0.cmp(b.0));
+        for (key, a) in attached {
             rows.push(Entry {
-                id: a.announced.id.clone(),
+                id: key.clone(),
                 name: a.announced.name.clone(),
                 detail: a.announced.detail.clone(),
                 builtin: false,
-                active: a.announced.id == active,
+                active: *key == active,
                 capabilities: Capabilities {
                     streaming: true,
                     tools: a.announced.tools,
                     memory: a.announced.memory,
                 },
                 pid: a.pid,
+                shared: a.announced.shared,
+                takes_turns: a.announced.takes_turns,
+                says_id: a.announced.id.clone(),
             });
         }
         rows
@@ -953,7 +994,13 @@ impl Host {
                 known.join(", ")
             ));
         }
-        self.lock().active = id.to_string();
+        let mut state = self.lock();
+        if state.attached.get(id).is_some_and(|a| !a.announced.takes_turns) {
+            return Err(format!(
+                "`{id}` takes its turns in its terminal; it cannot be the mind you chat with"
+            ));
+        }
+        state.active = id.to_string();
         Ok(())
     }
 
@@ -997,7 +1044,7 @@ impl Host {
         let mut state = self.lock();
         self.reap(&mut state);
         let st = &mut *state;
-        let live: usize = st.attached.values().map(|a| a.agents.len()).sum();
+        let live = counted_live(&st.attached);
         let Some(harness) = st.attached.get_mut(harness_id) else {
             let mut known: Vec<&String> = st.attached.keys().collect();
             known.sort();
@@ -1010,6 +1057,11 @@ impl Host {
                 )
             });
         };
+        if !harness.announced.takes_turns {
+            return Err(format!(
+                "`{harness_id}` takes its turns in its terminal; leave it a note instead"
+            ));
+        }
         if !harness.announced.conversations && harness.agents.contains_key(AgentId::MAIN) {
             return Err(format!(
                 "{} holds one conversation at a time, and it is already open as `{}`",
@@ -1057,6 +1109,11 @@ impl Host {
             .attached
             .get_mut(harness_id)
             .ok_or_else(|| format!("`{harness_id}` is no longer attached, so `{agent}` cannot answer"))?;
+        if !harness.announced.takes_turns {
+            return Err(format!(
+                "`{harness_id}` takes its turns in its terminal; leave it a note instead"
+            ));
+        }
         if !harness.agents.contains_key(&conversation) {
             if conversation != AgentId::MAIN {
                 return Err(format!(
@@ -1084,10 +1141,18 @@ impl Host {
                 memory_credential: String::new(),
                 memory_url: String::new(),
                 origin: turn.origin,
+                options: turn.options.filter(|o| !o.is_empty()),
             },
             tx,
         });
         Ok(rx)
+    }
+
+    /// How many live agents count toward [`protocol::MAX_LIVE_AGENTS`] (see [`counted_live`]).
+    pub fn counted_live_agents(&self) -> usize {
+        let mut state = self.lock();
+        self.reap(&mut state);
+        counted_live(&state.attached)
     }
 
     /// Every live agent, oldest first.
@@ -1286,6 +1351,15 @@ impl Host {
         state.attached.get(harness_id).is_some_and(|h| h.announced.handover_context)
     }
 
+    /// Whether an attached harness said it has no model to think with yet (`needs_model`), so a
+    /// first run may give it the person's pick with no question. False when nothing by that id
+    /// is attached, and for a harness that did not say: that one has a provider of its own.
+    pub fn needs_model(&self, harness_id: &str) -> bool {
+        let mut state = self.lock();
+        self.reap(&mut state);
+        state.attached.get(harness_id).is_some_and(|h| h.announced.needs_model)
+    }
+
     /// Hand a live agent's token to `f`, for the one thing the shell derives from it: the one-way
     /// digest it publishes an agent's reach under (`yantrik_ipc_transport::reach`). The token
     /// itself goes no further than `f`. `None` for an agent that is not live.
@@ -1441,6 +1515,7 @@ impl Host {
             protocol::POLL => self.poll(params, peer),
             protocol::CHUNK => self.chunk(params, peer),
             protocol::EVENT => self.event(params, peer),
+            protocol::NOTICE => self.notice(params, peer),
             protocol::COMPLETE => self.finish(params, peer, None),
             protocol::FAIL => {
                 let why = params["error"].as_str().unwrap_or("the harness reported a failure");
@@ -1460,8 +1535,13 @@ impl Host {
         pid: Option<u32>,
         uid: Option<u32>,
     ) -> Result<serde_json::Value, String> {
-        let announced: Attach = serde_json::from_value(params.clone())
+        let mut announced: Attach = serde_json::from_value(params.clone())
             .map_err(|e| format!("`attach` needs at least an `id` and a `name`: {e}"))?;
+        // A mind's own line often names where it runs ("qwen3.5 · https://user:key@aig/v1"), and
+        // every face draws it: the Minds rows and Details, the status rail, `describe shell`, the
+        // runs-on card. It is kept only as it may be drawn, here, so none of them can show the
+        // sign-in details of an address in it (review of #856, finding 3).
+        announced.detail = announced.detail.as_deref().map(yantrik_shown_address::without_sign_in);
         if announced.id.trim().is_empty() {
             return Err("`id` is what a person types to select this harness; it cannot be empty".into());
         }
@@ -1476,21 +1556,22 @@ impl Host {
             // ambiguous, and an id a person types has no use for one.
             return Err(format!("`id` cannot contain `:` (`{}`)", announced.id));
         }
-        if self.builtin(&announced.id).is_some() {
-            return Err(format!(
-                "`{}` is a built-in harness; attach under a different id",
-                announced.id
-            ));
-        }
 
         // The counter keeps ids ordered for a reader of the log; the random part is so that one
         // session's id says nothing about another's. A session answers only whoever attached it
         // (`Attached::admits`), so this is the second wall, not the only one.
         let salt = random_hex(SESSION_RANDOM_BYTES)?;
+        // Asked before the lock: the desk reads the person's settings, which are the shell's.
+        let notice_fields = self.notice_attach_fields();
         let mut state = self.lock();
         self.reap(&mut state);
         let session = format!("s{}-{salt}", state.next_session);
         state.next_session += 1;
+
+        let key = self.allocate_key(&mut state, &announced, pid)?;
+        // Minted before anything is listed, so a failing RNG refuses the attach whole instead of
+        // leaving an entry with no token behind it (yantrik-mind-72's C).
+        let presence_main = if announced.takes_turns { None } else { Some(Agent::new(mint_token()?)) };
 
         // Re-attaching under an existing id replaces it, which is what a harness that restarted
         // should get. Anything the old one owed is failed rather than abandoned — the turn it was
@@ -1503,29 +1584,29 @@ impl Host {
         // Not across accounts. A live harness attached from one account is not replaced by a
         // process of another: that would hand the newcomer the turns it listed as resumed and
         // whoever asks this mind something next. A restart comes back from the same account.
-        if let Some(previous) = state.attached.get(&announced.id) {
+        if let Some(previous) = state.attached.get(&key) {
             if previous.uid.is_some() && previous.uid != uid {
                 return Err(format!(
                     "`{}` is attached from another account; it can be replaced only from that one",
-                    announced.id
+                    key
                 ));
             }
         }
         let mut kept: HashMap<u64, Flight> = HashMap::new();
-        if let Some(mut previous) = state.attached.remove(&announced.id) {
+        if let Some(mut previous) = state.attached.remove(&key) {
             for turn in announced.resume.iter().filter_map(|r| r.turn_id) {
                 if let Some(flight) = previous.in_flight.remove(&turn) {
                     kept.insert(turn, flight);
                 }
             }
             let orphaned = previous.fail_everything(
-                &format!("{} restarted mid-answer", announced.id),
-                &format!("{} restarted before it answered", announced.id),
+                &format!("{key} restarted mid-answer"),
+                &format!("{key} restarted before it answered"),
             );
             self.end_runs(&orphaned, RunState::Orphaned);
         }
 
-        let id = announced.id.clone();
+        let id = key.clone();
         state.attached.insert(
             id.clone(),
             Attached {
@@ -1544,19 +1625,125 @@ impl Host {
             },
         );
 
-        let (resumed, refused) = self.resume(&mut state, &id, kept);
+        // A shared attach starts fresh: its resume entries are all refused, and it never becomes
+        // active. A presence-only mind still needs its `main` agent made now, so its acts carry a
+        // token from the start.
+        let (resumed, refused) = if state.attached[&id].announced.shared {
+            let refused: Vec<serde_json::Value> = state.attached[&id]
+                .announced
+                .resume
+                .iter()
+                .map(|r| serde_json::json!({ "conversation": r.conversation, "why": "a shared attach starts fresh" }))
+                .collect();
+            (Vec::new(), refused)
+        } else {
+            self.resume(&mut state, &id, kept)
+        };
 
         // The first mind to attach on a machine with no built-in becomes the one answering,
-        // rather than leaving a desktop that has a harness and is not using it.
-        if state.active.is_empty() {
-            state.active = id;
+        // rather than leaving a desktop that has a harness and is not using it. A shared attach
+        // never becomes active, even when nothing else is attached.
+        if state.active.is_empty() && !state.attached[&id].announced.shared {
+            state.active = id.clone();
         }
-        let mut reply = serde_json::json!({ "session": session });
+
+        // A presence-only mind is never handed a turn, but its acts need a token: its `main` agent,
+        // minted before the attach was listed (see `presence_main`), goes in now.
+        if let Some(main) = presence_main {
+            state.attached.get_mut(&id).expect("just inserted").agents.insert(AgentId::MAIN.to_string(), main);
+        }
+
+        let mut reply = serde_json::json!({ "session": session, "as": id });
+        // A harness sends notices only when it sees the feature; an older desktop sends no
+        // `features` at all, and that means no (design/initiative-inbox-2026-10-16.md).
+        if let Some((features, initiative)) = notice_fields {
+            reply["features"] = features;
+            reply["initiative"] = initiative;
+        }
         if !resumed.is_empty() || !refused.is_empty() {
             reply["resumed"] = resumed.into();
             reply["refused"] = refused.into();
         }
         Ok(reply)
+    }
+
+    /// The key this attach is listed under, and the refusals that decide it.
+    ///
+    /// A plain attach is keyed by its `id` and everything after is exactly today's behaviour. A
+    /// shared attach gets its own key `<id>.<n>` beside the others under the same id, never
+    /// replacing anything and never becoming active.
+    fn allocate_key(
+        &self,
+        state: &mut State,
+        announced: &Attach,
+        pid: Option<u32>,
+    ) -> Result<String, String> {
+        if announced.id.contains('.') {
+            return Err(
+                "`id` cannot contain `.`; the desktop gives a shared attach its own key".into(),
+            );
+        }
+        // Lowercase ASCII only, so `Mind`, a zero-width `mind` or a Cyrillic `mіnd` cannot pass
+        // as the person's Mind in the picker (yantrik-mind-72's D).
+        if !announced.id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
+            return Err(format!(
+                "`id` may hold only lowercase ASCII letters, digits, `-` and `_` (`{}`)",
+                announced.id.escape_default()
+            ));
+        }
+        // Presence-only is for a mind that takes its turns elsewhere, beside others under its id;
+        // under the bare id it would replace a live mind of that id, take its grants, and become
+        // the mind the Lens talks to while refusing every turn (yantrik-mind-72's A).
+        if !announced.takes_turns && !announced.shared {
+            return Err("a presence-only attach (`takes_turns: false`) must also be `shared: true`".into());
+        }
+        if self.builtin(&announced.id).is_some() {
+            return Err(format!(
+                "`{}` is a built-in harness; attach under a different id",
+                announced.id
+            ));
+        }
+        // The OS's own notices (the calendar's) are filed under this id. A harness under it, even
+        // a shared one, would post as the calendar and be served its feedback.
+        if announced.id == crate::notice::OS_HARNESS {
+            return Err(format!(
+                "`{}` is the id the desktop files its own notices under; attach under a different id",
+                announced.id
+            ));
+        }
+        if !announced.shared {
+            return Ok(announced.id.clone());
+        }
+        // A harness's own tools act under its token; a process that descends from an already
+        // attached harness must not attach a second time under the same id.
+        for (key, attached) in &state.attached {
+            if let Some(attacher) = attached.pid {
+                if pid.is_some_and(|caller| caller == attacher || (self.descends)(caller, attacher)) {
+                    return Err(format!(
+                        "already covered by `{key}`; a harness's own tools act under its token"
+                    ));
+                }
+            }
+        }
+        // Count the live shared attaches under this id, not the counter, so a reaped attach frees
+        // its place under the cap. Compared by the announced id exactly, never by prefix: a shared
+        // key `hermes.1` is not the id `hermes`.
+        let live = state
+            .attached
+            .values()
+            .filter(|a| a.announced.shared && a.announced.id == announced.id)
+            .count();
+        if live >= protocol::MAX_SHARED_PER_ID {
+            return Err(format!(
+                "`{}` already has {} shared attaches, which is as many as one id may hold",
+                announced.id,
+                protocol::MAX_SHARED_PER_ID
+            ));
+        }
+        let n = state.shared_counters.entry(announced.id.clone()).or_insert(1);
+        let key = format!("{}.{}", announced.id, *n);
+        *n += 1;
+        Ok(key)
     }
 
     /// Take back what a re-attaching harness still holds (#246): each conversation under the
@@ -1708,6 +1895,22 @@ impl Host {
     /// takes it, not when it was queued: a grant given or taken away while the turn waited is
     /// the one that counts, and the turn goes only to a caller [`Attached::admits`].
     fn poll(&self, params: &serde_json::Value, peer: Peer) -> Result<serde_json::Value, String> {
+        // The person's settings, and the feedback on this harness's own cards, read from the
+        // shell off the host's lock and only for a caller this session admits: feedback goes to
+        // the harness that sent the card and to nobody else. Until a later poll says
+        // `feedback_ack`, it comes again.
+        let notice_fields = match &self.notice_desk {
+            None => None,
+            Some(_) => {
+                let (harness, pid, uid) = {
+                    let mut state = self.lock();
+                    self.reap(&mut state);
+                    let attached = Self::touch(&mut state.attached, params, peer, &*self.descends)?;
+                    (attached.announced.id.clone(), attached.pid, attached.uid)
+                };
+                self.notice_poll_fields(&harness, pid, uid, params["feedback_ack"].as_u64())
+            }
+        };
         // The person's grants are the shell's to read, from a file, so they are asked outside the
         // host's lock: every harness and the whole UI wait on that lock. Asked only when a turn is
         // ready to go, and of the mind as it attached (its id and the account the kernel named).
@@ -1794,6 +1997,12 @@ impl Host {
         if !harness.answers.is_empty() {
             reply["answers"] = serde_json::json!(std::mem::take(&mut harness.answers));
         }
+        if let Some((initiative, feedback)) = notice_fields {
+            reply["initiative"] = initiative;
+            if !feedback.is_empty() {
+                reply["notice_feedback"] = feedback.into();
+            }
+        }
         Ok(reply)
     }
 
@@ -1851,22 +2060,6 @@ impl Host {
         }
         let counts = &mut st.events;
 
-        let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
-            if harness.finished.contains(&turn_id) {
-                counts.late += 1;
-                tracing::debug!(harness = %who, turn = turn_id, "event after the turn was closed; dropped");
-                return Ok(refused(format!(
-                    "turn {turn_id} is finished; events after complete or fail are dropped"
-                )));
-            }
-            return Err(harness.not_in_flight(turn_id));
-        };
-        if flight.tx.is_none() {
-            counts.late += 1;
-            flight.log_drop(&who, turn_id);
-            return Ok(serde_json::json!({ "dropped": true }));
-        }
-
         let size = serde_json::to_string(raw).map(|s| s.len()).unwrap_or(usize::MAX);
         if size > protocol::MAX_EVENT_BYTES {
             counts.oversized += 1;
@@ -1897,6 +2090,63 @@ impl Host {
                 return Ok(refused(format!("a malformed `{kind}` event: {e}")));
             }
         };
+
+        // A notice is not part of a turn's stream: it may come with no turn in flight at all
+        // (#396). With a turn listening it is the agent's status line, as it always was. With none,
+        // it is stored as a notice in the one notification store (#806's case,
+        // design/initiative-inbox-2026-10-16.md), so it reaches the person rather than a log line.
+        if let Event::Notice { text } = &event {
+            if text.trim().is_empty() {
+                counts.malformed += 1;
+                tracing::warn!(harness = %who, turn = turn_id, "notice with empty `text`; refused");
+                return Ok(refused("a `notice` needs `text`".to_string()));
+            }
+            // Recorded in a run only when the turn is this harness's own: turn ids are the
+            // host's, so one named by any other harness's session (the Mind's included) is
+            // never written into.
+            if let Some(flight) = harness.in_flight.get_mut(&turn_id).filter(|f| f.tx.is_some()) {
+                self.record("notice", turn_id, |s| s.append(turn_id, "notice", raw));
+                let tx = flight.tx.as_ref().expect("checked above");
+                if tx.send(Chunk::Event(event.clone())).is_err() {
+                    flight.abandon(None);
+                    flight.log_drop(&who, turn_id);
+                    return Ok(serde_json::json!({ "dropped": true }));
+                }
+                counts.accepted += 1;
+                return Ok(serde_json::json!({ "kept": true }));
+            }
+            counts.accepted += 1;
+            let sender = notice::Sender {
+                harness: who.clone(),
+                name: harness.announced.name.clone(),
+                pid: harness.pid,
+                uid: harness.uid,
+            };
+            // Off the lock: storing it is a call to the notifications service.
+            drop(state);
+            if let Some(answer) = self.text_notice(sender, text) {
+                return Ok(answer);
+            }
+            tracing::info!(harness = %who, turn = turn_id, "notice with no turn in flight; kept");
+            return Ok(serde_json::json!({ "kept": true }));
+        }
+
+        let Some(flight) = harness.in_flight.get_mut(&turn_id) else {
+            if harness.finished.contains(&turn_id) {
+                counts.late += 1;
+                tracing::debug!(harness = %who, turn = turn_id, "event after the turn was closed; dropped");
+                return Ok(refused(format!(
+                    "turn {turn_id} is finished; events after complete or fail are dropped"
+                )));
+            }
+            return Err(harness.not_in_flight(turn_id));
+        };
+        if flight.tx.is_none() {
+            counts.late += 1;
+            flight.log_drop(&who, turn_id);
+            return Ok(serde_json::json!({ "dropped": true }));
+        }
+
         if event.call().is_some_and(|call| call.trim().is_empty()) {
             counts.malformed += 1;
             tracing::warn!(harness = %who, turn = turn_id, kind, "tool event with an empty `call`; refused");
@@ -1907,7 +2157,7 @@ impl Host {
             tracing::warn!(harness = %who, turn = turn_id, why = %why, "event out of order; refused");
             return Ok(refused(why));
         }
-        if let Event::Request { request_id, prompt, options } = &event {
+        if let Event::Request { request_id, prompt, options, .. } = &event {
             // A question is only asked if it can be answered exactly once, which needs the store.
             let Some(store) = &self.runs else {
                 return Ok(refused("this desktop keeps no runs, so it cannot take a question".to_string()));
@@ -2598,6 +2848,30 @@ mod tests {
         assert_eq!(row.pid, None, "`handle` brings no peer for the kernel to name");
     }
 
+    /// Review of #856, finding 3: a mind's own line is drawn on every face that lists minds, so
+    /// an address in it is kept without its sign-in details, query or fragment from the attach on.
+    #[test]
+    fn a_minds_own_line_is_kept_without_the_sign_in_of_any_address_in_it() {
+        let host = host();
+        let said = [
+            ("qwen3.5 \u{b7} https://user:pw@aig.example/v1?api-key=x#f", "qwen3.5 \u{b7} https://aig.example/v1"),
+            ("qwen3.5 \u{b7} https://user:p/w@aig.example/v1", "qwen3.5 \u{b7} (address not shown)"),
+            ("on http://u@127.0.0.1:11434", "on http://127.0.0.1:11434"),
+            ("on http://u:p@[::1]:4000", "on http://[::1]:4000"),
+            ("m \u{b7} user:pw@aig.example", "m \u{b7} aig.example"),
+            ("m \u{b7} user%40x:pw@aig.example", "m \u{b7} aig.example"),
+            ("m \u{b7} aig.example/v1?api-key=x", "m \u{b7} aig.example/v1"),
+            ("m \u{b7} https://aig.example/a@b", "m \u{b7} (address not shown)"),
+            ("Hermes 0.21.5 \u{b7} picked", "Hermes 0.21.5 \u{b7} picked"),
+        ];
+        for (i, (detail, kept)) in said.iter().enumerate() {
+            let id = format!("m{i}");
+            host.handle(protocol::ATTACH, &serde_json::json!({ "id": id, "name": "M", "detail": detail })).unwrap();
+            let row = host.list().into_iter().find(|e| e.id == id).unwrap();
+            assert_eq!(row.detail.as_deref(), Some(*kept), "{detail}");
+        }
+    }
+
     // ── Order: first in, first out, one at a time per conversation ─────
     //
     // These three are written against the API that existed before agents, so they can be run
@@ -2690,6 +2964,22 @@ mod tests {
         Host::new(vec![])
     }
 
+    /// Every `.rs` file under `root`, for the source scan in
+    /// `no_id_is_matched_by_prefix_or_split_on_a_dot`.
+    fn walk(root: &str) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(root) else { return out };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walk(&path.to_string_lossy()));
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+        out
+    }
+
     #[test]
     fn events_arrive_between_the_text_in_the_order_they_were_sent() {
         let host = host_with_nothing();
@@ -2725,6 +3015,16 @@ mod tests {
         // Queued, not polled: the harness does not hold it, so it cannot speak for it.
         let err = event(&host, &session, 1, start("t1")).unwrap_err();
         assert!(err.contains("not one this harness was given"), "{err}");
+    }
+
+    #[test]
+    fn a_notice_is_kept_even_with_no_turn_in_flight() {
+        let host = host_with_nothing();
+        let session = attach(&host, "mind");
+        // A turn id the harness was never handed: a notice has no turn behind it (#396).
+        let reply = event(&host, &session, 0, json!({ "kind": "notice", "text": "download finished" }))
+            .expect("a notice is taken, not refused");
+        assert_eq!(reply, json!({ "kept": true }), "{reply}");
     }
 
     #[test]
@@ -3108,6 +3408,26 @@ mod tests {
     }
 
     #[test]
+    fn the_persons_choices_travel_with_the_turn_and_an_empty_choice_is_not_sent() {
+        let host = host_with_nothing().with_liveness(|pid| pid == 4242);
+        let pi = host
+            .handle_from(protocol::ATTACH, &json!({ "id": "pi", "name": "Pi" }), Some(4242), Some(1000))
+            .unwrap()["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let chosen = protocol::TurnOptions { model: "free-groq/openai/gpt-oss-120b".into(), effort: "medium".into(), attachments: vec![] };
+        let _a = host.send_to(&AgentId::new("pi", AgentId::MAIN), Turn::new("one").with_options(chosen)).unwrap();
+        let first = poll_from(&host, &pi, 4242, Some(1000)).unwrap();
+        assert_eq!(first["options"], json!({ "model": "free-groq/openai/gpt-oss-120b", "effort": "medium" }));
+        host.handle_from(protocol::COMPLETE, &json!({ "session": pi, "turn_id": first["turn_id"] }), Some(4242), Some(1000))
+            .unwrap();
+        let _b = host.send_to(&AgentId::new("pi", AgentId::MAIN), Turn::new("two").with_options(protocol::TurnOptions::default())).unwrap();
+        let second = poll_from(&host, &pi, 4242, Some(1000)).unwrap();
+        assert!(second.get("options").is_none(), "nothing chosen, nothing on the wire: {second}");
+    }
+
+    #[test]
     fn a_turn_carries_the_memory_credential_only_to_a_mind_the_person_granted() {
         let hash = |s: &str| format!("{:0>64}", s.len().to_string() + &s[4..10]);
         let host = host_with_nothing()
@@ -3450,6 +3770,10 @@ mod tests {
         let (session, agent, turn_id, _answer) = turn_in_flight(&host);
         assert!(host.stop_agent(&agent));
         tracing::subscriber::with_default(DropLog(lines.clone()), || {
+            // Another test thread can register this log line's callsite while no subscriber is
+            // listening, and tracing caches that interest; asked again now, it counts this one
+            // (failed once in CI on #861, never locally).
+            tracing::callsite::rebuild_interest_cache();
             for text in ["secret one", "secret two"] {
                 let r = host
                     .handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": text }))
@@ -3763,6 +4087,19 @@ mod tests {
     }
 
     #[test]
+    fn a_notice_is_never_written_into_another_harness_s_run() {
+        let (host, store) = host_with_runs();
+        let (session, _, run, _answer) = turn_in_flight(&host);
+        let other = attach(&host, "mind");
+        let reply = event(&host, &other, run, json!({ "kind": "notice", "text": "not yours" })).unwrap();
+        assert_eq!(reply, json!({ "kept": true }), "{reply}");
+        assert!(!kinds(&store, run).contains(&"notice".to_string()), "{:?}", kinds(&store, run));
+        // Its own turn's notice is kept in its run.
+        event(&host, &session, run, json!({ "kind": "notice", "text": "mine" })).unwrap();
+        assert!(kinds(&store, run).contains(&"notice".to_string()), "{:?}", kinds(&store, run));
+    }
+
+    #[test]
     fn a_failed_turn_keeps_why() {
         let (host, store) = host_with_runs();
         let (session, _, run, _answer) = turn_in_flight(&host);
@@ -3934,6 +4271,251 @@ mod tests {
         let stranger = AgentId::new("pi", "c-someone-else");
         ask(&host, &session, run, "r2");
         assert!(host.answer_for(&stranger, "r2", &json!("Yes"), true).is_err(), "only the agent that asked");
+    }
+
+    #[test]
+    fn a_shared_or_terminal_attach_never_takes_a_grant_bearing_id() {
+        let host = host_with_nothing().with_liveness(|_| true);
+        // A shared attach with nothing else attached gets its own key, never the bare id, and
+        // nothing becomes active.
+        let reply = host
+            .handle(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "shared": true }))
+            .unwrap();
+        assert_eq!(reply["as"], "hermes.1");
+        assert!(host.list().iter().all(|e| e.id != "hermes"), "no bare hermes");
+        assert_eq!(host.active_id(), "", "a shared attach never becomes active");
+
+        // A plain attach from another pid sits beside it under the bare id.
+        let plain = host
+            .handle_from(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes" }), Some(200), None)
+            .unwrap();
+        assert_eq!(plain["as"], "hermes");
+        assert!(host.list().iter().any(|e| e.id == "hermes"));
+        assert!(host.list().iter().any(|e| e.id == "hermes.1"));
+
+        // A second shared attach gets the next key.
+        let second = host
+            .handle_from(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "shared": true }), Some(300), None)
+            .unwrap();
+        assert_eq!(second["as"], "hermes.2");
+
+        // Nobody can ask for a dotted key directly.
+        let err = host
+            .handle(protocol::ATTACH, &json!({ "id": "hermes.2", "name": "Hermes" }))
+            .unwrap_err();
+        assert!(err.contains("`.`"), "{err}");
+
+        // A shared `mind` on the host alone is keyed `mind.1`, never `mind`.
+        let host = host_with_nothing();
+        let reply = host
+            .handle(protocol::ATTACH, &json!({ "id": "mind", "name": "Mind", "shared": true }))
+            .unwrap();
+        assert_eq!(reply["as"], "mind.1");
+        assert!(host.list().iter().all(|e| e.id != "mind"));
+
+        // A new Host restarts the counter.
+        let host = host_with_nothing();
+        let reply = host
+            .handle(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "shared": true }))
+            .unwrap();
+        assert_eq!(reply["as"], "hermes.1");
+    }
+
+    #[test]
+    fn a_plain_reattach_still_replaces_its_own_session() {
+        let host = host_with_nothing().with_liveness(|_| true);
+        let first = host
+            .handle_from(protocol::ATTACH, &json!({ "id": "mind", "name": "Mind" }), Some(100), Some(1000))
+            .unwrap();
+        let first_session = first["session"].as_str().unwrap().to_string();
+        host.set_active("mind").unwrap();
+        let answer = host.send(Turn::new("hello"));
+
+        // The same uid re-attaching replaces the first session; its queued turn fails.
+        let second = host
+            .handle_from(protocol::ATTACH, &json!({ "id": "mind", "name": "Mind" }), Some(100), Some(1000))
+            .unwrap();
+        assert_eq!(second["as"], "mind");
+        assert_ne!(second["session"], first_session);
+        // Polled from the very process that attached it, so the refusal is the session being gone,
+        // not the peer check (yantrik-mind-72: a peerless poll is refused anyway).
+        let err = host
+            .handle_from(protocol::POLL, &json!({ "session": first_session }), Some(100), Some(1000))
+            .unwrap_err();
+        assert!(err.contains("not attached any more"), "{err}");
+        assert!(matches!(answer.try_recv(), Ok(Chunk::Failed(_))), "the queued turn failed");
+    }
+
+    #[test]
+    fn a_shared_attach_from_inside_an_attached_harness_is_refused() {
+        let host = host_with_nothing()
+            .with_liveness(|_| true)
+            .with_descent(|caller, ancestor| caller == 150 && ancestor == 100);
+        host.handle_from(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes" }), Some(100), None).unwrap();
+        let err = host
+            .handle_from(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "shared": true }), Some(150), None)
+            .unwrap_err();
+        assert!(err.contains("already covered by `hermes`"), "{err}");
+    }
+
+    #[test]
+    fn shared_attaches_are_capped_per_id() {
+        let host = host_with_nothing().with_liveness(|_| true);
+        for n in 1..=4 {
+            let reply = host
+                .handle_from(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "shared": true }), Some(100 + n), None)
+                .unwrap();
+            assert_eq!(reply["as"], format!("hermes.{n}"));
+        }
+        let err = host
+            .handle_from(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "shared": true }), Some(200), None)
+            .unwrap_err();
+        assert!(err.contains("4"), "{err}");
+    }
+
+    #[test]
+    fn a_presence_only_mind_takes_no_turns() {
+        let host = host_with_nothing();
+        let reply = host
+            .handle(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "shared": true, "takes_turns": false }))
+            .unwrap();
+        let key = reply["as"].as_str().unwrap().to_string();
+        assert_eq!(key, "hermes.1");
+
+        let err = host.set_active(&key).unwrap_err();
+        assert!(err.contains("takes its turns in its terminal; it cannot be the mind you chat with"), "{err}");
+        let err = host.start_agent(&key).unwrap_err();
+        assert!(err.contains("takes its turns in its terminal; leave it a note instead"), "{err}");
+        let err = host.send_to(&AgentId::new(&key, AgentId::MAIN), Turn::new("x")).unwrap_err();
+        assert!(err.contains("takes its turns in its terminal; leave it a note instead"), "{err}");
+
+        // Its `main` agent was made at attach, so its acts carry a token.
+        assert!(host.with_agent_token(&AgentId::new(&key, AgentId::MAIN), |t| !t.is_empty()).unwrap());
+    }
+
+    #[test]
+    fn presence_only_mains_never_count_toward_the_live_cap() {
+        let host = host_with_nothing();
+        host.handle(protocol::ATTACH, &json!({ "id": "mind", "name": "Mind", "conversations": true })).unwrap();
+        for _ in 1..=4 {
+            host.handle(
+                protocol::ATTACH,
+                &json!({ "id": "hermes", "name": "Hermes", "shared": true, "takes_turns": false }),
+            )
+            .unwrap();
+        }
+        // Four presence-only `main` agents are live (`mind` holds conversations, so it has none
+        // until one is started), and none of them counts.
+        for _ in 0..protocol::MAX_LIVE_AGENTS {
+            host.start_agent("mind").unwrap();
+        }
+        // The cap is reached only once MAX_LIVE_AGENTS non-main agents are live.
+        assert!(host.start_agent("mind").unwrap_err().contains("as many as this desktop runs"));
+    }
+
+    #[test]
+    fn a_shared_attach_resumes_nothing() {
+        let host = host_with_nothing();
+        let reply = host
+            .handle(
+                protocol::ATTACH,
+                &json!({ "id": "hermes", "name": "Hermes", "shared": true, "resume": [
+                    { "conversation": "main", "agent_token": "", "turn_id": 18, "prompt": "build the town" },
+                ]}),
+            )
+            .unwrap();
+        assert_eq!(reply["resumed"], json!([]));
+        assert_eq!(reply["refused"][0]["why"], "a shared attach starts fresh");
+    }
+
+    /// yantrik-mind-72's A: presence-only under the bare id would replace a live mind of that id,
+    /// take its grants and become the mind the Lens talks to while refusing every turn.
+    #[test]
+    fn a_presence_only_attach_must_be_shared() {
+        let host = host_with_nothing();
+        let err = host
+            .handle(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "takes_turns": false }))
+            .unwrap_err();
+        assert!(err.contains("must also be `shared: true`"), "{err}");
+        assert!(host.list().is_empty(), "nothing was listed");
+        assert_eq!(host.active_id(), "");
+    }
+
+    /// yantrik-mind-72's D: only lowercase ASCII ids, so nothing can pass as `mind` in the picker.
+    #[test]
+    fn ids_are_lowercase_ascii_so_nothing_passes_as_mind() {
+        let host = host_with_nothing();
+        for id in ["Mind", "MIND", "mind\u{200b}", "m\u{0456}nd", "mind\u{2024}x"] {
+            let err = host.handle(protocol::ATTACH, &json!({ "id": id, "name": "Mind" })).unwrap_err();
+            assert!(err.contains("lowercase ASCII"), "{id:?}: {err}");
+        }
+        for id in ["mind", "hermes", "open-claw", "pi_2"] {
+            assert!(host.handle(protocol::ATTACH, &json!({ "id": id, "name": "X" })).is_ok(), "{id}");
+        }
+    }
+
+    /// yantrik-mind-72's B and the uncapped loose end: only the `main` a shared or presence-only
+    /// attach is given is free. A single-conversation harness's `main` still counts, so many of
+    /// them cannot go past the cap, and the host's count is the one the recipe runner reads.
+    #[test]
+    fn only_shared_and_presence_mains_are_free_under_the_cap() {
+        let host = host_with_nothing().with_liveness(|_| true);
+        for n in 0..protocol::MAX_LIVE_AGENTS {
+            let id = format!("solo{n}");
+            host.handle_from(protocol::ATTACH, &json!({ "id": id, "name": "Solo" }), Some(1000 + n as u32), None)
+                .unwrap();
+            host.start_agent(&id).unwrap();
+        }
+        assert_eq!(host.counted_live_agents(), protocol::MAX_LIVE_AGENTS);
+        host.handle_from(protocol::ATTACH, &json!({ "id": "solo9", "name": "Solo" }), Some(1999), None).unwrap();
+        assert!(host.start_agent("solo9").unwrap_err().contains("as many as this desktop runs"));
+        // A presence-only shared attach adds a `main` that is not counted.
+        host.handle_from(
+            protocol::ATTACH,
+            &json!({ "id": "hermes", "name": "Hermes", "shared": true, "takes_turns": false }),
+            Some(3000),
+            None,
+        )
+        .unwrap();
+        assert_eq!(host.counted_live_agents(), protocol::MAX_LIVE_AGENTS);
+    }
+
+    /// A shared mind that takes turns does real work in its `main`, so that `main` counts; only a
+    /// presence-only `main` is free (yantrik-mind-72's re-review, point 1).
+    #[test]
+    fn a_turn_taking_shared_main_counts() {
+        let host = host_with_nothing().with_liveness(|_| true);
+        host.handle_from(protocol::ATTACH, &json!({ "id": "hermes", "name": "Hermes", "shared": true }), Some(100), None)
+            .unwrap();
+        assert_eq!(host.counted_live_agents(), 0, "no agent yet");
+        host.start_agent("hermes.1").unwrap();
+        assert_eq!(host.counted_live_agents(), 1, "its working main counts");
+    }
+
+    /// yantrik-mind-72's change C: no harness id or key is ever matched by prefix or by splitting
+    /// on a dot, or `mind.1` becomes a back door to the first-party name. Grants, `is_the_mind`
+    /// and the search-grant screen keep comparing with exactly `== "mind"`.
+    #[test]
+    fn no_id_is_matched_by_prefix_or_split_on_a_dot() {
+        let roots = [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../yantrik-ui/src"),
+        ];
+        let prefix = "starts_with(".to_string() + "\"mind";
+        let prefix_const = "starts_with(".to_string() + "FIRST_PARTY_MIND";
+        for root in roots {
+            for entry in walk(root) {
+                let text = std::fs::read_to_string(&entry).unwrap();
+                for (n, line) in text.lines().enumerate() {
+                    assert!(
+                        !line.contains(&prefix) && !line.contains(&prefix_const),
+                        "{}:{} matches a harness id by prefix: {line}",
+                        entry.display(),
+                        n + 1
+                    );
+                }
+            }
+        }
     }
 
     #[test]

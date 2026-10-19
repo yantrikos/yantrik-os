@@ -8,8 +8,10 @@
 An AI-native desktop operating system where the AI **is** the shell. Built in Rust, on Debian
 13, shipped as a live ISO you boot and try before you install anything.
 
-Yantrik OS replaces the traditional desktop metaphor with an agent that watches the system,
-learns your patterns and helps without being asked, alongside a suite of built-in apps.
+Bring your own AI agents (Claude Code, Hermes, OpenClaw, Pi, or the built-in Yantrik Mind) and
+they drive the whole desktop: every app and every screen, through the same path a person uses.
+What they learn about you stays in YantrikDB on your machine, and the desktop keeps a record of
+what each one did, so you never have to take an agent's word for it.
 
 > **Come and talk to us: [discord.gg/7cDw3jd3Xf](https://discord.gg/7cDw3jd3Xf)**
 > — `#nightly` announces every published image, `#apps-and-surfaces` is where the app control
@@ -30,8 +32,12 @@ learns your patterns and helps without being asked, alongside a suite of built-i
   built to be driven by whatever mind you give it, and a mind you point at a provider talks to
   that provider. The status bar carries a chip naming which mind is answering and whether it is
   local or cloud, so that is never something you have to go and check.
-- **Proactive, not reactive.** A four-stage pipeline (Detect → Generate → Score → Deliver)
-  decides *when* to speak and *what* to say, so it helps without nagging.
+- **Proof of what your agents did.** Each mind works under a mode you choose: read-only, asking
+  about anything that matters, or asking only before what cannot be undone. Whatever it does
+  without asking is written down where you can read it (the mode chip's "See what it did without
+  asking").
+- **It speaks up only when it is worth it.** A four-stage pipeline (Detect → Generate → Score →
+  Deliver) decides *when* a suggestion is worth your attention, so it helps without nagging.
 - **Rust throughout.** Slint UI, agent, memory database and system observer. No Electron, no
   Python runtime, no Docker.
 

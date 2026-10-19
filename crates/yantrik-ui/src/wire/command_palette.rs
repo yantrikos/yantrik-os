@@ -43,9 +43,11 @@ fn build_commands() -> Vec<CommandItem> {
     // Images, Text Editor and Media Player went the same way in #253, with the Editor's two
     // rows: the shell drew its own copy of each, and those copies are gone.
 
-    // Music and ySheets are shelved, so the palette does not offer them. "Go to Music",
-    // "Go to Spreadsheet", "New Spreadsheet" and "Import CSV" were here; see
-    // wire::dock::SHELVED for why, and put them back with the apps.
+    // "Go to Music", "Go to Spreadsheet", "New Spreadsheet" and "Import CSV" were here and went
+    // when Music and ySheets were shelved; see wire::dock::SHELVED. ySheets came off the shelf
+    // (#727) and Music did too (#728); both are opened like the apps below, from the launcher,
+    // the Lens or open_app, not from rows that navigated to the shell's old in-process screens
+    // ("Go to Music" dispatched to a screen id nothing drew).
     //
     // Email, Calendar, Notes, Terminal, Document and Presentation had rows here too — "Compose
     // New Email", "New Calendar Event", "New Note", "New Terminal Tab" (advertising Ctrl+T),
@@ -210,11 +212,11 @@ fn wire_selected(ui: &App, ctx: &AppContext) {
             ui.set_lens_open(true);
             ui.invoke_open_lens();
         } else if action == "system:screenshot" {
-            // The same capture the Print key does: a timestamped file in ~/Pictures/Screenshots
-            // and a notification naming it. This used to run grim straight at
+            // The same capture the Print keys do: a dated file in ~/Pictures/Screenshots, the
+            // clipboard, and a notification naming it. This used to run grim straight at
             // /tmp/screenshot.png — one fixed name, readable by every account, overwritten by the
             // next one, and never mentioned to the person who asked for it.
-            crate::wire::screenshot::take_screenshot(ui.as_weak(), yantrik_os::screenshot::CaptureMode::FullScreen);
+            crate::wire::screenshot::take_screenshot();
         } else if action == "system:toggle-theme" {
             // The Quick Settings tile's own callback (wired in `wire::settings`), so the flag,
             // the theme's colours and the saved setting move together. Setting the flag here

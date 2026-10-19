@@ -18,6 +18,10 @@ pub mod agents;
 #[cfg(test)]
 mod lens_card_layout;
 pub mod lens_work;
+pub mod lens_steps;
+pub mod lens_timeline;
+pub mod lens_queue;
+pub mod step_words;
 pub mod agents_workroom;
 mod run_heading;
 pub mod runs_on_card;
@@ -41,6 +45,7 @@ mod clipboard;
 mod shell_overlays;
 mod cheat_sheet;
 pub mod network;
+pub mod wifi_reconnect;
 pub mod dock;
 /// A launch by name for an app already open on the desktop raises its window instead.
 pub(crate) mod already_open;
@@ -51,8 +56,13 @@ pub mod i18n;
 mod lens;
 mod navigate;
 pub mod notifications;
+// The Lens's For you inbox of mind notices, their toasts and their one button.
+pub mod for_you;
+// Settings → Minds → Initiative.
+pub mod initiative;
 mod power;
 pub mod screenshot;
+pub mod capture_bar;
 pub mod settings;
 pub mod theme;
 pub mod theme_files;
@@ -72,6 +82,9 @@ pub mod problem_report;
 pub mod version;
 pub mod ai_assist;
 pub mod ai_onboarding;
+pub mod onboarding;
+pub mod onboarding_proofs;
+pub mod onboarding_nearby;
 pub mod ai_provider;
 pub mod ai_status;
 pub mod harness_provider;
@@ -105,6 +118,8 @@ pub mod minds_panel;
 pub mod services;
 pub mod vault;
 pub mod free_ai;
+/// Settings → AI & Intelligence → AI accounts: every account and its models (#673).
+pub mod ai_accounts_card;
 
 use crate::app_context::AppContext;
 use crate::App;
@@ -123,6 +138,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     crate::power_status::wire(ui);
     // The network mark and its popover, and the one reading every surface shows of the network.
     network::wire(ui);
+    // The Wi-Fi tile's press, the notice a drop raises, and the rejoin-by-itself after one.
+    wifi_reconnect::wire(ui);
     lens::wire(ui, ctx);
     navigate::wire(ui, ctx);
     // The letter on the tile of an app there is no art and no theme icon for (AppTile).
@@ -140,9 +157,13 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     system_poll::wire(ui, ctx);
     package_manager::wire(ui, ctx);
     screenshot::wire(ui, ctx);
+    // The capture bar, the red dot's click, and any recording a previous shell left running.
+    capture_bar::wire(ui);
     // Owns the notification centre, the toasts and the poll of the one store. `toast` is the
     // drawing half and has no `wire` of its own any more.
     notifications::wire(ui, ctx);
+    for_you::wire(ui);
+    initiative::wire(ui);
     skill_store::wire(ui, ctx);
     device_dashboard::wire(ui, ctx);
     permission_dashboard::wire(ui, ctx);
@@ -159,9 +180,16 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     command_palette::wire(ui, ctx);
     cross_app::wire(ui, ctx);
     ai_onboarding::wire(ui, ctx);
+    onboarding::wire(ui, ctx);
     ai_provider::wire(ui, ctx);
     decision_model::wire(ui, ctx);
     free_ai::wire(ui, ctx);
+    // After `free_ai`, whose choices say which free tiers are switched on.
+    ai_accounts_card::wire(ui, ctx);
+    // The model gateway reads that catalogue at each call; it listens from here on.
+    crate::gateway::start(ctx.bridge.clone());
+    // The picker reads the catalogue, the minds and the gateway's calls: after all three.
+    crate::picker::wire(ui, ctx);
     installer::wire(ui, ctx);
     // The Mac BCM4331's driver, fetched once online: what the first-run screens say meanwhile.
     wifi_driver::wire(ui, ctx);

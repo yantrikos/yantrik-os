@@ -61,7 +61,17 @@ const EPROTO: i32 = 71;
 /// `yantrik-weather`; a record is filed under it.
 ///
 /// See the module documentation for why the display is asked rather than the error read.
-pub fn run_until_closed(ui: &impl slint::ComponentHandle, program: &str) -> bool {
+pub fn run_until_closed<C: slint::ComponentHandle + 'static>(ui: &C, program: &str) -> bool {
+    // How a second launch gets this window back in front of the person (`present`). Installed
+    // here because every app's window reaches its loop through this call, and before the loop,
+    // because a request posted to it is run only once the loop is running.
+    let weak = ui.as_weak();
+    crate::present::install(move || {
+        let ui = weak.upgrade().ok_or("the window is closing")?;
+        ui.show().map_err(|e| format!("the window could not be shown: {e}"))?;
+        crate::chrome::bring_back(ui.window());
+        Ok(())
+    });
     match ui.run() {
         Ok(()) => true,
         Err(error) => {

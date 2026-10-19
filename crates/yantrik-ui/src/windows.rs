@@ -18,6 +18,10 @@ pub(crate) const SHELL_WINDOW_TITLE: &str = "Yantrik OS";
 /// front" must never offer or name it.
 pub(crate) const OSD_WINDOW_TITLE: &str = "Yantrik OSD";
 
+/// The capture bar's own window (wire/capture_bar.rs), for the same reason: a toplevel while it is
+/// up, and never a window the taskbar, Alt+Tab or "which window is in front" may name.
+pub(crate) const CAPTURE_WINDOW_TITLE: &str = "Yantrik Capture";
+
 /// A running window on the desktop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowEntry {
@@ -695,6 +699,7 @@ fn wlrctl_windows() -> Vec<WindowEntry> {
         // already looking at.
         .filter(|line| split_toplevel_line(line).0 != SHELL_WINDOW_TITLE)
         .filter(|line| split_toplevel_line(line).0 != OSD_WINDOW_TITLE)
+        .filter(|line| split_toplevel_line(line).0 != CAPTURE_WINDOW_TITLE)
         .map(toplevel_entry)
         .collect()
 }
@@ -763,7 +768,7 @@ fn activation(text: &str) -> Activation {
         // The person is looking at the desktop, or one of its screens. No app window is in front.
         return Activation::Shell;
     }
-    if title.is_empty() || title == OSD_WINDOW_TITLE {
+    if title.is_empty() || title == OSD_WINDOW_TITLE || title == CAPTURE_WINDOW_TITLE {
         return Activation::Unknown;
     }
     Activation::Window(title)
@@ -803,6 +808,13 @@ pub fn in_front() -> Option<String> {
         true => None,
         false => compositor_snapshot().1,
     }
+}
+
+/// The person just clicked the shell, so labwc has raised it over every app window: say so before
+/// the next reading. The mind panel folds to its strip while an app window is in front
+/// (`mind_panel_room`), and a click on the strip must open it at once, not seconds later.
+pub fn note_shell_clicked() {
+    SHELL_FRONT.store(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// [`shell_in_front`]'s last reading: 0 not knowable, 1 the shell, 2 an app window.

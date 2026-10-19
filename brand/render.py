@@ -31,6 +31,8 @@ HERE = Path(__file__).resolve().parent
 
 MARK_SVG = HERE / "yantrik-mark.svg"           # the core: favicons and <= 64 px
 EMBLEM_SVG = HERE / "yantrik-emblem.svg"       # the full emblem
+SPLASH_EMBLEM_PNG = HERE.parent / "deploy/yantrik-os/boot-unlock/theme/emblem.png"
+SPLASH_EMBLEM_SIZE = 132
 ICON_SVG = HERE / "yantrik-icon.svg"           # the app icon (hicolor 'yantrik')
 WORDMARK_SVG = HERE / "yantrik-wordmark.svg"   # the horizontal lockup
 
@@ -289,6 +291,13 @@ def render_all(backend: Backend) -> list[tuple[Path, str]]:
     out = HERE / "social-preview-1280x640.png"
     backend.render(card(1280, 640, 36, 0.56), out, 1280, 640)
     made.append((out, "social-preview"))
+
+    # The boot splash: the emblem alone, transparent, at the size the shell's boot screen draws
+    # it (YantrikMark, mark-size 132px). plymouth draws it centred on the Lake ground, and the
+    # shell's first frame puts the same emblem in the same place, so the hand-off does not move.
+    out = SPLASH_EMBLEM_PNG
+    backend.render(EMBLEM_SVG.read_text(encoding="utf-8"), out, SPLASH_EMBLEM_SIZE, SPLASH_EMBLEM_SIZE)
+    made.append((out, "boot splash emblem"))
 
     out = HERE / "github-avatar-512.png"
     backend.render(avatar(512), out, 512, 512)

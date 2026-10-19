@@ -5,16 +5,16 @@
 //! Tool results: Standard `role: tool` messages.
 
 use super::ChatTemplate;
+use crate::capability::ModelTier;
+use crate::compact_tools::{compact_tool, ToolBudget};
 use crate::types::{ChatMessage, ToolCall};
 
 pub struct QwenTemplate;
 
-impl ChatTemplate for QwenTemplate {
-    fn format_tools(&self, tools: &[serde_json::Value]) -> String {
-        if tools.is_empty() {
-            return String::new();
-        }
-
+impl QwenTemplate {
+    /// Shared `<tools>` wrapper. `body` renders one tool definition, so the
+    /// full-JSON and compact forms cannot drift apart at the edges.
+    fn render<F: Fn(&serde_json::Value) -> String>(tools: &[serde_json::Value], body: F) -> String {
         let example_name = tools.first()
             .and_then(|t| t.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
             .or_else(|| tools.first().and_then(|t| t.get("name")).and_then(|n| n.as_str()))
@@ -25,7 +25,7 @@ impl ChatTemplate for QwenTemplate {
              You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n"
         );
         for tool in tools {
-            s.push_str(&serde_json::to_string(tool).unwrap_or_default());
+            s.push_str(&body(tool));
             s.push('\n');
         }
         s.push_str(&format!(
@@ -35,6 +35,23 @@ impl ChatTemplate for QwenTemplate {
             example_name
         ));
         s
+    }
+}
+
+impl ChatTemplate for QwenTemplate {
+    fn format_tools(&self, tools: &[serde_json::Value]) -> String {
+        if tools.is_empty() {
+            return String::new();
+        }
+        QwenTemplate::render(tools, |tool| serde_json::to_string(tool).unwrap_or_default())
+    }
+
+    fn format_tools_compact(&self, tools: &[serde_json::Value], tier: ModelTier) -> String {
+        if tools.is_empty() || !ToolBudget::is_compact(tier) {
+            return self.format_tools(tools);
+        }
+        let budget = ToolBudget::for_tier(tier);
+        QwenTemplate::render(tools, |tool| compact_tool(tool, budget))
     }
 
     fn parse_tool_calls(&self, text: &str) -> Vec<ToolCall> {

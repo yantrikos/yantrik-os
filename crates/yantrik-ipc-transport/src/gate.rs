@@ -31,7 +31,10 @@
 //!    MCP bridge already asked about those, and until this rule moved here
 //!    `yos act` or a raw socket ran `calendar.delete_event` in auto with nobody asked (map gap 4
 //!    of the surface SDK). A session rule never covers one, and in plan mode no session rule
-//!    covers anything — plan raises no card, so there is no standing answer to one.
+//!    covers anything — plan raises no card, so there is no standing answer to one. The
+//!    administrator's standing rules (`standing_rules` in the same file, 15 October 2026) answer
+//!    as a session rule does, and only in auto or a bypass and never for a `dangerous` action
+//!    ([`Mode::standing_covers`]).
 //!
 //! The whole table is generated into `deploy/yantrik-os/surface-vectors.json` by this module's
 //! tests, and every other implementation of it replays that file.
@@ -254,11 +257,19 @@ pub struct Mode {
     /// `(app, action)` pairs a person allowed for the rest of the session from the card's
     /// "Allow for this session". A rule covers any arguments, but only its own action.
     pub session_rules: Vec<(String, String)>,
+    /// `(app, action)` pairs this machine's ADMINISTRATOR allows from the shell's start, written
+    /// by root into `/etc/yantrik/standing-rules.conf` and published by the shell beside the
+    /// session rules (Pranab's decision of 15 October 2026, for unattended machines). They answer
+    /// what a session rule answers and less: only in auto and either bypass, never an action
+    /// graded `dangerous`, never one that cannot be undone ([`Mode::standing_covers`]). The shell
+    /// publishes only the ones in force; the limits are held here as well, so a file that says
+    /// more than the shell would have is not believed.
+    pub standing_rules: Vec<(String, String)>,
 }
 
 impl Mode {
     pub fn named(name: &str) -> Mode {
-        Mode { name: name.to_string(), session_rules: Vec::new() }
+        Mode { name: name.to_string(), session_rules: Vec::new(), standing_rules: Vec::new() }
     }
 
     /// The highest grade this mode runs unasked, as a position on [`LADDER`]. A name that is
@@ -290,6 +301,18 @@ impl Mode {
     /// Whether a session rule is the person's standing answer for `app.action`.
     pub fn covers(&self, app: &str, action: &str) -> bool {
         self.session_rules.iter().any(|(a, x)| a == app && x == action)
+    }
+
+    /// Whether one of the administrator's standing rules answers `app.action` at `level` on
+    /// [`LADDER`]. Only in auto or a bypass — in ask and plan they answer nothing, so a person
+    /// who lowers the mode gets the asks back — and never for a `dangerous` action: the card's
+    /// "Allow for this session" is never offered for one, and a standing rule is that button
+    /// pressed ahead of time. What cannot be undone is excluded by the caller, [`decide`], before
+    /// this is asked, as it is for a session rule.
+    pub fn standing_covers(&self, app: &str, action: &str, level: usize) -> bool {
+        matches!(self.name.as_str(), "auto" | "bypass" | "bypass_all")
+            && level < grade("dangerous").unwrap()
+            && self.standing_rules.iter().any(|(a, x)| a == app && x == action)
     }
 }
 
@@ -417,18 +440,25 @@ pub fn mode_from(text: &str, now_unix: u64) -> Mode {
             }
         }
     }
-    let session_rules = doc["session_rules"]
-        .as_array()
-        .filter(|_| !lapsed)
-        .map(|list| {
-            list.iter()
-                .filter_map(|r| {
-                    Some((r["app"].as_str()?.to_string(), r["action"].as_str()?.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Mode { name, session_rules }
+    let pairs = |key: &str| -> Vec<(String, String)> {
+        doc[key]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|r| {
+                        Some((r["app"].as_str()?.to_string(), r["action"].as_str()?.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let session_rules = if lapsed { Vec::new() } else { pairs("session_rules") };
+    // The standing rules are not a lowering's to clear: they are the administrator's, and they
+    // answer in auto — which is what a bypass most often lapses back to — as they did in the
+    // bypass. `Mode::standing_covers` holds them to auto and the bypasses whatever the name is
+    // now, so one that lapsed back to ask answers nothing.
+    let standing_rules = pairs("standing_rules");
+    Mode { name, session_rules, standing_rules }
 }
 
 // ── Spending a grant ────────────────────────────────────────────────
@@ -713,6 +743,12 @@ pub fn decide(
     if !held && !plan && !irreversible && mode.covers(app_id, action) {
         return Ok(());
     }
+    // And the administrator's standing rule (15 October 2026): the same answer, within the same
+    // limits and two more — auto or a bypass only, never `dangerous` ([`Mode::standing_covers`]).
+    // A call held from a phone is still held: the administrator answered for the desk.
+    if !held && !irreversible && mode.standing_covers(app_id, action, level) {
+        return Ok(());
+    }
     // In plan mode a held call is refused as plan refuses, with no card: the person's strictest
     // setting is not loosened for a phone. Anywhere else a held call is refused for the hold,
     // and says so — in full bypass the hold is the only reason there is.
@@ -871,6 +907,62 @@ fn grant_refusal(
 mod tests {
     use super::*;
 
+    /// The administrator's standing rules (15 October 2026): read from the file under their own
+    /// name, they answer what a session rule answers in auto and either bypass, and nothing in
+    /// ask or plan, nothing `dangerous`, nothing that cannot be undone, nothing past the ceiling,
+    /// and nothing held from a phone.
+    #[test]
+    fn a_standing_rule_answers_only_where_a_session_rule_could_and_only_in_auto_or_a_bypass() {
+        let run = "Run a command line in its own terminal. What it runs can do anything you can.";
+        let gone = "Take an event off the calendar. It is not recoverable";
+        let with = |ceiling: &str, mode: &str| {
+            let mut a = at(ceiling, mode);
+            a.mode.standing_rules =
+                vec![("shell".into(), "agent_run".into()), ("calendar".into(), "delete_event".into())];
+            a
+        };
+        for mode in ["plan", "ask", "auto", "bypass", "bypass_all"] {
+            let ruled = with("dangerous", mode);
+            let got = decide(&ruled, "shell", "agent_run", "sensitive", run);
+            let should = matches!(mode, "auto" | "bypass" | "bypass_all");
+            assert_eq!(got.is_ok(), should, "{mode}: {got:?}");
+            // Only its own action.
+            assert!(decide(&ruled, "terminal", "run", "sensitive", run).is_ok() == (mode == "bypass_all"), "{mode}");
+            // Never `dangerous`, outside full bypass, which asks nothing anyway.
+            let dangerous = decide(&ruled, "shell", "agent_run", "dangerous", run);
+            assert_eq!(dangerous.is_ok(), mode == "bypass_all", "{mode}: {dangerous:?}");
+            // Never what cannot be undone.
+            let deleted = decide(&ruled, "calendar", "delete_event", "sensitive", gone);
+            assert_eq!(deleted.is_ok(), mode == "bypass_all", "{mode}: {deleted:?}");
+            // Never past the ceiling.
+            let capped = decide(&with("standard", mode), "shell", "agent_run", "sensitive", run).unwrap_err();
+            assert!(capped.starts_with("CEILING:"), "{mode}: {capped}");
+            // And not for a call held from the phone.
+            let mut held = with("dangerous", mode);
+            held.asks_above = Some(0);
+            assert!(decide(&held, "shell", "agent_run", "sensitive", run).is_err(), "{mode}");
+        }
+
+        // From the file: under their own key, beside the session rules, and still read after a
+        // bypass lapses — back to auto they answer, back to ask they do not.
+        let now = 1_800_000_000u64;
+        let doc = |previous: &str| {
+            format!(
+                r#"{{"mode":"bypass","previous":"{previous}","bypass_expires_unix":{now},"session_rules":[{{"app":"files","action":"move"}}],"standing_rules":[{{"app":"shell","action":"agent_run"}}]}}"#
+            )
+        };
+        let read = mode_from(&doc("auto"), now - 1);
+        assert_eq!(read.standing_rules, vec![("shell".to_string(), "agent_run".to_string())]);
+        assert_eq!(read.session_rules.len(), 1);
+        let lapsed = mode_from(&doc("auto"), now);
+        assert_eq!((lapsed.name.as_str(), lapsed.session_rules.len()), ("auto", 0));
+        assert!(lapsed.standing_covers("shell", "agent_run", 2));
+        let lapsed = mode_from(&doc("ask"), now);
+        assert!(!lapsed.standing_covers("shell", "agent_run", 2));
+        // A file from before them has none.
+        assert!(mode_from(r#"{"mode":"auto","session_rules":[]}"#, now).standing_rules.is_empty());
+    }
+
     #[test]
     fn a_call_held_from_a_phone_asks_above_its_level_in_every_mode() {
         for mode in ["plan", "ask", "auto", "bypass", "bypass_all"] {
@@ -909,7 +1001,7 @@ mod tests {
         // A standing yes given at the desk is not given to a phone.
         let ruled = Authority {
             ceiling: "dangerous".into(),
-            mode: Mode { name: "auto".into(), session_rules: vec![("notes".into(), "new_note".into())] },
+            mode: Mode { name: "auto".into(), session_rules: vec![("notes".into(), "new_note".into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: Some(0),
         };
@@ -1043,7 +1135,7 @@ mod tests {
         // No session rule covers one in bypass either: the card never offers a rule for it.
         let ruled = Authority {
             ceiling: "dangerous".into(),
-            mode: Mode { name: "bypass".into(), session_rules: vec![("calendar".into(), "delete_event".into())] },
+            mode: Mode { name: "bypass".into(), session_rules: vec![("calendar".into(), "delete_event".into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: None,
         };
@@ -1098,7 +1190,7 @@ mod tests {
                 assert!(err.contains("Allowed for this session from the card"), "{mode}: the way out is named: {err}");
                 let ruled = Authority {
                     ceiling: "sensitive".into(),
-                    mode: Mode { name: mode.into(), session_rules: vec![("terminal".into(), "run".into())] },
+                    mode: Mode { name: mode.into(), session_rules: vec![("terminal".into(), "run".into())], standing_rules: Vec::new() },
                     granted: false,
                     asks_above: None,
                 };
@@ -1126,7 +1218,7 @@ mod tests {
         let both = "Run a script, then delete it and everything it wrote. It cannot be undone. What it runs can do anything you can.";
         let ruled = Authority {
             ceiling: "dangerous".into(),
-            mode: Mode { name: "bypass".into(), session_rules: vec![("terminal".into(), "run_and_clean".into())] },
+            mode: Mode { name: "bypass".into(), session_rules: vec![("terminal".into(), "run_and_clean".into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: None,
         };
@@ -1142,7 +1234,7 @@ mod tests {
     fn a_held_call_asks_about_an_open_ended_action_whatever_the_rule() {
         let held = Authority {
             ceiling: "dangerous".into(),
-            mode: Mode { name: "auto".into(), session_rules: vec![("terminal".into(), "run".into())] },
+            mode: Mode { name: "auto".into(), session_rules: vec![("terminal".into(), "run".into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: Some(0),
         };
@@ -1155,7 +1247,7 @@ mod tests {
         let delete = "Take an event off the calendar. It is not recoverable";
         let with_rule = |mode: &str, action: &str| Authority {
             ceiling: "dangerous".into(),
-            mode: Mode { name: mode.into(), session_rules: vec![("calendar".into(), action.into())] },
+            mode: Mode { name: mode.into(), session_rules: vec![("calendar".into(), action.into())], standing_rules: Vec::new() },
             granted: false,
             asks_above: None,
         };
@@ -1462,7 +1554,7 @@ mod tests {
                                 };
                                 let authority = |granted| Authority {
                                     ceiling: ceiling.to_string(),
-                                    mode: Mode { name: mode.to_string(), session_rules: rules.clone() },
+                                    mode: Mode { name: mode.to_string(), session_rules: rules.clone(), standing_rules: Vec::new() },
                                     granted,
                                     asks_above: None,
                                 };

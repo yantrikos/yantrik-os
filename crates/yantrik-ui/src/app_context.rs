@@ -218,13 +218,19 @@ impl AppContext {
             .filter(|m| !m.trim().is_empty())
             .or_else(|| {
                 // llama.cpp and the built-in path name a repository rather than a model id;
-                // the last path segment is the part a person would recognise.
+                // the last path segment is the part a person would recognise. An API backend
+                // with no model chosen names none: the default repository is not what it runs.
+                if config.llm.is_api_backend() {
+                    return None;
+                }
                 let repo = config.llm.hub_repo.trim();
                 (!repo.is_empty()).then(|| {
                     repo.rsplit('/').next().unwrap_or(repo).to_string()
                 })
             });
 
+        // Nothing chosen: said, never a model nothing serves.
+        let model_label = model_label.or_else(|| Some("Not set up".to_string()));
         if let Some(model) = model_label {
             // Cloud backends are named, because "which cloud" is the question you are actually
             // asking when you look. Local ones are not, because the lock icon beside this

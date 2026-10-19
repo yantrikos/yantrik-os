@@ -8,7 +8,7 @@
 # What this file changes is where that debt is reported. A shelved app's findings are
 # printed under their own heading with the reason the app is on the shelf, they are
 # left out of the shipping totals, and they do not fail the run. Nobody is being asked
-# to fix them: the decision was that these two apps get built properly or stay off the
+# to fix them: the decision was that these apps get built properly or stay off the
 # shelf, and a lint failing every day about an app nobody is working on is a lint that
 # gets switched off.
 #
@@ -21,17 +21,11 @@
 # crates/yantrik-ui/src/wire/dock.rs. design/shelved-2026-09-20.md is the account.
 # Un-shelving an app is deleting its entry here and there.
 
-[music-player]
-reason = """
-Nothing plays audio. There is no playback engine, no scanner and no library behind the \
-screen: double-clicking a song logs "(stub)", and only YANTRIK_MUSIC_DEMO=1 can put a \
-track on it. 2168 lines of Slint over 312 of Rust.\
-"""
-
-[spreadsheet]
-reason = """
-Nothing can be typed into the grid. cell-grid, row-count and col-count are `in` \
-properties Rust never sets, so the model is empty and the guards in cell-click, \
-cell-edit and formula-submit all fail -- a perfect 50x26 grid that no mouse and no \
-mind can reach. 44 of 47 handlers are log lines and there is no formula engine.\
-"""
+# Nothing is shelved. Music (#728) and ySheets (#727) were the two entries, and both came
+# off the shelf in October 2026 once there was something under their screens. An entry
+# looks like this:
+#
+#   [app-dir-name]
+#   reason = """
+#   What is missing under the screen, in a sentence or two.\
+#   """

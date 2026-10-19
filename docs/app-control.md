@@ -299,6 +299,11 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `install_harness`, `start_harness` | sensitive | fetches software onto the machine; decides what it runs on every login |
 | shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |
 | shell | `lock` | safe | only takes access away — Super+L must lock, not ask about locking (#215) |
+| shell | `capture_open`, `capture_region`, `capture_screen_to_clipboard`, `capture_record_toggle` | safe | the person's capture keys (Print, Shift+Print, Super+Shift+S, Ctrl+Print, Super+Shift+R): a key must not raise a card, so each refuses any caller the shell takes for a mind instead (design/capture-2026-10-15.md) |
+| shell | `screenshot_mind_view` | safe | a mind photographing its own display; saved to ~/Pictures/Screenshots and the person told which mind took it; one every 2 s from minds, and none with under 1 GB free |
+| shell | `screenshot_screen` | sensitive | a picture of the person's desktop; its purpose says it cannot be undone, word for word as `read_screen`'s, so it asks every time and no session rule covers it; the person is told which mind took it |
+| shell | `open_capture` | sensitive | opens a saved screenshot or recording in Mind View's viewer or player; each is a picture of the person's desktop, so its purpose says it cannot be undone, word for word as `read_screen`'s, it asks every time and taints as a screen read. `~/Pictures/Screenshots` and `~/Videos/Recordings` are protected places (`home_paths::PROTECTED`): Files, the apps' `open` and the file tools refuse them to every agent, and this is a mind's one way to one |
+| shell | `record_start`, `record_stop` | sensitive | recording Mind View only (`target` offers `mind_view` and nothing else): the person's desktop is never recorded for a mind. The red dot shows for every recording; locking stops it. A mind's ends after 30 minutes (`RuntimeMaxSec`) at a fifth of the default CPU weight, and the person starting their own stops it |
 | shell | `files_go`, `files_enter`, `files_open`, `files_up`, `files_new_folder`, `files_new_file`, `files_select`, `files_view`, `files_rename`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_refresh`, `files_cancel`, `files_terminal` | standard | driving the Files screen; what they change is content, taken back by the paired verb or recovered from Trash; `files_new_folder` and `files_new_file` answer the disk's own fact, **settled**, from the create call itself (`EEXIST`), not a stat beside it: `{"created": "<absolute path>", "kind": "directory"\; `files_go` answers, **settled**, what the folder holds (`{"path", "exists": true, "entries", "first": [up to 12 names, folders end in `/`], "more"}`), and a missing folder is refused with the `files_new_folder` call that makes it; `files_new_folder` takes a nested path (`a/b`, `~/a/b`), makes the missing parents (each level judged as a single make is, `..` refused) and lists them in `made_parents` |
 | shell | `files_delete` | dangerous | destroys without a trash |
 | shell | `check_update` | safe | reads |
@@ -327,7 +332,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 
 | calendar | `add_event`, `update_own_event`, `delete_own_event` | standard | content, paired: what `add_event` writes, `update_own_event` moves and `delete_own_event` takes back — the caller's own events, by the #201 record |
 | calendar | `update_event`, `delete_event` | sensitive | reach any stored event — the person's own, a Google-synced one, another caller's — so the person sees a card (#332); a delete has no trash, and its description says the event is not recoverable |
-| containers | `refresh`, `start`, `show_logs` | standard | reads, and starting what is stopped |
+| containers | `refresh`, `start`, `show_logs`, `show_tab` | standard | reads, and starting what is stopped; `show_tab` switches the window between containers, images and volumes, as `describe.tab` reports it |
 | containers | `stop`, `restart` | sensitive | interrupts what the container was serving |
 | containers | `remove` | dangerous | the writable layer goes with it |
 | documents | `find`, `show` | safe | reads |
@@ -336,7 +341,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | download-manager | `cancel` | sensitive | ends a transfer in flight |
 | email | `open_message`, `select_folder`, `search`, `mark_read`, `flag`, `compose` | standard | reads and a draft; `send` is deliberately not published — mail that has gone cannot be taken back |
 | email | `begin_google_sign_in` | sensitive | puts a full-access consent screen in front of the person, unasked |
-| image-viewer | `open`, `show`, `next`, `previous`, `rotate`, `fit`, `toggle_info` | standard | showing pictures; `rotate` turns what is on screen, the file is unchanged |
+| image-viewer | `open`, `show`, `next`, `previous`, `rotate`, `flip`, `fit`, `toggle_info` | standard | showing pictures; `rotate` and `flip` turn and mirror what is on screen (the toolbar's own path), the file is unchanged and the next picture is shown as stored; `fit` is the fit button, back to the whole picture from a zoom |
 | network | `refresh`, `wifi_scan` | standard | reads that trigger a radio scan |
 | network | `wifi_connect`, `wifi_forget` | sensitive | changes what the machine joins; forgetting deletes a stored credential |
 | network | `wifi_disconnect`, `wifi_radio` | dangerous | on a machine reached over Wi-Fi, takes away the channel the undo would travel on |
@@ -362,7 +367,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | weather | `show_location` | standard | a showing: moves an already-saved place onto the screen — the prefs line it touches is which place was being shown, not what is saved |
 | weather | `add_location` | sensitive | **regraded (#48)**: saves a place into `~/.config/yantrik/weather.json`, still saved after a restart |
 | weather | `set_units` | sensitive | **regraded (#48)**: the stored unit choice decides the units every future reading arrives in |
-| weather-service | `set_location` | standard | remembered in memory for this run only; the service writes no file — the app's `add_location` is the storing one |
+| weather-service | `set_location` | standard | moves which place describe reports on (conditions and daily forecast); remembered in memory for this run only; the service writes no file — the app's `add_location` is the storing one |
 | system-monitor-service | `find_process` | safe | reads |
 | system-monitor-service | `kill_process` | dangerous | ends what somebody else is running |
 | notifications-service | `notify`, `dismiss`, `dismiss_all`, `mark_read` | standard | a notification changes nothing and reaches nowhere outside this machine |
@@ -458,13 +463,19 @@ calls `a11y.act`.
 | notes | `notes.delete` | change | none | removes the note file outright — no trash; the app's `trash` (sensitive) is the recoverable one. No caller on the desktop |
 | notes | `notes.set_pinned` | change | none | rewrites the note's pinned flag. No caller on the desktop |
 | notes | `notes.set_tags` | change | `tags` (app) — standard | rewrites the note's tags. No caller on the desktop |
-| notifications | `notifications.list` | read | — | the centre's contents |
-| notifications | `notifications.since` | read | — | what changed since a revision; the shell's notification wire polls it |
+| notifications | `notifications.list` | read | — | the centre's contents. To any caller but the desktop, a mind's notice comes without its feedback, evidence or button |
+| notifications | `notifications.since` | read | — | what changed since a revision; the shell's notification wire polls it. Redacted as `list` is for any caller but the desktop, and without the harness bindings |
 | notifications | `notifications.add` | change | `notify` (service surface) — standard | stores and shows one notification. Every app's notify goes through an app-runtime helper that calls this method |
-| notifications | `notifications.dismiss` | change | `dismiss` (service surface) — standard | takes one off the screen |
-| notifications | `notifications.dismiss_all` | change | `dismiss_all` (service surface) — standard | takes them all off |
-| notifications | `notifications.mark_read` | change | `mark_read` (service surface) — standard | clears the unread badge |
+| notifications | `notifications.dismiss` | change | `dismiss` (service surface) — standard | takes one off the screen. A mind's notice is refused to any caller but the desktop |
+| notifications | `notifications.dismiss_all` | change | `dismiss_all` (service surface) — standard | takes them all off; from any caller but the desktop, minds' notices stay |
+| notifications | `notifications.mark_read` | change | `mark_read` (service surface) — standard | clears the unread badge; from any caller but the desktop, minds' notices stay unread |
 | notifications | `notifications.action` | change | none | invokes a notification's button and tells the sender. The shell calls it when the person clicks; the click is the authority, which is why there is no action |
+| notifications | `notifications.notice_feedback` | change | none | records the person's feedback on a mind's notice (and, for "Never this kind" / "Inbox only", their settings). Refused to any caller but the desktop: the press on the card is the authority |
+| notifications | `notifications.notice_shown` | change | none | records that the shell toasted a notice, showed it in For you, or opened its button. Desktop only |
+| notifications | `notifications.notice_feedback_poll` | change | none | one harness's pending feedback, advancing its durable cursor past what it acknowledged. Desktop only: the harness host asks on the harness's behalf, naming the account and program the harness id is bound to |
+| notifications | `notifications.initiative` | read | — | the person's initiative settings (design/initiative-inbox-2026-10-16.md) |
+| notifications | `notifications.initiative_set` | change | none | changes the initiative settings. Desktop only: Settings → Harnesses → Initiative is the authority |
+| notifications | `notifications.notice_unbind` | change | none | forgets which account and program a harness id belongs to, so the next notice under it binds it afresh. Desktop only: the person presses Forget in Settings → Harnesses → Initiative |
 | email | `email.accounts` | read | — | the configured accounts, secrets stripped |
 | email | `email.oauth_status` | read | — | where a sign-in stands |
 | email | `email.test_account` | read | — | dials the account's server to check the credentials; changes nothing |
@@ -631,11 +642,13 @@ publishes right now is `yos describe <name>`; whether it keeps the protocol, `yo
 | `editor` | `app-editor.sock` | `text-editor` | write a new text or code file (new with its text, then save_as a path), or open and edit one by path |
 | `email` | `app-email.sock` | — | read and send mail |
 | `image-viewer` | `app-image-viewer.sock` | `images`, `image` | view pictures |
+| `music` | `app-music.sock` | `music-player` | play the music in your library folders, or one sound file, through mpv |
 | `network` | `app-network.sock` | `network-manager` | this machine's connections, Wi-Fi and firewall state |
 | `notes` | `app-notes.sock` | — | quick markdown notes kept in the notes library, not files you name |
 | `presentation` | `app-presentation.sock` | `slides` | slide decks |
 | `shell` | `app-shell.sock` | — | the desktop itself: screens, windows, files, opening apps, approvals |
 | `snippets` | `app-snippets.sock` | `snippet-manager` | reusable pieces of code and text |
+| `spreadsheet` | `app-spreadsheet.sock` | `ysheets`, `sheets` | a sheet of numbers and formulas, opened from and saved to CSV files |
 | `studio` | `app-studio.sock` | — | make pictures from a sentence, on your own GPU or a hosted service; they land as files |
 | `system-monitor` | `app-system-monitor.sock` | `sysmonitor` | CPU, memory, disk and processes |
 | `terminal` | `app-terminal.sock` | — | a shell: run commands |
@@ -644,8 +657,18 @@ publishes right now is `yos describe <name>`; whether it keeps the protocol, `yo
 
 Beside them, five services answer `app.describe` on their own sockets — `weather`,
 `system-monitor`, `notifications`, `network`, `calendar` — and the first three take `app.act` too.
+The weather service's describe is the place it last reported on: current conditions in the
+summary, and in `state.forecast` the next eight days (today first) — `date`, `weekday`, `min`,
+`max` in `state.unit`, `condition`, `precipitation_probability` when Open-Meteo gives one, and
+`precipitation_mm`. They come from the same Open-Meteo call as the conditions and are kept with
+them, so describe never waits on the network for them. For somewhere else, `act set_location`
+with the place, then describe (the act's own answer already carries the new place's state).
 Blender's surface is served by a Python addon inside Blender (`apps/blender/addon`), a port of the
 runtime's dispatch.
+
+ySheets saves what was typed, formulas included, so a cell of an opened CSV that starts with
+`=` (`=HYPERLINK(...)`, `=cmd|...`) is saved back unchanged, and Excel or LibreOffice reads it
+as a formula when the file is opened there later.
 
 Windows from other applications are not in this list unless their `.desktop` file declares a
 surface (above) — an adapter is how one gets there. The rest publish through AT-SPI, and
@@ -675,6 +698,11 @@ every window a mind opens is drawn in Mind View and never on the person's deskto
 - `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
   and colours only (no screen clears, no carriage returns, no titles), capped per command; the
   answer and the Agents screen keep the full output.
+- A person opening an app a mind already has open (dock, tile, `open_app`, a terminal) gets that
+  app, not a silent second launch: the second copy asks the running one to `present` itself, and the
+  shell brings Mind View forward, because that is where the window is. Every surface on the app
+  runtime publishes `present` (`safe`; refused to an agent, since it is the desktop's own handover).
+  A copy with no window answers that it has none, and the launch says so.
 - Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
   `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
   drives whichever Terminal window is open, including the person's if that is the one open.

@@ -13,6 +13,8 @@ yantrik-chat = { workspace = true }
 yantrikdb-core = { workspace = true }
 yantrik-brain = { workspace = true }
 yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
+# The Home Assistant address is logged only as it may be drawn (#856).
+yantrik-shown-address = { workspace = true }
 yantrik-os = { workspace = true }
 # The calendar tools are callers of `calendar-service`, not a second calendar. These two carry
 # its typed parameters and the socket, and neither pulls in Slint — the companion runs inside the

@@ -11,14 +11,13 @@
 import { Theme } from "theme.slint";
 import { QuestionRequest, QuestionCard } from "question_card.slint";
 import { Icon, Icons } from "icon.slint";
-import { MessageData } from "message_bubble.slint";
-import { WorkCardData, WorkCard, WorkStrip } from "work_card.slint";
+import { MessageData, ContentBlock } from "message_bubble.slint";
 import { ChatMessage } from "chat_message.slint";
 import { ChatTranscript } from "chat_transcript.slint";
 import { ChatComposer } from "chat_composer.slint";
 import { ChatHeader, ChatEmpty } from "chat_chrome.slint";
-export { WorkCardData } from "work_card.slint";
 import { YButton } from "y_button.slint";
+import { ForYouSection } from "for_you.slint";
 
 // A single result in the Intent Feed.
 export struct LensResult {
@@ -1199,21 +1198,32 @@ export component IntentLens inherits Rectangle {
     /// Questions the mind this conversation is with asked and is waiting on (#25), oldest first.
     in property <[QuestionRequest]> questions: [];
     callback question-answer(string, string, string, bool);   // agent id, request id, answer, pressed
-    // The run's row id (`mind:main#n`), from a work card's Details or Review changes, or an agent's
-    // id from a resolved approval's "View action" — both land in the Agents screen. Also the
+    // An agent's id, from a resolved approval's "View action", which lands in the Agents screen. Also the
     // desktop's own offer, while private, to leave Private mode (`private:leave`).
     callback open-run(string);
 
     // ── Chat v2 ──
     //
-    // What the shell knows of the runs this chat started, from the Agents store: one card per
-    // run, found by the id a reply carries. Nothing here is composed by the mind.
-    in property <[WorkCardData]> work-cards: [];
-    // The run the strip describes (the live one that most needs the person), and how many runs are
-    // live in this chat, and how many of those wait on the person. `strip.run == ""` is none.
-    in property <WorkCardData> strip;
+    // The timeline of the reply still arriving (wire/lens_timeline.rs), and that reply's row (-1:
+    // none). It is the one place the Lens shows a mind's work: the card under each reply and the
+    // strip above the composer said the same thing twice more, and are gone. Nothing here is
+    // composed by the mind.
+    in property <[ContentBlock]> live-steps: [];
+    in property <int> live-steps-row: -1;
+    // How many runs are live in this chat, and how many of those wait on the person.
     in property <int> live-runs: 0;
     in property <int> waiting-runs: 0;
+    // What Enter does while the mind is busy (wire/lens_queue.rs): "" sends, "queue" holds the
+    // message until the turn ends, "answer" answers the question the run waits on, which
+    // `composer-asks` shows just above the box. The placeholder names the mode.
+    in property <string> composer-mode: "";
+    in property <string> composer-placeholder: "";
+    in property <string> composer-asks: "";
+    // The queued message's line: whose finishing sends it, and a note when it replaced another.
+    in property <string> queued-mind: "";
+    in property <string> queued-note: "";
+    // The × on the queued message: it is taken back, never sent.
+    callback cancel-queued();
     // The composer's mode chip: the mind-mode label ("Ask"). The chip opens the existing choice.
     in property <string> mode-label: "Ask";
     // Where the mind runs, as the header says it: "Built-in mind" or "Attached mind".
@@ -1237,8 +1247,6 @@ export component IntentLens inherits Rectangle {
     out property <bool> transcript-following: true;
     out property <bool> transcript-missed: false;
     out property <length> transcript-y: 0px;
-    // Whether the current-work strip is on screen.
-    out property <bool> strip-shown: root.chat-mode && root.strip.run != "";
 
     // Callbacks
     callback approval-allow(string);   // request id — a click, and nothing else, creates a grant
@@ -1252,6 +1260,15 @@ export component IntentLens inherits Rectangle {
     callback close-lens();
     callback send-message(string);
     callback mic-pressed();
+    // The first run's first success (wire/onboarding.rs): the chat opens on one suggestion, and
+    // says "You're ready." with Done only once the mind has really answered. A reply that was an
+    // error or the not-set-up sentence keeps the person here, with the plain sentence and Try again.
+    in property <bool> first-run: false;
+    // "", "answered", "failed": what the first reply was, from Rust.
+    in property <string> first-run-outcome: "";
+    in property <string> first-run-failure: "";
+    callback first-run-done();
+    callback first-run-retry();
     // "open in Agents": the Agents screen, with this conversation's agent selected.
     callback open-in-agents();
     // "History": every conversation, on the Agents screen's All tab (#246).
@@ -1968,6 +1985,11 @@ export component IntentLens inherits Rectangle {
                 if root.results.length == 0 && root.input-text == "" : VerticalLayout {
                     spacing: 4px;
 
+                    // ── FOR YOU: what minds have put in the person's inbox ──
+                    // First, above what the Lens suggests, because a card is something a mind
+                    // was asked to say or chose to; a suggestion is the Lens guessing.
+                    ForYouSection { }
+
                     // ── SUGGESTED section ──
                     if root.suggestions.length > 0 : VerticalLayout {
                         spacing: 0;
@@ -2221,10 +2243,10 @@ export component IntentLens inherits Rectangle {
                 //
                 // Under the header and not above the reply box, which is where it was, because
                 // everything between this block and the bottom of the panel changes while a
-                // person is aiming at a button: the current-work strip appears when a run goes
-                // live (which is when requests arrive) and the reply box grows as they type, and
-                // each moved the card by 48px or more between the press and the release of a
-                // click (review of #580). The only thing above the card now is the header, which
+                // person is aiming at a button: the line naming a waiting question appears above
+                // the reply box (the current-work strip did, before) and the box grows as they
+                // type, and each moved the card by 48px or more between the press and the release
+                // of a click (review of #580). The only thing above the card now is the header, which
                 // is one fixed height, so the card's top edge is a constant of the panel, and its
                 // height limit below reserves the worst case for what is under it, so its bottom
                 // edge — where the buttons are — is one too.
@@ -2239,19 +2261,19 @@ export component IntentLens inherits Rectangle {
                         data: item;
                         // The tallest the card may be and still leave the panel showing
                         // everything else it owes: the header, the transcript sliver below and
-                        // the strip and reply box under that — the reply box was what went off the
+                        // the question line and reply box under that — the reply box was what went off the
                         // bottom edge in #218, with the card's buttons a 3px sliver above it. The
                         // panel is the window between the two bars, less its margins; from it go
                         // the header, the composer at its tallest, the
-                        // current-work strip, the transcript's floor, this
+                        // question line (its room is the old strip's), the transcript's floor, this
                         // block's padding with its "N more waiting" line (40px), and one row
                         // (32px) per decided record sharing this block with the card. The floor
                         // keeps a card's identity rows and buttons on any panel tall enough to
                         // hold them at all.
                         //
-                        // The composer and the strip are counted at their LARGEST, whether or
-                        // not they are drawn now: a limit that read their current heights would
-                        // resize the card, and move its buttons, when either changed.
+                        // The composer and the question line are counted at their LARGEST,
+                        // whether or not they are drawn now: a limit that read their current
+                        // heights would resize the card, and move its buttons, when either changed.
                         height-limit: max(240px, root.panel-height - Theme.chat-header-height
                             - composer.bar-height-max - Theme.chat-strip-height
                             - root.transcript-min - 40px - 32px * root.approvals.length);
@@ -2271,6 +2293,10 @@ export component IntentLens inherits Rectangle {
                     }
                 }
 
+                // The inbox, folded to one line under the header: in a conversation the transcript
+                // needs the room, and the cards are a press away.
+                ForYouSection { foldable: true; }
+
                 // The conversation — fills the panel's height, down to `transcript-min` while a
                 // card is waiting (see the property at the top of the component). It follows the
                 // newest line only while the person is at the bottom; scrolled up, it stays put
@@ -2281,7 +2307,14 @@ export component IntentLens inherits Rectangle {
 
                     if root.messages.length == 0 : ChatEmpty {
                         mind-name: root.mind-name;
+                        first-run: root.first-run;
                         starter(words) => { composer.fill(words); }
+                        task(words) => {
+                            transcript.jump();
+                            root.send-message(words);
+                        }
+                        type-chosen => { composer.focus-input(); }
+                        talk-chosen => { root.mic-pressed(); }
                     }
 
                     transcript := ChatTranscript {
@@ -2300,54 +2333,140 @@ export component IntentLens inherits Rectangle {
                             ChatMessage {
                                 data: msg;
                                 mind-name: root.mind-name;
-                                group-start: idx == 0 || root.messages[idx - 1].role != msg.role;
+                                group-start: idx == 0 || root.messages[idx - 1].role != msg.role || root.messages[idx - 1].mind != msg.mind;
+                                live: idx == root.live-steps-row ? root.live-steps : [];
+                                questions: idx == root.live-steps-row ? root.questions : [];
+                                queued-mind: root.queued-mind;
+                                queued-note: root.queued-note;
                                 open-run(run) => { root.open-run(run); }
-                            }
-                            // The run this reply started, as one card, kept in step with the
-                            // store: the loop finds it by id, so it is updated in place and
-                            // never drawn twice. Plain talk has no run and so no card.
-                            for card in root.work-cards : VerticalLayout {
-                                if card.run == msg.run && msg.run != "" : Rectangle {
-                                    height: work-card.height + Theme.sp-1;
-                                    work-card := WorkCard {
-                                        x: Theme.sp-3 + 16px + Theme.sp-2;
-                                        y: 0;
-                                        width: parent.width - self.x - Theme.sp-4;
-                                        data: card;
-                                        view-desk(run) => { root.view-desk(run); }
-                                        details(run) => { root.open-run(run); }
-                                    }
-                                }
+                                question-answer(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }
+                                cancel-queued => { root.cancel-queued(); }
                             }
                         }
                     }
                 }
 
-                // The mind's questions, where approvals sit and for the same reason: waiting on the
-                // person, they must stay put rather than scroll away with the transcript.
-                if root.questions.length > 0 : VerticalLayout {
-                    spacing: Theme.sp-1;
-                    padding: Theme.sp-2;
-                    for q in root.questions : QuestionCard {
+                // A question of the mind's is drawn in the reply that asked it (TimelineLine).
+                // One no followed reply holds (asked before the desktop restarted, say) is pinned
+                // here instead, where approvals sit and for the same reason: waiting on the
+                // person, it must stay put rather than scroll away, and never go unseen.
+                for q in root.questions : VerticalLayout {
+                    padding-left: Theme.sp-2;
+                    padding-right: Theme.sp-2;
+                    padding-bottom: q.in-reply ? 0px : Theme.sp-2;
+                    if !q.in-reply : QuestionCard {
                         mind: q.mind;
                         prompt: q.prompt;
                         options: q.options;
                         asked: q.asked;
                         removes: q.removes;
+                        recommended: q.recommended;
                         answered(a, pressed) => { root.question-answer(q.agent, q.request, a, pressed); }
                     }
                 }
 
-                // The current-work strip: only while a run in this chat is live.
-                if root.strip-shown : WorkStrip {
-                    mind: root.strip.mind;
-                    state-label: root.strip.label;
-                    needs-you: root.strip.state == "needs-you";
-                    live-runs: root.live-runs;
-                    waiting-runs: root.waiting-runs;
-                    can-view-desk: root.strip.can-view-desk;
-                    view-desk => { root.view-desk(root.strip.run); }
-                    view-work => { root.open-in-agents(); }
+                // While the run waits on a question, the reply box answers it: the question is
+                // said just above the box, so what Enter does is never a guess.
+                if root.composer-asks != "" : Rectangle {
+                    height: 32px;
+                    background: Theme.chat-bar;
+                    asks-line := Text {
+                        x: Theme.sp-4;
+                        width: parent.width - 2 * Theme.sp-4;
+                        height: parent.height;
+                        text: root.composer-asks;
+                        color: Theme.chat-needs-you;
+                        font-size: Theme.fs-caption;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                // The first reply was not an answer: the plain sentence, and Try again.
+                if root.first-run && root.first-run-outcome == "failed" && !root.is-generating : Rectangle {
+                    height: failed-row.preferred-height + 16px;
+                    border-radius: Theme.r-md;
+                    background: Theme.hover-fill;
+                    failed-row := HorizontalLayout {
+                        padding-left: Theme.sp-3; padding-right: Theme.sp-2;
+                        padding-top: 8px; padding-bottom: 8px;
+                        spacing: Theme.sp-2;
+                        Text {
+                            text: root.first-run-failure;
+                            color: Theme.color-warning;
+                            font-size: Theme.fs-body;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Rectangle {
+                            width: retry-text.preferred-width + 2 * Theme.sp-3;
+                            border-radius: Theme.r-md;
+                            border-width: retry-fs.has-focus ? Theme.focus-ring-width : 1px;
+                            border-color: retry-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+                            accessible-role: button;
+                            accessible-label: "Try again";
+                            accessible-action-default => { root.first-run-retry(); }
+                            retry-fs := FocusScope {
+                                init => { self.focus(); }
+                                key-pressed(event) => {
+                                    if (event.text == "\n" || event.text == " ") { root.first-run-retry(); return accept; }
+                                    reject
+                                }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => { root.first-run-retry(); } }
+                            retry-text := Text {
+                                text: "Try again";
+                                color: Theme.chat-text;
+                                font-size: Theme.fs-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // 4:30 in the first run: the closing line, once the mind has really answered.
+                if root.first-run && root.first-run-outcome == "answered" && !root.is-generating : Rectangle {
+                    height: ready-row.preferred-height + 16px;
+                    border-radius: Theme.r-md;
+                    background: Theme.hover-fill;
+                    ready-row := HorizontalLayout {
+                        padding-left: Theme.sp-3; padding-right: Theme.sp-2;
+                        padding-top: 8px; padding-bottom: 8px;
+                        spacing: Theme.sp-2;
+                        Text {
+                            text: "You\u{2019}re ready. The chat is always on the right; the microphone is in it.";
+                            color: Theme.chat-text;
+                            font-size: Theme.fs-body;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Rectangle {
+                            width: done-text.preferred-width + 2 * Theme.sp-3;
+                            border-radius: Theme.r-md;
+                            border-width: done-fs.has-focus ? Theme.focus-ring-width : 1px;
+                            border-color: done-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+                            accessible-role: button;
+                            accessible-label: "Done";
+                            accessible-action-default => { root.first-run-done(); }
+                            done-fs := FocusScope {
+                                key-pressed(event) => {
+                                    if (event.text == "\n" || event.text == " ") { root.first-run-done(); return accept; }
+                                    reject
+                                }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => { root.first-run-done(); } }
+                            done-text := Text {
+                                text: "Done";
+                                color: Theme.chat-text;
+                                font-size: Theme.fs-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
 
                 composer := ChatComposer {
@@ -2355,6 +2474,8 @@ export component IntentLens inherits Rectangle {
                     mode-label: root.mode-label;
                     destination: root.destination;
                     run-active: root.is-generating || root.live-runs > 0;
+                    mode: root.composer-mode;
+                    placeholder: root.composer-placeholder;
                     mic => { root.mic-pressed(); }
                     mode-clicked => { root.mode-clicked(); }
                     escape => { root.close-lens(); }

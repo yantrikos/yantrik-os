@@ -41,6 +41,22 @@ pub fn write_marker() {
     let _ = std::fs::remove_file(after_install_marker_path());
 }
 
+/// How long a machine is new. Before a day has passed since the first run there is no day behind
+/// it to brief on or recap: 13 Oct, minutes after setup, the Lens offered "Evening review: Recap
+/// today's activity".
+pub const NEW_FOR: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Whether the person has a history here worth a brief or a review: the first run ended at least
+/// [`NEW_FOR`] ago. A machine whose first run has not ended has none.
+pub fn has_history(since_first_run: Option<std::time::Duration>) -> bool {
+    since_first_run.is_some_and(|age| age >= NEW_FOR)
+}
+
+/// How long ago the first run ended, from its marker's time.
+pub fn since_first_run() -> Option<std::time::Duration> {
+    std::fs::metadata(marker_path()).ok()?.modified().ok()?.elapsed().ok()
+}
+
 /// Generate the guided Lens result for the current onboarding step.
 pub fn guide_result(step: i32) -> LensResult {
     match step {

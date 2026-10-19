@@ -1,0 +1,164 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# splash release|handoff|console — plymouth's last frame, the emblem, stays on the screen until
+# labwc holds the display, and tty1 is free for its getty well before that
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# plymouth draws the Yantrik emblem from the kernel's first frame (theme/yantrik.script), and asks
+# for the disk's password in the same program when there is one. Stock, `plymouth quit` at
+# multi-user.target clears the screen.
+#
+# Why plymouthd has to outlive labwc's first frame, on every KMS display (simpledrm on UEFI,
+# virtio-gpu, bochs-drm on SeaBIOS, i915, amdgpu): when plymouthd exits, even with
+# --retain-splash, it removes the framebuffer it scanned out (drmModeRmFB in its drm renderer) and
+# closes the device. The kernel turns the plane off (simpledrm clears the screen to black), and
+# with nobody else holding the device it hands the display back to the kernel console, which on
+# tty1 is a black screen with a cursor in its corner (#820, the OVMF film). --retain-splash only
+# keeps the frame when something else has already put its own frame up. `plymouth deactivate`
+# is the step that leaves the frame where it is: plymouthd stops drawing and drops the DRM master,
+# but keeps its framebuffer scanned out, so labwc can take the display from it without a gap. It
+# also stops reading the keyboard, and closes tty1 and gives VT switching back to the kernel.
+# With no pixel display (BIOS in VGA text mode, before a DRM driver loads) there is no frame to
+# keep either way, and both steps do what they did before.
+#
+#   release   yantrik-splash-release.service: a oneshot with no terminal, before getty@tty1.
+#             plymouthd deactivates: tty1 is free, the emblem stays. If plymouth does not answer,
+#             it quits with --retain-splash and is killed if it still does not, as before.
+#   handoff   yantrik-splash-handoff.service: started with it, ordered after it, waited on by
+#             nothing. Once labwc holds the display (it has a DRM device open), plymouth quits
+#             with --retain-splash: labwc's frame is on the screen by then, so removing plymouth's
+#             changes nothing. Bounded by the fallbacks below.
+#   console   tty1 back in text mode, with its cursor, for the crash guard's words (.bash_profile)
+#             and the handoff's no-desktop fallback: plymouth leaves tty1 in graphics mode, and
+#             getty@tty1 no longer switches it back on its own (splash.d/getty-tty1.conf).
+#
+# Nothing here may run in getty@tty1's own execution context: systemd takes tty1 for every Exec*
+# line of that unit before running it, and waited there while plymouthd still held the VT. On
+# real SeaBIOS boots the desktop was about two minutes late (#820). The release runs before the
+# getty asks for tty1; the handoff never touches tty1 except in its no-desktop fallback, as root,
+# after plymouth has gone.
+#
+# Every call to plymouth is bounded (PLY_WAIT seconds). A plymouthd that stops answering is
+# killed, because a frame of black is better than no desktop. The units bound each step too.
+#
+# Nothing here asks for or reads anything typed: the disk's password prompt is the theme's, and is
+# over before this runs. With plymouth not running (`plymouth.enable=0`, the boot that shows every
+# message, no plymouth in the image) release and handoff do nothing.
+set -u
+
+PLY_WAIT="${YANTRIK_SPLASH_PLY_WAIT:-5}"            # seconds any one plymouth call may take
+TTY_WAIT="${YANTRIK_SPLASH_TTY_WAIT:-15}"           # seconds for tty1's getty to have started
+SESSION_WAIT="${YANTRIK_SPLASH_SESSION_WAIT:-45}"   # seconds for labwc to start at all
+DRAWN_WAIT="${YANTRIK_SPLASH_DRAWN_WAIT:-180}"      # seconds for labwc to hold the display
+SETTLE="${YANTRIK_SPLASH_SETTLE:-1}"                # seconds for labwc's first frame after that
+TICK="${YANTRIK_SPLASH_TICK:-0.25}"
+PROC="${YANTRIK_SPLASH_PROC:-/proc}"
+TTY="${YANTRIK_SPLASH_TTY:-/dev/tty1}"
+
+# KDSETMODE(tty, KD_TEXT): the kernel console draws tty1 again, with what was written to it.
+# Then its cursor on (DECTCEM, ESC [ ? 25 h): the splash's kernel line hides it until plymouth
+# draws (vt.global_cursor_default=0), and tty1 was opened with that default.
+# perl-base is Essential in Debian; root, or the account tty1 is the controlling terminal of.
+text_console() {
+    perl -e 'open(my $t, "+<", $ARGV[0]) or exit 1; ioctl($t, 0x4B3A, 0) or exit 1; syswrite($t, "\e[?25h")' "$TTY" 2>/dev/null
+    return 0
+}
+
+case "${1:-}" in
+    console) text_console; exit 0 ;;
+    release | handoff) ;;
+    *)
+        echo "usage: splash release|handoff|console" >&2
+        exit 2
+        ;;
+esac
+
+command -v plymouth >/dev/null 2>&1 || exit 0
+
+ply() {
+    timeout -k 1 "$PLY_WAIT" plymouth "$@" 2>/dev/null
+}
+
+# Only root's plymouthd: its socket is abstract and anyone can bind it once it has gone.
+kill_plymouthd() {
+    pkill -u 0 -x plymouthd 2>/dev/null
+    sleep 1
+    pkill -KILL -u 0 -x plymouthd 2>/dev/null
+    return 0
+}
+
+# plymouth goes, leaving its frame. Killed if it does not answer.
+let_go() {
+    ply quit --retain-splash || kill_plymouthd
+    return 0
+}
+
+state() { # 0 running, 1 not running, 2 running and not answering
+    ply --ping
+    case $? in
+        0) return 0 ;;
+        124 | 137) return 2 ;;
+        *) return 1 ;;
+    esac
+}
+
+state
+case $? in
+    1) exit 0 ;;
+    2) let_go; exit 0 ;;
+esac
+
+if [ "$1" = release ]; then
+    ply deactivate || let_go
+    exit 0
+fi
+
+# ── handoff ──
+# labwc holds the display: one of its file descriptors is a DRM device. logind passes it that
+# fd, master already set, when the session takes the seat; its first frame follows at once.
+labwc_has_display() {
+    for pid in $(pgrep -x labwc 2>/dev/null); do
+        for fd in "$PROC/$pid"/fd/*; do
+            case "$(readlink "$fd" 2>/dev/null)" in /dev/dri/card*) return 0 ;; esac
+        done
+    done
+    return 1
+}
+
+ticks=0
+per_second=$(awk "BEGIN { print int(1 / $TICK + 0.5) }")
+tty_ticks=$((TTY_WAIT * per_second))
+session_ticks=$((SESSION_WAIT * per_second))
+drawn_ticks=$((DRAWN_WAIT * per_second))
+while :; do
+    # plymouth gone some other way (Escape and a crash, a shutdown): nothing to hand off.
+    state
+    case $? in
+        1) exit 0 ;;
+        2) let_go; exit 0 ;;
+    esac
+    if labwc_has_display; then
+        sleep "$SETTLE"
+        let_go
+        exit 0
+    fi
+    if [ "$ticks" -ge "$tty_ticks" ] && ! pgrep -t "${TTY#/dev/}" >/dev/null 2>&1; then
+        # Nothing has started on tty1: its getty may be waiting for the VT. Free it whatever the
+        # cost to the picture: the desktop matters more than the emblem.
+        let_go
+        exit 0
+    fi
+    if [ "$ticks" -ge "$session_ticks" ] && ! pgrep -x labwc >/dev/null 2>&1; then
+        # No desktop is coming. The text console back, so the crash guard's words are seen.
+        ply quit || kill_plymouthd
+        text_console
+        exit 0
+    fi
+    if [ "$ticks" -ge "$drawn_ticks" ]; then
+        # labwc runs and never took the display; whatever it shows, plymouth has had its time.
+        let_go
+        exit 0
+    fi
+    sleep "$TICK"
+    ticks=$((ticks + 1))
+done

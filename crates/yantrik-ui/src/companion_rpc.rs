@@ -69,6 +69,11 @@ fn ask_failed(e: AskError) -> ServiceError {
             code: yantrik_ipc_contracts::ERR_NO_MODEL,
             message: "no AI model answered: check Settings \u{2192} AI".to_string(),
         },
+        // Still no model's words, so still the no-model code; the message says why.
+        AskError::Unreachable(why) => ServiceError {
+            code: yantrik_ipc_contracts::ERR_NO_MODEL,
+            message: format!("no AI model answered: the model could not be reached ({why})"),
+        },
         AskError::Failed(reason) => failed(reason),
     }
 }

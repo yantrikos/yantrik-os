@@ -863,6 +863,18 @@ mod tests {
         assert_eq!(ModelTier::from_model_name("Llama-3.2-70B"), ModelTier::Large);
     }
 
+    /// VM 542, 16 Oct 2026: a report read the swap log's `steps=15` for Claude as `steps=1`.
+    /// A large-tier cloud model must be able to call a tool and then answer from its result.
+    #[test]
+    fn claude_is_large_native_and_has_room_to_call_a_tool_and_answer() {
+        let p = ModelCapabilityProfile::from_model_name("claude-sonnet-5-5");
+        assert_eq!(p.tier, ModelTier::Large);
+        assert_eq!(p.family, ModelFamily::Anthropic);
+        assert!(p.uses_native_tools());
+        assert!(p.max_agent_steps > 1, "{}", p.summary());
+        assert!(p.summary().contains("steps=15"), "{}", p.summary());
+    }
+
     #[test]
     fn tier_detection_cloud_models() {
         assert_eq!(ModelTier::from_model_name("claude-3-5-sonnet"), ModelTier::Large);

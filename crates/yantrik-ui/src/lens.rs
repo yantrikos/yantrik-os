@@ -571,13 +571,26 @@ pub fn apply_smart_ranking(
 
 // ── Context Suggestions (empty-query experience) ──
 
+/// Three first tasks that do something real and visible on this desktop, with one press: the
+/// first run's chat offers them (chat_chrome.slint, ChatEmpty), and so does the Lens on a machine
+/// with no history yet, in place of a brief or a review of a day that has not happened.
+pub const FIRST_TASKS: [&str; 3] = [
+    "Make a note called Groceries with milk, eggs and bread",
+    "What's on my calendar this week?",
+    "Open Files and show me what's in Documents",
+];
+
 /// Build contextual suggestions based on time, system state, running apps, and notifications.
 /// This fires when the Lens opens with no query — the "ambient awareness" experience.
+///
+/// `has_history`: the machine has a day behind it (`onboarding::has_history`). Without one, the
+/// morning brief and the evening review have nothing to say, so the first tasks are offered.
 pub fn build_context_suggestions(
     snapshot: &yantrik_os::SystemSnapshot,
     unread_notifications: usize,
     companion_online: bool,
     running_processes: &[yantrik_os::ProcessInfo],
+    has_history: bool,
 ) -> Vec<LensResult> {
     let mut results = Vec::new();
     let now = std::time::SystemTime::now()
@@ -586,8 +599,16 @@ pub fn build_context_suggestions(
         .as_secs();
     let hour = (now / 3600) % 24;
 
-    // 1. Time-of-day suggestion
+    // 0. A machine minutes old: what it can do, rather than a recap of nothing.
+    if !has_history && companion_online {
+        for task in FIRST_TASKS {
+            results.push(lr("context", task, "Try it: one press", "✦", format!("ask:{task}")));
+        }
+    }
+
+    // 1. Time-of-day suggestion, once there is a day to brief on or review.
     match hour {
+        _ if !has_history => {}
         5..=9 => {
             if companion_online {
                 results.push(lr(
@@ -1561,6 +1582,53 @@ pub fn capitalize(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+#[cfg(test)]
+mod first_task_tests {
+    use super::*;
+
+    fn titles(has_history: bool) -> Vec<String> {
+        build_context_suggestions(&yantrik_os::SystemSnapshot::default(), 0, true, &[], has_history)
+            .into_iter()
+            .map(|r| r.title.to_string())
+            .collect()
+    }
+
+    /// 13 Oct: minutes after setup, Super+K offered "Evening review: Recap today's activity". A
+    /// machine with no day behind it is offered what it can do, at any hour.
+    #[test]
+    fn a_new_machine_is_offered_first_tasks_never_a_recap_of_a_day_it_has_not_had() {
+        let new = titles(false);
+        assert_eq!(new, FIRST_TASKS.map(String::from).to_vec());
+        for history_needing in ["Evening review", "Morning brief"] {
+            assert!(!new.iter().any(|t| t == history_needing), "{history_needing} on a new machine");
+        }
+        let seasoned = titles(true);
+        assert!(!seasoned.iter().any(|t| FIRST_TASKS.contains(&t.as_str())), "the first tasks are for a new machine");
+        let actions: Vec<String> = build_context_suggestions(&yantrik_os::SystemSnapshot::default(), 0, true, &[], false)
+            .into_iter()
+            .map(|r| r.action_id.to_string())
+            .collect();
+        assert!(actions.iter().all(|a| matches!(resolve_action(a, &[]), LensAction::SubmitToAI(_))), "each is one press: sent as asked");
+    }
+
+    #[test]
+    fn a_day_since_the_first_run_is_a_history() {
+        use std::time::Duration;
+        assert!(!crate::onboarding::has_history(None), "a first run not ended has no history");
+        assert!(!crate::onboarding::has_history(Some(Duration::from_secs(5 * 60))));
+        assert!(crate::onboarding::has_history(Some(crate::onboarding::NEW_FOR)));
+    }
+
+    /// The chat's first-run tasks and the Lens's are the same three.
+    #[test]
+    fn the_chat_offers_the_same_first_tasks() {
+        let slint = include_str!("../../yantrik-ui-slint/ui/components/chat_chrome.slint");
+        for task in FIRST_TASKS {
+            assert!(slint.contains(&format!("\"{task}\"")), "{task}");
+        }
     }
 }
 
