@@ -317,7 +317,7 @@ impl GenericOpenAIBackend {
         let body_str = serde_json::to_string(body)?;
 
         let tool_count = body.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
-        tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %url, "GenericOpenAI Ollama request");
+        tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %yantrik_shown_address::address_of(&url), "GenericOpenAI Ollama request");
 
         let agent = self.build_agent();
         let mut req = agent.post(&url).header("Content-Type", "application/json");
@@ -327,6 +327,7 @@ impl GenericOpenAIBackend {
 
         let resp = req
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .map_err(|e| {
                 tracing::error!(error = %e, "Ollama API request failed");
                 e
@@ -526,6 +527,7 @@ impl GenericOpenAIBackend {
         let host = error_host(&url);
         let resp = req
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .with_context(|| format!("OpenAI-compatible API request to {host} failed"))?;
         let status = resp.status().as_u16();
         if let Some(sink) = &self.meta {
@@ -688,6 +690,7 @@ impl GenericOpenAIBackend {
             let agent = self.build_agent();
             let _resp = agent.get(&url)
                 .call()
+                .map_err(crate::refusal::unanswered)
                 .context("Ollama health probe failed")?;
         } else {
             // OpenAI-compatible: send a tiny models list request
@@ -697,7 +700,7 @@ impl GenericOpenAIBackend {
             for (k, v) in self.auth_headers() {
                 req = req.header(&k, &v);
             }
-            let _resp = req.call().context("OpenAI health probe failed")?;
+            let _resp = req.call().map_err(crate::refusal::unanswered).context("OpenAI health probe failed")?;
         }
 
         Ok(start.elapsed().as_millis() as u64)

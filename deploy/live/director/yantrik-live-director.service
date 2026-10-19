@@ -4,14 +4,23 @@
 # finished mission hands over to the next one and a stopped one is retried after a rest.
 [Unit]
 Description=Yantrik Live Director (missions for the live Mind)
-After=yantrik-mind.service
+After=yantrik-mind.service yantrik-live-contracts.service
+# Every mission is a contract; without the service the Director starts none (director.py).
+Wants=yantrik-live-contracts.service
 
 [Service]
 Type=oneshot
 User=yantrik
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=HOME=/home/yantrik
-ExecStart=/usr/bin/python3 /opt/yantrik-live/director/director.py
+# -I: no user site-packages and no PYTHON* variables. HOME is the Mind's account's, and a .pth
+# the Mind wrote under ~/.local would otherwise run inside this unit. -I is not passed on to a
+# child interpreter, so the Director runs yos with -I too, and PYTHONNOUSERSITE covers any other
+# Python started here. Neither is what keeps the Mind from reporting as the Director: what this
+# unit starts reads the Mind's files, so the contracts service takes for the Director only the
+# process holding this run's key (contracts.py register), not whatever runs in this unit.
+Environment=PYTHONNOUSERSITE=1
+ExecStart=/usr/bin/python3 -I /opt/yantrik-live/director/director.py
 NoNewPrivileges=yes
 PrivateTmp=yes
 # No IP at all. The Director speaks to the desktop over its unix socket only, and check-page loads

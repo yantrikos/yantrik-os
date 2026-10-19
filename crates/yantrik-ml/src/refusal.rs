@@ -44,17 +44,28 @@ const REFUSED: [&str; 7] =
 /// Anthropic's API host: its OpenAI-compatible endpoint is `https://api.anthropic.com/v1`.
 const ANTHROPIC_HOST: &str = "api.anthropic.com";
 
-/// The host (and port) of a URL, never its path, query or `user:pass@`: a path can carry an
-/// account id (Cloudflare), a query a key.
+/// The host (and port) of a URL as errors and refusals name it, never its path, query or
+/// `user:pass@`: a path can carry an account id (Cloudflare), a query a key. Read from the one
+/// rule for drawing an address (`yantrik_shown_address`), so a key holding a `/`
+/// (`https://user:p/w@host/v1`) is "the provider", never "user:p" (review of #856). Not a URL at
+/// all is "the provider" too.
 pub fn host_of(url: &str) -> String {
-    let authority = url.split("://").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("");
-    let host = authority.rsplit('@').next().unwrap_or("");
-    if host.is_empty() { "the provider".to_string() } else { host.to_string() }
+    let host = if url.contains("://") { yantrik_shown_address::shown_host(url) } else { String::new() };
+    if host.is_empty() { "the provider".to_string() } else { host }
 }
 
-/// Whether `base_url` is Anthropic's own API.
+/// A request that never got an answer, as it may be said or logged: ureq's own text with every
+/// address in it drawn by `yantrik_shown_address`. Its "bad uri" and "configured for https only"
+/// errors carry the whole address, sign-in details and `?key=` included.
+#[cfg(feature = "api-llm")]
+pub fn unanswered(e: ureq::Error) -> anyhow::Error {
+    anyhow::anyhow!(yantrik_shown_address::without_sign_in(&e.to_string()))
+}
+
+/// Whether `base_url` is Anthropic's own API: a decision, so it reads the address as it is.
 pub fn is_anthropic(base_url: &str) -> bool {
-    host_of(base_url).eq_ignore_ascii_case(ANTHROPIC_HOST)
+    let authority = base_url.split("://").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("");
+    authority.rsplit('@').next().unwrap_or("").eq_ignore_ascii_case(ANTHROPIC_HOST)
 }
 
 /// Text from a provider, made safe to show and to log: only characters that print. Control
@@ -510,5 +521,44 @@ mod tests {
         for not_a_refusal in [200, 408, 429, 500, 503] {
             assert!(ProviderRefused::of(not_a_refusal, "https://api.anthropic.com/v1", TEMPERATURE_DEPRECATED, None).is_none());
         }
+    }
+
+    /// Review of #856: the refusal sentence the person reads in the chat, and every error and log
+    /// line that names a host, never names a part of the sign-in details.
+    #[test]
+    fn a_refusal_never_names_a_part_of_the_sign_in_details() {
+        let said = |url: &str| ProviderRefused::of(401, url, "", None).unwrap().said();
+        assert!(said("https://user:p/w@aig.example/v1").starts_with("the provider refused the request"), "{}", said("https://user:p/w@aig.example/v1"));
+        assert!(said("https://user:pw@aig.example/v1?api-key=x#f").starts_with("aig.example refused"));
+        assert!(said("http://u@127.0.0.1:11434").starts_with("127.0.0.1:11434 refused"));
+        assert!(said("http://u:p@[::1]:4000/v1").starts_with("[::1]:4000 refused"));
+        for url in [
+            "https://user:p/w@aig.example/v1",
+            "https://user:pw@aig.example/v1?api-key=x#f",
+            "http://u@127.0.0.1:11434",
+            "http://u:p@[::1]:4000/v1",
+            "user:pw@aig.example",
+            "user%40x:pw@aig.example",
+            "https://aig.example/a@b",
+            "aig.example/v1?api-key=x",
+        ] {
+            for shown in [said(url), host_of(url)] {
+                for secret in ["user", "pw", "p/w", "api-key", "u@", "u:p", "%40", "#f"] {
+                    assert!(!shown.contains(secret), "{url} names {secret:?}: {shown}");
+                }
+            }
+        }
+        // Deciding is not drawing: Anthropic is still told by the address as it is.
+        assert!(is_anthropic("https://key@api.anthropic.com/v1"));
+        assert!(!is_anthropic("https://api.anthropic.com@evil.example/v1"));
+    }
+
+    #[cfg(feature = "api-llm")]
+    #[test]
+    fn a_request_that_never_got_an_answer_says_no_sign_in_or_key() {
+        let https_only = unanswered(ureq::Error::RequireHttpsOnly("http://user:pw@aig.example/v1/models?key=k".into()));
+        assert_eq!(https_only.to_string(), "configured for https only: http://aig.example/v1/models");
+        let bad = unanswered(ureq::Error::BadUri("user:pw@aig.example/v1 is missing scheme".into()));
+        assert_eq!(bad.to_string(), "bad uri: aig.example/v1 is missing scheme");
     }
 }

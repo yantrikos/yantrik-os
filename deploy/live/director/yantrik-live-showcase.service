@@ -1,0 +1,48 @@
+# The live instance's showcase publisher (`director.py showcase`): copies the game to show out of
+# the Mind's ~/Projects into /opt/yantrik-live/showcase and writes the frame page there, so the
+# Mind's account cannot write what the stream shows (security review of #840). The window is
+# yantrik-live-showcase-browser.service, its place on screen yantrik-live-windows.service. On VM
+# 561 only. Installed by setup-director.sh.
+[Unit]
+Description=Yantrik Live showcase publisher (what the showcase shows)
+After=yantrik-mind.service
+StartLimitIntervalSec=0
+
+[Service]
+# Root, so that the account the Mind's commands run as cannot write the showcase, and confined
+# so that root here can do nothing but that: read the Mind's files (CAP_DAC_READ_SEARCH, no other
+# capability; director.py takes only files the Mind's account owns, never a link) and write
+# /opt/yantrik-live/showcase. Every other path in /home, /root and /run/user is hidden, the rest of the disk is
+# read-only, and there is no network.
+Environment=HOME=/home/yantrik
+# -I: no user site-packages, no PYTHON* variables. HOME names the Mind's home, and root must
+# never load a .pth the Mind's account wrote there.
+ExecStart=/usr/bin/python3 -I /opt/yantrik-live/director/director.py showcase
+UMask=0022
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/yantrik-live/showcase
+ProtectHome=tmpfs
+BindReadOnlyPaths=-/home/yantrik/Projects -/home/yantrik/director
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=256M
+Nice=5
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

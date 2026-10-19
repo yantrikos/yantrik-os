@@ -19,6 +19,8 @@ run target/ui-validation/decision.png 720 780 verify-decision
 run target/ui-validation/unused.png 1280 800 verify-apps
 run target/ui-validation/mind-panel.png 1280 800 verify-mind-panel
 run target/ui-validation/minds.png 1280 800 verify-minds
+run target/ui-validation/for-you.png 1280 800 verify-for-you
+run target/ui-validation/for-you-narrow.png 480 800 verify-for-you
 run target/ui-validation/jump-to-present.png 480 400 verify-jump-to-present
 run target/ui-validation/context-rail.png 900 500 verify-context-rail
 run target/ui-validation/calendar.png 1100 720 verify-calendar
@@ -49,6 +51,7 @@ run target/ui-validation/settings-verify.png 1280 800 verify-settings
 run target/ui-validation/settings-verify-compact.png 800 600 verify-settings
 run target/ui-validation/quick-settings.png 1280 800 verify-quick-settings
 run target/ui-validation/osd.png 1280 800 verify-osd
+run target/ui-validation/capture-bar.png 1280 800 verify-capture-bar
 run target/ui-validation/battery.png 1280 800 verify-battery
 run target/ui-validation/network.png 1280 800 verify-network
 run target/ui-validation/lens-answers.png 640 800 verify-lens-answers

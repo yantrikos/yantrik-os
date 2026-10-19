@@ -232,12 +232,13 @@ impl GoogleGeminiBackend {
     fn send_request(&self, url: &str, body: &serde_json::Value) -> Result<ureq::Body> {
         let body_str = serde_json::to_string(body)?;
 
-        tracing::debug!(body_bytes = body_str.len(), url = %url, "Gemini request");
+        tracing::debug!(body_bytes = body_str.len(), url = %yantrik_shown_address::address_of(url), "Gemini request");
 
         let agent = self.build_agent();
         let resp = agent.post(url)
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .context("Gemini API request failed")?;
 
         Ok(resp.into_body())
@@ -286,6 +287,7 @@ impl GoogleGeminiBackend {
         let agent = self.build_agent();
         let _resp = agent.get(&url)
             .call()
+            .map_err(crate::refusal::unanswered)
             .context("Gemini health probe failed")?;
 
         Ok(start.elapsed().as_millis() as u64)

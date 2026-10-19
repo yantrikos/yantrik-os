@@ -341,7 +341,8 @@ fn llm_extract(ollama_base: &str, model: &str, content: &str, prompt: &str, url:
     let resp: serde_json::Value = ureq::post(&api_url)
         .set("Content-Type", "application/json")
         .send_string(&payload.to_string())
-        .map_err(|e| format!("LLM request failed: {e}"))?
+        // ureq 2's error text starts with the whole address, sign-in details included.
+        .map_err(|e| format!("LLM request failed: {}", yantrik_shown_address::without_sign_in(&e.to_string())))?
         .into_json()
         .map_err(|e| format!("LLM response parse error: {e}"))?;
 
@@ -436,4 +437,17 @@ fn strip_html(html: &str) -> String {
     }
 
     result.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chat_model_that_cannot_be_reached_is_named_without_its_sign_in() {
+        // Nothing listens on port 9, so ureq 2 fails in transport, and its text starts with the URL.
+        let err = llm_extract("http://user:pw@127.0.0.1:9", "m", "page", "what?", "https://page.example").unwrap_err();
+        assert!(err.starts_with("LLM request failed: http://127.0.0.1:9/api/chat"), "{err}");
+        assert!(!err.contains("user") && !err.contains("pw") && !err.contains('@'), "{err}");
+    }
 }

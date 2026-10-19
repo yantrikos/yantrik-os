@@ -143,11 +143,13 @@ pub(crate) fn target(store: &ProviderStore, config_url: &str, config_model: &str
 /// What an address is called: the catalogue's name for it, or its host. The same answer every
 /// other surface gives (runs_on::identity).
 fn name_for(url: &str) -> String {
-    use crate::runs_on::identity::{from_url, host, ProviderRef};
+    use crate::runs_on::identity::{from_url, shown_host, ProviderRef};
     match from_url(url) {
         ProviderRef::Known(p) => p.display_name.to_string(),
+        // No host that can be drawn without part of the sign-in details (`shown_host`).
+        ProviderRef::Custom(h) if h.is_empty() => "A service you set up".to_string(),
         ProviderRef::Custom(h) | ProviderRef::Local(h) => h,
-        ProviderRef::NotReported => host(url),
+        ProviderRef::NotReported => shown_host(url),
     }
 }
 
@@ -276,6 +278,17 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The AI page's provider name never holds a part of the sign-in details (review of #844).
+    #[test]
+    fn the_provider_name_is_never_a_part_of_the_sign_in_details() {
+        for url in crate::runs_on::tests::HOSTILE_URLS {
+            crate::runs_on::tests::assert_clean(url, &name_for(url));
+        }
+        assert_eq!(name_for("https://user:p/w@aig.example/v1"), "A service you set up");
+        assert_eq!(name_for("https://user:pw@aig.example/v1?api-key=x#f"), "aig.example");
+        assert_eq!(name_for("http://u@127.0.0.1:11434"), "127.0.0.1:11434");
+    }
     use crate::wire::settings::ProviderStoreEntry;
 
     fn listed(ids: &[&str]) -> Vec<ListedModel> {

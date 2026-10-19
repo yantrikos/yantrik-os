@@ -128,3 +128,6 @@ pub fn register_all(reg: &mut ToolRegistry) {
     window::register(reg);
     workspace::register(reg);
 }
+
+#[cfg(test)]
+mod capture_rule_tests;

@@ -2,7 +2,7 @@
 name = "yantrik-spreadsheet"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik Spreadsheet — full-featured spreadsheet with formulas, charts, AI assist"
+description = "ySheets — one sheet of formulas, opened from and saved to CSV, with undo and a control surface"
 
 [[bin]]
 name = "yantrik-spreadsheet"
@@ -18,6 +18,13 @@ slint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# O_NONBLOCK, so opening a FIFO cannot hang the window (src/document.rs).
+libc = { workspace = true }
+# The desktop's file picker, over the FileChooser portal (src/picker.rs).
+zbus = { workspace = true }
+
+[dev-dependencies]
+png = "0.18"
 
 [build-dependencies]
 slint-build = "1.17"

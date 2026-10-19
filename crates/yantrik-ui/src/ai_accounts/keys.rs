@@ -13,7 +13,7 @@ pub struct Resolved {
 impl std::fmt::Debug for Resolved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Resolved")
-            .field("base_url", &self.base_url)
+            .field("base_url", &yantrik_app_runtime::place::address_of(&self.base_url))
             .field("key", &self.key.as_ref().map(|_| "<redacted>"))
             .finish()
     }

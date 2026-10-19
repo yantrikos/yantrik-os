@@ -1414,3 +1414,106 @@ and its paragraph names both, inside the same fixed heights.
 | `crates/yantrik-ui/src/mind_mode.rs` (#504 review) | a person's, the socket's and a lapse's lowering each clear the rules and leave one line for the audit and the menu; raising keeps them; a lapsed bypass's rules answer nothing and are not published |
 | `gate.rs`, `gate.py` (#504 review) | `mode_from` drops the session rules of a bypass that has run out |
 | `yos-mcp-selftest.py`, `yos-selftest.py` (#504 review) | a three-line description is read whole and asks as open-ended; `yos` prints every line of a description at the purpose's indent |
+
+## Standing rules for an unattended machine (15 October 2026)
+
+Pranab's decision: **on a machine nobody is sitting at, the administrator may allow named actions
+from the shell's start.** "Should be allowed otherwise it will be stuck, it's an unattended
+system."
+
+The case. The live-stream VM (561) runs with nobody at it. A Director types build missions to
+the Mind, which runs commands through `shell.agent_run` — published as open-ended, so since 29
+September it asks once per session in `auto`, and the answer ("Allow for this session") is a
+session rule that dies with the shell. Every OS update restarts the shell. After each one the
+first `agent_run` put a card up, nobody was there to press it, it lapsed after 110 seconds, and
+the live builds stalled until somebody logged in to click Allow. The design was doing exactly
+what it said — "no standing permission that survives a restart" — on a machine it was never
+written for.
+
+So there is one exception to that sentence, and it is deliberately narrow. **The machine's
+administrator — root, not a card and never a mind — can name `(app, action)` pairs that are
+answered as if a person had pressed "Allow for this session", from the shell's start.**
+
+**Where they come from.** One file, `/etc/yantrik/standing-rules.conf`. Lines `<app> <action>`,
+an optional `# comment`, blank lines and comment lines ignored; names match
+`^[a-z0-9_.-]{1,64}$`; at most 32 rules. Nothing ships it, so a machine without it — every
+machine but the ones somebody set up to run alone — has no standing rules. The live VM's file is
+one line:
+
+```
+shell agent_run   # the Director's builds
+```
+
+**When the file is believed.** Opened with `O_NOFOLLOW` (a symlink at the path is refused, not
+followed), a regular file on the open descriptor (so nothing swaps it between the look and the
+read), owned by uid 0 and writable by neither group nor others. One check the brief did not ask
+for: the directory it sits in is held to the same two (root's, not group- or other-writable),
+because a directory somebody else can write lets them rename their own root-owned-looking file
+into place and every check above is then made of the replacement. Fail any of these and the
+whole file is ignored, with a `tracing::warn` naming why. A malformed line ignores the whole file
+too, and the warning names every bad line: a file that does not say exactly what its author meant
+is not believed in part (a root write cut off at the shell's start can turn a longer action name
+into a shorter valid one). More than 32 rules
+ignores the whole file: which 32 to keep would be an accident of order. The file is read once,
+when the shell's one `Modes` is built (`mind_mode::modes`, behind a `OnceLock`); nothing on the
+socket can make the shell read it again, and
+`mind_mode_no_control_path_reaches_the_standing_rules_loader` holds every `control*.rs` to that.
+
+**What a standing rule answers: what a session rule answers, and less.**
+
+| | a standing rule |
+|---|---|
+| `plan`, `ask` | nothing. A person who lowers the mode gets the asks back; raising it to `auto` brings the standing rules back without a card |
+| `auto`, `bypass` | turns an ask into a run, as a session rule does — the open-ended `shell.agent_run` above all |
+| `bypass_all` | nothing to answer; full bypass asks nothing anyway |
+| a `dangerous` action | never (the card never offers a session rule for one, and a standing rule is that button pressed ahead of time) |
+| what cannot be undone | never — `irreversible` still wins in `ask_or_rule`, checked at decision time, not trusted from the file |
+| above the machine ceiling | never; `tool_permission` is consulted first, as for every mode |
+| a call held from the person's phone | never; the administrator answered for the desk |
+
+A lowering does not clear a standing rule — it is not the person's answer to take back — but in
+ask and plan it answers nothing, which is the same thing for as long as the mode stays down.
+
+**Whom it covers: every caller on the machine, not one mind.** A standing rule is not scoped to
+the Mind, a mission or an agent. Like a session rule, it answers for any caller the mode answers
+for — another agent, a harness, `yos act` — so on the live VM any of them runs `shell.agent_run`
+in auto with no card. The reach checks still come first (`control_approvals`, and the app
+runtime's `control.rs`), and so do the ceiling, the phone hold and a tainted session's ask; a
+standing rule only answers the question a session rule would have answered.
+
+**The person stays in charge.** A standing rule in force is listed in the mode menu beside the
+session rules ("shell.agent_run · this machine's administrator") with the same ✕. The ✕
+(`person_revoke_rule`, UI only) **suspends** it until the shell restarts; nothing re-arms it short
+of a restart, and a mind can neither add, re-arm nor revoke one.
+
+**Every door decides the same.** The shell publishes the standing rules in force in
+`mind-mode.json`, as `standing_rules` beside `session_rules` — none in ask or plan, none
+suspended — and `gate::Mode::standing_covers` holds them to auto and the bypasses and below
+`dangerous` again, so a file that says more than the shell would have is not believed. The
+Python SDK's gate is the same rule for rule. The MCP bridge reads them off `describe shell`, and
+`mind-mode-vectors.json` carries them as their own `rule=standing` case, so the bridge's copy of
+the table is held to the shell's on every mode, grade, ceiling and sentence. `surface-vectors.json`
+is unchanged: it is replayed by every port of the dispatch, and the standing rules are covered
+there by the gate's and the Python SDK's own tests and by
+`mind_mode_standing_rules_publish_to_the_gate_and_it_agrees`, which drives what the shell
+publishes through the gate's reader and `decide` in every mode.
+
+**Visible.** `describe shell` → `mind_mode` carries `standing_rules` (`app`, `action`,
+`suspended`, `in_force`) and `standing_rules_source`. The mode's sentence (Settings, and
+`set_mind_mode`'s answer) stops promising "once per session before it runs commands" while a
+standing rule is in force and says instead "This machine's administrator allows shell.agent_run
+without asking; anything else that runs commands asks once per session." Every action that runs on
+a standing rule is unasked and audited like any rule-answered action, with the mode written as
+`standing_rule`: the bridge asks its table the same question without the standing rules to tell,
+and the shell's `request_approval` answers `not_needed` with `"standing_rule": true` for a caller
+that asks it.
+
+### Tests
+
+| where | what |
+|---|---|
+| `crates/yantrik-ui/src/mind_mode.rs` | the parser (comments, blanks, duplicates, one bad line ignores the whole file, 32 and no more); the loader refuses a symlink, a non-root owner, a group- or other-writable file, an other-writable directory, a directory or FIFO at the path, and too many rules (the owner is a test seam, so no test needs root); a standing rule runs `shell.agent_run` in auto and bypass without a card and is named as what answered; it does nothing in ask or plan, after a lowering, or after a bypass lapses to ask, and comes back on raising; it never answers `dangerous`, what cannot be undone, or past the ceiling; the ✕ suspends it through any mode change; the sentence names it; what `policy_json` publishes, the gate decides the same in every mode |
+| `crates/yantrik-ui/src/control_approvals.rs` | no `control*.rs` names the loader, and inside `mind_mode.rs` it is called once, from `modes` |
+| `crates/yantrik-ipc-transport/src/gate.rs` | `standing_covers` in every mode, never `dangerous`, never unrecoverable, never past the ceiling or for a held call; `mode_from` reads `standing_rules` and keeps them through a lapse back to auto |
+| `sdk/python/tests/test_gate.py` | the same, in the Python gate |
+| `deploy/yantrik-os/yos-mcp-selftest.py` | the `rule=standing` vectors; `run_command` runs in auto under a standing rule and is recorded as `standing_rule`; in ask, or suspended, it asks |

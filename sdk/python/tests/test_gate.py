@@ -47,7 +47,7 @@ class TestReadingTheFiles(unittest.TestCase):
 
     def test_the_mode_is_read_the_way_mode_from_reads_it(self):
         now = 1_800_000_000
-        self.assertEqual(mode_from('{"mode":"auto"}', now), ("auto", set()))
+        self.assertEqual(mode_from('{"mode":"auto"}', now), ("auto", set(), set()))
         for text in ("", "{}", "mode: auto", '{"mode":"yolo"}', '{"mode":"BYPASS"}', "[]",
                      '{"mode": 3}'):
             self.assertEqual(mode_from(text, now).name, "ask", text)
@@ -60,7 +60,7 @@ class TestReadingTheFiles(unittest.TestCase):
         # A lapse is a lowering: the session rules the file lists end with the bypass.
         ruled = dict(bypass, session_rules=[{"app": "terminal", "action": "run"}])
         self.assertEqual(len(mode_from(json.dumps(ruled), now).session_rules), 1)
-        self.assertEqual(mode_from(json.dumps(ruled), now + 60), ("auto", set()))
+        self.assertEqual(mode_from(json.dumps(ruled), now + 60), ("auto", set(), set()))
         # Full bypass is time-boxed the same way, and neither bypass is ever what one ends in.
         full = dict(bypass, mode="bypass_all")
         self.assertEqual(mode_from(json.dumps(full), now).name, "bypass_all")
@@ -430,6 +430,40 @@ class TestWhatCannotBeUndone(unittest.TestCase):
         err = decide(with_rule("plan", "update_event"), "calendar", "update_event", "sensitive",
                      "Move it")
         self.assertTrue(err.startswith("GRANT:") and "plan mode" in err, err)
+
+    def test_a_standing_rule_answers_only_in_auto_or_a_bypass_and_never_more(self):
+        # `gate::tests::a_standing_rule_answers_only_where_a_session_rule_could_and_only_in_auto_or_a_bypass`.
+        run = "Run a command line in its own terminal. What it runs can do anything you can."
+        standing = frozenset({("shell", "agent_run"), ("calendar", "delete_event")})
+
+        def with_standing(ceiling, mode, asks_above=None):
+            return Authority(ceiling, Mode(mode, frozenset(), standing), asks_above=asks_above)
+
+        for mode in ("plan", "ask", "auto", "bypass", "bypass_all"):
+            ruled = with_standing("dangerous", mode)
+            self.assertEqual(decide(ruled, "shell", "agent_run", "sensitive", run) is None,
+                             mode in ("auto", "bypass", "bypass_all"), mode)
+            self.assertEqual(decide(ruled, "shell", "agent_run", "dangerous", run) is None,
+                             mode == "bypass_all", mode)
+            self.assertEqual(decide(ruled, "calendar", "delete_event", "sensitive", DELETE) is None,
+                             mode == "bypass_all", mode)
+            self.assertTrue(decide(with_standing("standard", mode), "shell", "agent_run",
+                                   "sensitive", run).startswith("CEILING:"), mode)
+            self.assertIsNotNone(decide(with_standing("dangerous", mode, asks_above=0), "shell",
+                                        "agent_run", "sensitive", run), mode)
+        # Read from the file under their own key, and still read after a bypass lapses back to
+        # auto — where they answer — or ask, where they do not.
+        now = 1_800_000_000
+        doc = {"mode": "bypass", "previous": "auto", "bypass_expires_unix": now,
+               "session_rules": [{"app": "files", "action": "move"}],
+               "standing_rules": [{"app": "shell", "action": "agent_run"}, {"app": 1}]}
+        read = mode_from(json.dumps(doc), now - 1)
+        self.assertEqual(read.standing_rules, {("shell", "agent_run")})
+        lapsed = mode_from(json.dumps(doc), now)
+        self.assertEqual((lapsed.name, lapsed.session_rules), ("auto", set()))
+        self.assertTrue(lapsed.standing_covers("shell", "agent_run", 2))
+        lapsed = mode_from(json.dumps(dict(doc, previous="ask")), now)
+        self.assertFalse(lapsed.standing_covers("shell", "agent_run", 2))
 
     def test_plan_says_so_when_the_reason_is_the_description(self):
         fragment = ('"GRANT: {app}.{action} is graded `{graded}` and {final_word}, and this machine '

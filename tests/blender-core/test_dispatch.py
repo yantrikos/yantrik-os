@@ -483,7 +483,7 @@ class TestModeAndGrant(unittest.TestCase):
 
     def test_the_mode_file_is_read_the_way_the_runtime_reads_it(self):
         now = 1_800_000_000
-        self.assertEqual(mode_from('{"mode":"auto"}', now), ("auto", set()))
+        self.assertEqual(mode_from('{"mode":"auto"}', now), ("auto", set(), set()))
         for text in ("", "{}", "mode: auto", '{"mode":"yolo"}', '{"mode":"BYPASS"}', "[]"):
             self.assertEqual(mode_from(text, now)[0], "ask", text)
         bypass = json.dumps({"mode": "bypass", "previous": "auto",

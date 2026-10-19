@@ -223,12 +223,17 @@ def _mode_file():
 # nothing else, so a package the image gained after an install never reaches the base system
 # until the updater reconciles it (#210: VM 520 had no `ip`, `ss` or `ping`). The names here
 # are commands, not packages — they are what the shipped code and the person at the keyboard
-# actually run — and they must stay in step with REQUIRED_PACKAGES in yantrik-update.
+# actually run — and the package behind each must be in deploy/yantrik-os/packages.list, the one
+# list the image installs and yantrik-update reconciles (#854).
 IMAGE_COMMANDS = {
     "ip": "the network tools and every `ip addr` a person types (iproute2)",
     "ss": "socket listings the mind runs (iproute2)",
     "ping": "the reachability check, and the first thing anyone tries on a broken network (iputils-ping)",
     "grim": "every screenshot the desktop takes",
+    "slurp": "the region a person drags for a screenshot or a recording",
+    "wl-copy": "a screenshot copied to the clipboard, and every copy between apps (wl-clipboard)",
+    "wf-recorder": "screen recording: the capture bar's Record and a mind's record_start",
+    "vainfo": "whether a recording can encode on the GPU rather than the CPU",
     "curl": "the updater's downloads and the mind's fetches",
     "python3": "yos itself is a python3 script",
     "nano": "EDITOR, exported by yantrik-session",

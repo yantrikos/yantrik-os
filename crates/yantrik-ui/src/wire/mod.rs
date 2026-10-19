@@ -56,8 +56,13 @@ pub mod i18n;
 mod lens;
 mod navigate;
 pub mod notifications;
+// The Lens's For you inbox of mind notices, their toasts and their one button.
+pub mod for_you;
+// Settings → Minds → Initiative.
+pub mod initiative;
 mod power;
 pub mod screenshot;
+pub mod capture_bar;
 pub mod settings;
 pub mod theme;
 pub mod theme_files;
@@ -152,9 +157,13 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     system_poll::wire(ui, ctx);
     package_manager::wire(ui, ctx);
     screenshot::wire(ui, ctx);
+    // The capture bar, the red dot's click, and any recording a previous shell left running.
+    capture_bar::wire(ui);
     // Owns the notification centre, the toasts and the poll of the one store. `toast` is the
     // drawing half and has no `wire` of its own any more.
     notifications::wire(ui, ctx);
+    for_you::wire(ui);
+    initiative::wire(ui);
     skill_store::wire(ui, ctx);
     device_dashboard::wire(ui, ctx);
     permission_dashboard::wire(ui, ctx);

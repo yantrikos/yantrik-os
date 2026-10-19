@@ -58,6 +58,12 @@ pub fn protected(path: &str) -> bool {
     // is not `~/dev/project`); the others are names under a home directory and match as whole
     // names wherever they are (a folder's entry ends in `/`, so `.config/gh/` is not
     // `.config/ghostty`).
+    // The desktop's shared list, a whole component at a time, as every other side reads it: the
+    // substring list above was copied from its oldest entries and missed the newer ones, the
+    // person's screenshots among them (security review of #828, finding 1).
+    if forms.iter().any(|f| yantrik_ipc_contracts::home_paths::is_protected(std::path::Path::new(f))) {
+        return true;
+    }
     forms.iter().any(|f| {
         let f = format!("{f}/");
         crate::BLOCKED_SEGMENTS.iter().chain(ALSO_PROTECTED).any(|seg| {

@@ -96,6 +96,7 @@ fn verb(base: &str, rest: &str) -> Phrase {
         "pay" => ("paid".to_string(), "paying".to_string()),
         "draw" => ("drew".to_string(), "drawing".to_string()),
         "do" => ("did".to_string(), "doing".to_string()),
+        "copy" => ("copied".to_string(), "copying".to_string()),
         _ if base.ends_with('e') && !base.ends_with("ee") => {
             (format!("{base}d"), format!("{}ing", &base[..base.len() - 1]))
         }
@@ -109,7 +110,7 @@ fn verb(base: &str, rest: &str) -> Phrase {
 const VERBS: &[&str] = &[
     "add", "archive", "cancel", "change", "check", "clear", "close", "copy", "create", "delete",
     "download", "edit", "export", "find", "generate", "get", "import", "install", "list", "load",
-    "make", "mark", "move", "open", "pause", "play", "print", "read", "remove", "rename", "reply",
+    "make", "mark", "move", "open", "pause", "play", "print", "read", "remove", "rename", "render", "reply",
     "restore", "resume", "run", "save", "search", "send", "set", "share", "show", "start", "stop",
     "switch", "update", "upload", "write",
 ];

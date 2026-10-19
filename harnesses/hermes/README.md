@@ -9,7 +9,7 @@ reads none of it except the model name, which it passes as the `detail` the pick
 
 ## Install
 
-**Settings → Harnesses** lists Hermes whether or not it is installed, says which part is
+**Settings → Minds** lists Hermes whether or not it is installed, says which part is
 missing, and has an *Install* button that does all of it with the output on the row:
 `harnesses/lib/install/hermes.sh` installs Hermes itself when it is not there (Hermes's own
 installer, into `~/.hermes`, no root, browser and computer-use tools left out), copies and enables
@@ -103,7 +103,7 @@ Hermes, which has no `clarify` gateway, is unchanged.
 
 ## Yantrik models
 
-Installing Hermes (the ISO, the installer, or **Settings → Harnesses → Install**) does this with no
+Installing Hermes (the ISO, the installer, or **Settings → Minds → Install**) does this with no
 question; **Use its own models** on its row undoes it, and **Use Yantrik models** does it again. It
 sets Hermes's model in its own
 `~/.hermes/config.yaml` to the desktop's model gateway: `model.provider: custom`,

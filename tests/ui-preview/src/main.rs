@@ -36,11 +36,13 @@ mod bar_overlays_tests;
 mod cheat_sheet_tests;
 mod quick_settings_tests;
 mod osd_tests;
+mod capture_bar_tests;
 mod battery_tests;
 mod network_tests;
 mod monitor_tests;
 mod weather_tests;
 mod minds_tests;
+mod for_you_tests;
 mod jump_tests;
 mod handoff_card_tests;
 mod picker_tests;
@@ -94,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-agents-catalog") { return agents_tests::run_catalog(&window, output); }
     if args.iter().any(|a| a == "verify-mind-panel") { return mind_panel_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-minds") { return minds_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-for-you") { return for_you_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-jump-to-present") { return jump_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-handoff-card") { return handoff_card_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-picker") { return picker_tests::run(&window, output); }
@@ -124,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-cheat-sheet") { return cheat_sheet_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-quick-settings") { return quick_settings_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-osd") { return osd_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-capture-bar") { return capture_bar_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-battery") { return battery_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-network") { return network_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-lens-answers") { return lens_tests::run(&window, output); }

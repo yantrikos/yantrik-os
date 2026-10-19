@@ -42,9 +42,14 @@ impl Default for Http {
     }
 }
 
+/// The account's host as a mind may read it in an error: never a part of the sign-in details,
+/// query or fragment (`yantrik_shown_address`, review of #856). "its provider" when the host
+/// cannot be told from those details.
 fn host(url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    rest.split(['/', '?', '#']).next().unwrap_or("").rsplit('@').next().unwrap_or("").to_string()
+    match yantrik_shown_address::shown_host(url) {
+        host if host.is_empty() => "its provider".to_string(),
+        host => host,
+    }
 }
 
 impl Upstream for Http {
@@ -66,6 +71,29 @@ impl Upstream for Http {
                 code: "unreachable",
                 message: format!("Could not reach {} ({}).", host(base_url), t.kind()),
             }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review of #856: "Could not reach …" goes back to the mind that asked, and names the
+    /// account's host only as it may be drawn.
+    #[test]
+    fn could_not_reach_never_names_a_part_of_the_sign_in_details() {
+        assert_eq!(host("https://user:pw@aig.example/v1?api-key=x#f"), "aig.example");
+        assert_eq!(host("http://u@127.0.0.1:11434/v1"), "127.0.0.1:11434");
+        assert_eq!(host("http://u:p@[::1]:4000/v1"), "[::1]:4000");
+        assert_eq!(host("https://user:p/w@aig.example/v1"), "its provider");
+        assert_eq!(host("https://aig.example/a@b"), "its provider");
+        // Through the real send: the address does not parse, so nothing is sent, and the
+        // sentence the mind reads does not say "user:p".
+        let err = Http::default().chat("https://user:p/w@aig.example/v1", None, b"{}").err().expect("not sent");
+        assert!(err.message.starts_with("Could not reach its provider"), "{}", err.message);
+        for secret in ["user", "p/w", "u:p"] {
+            assert!(!err.message.contains(secret), "{}", err.message);
         }
     }
 }

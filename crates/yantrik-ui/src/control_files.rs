@@ -21,7 +21,7 @@ const FILES_SCREEN: i32 = 8;
 
 /// Put the shell on the Files screen if it is not already, so the browser state is live and a
 /// following describe reports the directory rather than whatever else was up.
-fn ensure_files_screen(ui: &App) {
+pub(crate) fn ensure_files_screen(ui: &App) {
     if ui.get_current_screen() != FILES_SCREEN {
         ui.set_current_screen(FILES_SCREEN);
         ui.invoke_navigate(FILES_SCREEN);

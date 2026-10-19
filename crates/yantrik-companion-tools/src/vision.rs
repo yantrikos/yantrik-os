@@ -3,7 +3,7 @@
 //! Uses Ollama's native `/api/chat` endpoint with multimodal `images` field.
 //! Screenshots captured via `grim` (Wayland).
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, validate_write_path};
 
 /// Register vision tools with the Ollama base URL (e.g. "http://192.168.4.35:11434").
 pub fn register(reg: &mut ToolRegistry, ollama_base: &str, model: &str) {
@@ -167,8 +167,15 @@ impl Tool for DescribeImageTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let path = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => super::expand_home(p),
+            Some(p) => p,
             None => return "Error: path parameter required".to_string(),
+        };
+        // The same rule as every file tool: the picture goes to a model, and a path anywhere the
+        // person can read was a screenshot of their desktop, or ~/.ssh, with no check at all
+        // (security review of #828, finding 1).
+        let path = match validate_path(path) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
         };
 
         if !std::path::Path::new(&path).exists() {
@@ -224,8 +231,13 @@ impl Tool for SmartRenameTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        // Read by a model and then renamed: both ends under the file tools' rule, as for
+        // describe_image.
         let path = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => super::expand_home(p),
+            Some(p) => match validate_write_path(p) {
+                Ok(p) => p,
+                Err(e) => return format!("Error: {e}"),
+            },
             None => return "Error: path parameter required".to_string(),
         };
 
@@ -266,6 +278,9 @@ impl Tool for SmartRenameTool {
             return format!("Error: cannot rename {}", file_path.display());
         };
         let new_path = parent.join(format!("{new_name}.{ext}"));
+        if let Err(e) = validate_write_path(&new_path.to_string_lossy()) {
+            return format!("Error: {e}");
+        }
 
         if new_path.exists() {
             return format!("Target already exists: {}", new_path.display());
@@ -278,6 +293,45 @@ impl Tool for SmartRenameTool {
                 new_path.file_name().unwrap_or_default().to_string_lossy()
             ),
             Err(e) => format!("Rename failed: {e}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(tool: &dyn Tool, args: serde_json::Value) -> String {
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+        let ctx = ToolContext {
+            db: &db,
+            max_permission: PermissionLevel::Dangerous,
+            registry_metadata: None,
+            task_manager: None,
+            incognito: true,
+            agent_spawner: None,
+        };
+        tool.execute(&ctx, &args)
+    }
+
+    /// Security review of #828, finding 1: the picture goes to a model, so a saved screenshot of
+    /// the person's desktop, or anything outside the home, is refused before anything is read.
+    /// The model's address leads nowhere: a refusal that came after a request would fail
+    /// differently.
+    #[test]
+    fn a_picture_a_tool_may_not_read_is_never_sent_to_the_model() {
+        let describe = DescribeImageTool { ollama_base: "http://127.0.0.1:9".into(), model: "none".into() };
+        let rename = SmartRenameTool { ollama_base: "http://127.0.0.1:9".into(), model: "none".into() };
+        for path in [
+            "~/Pictures/Screenshots/Screenshot 2026-10-15 at 14.32.07.png",
+            "~/Videos/Recordings/Recording 2026-10-15 at 14.32.07.mp4",
+            "~/.ssh/id_ed25519",
+            "/etc/hostname",
+        ] {
+            for tool in [&describe as &dyn Tool, &rename] {
+                let said = run(tool, serde_json::json!({ "path": path }));
+                assert!(said.starts_with("Error:"), "{} {path}: {said}", tool.name());
+            }
         }
     }
 }

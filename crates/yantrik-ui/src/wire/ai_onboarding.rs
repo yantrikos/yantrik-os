@@ -272,7 +272,7 @@ fn probe_runtime(configured: Option<&str>) -> bool {
 
     for url in &candidates {
         if agent.get(url).call().is_ok() {
-            tracing::info!(endpoint = %url, "Onboarding: LLM runtime reachable");
+            tracing::info!(endpoint = %yantrik_app_runtime::place::address_of(url), "Onboarding: LLM runtime reachable");
             return true;
         }
     }

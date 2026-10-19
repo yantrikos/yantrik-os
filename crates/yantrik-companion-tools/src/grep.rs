@@ -10,7 +10,7 @@ pub fn register(reg: &mut super::ToolRegistry) {
     reg.register(Box::new(GrepTool));
 }
 
-struct GrepTool;
+pub(crate) struct GrepTool;
 
 impl Tool for GrepTool {
     fn name(&self) -> &'static str { "grep" }
@@ -211,9 +211,12 @@ fn search_dir_recursive(
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
 
-        // Skip hidden dirs and common noise
+        // Skip hidden dirs and common noise, and every protected place below the folder asked
+        // for: validate_path checked only the top, and ~/Pictures held the person's screenshots
+        // (security review of #828, finding 1).
         if name.starts_with('.') || name == "node_modules" || name == "target"
             || name == "__pycache__" || name == ".git"
+            || yantrik_ipc_contracts::home_paths::is_protected(&path)
         {
             continue;
         }

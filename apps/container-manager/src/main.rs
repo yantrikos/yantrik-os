@@ -153,8 +153,11 @@ fn main() {
             }
         });
     }
-    app.on_proposal_applied(|| {});
-    app.on_agent_context_activated(|_| {});
+    // No `proposal-applied` or `agent-context-activated` handler, on purpose. The proposal card
+    // draws its Apply button only for a proposal with an impact, and every proposal here is an
+    // answer to read (Close goes to `proposal-dismissed`). The rail's context rows are drawn
+    // as plain rows, not buttons, because nothing here opens them (`context-opens` defaults to
+    // false in agent_rail.slint).
     // The rail follows the app's state on a timer.
     //
     // Calling it once at startup was not enough: at that moment Weather has no reading yet and
@@ -236,6 +239,7 @@ fn read_images(rt: &str) -> Vec<ImageData> {
     runtime::parse_images(stdout)
         .into_iter()
         .map(|i| ImageData {
+            title: runtime::plain_image_name(&i.repo_tag).into(),
             id: i.id.into(),
             repo_tag: i.repo_tag.into(),
             size_text: i.size_text.into(),
@@ -436,11 +440,7 @@ fn publish_control(app: &ContainerManagerApp, health: &Health) {
                 .with("runtime_state", state.state_name())
                 // Said twice: the strip under the header is the person's half of this.
                 .with("notice", ui.get_notice().to_string())
-                .with("tab", match ui.get_active_tab() {
-                    1 => "images",
-                    2 => "volumes",
-                    _ => "containers",
-                })
+                .with("tab", TABS[ui.get_active_tab().clamp(0, 2) as usize])
                 .with("running", ui.get_running_count())
                 .with("stopped", ui.get_stopped_count())
                 .with("total", ui.get_total_count())
@@ -469,6 +469,7 @@ fn publish_control(app: &ContainerManagerApp, health: &Health) {
     let ui_for = move || weak.upgrade().ok_or_else(|| "Containers window is gone".to_string());
 
     let refresh_ui = ui_for.clone();
+    let tab_ui = ui_for.clone();
     let start_ui = ui_for.clone();
     let stop_ui = ui_for.clone();
     let restart_ui = ui_for.clone();
@@ -495,6 +496,19 @@ fn publish_control(app: &ContainerManagerApp, health: &Health) {
                 "runtime_state": state.state_name(),
             }))
         })
+        .action(
+            Action::new("show_tab", "Switch the window to the containers, images or volumes list")
+                .arg(Param::text("tab").describe("containers | images | volumes")),
+            move |args| {
+                let ui = tab_ui()?;
+                let index = tab_index(args["tab"].as_str().unwrap_or_default())?;
+                // What the tab bar does when it is clicked (container_manager.slint): the screen
+                // draws the list for `active-tab`, and `ct-tab` hears of the switch.
+                ui.set_active_tab(index);
+                ui.invoke_ct_tab(index);
+                Ok(serde_json::json!({ "tab": TABS[index as usize] }))
+            },
+        )
         .action(
             Action::new("start", "Start a stopped container").arg(Param::text("container")),
             move |args| {
@@ -585,6 +599,18 @@ fn publish_control(app: &ContainerManagerApp, health: &Health) {
         .serve();
 }
 
+/// The window's tabs, in the order the tab bar draws them: `active-tab` is an index into this.
+const TABS: [&str; 3] = ["containers", "images", "volumes"];
+
+/// The tab a caller named, as the screen's `active-tab` index.
+fn tab_index(name: &str) -> Result<i32, String> {
+    let name = name.trim().to_lowercase();
+    TABS.iter()
+        .position(|t| *t == name)
+        .map(|i| i as i32)
+        .ok_or_else(|| format!("no `{name}` tab; use containers, images or volumes"))
+}
+
 // ── Wire all callbacks ───────────────────────────────────────────────
 
 fn wire(app: &ContainerManagerApp, health: &Health) {
@@ -596,7 +622,8 @@ fn wire(app: &ContainerManagerApp, health: &Health) {
     // Published after the first read, so a describe reports real containers.
     publish_control(app, health);
 
-    // Tab switch
+    // Tab switch. The screen switches the tab itself: the tab bar sets `active-tab` and the list
+    // drawn follows it (container_manager.slint). This only hears that it happened.
     app.on_ct_tab(|_tab| {
         tracing::debug!("Switched to tab {}", _tab);
     });
@@ -743,5 +770,50 @@ fn wire(app: &ContainerManagerApp, health: &Health) {
                 ui.set_ai_response(SharedString::new());
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tab_is_named_the_way_describe_reports_it() {
+        assert_eq!(tab_index("containers"), Ok(0));
+        assert_eq!(tab_index(" Images "), Ok(1));
+        assert_eq!(tab_index("volumes"), Ok(2));
+        assert!(tab_index("networks").is_err());
+        assert!(tab_index("").is_err());
+    }
+
+    /// The source above the tests, so a test mentioning a name cannot satisfy itself.
+    fn main_source() -> String {
+        let src = include_str!("main.rs");
+        src.split("#[cfg(test)]").next().unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn the_tab_bar_switches_the_list_on_its_own() {
+        // `ct-tab`'s Rust handler only logs, which is right only while the screen does the work.
+        let screen = include_str!("../../../crates/yantrik-ui-slint/ui/container_manager.slint");
+        for (i, id) in ["tab-containers", "tab-images", "tab-volumes"].iter().enumerate() {
+            let line = format!("(id == \"{id}\") {{ root.active-tab = {i}; root.ct-tab({i}); }}");
+            assert!(screen.contains(&line), "the tab bar no longer sets active-tab for {id}");
+            assert!(screen.contains(&format!("if active-tab == {i} : VerticalLayout")), "nothing draws tab {i}");
+        }
+    }
+
+    #[test]
+    fn no_proposal_here_draws_an_apply_button() {
+        // The card draws Apply only for a proposal with an impact, and nothing handles Apply.
+        let src = main_source();
+        assert!(!src.contains("impact:"), "a proposal with an impact needs an on_proposal_applied");
+        assert!(!src.contains("on_proposal_applied"));
+    }
+
+    #[test]
+    fn the_rail_rows_are_not_offered_as_buttons() {
+        assert!(!main_source().contains("on_agent_context_activated"));
+        assert!(!include_str!("../../../crates/yantrik-ui-slint/ui/container_manager.slint").contains("context-opens: true"));
     }
 }

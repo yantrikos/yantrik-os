@@ -241,6 +241,12 @@ jobs:
       - name: The live Director keeps its Mind building
         run: python3 deploy/live/director/director-selftest.py
 
+      # Every mission is a task contract: a malformed report is refused whole, nothing the
+      # Director or the Mind's account can send accepts one, and revisions and events are never
+      # rewritten. Run as root here, it also tries the real service as another account.
+      - name: The live Director's contracts are accepted only by a person
+        run: sudo python3 deploy/live/director/contracts-selftest.py
+
       # First boot left git with no identity, so `git commit` from a mind, an editor or a
       # harness died with "Please tell me who you are" (#680). This runs the session's
       # defaulting block under a temporary HOME with the account faked.

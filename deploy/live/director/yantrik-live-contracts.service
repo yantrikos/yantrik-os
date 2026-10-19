@@ -1,0 +1,52 @@
+# The live instance's task contracts (deploy/live/director/contracts.py serve): the store of every
+# mission's contract and its events, and the only writer of it. On VM 561 only. Installed by
+# setup-director.sh.
+#
+# Its own account, because the Mind's commands run as yantrik, and so does the Director: an
+# account either could use would let the Mind write its own acceptance, which the design forbids
+# (design/task-contracts-2026-10-17.md). The store is in /var/lib/yantrik-contracts, 0700. The
+# socket in /run/yantrik-contracts is open to every account; contracts.py names each caller from
+# the kernel's peer credentials: root outside the yantrik-live-* units (a person) may decide; the
+# Director may report, from its unit and with the key that run of its unit was given once, while
+# it was alone there; and nothing anyone can send makes a contract accepted but a person's decision.
+[Unit]
+Description=Yantrik Live task contracts (the missions' contracts and their events)
+Before=yantrik-live-director.service
+StartLimitIntervalSec=0
+
+[Service]
+User=yantrik-contracts
+Group=yantrik-contracts
+# -I: no user site-packages, no PYTHON* variables.
+ExecStart=/usr/bin/python3 -I /opt/yantrik-live/director/contracts.py serve
+StateDirectory=yantrik-contracts
+StateDirectoryMode=0700
+RuntimeDirectory=yantrik-contracts
+RuntimeDirectoryMode=0755
+UMask=0077
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# A unix socket by path, which a private network namespace does not hide; no IP at all.
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryMax=128M
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

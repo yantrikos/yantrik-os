@@ -178,11 +178,18 @@ impl Plan {
         )
     }
 
-    /// The address, and when it is not the provider's own, whose it is not.
+    /// The address, and when it is not the provider's own, whose it is not. The host is the
+    /// drawable one (`shown_host`, the one rule): for `https://user:p/w@aig.example/v1` the raw
+    /// `host` is "user:p", part of the key (review of #856, finding 1). Whether the key may cross
+    /// plain http is still decided on the address as it is (`card`).
     fn where_to(&self) -> String {
+        let at = match crate::runs_on::identity::shown_host(&self.destination) {
+            h if h.is_empty() => "an address not shown, as it may hold sign-in details".to_string(),
+            h => h,
+        };
         match &self.own_address {
-            Some(own) => format!("{} (not {}'s own address, {own})", host(&self.destination), self.provider_name),
-            None => host(&self.destination),
+            Some(own) => format!("{at} (not {}'s own address, {own})", self.provider_name),
+            None => at,
         }
     }
 }
@@ -441,7 +448,11 @@ pub(crate) fn marker(home: &Path, harness: &str) -> Option<Marker> {
 /// The row's line: "Provider: NVIDIA NIM · nvidia/nemotron-…" once assigned, else its own.
 pub(crate) fn row_line(home: &Path, harness: &str) -> String {
     match (adapter_for(harness), marker(home, harness)) {
-        (_, Some(m)) if m.provider_id == GATEWAY_ID => format!("Provider: {} · {} (through the desktop's gateway)", m.provider_name, m.model),
+        // A mind on the gateway asks for "picked": whatever the person picks in the ask bar.
+        (_, Some(m)) if m.provider_id == GATEWAY_ID && m.model.trim() == "picked" => {
+            format!("Provider: {}, the model you pick in the ask bar", m.provider_name)
+        }
+        (_, Some(m)) if m.provider_id == GATEWAY_ID => format!("Provider: {} · {}", m.provider_name, m.model),
         (_, Some(m)) => format!("Provider: {} · {} (from your saved providers)", m.provider_name, m.model),
         (Some(_), None) if uses_own_models(home, harness) => "Provider: its own models (your choice)".into(),
         (Some(_), None) => "Provider: its own settings".into(),

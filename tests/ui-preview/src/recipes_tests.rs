@@ -126,7 +126,7 @@ pub fn rows() -> Vec<RecipeRowData> {
         },
         RecipeRowData {
             error: "Step 1 failed: web_search: no results for \"{{topic}}\"".into(),
-            unbound: "Needs {{topic}} — sent as written until set".into(),
+            unbound: "To fill in: topic. Until then it is sent with the blanks as written.".into(),
             ..row(Row {
                 id: "rcp_research",
                 name: "Research a topic",
@@ -159,7 +159,7 @@ pub fn rows() -> Vec<RecipeRowData> {
         }),
         RecipeRowData {
             template: true,
-            unbound: "Needs {{city}} — sent as written until set".into(),
+            unbound: "To fill in: city. Until then it is sent with the blanks as written.".into(),
             ..row(Row {
                 id: "builtin_morning_briefing",
                 name: "Morning briefing",
@@ -215,7 +215,7 @@ fn research_steps() -> Vec<RecipeStepData> {
     vec![
         RecipeStepData {
             result: "web_search: no results for \"{{topic}}\"".into(),
-            unbound: "{{topic}} had no value when it ran".into(),
+            unbound: "The blank “topic” was empty when it ran".into(),
             detail: "tool: web_search\narguments: {\"query\":\"{{topic}} latest\"}\nkeeps it as: hits\non error: stop the recipe".into(),
             ..step("1", "tool", "web_search", "web_search query=\"{{topic}} latest\"", "failed", "failed")
         },

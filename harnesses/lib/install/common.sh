@@ -1,6 +1,6 @@
 # Shared by every harness installer here. Sourced, not run.
 #
-# The Install button on Settings > Harnesses runs one of these as the person, with no terminal
+# The Install button on Settings > Minds runs one of these as the person, with no terminal
 # and no root, and streams what it prints into the row. So every line printed is written for
 # that row, and everything lands in the person's home:
 #
@@ -92,7 +92,7 @@ wire_model() {
     if [ -x "$ui" ] && grep -q -e '--wire-model' "$ui" 2>/dev/null; then
         # #675's model step: the harness's own config pointed at the gateway, `model: picked`,
         # its file kept for Revert. It never stops the install: a step that did not run is said,
-        # recorded as failed for the proofs, and Settings → Harnesses → Use Yantrik models retries.
+        # recorded as failed for the proofs, and Settings → Minds → Use Yantrik models retries.
         # Only its last line is kept: that is the one it writes for a person (logs go before it).
         if out=$(RUST_LOG=error "$ui" --wire-model "$1" </dev/null 2>&1); then
             out=$(printf '%s\n' "$out" | tail -n 1)
@@ -104,12 +104,12 @@ wire_model() {
             return 0
         fi
         out=$(printf '%s\n' "$out" | tail -n 1)
-        say "model: $1 was not pointed at your model ($out); Settings → Harnesses → Use Yantrik models does it"
+        say "model: $1 was not pointed at your model ($out); Settings → Minds → Use Yantrik models does it"
         printf 'failed\n' > "$state/model"
         return 0
     fi
     rm -f "$state/model"
-    say "model: its own (no desktop here to point it at your model; Settings → Harnesses does it later)"
+    say "model: its own (no desktop here to point it at your model; Settings → Minds does it later)"
 }
 
 # Node, pinned. Updated by hand with the checksums nodejs.org publishes in SHASUMS256.txt for

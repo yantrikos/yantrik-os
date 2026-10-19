@@ -51,7 +51,7 @@ const RESTART_BACKOFF: Duration = Duration::from_secs(20);
 /// Screens where a toast must not appear: lock, login, boot, onboarding. The same list the
 /// approval card uses, and for the same reason — what is on a locked screen is readable by
 /// whoever is standing in front of it.
-const SILENT_SCREENS: [i32; 4] = [0, 2, 3, 32];
+pub(crate) const SILENT_SCREENS: [i32; 4] = [0, 2, 3, 32];
 
 thread_local! {
     /// The shell's mirror of the store, installed by [`wire`]. A thread_local because the poll
@@ -64,7 +64,7 @@ thread_local! {
 }
 
 /// Read the mirror on the UI thread.
-fn with_mirror<T>(f: impl FnOnce(&mut notifications::NotificationMirror) -> T) -> Option<T> {
+pub(crate) fn with_mirror<T>(f: impl FnOnce(&mut notifications::NotificationMirror) -> T) -> Option<T> {
     MIRROR.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -358,7 +358,7 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
             n.actions
                 .iter()
                 .find(|a| a.id == action_id)
-                .map(|a| (n.app.clone(), a.args.clone()))
+                .map(|a| (n.app.clone(), a.args.clone(), n.sender.as_ref().is_some_and(|s| s.desktop)))
         })
     })
     .flatten();
@@ -369,8 +369,16 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
     if let Some(ui) = weak.upgrade() {
         crate::wire::toast::remove(&ui, id);
         resync(&ui);
-        if let Some((app, args)) = ours {
-            forward_to_app(&ui, &app, action_id, args);
+        if let Some((app, args, from_desktop)) = ours {
+            // A capture's Open, Show in Files and Delete act on a file in the person's home, so
+            // they are carried out here, as the person's press, not as a call on the control
+            // surface any caller could make; `capture::notice` checks who filed it and what it
+            // names.
+            if crate::capture::notice::handles(action_id) {
+                crate::capture::notice::press(&ui, action_id, args.as_ref(), from_desktop);
+            } else {
+                forward_to_app(&ui, &app, action_id, args);
+            }
         }
     }
     tracing::info!(id, action_id, "notification action pressed");
@@ -382,7 +390,7 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
 /// raised it, and "the download finished" is exactly the case where Download Manager has since
 /// been closed. If the app is not one of ours, or its surface never answers, that is logged and
 /// nothing else happens — the alternative is a button that reports success it did not observe.
-fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<serde_json::Value>) {
+pub(crate) fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<serde_json::Value>) {
     let installed = crate::apps::Catalogue::shared().get();
     let Some((surface, opens_as)) = button_route(app, &installed) else {
         tracing::warn!(app, action, "a notification button named an app this desktop does not open");
@@ -481,7 +489,7 @@ fn open_sender(ui: &App, id: &str) {
 }
 
 /// Put the mirror on screen: the list, the badge, and whether the service is answering.
-fn resync(ui: &App) {
+pub(crate) fn resync(ui: &App) {
     MIRROR.with(|slot| {
         if let Some(shared) = slot.borrow().as_ref() {
             notifications::sync_to_ui(&shared.borrow(), &ui.as_weak());
@@ -526,6 +534,7 @@ fn maybe_toast(ui: &App, n: &Notification) {
     // not verified" when there is no record): a toast had no sender line at all, and a name the
     // caller chose was the only thing on it (security reviews of #614).
     let app_name = notifications::sender_name(n);
+    let thumbnail = thumbnail_for(n);
 
     crate::wire::toast::push(
         ui,
@@ -543,9 +552,33 @@ fn maybe_toast(ui: &App, n: &Notification) {
                 .to_string()
                 .into(),
             actions: ModelRc::new(VecModel::from(actions)),
+            thumbnail: thumbnail.clone().unwrap_or_default(),
+            has_thumbnail: thumbnail.is_some(),
         },
         notifications::urgency_int(n.urgency),
     );
+}
+
+/// The largest picture a toast loads for its thumbnail. A screenshot of a 4K desktop is a few
+/// megabytes of PNG; past this it is not one of ours, and decoding it would hold up the UI thread.
+const THUMBNAIL_MAX_BYTES: u64 = 24 << 20;
+
+/// The thumbnail a toast may draw: only on a notification the desktop itself sent (the service
+/// says so from the socket's own process, `Sender::desktop`), only for a capture this desktop
+/// saved, and only a file of a sane size. Anyone else's `image` is kept in the store and never
+/// loaded, so a caller cannot make the shell decode a file of its choosing.
+fn thumbnail_for(n: &yantrik_ipc_contracts::notifications::Notification) -> Option<slint::Image> {
+    let from_desktop = n.sender.as_ref().is_some_and(|s| s.desktop);
+    let path = std::path::PathBuf::from(n.image.as_deref().filter(|_| from_desktop)?);
+    let home = crate::capture::names::home().ok()?;
+    if !crate::capture::names::is_capture(&path, &home) {
+        return None;
+    }
+    let size = std::fs::metadata(&path).ok().filter(|m| m.is_file())?.len();
+    if size == 0 || size > THUMBNAIL_MAX_BYTES {
+        return None;
+    }
+    slint::Image::load_from_path(&path).ok()
 }
 
 // ── The poll ────────────────────────────────────────────────────────────────────────────────
@@ -570,6 +603,9 @@ fn start_poll(ui: &App) {
                 let tick = match poll_once(revision) {
                     Ok(since) => {
                         revision = since.revision;
+                        // The harness host's desk reads the person's settings and the store's
+                        // revision from here, on its own thread (notice_desk).
+                        crate::notice_desk::observe(&since);
                         if said_down {
                             tracing::info!("the notifications service is answering again");
                             said_down = false;
@@ -643,13 +679,18 @@ fn apply_tick(ui: &App, tick: Tick) {
             for id in &applied.gone {
                 crate::wire::toast::remove(ui, id);
             }
-            for n in &applied.fresh {
+            // A mind's notice is toasted by its own rule (`for_you`), never by this one: only a
+            // granted interrupt, only when the screen allows it, and only once. Nor is it handed to
+            // the feature pipeline as something the machine said; it is a mind's words.
+            let plain: Vec<Notification> = applied.fresh.into_iter().filter(|n| n.notice.is_none()).collect();
+            for n in &plain {
                 maybe_toast(ui, n);
             }
-            if !applied.fresh.is_empty() {
-                relay_to_features(&applied.fresh);
+            if !plain.is_empty() {
+                relay_to_features(&plain);
             }
             resync(ui);
+            crate::wire::for_you::tick(ui);
         }
         Tick::Down(why) => {
             with_mirror(|m| m.unreachable(why));
@@ -759,7 +800,7 @@ fn watch_for_updates() {
 /// Off the UI thread, always. Every caller here is a Slint callback — a button the person just
 /// pressed — and the screen has already been updated optimistically, so there is nothing to wait
 /// for. A failure is logged and corrected by the next poll, which re-reads the store.
-fn act(method: &'static str, params: serde_json::Value) {
+pub(crate) fn act(method: &'static str, params: serde_json::Value) {
     let _ = std::thread::Builder::new()
         .name("yos-notification-call".into())
         .spawn(move || {
@@ -1346,7 +1387,17 @@ mod tests {
     /// added here because its words are the desktop's.
     #[test]
     fn model_text_reaches_a_notification_only_through_post_companion() {
-        const DESKTOPS_OWN_WORDS: [(&str, &str); 11] = [
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 19] = [
+            // Capture: fixed sentences, a file name this desktop chose, the requester's mind name.
+            ("capture/notice.rs", "screenshot_saved"),
+            ("capture/notice.rs", "screenshot_copied"),
+            ("capture/notice.rs", "screenshot_by_mind"),
+            ("capture/notice.rs", "recording_by_mind"),
+            ("capture/notice.rs", "capture_opened_by_mind"), // "<mind> opened <capture>"
+            ("capture/notice.rs", "screenshot_failed"),
+            ("capture/notice.rs", "recording_failed"),
+            ("capture/notice.rs", "recording_finished"),
+            ("capture/notice.rs", "leftover_stopped"),
             ("default_mind.rs", "handed_over"),            // "Hermes is ready; it answers from now on."
             ("focus.rs", "start"),                         // "Session complete. Nice work."
             ("wire/agents.rs", "notification"),            // turn titles, "You asked: …"
@@ -1356,7 +1407,6 @@ mod tests {
             ("wire/notifications.rs", "bypass_ended"),     // "Bypass ended"
             ("wire/notifications.rs", "private_mode_notice"),
             ("wire/notifications.rs", "post_companion"),   // the one door for model text
-            ("wire/screenshot.rs", "take_screenshot"),     // "Screenshot saved"
             ("wire/wifi_reconnect.rs", "observe"),          // "Wi-Fi disconnected", DropWatch's words
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

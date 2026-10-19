@@ -14,3 +14,5 @@ ureq = { workspace = true }
 # The models' capabilities and each provider's thinking knob (yantrik_ml::model_caps); none of
 # its backends.
 yantrik-ml = { path = "../yantrik-ml", default-features = false }
+# "Could not reach …" names the account's host only as it may be drawn.
+yantrik-shown-address = { workspace = true }

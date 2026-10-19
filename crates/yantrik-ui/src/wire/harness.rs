@@ -191,6 +191,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // A forget the person answered *Erase* to reaches the agent's pane and its saved session as
     // well as the run store, once the host's rule holds (`redact`, docs/harness.md).
     let host = host.with_redactor(crate::agents::Redactor);
+    // A mind's notice (`harness.notice`, or `{text}` with no turn in flight) goes to the one
+    // notification store through the shell, the one caller that store takes a notice from
+    // (design/initiative-inbox-2026-10-16.md).
+    let host = host.with_notice_desk(Arc::new(crate::notice_desk::ShellDesk::new()));
     // A mind the person has granted some use of their memory carries its credential with every
     // turn (#447); one with none carries nothing. Judged as `memory_validate` judges it: the
     // person's grants, with the first-party defaults only for the account that attached as the
@@ -601,6 +605,7 @@ fn publish_catalogue(ui: &App, entries: &[yantrik_harness::Entry]) {
             row
         })
         .map(|row| HarnessRowData {
+            details: harness_details(&row.id, &row.detail, &row.docs, &super::runs_on_card::row_details(&runs_on, &row.id)).into(),
             id: row.id.into(),
             name: row.name.into(),
             detail: row.detail.into(),
@@ -816,6 +821,24 @@ fn first_party_claim_refused(
     ))
 }
 
+/// A Minds card's Details: its id (what `yos act shell use_harness` takes), its own words as it
+/// attached, where its files are, and the exact line of what it runs on. All of it was on the
+/// card's face until the sweep of 17 October; none of it is something a person needs to read
+/// first.
+fn harness_details(id: &str, said: &str, docs: &str, runs_on: &str) -> String {
+    let mut lines = vec![format!("Id: {id}")];
+    if !said.trim().is_empty() {
+        lines.push(format!("It said: {}", said.trim()));
+    }
+    if !docs.trim().is_empty() {
+        lines.push(format!("Files: {}", docs.trim()));
+    }
+    if !runs_on.trim().is_empty() {
+        lines.push(runs_on.trim().to_string());
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,6 +1016,41 @@ mod tests {
         // is attached (yantrik-harness's host tests pin that).
         choose(&host, "pi").unwrap();
         assert_eq!(host.active_id(), "pi");
+    }
+
+    /// Review of #856, finding 3: a mind's own line is drawn on the Minds rows, their Details,
+    /// the status rail and `describe shell`, all from the host's list. The host keeps it without
+    /// the sign-in details of any address in it, so none of those faces can draw them.
+    #[test]
+    fn no_face_that_lists_minds_draws_the_sign_in_of_an_address_in_a_minds_own_line() {
+        for url in crate::runs_on::tests::HOSTILE_URLS {
+            let host = Host::new(vec![]);
+            let said = format!("qwen3.5:27b \u{b7} {url}");
+            host.handle(protocol::ATTACH, &serde_json::json!({ "id": "pi", "name": "Pi", "detail": said })).unwrap();
+            let entries = host.list();
+            let entry = entries.iter().find(|e| e.id == "pi").unwrap();
+            let rows = harness_catalogue::rows(&pi_machine(None), &entries);
+            let row = rows.iter().find(|r| r.id == "pi").unwrap();
+            let facts = [crate::runs_on::MindFact {
+                gateway: None,
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                detail: entry.detail.clone(),
+                answering: entry.active,
+                builtin: entry.builtin,
+            }];
+            let runs_on = crate::runs_on::resolve(&facts, None);
+            let faces = [
+                entry.detail.clone().unwrap_or_default(),
+                row.detail.clone(),
+                harness_details(&row.id, &row.detail, &row.docs, &super::super::runs_on_card::row_details(&runs_on, "pi")),
+                super::super::runs_on_card::row_line(&runs_on, "pi"),
+            ];
+            for face in &faces {
+                crate::runs_on::tests::assert_clean(url, face.trim_start_matches("qwen3.5:27b"));
+            }
+            assert!(faces[0].starts_with("qwen3.5:27b \u{b7} "), "the rest of the line is kept: {}", faces[0]);
+        }
     }
 
     #[test]

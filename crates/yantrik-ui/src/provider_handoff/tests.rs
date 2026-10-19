@@ -179,6 +179,42 @@ fn the_approval_sentence_says_where_the_key_goes_and_never_the_key() {
     assert!(card.contains("plain http"), "{card}");
 }
 
+/// Review of #856, finding 1: the hand-off card and its approval sentence name the address the
+/// key goes to by its drawable host (`shown_host`), never the raw `host`, which for
+/// `https://user:p/w@aig.example/v1` is "user:p". The plain-http warning is still decided on the
+/// address as it is.
+#[test]
+fn the_card_and_the_approval_sentence_never_draw_a_part_of_the_sign_in_details() {
+    let home = Home::new("signin");
+    for url in crate::runs_on::tests::HOSTILE_URLS {
+        for provider_type in ["custom", "nvidia-nim"] {
+            let mut entry = nim();
+            entry.provider_type = provider_type.into();
+            entry.base_url = url.to_string();
+            let plan = adapter_for("deepseek").unwrap().plan(&home.0, &entry).unwrap();
+            let (card, sentence) = (plan.card(&home.0), plan.sentence(&home.0));
+            for shown in [&card, &sentence] {
+                crate::runs_on::tests::assert_clean(url, shown);
+                assert!(!shown.contains(KEY), "{shown}");
+            }
+        }
+    }
+    let mut odd = nim();
+    odd.provider_type = "custom".into();
+    odd.base_url = "https://user:p/w@aig.example/v1".into();
+    let s = adapter_for("deepseek").unwrap().plan(&home.0, &odd).unwrap().sentence(&home.0);
+    assert!(s.contains("at an address not shown, as it may hold sign-in details with"), "{s}");
+    odd.base_url = "https://user:pw@aig.example/v1?api-key=x#f".into();
+    let card = adapter_for("deepseek").unwrap().plan(&home.0, &odd).unwrap().card(&home.0);
+    assert!(card.contains(" at aig.example with "), "{card}");
+    odd.base_url = "http://user:pw@gateway.example.com/v1".into();
+    let card = adapter_for("deepseek").unwrap().plan(&home.0, &odd).unwrap().card(&home.0);
+    assert!(card.contains("plain http") && card.contains(" at gateway.example.com with "), "{card}");
+    odd.base_url = "http://u@127.0.0.1:11434/v1".into();
+    let card = adapter_for("deepseek").unwrap().plan(&home.0, &odd).unwrap().card(&home.0);
+    assert!(!card.contains("plain http"), "a local address is decided as local: {card}");
+}
+
 #[test]
 fn revert_refuses_a_record_naming_files_it_never_writes_and_moves_nothing() {
     let home = Home::new("tamper");

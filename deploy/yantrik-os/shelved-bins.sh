@@ -3,9 +3,10 @@
 # shelved-bins.sh — the binaries this build does not ship, asked of the one place that decides
 # ═══════════════════════════════════════════════════════════════════════════════════════
 #
-# Prints one binary name per line. Exits non-zero if it cannot read the list, because a
-# packaging script that silently gets an empty shelf ships the shelved apps — which is the
-# failure this file exists to stop.
+# Prints one binary name per line, and nothing when the table is empty (it is, since Music
+# and ySheets came off it in #727 and #728). Exits non-zero if it cannot find the table,
+# because a packaging script that silently gets an empty list from a table it failed to read
+# ships the shelved apps — which is the failure this file exists to stop.
 #
 # The shelf is SHELVED in crates/yantrik-ui/src/wire/dock.rs: each entry carries the app's
 # names, the binary it would run, why it is not in this build, and what would bring it back.
@@ -32,17 +33,26 @@ DOCK="$PROJECT_ROOT/crates/yantrik-ui/src/wire/dock.rs"
   exit 1
 }
 
-# Only the VALUES in the SHELVED table, never the struct's field declaration: `pub binary:`
-# is a type, `binary: "yantrik-music-player"` is a decision. The leading whitespace and the
-# absence of `pub` is what tells them apart.
-BINS="$(sed -n 's/^[[:space:]]\+binary:[[:space:]]*"\([^"]\+\)".*/\1/p' "$DOCK")"
-
-[ -n "$BINS" ] || {
-  echo "shelved-bins.sh: read no shelved binaries from $DOCK." >&2
-  echo "  Either the shelf is empty — in which case delete this guard, not the callers —" >&2
-  echo "  or the SHELVED table changed shape and every packaging script is now shipping" >&2
-  echo "  apps the launcher refuses to open. Failing rather than returning nothing." >&2
+# Only the VALUES inside the SHELVED table, never the struct's field declaration and never a
+# test fixture further down the file: `pub binary:` is a type, `binary: "yantrik-tunes"` in a
+# test is an example, and `binary: "…"` between `const SHELVED: &[Shelved] = &[` and its `];`
+# is a decision. An empty table (`= &[];` on one line) is a decision too — nothing is shelved —
+# and prints nothing. What still fails is a dock.rs with no SHELVED table in it, or one that
+# never closes: that is the table changing shape, and every packaging script would then ship
+# apps the launcher refuses to open.
+BINS="$(awk '
+  /^const SHELVED: &\[Shelved\] = &\[/ { found = 1; inside = 1 }
+  inside && /^[ \t]+binary:[ \t]*"[^"]+"/ {
+    match($0, /"[^"]+"/); print substr($0, RSTART + 1, RLENGTH - 2)
+  }
+  inside && /\];[ \t]*$/ { inside = 0; closed = 1 }
+  END { if (!found || !closed) exit 3 }
+' "$DOCK")" || {
+  echo "shelved-bins.sh: found no SHELVED table in $DOCK (looked for a line starting" >&2
+  echo "  'const SHELVED: &[Shelved] = &[' and the '];' that closes it)." >&2
+  echo "  The table changed shape, and every packaging script would now ship apps the" >&2
+  echo "  launcher refuses to open. Failing rather than returning nothing." >&2
   exit 1
 }
 
-printf '%s\n' "$BINS"
+[ -z "$BINS" ] || printf '%s\n' "$BINS"

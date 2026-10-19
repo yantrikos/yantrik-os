@@ -30,6 +30,8 @@ image** — that is the authoritative list, it is complete, and it ships. Notabl
 | Chromium | BSD-3-Clause and others (see its own `copyright`) |
 | Mesa, PipeWire, WirePlumber | MIT / LGPL-2.1+ |
 | mako, grim, slurp, wl-clipboard, swaybg | MIT / ISC |
+| wf-recorder (screen recording) | MIT |
+| vainfo (libva-utils: whether the GPU encodes H.264) | MIT |
 | `firmware-*` (non-free) | Redistributable binary firmware, vendor terms — see each `copyright` |
 
 **GPL source offer.** The kernel and much of the base are GPL. Redistributing Debian's

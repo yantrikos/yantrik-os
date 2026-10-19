@@ -207,7 +207,7 @@ impl ApiLLM {
         let body_str = serde_json::to_string(body)?;
 
         let tool_count = body.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
-        tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %url, "Ollama request");
+        tracing::debug!(body_bytes = body_str.len(), tools = tool_count, url = %yantrik_shown_address::address_of(&url), "Ollama request");
 
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
@@ -225,6 +225,7 @@ impl ApiLLM {
         let resp = agent_no_err.post(&url)
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .map_err(|e| {
                 tracing::error!(error = %e, body_bytes = body_str.len(), tools = tool_count, "Ollama API request failed");
                 e
@@ -639,6 +640,7 @@ impl ApiLLM {
 
         let resp = req
             .send(body_str.as_bytes())
+            .map_err(crate::refusal::unanswered)
             .context("API request failed")?;
 
         let status = resp.status();

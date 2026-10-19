@@ -1,0 +1,12 @@
+// What the shell knows about capture, for the pieces of the desktop that draw it.
+//
+// `recording` and `elapsed` are the red dot on the status bar: set from Rust while a recording
+// runs (capture::show_recording), for every recording, whoever started it — no caller can hide
+// it. `stop` is the dot's click. `hiding` is set for the moment a screenshot is taken, so the
+// toasts are not in the picture.
+export global CaptureState {
+    in-out property <bool> recording: false;
+    in-out property <string> elapsed: "";
+    in-out property <bool> hiding: false;
+    callback stop();
+}

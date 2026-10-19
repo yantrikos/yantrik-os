@@ -1,7 +1,7 @@
 //! A terminal window running one command, for the person to type into.
 //!
 //! For the setup steps only a program's own prompts can do: signing in to a vendor's account
-//! (Settings → Accounts), choosing a harness's model (Settings → Harnesses). The desktop does not
+//! (Settings → Accounts), choosing a harness's model (Settings → Minds). The desktop does not
 //! answer those prompts and does not read what is typed; it opens the window and lets go.
 //!
 //! `foot --hold`, so what the command said last stays on screen after it exits — a sign-in that

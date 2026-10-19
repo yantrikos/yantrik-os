@@ -1,5 +1,5 @@
 # What the desktop can say about Yantrik Mind before it attaches (#677): without this the flagship
-# mind was not in Settings → Harnesses at all on a fresh install, only once it had attached.
+# mind was not in Settings → Minds at all on a fresh install, only once it had attached.
 # See harnesses/pi/harness.yaml for why this file exists at all.
 id: mind
 name: Yantrik Mind

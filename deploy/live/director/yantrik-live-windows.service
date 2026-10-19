@@ -1,0 +1,23 @@
+# The live instance's window loop (`director.py windows`): Mind View on the left half of the
+# screen, the showcase on the right, again whenever the showcase browser starts and when a mission
+# ends. As the desktop's account, which `yos` takes; it writes nothing the stream shows. On VM 561
+# only. Installed by setup-director.sh.
+[Unit]
+Description=Yantrik Live windows (Mind View and the showcase side by side)
+After=yantrik-mind.service
+
+[Service]
+User=yantrik
+Environment=XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0
+Environment=HOME=/home/yantrik
+ExecStart=/usr/bin/python3 /opt/yantrik-live/director/director.py windows
+Restart=always
+RestartSec=15
+Nice=5
+MemoryMax=128M
+NoNewPrivileges=yes
+PrivateTmp=yes
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target

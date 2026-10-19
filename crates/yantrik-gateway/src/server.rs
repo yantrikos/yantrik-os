@@ -177,7 +177,7 @@ impl Gateway {
             let _ = write_json(
                 out,
                 401,
-                &error_body("invalid_token", "This needs the token the desktop gave this mind (Settings → Harnesses → Use Yantrik models)."),
+                &error_body("invalid_token", "This needs the token the desktop gave this mind (Settings → Minds → Use Yantrik models)."),
             );
             return;
         };

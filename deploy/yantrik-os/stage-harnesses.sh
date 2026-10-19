@@ -5,7 +5,7 @@
 # by the release bundle every update installs (build-release.sh). There were two answers before:
 # the ISO staged them and the bundle did not, and the updater installs share/ with --delete — so
 # the first update on any installed machine removed /opt/yantrik/share/harnesses, and with it the
-# manifests Settings → Harnesses reads, the installers its buttons run, and the scripts the
+# manifests Settings → Minds reads, the installers its buttons run, and the scripts the
 # harness units start. A machine was left with units pointing at files that were gone.
 #
 # Source only, nothing enabled, nothing configured: each needs an endpoint, a model and a key

@@ -1497,7 +1497,13 @@ PRIVATE_READS = {"os_describe", "os_screen", "os_perception", "web_listen",
 OUTBOUND = {"web_type", "web_go"}
 # Reads a mind makes through os_act, because they are the shell's actions: a display's text, read
 # from its pixels (#257). Private the way os_screen is — everything on the display is in them.
-SCREEN_READS = {("shell", "read_screen"), ("shell", "read_mind_view")}
+# A picture of a display holds even more than its text (design/capture-2026-10-15.md), so the two
+# screenshots taint exactly as the two reads do: the desktop's as read_screen, Mind View's as
+# read_mind_view. A saved screenshot or recording is the same picture, opened again: `open_capture`,
+# a mind's one way to one, taints as read_screen does (security review of #828, finding 1).
+SCREEN_READS = {("shell", "read_screen"), ("shell", "read_mind_view"),
+                ("shell", "screenshot_screen"), ("shell", "screenshot_mind_view"),
+                ("shell", "open_capture")}
 # Surfaces whose every act answers with the person's own data: the calendar's `list_events` is
 # their events, and every act's envelope carries the calendar's state, which lists the week ahead.
 # A mind reaches calendar-service at its door since 16 Oct 2026 (VM 541, #411), so a calendar read
@@ -1985,6 +1991,23 @@ def mind_mode(state):
     return mode, rules
 
 
+def standing_rules(state):
+    """The `(app, action)` pairs this machine's administrator allows from the shell's start —
+    `standing_rules` in `describe shell`'s `mind_mode`, read from root's
+    `/etc/yantrik/standing-rules.conf` (Pranab's decision, 15 October 2026, for machines that
+    run with nobody at them). Only the ones in force: a rule the person suspended with its ✕
+    answers nothing. An older shell says nothing about them, which is none."""
+    block = (state or {}).get("mind_mode") or {}
+    rules = []
+    for rule in block.get("standing_rules") or []:
+        if not isinstance(rule, dict) or rule.get("suspended") or rule.get("in_force") is False:
+            continue
+        app, action = str(rule.get("app") or ""), str(rule.get("action") or "")
+        if app and action:
+            rules.append((app, action))
+    return rules
+
+
 # Every answer the table can give, and the only vocabulary the two implementations share.
 #
 # The three refusals are NAMED rather than lumped together as one word, because this table is
@@ -2039,7 +2062,7 @@ def open_ended(purpose):
 
 
 def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool="os_act",
-           runs_anything=False):
+           runs_anything=False, standing=()):
     """Run it, ask about it, or refuse it — the whole table, as one pure function.
 
     Returns `(verdict, detail)`:
@@ -2129,6 +2152,14 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     # and so that the `auto` rule above means something rather than being answerable by a rule
     # the card would never have made.
     covered = (app, action) in rules and not irreversible
+    # The administrator's standing rules (`standing`, 15 October 2026) answer what a session rule
+    # answers and less: only in auto and either bypass, so a person who lowers the mode gets the
+    # asks back, and never for a `dangerous` action — the card never offers a session rule for
+    # one, and a standing rule is that button pressed ahead of time. What cannot be undone is
+    # excluded above, as for a session rule.
+    covered = covered or (
+        (app, action) in standing and not irreversible
+        and mode in ("auto", "bypass", "bypass_all") and rank < LADDER.index("dangerous"))
 
     if mode == "plan":
         if rank == 0:
@@ -2205,6 +2236,7 @@ def decide_outcome(vector):
         cap=vector.get("env_cap"),
         tool=vector.get("tool") or "os_act",
         runs_anything=vector.get("open_ended"),
+        standing=[tuple(rule) for rule in vector.get("standing_rules") or []],
     )
     if verdict == "run":
         return "run_logged" if detail else "run"
@@ -2480,12 +2512,13 @@ def guard_act(args):
     state = shell_state()
     machine = machine_ceiling(state)
     mode, rules = mind_mode(state)
+    standing = standing_rules(state)
     unreadable = ""
     if mode is None:
         # Fail closed and say so. `ask` with no rules is the strictest mode that still lets
         # ordinary work happen, and a bridge that guessed `auto` from a desktop it could not
         # read would be inventing permission out of a failure.
-        mode, rules = "ask", []
+        mode, rules, standing = "ask", [], []
         unreadable = ("(this bridge could not read the desktop's mind-mode, so it fell back to "
                       "`ask` — the strict default — and nothing was assumed.)")
 
@@ -2505,7 +2538,7 @@ def guard_act(args):
     # One call, one table — the harness's own cap included, so there is nothing here that the
     # vectors do not cover. See `decide`; `CEILING` is only a cap when somebody set it.
     verdict, detail = decide(level, app, action, cannot_undo, mode, rules, machine, cap=cap,
-                             runs_anything=runs_anything)
+                             runs_anything=runs_anything, standing=standing)
     private = carries_private(app, action, runs_anything)
     if private and verdict == "run":
         verdict = "ask"
@@ -2523,9 +2556,16 @@ def guard_act(args):
         # `unasked` actions reach this line, so `cannot_undo` and the table's `irreversible`
         # cannot differ — a `safe` action is never unasked.)
         covered = (app, action) in rules and not cannot_undo
+        # Was it the administrator's standing rule that let it through, rather than the mode or
+        # the person's own rule? Asked of the table, as below: the same call without the standing
+        # rules. The record says so — `standing_rule` — so a person reading it can tell an action
+        # the machine's administrator allowed from one they allowed themselves.
+        by_standing = (not covered and bool(standing) and decide(
+            level, app, action, cannot_undo, mode, rules, machine, cap=cap,
+            runs_anything=runs_anything)[0] == "ask")
         audit = {
             "app": app, "action": action, "grade": level,
-            "mode": "rule" if covered else mode,
+            "mode": "rule" if covered else "standing_rule" if by_standing else mode,
             "args_json": bound,
             "requester": requester_name(state),
         }
@@ -2535,7 +2575,8 @@ def guard_act(args):
                 "from the mode chip in the status bar. Report it as something you did, not as "
                 "something you were permitted."
                 % (mode, " and they have allowed %s.%s for this session" % (app, action)
-                   if covered else ""))
+                   if covered else " and this machine's administrator allows %s.%s without a "
+                   "card" % (app, action) if by_standing else ""))
         return None, join(unreadable, note), audit, None
 
     # Why there is a card at all, when the mode the person chose would otherwise have run this.

@@ -176,7 +176,10 @@ worth knowing on the first day:
 | `Super`+`L` | Lock |
 | `Alt`+`Tab` / `Alt`+`F4` | Cycle windows / close |
 | `Super`+`←`/`→`/`↑`/`↓` | Snap, maximize, minimize |
-| `Print` / `Super`+`Shift`+`S` | Screenshot: whole screen / a region, into `~/Pictures` |
+| `Print` | The capture bar: a screenshot or a recording, of a region or the whole screen |
+| `Shift`+`Print` / `Super`+`Shift`+`S` | Screenshot of a region you drag, into `~/Pictures/Screenshots` and the clipboard |
+| `Ctrl`+`Print` | Screenshot of the whole screen, to the clipboard only |
+| `Super`+`Shift`+`R` | Start or stop a screen recording (saved in `~/Videos/Recordings`) |
 
 ---
 
@@ -350,10 +353,10 @@ conversation. Point the machine at something with a GPU on your LAN, or at a pro
 
 ### An app I expected is not there
 
-Music and ySheets are **shelved** — deliberately not in this build, because there was nothing
-behind their screens. The shell says so when you ask for one, with the reason and what would
-bring it back. [`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) is the full
-account.
+Nothing is shelved in this build. Music and ySheets were — deliberately left out because there
+was nothing behind their screens — and both came back in October 2026. If an app is shelved
+again, the shell says so when you ask for it, with the reason and what would bring it back.
+[`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) is the full account.
 
 ### Reading the logs
 

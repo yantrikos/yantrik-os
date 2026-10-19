@@ -1,7 +1,7 @@
 //! Bakes the build-time version into the crate, so a binary carries an answer even when it is
 //! running outside an installed tree.
 //!
-//! `git describe --tags --always --dirty` is the same command `build-release.sh` runs to name
+//! `git describe --tags --match "v[0-9]*" --always --dirty` is the same command `build-release.sh` runs to name
 //! the tarball and fill the BUILD marker, and `build-debian-iso.sh` runs to name the ISO. One
 //! command, one string, whichever of them produced the thing you are looking at.
 //!
@@ -30,7 +30,7 @@ fn main() {
 
 fn git_describe() -> Option<String> {
     let out = std::process::Command::new("git")
-        .args(["describe", "--tags", "--always", "--dirty"])
+        .args(["describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty"])
         .output()
         .ok()?;
     if !out.status.success() {

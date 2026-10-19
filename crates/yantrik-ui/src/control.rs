@@ -51,19 +51,29 @@ fn check_launchable(name: &str, installed: &[crate::apps::DesktopEntry]) -> Resu
         // spelling. This build does not have the app and no action on this machine will produce
         // it, so the refusal says that, says what is missing under the screen, and says what
         // would have to be built. An agent reading it can stop, or go and write the missing half.
-        Availability::Shelved(shelf) => Err(format!(
-            "`{name}` is not part of this build. {} is shelved: {}. It comes back when {} \
-             — see design/shelved-2026-09-20.md. It can open: {}",
-            shelf.name,
-            shelf.reason,
-            shelf.returns_when,
-            launchable_app_ids(installed).join(", ")
-        )),
+        Availability::Shelved(shelf) => Err(shelved_refusal(name, shelf, installed)),
         Availability::Unknown => Err(format!(
             "no app `{name}` on this machine; it can open: {}",
             launchable_app_ids(installed).join(", ")
         )),
     }
+}
+
+/// The refusal `check_launchable` gives for a shelved app: why it is not in this build, what
+/// would bring it back, and what can be opened instead.
+fn shelved_refusal(
+    name: &str,
+    shelf: &crate::wire::dock::Shelved,
+    installed: &[crate::apps::DesktopEntry],
+) -> String {
+    format!(
+        "`{name}` is not part of this build. {} is shelved: {}. It comes back when {} \
+         — see design/shelved-2026-09-20.md. It can open: {}",
+        shelf.name,
+        shelf.reason,
+        shelf.returns_when,
+        crate::wire::dock::launchable_app_ids(installed).join(", ")
+    )
 }
 
 /// Open the Apps launcher where a person can see it, and answer with what is observed.
@@ -990,10 +1000,16 @@ pub fn publish(
                     ),
                 )
                 .with("do_not_disturb", ui.get_dnd_mode())
+                // Whether the screen is being recorded, since when, of what, by whom, and where
+                // it will be saved: the red dot as data. `control_capture`.
+                .with("capture", crate::capture::for_describe())
                 // What the machine is trying to tell the person, so that "is anything waiting
                 // for me" is a read of the shell rather than a second call to the notifications
                 // service — and so a mind can see what it has already said.
                 .with("notifications", crate::wire::notifications::describe_summary())
+                // What the For you inbox holds — how many cards, how many unread, the newest five
+                // ids and titles — so an agent test can read what the person sees there.
+                .with("inbox", crate::wire::for_you::describe())
                 // The ask bar, so "is the Lens up, and what is in it" is a read rather than a
                 // screenshot. `open_lens` and `close_lens` answer from these same properties.
                 .with(
@@ -2192,6 +2208,9 @@ pub fn publish(
     let surface = crate::control_files::actions(surface, ui);
     // Reading a display's text from its pixels, for windows that publish nothing else (#257).
     let surface = crate::control_screen::actions(surface);
+    // Pictures and recordings: the person's capture keys, and what a mind may take, graded as
+    // reading the screen is. See `control_capture`.
+    let surface = crate::control_capture::actions(surface, ui);
     // Asking the person. Three actions, all `safe`, none of which decides anything — the
     // decision is a button in the Lens. See `control_approvals` for why that split is the
     // whole point.
@@ -2278,7 +2297,7 @@ mod persons_fields_tests {
 
 #[cfg(test)]
 mod screen_table_tests {
-    use super::{SCREENS, SETTINGS_SECTIONS, check_launchable, screen_name};
+    use super::{SCREENS, SETTINGS_SECTIONS, check_launchable, screen_name, shelved_refusal};
     use std::path::Path;
 
     /// Elements that wrap a screen rather than being one.
@@ -2428,8 +2447,14 @@ mod screen_table_tests {
     /// built, and an agent reading it can stop instead of retrying four spellings.
     #[test]
     fn opening_a_shelved_app_is_refused_with_its_reason() {
-        for name in ["music", "music-player", "Music Player", "spreadsheet", "ySheets"] {
-            let err = check_launchable(name, &[]).expect_err("a shelved app must not open");
+        // Music and ySheets were the whole shelf and both came off it (#727, #728), so the
+        // refusal is checked on a fixture entry, and on whatever the real shelf holds next.
+        let fixture = crate::wire::dock::Shelved { ids: &["tunes"], name: "Tunes", binary: "yantrik-tunes", reason: "nothing plays", returns_when: "something plays" };
+        let refusals = std::iter::once(("tunes".to_string(), shelved_refusal("tunes", &fixture, &[])))
+            .chain(crate::wire::dock::shelved_table().iter().flat_map(|s| s.ids.iter()).map(|id| {
+                (id.to_string(), check_launchable(id, &[]).expect_err("a shelved app must not open"))
+            }));
+        for (name, err) in refusals {
             assert!(err.contains("not part of this build"), "{name}: {err}");
             assert!(err.contains("shelved"), "{name}: {err}");
             assert!(err.contains("It comes back when"), "{name}: {err}");
@@ -2440,6 +2465,9 @@ mod screen_table_tests {
                 !offered.split(", ").any(|id| crate::wire::dock::shelved(id).is_some()),
                 "{name} was refused and then offered something shelved: {offered}"
             );
+        }
+        for name in ["music", "music-player", "Music Player", "spreadsheet", "ySheets", "yantrik-spreadsheet"] {
+            assert!(crate::wire::dock::shelved(name).is_none(), "`{name}` came off the shelf");
         }
         assert!(check_launchable("files", &[]).is_ok(), "a shipped app still opens");
     }
@@ -2790,6 +2818,26 @@ mod bond_not_loaded_tests {
                 "{file} still defaults the level to Stranger — the made-up value the rail showed for the window between boot and the first push"
             );
         }
+    }
+
+    /// Interaction history is plain counts. The level, its formula, the streak, the count of
+    /// messages that said how the person felt and the humor rate are banned by the design rules
+    /// (no manufactured pull) and were still drawn in the sweep of 17 October.
+    #[test]
+    fn interaction_history_draws_no_level_score_streak_or_feelings_count() {
+        let code: String = slint("bond.slint")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in [
+            "Level \"", "of 5", "adds 0.0", "in a row", "how you felt", "humor", "Partner-in-Crime",
+            "days together", "data.bond-level", "data.bond-score", "current-streak", "vulnerability",
+        ] {
+            assert!(!code.contains(banned), "Interaction history must not draw {banned:?}");
+        }
+        assert!(code.contains("data.total-interactions") && code.contains("data.days-together"));
+        assert!(code.contains("Not read yet"), "before the first push it says so, not zeros");
     }
 
     /// The `describe shell` side.

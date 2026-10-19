@@ -236,6 +236,23 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     // shown a question the machine was going to say yes to anyway learns that
                     // the card is noise, which is the failure this whole design is built around.
                     crate::mind_mode::Decision::Run { .. } => {
+                        // When it is the administrator's standing rule that answers, say so, so
+                        // the record of the run names it (`mode: standing_rule`) rather than
+                        // crediting the mode the person chose.
+                        if crate::mind_mode::standing_rule_answers(&grade, &app, &action, declared) {
+                            return Ok(serde_json::json!({
+                                "status": "not_needed",
+                                "app": app,
+                                "action": action,
+                                "grade": grade,
+                                "mode": crate::mind_mode::current().as_str(),
+                                "standing_rule": true,
+                                "next": "nobody was asked and nobody needs to be: this machine's \
+                                         administrator allows this action without a card \
+                                         (/etc/yantrik/standing-rules.conf). Run the action, then \
+                                         call record_unasked_action with mode `standing_rule`.",
+                            }));
+                        }
                         return Ok(serde_json::json!({
                             "status": "not_needed",
                             "app": app,
@@ -476,7 +493,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 tracing::info!(mode = settled.as_str(), "a caller tightened the mind mode");
                 Ok(serde_json::json!({
                     "mode": settled.as_str(),
-                    "means": settled.meaning(),
+                    "means": crate::mind_mode::meaning_now(),
                     "note": "only the person at this machine can loosen this again.",
                 }))
             },
@@ -565,7 +582,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .arg(
                 Param::text("mode")
                     .optional()
-                    .describe("The mode it ran under: auto, bypass, bypass_all, or rule"),
+                    .describe("The mode it ran under: auto, bypass, bypass_all, rule, or standing_rule \
+                               (this machine's administrator allows it without a card)"),
             )
             .arg(
                 Param::object("args_json")
@@ -2092,26 +2110,32 @@ fn publish_mode(ui: &App) {
     let mode = crate::mind_mode::current();
     ui.set_mind_mode(mode.as_str().into());
     ui.set_mind_mode_label(crate::mind_mode::chip_label().into());
-    ui.set_mind_mode_means(mode.meaning().into());
+    // With the administrator's standing rules in it, so Settings does not promise a card before
+    // commands on a machine that allows them from the start.
+    ui.set_mind_mode_means(crate::mind_mode::meaning_now().into());
     ui.set_mind_ceiling(machine_ceiling().into());
 
     let snapshot = crate::mind_mode::snapshot();
-    let rules: Vec<crate::MindRule> = snapshot["session_rules"]
+    let row = |r: &serde_json::Value, by: &str| {
+        let app = r["app"].as_str().unwrap_or_default().to_string();
+        let action = r["action"].as_str().unwrap_or_default().to_string();
+        crate::MindRule { label: format!("{app}.{action}{by}").into(), app: app.into(), action: action.into() }
+    };
+    let mut rules: Vec<crate::MindRule> = snapshot["session_rules"]
         .as_array()
-        .map(|list| {
-            list.iter()
-                .map(|r| {
-                    let app = r["app"].as_str().unwrap_or_default().to_string();
-                    let action = r["action"].as_str().unwrap_or_default().to_string();
-                    crate::MindRule {
-                        label: format!("{app}.{action}").into(),
-                        app: app.into(),
-                        action: action.into(),
-                    }
-                })
-                .collect()
-        })
+        .map(|list| list.iter().map(|r| row(r, "")).collect())
         .unwrap_or_default();
+    // The administrator's standing rules that are answering right now, in the same list and with
+    // the same ✕ — which suspends one until the shell restarts (`Modes::person_revoke_rule`). The
+    // row says whose rule it is, because the person did not press anything to make it.
+    rules.extend(
+        snapshot["standing_rules"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["in_force"] == true)
+            .map(|r| row(r, " · this machine's administrator")),
+    );
     ui.set_mind_session_rules(ModelRc::new(VecModel::from(rules)));
     ui.set_mind_rules_cleared(crate::mind_mode::cleared_note().into());
 
@@ -2578,6 +2602,62 @@ mod control_approvals_tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The administrator's standing rules are read once, when the shell starts, and nothing a
+    /// caller on the socket reaches can read them again, add one, or re-arm one the person
+    /// suspended (Pranab, 15 October 2026). A re-read a mind could trigger would let whoever can
+    /// write a file choose the moment it took effect; an action that set one would be a mind
+    /// minting its own standing yes.
+    ///
+    /// So no `control*.rs` names the loader or the setter, outside its tests — and inside
+    /// `mind_mode.rs` the loader has exactly one caller, `modes`, which builds the shell's one
+    /// `Modes` behind a `OnceLock`. The ✕ (`person_revoke_rule`) is already held to the callback
+    /// wiring by `mind_mode_only_a_person_can_raise_the_mode`.
+    #[test]
+    fn mind_mode_no_control_path_reaches_the_standing_rules_loader() {
+        const LOADER: &[&str] = &[
+            "load_standing_rules",
+            "standing_rules_from",
+            "parse_standing_rules",
+            "with_standing_rules",
+            "STANDING_RULES_PATH",
+        ];
+        for path in control_sources() {
+            let whole = std::fs::read_to_string(&path).unwrap();
+            let src = whole.split("#[cfg(test)]").next().unwrap_or("");
+            let file = path.file_name().unwrap().to_string_lossy().to_string();
+            for (index, line) in src.lines().enumerate() {
+                for name in LOADER {
+                    assert!(
+                        !line.contains(name),
+                        "{file}:{} names `{name}`. The standing rules are read once, at the \
+                         shell's start, from root's file; nothing on the socket may read, add or \
+                         re-arm them.",
+                        index + 1
+                    );
+                }
+            }
+        }
+
+        let mind_mode = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mind_mode.rs");
+        let whole = std::fs::read_to_string(&mind_mode).unwrap();
+        let src = whole.split("#[cfg(test)]").next().unwrap_or("");
+        let owners = enclosing_fns(src);
+        for call in ["load_standing_rules()", ".with_standing_rules("] {
+            let callers: Vec<String> = src
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| !line.trim_start().starts_with("//") && !line.contains("fn "))
+                .filter(|(_, line)| line.contains(call))
+                .map(|(index, _)| owners[index].clone())
+                .collect();
+            assert_eq!(
+                callers,
+                vec!["modes".to_string()],
+                "`{call}` is called once, from `modes`, which builds the shell's one `Modes`"
+            );
         }
     }
 

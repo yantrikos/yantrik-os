@@ -38,7 +38,7 @@ dock.browser: "浏览器"
 dock.files: "文件"
 dock.notes: "笔记"
 dock.editor: "编辑器"
-dock.bond: "羁绊"
+dock.bond: "互动记录"
 dock.memory: "记忆"
 dock.alerts: "提醒"
 dock.system: "系统"
@@ -373,12 +373,9 @@ notifications.no_notifications: "没有通知"
 notifications.clear_all: "清除全部"
 
 # ── Bond ──
-bond.title: "羁绊"
-bond.score: "羁绊值"
-bond.level: "等级"
+bond.title: "互动记录"
 bond.interactions: "总互动次数"
-bond.days: "相处天数"
-bond.streak: "当前连续天数"
+bond.days: "距首次对话的天数"
 
 # ── Power ──
 power.shutdown: "关机"

@@ -46,6 +46,9 @@ pub(crate) enum ListError {
     NotAList,
     /// The URL still has a part the person must fill in, or is not a URL.
     BadUrl,
+    /// The URL's sign-in details cannot be told from its host (a key holding a `/`, `?` or `#`):
+    /// it is neither sent nor named.
+    UnclearAddress,
 }
 
 impl std::fmt::Display for ListError {
@@ -58,6 +61,7 @@ impl std::fmt::Display for ListError {
             Self::Status(code) => write!(f, "The provider answered with an error (HTTP {code})."),
             Self::NotAList => write!(f, "The provider answered, but not with a model list."),
             Self::BadUrl => write!(f, "That URL is not complete. Fill in any part in braces, like {{account_id}}."),
+            Self::UnclearAddress => write!(f, "That URL holds sign-in details that hide where it goes. Put the key in the key field instead."),
         }
     }
 }
@@ -71,6 +75,9 @@ pub(crate) fn list_models(
 ) -> Result<Vec<ListedModel>, ListError> {
     let base = listing_base(base_url);
     let host = host_of(&base);
+    if host.is_empty() && !crate::runs_on::identity::host(&base).is_empty() {
+        return Err(ListError::UnclearAddress);
+    }
     if host.is_empty() || base.contains('{') || !(base.starts_with("http://") || base.starts_with("https://")) {
         return Err(ListError::BadUrl);
     }
@@ -196,6 +203,9 @@ pub(crate) fn list_is_public(base_url: &str, auth_type: &str) -> bool {
 pub(crate) fn check_key(base_url: &str, api_key: &str, model: &str) -> KeyCheck {
     let base = listing_base(base_url);
     let host = host_of(&base);
+    if host.is_empty() {
+        return KeyCheck::Unconfirmed(ListError::UnclearAddress.to_string());
+    }
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(CONNECT_TIMEOUT)
         .timeout(TOTAL_TIMEOUT)
@@ -276,11 +286,11 @@ fn candidate_paths(base: &str) -> Vec<String> {
     }
 }
 
-/// The host (and port) of a URL, without scheme, userinfo or path.
+/// The host errors and logs name: the drawable one (`identity::shown_host`). Empty for a URL whose
+/// sign-in details cannot be told from its host, which is then refused (`UnclearAddress`) rather
+/// than sent, or named by a part of its key ("Could not reach user:p.").
 fn host_of(url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    authority.rsplit('@').next().unwrap_or("").to_string()
+    crate::runs_on::identity::shown_host(url)
 }
 
 fn transport_error(t: &ureq::Transport, host: &str) -> ListError {
@@ -300,6 +310,26 @@ fn transport_error(t: &ureq::Transport, host: &str) -> ListError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An error or log line names the host by the drawable address only, and a URL whose host
+    /// cannot be told from its sign-in details is refused, never sent (review of #844, finding 2).
+    #[test]
+    fn errors_never_name_a_part_of_the_sign_in_details() {
+        for url in crate::runs_on::tests::HOSTILE_URLS {
+            crate::runs_on::tests::assert_clean(url, &host_of(url));
+            for e in [ListError::Unreachable { host: host_of(url) }, ListError::TimedOut { host: host_of(url) }] {
+                crate::runs_on::tests::assert_clean(url, &e.to_string());
+            }
+        }
+        assert_eq!(host_of("https://user:pw@aig.example/v1?api-key=x#f"), "aig.example");
+        assert_eq!(host_of("https://user:pw@[fd00::1]:8443/v1"), "[fd00::1]:8443");
+        assert_eq!(list_models("https://user:p/w@aig.example/v1", Some("k"), "bearer"), Err(ListError::UnclearAddress));
+        assert_eq!(list_models("https://user:p/w@[::1]:4000/v1", None, "none"), Err(ListError::UnclearAddress));
+        match check_key("https://user:p/w@aig.example/v1", "k", "m") {
+            KeyCheck::Unconfirmed(said) => crate::runs_on::tests::assert_clean("https://user:p/w@aig.example/v1", &said),
+            other => panic!("{other:?}"),
+        }
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;

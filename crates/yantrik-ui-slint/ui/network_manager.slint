@@ -1353,6 +1353,8 @@ export component NetworkManager inherits Rectangle {
 
             // ── What Yantrik knows about this ──
             AgentRail {
+                // This app answers a click on a context row (its Rust wires context-activated).
+                context-opens: true;
                 context-items: root.agent-context;
                 suggestions: root.agent-suggestions;
                 unavailable: root.agent-unavailable;
