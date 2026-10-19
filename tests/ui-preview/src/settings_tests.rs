@@ -6,7 +6,7 @@ fn chord(w:&MinimalSoftwareWindow, text:&str){
 }
 pub fn run(w:&MinimalSoftwareWindow, output:&str,width:u32,height:u32)->Result<(),Box<dyn std::error::Error>>{
     let ui=SettingsProbe::new()?;ui.set_canvas_width(width as f32);ui.set_canvas_height(height as f32);
-    let all:Vec<_>=["Appearance","AI & Intelligence","Desktop","Network","Accounts","Privacy & Security","System","Skills","Harnesses"].iter().enumerate().map(|(i,s)|SettingsCategoryItem{id:i as i32,label:(*s).into(),icon:"".into()}).collect();
+    let all:Vec<_>=["Appearance","AI & Intelligence","Desktop","Network","Accounts","Privacy & Security","System","Skills","Minds"].iter().enumerate().map(|(i,s)|SettingsCategoryItem{id:i as i32,label:(*s).into(),icon:"".into()}).collect();
     ui.set_categories(ModelRc::new(VecModel::from(all.clone())));
     let weak=ui.as_weak();ui.on_search(move|q|{if let Some(ui)=weak.upgrade(){ui.set_categories(ModelRc::new(VecModel::from(all.iter().filter(|c|q.is_empty()||c.label.to_lowercase().contains(&q.to_lowercase())).cloned().collect::<Vec<_>>())));}});
     ui.show()?;w.set_size(slint::PhysicalSize::new(width,height));

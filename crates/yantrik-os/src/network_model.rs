@@ -132,6 +132,13 @@ pub struct NetworkSnapshot {
     /// How many wired or Wi-Fi connections are up. One means leaving it leaves the machine with
     /// no network at all, which is what grades `disconnect_network` and `set_wifi` off.
     pub links: u8,
+    /// NetworkManager has the Wi-Fi device `disconnected` (device state 30): not joined, and not
+    /// trying to join. Not the same as connecting, which is NetworkManager still at it, nor as
+    /// unavailable, which is a radio switched off or a driver not ready yet. The shell's
+    /// reconnect-by-itself waits for this state: a device that is already trying needs no help,
+    /// and one that is idle with a saved network in range is one NetworkManager gave up on.
+    #[serde(default)]
+    pub wifi_idle: bool,
 }
 
 impl Default for NetworkSnapshot {
@@ -148,6 +155,7 @@ impl Default for NetworkSnapshot {
             radio_on: false,
             access_points: Vec::new(),
             links: 0,
+            wifi_idle: false,
         }
     }
 }
@@ -294,6 +302,26 @@ impl NetworkSnapshot {
                 .then(a.ssid.cmp(&b.ssid))
         });
         folded
+    }
+
+    /// On a Wi-Fi network right now. A machine on a cable is online and not this.
+    pub fn wifi_joined(&self) -> bool {
+        self.kind == NetKind::Wifi && self.state == NetState::Connected
+    }
+
+    /// The network to rejoin after a drop: the strongest visible one this machine has a saved
+    /// profile for, so joining it needs no password. `None` when there is no radio, it is off, or
+    /// no saved network is in range. Among equals the first listed is taken, which is the order
+    /// the popover shows.
+    pub fn best_saved_in_range(&self) -> Option<&AccessPoint> {
+        if !self.wifi_present || !self.radio_on {
+            return None;
+        }
+        self.access_points
+            .iter()
+            .rev()
+            .filter(|p| p.known && !p.connected && !p.ssid.is_empty())
+            .max_by_key(|p| p.strength)
     }
 
     /// The visible network with this name, if any.
@@ -457,6 +485,31 @@ mod tests {
             ]),
             ..NetworkSnapshot::default()
         }
+    }
+
+    /// After a drop: the radio is on, nothing is joined, and the network to rejoin is the
+    /// strongest saved one in range — never one that would need a password.
+    #[test]
+    fn the_network_to_rejoin_is_the_strongest_saved_one_in_range() {
+        let dropped = NetworkSnapshot {
+            kind: NetKind::None,
+            state: NetState::Disconnected,
+            ssid: None,
+            access_points: NetworkSnapshot::arrange(vec![
+                ap("Guest", 90, false, false, false),
+                ap("Home", 60, true, true, false),
+                ap("Office", 70, true, true, false),
+            ]),
+            ..laptop()
+        };
+        assert!(!dropped.wifi_joined());
+        assert_eq!(dropped.best_saved_in_range().map(|p| p.ssid.as_str()), Some("Office"));
+
+        let nothing_saved = NetworkSnapshot { access_points: vec![ap("Guest", 90, false, false, false)], ..dropped.clone() };
+        assert_eq!(nothing_saved.best_saved_in_range(), None);
+        let radio_off = NetworkSnapshot { radio_on: false, ..dropped.clone() };
+        assert_eq!(radio_off.best_saved_in_range(), None, "nothing is rejoined with the radio off");
+        assert!(laptop().wifi_joined());
     }
 
     #[test]

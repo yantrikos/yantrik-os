@@ -88,6 +88,9 @@ fn wifi(g: &NetworkState) {
     g.set_ip("192.168.1.20".into());
     g.set_wifi_present(true);
     g.set_radio_on(true);
+    // The tile's two lines, as `wifi_reconnect::Tile` words a joined network.
+    g.set_tile_title("Home".into());
+    g.set_tile_hint("Tap to manage".into());
     g.set_networks(ModelRc::new(VecModel::from(Vec::<NetworkRow>::new())));
 }
 

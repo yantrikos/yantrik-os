@@ -2,7 +2,10 @@
 //!
 //! Instead of celebrating/encouraging in real-time, waits for a natural
 //! opening (user goes idle, switches context) then reflects on what happened.
-//! Replaces the need for separate celebration, encouragement, and witness instincts.
+//! Replaces the need for separate celebration, encouragement, and witness instincts, and
+//! absorbs debrief_partner (#755): for a meeting or presentation it may offer a short debrief
+//! instead of asking three questions unprompted. It speaks about the recorded event only — no
+//! greeting, no mood check — and stays silent when there is nothing to say.
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
@@ -57,20 +60,20 @@ impl Instinct for AftermathInstinct {
                          It happened about {} minutes ago. Comment on it briefly — \
                          acknowledge what happened, maybe note something interesting \
                          about how they handled it. Keep it to 1-2 sentences. \
-                         Be genuine, not congratulatory. Don't use exclamation marks.",
+                         If it was a meeting or presentation, you may offer to note what went well \
+                         and what to change next time — offer, don't ask a list of questions. \
+                         Be plain, not congratulatory. Don't use exclamation marks. \
+                         If there is nothing worth saying, reply exactly \"Nothing to surface right now.\"",
                     description,
                     (age / 60.0) as u32
                 ),
-                ModelTier::Tiny => format!(
-                    "EXECUTE Pick one: greeting, mood check, or task nudge for . Time: (now). Output: 1 sentence.",
-                ),
+                ModelTier::Tiny => "EXECUTE SKIP".to_string(),
                 _ => format!(
-                    "EXECUTE Task: Send a short, natural check-in to .\n\
-             Input: time=(now).\n\
-             Tool: You may use recall once for one recent explicit user-mentioned detail.\n\
-             Rule: Use only details explicitly stated by the user or returned by recall. Do not imply the user is currently doing, feeling, or experiencing anything unless they said so.\n\
-             Fallback: Send a simple warm greeting.\n\
+                    "EXECUTE Task: Say one plain sentence about this recorded event: \"{}\".\n\
+             Rule: Use only the event text. Do not greet. Do not guess how the person feels.\n\
+             Fallback: \"Nothing to surface right now.\"\n\
              Output: 1 sentence, under 20 words.",
+                    description
                 ),
             };
             return vec![

@@ -7,6 +7,7 @@ description = "Pure tool implementations for the Yantrik companion agent"
 [dependencies]
 yantrik-companion-core = { workspace = true }
 yantrikdb-core = { workspace = true }
+yantrik-shown-address = { workspace = true }
 # Private scratch and quarantine directories (`yantrik_ml::private_dir`). Already in the graph
 # through yantrik-companion-core; named because the tools call it directly.
 # api-llm: the free tiers' key shapes (provider::pool::signup), for the clipboard tools

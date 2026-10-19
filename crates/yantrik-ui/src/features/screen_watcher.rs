@@ -96,15 +96,10 @@ fn quick_screen_check() -> Option<String> {
     }
     // Capture screenshot to grim's stdout, not a file. It used to be a fixed name in /tmp —
     // the whole screen, readable by and pre-plantable by every other account — and nothing reads
-    // the capture yet (see below), so there is no reason for it to touch the disk at all.
-    let output = std::process::Command::new("grim")
-        .args(["-t", "png", "-"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
+    // the capture yet (see below), so there is no reason for it to touch the disk at all. Through
+    // the shared capture, so it has the same deadline as every other look at the screen.
+    use crate::capture::grab::{self, Display, Format};
+    grab::grab_bytes(Display::Desktop, None, Format::Png, false).ok()?;
 
     // For now, just note that we captured — full vision analysis would
     // require the Ollama URL which isn't available in the feature context.

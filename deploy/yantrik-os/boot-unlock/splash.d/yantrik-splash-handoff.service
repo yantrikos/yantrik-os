@@ -1,0 +1,20 @@
+# yantrik-splash-handoff.service — plymouth quits, leaving its frame, once labwc holds the display,
+# so the emblem is on the screen from plymouth's first frame to labwc's (/usr/lib/yantrik/boot-unlock/splash).
+#
+# Started with the release and after it; nothing waits on it, tty1's getty least of all. No
+# terminal. If labwc never starts, plymouth quits after 45 s and tty1 is put back in text mode, so
+# the crash guard's words are seen; whatever happens, it is over within 180 s and some seconds
+# (the script bounds itself: a RuntimeMaxSec would fail the unit once it has run, and the next
+# getty restart would start it again). Once per boot, like the release.
+[Unit]
+Description=Yantrik boot splash: the emblem stays until labwc's first frame
+After=yantrik-splash-release.service plymouth-start.service
+
+[Service]
+Type=simple
+RemainAfterExit=yes
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+ExecStart=-/usr/lib/yantrik/boot-unlock/splash handoff
+TimeoutStopSec=5

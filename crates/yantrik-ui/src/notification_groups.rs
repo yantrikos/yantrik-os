@@ -266,6 +266,8 @@ mod tests {
             source: Source::Yantrik,
             replaces_id: None,
             sender,
+            image: None,
+            notice: None,
             revision: 1,
         }
     }

@@ -1,7 +1,8 @@
 //! Chat v2 (the conversation panel), drawn by the production Lens from fixture data: a conversation
-//! with a work card and a pending approval, the approval once resolved, the empty state with its
-//! starters, the transcript's follow-the-bottom rule with its "New reply" pill, the composer's
-//! keys, and the panel's drag-to-resize. Pictures are written beside `output`.
+//! with a pending approval, the approval once resolved, the empty state with its starters, the
+//! transcript's follow-the-bottom rule with its "New reply" pill, the composer's keys, a reply's
+//! timeline (running, waiting on a question card, answered), a queued message, and the panel's
+//! drag-to-resize. Pictures are written beside `output`.
 use super::*;
 use slint::platform::{Key, WindowEvent};
 use slint::{Model, ModelRc, SharedString, VecModel};
@@ -45,6 +46,8 @@ fn msg(role: &str, content: &str, run: &str) -> MessageData {
         is_streaming: false,
         blocks: ModelRc::new(VecModel::from(Vec::<ContentBlock>::new())),
         run: run.into(),
+        mind: Default::default(),
+        model: Default::default(),
     }
 }
 
@@ -52,16 +55,37 @@ fn lines(rows: &[&str]) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(rows.iter().map(|r| SharedString::from(*r)).collect::<Vec<_>>()))
 }
 
-fn work(state: &str, label: &str, activity: &str, view_desk: bool, review: bool) -> WorkCardData {
-    WorkCardData {
-        run: "pi:main#3".into(),
-        title: "Tidy the photos folder and tell me what you moved".into(),
-        mind: "Yantrik Mind".into(),
-        state: state.into(),
-        label: label.into(),
-        activity: activity.into(),
-        can_view_desk: view_desk,
-        can_review: review,
+/// One line of a reply's timeline, as `lens_timeline::blocks` makes it.
+fn line(kind: &str, text: &str, status: &str) -> ContentBlock {
+    ContentBlock { block_type: kind.into(), text: text.into(), call: ToolCallData { status: status.into(), ..Default::default() } }
+}
+
+/// The Dallas weekend turn on VM 541 as it went, step by step.
+fn asking() -> MessageData {
+    msg("user", "What will the weather be in Dallas this weekend?", "")
+}
+
+fn hermes_reply(content: &str, streaming: bool, blocks: Vec<ContentBlock>) -> MessageData {
+    MessageData {
+        is_streaming: streaming,
+        blocks: ModelRc::new(VecModel::from(blocks)),
+        mind: "Hermes Agent".into(),
+        model: "deepseek-v4.1-flash".into(),
+        ..msg("assistant", content, "")
+    }
+}
+
+fn weekend_question() -> QuestionRequest {
+    QuestionRequest {
+        agent: "hermes:main".into(),
+        mind: "Hermes Agent".into(),
+        request: "c1".into(),
+        prompt: "Which days is this weekend for you?".into(),
+        options: lines(&["Sat Oct 17 + Sun Oct 18", "Just the next 2 days (Thu/Fri)"]),
+        asked: "09:14".into(),
+        removes: "".into(),
+        recommended: 0,
+        in_reply: true,
     }
 }
 
@@ -162,11 +186,16 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let ui = ChatProbe::new()?;
     ui.show()?;
     w.set_size(slint::PhysicalSize::new(W, H));
+    // The composer row as VM 541 showed it (14 Oct): Hermes on a Custom model, connected.
+    let picker = ui.global::<PickerState>();
+    picker.set_mind_label("Hermes Agent".into());
+    picker.set_model_label("qwen3.5:27b \u{b7} Custom".into());
+    picker.set_efforts(ModelRc::new(VecModel::from(vec![SharedString::from("easy"), "medium".into(), "hard".into()])));
+    picker.set_status_words("connected \u{b7} qwen3.5:27b".into());
+    picker.set_status_state("connected".into());
 
-    // ── 1. A conversation with a work card and a pending approval ──
+    // ── 1. A conversation with a pending approval ──
     ui.set_messages(ModelRc::new(VecModel::from(conversation())));
-    ui.set_work_cards(ModelRc::new(VecModel::from(vec![work("needs-you", "Needs you", "Waiting for your answer", true, false)])));
-    ui.set_strip(work("needs-you", "Needs you", "Waiting for your answer", true, false));
     ui.set_live_runs(1);
     ui.set_waiting_runs(1);
     ui.set_approvals(ModelRc::new(VecModel::from(vec![approval("", "", "")])));
@@ -181,9 +210,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 
     // ── 1b. The card does not move under the pointer (review of #580) ──
     //
-    // The work strip comes and goes while a request waits, and the reply box grows as a person
-    // types. Neither may move the card or resize it, so the rows the card is drawn in are the
-    // same pixels in every state.
+    // The line naming a waiting question comes and goes above the reply box while a request
+    // waits, and the box grows as a person types. Neither may move the card or resize it, so the
+    // rows the card is drawn in are the same pixels in every state.
     let card_rows = |p: &Pixels| -> Vec<slint::Rgb8Pixel> {
         let from = (112 * W + PANEL_X as u32) as usize;
         (0..230usize)
@@ -191,13 +220,14 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
             .collect()
     };
     let with_strip = card_rows(&waiting);
-    ui.set_strip(WorkCardData::default());
+    ui.set_composer_asks("Hermes Agent asks: Which days is this weekend for you?".into());
     ui.set_live_runs(0);
     ui.set_waiting_runs(0);
     assert!(
         card_rows(&settle(w)) == with_strip,
-        "the card is drawn in the same place with and without the work strip"
+        "the card is drawn in the same place with and without the question line"
     );
+    ui.set_composer_asks("".into());
     key(w, "a");
     for _ in 0..6 {
         shift_enter(w);
@@ -210,7 +240,6 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         key(w, Key::Backspace);
     }
     settle(w);
-    ui.set_strip(work("needs-you", "Needs you", "Waiting for your answer", true, false));
     ui.set_live_runs(1);
     ui.set_waiting_runs(1);
 
@@ -236,8 +265,6 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         "Allowed once: files.move \u{2014} 10:42",
         "10:42",
     )])));
-    ui.set_work_cards(ModelRc::new(VecModel::from(vec![work("finished", "Finished", "12 calls recorded", false, true)])));
-    ui.set_strip(WorkCardData::default());
     ui.set_live_runs(0);
     ui.set_waiting_runs(0);
     let resolved = settle(w);
@@ -271,7 +298,6 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 
     // ── 3. The empty state, and a starter that fills the composer without sending ──
     ui.set_messages(ModelRc::new(VecModel::from(Vec::<MessageData>::new())));
-    ui.set_work_cards(ModelRc::new(VecModel::from(Vec::<WorkCardData>::new())));
     ui.set_approvals(ModelRc::new(VecModel::from(Vec::<ApprovalRequest>::new())));
     let empty = settle(w);
     save(&empty, &named(output, "empty"))?;
@@ -365,7 +391,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     wheel(w, 20000.0);
     settle(w);
     assert!(!ui.get_following());
-    crate::click(w, PANEL_X + 150.0, 690.0);
+    // The words, not the picker row under them (the mind chip is at 690 once it has its label).
+    crate::click(w, PANEL_X + 150.0, 645.0);
     // Step 3's starter left its words in the box (a starter fills and never sends); a person
     // clears them before writing their own.
     clear_field(w);
@@ -391,15 +418,11 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     settle(w);
     assert_eq!((ui.get_sends(), ui.get_sent().as_str()), (2, "a\nb"), "the two lines go together");
 
-    // ── 6. A run is going: the work strip and "Send follow-up" ──
-    ui.set_strip(work("working", "Working", "Running files.move", true, false));
-    ui.set_live_runs(1);
-    ui.set_work_cards(ModelRc::new(VecModel::from(vec![work("working", "Working", "Running files.move", true, false)])));
-    let running = settle(w);
-    assert!(differ(&reading, &running) > 500, "a live run shows the strip");
-    save(&running, &named(output, "working"))?;
-    ui.set_live_runs(0);
-    ui.set_strip(WorkCardData::default());
+    // ── 6. One reply, one timeline: running, a question card in it, answered, and a queued message ──
+    timeline(w, &ui, output, &reading)?;
+    ui.set_panel_width(380.0);
+    timeline(w, &ui, &named(output, "narrow"), &reading)?;
+    ui.set_panel_width(440.0);
 
     // ── 7. Resizable from 380 to 560, 440 by default ──
     ui.set_messages(ModelRc::new(VecModel::from(conversation())));
@@ -425,6 +448,160 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     let redrawn = w.draw_if_needed(|r| { r.render(p.make_mut_slice(), W as usize); });
     assert!(!redrawn, "a settled conversation draws nothing: no looping animation, no timer");
 
-    println!("PASS: Chat v2 \u{2014} approval and work card, resolved line, empty state with starters, follow-the-bottom with the New reply pill, Enter and Shift+Enter, resize 380\u{2013}560, idle");
+    println!("PASS: Chat v2 \u{2014} approval, resolved line, empty state with starters, follow-the-bottom with the New reply pill, Enter and Shift+Enter, a reply's timeline (running, question card, answered), a queued message, resize 380\u{2013}560, idle");
+    Ok(())
+}
+
+/// The reply's timeline in each of its states, at the panel's current width, with pictures named
+/// `<output>-timeline-*.png`: the Dallas weekend turn running, waiting on its question (a card with
+/// the recommended answer marked, in the reply, and the reply box answering it), answered and
+/// finished (the card folded to one line), and a message queued while it ran.
+fn timeline(w: &MinimalSoftwareWindow, ui: &ChatProbe, output: &str, before: &Pixels) -> Result<(), Box<dyn std::error::Error>> {
+    let thought = line("thinking", "Thought for 4 s", "done");
+    let searched = line("step", "Searched the web for \u{201c}dallas weather\u{201d} \u{2014} 3 results", "done");
+
+    // Running: the steps so far, one live line, nothing in the reply's words yet.
+    ui.set_messages(ModelRc::new(VecModel::from(vec![asking(), hermes_reply("", true, Vec::new())])));
+    ui.set_live_steps_row(1);
+    ui.set_live_steps(ModelRc::new(VecModel::from(vec![
+        thought.clone(),
+        searched.clone(),
+        line("status", "Opening a web page\u{2026} \u{00b7} 24 s", "running"),
+    ])));
+    ui.set_composer_mode("queue".into());
+    ui.set_composer_placeholder("Queue a message for Hermes Agent\u{2026}".into());
+    ui.set_live_runs(1);
+    let running = settle(w);
+    save(&running, &named(output, "timeline-running"))?;
+    assert!(differ(before, &running) > 2000, "a running reply draws its timeline");
+
+    // Waiting on its question: the card, where it was asked, and the box answers it.
+    let mut ask = line("question", "Which days is this weekend for you?", "waiting");
+    ask.call.name = "c1".into();
+    ui.set_questions(ModelRc::new(VecModel::from(vec![weekend_question()])));
+    ui.set_live_steps(ModelRc::new(VecModel::from(vec![thought.clone(), searched.clone(), ask])));
+    ui.set_composer_mode("answer".into());
+    ui.set_composer_placeholder("Answer Hermes Agent\u{2019}s question\u{2026}".into());
+    ui.set_composer_asks("Hermes Agent asks: Which days is this weekend for you?".into());
+    let waiting = settle(w);
+    save(&waiting, &named(output, "timeline-question"))?;
+    assert!(differ(&running, &waiting) > 2000, "the card is drawn in the reply");
+    // Pressed where a person would: the recommended answer is the first, filled button.
+    ui.set_answered("".into());
+    let panel_x = 1280.0 - ui.get_panel_width() - 12.0;
+    'press: for y in (120..600).step_by(4) {
+        for x in (panel_x as i32 + 60..panel_x as i32 + 300).step_by(20) {
+            crate::click(w, x as f32, y as f32);
+            if !ui.get_answered().is_empty() {
+                break 'press;
+            }
+        }
+    }
+    assert_eq!(ui.get_answered().as_str(), "c1:Sat Oct 17 + Sun Oct 18:pressed", "the recommended answer, pressed");
+    // Enter in the reply box goes to the shell, which answers the card with it (lens_queue).
+    let sends = ui.get_sends();
+    // The words, not the picker row under them: with the question line above it the box is the
+    // same height, and its text starts at the top.
+    crate::click(w, panel_x + 150.0, 645.0);
+    clear_field(w);
+    for c in "Saturday".chars() {
+        key(w, c.to_string());
+    }
+    // With words in the box the mic gives its place to Answer, inside the box.
+    save(&settle(w), &named(output, "composer-typed"))?;
+    key(w, Key::Return);
+    settle(w);
+    assert_eq!((ui.get_sends(), ui.get_sent().as_str()), (sends + 1, "Saturday"), "Enter hands the words on");
+
+    // Answered and going on: the card is one line in the timeline, and the live line is under
+    // the words, where the person pressed (VM 541, 14 Oct: after a tap nothing moved there).
+    let mut took = line("question", "Answered: Sat Oct 17 + Sun Oct 18", "answered");
+    took.call.name = "c1".into();
+    ui.set_questions(ModelRc::new(VecModel::from(Vec::<QuestionRequest>::new())));
+    ui.set_messages(ModelRc::new(VecModel::from(vec![
+        asking(),
+        hermes_reply("Happy to look that up \u{2014} I just need to know which days first.", true, Vec::new()),
+    ])));
+    ui.set_live_steps(ModelRc::new(VecModel::from(vec![
+        thought.clone(),
+        searched.clone(),
+        took,
+        line("status", "Thinking\u{2026}", "running"),
+    ])));
+    ui.set_composer_mode("queue".into());
+    ui.set_composer_placeholder("Queue a message for Hermes Agent\u{2026}".into());
+    ui.set_composer_asks("".into());
+    save(&settle(w), &named(output, "timeline-after-answer"))?;
+
+    // Answered, and finished: the card folds to one line, and the reply's words sit under it all.
+    let mut answered = line("question", "Answered: Sat Oct 17 + Sun Oct 18", "answered");
+    answered.call.name = "c1".into();
+    let done = vec![
+        thought,
+        searched,
+        answered,
+        line("step", "Opened a web page \u{2014} weather.example/dallas", "done"),
+        line("text", "Dallas this weekend: Saturday sunny, 29\u{b0}C; Sunday a few clouds, 27\u{b0}C.", ""),
+    ];
+    ui.set_live_steps_row(-1);
+    ui.set_live_steps(ModelRc::new(VecModel::from(Vec::<ContentBlock>::new())));
+    ui.set_questions(ModelRc::new(VecModel::from(Vec::<QuestionRequest>::new())));
+    ui.set_composer_mode("".into());
+    ui.set_composer_placeholder("".into());
+    ui.set_composer_asks("".into());
+    ui.set_live_runs(0);
+    ui.set_messages(ModelRc::new(VecModel::from(vec![
+        asking(),
+        hermes_reply("Dallas this weekend: Saturday sunny, 29\u{b0}C; Sunday a few clouds, 27\u{b0}C.", false, done.clone()),
+    ])));
+    let finished = settle(w);
+    save(&finished, &named(output, "timeline-answered"))?;
+    assert!(differ(&waiting, &finished) > 2000, "the card folded");
+
+    // Queued while it runs: the bubble says when it goes, and its × takes it back.
+    ui.set_messages(ModelRc::new(VecModel::from(vec![
+        asking(),
+        hermes_reply("", true, Vec::new()),
+        msg("queued", "And Austin?", ""),
+    ])));
+    ui.set_live_steps_row(1);
+    ui.set_live_steps(ModelRc::new(VecModel::from(vec![
+        line("thinking", "Thought for 4 s", "done"),
+        line("status", "Searching the web\u{2026} \u{00b7} 12 s", "running"),
+    ])));
+    ui.set_queued_mind("Hermes Agent".into());
+    ui.set_composer_mode("queue".into());
+    ui.set_composer_placeholder("Queue a message for Hermes Agent\u{2026}".into());
+    ui.set_live_runs(1);
+    let queued = settle(w);
+    save(&queued, &named(output, "queued"))?;
+    let cancels = ui.get_cancels();
+    'cancel: for y in (100..680).step_by(3) {
+        for x in (1280 - 60..1280 - 12).step_by(4) {
+            crate::click(w, x as f32, y as f32);
+            if ui.get_cancels() > cancels {
+                break 'cancel;
+            }
+        }
+    }
+    assert_eq!(ui.get_cancels(), cancels + 1, "\u{00d7} takes the queued message back");
+
+    ui.set_live_steps_row(-1);
+    ui.set_live_steps(ModelRc::new(VecModel::from(Vec::<ContentBlock>::new())));
+    ui.set_queued_mind("".into());
+    ui.set_composer_mode("".into());
+    ui.set_composer_placeholder("".into());
+    ui.set_live_runs(0);
+
+    // A problem with the model: its one press sits after the model chip, which stays, so a person
+    // can choose another model (VM 541, 15 Oct: the LAN model was gone from its list).
+    let picker = ui.global::<PickerState>();
+    picker.set_status_words("qwen3.5:27b is not one of the models Custom lists".into());
+    picker.set_status_state("unreachable".into());
+    picker.set_fix_label("Try again".into());
+    save(&settle(w), &named(output, "composer-fixing"))?;
+    picker.set_status_words("connected \u{b7} qwen3.5:27b".into());
+    picker.set_status_state("connected".into());
+    picker.set_fix_label("".into());
     Ok(())
 }

@@ -249,6 +249,8 @@ mod tests {
                 exe: exe.into(),
                 desktop,
             }),
+            image: None,
+            notice: None,
             revision: 1,
         }
     }

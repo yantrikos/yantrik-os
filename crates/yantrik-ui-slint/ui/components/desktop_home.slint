@@ -35,10 +35,10 @@ export component DesktopHome inherits Rectangle {
 
     property <int> columns: max(2, min(6, floor((self.width - 48px) / 104px)));
     // The box says where its words go: it opens the chat with the mind that answers, and that
-    // mind may be an online model. The answering mind by name; the Mind's until the harness host
-    // has said who is answering.
+    // mind may be an online model. The answering mind by name; "your mind" until the harness host
+    // has said who is answering, never a mind that may not be on this machine.
     property <string> ask-words: "Message "
-        + (root.mind-name == "" || root.mind-name == "no mind" ? "Yantrik Mind" : root.mind-name);
+        + (root.mind-name == "" || root.mind-name == "no mind" ? "your mind" : root.mind-name);
 
     Flickable {
         width: 100%; height: 100%;

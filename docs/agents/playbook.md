@@ -67,6 +67,9 @@ A reviewer compared its UI with Omarchy and called it "really really bad". The d
   - the screenshot paths;
   - anything left out, or found but not fixed.
 
+## Before you open the PR
+Pass the pre-review gate in [`pre-review-checklist.md`](pre-review-checklist.md): the acceptance check first, CI's checks green, the checklist answered item by item in the PR description with file:line evidence, the feature used and the evidence attached, and a hostile second read of your own diff. Do the same before you push fixes for a review, including a grep for every sibling path of what the reviewer found. The PR template asks for each part.
+
 ## Your final report to the parent (under 300 words)
 - the PR URL and the branch;
 - what a person now sees;

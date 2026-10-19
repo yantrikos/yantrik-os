@@ -2,11 +2,110 @@
   {
     "id": "starfall",
     "title": "Starfall, a browser game built from scratch",
-    "max_turns": 40,
-    "max_hours": 3,
-    "brief": "Please build a small browser game from scratch, in a folder called starfall inside the Projects folder in your home folder. In the game you steer a little ship along the bottom of the screen, dodge falling stars and catch energy orbs, and the stars fall faster as the score climbs. Use plain HTML, CSS and JavaScript only, all in that one folder, with no libraries and no internet. Do all the work in your own terminal, through the shell's agent_run action: that is how you make the folder, write each file and look at what you wrote. Do not use the Terminal app. Start by writing a short plan into a file called PLAN.md in that folder: a checklist of about eight steps, from an empty page to a finished game with a start screen, score, levels, keyboard and touch controls, and sound that stays off until the player turns it on. Then work through the plan one step at a time: write or change the files, then check the page by running `/opt/yantrik-live/director/check-page ~/Projects/starfall/index.html` through agent_run. It loads the game in a headless browser and prints any error the page throws; no output means it loaded clean. Fix every error it shows. Tick a step off in PLAN.md only when the code for it is really there and the check is clean: a tick is a promise to the people watching. People are watching the screen, so keep each step small and visible. When every step is ticked and the check is clean, say FINISHED on its own line.",
-    "keep_going": "Please keep going on Starfall. Read PLAN.md in the starfall folder through the shell's agent_run action. If the folder or the plan does not exist yet, make them first, as the brief said. Otherwise take the first step that is not ticked, do it, and check the page by running `/opt/yantrik-live/director/check-page ~/Projects/starfall/index.html` through agent_run. Fix any error it prints, and tick the step off in PLAN.md only when its code is really there and the check is clean. If every step is ticked and the check is clean, say FINISHED on its own line.",
-    "check_page": "~/Projects/starfall/index.html",
-    "fix_first": "Before anything else on Starfall: the game's page throws an error when it loads. The Director just loaded it in a headless browser and it said:\n\n{errors}\n\nFix that first, through the shell's agent_run action, and check it again by running `/opt/yantrik-live/director/check-page ~/Projects/starfall/index.html`. Then read game.js and PLAN.md side by side, and untick any step whose code is not really there yet: a step is ticked only when it works. Then carry on with the first step that is not ticked."
+    "name": "Starfall",
+    "folder": "starfall",
+    "what": "a small browser game called Starfall",
+    "details": "In the game you steer a little ship along the bottom of the screen, dodge falling stars and catch energy orbs, and the stars fall faster as the score climbs.",
+    "plan": "a finished game with a start screen, score, levels, keyboard and touch controls, and sound that stays off until the player turns it on"
+  },
+  {
+    "id": "orrery",
+    "title": "Orrery, the solar system in motion",
+    "name": "Orrery",
+    "folder": "orrery",
+    "what": "an orrery called Orrery: the Sun and its eight planets moving on a canvas",
+    "details": "Each planet goes round in its true order and at its true relative speed (the distances may be squeezed so that every orbit fits on the screen). A slider sets how fast time runs, the date the model is showing is printed in a corner, and clicking a planet opens a small card with a few facts about it, written into the code.",
+    "plan": "a finished orrery with labelled orbits, the time slider, the date, pause and play, and a facts card for every planet"
+  },
+  {
+    "id": "life",
+    "title": "Life Lab, Conway's Game of Life to play with",
+    "name": "Life Lab",
+    "folder": "life-lab",
+    "what": "a Game of Life laboratory called Life Lab",
+    "details": "A grid of cells follows Conway's rules. The player draws and erases cells with the mouse or a finger, starts, pauses and steps the world one generation at a time, sets the speed, and drops in classic patterns from a small gallery: a glider, a pulsar, a lightweight spaceship and the Gosper glider gun. Counters show the generation and how many cells are alive.",
+    "plan": "a finished lab with drawing, play and pause, single steps, speed, the pattern gallery and the counters"
+  },
+  {
+    "id": "labyrinth",
+    "title": "Labyrinth, a maze that builds and solves itself",
+    "name": "Labyrinth",
+    "folder": "labyrinth",
+    "what": "a maze page called Labyrinth",
+    "details": "The page carves a new maze one step at a time so the viewer watches it grow, then finds the way from the top-left corner to the bottom-right and draws the path. There are buttons for a new maze and for the maze's size, a choice between two ways of solving it (breadth-first search and A*), and a count of how many cells each way looked at before it found the exit.",
+    "plan": "a finished page that carves, animates and solves mazes both ways and shows their counts"
+  },
+  {
+    "id": "sortbars",
+    "title": "Sortbars, sorting you can watch",
+    "name": "Sortbars",
+    "folder": "sortbars",
+    "what": "a sorting visualiser called Sortbars",
+    "details": "Bars of different heights are sorted on screen one comparison at a time, with the two bars being compared lit up, by bubble sort, insertion sort, merge sort and quicksort. The player picks the algorithm, the number of bars and the speed, and the page counts comparisons and swaps, so the algorithms can be compared side by side.",
+    "plan": "a finished visualiser with all four algorithms, the controls and the counts"
+  },
+  {
+    "id": "blockfall",
+    "title": "Blockfall, a falling-blocks puzzle",
+    "name": "Blockfall",
+    "folder": "blockfall",
+    "what": "a falling-blocks puzzle game called Blockfall",
+    "details": "Shapes made of four squares fall into a well ten squares wide and twenty tall. The player moves and turns them with the keyboard or with touch buttons, full rows clear and score, the fall speeds up every ten rows, the next shape is shown beside the well, and the best score is kept in the browser's local storage.",
+    "plan": "a finished game with a start screen, pause, scoring, levels, the next-shape preview, touch buttons and a game-over screen with the best score"
+  },
+  {
+    "id": "pixelsmith",
+    "title": "Pixelsmith, a pixel-art editor",
+    "name": "Pixelsmith",
+    "folder": "pixelsmith",
+    "what": "a pixel-art editor called Pixelsmith",
+    "details": "A canvas of 32 by 32 big pixels, a palette of sixteen colours, a pencil, an eraser, a flood fill and a colour picker, undo and redo, a grid that can be turned off, and a live preview at actual size. The drawing is kept in the browser's local storage so it survives a reload, and the page opens with a small example drawing so the screen is never empty.",
+    "plan": "a finished editor with every tool, undo and redo, the preview and the saved drawing"
+  },
+  {
+    "id": "beatgrid",
+    "title": "Beatgrid, a drum machine in the browser",
+    "name": "Beatgrid",
+    "folder": "beatgrid",
+    "what": "a step sequencer called Beatgrid",
+    "details": "A grid of sixteen steps for six sounds (kick, snare, closed hat, open hat, clap and a tone), every sound made in code with the Web Audio API, with no sample files. Clicking a cell turns it on or off, a playhead sweeps across at the tempo, the tempo can be changed, and there are a few preset beats. Sound stays off until the player presses Start, and the grid lights up as it plays, so it reads on a silent screen too.",
+    "plan": "a finished sequencer with all six sounds, the playhead, tempo, presets and the Start button"
+  },
+  {
+    "id": "anthill",
+    "title": "Anthill, an ant colony that forages on its own",
+    "name": "Anthill",
+    "folder": "anthill",
+    "what": "an ant colony simulation called Anthill",
+    "details": "A nest sits in the middle of a canvas and a few hundred ants wander out from it. An ant that finds food carries a crumb home and lays a scent trail on the way, trails fade over time, and other ants follow the strongest scent, so paths to the food form by themselves and can be watched forming. The viewer clicks to drop food and drags to draw walls, and counters show the ants, the food carried home and the food left.",
+    "plan": "a finished simulation with wandering ants, food, fading scent trails drawn on the ground, walls, play and pause, a speed control and the counters"
+  },
+  {
+    "id": "aurora",
+    "title": "Aurora, music that draws itself",
+    "name": "Aurora",
+    "folder": "aurora",
+    "what": "a generative music visualiser called Aurora",
+    "details": "Aurora composes a slow piece on its own from a pentatonic scale, a melody and a bass line chosen at random within simple rules, and plays it with tones made in code with the Web Audio API, with no sample files. Each note draws on a canvas as it plays: rings that grow from where the note sits on the scale, colours by instrument, a slowly shifting background. Sound stays off until the viewer presses Start; with it off the notes are still drawn on time, so it reads on a silent screen too. Buttons pick the mood (calm, bright or dark) and the tempo.",
+    "plan": "a finished visualiser with the composer, the synthesised voices, the drawing, the moods, the tempo and the Start button"
+  },
+  {
+    "id": "tumble",
+    "title": "Tumble, a physics sandbox",
+    "name": "Tumble",
+    "folder": "tumble",
+    "what": "a physics sandbox called Tumble",
+    "details": "Balls and boxes fall under gravity, bounce off each other and the walls, and come to rest in heaps, with the physics written in plain JavaScript and no library. The viewer clicks to drop a shape, picks ball or box and its size, flings one by dragging it, sets the gravity and the bounciness with sliders, and can tilt the floor. A counter shows how many shapes are in the world, and a Clear button empties it.",
+    "plan": "a finished sandbox with falling and colliding balls and boxes, dragging and flinging, the sliders, the tilted floor, the counter and Clear"
+  },
+  {
+    "id": "matein",
+    "title": "Mate In, a chess-puzzle trainer",
+    "name": "Mate In",
+    "folder": "mate-in",
+    "what": "a chess-puzzle trainer called Mate In",
+    "details": "A board shows a position from a set of twelve mate-in-one and mate-in-two puzzles written into the code. The player moves a piece by clicking it and then its square or by dragging it; only legal moves are allowed, the opponent's reply in a mate in two is played by the page, and a wrong move is shown, explained in a line and taken back. The pieces are drawn with the chess symbols in Unicode, so no image files are needed. A counter shows puzzles solved and the current streak, and there are buttons for a hint, the next puzzle and the previous one.",
+    "plan": "a finished trainer with the board, legal moves for every piece, all twelve puzzles, the replies, hints, the counters and the puzzle buttons",
+    "steps": 10
   }
 ]

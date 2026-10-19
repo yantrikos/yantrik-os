@@ -97,6 +97,12 @@ packages:
   # The region selector. `grim` alone captures a whole output; every screenshot-a-region
   # binding on every desktop is grim plus slurp.
   - slurp
+  # The screen recorder (design/capture-2026-10-15.md): Record on the capture bar and a mind's
+  # record_start run wf-recorder in a transient user unit. Its libav libraries are mpv's too.
+  - wf-recorder
+  # Whether the GPU can encode H.264, asked before a recording picks its encoder: without it the
+  # recorder always takes the CPU path, which works and costs a core.
+  - vainfo
   # Notifications. The daemon is ours: the notifications-service holds
   # org.freedesktop.Notifications and is the machine's one notification store, so mako is not
   # installed — two daemons cannot own one bus name and the loser's notifications vanish.

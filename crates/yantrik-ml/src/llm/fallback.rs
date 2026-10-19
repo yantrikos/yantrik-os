@@ -68,12 +68,21 @@ const DEFAULT_FALLBACK_CONTEXT_TOKENS: usize = 4_096;
 ///
 /// On every call, tries the primary backend first. If it fails,
 /// lazily initializes and uses the fallback.
+/// Consecutive primary failures before the primary is skipped.
+const SKIP_AFTER: u32 = 3;
+/// How long the primary is skipped after `SKIP_AFTER` failures before it is tried again.
+const PRIMARY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+
 pub struct FallbackLLM {
     primary: Arc<dyn LLMBackend>,
     fallback: Mutex<Option<Arc<dyn LLMBackend>>>,
     fallback_config: Option<FallbackConfig>,
     /// Track consecutive primary failures to avoid slow retries
     primary_failures: Mutex<u32>,
+    /// After `SKIP_AFTER` consecutive failures the primary is skipped until this instant; then it
+    /// is tried once. A success clears it; a failure starts a new cooldown.
+    skip_until: Mutex<Option<std::time::Instant>>,
+    cooldown: std::time::Duration,
     /// Believed context windows of the two backends. Slimming exists only to fit a big
     /// conversation into a small model; when the fallback is not the smaller one it is a
     /// mutilation for nothing, so these decide whether it happens at all.
@@ -101,6 +110,8 @@ impl FallbackLLM {
             fallback: Mutex::new(None),
             fallback_config,
             primary_failures: Mutex::new(0),
+            skip_until: Mutex::new(None),
+            cooldown: PRIMARY_COOLDOWN,
             primary_context_tokens: DEFAULT_PRIMARY_CONTEXT_TOKENS,
             fallback_context_tokens,
         }
@@ -116,6 +127,8 @@ impl FallbackLLM {
             fallback: Mutex::new(Some(fallback)),
             fallback_config: None,
             primary_failures: Mutex::new(0),
+            skip_until: Mutex::new(None),
+            cooldown: PRIMARY_COOLDOWN,
             primary_context_tokens: DEFAULT_PRIMARY_CONTEXT_TOKENS,
             fallback_context_tokens: DEFAULT_FALLBACK_CONTEXT_TOKENS,
         }
@@ -152,11 +165,12 @@ impl FallbackLLM {
                 );
                 #[cfg(feature = "api-llm")]
                 {
+                    // The API fallback is a llama-server on this machine.
                     Arc::new(crate::llm::ApiLLM::new(
                         base_url.clone(),
                         None, // no API key for local server
                         model,
-                    ))
+                    ).for_provider("llamacpp"))
                 }
                 #[cfg(not(feature = "api-llm"))]
                 {
@@ -195,7 +209,14 @@ impl FallbackLLM {
         Ok(fb)
     }
 
-    /// Record a primary success — reset failure counter.
+    /// How long the primary is skipped after `SKIP_AFTER` failures (tests shorten it).
+    #[cfg(test)]
+    fn with_cooldown(mut self, cooldown: std::time::Duration) -> Self {
+        self.cooldown = cooldown;
+        self
+    }
+
+    /// Record a primary success — reset failure counter and any cooldown.
     fn primary_success(&self) {
         if let Ok(mut count) = self.primary_failures.lock() {
             if *count > 0 {
@@ -203,23 +224,48 @@ impl FallbackLLM {
                 *count = 0;
             }
         }
-    }
-
-    /// Record a primary failure — increment counter.
-    fn primary_failure(&self) {
-        if let Ok(mut count) = self.primary_failures.lock() {
-            *count += 1;
+        if let Ok(mut until) = self.skip_until.lock() {
+            *until = None;
         }
     }
 
-    /// Check if we should skip the primary (too many consecutive failures).
-    /// After 3 consecutive failures, go straight to fallback for 10 calls,
-    /// then retry primary once.
+    /// Record a primary failure. From the `SKIP_AFTER`th in a row, each one starts a cooldown.
+    fn primary_failure(&self) {
+        let count = match self.primary_failures.lock() {
+            Ok(mut count) => {
+                *count += 1;
+                *count
+            }
+            Err(_) => return,
+        };
+        if count >= SKIP_AFTER {
+            if let Ok(mut until) = self.skip_until.lock() {
+                *until = Some(std::time::Instant::now() + self.cooldown);
+            }
+        }
+    }
+
+    /// Skip the primary while a cooldown runs. The old rule (`count % 10 != 0`) never let the
+    /// count reach 10, since a skipped call records nothing, so three failures skipped the primary
+    /// for the rest of the process: one bad minute with the cloud model, and the companion stayed
+    /// on the small fallback until the desktop restarted. (The same fix as yantrik-companion's
+    /// copy, #4.)
+    ///
+    /// One probe, not a stampede: the first caller past the end of a cooldown moves it on by
+    /// another cooldown before it tries the primary, so concurrent callers keep using the fallback
+    /// meanwhile. Its success clears the cooldown; its failure leaves a fresh one.
     fn should_skip_primary(&self) -> bool {
-        if let Ok(count) = self.primary_failures.lock() {
-            *count >= 3 && *count % 10 != 0
-        } else {
-            false
+        let Ok(mut until) = self.skip_until.lock() else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        match *until {
+            Some(t) if now < t => true,
+            Some(_) => {
+                *until = Some(now + self.cooldown);
+                false
+            }
+            None => false,
         }
     }
 
@@ -700,5 +746,120 @@ mod tests {
 
         // Configured larger than the assumed primary, so nothing is cut.
         assert!(!llm.should_slim());
+    }
+}
+
+/// Three failures skip the primary for a cooldown, not for the rest of the process, and the end of
+/// a cooldown is probed by one caller (yantrik-companion #4).
+#[cfg(test)]
+mod cooldown_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    fn answer(text: &str) -> LLMResponse {
+        LLMResponse {
+            text: text.into(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            tool_calls: Vec::new(),
+            api_tool_calls: Vec::new(),
+            stop_reason: "stop".into(),
+        }
+    }
+
+    struct Flaky {
+        calls: AtomicUsize,
+        failing: AtomicBool,
+        delay: std::time::Duration,
+    }
+    impl LLMBackend for Flaky {
+        fn chat(&self, _: &[ChatMessage], _: &GenerationConfig, _: Option<&[serde_json::Value]>) -> Result<LLMResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            if self.failing.load(Ordering::SeqCst) {
+                anyhow::bail!("connection reset");
+            }
+            Ok(answer("ok"))
+        }
+        fn chat_streaming(&self, m: &[ChatMessage], c: &GenerationConfig, t: Option<&[serde_json::Value]>, _: &mut dyn FnMut(&str)) -> Result<LLMResponse> {
+            self.chat(m, c, t)
+        }
+        fn count_tokens(&self, t: &str) -> Result<usize> {
+            Ok(t.len())
+        }
+        fn backend_name(&self) -> &str {
+            "flaky"
+        }
+    }
+
+    fn flaky(failing: bool) -> Arc<Flaky> {
+        Arc::new(Flaky { calls: AtomicUsize::new(0), failing: AtomicBool::new(failing), delay: std::time::Duration::ZERO })
+    }
+
+    fn msgs() -> Vec<ChatMessage> {
+        vec![ChatMessage::system("be brief"), ChatMessage::user("hi")]
+    }
+
+    const COOLDOWN: std::time::Duration = std::time::Duration::from_millis(20);
+    const PAST_IT: std::time::Duration = std::time::Duration::from_millis(200);
+
+    #[test]
+    fn after_the_cooldown_the_primary_is_tried_again_and_a_success_clears_it() {
+        let primary = flaky(true);
+        let llm = FallbackLLM::with_fallback(primary.clone(), flaky(false)).with_cooldown(COOLDOWN);
+        for _ in 0..3 {
+            llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap();
+        }
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 3);
+        llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap();
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 3, "skipped during the cooldown");
+        std::thread::sleep(PAST_IT);
+        primary.failing.store(false, Ordering::SeqCst);
+        llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap();
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 4, "tried again once the cooldown ended");
+        assert!(!llm.is_degraded(), "a success clears it");
+        llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap();
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 5, "and it is used again");
+    }
+
+    #[test]
+    fn a_failure_after_the_cooldown_starts_another() {
+        let primary = flaky(true);
+        let llm = FallbackLLM::with_fallback(primary.clone(), flaky(false)).with_cooldown(COOLDOWN);
+        for _ in 0..3 {
+            llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap();
+        }
+        std::thread::sleep(PAST_IT);
+        llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap();
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 4, "tried once after the cooldown");
+        llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap();
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 4, "it failed, so a new cooldown runs");
+    }
+
+    #[test]
+    fn after_a_cooldown_one_caller_probes_and_the_others_keep_the_fallback() {
+        // The primary is slow to fail, so the second caller arrives while the probe is in flight.
+        let slow = Arc::new(Flaky {
+            calls: AtomicUsize::new(0),
+            failing: AtomicBool::new(true),
+            delay: std::time::Duration::from_millis(150),
+        });
+        let llm = Arc::new(
+            FallbackLLM::with_fallback(slow.clone(), flaky(false)).with_cooldown(std::time::Duration::from_millis(300)),
+        );
+        for _ in 0..3 {
+            llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let llm = llm.clone();
+                std::thread::spawn(move || llm.chat(&msgs(), &GenerationConfig::default(), None).unwrap())
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(slow.calls.load(Ordering::SeqCst), 4, "one probe, not two");
     }
 }

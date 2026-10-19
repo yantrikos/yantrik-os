@@ -133,6 +133,8 @@ pub fn local(ui_weak: &slint::Weak<App>, app: &str, summary: &str, body: &str, u
                 .to_string()
                 .into(),
             actions: ModelRc::default(),
+            thumbnail: Default::default(),
+            has_thumbnail: false,
         },
         urgency,
     );

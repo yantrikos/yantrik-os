@@ -21,5 +21,11 @@ methods = [
     "notifications.dismiss_all",
     "notifications.mark_read",
     "notifications.action",
+    "notifications.notice_feedback",
+    "notifications.notice_shown",
+    "notifications.notice_feedback_poll",
+    "notifications.initiative",
+    "notifications.initiative_set",
+    "notifications.notice_unbind",
 ]
 autostart = true

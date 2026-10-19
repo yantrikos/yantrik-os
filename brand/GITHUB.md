@@ -43,7 +43,7 @@ There is no REST endpoint for the social preview image. Upload it by hand:
 > **https://github.com/yantrikos/yantrik-os/settings** → *Social preview* → **Upload an image**
 
 Use **`brand/social-preview-1280x640.png`** (1280×640, under 1 MB — GitHub's stated
-requirement is 1280×640 and ≤ 1 MB, and this file is ~38 KB).
+requirement is 1280×640 and ≤ 1 MB, and this file is well under that).
 
 This is the picture that appears when the repo is linked on Slack, Discord, X or LinkedIn.
 
@@ -54,9 +54,8 @@ Also no API. The organisation avatar is the one showing YantrikDB's logo:
 > **https://github.com/organizations/yantrikos/settings/profile** → *Profile picture* →
 > **Upload new picture**
 
-Use **`brand/github-avatar-512.png`** (512×512, the mark on `#0b0d12` with clear space).
-GitHub crops avatars to a circle and the mark is already a circle, so it survives the crop —
-the `#0b0d12` ground shows only in the corners that get cropped away.
+Use **`brand/github-avatar-512.png`** (512×512, the full emblem on `#05070d`). GitHub crops
+avatars to a circle; the emblem's gates sit inside it, so nothing of the mark is cut.
 
 While on that page, it is worth setting the org's own homepage to
 `https://www.yantrikos.com` and its description to match the repo's.
@@ -77,7 +76,7 @@ gh api -X PATCH repos/yantrikos/yantrik-website \
 |---|---|
 | org avatar | `brand/github-avatar-512.png` |
 | repo social preview | `brand/social-preview-1280x640.png` |
-| anywhere a logo is asked for | `brand/yantrik-mark.svg` or `brand/yantrik-mark-512.png` |
+| anywhere a logo is asked for | `brand/yantrik-emblem.svg`, or `brand/yantrik-icon-512.png` for a square icon |
 
-All of them are rendered from `brand/yantrik-mark.svg` by `brand/render.py`. If the mark
-ever changes, re-run it and re-upload these two — there is no other copy to chase.
+All of them come from `brand/build.py` via `brand/render.py`. If the mark ever changes, re-run
+it and re-upload these two — there is no other copy to chase.

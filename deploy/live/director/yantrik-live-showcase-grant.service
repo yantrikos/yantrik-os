@@ -1,0 +1,19 @@
+# The showcase window's Wayland grant (director.py wayland_grant), as root and outside any
+# namespace: an ACL entry letting yantrik-showcase connect to the desktop's Wayland socket, and a
+# note in /run/yantrik-live-showcase of which socket that is, which showcase-browser checks. On
+# VM 561 only. Installed by setup-director.sh.
+#
+# A unit of its own, not an ExecStartPre=+ of the browser: a "+" command runs with full
+# privileges but inside the browser unit's mount namespace, where TemporaryFileSystem=/opt and
+# ProtectHome=yes hide both director.py and /run/user (live test on 561). No RemainAfterExit: once
+# it has run it is inactive again, so every start of the browser, Restart=always included, runs
+# it again. It is safe to run any number of times: the ACL is set whole, the note written
+# atomically.
+[Unit]
+Description=Yantrik Live showcase window's Wayland grant
+After=yantrik-mind.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/yantrik-live/director/director.py wayland-grant

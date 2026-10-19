@@ -1,0 +1,65 @@
+// The one dialog ySheets has: a typed path, when the desktop's file picker cannot be asked, and
+// the unsaved-changes question before opening another file or closing the window.
+
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+import { YInput } from "y_input.slint";
+
+export enum SheetDialog { none, open-path, save-path, unsaved }
+
+export component SheetDialogView inherits Rectangle {
+    in property <SheetDialog> kind: SheetDialog.none;
+    in property <string> message;
+    in-out property <string> path;
+    callback confirm();
+    callback cancel();
+    callback discard();
+
+    visible: root.kind != SheetDialog.none;
+    changed kind => {
+        if (root.kind == SheetDialog.open-path || root.kind == SheetDialog.save-path) { path-input.focus(); }
+    }
+    background: #00000066;
+    // Clicks behind the dialog stop here.
+    TouchArea {}
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(520px, root.width - 48px);
+        height: modal.preferred-height;
+        border-radius: 14px;
+        background: Theme.bg-elevated;
+        border-width: 1px;
+        border-color: Theme.border-default;
+        modal := VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text {
+                text: root.kind == SheetDialog.open-path ? "Open a sheet"
+                    : root.kind == SheetDialog.save-path ? "Save the sheet"
+                    : "Keep your changes?";
+                color: Theme.text-primary;
+                font-size: 22px;
+                font-weight: 600;
+            }
+            Text { text: root.message; color: Theme.text-secondary; font-size: 14px; wrap: word-wrap; }
+            path-input := YInput {
+                visible: root.kind == SheetDialog.open-path || root.kind == SheetDialog.save-path;
+                value <=> root.path;
+                accepted(_) => { root.confirm(); }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                YButton { label: "Cancel"; variant: 2; clicked => { root.cancel(); } }
+                if root.kind == SheetDialog.unsaved : YButton { label: "Discard"; variant: 1; clicked => { root.discard(); } }
+                YButton {
+                    label: root.kind == SheetDialog.open-path ? "Open" : "Save";
+                    variant: 0;
+                    clicked => { root.confirm(); }
+                }
+            }
+        }
+    }
+}

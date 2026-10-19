@@ -4,28 +4,20 @@
 import { Theme } from "theme.slint";
 import { AppWindow } from "app_window.slint";
 export { WindowChrome } from "app_window.slint";
-import { AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
-import { AgentProposal } from "components/agent_proposal.slint";
+import { AgentContextItem } from "components/agent_rail.slint";
 import { AppIdentity } from "app_color.slint";
 import { ImageViewer } from "image_viewer.slint";
 import { ThemeMode, AccentPreset } from "theme.slint";
 
-export { AgentContextItem, AgentSuggestion, AgentProposal, ThemeMode, AccentPreset }
+export { AgentContextItem, ThemeMode, AccentPreset }
 
 export component ImageViewerApp inherits AppWindow {
     // The screen's own header is this window's title bar (#256).
     show-bar: false;
     // ── The agent layer ──
     in property <[AgentContextItem]> agent-context <=> viewer.agent-context;
-    in property <[AgentSuggestion]> agent-suggestions <=> viewer.agent-suggestions;
     in property <string> agent-unavailable <=> viewer.agent-unavailable;
-    callback agent-context-activated <=> viewer.agent-context-activated;
-    callback agent-suggestion-activated <=> viewer.agent-suggestion-activated;
-    in property <AgentProposal> proposal <=> viewer.proposal;
-    in property <bool> proposal-working <=> viewer.proposal-working;
-    callback proposal-applied <=> viewer.proposal-applied;
-    callback proposal-dismissed <=> viewer.proposal-dismissed;
-    
+
     // What app this window is.
     //
     // Set on the WINDOW and not on AppHeader, which is where it lived first: a header covers
@@ -50,6 +42,9 @@ export component ImageViewerApp inherits AppWindow {
     in property <string> counter-text <=> viewer.counter-text;
     in property <string> notice <=> viewer.notice;
     in-out property <bool> fit-contain <=> viewer.fit-contain;
+    // The person has zoomed or panned to a size of their own; `fit` goes back to the whole picture.
+    out property <bool> zoomed: viewer.is-custom-zoom;
+    public function toggle-fit-mode() { viewer.toggle-fit-mode(); }
 
     // ── Navigation ──
     callback nav-prev <=> viewer.nav-prev;

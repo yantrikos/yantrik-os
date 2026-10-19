@@ -13,6 +13,9 @@
 //! that stage — not the beginner explanation, not the advanced theory, but the
 //! precise mental model for where they are right now.
 //!
+//! Absorbs mentor_match (#755): when one specific resource — a book chapter, a talk, an essay —
+//! is the better unlock, it names that instead.
+//!
 //! Example output: "You've been working with async Rust. The concept that unlocks it
 //! for most people: think of .await as 'yield control here' — it's not waiting, it's
 //! cooperating. The runtime is a scheduler, not a waiter."
@@ -92,6 +95,9 @@ impl Instinct for SkillForgeInstinct {
              Example tone: \"You've been working with async Rust. The concept that unlocks it \
              for most people: think of .await as 'yield control here' — it's not waiting, it's \
              cooperating. The runtime is a scheduler, not a waiter.\"\n\
+             \n\
+             If one specific resource (a named book chapter, talk, or essay) would unblock them better \
+             than an explanation, name that one resource and say why it fits instead.\n\
              \n\
              If no active learning topics found in memory, respond with just \"No skill forge today.\"\n\
              After you're done, call browser_cleanup to free resources.",

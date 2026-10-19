@@ -63,6 +63,23 @@
 //! and a session rule dies with the shell. The standing policy on this machine is
 //! `tool_permission`, set at the keyboard, and a second one minted from a card would be a second
 //! place for the truth to live. See `design/mind-modes-2026-09-21.md`.
+//!
+//! **One exception, and only one: the standing rules of an unattended machine** (Pranab's
+//! decision of 15 October 2026). The live-stream VM runs with nobody at it; a Director types
+//! build missions to the Mind, which runs commands through `shell.agent_run`, an open-ended
+//! action. In auto that asks once per session, and the session's answer dies with the shell —
+//! so after every OS update the first command raised a card nobody was there to press, it lapsed,
+//! and the builds stalled. So the machine's ADMINISTRATOR — root, writing
+//! [`STANDING_RULES_PATH`] — may name `(app, action)` pairs that are answered from the shell's
+//! start exactly as if a person had pressed "Allow for this session". Not a card, and never a
+//! mind: the file is read once at start ([`modes`]), trusted only if root owns it and nobody else
+//! can write it ([`standing_rules_from`]), and nothing on the socket can add, re-arm or revoke
+//! one. A standing rule answers no more than a session rule does — never `dangerous`, never what
+//! cannot be undone — and only in auto or a bypass, so a person who lowers the mode gets the asks
+//! back. A standing rule covers every caller on the machine, not only one mind — any agent,
+//! harness or `yos act` caller the mode answers for — with the reach checks still made first.
+//! The person's ✕ suspends one until the shell restarts. See the 15 October 2026 entry in
+//! `design/mind-modes-2026-09-21.md`.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -192,6 +209,34 @@ impl Mode {
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
             Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete, and once per session before running commands.",
             Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo.",
+        }
+    }
+
+    /// [`Mode::meaning`], told the truth about this machine's standing rules.
+    ///
+    /// Auto and bypass promise to ask "once per session" before commands, and on a machine whose
+    /// administrator has allowed `shell.agent_run` from the start that promise is not kept: the
+    /// first command runs with nobody asked. So while any standing rule is in force the sentence
+    /// stops making that promise and says, plainly, who allows what. `in_force` is what
+    /// [`Modes::standing_in_force`] answers for this mode, so in ask and plan — where a standing
+    /// rule does nothing — this is the plain sentence.
+    pub fn meaning_with(self, in_force: &[Rule]) -> String {
+        if in_force.is_empty() {
+            return self.meaning().to_string();
+        }
+        let names: Vec<String> = in_force.iter().map(|r| format!("{}.{}", r.app, r.action)).collect();
+        let allowed = format!(
+            "This machine's administrator allows {} without asking; anything else that runs \
+             commands asks once per session.",
+            names.join(", ")
+        );
+        match self {
+            Mode::Auto => format!("It gets on with things. You are still asked about the destructive ones. {allowed}"),
+            Mode::Bypass => format!(
+                "It does not ask, except before anything an app marks as impossible to undo, such \
+                 as a purchase or a calendar delete. {allowed}"
+            ),
+            other => other.meaning().to_string(),
         }
     }
 }
@@ -347,6 +392,190 @@ pub struct Rule {
     pub action: String,
 }
 
+// ── The standing rules of an unattended machine ─────────────────────
+//
+// The one exception to "no standing permission survives a restart" (module doc; Pranab, 15
+// October 2026). Everything about where they come from is arranged so that the only hand that can
+// write one is the machine's administrator's: one root-owned file, read once when the shell
+// starts, and nowhere a mind could make the shell read it again.
+
+/// Where the administrator names the actions an unattended machine runs without a card. Nothing
+/// ships this file; a machine without it has no standing rules, which is every machine but the
+/// ones somebody set up to run alone.
+pub const STANDING_RULES_PATH: &str = "/etc/yantrik/standing-rules.conf";
+
+/// The most rules the file may carry. A handful is what an unattended machine needs — the live
+/// VM needs one — and a file with more than this is more likely a mistake (or a list copied from
+/// somewhere) than a deliberate policy, so the whole file is ignored rather than its first 32
+/// taken: which 32 would be an accident of order.
+pub const STANDING_RULES_MAX: usize = 32;
+
+/// The longest file worth reading. 32 rules of two 64-character names with a comment each fit in
+/// a fraction of this; anything bigger is not this file.
+const STANDING_RULES_BYTES: u64 = 64 * 1024;
+
+/// One rule from [`STANDING_RULES_PATH`], and whether the person has suspended it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StandingRule {
+    pub rule: Rule,
+    /// The person pressed ✕ on it. It answers nothing until the shell restarts — the person at
+    /// the machine stays in charge of what runs on it while they are there.
+    pub suspended: bool,
+}
+
+/// A name the file may use for an app or an action: `^[a-z0-9_.-]{1,64}$`. Narrow on purpose —
+/// every app id and action name on this OS fits it, and a line that does not is a typo or
+/// something that is not a rule at all.
+fn standing_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-'))
+}
+
+/// The rules in the file's text.
+///
+/// `<app> <action>`, optionally followed by `# comment`; blank lines and comment lines are
+/// nothing. A duplicate is the same rule. A malformed line is an `Err` that names every bad line,
+/// and the whole file is ignored — it allows nothing. A file that does not say exactly what its
+/// author meant is not believed in part: a root write cut off at the shell's start can turn a
+/// longer action name into a shorter valid one, and the lines around a bad one may be no closer
+/// to what was meant. More than [`STANDING_RULES_MAX`] rules is an `Err` too, for the reason
+/// that constant gives.
+pub fn parse_standing_rules(text: &str) -> Result<Vec<Rule>, String> {
+    let mut rules: Vec<Rule> = Vec::new();
+    let mut skipped = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let [app, action] = words[..] else {
+            skipped.push(format!("line {}: expected `<app> <action>`, got {} words", index + 1, words.len()));
+            continue;
+        };
+        if !standing_name_ok(app) || !standing_name_ok(action) {
+            skipped.push(format!(
+                "line {}: `{app} {action}` is not two names of 1-64 characters from a-z, 0-9, `_`, `.` and `-`",
+                index + 1
+            ));
+            continue;
+        }
+        if rules.iter().any(|r| r.app == app && r.action == action) {
+            continue;
+        }
+        rules.push(Rule { app: app.to_string(), action: action.to_string() });
+    }
+    if rules.len() > STANDING_RULES_MAX {
+        return Err(format!(
+            "it names {} rules and at most {STANDING_RULES_MAX} are allowed",
+            rules.len()
+        ));
+    }
+    if !skipped.is_empty() {
+        return Err(format!("{} line(s) are not a rule — {}", skipped.len(), skipped.join("; ")));
+    }
+    Ok(rules)
+}
+
+/// The standing rules at `path`, if the file there can be trusted, owned by `owner` — `0` on a
+/// real machine; a test passes its own uid, so the trust checks are tested without root.
+///
+/// `Ok(empty)` when there is no file: the default everywhere, and not worth a word. `Err` names
+/// why a file that IS there was ignored entirely, and every reason fails closed:
+///
+/// * opened with `O_NOFOLLOW`, so a symlink planted at the path is refused rather than followed
+///   to whatever a less privileged user pointed it at;
+/// * a regular file, checked on the open descriptor rather than the path, so nothing can swap it
+///   between the look and the read;
+/// * owned by `owner` and not writable by group or others — the file's owner is the only person
+///   it speaks for, and a file anyone else can write speaks for them too;
+/// * every line a rule ([`parse_standing_rules`]) — one malformed line and the file allows
+///   nothing;
+/// * and the directory it sits in the same (not in the 15 October brief, added because it closes
+///   the same door one level up: a directory somebody else can write lets them rename their own
+///   file into place, and every check above would then be made of the wrong file's
+///   replacement). `/etc/yantrik` is root's on every machine that has it.
+pub fn standing_rules_from(path: &std::path::Path, owner: u32) -> Result<Vec<Rule>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        // ELOOP is what O_NOFOLLOW answers for a symlink in the last component.
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            return Err("it is a symbolic link, and only a file root wrote in place is trusted".into())
+        }
+        Err(e) => return Err(format!("it could not be opened: {e}")),
+    };
+    let meta = file.metadata().map_err(|e| format!("it could not be examined: {e}"))?;
+    if !meta.file_type().is_file() {
+        return Err("it is not a regular file".into());
+    }
+    let trusted = |meta: &std::fs::Metadata, what: &str| -> Result<(), String> {
+        if meta.uid() != owner {
+            return Err(format!("{what} is owned by uid {}, not by root", meta.uid()));
+        }
+        if meta.mode() & 0o022 != 0 {
+            return Err(format!(
+                "{what} is writable by {} (mode {:o})",
+                if meta.mode() & 0o002 != 0 { "anyone" } else { "its group" },
+                meta.mode() & 0o7777
+            ));
+        }
+        Ok(())
+    };
+    trusted(&meta, "the file")?;
+    let dir = path.parent().ok_or("it has no directory")?;
+    let dir_meta = std::fs::metadata(dir).map_err(|e| format!("its directory could not be examined: {e}"))?;
+    trusted(&dir_meta, "its directory")?;
+    if meta.len() > STANDING_RULES_BYTES {
+        return Err(format!("it is {} bytes, more than this file could ever need", meta.len()));
+    }
+    let mut text = String::new();
+    file.take(STANDING_RULES_BYTES)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("it could not be read as text: {e}"))?;
+    parse_standing_rules(&text)
+}
+
+/// The standing rules this shell starts with, read from [`STANDING_RULES_PATH`] — called exactly
+/// once, from [`modes`], when the shell's one `Modes` is built. There is no other caller and no
+/// way to read the file again short of restarting the shell: a re-read that something on the
+/// socket could trigger would be a way for whoever can write a file to choose the moment it took
+/// effect. `mind_mode_no_control_path_reaches_the_standing_rules_loader` (in `control_approvals`)
+/// keeps every `control*.rs` away from it.
+///
+/// Under test, none: a test run must not borrow the policy of the machine it runs on.
+fn load_standing_rules() -> Vec<Rule> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    let path = std::path::Path::new(STANDING_RULES_PATH);
+    match standing_rules_from(path, 0) {
+        Ok(rules) => {
+            if !rules.is_empty() {
+                let names: Vec<String> = rules.iter().map(|r| format!("{}.{}", r.app, r.action)).collect();
+                tracing::warn!(
+                    path = STANDING_RULES_PATH,
+                    rules = %names.join(", "),
+                    "this machine's administrator allows these actions without a card, in auto and \
+                     in a bypass, from the shell's start"
+                );
+            }
+            rules
+        }
+        Err(why) => {
+            tracing::warn!(path = STANDING_RULES_PATH, "standing rules ignored entirely: {why}");
+            Vec::new()
+        }
+    }
+}
+
 /// A bypass that ended because its clock ran out, rather than because somebody ended it.
 ///
 /// The distinction is the whole of why this type exists. A person who presses `Ask` has just
@@ -395,6 +624,11 @@ pub struct Modes {
     /// The same rules, until the audit has a line for them. Taken by [`Modes::take_unaudited`]
     /// outside the lock, because the audit writes a file.
     unaudited: Vec<Rule>,
+    /// What this machine's administrator allows from the shell's start ([`STANDING_RULES_PATH`]).
+    /// Set once, by [`Modes::with_standing_rules`] when the shell's one `Modes` is built; never
+    /// cleared by a lowering — in ask and plan they simply answer nothing — and only ever
+    /// suspended, by the person's ✕.
+    standing: Vec<StandingRule>,
 }
 
 impl Default for Modes {
@@ -420,7 +654,36 @@ impl Modes {
             rules: Vec::new(),
             cleared: Vec::new(),
             unaudited: Vec::new(),
+            standing: Vec::new(),
         }
+    }
+
+    /// These modes, with the administrator's standing rules. Only [`modes`] calls it outside the
+    /// tests, with what [`load_standing_rules`] read at the shell's start.
+    pub(crate) fn with_standing_rules(mut self, rules: Vec<Rule>) -> Self {
+        self.standing = rules.into_iter().map(|rule| StandingRule { rule, suspended: false }).collect();
+        self
+    }
+
+    /// Every standing rule, suspended or not, for `describe shell`.
+    pub fn standing_rules(&self) -> &[StandingRule] {
+        &self.standing
+    }
+
+    /// Whether the mode at `now` is one a standing rule answers in: auto, or either bypass. In
+    /// ask and plan it does nothing — a person who lowers the mode gets the asks back, and
+    /// raising it again brings the standing rules back without a card.
+    fn standing_mode(&self, now: Instant) -> bool {
+        matches!(self.mode(now), Mode::Auto | Mode::Bypass | Mode::BypassAll)
+    }
+
+    /// The standing rules that answer for something at `now`: in a mode they answer in, and not
+    /// suspended. What `policy_json` publishes to the apps and the mode's sentence names.
+    pub fn standing_in_force(&self, now: Instant) -> Vec<Rule> {
+        if !self.standing_mode(now) {
+            return Vec::new();
+        }
+        self.standing.iter().filter(|s| !s.suspended).map(|s| s.rule.clone()).collect()
     }
 
     /// The mode in force right now.
@@ -685,8 +948,15 @@ impl Modes {
     }
 
     /// A person pressed the ✕ beside a rule. **UI only** — see the module doc.
+    ///
+    /// On a standing rule the ✕ suspends it until the shell restarts: the administrator's file
+    /// is not the person's to edit from a menu, but what runs while they are at the machine is
+    /// theirs to decide. Nothing re-arms a suspended one but a restart, which reads the file again.
     pub(crate) fn person_revoke_rule(&mut self, app: &str, action: &str) {
         self.rules.retain(|r| !(r.app == app && r.action == action));
+        for standing in self.standing.iter_mut().filter(|s| s.rule.app == app && s.rule.action == action) {
+            standing.suspended = true;
+        }
     }
 
     fn rule_covers(&self, app: &str, action: &str) -> bool {
@@ -797,7 +1067,7 @@ impl Modes {
             // the rest of the session.
             Mode::Bypass => {
                 if irreversible || open {
-                    self.ask_or_rule(app, action, irreversible, now)
+                    self.ask_or_rule(app, action, rank, irreversible, now)
                 } else {
                     Decision::Run { unasked: would_ask }
                 }
@@ -810,14 +1080,14 @@ impl Modes {
             Mode::BypassAll => Decision::Run { unasked: would_ask },
             Mode::Auto => {
                 if rank >= DANGEROUS || irreversible || open {
-                    self.ask_or_rule(app, action, irreversible, now)
+                    self.ask_or_rule(app, action, rank, irreversible, now)
                 } else {
                     Decision::Run { unasked: would_ask }
                 }
             }
             Mode::Ask => {
                 if would_ask {
-                    self.ask_or_rule(app, action, irreversible, now)
+                    self.ask_or_rule(app, action, rank, irreversible, now)
                 } else {
                     Decision::Run { unasked: false }
                 }
@@ -838,13 +1108,55 @@ impl Modes {
     ///
     /// And only a rule in force at `now` ([`Modes::rules_at`]): a bypass that has run out has
     /// lowered the mode, and the rules went with it, whether or not a tick has folded it back.
-    fn ask_or_rule(&self, app: &str, action: &str, irreversible: bool, now: Instant) -> Decision {
-        let live = self.rules_at(now).iter().any(|r| r.app == app && r.action == action);
-        if !irreversible && live && self.rule_covers(app, action) {
-            Decision::Run { unasked: true }
-        } else {
-            Decision::Ask
+    ///
+    /// A standing rule ([`STANDING_RULES_PATH`]) answers here too, and never more than a session
+    /// rule could: it is the administrator pressing "Allow for this session" before anybody sat
+    /// down, so it is held to what that button is offered for — `may_offer_session_rule`, not
+    /// `dangerous` and not what cannot be undone, checked now rather than trusted from the file —
+    /// and only in a mode it answers in ([`Modes::standing_mode`]). The machine ceiling has
+    /// already been consulted above; nothing here reaches past it.
+    fn ask_or_rule(&self, app: &str, action: &str, rank: usize, irreversible: bool, now: Instant) -> Decision {
+        if irreversible {
+            return Decision::Ask;
         }
+        let live = self.rules_at(now).iter().any(|r| r.app == app && r.action == action);
+        if live && self.rule_covers(app, action) {
+            return Decision::Run { unasked: true };
+        }
+        if self.standing_covers(app, action, rank, now) {
+            return Decision::Run { unasked: true };
+        }
+        Decision::Ask
+    }
+
+    /// Whether a standing rule in force answers `app.action` at grade `rank`. Never `dangerous`
+    /// (the other half of `may_offer_session_rule`; what cannot be undone is the caller's
+    /// `irreversible`, which wins before this is asked).
+    fn standing_covers(&self, app: &str, action: &str, rank: usize, now: Instant) -> bool {
+        rank < DANGEROUS
+            && self.standing_mode(now)
+            && self.standing.iter().any(|s| !s.suspended && s.rule.app == app && s.rule.action == action)
+    }
+
+    /// Whether it was a standing rule — rather than the mode, or a session rule — that let this
+    /// action run unasked. The audit says so for every action that ran on one, so this asks the
+    /// table twice: as it is, and with the standing rules taken away.
+    pub fn standing_rule_answers(
+        &self,
+        grade: &str,
+        app: &str,
+        action: &str,
+        declared: impl Into<Declared>,
+        ceiling: &str,
+        now: Instant,
+    ) -> bool {
+        let declared = declared.into();
+        if !matches!(self.decide(grade, app, action, declared, ceiling, now), Decision::Run { .. }) {
+            return false;
+        }
+        let mut without = self.clone();
+        without.standing.clear();
+        without.decide(grade, app, action, declared, ceiling, now) == Decision::Ask
     }
 }
 
@@ -852,7 +1164,8 @@ impl Modes {
 
 fn modes() -> &'static Mutex<Modes> {
     static MODES: OnceLock<Mutex<Modes>> = OnceLock::new();
-    MODES.get_or_init(|| Mutex::new(Modes::new(stored_mode())))
+    // The one read of the administrator's standing rules, when the shell's one `Modes` is built.
+    MODES.get_or_init(|| Mutex::new(Modes::new(stored_mode()).with_standing_rules(load_standing_rules())))
 }
 
 /// A poisoned lock means a previous holder panicked mid-update. The state is four plain fields
@@ -877,6 +1190,23 @@ fn stored_mode() -> Mode {
 
 pub fn current() -> Mode {
     locked().mode(Instant::now())
+}
+
+/// The current mode's sentence, for Settings and the socket — [`Mode::meaning_with`] the
+/// standing rules in force, so neither says "once per session before it runs commands" on a
+/// machine whose administrator has allowed them from the start.
+pub fn meaning_now() -> String {
+    let now = Instant::now();
+    let guard = locked();
+    guard.mode(now).meaning_with(&guard.standing_in_force(now))
+}
+
+/// Whether a standing rule is what lets this action run unasked right now. See
+/// [`Modes::standing_rule_answers`]; `request_approval` asks it so the caller can write
+/// `standing_rule` into the audit as the reason.
+pub fn standing_rule_answers(grade: &str, app: &str, action: &str, declared: impl Into<Declared>) -> bool {
+    let ceiling = crate::control_approvals::machine_ceiling();
+    locked().standing_rule_answers(grade, app, action, declared, &ceiling, Instant::now())
 }
 
 /// Fold an expired bypass back. Returns whether the screen has something new to show.
@@ -1121,11 +1451,21 @@ pub fn policy_json(modes: &Modes, now: Instant, now_unix: u64) -> String {
         .iter()
         .map(|r| serde_json::json!({"app": r.app, "action": r.action}))
         .collect();
+    // The administrator's standing rules, beside the session rules and under their own name so an
+    // app can tell them apart and hold them to their own limits (`gate::Mode::standing_covers`:
+    // auto or a bypass, never `dangerous`, never what cannot be undone). Only the ones in force:
+    // none in ask or plan, none the person has suspended.
+    let standing: Vec<serde_json::Value> = modes
+        .standing_in_force(now)
+        .iter()
+        .map(|r| serde_json::json!({"app": r.app, "action": r.action}))
+        .collect();
     let mut doc = serde_json::json!({
         "mode": modes.mode(now).as_str(),
         "previous": modes.previous(now).as_str(),
         "bypass_expires_unix": modes.bypass_left(now).map(|left| now_unix + left.as_secs()),
         "session_rules": rules,
+        "standing_rules": standing,
         "note": "Written by the shell whenever the mind mode or a session rule changes; every \
                  app's dispatch reads it before running an action. Editing it changes nothing \
                  the shell shows, and the next change overwrites it.",
@@ -1195,6 +1535,21 @@ pub fn snapshot() -> serde_json::Value {
         .iter()
         .map(|r| serde_json::json!({"app": r.app, "action": r.action}))
         .collect();
+    let in_force = guard.standing_in_force(now);
+    let standing: Vec<serde_json::Value> = guard
+        .standing_rules()
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "app": s.rule.app,
+                "action": s.rule.action,
+                "suspended": s.suspended,
+                // Answering right now: not suspended, and the mode is auto or a bypass.
+                "in_force": in_force.contains(&s.rule),
+            })
+        })
+        .collect();
+    let means = mode.meaning_with(&in_force);
     let left = guard.bypass_left(now);
     let until_restart = guard.bypass_until_restart(now);
     let previous = guard.previous(now);
@@ -1204,7 +1559,7 @@ pub fn snapshot() -> serde_json::Value {
 
     serde_json::json!({
         "mode": mode.as_str(),
-        "means": mode.meaning(),
+        "means": means,
         "previous": previous.as_str(),
         "ceiling": crate::control_approvals::machine_ceiling(),
         // A number while a bypass is counting down; null when there is nothing counting. A
@@ -1218,6 +1573,11 @@ pub fn snapshot() -> serde_json::Value {
         // What the last lowering of the mode took away: a rule is per (app, action), covers
         // every caller, and goes when the mode is lowered or the shell restarts.
         "session_rules_cleared": serde_json::Value::Array(cleared),
+        // What this machine's administrator allows without a card from the shell's start, and
+        // the file it came from. They answer only in auto and either bypass, never for anything
+        // `dangerous` or that cannot be undone; `suspended` is the person's ✕, until restart.
+        "standing_rules": serde_json::Value::Array(standing),
+        "standing_rules_source": STANDING_RULES_PATH,
     })
 }
 
@@ -1230,8 +1590,10 @@ pub fn rules_summary() -> String {
     let names = |rules: &[Rule]| {
         rules.iter().map(|r| format!("{}.{}", r.app, r.action)).collect::<Vec<_>>().join(",")
     };
-    // The cleared list too, so the menu redraws its line the tick a lowering takes rules away.
-    format!("{}|{}", names(guard.rules()), names(guard.cleared()))
+    // The cleared list too, so the menu redraws its line the tick a lowering takes rules away —
+    // and the standing rules in force, which come and go with the mode and the person's ✕.
+    let standing = guard.standing_in_force(Instant::now());
+    format!("{}|{}|{}", names(guard.rules()), names(guard.cleared()), names(&standing))
 }
 
 /// The chip's text: the mode, plus the countdown while one is running.
@@ -1447,6 +1809,309 @@ mod mind_mode_tests {
 
     fn ran(d: &Decision) -> bool {
         matches!(d, Decision::Run { .. })
+    }
+
+    // ── The standing rules of an unattended machine (15 October 2026) ──
+
+    /// `shell.agent_run` as the shell publishes it: sensitive, and it runs whatever it is given.
+    const AGENT_RUN: Declared = Declared { cannot_be_undone: false, open_ended: true };
+
+    fn standing(mode: Mode, rules: &[(&str, &str)], now: Instant) -> Modes {
+        let mut modes = at(Mode::Ask).with_standing_rules(
+            rules.iter().map(|(a, b)| Rule { app: a.to_string(), action: b.to_string() }).collect(),
+        );
+        modes.person_set_mode(mode, Bypass::Hour, now, 0);
+        modes
+    }
+
+    /// A directory of the test's own for a standing-rules file, made with `mode`, and the uid
+    /// the test runs as — the owner the loader is told to trust, so no test needs root.
+    fn rules_dir(name: &str, mode: u32) -> (std::path::PathBuf, u32) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("yantrik-standing-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let uid = std::fs::metadata(&dir).unwrap().uid();
+        (dir, uid)
+    }
+
+    fn write_rules(dir: &std::path::Path, text: &str, mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("standing-rules.conf");
+        std::fs::write(&path, text).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    /// What the file may say: two names a line, comments and blanks ignored, no more than 32
+    /// rules — and one bad line makes the whole file allow nothing.
+    #[test]
+    fn mind_mode_standing_rules_parse_what_the_administrator_wrote() {
+        let good = "# the live-stream VM\n\
+                    \n\
+                    shell agent_run   # the Director's builds\n\
+                    shell agent_run\n\
+                    files   move\n";
+        assert_eq!(
+            parse_standing_rules(good).unwrap(),
+            vec![
+                Rule { app: "shell".into(), action: "agent_run".into() },
+                Rule { app: "files".into(), action: "move".into() },
+            ],
+            "a duplicate is one rule"
+        );
+
+        // A bad line in a good file: nothing stands, and every bad line is named.
+        let err = parse_standing_rules(&format!(
+            "{good}Shell agent_run\n\
+             shell\n\
+             shell agent_run extra\n\
+             shell agent;run\n"
+        ))
+        .unwrap_err();
+        assert!(err.starts_with("4 line(s)"), "{err}");
+        for line in ["line 6:", "line 7:", "line 8:", "line 9:"] {
+            assert!(err.contains(line), "{line} is named: {err}");
+        }
+        // One bad line is enough, wherever it sits.
+        assert!(parse_standing_rules("shell agent_run\nfiles\n").is_err());
+        assert!(parse_standing_rules("shell agent;run\nshell agent_run\n").is_err());
+
+        assert!(standing_name_ok(&"a".repeat(64)) && !standing_name_ok(&"a".repeat(65)));
+        assert!(!standing_name_ok("") && standing_name_ok("app-shell.v2_x"));
+
+        let many: String = (0..=STANDING_RULES_MAX).map(|i| format!("app{i} act\n")).collect();
+        let err = parse_standing_rules(&many).unwrap_err();
+        assert!(err.contains("33 rules"), "{err}");
+        let enough: String = (0..STANDING_RULES_MAX).map(|i| format!("app{i} act\n")).collect();
+        assert_eq!(parse_standing_rules(&enough).unwrap().len(), STANDING_RULES_MAX);
+    }
+
+    /// The file is trusted only as root's: a symlink, a file somebody else owns, a file or a
+    /// directory others can write, too many rules or a bad line, and the whole file is ignored.
+    #[test]
+    fn mind_mode_standing_rules_trust_only_a_file_root_alone_can_write() {
+        let (dir, uid) = rules_dir("trust", 0o755);
+        // No file: no rules, and nothing to say.
+        assert_eq!(standing_rules_from(&dir.join("standing-rules.conf"), uid).unwrap(), vec![]);
+
+        let path = write_rules(&dir, "shell agent_run\n", 0o644);
+        assert_eq!(standing_rules_from(&path, uid).unwrap().len(), 1, "root's own file, as it should be");
+        let err = standing_rules_from(&path, uid.wrapping_add(1)).unwrap_err();
+        assert!(err.contains("owned by uid"), "a file somebody else owns speaks for them: {err}");
+
+        write_rules(&dir, "shell agent_run\n", 0o664);
+        let err = standing_rules_from(&path, uid).unwrap_err();
+        assert!(err.contains("its group"), "{err}");
+        write_rules(&dir, "shell agent_run\n", 0o646);
+        let err = standing_rules_from(&path, uid).unwrap_err();
+        assert!(err.contains("anyone"), "{err}");
+
+        // A symlink at the path is refused, not followed — even to a perfectly good file.
+        let (real_dir, _) = rules_dir("trust-target", 0o755);
+        let target = write_rules(&real_dir, "shell agent_run\n", 0o644);
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let err = standing_rules_from(&path, uid).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
+        std::fs::remove_file(&path).unwrap();
+
+        // A directory, a FIFO: not a regular file. (The FIFO is opened non-blocking, so the
+        // shell's start cannot be held on one.)
+        std::fs::create_dir(&path).unwrap();
+        assert!(standing_rules_from(&path, uid).unwrap_err().contains("not a regular file"));
+        std::fs::remove_dir(&path).unwrap();
+        let fifo = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        assert!(standing_rules_from(&path, uid).unwrap_err().contains("not a regular file"));
+        std::fs::remove_file(&path).unwrap();
+
+        // Too many rules: all of them ignored.
+        let many: String = (0..=STANDING_RULES_MAX).map(|i| format!("app{i} act\n")).collect();
+        write_rules(&dir, &many, 0o644);
+        assert!(standing_rules_from(&path, uid).unwrap_err().contains("at most 32"));
+
+        // A bad line in a good file: the whole file is ignored, and the warning names the line.
+        write_rules(&dir, "shell agent_run\nNOT A RULE\n", 0o644);
+        let err = standing_rules_from(&path, uid).unwrap_err();
+        assert!(err.contains("line 2:"), "{err}");
+
+        // A directory others can write lets them rename their own file into place.
+        let (open_dir, uid) = rules_dir("trust-open-dir", 0o777);
+        let path = write_rules(&open_dir, "shell agent_run\n", 0o644);
+        assert!(standing_rules_from(&path, uid).unwrap_err().contains("its directory"));
+
+        for d in [dir, real_dir, open_dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// The case it exists for: on the live VM in auto, after a restart, the first command runs
+    /// with no card — and it is still unasked, so it lands in the audit, as a standing rule.
+    #[test]
+    fn mind_mode_a_standing_rule_runs_an_open_ended_action_in_auto_without_a_card() {
+        let now = Instant::now();
+        let modes = standing(Mode::Auto, &[("shell", "agent_run")], now);
+        assert_eq!(
+            modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now),
+            Decision::Run { unasked: true }
+        );
+        assert!(modes.standing_rule_answers("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now));
+        // Without it, the card the VM stalled on.
+        let bare = standing(Mode::Auto, &[], now);
+        assert_eq!(bare.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Ask);
+        // Only its own action.
+        assert_eq!(modes.decide("sensitive", "terminal", "run", AGENT_RUN, "dangerous", now), Decision::Ask);
+        // And it is not credited with what the mode runs anyway.
+        assert!(!modes.standing_rule_answers("sensitive", "shell", "agent_run", false, "dangerous", now));
+        // Both bypasses: bypass asks before commands and the rule answers; full bypass asks
+        // nothing, so the rule is not what let it through.
+        let bypass = standing(Mode::Bypass, &[("shell", "agent_run")], now);
+        assert_eq!(bypass.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Run { unasked: true });
+        assert!(bypass.standing_rule_answers("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now));
+        let full = standing(Mode::BypassAll, &[("shell", "agent_run")], now);
+        assert!(!full.standing_rule_answers("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now));
+    }
+
+    /// In ask and plan a standing rule does nothing; the person who lowers the mode gets the
+    /// asks back, and raising it again brings the rule back without a card.
+    #[test]
+    fn mind_mode_a_standing_rule_does_nothing_in_ask_or_plan() {
+        let now = Instant::now();
+        let ask = standing(Mode::Ask, &[("shell", "agent_run")], now);
+        assert_eq!(ask.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Ask);
+        assert!(ask.standing_in_force(now).is_empty());
+        let plan = standing(Mode::Plan, &[("shell", "agent_run")], now);
+        assert!(matches!(plan.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Refuse { .. }));
+
+        // Lowering, then raising.
+        let mut modes = standing(Mode::Auto, &[("shell", "agent_run")], now);
+        modes.person_set_mode(Mode::Ask, Bypass::Hour, now, 0);
+        assert_eq!(modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Ask);
+        assert!(modes.cleared().is_empty(), "a standing rule is not a session rule a lowering clears");
+        modes.person_set_mode(Mode::Auto, Bypass::Hour, now, 0);
+        assert_eq!(modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Run { unasked: true });
+        // From the socket too: a mind lowering the mode lowers it; it cannot raise it back.
+        modes.lower_from_socket(Mode::Plan, now).unwrap();
+        assert!(modes.standing_in_force(now).is_empty());
+        assert!(modes.lower_from_socket(Mode::Auto, now).is_err());
+
+        // A bypass that lapses back to ask takes the standing rules out of force at the deadline,
+        // before any tick has folded it back.
+        let mut modes = standing(Mode::Ask, &[("shell", "agent_run")], now);
+        modes.person_set_mode(Mode::Bypass, Bypass::Minutes15, now, 0);
+        let after = now + Duration::from_secs(15 * 60 + 1);
+        assert_eq!(modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", after), Decision::Ask);
+    }
+
+    /// It answers exactly what a session rule answers: never `dangerous`, never what cannot be
+    /// undone, and never past the machine ceiling.
+    #[test]
+    fn mind_mode_a_standing_rule_never_answers_dangerous_or_unrecoverable() {
+        let now = Instant::now();
+        for mode in [Mode::Auto, Mode::Bypass] {
+            let modes = standing(mode, &[("shell", "agent_run"), ("calendar", "delete_event")], now);
+            assert_eq!(
+                modes.decide("dangerous", "shell", "agent_run", AGENT_RUN, "dangerous", now),
+                Decision::Ask,
+                "{mode:?}: a dangerous one is asked about every time"
+            );
+            let gone = Declared { cannot_be_undone: true, open_ended: false };
+            assert_eq!(
+                modes.decide("sensitive", "calendar", "delete_event", gone, "dangerous", now),
+                Decision::Ask,
+                "{mode:?}: what cannot be undone is asked about every time"
+            );
+            let both = Declared { cannot_be_undone: true, open_ended: true };
+            assert_eq!(modes.decide("sensitive", "shell", "agent_run", both, "dangerous", now), Decision::Ask);
+            // The ceiling first: refused, not asked, and no rule reaches past it.
+            assert!(matches!(
+                modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "standard", now),
+                Decision::Refuse { why } if why.contains("tool_permission")
+            ));
+        }
+        // The card's own rule says the same about those two.
+        assert!(!approvals::may_offer_session_rule("dangerous", "Run a command."));
+        assert!(!approvals::may_offer_session_rule("sensitive", "It is not recoverable."));
+    }
+
+    /// The person's ✕ suspends a standing rule until the shell restarts, in every mode after it.
+    #[test]
+    fn mind_mode_a_person_revoking_a_standing_rule_suspends_it() {
+        let now = Instant::now();
+        let mut modes = standing(Mode::Auto, &[("shell", "agent_run"), ("files", "move")], now);
+        modes.person_revoke_rule("shell", "agent_run");
+        assert_eq!(modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Ask);
+        assert_eq!(modes.standing_in_force(now), vec![Rule { app: "files".into(), action: "move".into() }]);
+        assert!(modes.standing_rules().iter().any(|s| s.rule.action == "agent_run" && s.suspended));
+        // Down and up again does not re-arm it; nor does a bypass.
+        modes.person_set_mode(Mode::Ask, Bypass::Hour, now, 0);
+        modes.person_set_mode(Mode::Bypass, Bypass::Hour, now, 0);
+        assert_eq!(modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Ask);
+        // A session rule the person gives afterwards is theirs, and answers as one.
+        modes.person_add_rule_at("shell", "agent_run", "sensitive", "What it runs can do anything you can.", now).unwrap();
+        assert_eq!(modes.decide("sensitive", "shell", "agent_run", AGENT_RUN, "dangerous", now), Decision::Run { unasked: true });
+    }
+
+    /// What the mode's sentence says on a machine with a standing rule: no promise of a card
+    /// before commands that it will not keep, and who allows what.
+    #[test]
+    fn mind_mode_the_sentence_names_the_administrators_rule() {
+        let now = Instant::now();
+        let modes = standing(Mode::Auto, &[("shell", "agent_run")], now);
+        let said = Mode::Auto.meaning_with(&modes.standing_in_force(now));
+        assert!(!said.contains("once per session before it runs commands"), "{said}");
+        assert!(said.contains("This machine's administrator allows shell.agent_run without asking"), "{said}");
+        assert!(said.contains("destructive ones"), "{said}");
+        let bypass = Mode::Bypass.meaning_with(&modes.standing_in_force(now));
+        assert!(bypass.contains("administrator allows shell.agent_run") && !bypass.contains("once per session before running"));
+        // No rule in force: the sentence is the one it always was.
+        assert_eq!(Mode::Auto.meaning_with(&[]), Mode::Auto.meaning());
+        let ask = standing(Mode::Ask, &[("shell", "agent_run")], now);
+        assert_eq!(Mode::Ask.meaning_with(&ask.standing_in_force(now)), Mode::Ask.meaning());
+    }
+
+    /// What the shell publishes for the apps is what the apps enforce: the standing rules in
+    /// force ride under their own name, and the app-side gate decides as the shell does — in
+    /// every mode, for the open-ended action, a dangerous one and one that cannot be undone, and
+    /// after the person's ✕.
+    #[test]
+    fn mind_mode_standing_rules_publish_to_the_gate_and_it_agrees() {
+        use yantrik_app_runtime::control::mode_from;
+        use yantrik_ipc_transport::gate::{self, Authority};
+        let now = Instant::now();
+        let unix = 1_800_000_000;
+        let open = "Run a command line in its own terminal. What it runs can do anything you can.";
+        let gone = "Delete it. It is not recoverable.";
+        for mode in Mode::ALL {
+            let mut modes = standing(mode, &[("shell", "agent_run"), ("calendar", "delete_event")], now);
+            for revoked in [false, true] {
+                if revoked {
+                    modes.person_revoke_rule("shell", "agent_run");
+                }
+                let text = policy_json(&modes, now, unix);
+                let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let listed = doc["standing_rules"].as_array().unwrap().len();
+                let in_force = modes.standing_in_force(now).len();
+                assert_eq!(listed, in_force, "{mode:?}: only the rules in force are published");
+                let read = mode_from(&text, unix);
+                for (grade, app, action, purpose) in [
+                    ("sensitive", "shell", "agent_run", open),
+                    ("dangerous", "shell", "agent_run", open),
+                    ("sensitive", "calendar", "delete_event", gone),
+                ] {
+                    let shell = modes.decide(grade, app, action, Declared::from_purpose(purpose), "dangerous", now);
+                    let authority = Authority { ceiling: "dangerous".into(), mode: read.clone(), granted: false, asks_above: None };
+                    let app_side = gate::decide(&authority, app, action, grade, purpose);
+                    assert_eq!(
+                        ran(&shell),
+                        app_side.is_ok(),
+                        "{mode:?}/{grade} {app}.{action} revoked={revoked}: shell {shell:?}, app {app_side:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// The whole table, five modes by four grades, with the ceiling out of the way.
@@ -2582,6 +3247,10 @@ mod mind_mode_tests {
             // A rule for the app's own neighbour. It must never cover the action beside it.
             ("other", |app, _| vec![(app.to_string(), "rename".to_string())]),
         ];
+        // The administrator's standing rule for this very subject (15 October 2026), carried as
+        // `standing_rules` beside an empty `rules`. Its own case rather than a column on every
+        // vector, so the vectors that predate it are byte for byte what they were.
+        let standing_case = |app: &str, action: &str| vec![(app.to_string(), action.to_string())];
 
         for mode in modes_all {
             for grade in grades {
@@ -2622,6 +3291,33 @@ mod mind_mode_tests {
                                 "expect": outcome_of(&decision),
                             }));
                         }
+                        let standing = standing_case(app, action);
+                        let modes = modes_for(mode, &[], now).with_standing_rules(
+                            standing.iter().map(|(a, b)| Rule { app: a.clone(), action: b.clone() }).collect(),
+                        );
+                        let decision =
+                            modes.decide(grade, app, action, Declared { cannot_be_undone: cannot_undo, open_ended: open }, ceiling, now);
+                        out.push(serde_json::json!({
+                            "id": format!(
+                                "act/{}/{grade}/unrecoverable={cannot_undo}/open_ended={open}/ceiling={ceiling}/rule=standing",
+                                mode.as_str(),
+                            ),
+                            "layer": "shell",
+                            "tool": "os_act",
+                            "app": app,
+                            "action": action,
+                            "grade": grade,
+                            "mode": mode.as_str(),
+                            "ceiling": ceiling,
+                            "rules": Vec::<serde_json::Value>::new(),
+                            "standing_rules": standing.iter()
+                                .map(|(a, b)| serde_json::json!([a, b]))
+                                .collect::<Vec<_>>(),
+                            "env_cap": serde_json::Value::Null,
+                            "unrecoverable": cannot_undo,
+                            "open_ended": open,
+                            "expect": outcome_of(&decision),
+                        }));
                     }
                 }
             }
@@ -2763,7 +3459,12 @@ mod mind_mode_tests {
              \x20   \"whatever it is given (gate::OPEN_ENDED, since 29 September 2026). Above\",\n\
              \x20   \"safe it asks in ask, auto and bypass, and a session rule covers it;\",\n\
              \x20   \"bypass_all runs it and plan refuses it. Where both are said,\",\n\
-             \x20   \"unrecoverable wins.\"\n\
+             \x20   \"unrecoverable wins.\",\n\
+             \x20   \"\",\n\
+             \x20   \"standing_rules (15 October 2026, rule=standing) are the ones this machine's\",\n\
+             \x20   \"administrator names in /etc/yantrik/standing-rules.conf. They answer what a\",\n\
+             \x20   \"session rule answers, and only in auto, bypass and bypass_all: never\",\n\
+             \x20   \"dangerous, never unrecoverable, nothing in ask or plan.\"\n\
              \x20 ],\n",
         );
         text.push_str(

@@ -12,7 +12,10 @@ what only Blender has:
     the guard, the handler and the post-snapshot cross as ONE job, so no other caller can move
     the scene between "is this revision current" and "here is what your action did";
   * the notice: a refusal is said twice, once to the caller and once in the state, and the
-    next success clears it.
+    next success clears it;
+  * the busy answer: a render holds the main thread for as long as the scene takes, and a
+    describe that arrives in that window is answered from what the render published before it
+    took the thread — the scene as of then, plus what is running now.
 
 One thing changes for a caller: the SDK checks each argument against the type it is published
 with, as the Rust `yantrik-surface` crate does. `samples` takes the integer 4, `metallic` the
@@ -174,6 +177,15 @@ class Surface(_Surface):
 
     def snapshot(self):
         return self.scene.snapshot()
+
+    def busy_answer(self):
+        """A describe during a render, answered without waking the main thread.
+
+        The render said what it was writing and when it started before it took that thread, so
+        the truth is reachable from here; a Blender two minutes into a Cycles frame is not a
+        Blender that stopped answering. Nothing in flight, nothing to say — the timeout stands.
+        """
+        return self.scene.busy_snapshot()
 
     def run_on_app_thread(self, fn, timeout):
         """Blender's main thread, reached through the bridge; a thread that does not turn up

@@ -112,7 +112,7 @@ mod tests {
     /// A shelved app never reaches the catalogue, so no surface that reads it can offer one.
     ///
     /// The machine this matters on is one that installed a release with these apps in it: the
-    /// scan will keep finding /opt/yantrik/share/applications/yantrik-music-player.desktop until
+    /// scan will keep finding /opt/yantrik/share/applications/yantrik-spreadsheet.desktop until
     /// something removes it, and the launcher, the Lens and `open_app` all read this list.
     #[test]
     fn the_catalogue_leaves_shelved_apps_out() {

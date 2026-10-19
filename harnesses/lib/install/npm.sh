@@ -18,3 +18,5 @@ npm install --global --prefix "$HOME/.local" --no-fund --no-audit --no-update-no
 [ -x "$USER_BIN/$command" ] || fail "$package installed, but there is no $command in ~/.local/bin"
 version=$("$USER_BIN/$command" --version 2>/dev/null | head -n 1) || true
 say "$command ${version:-is} installed in ~/.local/bin"
+# The model step (the harness id is its command: pi, openclaw).
+wire_model "$command" || true

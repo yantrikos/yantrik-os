@@ -10,7 +10,7 @@ pub fn register(reg: &mut super::ToolRegistry) {
     reg.register(Box::new(GlobTool));
 }
 
-struct GlobTool;
+pub(crate) struct GlobTool;
 
 impl Tool for GlobTool {
     fn name(&self) -> &'static str { "glob" }
@@ -179,9 +179,11 @@ fn collect_matching_files(
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
 
-        // Skip hidden dirs and common noise
+        // Skip hidden dirs and common noise, and the protected places below the folder asked
+        // for, which validate_path checked only at the top.
         if name.starts_with('.') || name == "node_modules" || name == "target"
             || name == "__pycache__"
+            || yantrik_ipc_contracts::home_paths::is_protected(&path)
         {
             continue;
         }

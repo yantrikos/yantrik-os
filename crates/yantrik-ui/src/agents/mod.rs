@@ -122,6 +122,10 @@ impl Agents {
         self.lock().open_turn(id, prompt)
     }
 
+    pub fn new_conversation(&self) {
+        self.lock().new_conversation()
+    }
+
     /// A turn of the person's chat with a mind (the Lens): listed in Agents only if it does work.
     pub fn open_chat_turn(&self, id: &AgentId, prompt: &str) {
         self.lock().open_chat_turn(id, prompt)

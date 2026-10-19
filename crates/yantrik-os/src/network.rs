@@ -46,6 +46,9 @@ const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 const SETTINGS: &str = "org.freedesktop.NetworkManager.Settings";
 const SETTINGS_CONN: &str = "org.freedesktop.NetworkManager.Settings.Connection";
 
+/// `NMDeviceState` for a device that is neither joined nor trying to join.
+const DEVICE_STATE_DISCONNECTED: u32 = 30;
+
 /// The longest any one D-Bus call is waited for. zbus has no default timeout, and a wedged
 /// NetworkManager would otherwise hold whichever thread asked, which on a handler is the thread
 /// that draws the shell.
@@ -483,9 +486,11 @@ fn read_snapshot(conn: &Connection) -> Option<NetworkSnapshot> {
     // The Wi-Fi device, if the machine has one. Present is a fact about the hardware; the radio
     // may be off.
     let mut wifi_device: Option<String> = None;
+    let mut wifi_device_state: Option<u32> = None;
     for path in p_paths(&nm, "Devices") {
         if let Some(d) = get_all(conn, &path, DEVICE) {
             if p_u32(&d, "DeviceType") == Some(2) {
+                wifi_device_state = p_u32(&d, "State");
                 wifi_device = Some(path);
                 break;
             }
@@ -509,6 +514,9 @@ fn read_snapshot(conn: &Connection) -> Option<NetworkSnapshot> {
         vpn,
         wifi_present: wifi_device.is_some(),
         radio_on: wifi_device.is_some() && radio_on,
+        // `NM_DEVICE_STATE_DISCONNECTED`. Read as the device's own state and not inferred from
+        // the active connections, which say nothing about a device that is between attempts.
+        wifi_idle: wifi_device_state == Some(DEVICE_STATE_DISCONNECTED),
         ..NetworkSnapshot::default()
     };
 
@@ -890,6 +898,13 @@ pub(crate) fn build_settings<'a>(
     // profile made for it does not rejoin by itself.
     if matches!(decided, Plan::JoinOpen) && !request.by_person {
         connection.insert("autoconnect", Value::from(false));
+    } else {
+        // Retry forever after a drop. NetworkManager's default is four attempts and then no more
+        // until a manual join or a restart, and a slow driver (the Mac mini's BCM4331 on `wl`)
+        // spends four before the adapter is back: the machine then sat off the network with its
+        // radio on and its network in range (14 October 2026). network-service sets the same on
+        // the profiles it makes, and on saved ones still at the default when it starts.
+        connection.insert("autoconnect-retries", Value::from(0i32));
     }
     let mut wireless: HashMap<&'static str, Value<'a>> = HashMap::new();
     wireless.insert("ssid", Value::from(request.ssid.as_bytes().to_vec()));
@@ -935,6 +950,19 @@ mod tests {
         };
         assert_eq!(flag(false), Some(false), "not chosen by a person: autoconnect off");
         assert_eq!(flag(true), None, "chosen by a person: NetworkManager's default (on)");
+    }
+
+    /// A profile this shell makes keeps rejoining after a drop, rather than stopping after
+    /// NetworkManager's default of four attempts; one made with autoconnect off is not given it.
+    #[test]
+    fn a_new_profile_retries_forever_unless_it_does_not_autoconnect_at_all() {
+        let retries = |by_person, decided: &Plan| {
+            let r = ConnectRequest { ssid: "Home".into(), secret: Some(WifiSecret::new("long-enough-1".into())), by_person };
+            build_settings(&r, decided)["connection"].get("autoconnect-retries").and_then(|v| v.downcast_ref::<i32>().ok())
+        };
+        assert_eq!(retries(true, &Plan::JoinSecured { key_mgmt: "wpa-psk" }), Some(0));
+        assert_eq!(retries(true, &Plan::JoinOpen), Some(0));
+        assert_eq!(retries(false, &Plan::JoinOpen), None, "autoconnect is off there, so there is nothing to retry");
     }
 
     #[test]

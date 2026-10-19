@@ -20,16 +20,19 @@ taken out of the build for being drawings of apps.
 
 ## 1. Download the image
 
-The current image and its checksum are published at
-**<https://iso.yantrikos.com/nightly/>**, with `latest.json` naming the current file, its
-sha256, its size and its version. Four lines, and you can see every step:
+One link, always the newest nightly: **<https://iso.yantrikos.com/latest.iso>**. It leads to
+`https://iso.yantrikos.com/nightly/yantrik-os-latest.iso`, which the release host re-points at
+each build as it is published, and its checksum file names it, so three lines fetch and check it:
 
 ```bash
-curl -fsSL https://iso.yantrikos.com/nightly/latest.json          # what the current file is called
-curl -fL -O https://iso.yantrikos.com/nightly/<that file>
-curl -fL -O https://iso.yantrikos.com/nightly/<that file>.sha256
-sha256sum -c <that file>.sha256
+curl -fL -O https://iso.yantrikos.com/nightly/yantrik-os-latest.iso
+curl -fL -O https://iso.yantrikos.com/nightly/yantrik-os-latest.iso.sha256
+sha256sum -c yantrik-os-latest.iso.sha256
 ```
+
+Which build that is today, with its sha256, size and version, is in
+`https://iso.yantrikos.com/nightly/latest.json`. The host keeps only the newest few builds, so
+never link a build's own filename: it is gone a week later.
 
 `install.sh` in this repository does the same thing for you and is also served from
 `https://get.yantrikos.com/install.sh`:
@@ -43,9 +46,8 @@ Piped straight into a shell with no flag it explains and does nothing else — i
 file, installs nothing and wants no privilege. That is deliberate: an installer that runs the
 moment it is piped into `sh` is asking you to trust bytes you have not read.
 
-The image is about **1.3 GiB**. There is also `yantrik-os-nightly-latest.iso`, which always
-points at the newest one — convenient for a script, less good for a person, because the file
-you tested is not the file that name will mean tomorrow.
+The image is about **1.7 GiB**. If you want to keep the exact build you tested, keep the file:
+the `latest` name will mean the next build tomorrow.
 
 **Verify the checksum before you boot it.** The point is not that someone is attacking you;
 it is that a 1.3 GiB download that ends at 98% gives you an image that boots halfway and
@@ -134,9 +136,9 @@ The boot menu has four entries:
 | Entry | What it does |
 |---|---|
 | **Install Yantrik OS** | Boots live *and* puts first-run setup into installer mode, so it offers to write to a disk at the end |
-| **Try Yantrik OS (live, no install)** | Boots live. Nothing offers to touch a disk |
-| **Install Yantrik OS (Safe Mode)** | The same as the first, with `nomodeset` — use this if the screen stays black |
-| **Try Yantrik OS (verbose, serial console)** | No `quiet`, so the kernel and systemd say what they are doing. This is the entry to boot from when you are filing a bug |
+| **Try Yantrik OS without installing** | Boots live. Nothing offers to touch a disk |
+| **Install Yantrik OS with safe graphics** | The same as the first, with `nomodeset` — use this if the screen stays black |
+| **Try Yantrik OS, showing every boot message** | No `quiet`, so the kernel and systemd say what they are doing (on the serial line too). This is the entry to boot from when you are filing a bug |
 
 Either way the machine boots to a live desktop first. Nothing is written to any disk until
 you tell the installer to erase one.
@@ -174,7 +176,10 @@ worth knowing on the first day:
 | `Super`+`L` | Lock |
 | `Alt`+`Tab` / `Alt`+`F4` | Cycle windows / close |
 | `Super`+`←`/`→`/`↑`/`↓` | Snap, maximize, minimize |
-| `Print` / `Super`+`Shift`+`S` | Screenshot: whole screen / a region, into `~/Pictures` |
+| `Print` | The capture bar: a screenshot or a recording, of a region or the whole screen |
+| `Shift`+`Print` / `Super`+`Shift`+`S` | Screenshot of a region you drag, into `~/Pictures/Screenshots` and the clipboard |
+| `Ctrl`+`Print` | Screenshot of the whole screen, to the clipboard only |
+| `Super`+`Shift`+`R` | Start or stop a screen recording (saved in `~/Videos/Recordings`) |
 
 ---
 
@@ -324,7 +329,7 @@ desktop through the same path a person uses. See [app-control.md](app-control.md
 
 ### Black screen after boot
 
-Boot the **Safe Mode** entry, which adds `nomodeset`. If you have installed to disk already,
+Boot the **Install Yantrik OS with safe graphics** entry, which adds `nomodeset`. If you have installed to disk already,
 the renderer settings are in `~/.config/labwc/environment` —
 `WLR_RENDERER=pixman`, `LIBGL_ALWAYS_SOFTWARE=1` and `SLINT_BACKEND=winit` are what a machine
 with no usable GPU wants.
@@ -348,10 +353,10 @@ conversation. Point the machine at something with a GPU on your LAN, or at a pro
 
 ### An app I expected is not there
 
-Music and ySheets are **shelved** — deliberately not in this build, because there was nothing
-behind their screens. The shell says so when you ask for one, with the reason and what would
-bring it back. [`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) is the full
-account.
+Nothing is shelved in this build. Music and ySheets were — deliberately left out because there
+was nothing behind their screens — and both came back in October 2026. If an app is shelved
+again, the shell says so when you ask for it, with the reason and what would bring it back.
+[`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) is the full account.
 
 ### Reading the logs
 

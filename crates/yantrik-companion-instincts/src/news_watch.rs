@@ -35,6 +35,7 @@ const WORLD_LENSES: &[WorldLens] = &[
     },
     WorldLens {
         name: "cultural",
+        // Also covers what trend_watch did on its own before it was merged here (#755).
         search_query: "cultural trend viral phenomenon social movement today",
         filter_prompt: "Look for: emerging trends, viral moments worth understanding, \
                         cultural shifts, movements gaining momentum. Explain the WHY, not just the WHAT.",

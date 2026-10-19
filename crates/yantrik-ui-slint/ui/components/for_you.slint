@@ -1,0 +1,184 @@
+// For you — the Lens's inbox of mind notices (design/initiative-inbox-2026-10-16.md).
+//
+// A mind hands the OS a short card: a title, a sentence or two, why it was sent, and at most one
+// button that only opens something. The OS decides whether it interrupts; everything else waits
+// here. Each card carries "Why you got this" and the person's answer to it — Useful, Not useful,
+// Not now, Never this kind, Inbox only, Wrong — which goes back to the mind that sent it and is
+// applied by the OS whether or not the mind listens.
+//
+// Everything is drawn as plain text: a card's words are a mind's, and nothing in them is markup.
+// Every control is a YButton, so Tab reaches it and Enter or Space presses it.
+//
+// Reads one global, InboxState, which the shell fills (crates/yantrik-ui/src/wire/for_you.rs).
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+
+export struct NoticeCardData {
+    id: string,
+    title: string,
+    body: string,
+    // "Why you got this", with its evidence, one plain line.
+    why: string,
+    // Who sent it, in the approval card's words.
+    sender: string,
+    // The family, as Settings names it: "Reminders", "Calendar".
+    family: string,
+    // The one button's words, empty when the card has none.
+    action-label: string,
+    // The OS granted it an interrupt.
+    interrupt: bool,
+    unread: bool,
+    // A line under the card: what the button did, or why it could not.
+    note: string,
+}
+
+export global InboxState {
+    in property <[NoticeCardData]> cards: [];
+    // Live cards past the ones drawn; all of them are in the notification centre.
+    in property <int> more: 0;
+    // In the conversation the section starts folded to its header ("FOR YOU 2 · Show"), because
+    // the transcript needs the room; the Lens's own page always shows the cards.
+    in-out property <bool> expanded: false;
+    callback open-action(string);
+    callback feedback(string, string);  // card id, feedback kind
+    callback open-centre();
+}
+
+component FeedbackButton inherits YButton {
+    in property <string> card;
+    in property <string> kind;
+    variant: 1;
+    size: 0;
+    clicked => { InboxState.feedback(self.card, self.kind); }
+}
+
+export component NoticeCard inherits Rectangle {
+    in property <NoticeCardData> data;
+    background: Theme.bg-card;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: root.data.interrupt && root.data.unread ? Theme.accent : Theme.border-subtle;
+    height: body.preferred-height;
+    accessible-role: groupbox;
+    accessible-label: root.data.title;
+
+    body := VerticalLayout {
+        padding: Theme.sp-3;
+        spacing: Theme.sp-1;
+
+        HorizontalLayout {
+            spacing: Theme.sp-2;
+            Text {
+                text: root.data.title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-body;
+                font-weight: root.data.unread ? 700 : 600;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.data.family;
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                horizontal-alignment: right;
+            }
+        }
+        if root.data.body != "" : Text {
+            text: root.data.body;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.data.sender;
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Why you got this: " + root.data.why;
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            wrap: word-wrap;
+        }
+        if root.data.action-label != "" : HorizontalLayout {
+            alignment: start;
+            YButton {
+                label: root.data.action-label;
+                variant: 1;
+                size: 0;
+                clicked => { InboxState.open-action(root.data.id); }
+            }
+        }
+        if root.data.note != "" : Text {
+            text: root.data.note;
+            color: Theme.color-warning;
+            font-size: Theme.fs-micro;
+            wrap: word-wrap;
+        }
+        // Two rows of three, so the row fits the Lens at its narrowest.
+        HorizontalLayout {
+            spacing: Theme.sp-1;
+            alignment: start;
+            FeedbackButton { card: root.data.id; kind: "useful"; label: "Useful"; }
+            FeedbackButton { card: root.data.id; kind: "not_useful"; label: "Not useful"; }
+            FeedbackButton { card: root.data.id; kind: "not_now"; label: "Not now"; }
+        }
+        HorizontalLayout {
+            spacing: Theme.sp-1;
+            alignment: start;
+            FeedbackButton { card: root.data.id; kind: "never_family"; label: "Never this kind"; }
+            FeedbackButton { card: root.data.id; kind: "inbox_only"; label: "Inbox only"; }
+            FeedbackButton { card: root.data.id; kind: "wrong"; label: "Wrong"; }
+        }
+    }
+}
+
+// The section: a header, the cards, and how many more there are.
+export component ForYouSection inherits VerticalLayout {
+    // In the conversation the section can fold to its header; on the Lens's own page it cannot.
+    in property <bool> foldable: false;
+    spacing: Theme.sp-2;
+    padding-left: Theme.sp-2;
+    padding-right: Theme.sp-2;
+    padding-bottom: InboxState.cards.length > 0 ? Theme.sp-2 : 0px;
+
+    if InboxState.cards.length > 0 : HorizontalLayout {
+        spacing: Theme.sp-2;
+        padding-left: Theme.sp-2;
+        Text {
+            text: "FOR YOU";
+            color: Theme.accent;
+            font-size: Theme.fs-micro;
+            font-weight: 700;
+            letter-spacing: 2px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: (InboxState.cards.length + InboxState.more) + "";
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.foldable : YButton {
+            label: InboxState.expanded ? "Hide" : "Show";
+            variant: 1;
+            size: 0;
+            clicked => { InboxState.expanded = !InboxState.expanded; }
+        }
+    }
+    if InboxState.cards.length > 0 && (!root.foldable || InboxState.expanded) : VerticalLayout {
+        spacing: Theme.sp-2;
+        for card in InboxState.cards : NoticeCard { data: card; }
+        if InboxState.more > 0 : HorizontalLayout {
+            alignment: start;
+            YButton {
+                label: InboxState.more + " more in Notifications";
+                variant: 1;
+                size: 0;
+                clicked => { InboxState.open-centre(); }
+            }
+        }
+    }
+}

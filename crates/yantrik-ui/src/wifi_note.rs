@@ -76,4 +76,17 @@ mod tests {
         // No message, nothing to show.
         assert_eq!(note_from("state=needs-network\n"), "");
     }
+
+    #[test]
+    fn a_wl_reload_after_a_wedged_scan_changes_nothing_the_screens_say() {
+        // `yantrik-broadcom-wifi recover` appends this line to a ready status; it is not a state.
+        let s = "state=ready\nchip=BCM4331\ndriver=wl\nmessage=BCM4331 Wi-Fi is working (wl).\n\
+                 recovered=2026-10-14T03:33:00Z\n";
+        assert_eq!(note_from(s), "");
+        assert!(settled(s));
+        // Even were it to land above the state line, the state is still read by its own key.
+        let s = "recovered=2026-10-14T03:33:00Z\nstate=failed\nmessage=Could not give BCM4331 a driver.\n";
+        assert!(note_from(s).starts_with("Could not"));
+        assert!(!settled(s));
+    }
 }

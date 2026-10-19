@@ -28,7 +28,7 @@ import { StatusBar } from "components/status_bar.slint";
 import { DockItem } from "components/app_dock.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { IntentLens, LensResult, ApprovalRequest } from "components/intent_lens.slint";
-import { WorkCardData } from "components/work_card.slint";
+import { ContentBlock } from "components/message_bubble.slint";
 import { QuestionRequest } from "components/question_card.slint";
 import { MessageData } from "components/message_bubble.slint";
 import { UrgeCardData } from "components/glance_card.slint";
@@ -113,15 +113,23 @@ export component DesktopScreen inherits Rectangle {
     callback lens-open-in-agents();
     callback lens-open-history();
     callback lens-new-chat();
+    callback lens-cancel-queued();
 
-    // Chat v2: the work cards of the runs this chat started, the strip's run and counts, the mode
-    // chip's label and the header's identity line. Filled from the Agents store and the mind mode.
-    in property <[WorkCardData]> lens-work-cards: [];
-    in property <WorkCardData> lens-strip;
+    // Chat v2: the counts of the runs this chat started, the mode chip's label and the header's
+    // identity line. Filled from the Agents store and the mind mode.
+    // The timeline of the reply still arriving, and that reply's row (-1: none).
+    in property <[ContentBlock]> lens-live-steps: [];
+    in property <int> lens-live-steps-row: -1;
     in property <int> lens-live-runs: 0;
     in property <int> lens-waiting-runs: 0;
     in property <string> lens-mode-label: "Ask";
     in property <string> lens-identity: "";
+    // What the composer says Enter does while the mind is busy, and the queued message's line.
+    in property <string> lens-composer-mode: "";
+    in property <string> lens-composer-placeholder: "";
+    in property <string> lens-composer-asks: "";
+    in property <string> lens-queued-mind: "";
+    in property <string> lens-queued-note: "";
     // Where the composer's words go, or "" when that is not known (app.slint says where from).
     in property <string> lens-destination: "";
     callback lens-mode-clicked();
@@ -194,6 +202,12 @@ export component DesktopScreen inherits Rectangle {
     callback send-message(string);
     callback mic-pressed();
     callback launch-app(string);
+    // The first run's first success, passed to the chat (IntentLens.first-run).
+    in property <bool> first-run-chat: false;
+    in property <string> first-run-chat-outcome: "";
+    in property <string> first-run-chat-failure: "";
+    callback first-run-chat-done();
+    callback first-run-chat-retry();
 
     // The desktop's right-click menu.
     //
@@ -204,6 +218,14 @@ export component DesktopScreen inherits Rectangle {
     property <bool> show-work-rail: root.width >= 1360px && (root.active-project != "" || root.lens-recents.length > 0);
     // The centre column: 860 wide, centred in what the mind panel leaves; or, beside the work
     // rail, everything between the rail and the panel with the gap the machine rail used to get.
+    // The room the home keeps clear at the right: the mind panel's, or the open chat's where that
+    // is wider (the chat docks over the panel's place; intent_lens.slint).
+    property <length> home-inset: root.lens-open ? max(root.right-inset, lens.panel-width + 2 * Theme.chat-panel-gap) : root.right-inset;
+    // Where the home card ends and where the open chat begins, so the overlap is checked by a test
+    // that draws this screen (tests/ui-preview), not only by eye.
+    out property <length> home-right-edge: root.agent-mode ? root.width - root.content-right
+        : (root.width - root.home-inset + min(760px, root.width - root.home-inset - 48px)) / 2;
+    out property <length> lens-left-edge: root.width - lens.panel-width - Theme.chat-panel-gap;
     property <length> content-left: root.show-work-rail ? 316px : max(24px, (root.width - root.right-inset - 860px) / 2);
     property <length> content-right: root.right-inset + (root.show-work-rail ? 4px : root.content-left);
 
@@ -349,11 +371,13 @@ export component DesktopScreen inherits Rectangle {
         // spacing; the agent one lived here, 380 lines of it). Agent mode only adds what the mind
         // proposes and the day-one card, and sits in the centre column the work rail leaves.
         if !root.focus-mode : DesktopHome {
-            // Centred in what the mind panel leaves, not under it.
-            x: root.agent-mode ? root.content-left : (parent.width - root.right-inset - self.width) / 2;
+            // Centred in what the mind panel, or the open chat, leaves, not under it: with the
+            // chat open over its right side the home card's "Open companion" was cut to "Open
+            // companio" (13 Oct).
+            x: root.agent-mode ? root.content-left : (parent.width - root.home-inset - self.width) / 2;
             y: root.agent-mode ? Theme.sp-4 + 4px : (parent.height < 720px ? 24px : 56px);
             width: root.agent-mode ? max(0px, parent.width - root.content-left - root.content-right)
-                                   : min(760px, parent.width - root.right-inset - 48px);
+                                   : min(760px, parent.width - root.home-inset - 48px);
             height: max(0px, parent.height - self.y - Theme.taskbar-height - 24px);
             agent-mode: root.agent-mode;
             greeting: root.greeting-text;
@@ -630,7 +654,7 @@ export component DesktopScreen inherits Rectangle {
     }
 
     // ── Layer 3: Intent Lens overlay ──
-    IntentLens {
+    lens := IntentLens {
         is-open: root.lens-open;
         input-text <=> root.lens-input-text;
         is-thinking: root.is-thinking;
@@ -645,13 +669,19 @@ export component DesktopScreen inherits Rectangle {
         open-in-agents => { root.lens-open-in-agents(); }
         open-history => { root.lens-open-history(); }
         new-chat => { root.lens-new-chat(); }
-        work-cards: root.lens-work-cards;
-        strip: root.lens-strip;
+        live-steps: root.lens-live-steps;
+        live-steps-row: root.lens-live-steps-row;
         live-runs: root.lens-live-runs;
         waiting-runs: root.lens-waiting-runs;
         mode-label: root.lens-mode-label;
         identity: root.lens-identity;
         destination: root.lens-destination;
+        composer-mode: root.lens-composer-mode;
+        composer-placeholder: root.lens-composer-placeholder;
+        composer-asks: root.lens-composer-asks;
+        queued-mind: root.lens-queued-mind;
+        queued-note: root.lens-queued-note;
+        cancel-queued => { root.lens-cancel-queued(); }
         mode-clicked => { root.lens-mode-clicked(); }
         mind-clicked => { root.active-mind-clicked(); }
         view-desk(run) => { root.lens-view-desk(run); }
@@ -677,6 +707,11 @@ export component DesktopScreen inherits Rectangle {
         }
         send-message(text) => { root.send-message(text); }
         mic-pressed => { root.mic-pressed(); }
+        first-run: root.first-run-chat;
+        first-run-outcome: root.first-run-chat-outcome;
+        first-run-failure: root.first-run-chat-failure;
+        first-run-done => { root.first-run-chat-done(); }
+        first-run-retry => { root.first-run-chat-retry(); }
     }
 
     // Last in the file so it draws over the icons, the orb and the taskbar. A menu that opened

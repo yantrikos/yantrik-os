@@ -698,12 +698,14 @@ pub fn start_for_recipe(host: &Host, catalog: &Catalog, call: &AgentCall<'_>, as
             )));
         }
     }
+    // The host's own count, so the recipe runner and `start_agent` agree on what fills a place: a
+    // terminal session's presence-only `main` does not (yantrik-mind-72's B).
     let most = yantrik_harness::protocol::MAX_LIVE_AGENTS;
-    if live.len() >= most {
+    let counted = host.counted_live_agents();
+    if counted >= most {
         return Err(AgentRefusal::Wait(format!(
-            "a place: the desktop is running {} agents, the most it runs at once — stop one on the \
-             Agents screen, or it starts when one finishes",
-            live.len()
+            "a place: the desktop is running {counted} agents, the most it runs at once — stop one on the \
+             Agents screen, or it starts when one finishes"
         )));
     }
     // Nobody started this run at the desk: a role above `safe` waits for the person's Allow.
@@ -1083,6 +1085,18 @@ mod tests {
 
     fn id(s: &str) -> AgentId {
         AgentId(s.to_string())
+    }
+
+    /// The recipe runner's place check reads the host's own count, so it and `start_agent` agree
+    /// on what fills a place: a terminal session's presence-only `main` does not
+    /// (yantrik-mind-72, #735). Reverting to counting every listed agent fails here.
+    #[test]
+    fn the_recipe_runner_counts_places_the_way_the_host_does() {
+        let src = include_str!("control_agents.rs");
+        let check = &src[src.find("let most = yantrik_harness::protocol::MAX_LIVE_AGENTS;").expect("the place check")..];
+        let check = &check[..check.find("// Nobody started this run at the desk").expect("its end")];
+        assert!(check.contains("host.counted_live_agents()"), "the cap reads the host's count");
+        assert!(!check.contains("live.len() >= most"), "not the raw list of agents");
     }
 
     /// A call on a session from this process, which stands in for the harness that attached it:

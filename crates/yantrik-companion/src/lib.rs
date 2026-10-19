@@ -66,6 +66,8 @@ pub mod recipe_view;
 pub mod task_queue;
 pub mod trust_model;
 pub mod tool_cache;
+pub mod tool_markup;
+pub(crate) mod tool_mode;
 pub mod tool_metrics;
 pub mod tool_traces;
 pub mod types;

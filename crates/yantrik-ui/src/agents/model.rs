@@ -1023,6 +1023,8 @@ pub struct Question {
     pub prompt: String,
     /// The answers offered as buttons; empty for a free answer.
     pub options: Vec<String>,
+    /// Which of `options` the agent recommends, when it said: marked on the card, never chosen.
+    pub recommended: Option<usize>,
     /// What the person answered; empty while it waits.
     pub answer: String,
     /// Why it can no longer be answered, when that happened; empty while it can.
@@ -1037,6 +1039,10 @@ impl Question {
     pub const STOPPED_ASKING: &'static str = "the agent stopped asking";
     /// Why it closed when the desktop restarted: its run was orphaned with the shell.
     pub const RESTARTED: &'static str = "the desktop restarted while it waited";
+    /// Why it closed when the person stopped the mind it was waiting in (`/stop`).
+    pub const STOPPED_BY_YOU: &'static str = "you stopped it";
+    /// Why it closed when the person started a new conversation while it waited.
+    pub const NEW_CONVERSATION: &'static str = "you started a new conversation";
 
     /// Still waiting for the person.
     pub fn waiting(&self) -> bool {

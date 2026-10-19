@@ -158,10 +158,14 @@ def configured_ceiling(path=None):
 
 class Mode(NamedTuple):
     """The mode as the shell last published it: its name, and the `(app, action)` pairs a
-    person allowed for the rest of the session. Compares equal to a plain `(name, rules)`."""
+    person allowed for the rest of the session, and the ones the administrator allows from the
+    shell's start. Compares equal to a plain `(name, rules, standing)`."""
 
     name: str
     session_rules: frozenset = frozenset()
+    # `(app, action)` pairs this machine's administrator allows from the shell's start
+    # (`/etc/yantrik/standing-rules.conf`, 15 October 2026) — `gate::Mode::standing_rules`.
+    standing_rules: frozenset = frozenset()
 
     def allows(self):
         """The highest grade this mode runs unasked, as a position on the ladder. A name that
@@ -182,6 +186,14 @@ class Mode(NamedTuple):
     def covers(self, app, action):
         """Whether a session rule is the person's standing answer for `app.action`."""
         return (app, action) in self.session_rules
+
+    def standing_covers(self, app, action, level):
+        """Whether one of the administrator's standing rules answers `app.action` at `level` —
+        `gate::Mode::standing_covers`: only in auto or a bypass, never for a `dangerous` action.
+        What cannot be undone is excluded by `decide` before this is asked."""
+        return (self.name in ("auto", "bypass", "bypass_all")
+                and level < grade("dangerous")
+                and (app, action) in self.standing_rules)
 
 
 def _as_u64(value):
@@ -288,13 +300,18 @@ def mode_from(text, now):
             previous = doc.get("previous")
             previous = previous if isinstance(previous, str) else DEFAULT_MODE
             name = previous if previous in MODES and previous not in TIME_BOXED else DEFAULT_MODE
-    rules = set()
-    listed = doc.get("session_rules") if not lapsed else None
-    for rule in listed if isinstance(listed, list) else ():
-        if isinstance(rule, dict) and isinstance(rule.get("app"), str) \
-                and isinstance(rule.get("action"), str):
-            rules.add((rule["app"], rule["action"]))
-    return Mode(name, frozenset(rules))
+    def pairs(listed):
+        found = set()
+        for rule in listed if isinstance(listed, list) else ():
+            if isinstance(rule, dict) and isinstance(rule.get("app"), str) \
+                    and isinstance(rule.get("action"), str):
+                found.add((rule["app"], rule["action"]))
+        return frozenset(found)
+
+    # The standing rules are the administrator's, not a lowering's to clear: they are read even
+    # after a bypass lapsed, and `standing_covers` holds them to auto and the bypasses.
+    return Mode(name, pairs(doc.get("session_rules") if not lapsed else None),
+                pairs(doc.get("standing_rules")))
 
 
 def configured_mode(path=None, now=None):
@@ -559,6 +576,9 @@ def decide(authority, app_id, action, graded, purpose=""):
         return None
     plan = mode.allows() == 0
     if not held and not plan and not irreversible and mode.covers(app_id, action):
+        return None
+    # The administrator's standing rule: the same answer, within the same limits and two more.
+    if not held and not irreversible and mode.standing_covers(app_id, action, level):
         return None
     return grant_refusal(app_id, action, graded, mode, irreversible, held_above,
                          open_ended=runs_anything and mode.asks_before_open_ended())

@@ -11,6 +11,14 @@ requires:
     why: the harness is stdlib Python, and the image already carries it
   - file: yantrik_deepseek.py
     why: the harness script, staged beside this file
+  - file: ~/.local/state/yantrik/harnesses/deepseek/installed
+    why: written by Install once it can answer, remember in YantrikDB and reach the desktop
+
+install:
+  # Nothing to fetch: the harness ships in the image. YantrikDB memory from the image, the model
+  # step when the image has it, the unit, and the three proofs (#677).
+  command: sh {dir}/../lib/install/deepseek.sh
+  doing: giving DeepSeek YantrikDB memory and attaching it to the desktop
 
 # No `install`: there is nothing to fetch. On a machine that has the image, this harness is
 # already installed and the only thing between it and answering is the file below.

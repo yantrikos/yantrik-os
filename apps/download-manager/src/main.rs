@@ -396,6 +396,9 @@ fn to_row(download: &Download) -> DownloadItem {
         checksum_expected: download.checksum_expected.clone().into(),
         checksum_status: download.checksum_status.clone().into(),
         save_dir: download.save_dir.to_string_lossy().to_string().into(),
+        // The row's own line says where in words; the path and URL are in its Details.
+        place: yantrik_app_runtime::place::place_of(&download.save_dir, &yantrik_app_runtime::place::home()).into(),
+        site: yantrik_app_runtime::place::site_of(&download.url).into(),
         start_time: download.started_at.clone().into(),
         end_time: download.ended_at.clone().into(),
         file_hash: download.file_hash.clone().into(),

@@ -1,14 +1,15 @@
-//! What the Lens's conversation shows of the runs it started: the work card under a reply, and the
-//! strip above the composer (Chat v2).
+//! Where each of the Lens conversation's runs stands, in the eight words every surface uses.
+//!
+//! This drew the work card under a reply and the strip above the composer (Chat v2). Each reply now
+//! draws its own run's work in its timeline (`lens_timeline`), so the Lens reads only how many runs
+//! are live and how many wait on the person from here; the words stay as they were, so they still
+//! agree with the Agents screen when a later surface draws a run again.
 //!
 //! Everything here is read from the Agents store, which every call, answer and refusal already
-//! passes through; nothing asks the mind and nothing is composed. The state is one of the eight
-//! words every surface uses, and the one activity line is a call the store recorded, or "Last
-//! update 10:42" when nothing is observable. There is no progress figure because nothing measures
-//! one. "Paused" is in the vocabulary but is not drawn yet: no run can be paused today, so none is
-//! ever called that.
+//! passes through; nothing asks the mind and nothing is composed. There is no progress figure
+//! because nothing measures one.
 
-use crate::agents::model::{Agent, CallState, State, Turn};
+use crate::agents::model::{Agent, CallState, Card, State, Turn};
 use crate::agents::{progress, RowKey};
 
 /// How many of a conversation's runs get a card. A card is looked up by the id a reply carries, so
@@ -69,26 +70,38 @@ fn activity_of(a: &Agent, t: &Turn, state: &str, now: u64) -> String {
     match state {
         "needs-you" => "Waiting for your answer".to_string(),
         "queued" => "Not started yet".to_string(),
-        "working" => match progress::of(a, now) {
-            Some(p) => match (p.running, p.recent.last()) {
-                (Some(running), _) => format!("Running {running}"),
-                // The mind's own latest status line ("Grounding from memory…", "Thinking… (60 s)")
-                // outranks the last finished call, which says what it did, not what it does now.
-                // A tool_start clears it in the store, so a call in progress always wins.
-                (None, _) if !a.status.trim().is_empty() => progress::brief(a.status.trim(), 120),
-                (None, Some(last)) => last.clone(),
-                (None, None) if a.state == State::Thinking => "Thinking".to_string(),
-                (None, None) => last_update(),
-            },
-            None => last_update(),
-        },
+        "working" if progress::of(a, now).is_none() => last_update(),
+        // In the Lens's own words (`step_words`), never the call's name and arguments.
+        "working" => {
+            let status = super::step_words::of_status(&a.status);
+            if let Some(running) = t.cards().filter(|c| c.running()).last() {
+                phrase(running).running()
+            } else if let Some(status) = status {
+                // The mind's own latest status line ("Grounding from memory…") outranks the last
+                // finished call, which says what it did, not what it does now. A tool_start
+                // clears it in the store, so a call in progress always wins.
+                status.running()
+            } else if let Some(last) = t.cards().last() {
+                if last.state == CallState::Failed { phrase(last).failed() } else { phrase(last).done() }
+            } else if a.state == State::Thinking {
+                "Thinking".to_string()
+            } else {
+                last_update()
+            }
+        }
         "finished" if calls > 0 => format!("{calls} call{} recorded", if calls == 1 { "" } else { "s" }),
         "failed" => match t.cards().filter(|c| c.state == CallState::Failed).last() {
-            Some(c) => format!("{} failed", c.name),
+            Some(c) => phrase(c).failed(),
             None => last_update(),
         },
         _ => last_update(),
     }
+}
+
+/// A call as the Lens says it, with any words the person erased masked first.
+fn phrase(card: &Card) -> super::step_words::Phrase {
+    let card = card.shown();
+    super::step_words::of_call(&card.name, &card.target, &card.args, &card.preview)
 }
 
 /// One run's card.
@@ -118,19 +131,10 @@ pub fn works_of(a: &Agent, now: u64) -> Vec<Work> {
     all
 }
 
-/// The run the strip describes: one that needs the person first, else the newest live one.
-pub fn strip_of(works: &[Work]) -> Option<&Work> {
-    works
-        .iter()
-        .rev()
-        .find(|w| w.state == "needs-you")
-        .or_else(|| works.iter().rev().find(|w| w.live))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::model::{AgentMeta, Card, Item, Provenance, TurnOrigin};
+    use crate::agents::model::{AgentMeta, Item, Provenance, TurnOrigin};
     use crate::agents::AgentId;
 
     fn agent(state: State) -> Agent {
@@ -188,7 +192,7 @@ mod tests {
         let w = work_of(&a, &a.turns[0], now);
         assert_eq!((w.state, w.label), ("working", "Working"));
         assert_eq!(w.title, "tidy the photos folder", "the title is what was asked, on one line");
-        assert!(w.activity.starts_with("Running files.move"), "{}", w.activity);
+        assert_eq!(w.activity, "Moving in your files", "the call in words, never its name and arguments");
         assert_eq!(w.run, "pi:main#1");
         assert!(w.can_view_desk && !w.can_review);
 
@@ -205,17 +209,17 @@ mod tests {
         let mut a = agent(State::Thinking);
         a.turns.push(turn(None, None, false, &[("files.list", CallState::Ok)]));
         a.status = "Grounding from memory…".into();
-        assert_eq!(work_of(&a, &a.turns[0], 200).activity, "Grounding from memory…");
+        assert_eq!(work_of(&a, &a.turns[0], 200).activity, "Checking what I remember");
         a.status = "Thinking… (60 s)".into();
-        assert_eq!(work_of(&a, &a.turns[0], 200).activity, "Thinking… (60 s)", "replaced, not appended");
+        assert_eq!(work_of(&a, &a.turns[0], 200).activity, "Thinking", "replaced, not appended");
 
         // The store clears the status on tool_start and the running call is what is said.
         a.status.clear();
         a.state = State::RunningTool;
-        a.turns[0].items.push(Item::Card(Card::new("c2", "files.move", "", serde_json::Value::Null, Provenance::Reported, 20)));
-        assert!(work_of(&a, &a.turns[0], 200).activity.starts_with("Running files.move"));
+        a.turns[0].items.push(Item::Card(Card::new("c2", "os_describe", "calendar", serde_json::Value::Null, Provenance::Reported, 20)));
+        assert_eq!(work_of(&a, &a.turns[0], 200).activity, "Looking at your calendar");
         a.status = "Thinking… (90 s)".into();
-        assert!(work_of(&a, &a.turns[0], 200).activity.starts_with("Running files.move"), "a running call outranks a status");
+        assert_eq!(work_of(&a, &a.turns[0], 200).activity, "Looking at your calendar", "a running call outranks a status");
     }
 
     #[test]
@@ -228,31 +232,12 @@ mod tests {
 
         let failed = turn(Some(50), Some(false), false, &[("files.move", CallState::Failed)]);
         let w = work_of(&a, &failed, 200);
-        assert_eq!((w.label, w.activity.as_str()), ("Couldn\u{2019}t finish", "files.move failed"));
+        assert_eq!((w.label, w.activity.as_str()), ("Couldn\u{2019}t finish", "Couldn\u{2019}t move in your files"));
 
         let cut = turn(Some(50), None, true, &[]);
         let w = work_of(&a, &cut, 200);
         assert_eq!(w.label, "Stopped");
         assert!(w.activity.starts_with("Last update "), "unobservable work says when it was last heard: {}", w.activity);
         assert!(!w.can_review, "a run with nothing recorded has nothing to review");
-    }
-
-    #[test]
-    fn the_strip_follows_the_run_that_needs_the_person_first() {
-        let mk = |run: &str, state: &'static str, live: bool| Work {
-            run: run.into(),
-            title: String::new(),
-            mind: "pi".into(),
-            state,
-            label: words(state),
-            activity: String::new(),
-            live,
-            can_view_desk: live,
-            can_review: false,
-        };
-        let works = vec![mk("a#1", "needs-you", true), mk("a#2", "working", true), mk("a#0", "finished", false)];
-        assert_eq!(strip_of(&works).map(|w| w.run.as_str()), Some("a#1"));
-        assert_eq!(strip_of(&works[1..]).map(|w| w.run.as_str()), Some("a#2"));
-        assert!(strip_of(&works[2..]).is_none(), "no live run, no strip");
     }
 }

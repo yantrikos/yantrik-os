@@ -38,7 +38,7 @@ dock.browser: "ブラウザ"
 dock.files: "ファイル"
 dock.notes: "メモ"
 dock.editor: "エディタ"
-dock.bond: "絆"
+dock.bond: "やり取りの履歴"
 dock.memory: "メモリ"
 dock.alerts: "通知"
 dock.system: "システム"
@@ -373,12 +373,9 @@ notifications.no_notifications: "通知はありません"
 notifications.clear_all: "すべてクリア"
 
 # ── Bond ──
-bond.title: "絆"
-bond.score: "絆スコア"
-bond.level: "レベル"
+bond.title: "やり取りの履歴"
 bond.interactions: "総インタラクション数"
-bond.days: "一緒に過ごした日数"
-bond.streak: "現在の連続日数"
+bond.days: "最初の会話からの日数"
 
 # ── Power ──
 power.shutdown: "シャットダウン"

@@ -51,19 +51,29 @@ fn check_launchable(name: &str, installed: &[crate::apps::DesktopEntry]) -> Resu
         // spelling. This build does not have the app and no action on this machine will produce
         // it, so the refusal says that, says what is missing under the screen, and says what
         // would have to be built. An agent reading it can stop, or go and write the missing half.
-        Availability::Shelved(shelf) => Err(format!(
-            "`{name}` is not part of this build. {} is shelved: {}. It comes back when {} \
-             — see design/shelved-2026-09-20.md. It can open: {}",
-            shelf.name,
-            shelf.reason,
-            shelf.returns_when,
-            launchable_app_ids(installed).join(", ")
-        )),
+        Availability::Shelved(shelf) => Err(shelved_refusal(name, shelf, installed)),
         Availability::Unknown => Err(format!(
             "no app `{name}` on this machine; it can open: {}",
             launchable_app_ids(installed).join(", ")
         )),
     }
+}
+
+/// The refusal `check_launchable` gives for a shelved app: why it is not in this build, what
+/// would bring it back, and what can be opened instead.
+fn shelved_refusal(
+    name: &str,
+    shelf: &crate::wire::dock::Shelved,
+    installed: &[crate::apps::DesktopEntry],
+) -> String {
+    format!(
+        "`{name}` is not part of this build. {} is shelved: {}. It comes back when {} \
+         — see design/shelved-2026-09-20.md. It can open: {}",
+        shelf.name,
+        shelf.reason,
+        shelf.returns_when,
+        crate::wire::dock::launchable_app_ids(installed).join(", ")
+    )
 }
 
 /// Open the Apps launcher where a person can see it, and answer with what is observed.
@@ -196,6 +206,19 @@ pub(crate) const SCREEN_ENTRY_PREFIX: &str = "shell:";
 /// the launch cannot disagree about what just happened. `None` means a window is coming: a
 /// program from the catalogue, the browser, Blender, or the launcher, which answers with its own
 /// report before this is ever reached.
+/// `describe shell`'s `mind_preference`: the default mind, the person's choice (`null` when they
+/// never made one), the mind that should answer, and which of the two decided it.
+fn mind_preference(chosen: &str) -> serde_json::Value {
+    serde_json::json!({
+        "default": crate::wire::settings::DEFAULT_MIND,
+        "chosen": if chosen.is_empty() { serde_json::Value::Null } else { chosen.into() },
+        "preferred": crate::wire::settings::preference(chosen),
+        "by": if chosen.is_empty() { "default" } else { "choice" },
+        // The default takes over only once its three proofs have passed.
+        "default_proven": crate::default_mind::proven(),
+    })
+}
+
 fn switches_the_shell(name: &str) -> Option<(&'static str, Option<&'static str>)> {
     use crate::wire::dock::Launch;
     match crate::wire::dock::route(name) {
@@ -720,6 +743,14 @@ pub fn publish(
                         if !calls.is_empty() {
                             entry["calls"] = serde_json::Value::Array(calls);
                         }
+                        // The reply's timeline, as the bubble draws it: `[{kind, text, state}]`,
+                        // kind thinking | step | question | status, state running | done | failed |
+                        // waiting (a question: waiting | answered | closed). While it arrives the
+                        // last is the live status line; once it ends, the folded timeline. Read
+                        // here so a gate can check it without a screenshot.
+                        if let Some(steps) = crate::wire::lens_timeline::for_describe(i) {
+                            entry["steps"] = steps;
+                        }
                         entry
                     })
                     .collect()
@@ -729,7 +760,7 @@ pub fn publish(
                 .with("screen", screen_name(screen))
                 .with("conversation", serde_json::Value::Array(conversation))
                 // What the answering mind says it is doing now ("Thinking… (60 s)"), while its
-                // turn runs; empty otherwise. The chat's work card shows the same line.
+                // turn runs; empty otherwise. The reply's live line says the same, in the shell's words.
                 // Withheld from an agent caller with the conversation: the status line is the
                 // person's chat in miniature. Flattened and clipped so it cannot bloat `describe`.
                 .with(
@@ -856,12 +887,20 @@ pub fn publish(
                         })
                         .unwrap_or(serde_json::Value::Array(Vec::new())),
                 )
+                // Which mind should answer, and whether the person chose it or it is the default
+                // (Hermes until Yantrik Mind is ready), so a gate can check it without a picture.
+                // Beside `minds` rather than in it: `minds` is a list that release-check, yos-mcp,
+                // the arena and yantrik-term all read as one.
+                .with("mind_preference", mind_preference(&crate::wire::settings::chosen_mind()))
                 // What this machine could have, whether or not it is running — `minds` above is
                 // only what has attached. Published because the question "why can I not talk to
                 // Pi" has an answer the machine knows and nothing could read: it is not
                 // installed, or its config file was never written, or its unit is stopped. An
                 // agent asked to fix that needs the same list the Settings page draws.
                 .with("harnesses", crate::wire::harness::catalogue_for_describe())
+                // Settings → AI & Intelligence → AI accounts, as the card shows it (#673): each
+                // account, its models and whether personal things may go there. No key.
+                .with("ai_accounts", crate::wire::ai_accounts_card::for_describe())
                 // Agents' commands running now, per agent: the job, its command, how long, and
                 // whether it seems to be waiting for input. See `control_agent_terminal`.
                 .with("agent_jobs", {
@@ -961,10 +1000,16 @@ pub fn publish(
                     ),
                 )
                 .with("do_not_disturb", ui.get_dnd_mode())
+                // Whether the screen is being recorded, since when, of what, by whom, and where
+                // it will be saved: the red dot as data. `control_capture`.
+                .with("capture", crate::capture::for_describe())
                 // What the machine is trying to tell the person, so that "is anything waiting
                 // for me" is a read of the shell rather than a second call to the notifications
                 // service — and so a mind can see what it has already said.
                 .with("notifications", crate::wire::notifications::describe_summary())
+                // What the For you inbox holds — how many cards, how many unread, the newest five
+                // ids and titles — so an agent test can read what the person sees there.
+                .with("inbox", crate::wire::for_you::describe())
                 // The ask bar, so "is the Lens up, and what is in it" is a read rather than a
                 // screenshot. `open_lens` and `close_lens` answer from these same properties.
                 .with(
@@ -2163,6 +2208,9 @@ pub fn publish(
     let surface = crate::control_files::actions(surface, ui);
     // Reading a display's text from its pixels, for windows that publish nothing else (#257).
     let surface = crate::control_screen::actions(surface);
+    // Pictures and recordings: the person's capture keys, and what a mind may take, graded as
+    // reading the screen is. See `control_capture`.
+    let surface = crate::control_capture::actions(surface, ui);
     // Asking the person. Three actions, all `safe`, none of which decides anything — the
     // decision is a button in the Lens. See `control_approvals` for why that split is the
     // whole point.
@@ -2176,6 +2224,8 @@ pub fn publish(
     // The network mark's popover as data: set_wifi, disconnect_network, connect_wifi. See
     // `control_network`, which also says why no action there takes a password.
     let surface = crate::control_network::actions(surface, ui);
+    // The "Wi-Fi disconnected" notification's two buttons: reconnect_wifi, choose_wifi_network.
+    let surface = crate::control_wifi_reconnect::actions(surface, ui);
     // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
     let surface = crate::control_power::actions(surface, ui);
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
@@ -2197,6 +2247,10 @@ pub fn publish(
     // The chat in one read, for a client that is not the Lens: the Yantrik terminal. See
     // `control_chat`.
     let surface = crate::control_chat::actions(surface, ui);
+    // Which of the person's conversations a bridge is in, for the taint rule: taint_scope and
+    // taint_mark. Read and add only; the person's + in the Lens is the one thing that begins a
+    // scope. See `control_taint_scope` and `taint_scope`.
+    let surface = crate::control_taint_scope::actions(surface);
     // The workroom's own navigation: show_workroom. See `control_workroom`.
     let surface = crate::control_workroom::actions(surface, ui);
     crate::control_agents::actions(surface, ui).serve();
@@ -2243,7 +2297,7 @@ mod persons_fields_tests {
 
 #[cfg(test)]
 mod screen_table_tests {
-    use super::{SCREENS, SETTINGS_SECTIONS, check_launchable, screen_name};
+    use super::{SCREENS, SETTINGS_SECTIONS, check_launchable, screen_name, shelved_refusal};
     use std::path::Path;
 
     /// Elements that wrap a screen rather than being one.
@@ -2393,8 +2447,14 @@ mod screen_table_tests {
     /// built, and an agent reading it can stop instead of retrying four spellings.
     #[test]
     fn opening_a_shelved_app_is_refused_with_its_reason() {
-        for name in ["music", "music-player", "Music Player", "spreadsheet", "ySheets"] {
-            let err = check_launchable(name, &[]).expect_err("a shelved app must not open");
+        // Music and ySheets were the whole shelf and both came off it (#727, #728), so the
+        // refusal is checked on a fixture entry, and on whatever the real shelf holds next.
+        let fixture = crate::wire::dock::Shelved { ids: &["tunes"], name: "Tunes", binary: "yantrik-tunes", reason: "nothing plays", returns_when: "something plays" };
+        let refusals = std::iter::once(("tunes".to_string(), shelved_refusal("tunes", &fixture, &[])))
+            .chain(crate::wire::dock::shelved_table().iter().flat_map(|s| s.ids.iter()).map(|id| {
+                (id.to_string(), check_launchable(id, &[]).expect_err("a shelved app must not open"))
+            }));
+        for (name, err) in refusals {
             assert!(err.contains("not part of this build"), "{name}: {err}");
             assert!(err.contains("shelved"), "{name}: {err}");
             assert!(err.contains("It comes back when"), "{name}: {err}");
@@ -2405,6 +2465,9 @@ mod screen_table_tests {
                 !offered.split(", ").any(|id| crate::wire::dock::shelved(id).is_some()),
                 "{name} was refused and then offered something shelved: {offered}"
             );
+        }
+        for name in ["music", "music-player", "Music Player", "spreadsheet", "ySheets", "yantrik-spreadsheet"] {
+            assert!(crate::wire::dock::shelved(name).is_none(), "`{name}` came off the shelf");
         }
         assert!(check_launchable("files", &[]).is_ok(), "a shipped app still opens");
     }
@@ -2755,6 +2818,26 @@ mod bond_not_loaded_tests {
                 "{file} still defaults the level to Stranger — the made-up value the rail showed for the window between boot and the first push"
             );
         }
+    }
+
+    /// Interaction history is plain counts. The level, its formula, the streak, the count of
+    /// messages that said how the person felt and the humor rate are banned by the design rules
+    /// (no manufactured pull) and were still drawn in the sweep of 17 October.
+    #[test]
+    fn interaction_history_draws_no_level_score_streak_or_feelings_count() {
+        let code: String = slint("bond.slint")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in [
+            "Level \"", "of 5", "adds 0.0", "in a row", "how you felt", "humor", "Partner-in-Crime",
+            "days together", "data.bond-level", "data.bond-score", "current-streak", "vulnerability",
+        ] {
+            assert!(!code.contains(banned), "Interaction history must not draw {banned:?}");
+        }
+        assert!(code.contains("data.total-interactions") && code.contains("data.days-together"));
+        assert!(code.contains("Not read yet"), "before the first push it says so, not zeros");
     }
 
     /// The `describe shell` side.
@@ -3574,6 +3657,20 @@ mod power_profile_tests {
 }
 
 #[cfg(test)]
+mod steps_describe_tests {
+    /// `describe shell` carries the live steps on the reply they belong to, inside the
+    /// conversation, which an agent caller is never handed.
+    #[test]
+    fn the_open_turns_steps_ride_on_its_conversation_entry() {
+        let src = include_str!("control.rs");
+        let at = src.find("let conversation: Vec<serde_json::Value> = if agent_reading { Vec::new() }").expect("conversation");
+        let block = &src[at..at + 4000];
+        assert!(block.contains("crate::wire::lens_timeline::for_describe(i)"), "{block}");
+        assert!(block.contains("entry[\"steps\"] = steps"), "{block}");
+    }
+}
+
+#[cfg(test)]
 mod status_gate_tests {
     /// The mind's status line is the person's chat in miniature: `describe shell` withholds it
     /// from an agent caller exactly as it withholds the conversation (#587 review).
@@ -3649,5 +3746,21 @@ mod auto_lock_action_tests {
             "describe's `settings` must carry `auto_lock_secs` read off the window, the same \
              property the idle watcher polls. Section as written:\n{settings}"
         );
+    }
+}
+
+#[cfg(test)]
+mod mind_preference_tests {
+    #[test]
+    fn describe_shell_says_hermes_is_the_default_and_whether_it_was_chosen() {
+        let never = super::mind_preference("");
+        assert_eq!(never["default"], "hermes");
+        assert_eq!(never["chosen"], serde_json::Value::Null);
+        assert_eq!((never["preferred"].as_str(), never["by"].as_str()), (Some("hermes"), Some("default")));
+
+        let chose = super::mind_preference("companion");
+        assert_eq!(chose["default"], "hermes");
+        assert_eq!(chose["chosen"], "companion");
+        assert_eq!((chose["preferred"].as_str(), chose["by"].as_str()), (Some("companion"), Some("choice")));
     }
 }

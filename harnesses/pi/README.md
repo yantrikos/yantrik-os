@@ -12,7 +12,7 @@ Two parts:
 
 ## Install
 
-The desktop can do all of this for you: **Settings → Harnesses** lists Pi whether or not it is
+The desktop can do all of this for you: **Settings → Minds** lists Pi whether or not it is
 installed, says which of the steps below is still missing, and has an *Install* button that runs
 `harnesses/lib/install/npm.sh` with its output on the row — a pinned Node 24 into `~/.local` when
 there is none new enough (the image ships none), then Pi — and a *Start* button for the unit.
@@ -81,6 +81,15 @@ holding a key:
   }
 }
 ```
+
+## Yantrik models
+
+**Settings → Minds → Pi → Use Yantrik models** adds one provider to Pi's own
+`~/.pi/agent/models.json`, `yantrik`, at the desktop's model gateway with a gateway token of Pi's
+own (never a key), and sets `"provider": "yantrik", "model": "picked"` in
+`~/.config/yantrik/pi.json`. `picked` is whichever model you pick for Pi in the ask bar; every
+model of your AI accounts is also listed for Pi's own `/model`. Your other providers stay. Revert
+puts both files back and withdraws the token.
 
 ## Pi's own tools are off, and that is a decision
 

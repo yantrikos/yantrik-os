@@ -39,6 +39,8 @@ pub mod control;
 pub mod event_loop;
 pub mod instance;
 pub mod notify;
+pub mod place;
+pub mod present;
 pub mod problems;
 pub mod service;
 pub mod theme;

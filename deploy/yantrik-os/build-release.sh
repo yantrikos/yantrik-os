@@ -72,7 +72,7 @@ fail() { printf '\033[31mFAIL: %s\033[0m\n' "$*" >&2; exit 1; }
 # did nothing. That is what a git worktree made on Windows looks like from WSL (its .git file
 # names a C:/ path this git cannot follow). Say so instead.
 if [ -z "${YANTRIK_VERSION:-}" ]; then
-  VERSION="$(git -C "$PROJECT_ROOT" describe --tags --always --dirty 2>&1)"     || fail "git cannot read $PROJECT_ROOT to name this build: $VERSION. A worktree made by another OS's git cannot be read here; clone it natively, or set YANTRIK_VERSION."
+  VERSION="$(git -C "$PROJECT_ROOT" describe --tags --match "v[0-9]*" --always --dirty 2>&1)"     || fail "git cannot read $PROJECT_ROOT to name this build: $VERSION. A worktree made by another OS's git cannot be read here; clone it natively, or set YANTRIK_VERSION."
 else
   VERSION="$YANTRIK_VERSION"
 fi
@@ -184,11 +184,22 @@ echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored
 
 # The harnesses, staged by the same script as the image. The updater installs share/ with
 # --delete, and before this the bundle had no share/harnesses: every update removed what the
-# image had put in /opt/yantrik/share/harnesses — the manifests Settings → Harnesses reads, the
+# image had put in /opt/yantrik/share/harnesses — the manifests Settings → Minds reads, the
 # installers its buttons run, and the scripts each harness unit starts.
 sh "$SCRIPT_DIR/stage-harnesses.sh" "$PROJECT_ROOT" "$ROOT/share/harnesses" >/dev/null \
   || fail "the harnesses did not stage — an update would remove every harness from the machine"
 echo "   + harnesses (share/harnesses: manifests, harness scripts, installers)"
+
+# YantrikDB, every mind's memory (#677): the same tree the ISO ships at /opt/yantrik/memory, so a
+# machine that gets this build by update can install a harness too. Without it in the bundle,
+# VM 520 on build 1448 (updated, not imaged) had no /opt/yantrik/memory and every harness install
+# stopped at "this image has no yantrikdb-mcp". Its own directory, not share/: the updater mirrors
+# share/ as the desktop's files and this as root's, and the ISO copies it from this bundle.
+sh "$SCRIPT_DIR/bake-memory.sh" "$ROOT/memory" >/dev/null \
+  || fail "YantrikDB did not bake (bake-memory.sh) — every harness install would stop at \"no yantrikdb-mcp\""
+sh "$SCRIPT_DIR/bake-memory.sh" --check "$ROOT/memory" \
+  || fail "the bundle's memory/ is missing a file a harness install reads"
+echo "   + memory (YantrikDB for every mind: $(du -sh "$ROOT/memory" | cut -f1), $(sed -n 's/^image-python=//p' "$ROOT/memory/VERSIONS") python)"
 
 # The updater ships in the image so a machine can update itself. It is a script, not a
 # compiled binary, so binary discovery does not find it either — and a machine that cannot
@@ -218,6 +229,11 @@ if [ -f "$SCRIPT_DIR/yantrik-session" ]; then
   cp "$SCRIPT_DIR/yantrik-shell" "$ROOT/bin/yantrik-shell"
   chmod +x "$ROOT/bin/yantrik-shell"
   echo "   + yantrik-shell"
+  # The chrome copy the session runs at login and the updater runs as the person after an update
+  # that changed the keys (#854).
+  cp "$SCRIPT_DIR/yantrik-session-chrome" "$ROOT/bin/yantrik-session-chrome"
+  chmod +x "$ROOT/bin/yantrik-session-chrome"
+  echo "   + yantrik-session-chrome"
 else
   fail "missing $SCRIPT_DIR/yantrik-session -- a release without a session does not boot"
 fi
@@ -291,11 +307,23 @@ install -m 0755 "$SCRIPT_DIR/yantrik-mind-log" "$ROOT/share/root-helpers/yantrik
 # into /etc/systemd/system by `yantrik-update`; enabled by `yantrik-update migrate-minds`.
 mkdir -p "$ROOT/share/systemd"
 cp "$PROJECT_ROOT/config/systemd/"*.service "$ROOT/share/systemd/"
+# The boot menu's theme, with its fonts, made by the same script as the image's
+# /usr/share/yantrik/grub-theme (#835). A machine installed from an image older than that (VM 541,
+# 12 Oct) has no theme anywhere; `yantrik-update` copies this one into /boot/grub/themes/yantrik
+# as root when it moves an old installer's menu to gfxterm on UEFI, so it is hash-listed below.
+sh "$SCRIPT_DIR/stage-grub-theme.sh" "$ROOT/share/grub-theme" >/dev/null \
+  || fail "the boot menu's theme did not stage (stage-grub-theme.sh needs grub-mkfont and fonts-dejavu-core) — an update would leave an old machine's menu unthemed"
+echo "   + share/grub-theme (the boot menu's theme and fonts)"
+# The Debian packages every Yantrik machine has (#854): the list the image installs, which
+# `yantrik-update` reads after an apply to install whatever an older machine lacks. Root acts on
+# it (apt), so it is hash-listed below like everything else root installs from share/.
+install -m 0644 "$SCRIPT_DIR/packages.list" "$ROOT/share/packages.list"
 # What the updater installs as root, by content: every file under share/ it copies into /usr/lib,
-# /etc/polkit-1, /etc/sysctl.d, /etc/containers or /etc/systemd/system, with its sha256. It rides in bin/, which the
+# /etc/polkit-1, /etc/sysctl.d, /etc/containers, /etc/systemd/system or /boot/grub/themes, and the
+# package list it runs apt from, with its sha256. It rides in bin/, which the
 # updater installs with plain cp as root, so it is root's on the machine whoever could write
 # share/; the updater installs nothing as root whose hash is not in it (#419).
-(cd "$ROOT/share" && sha256sum root-helpers/* polkit/* sysctl/* containers/* systemd/*) > "$ROOT/bin/yantrik-root-files.sha256"
+(cd "$ROOT/share" && sha256sum packages.list root-helpers/* polkit/* sysctl/* containers/* systemd/* grub-theme/*) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
 mkdir -p "$ROOT/share/labwc-mind"
 cp "$PROJECT_ROOT/config/labwc-mind/rc.xml" "$ROOT/share/labwc-mind/rc.xml"
@@ -367,12 +395,12 @@ echo "   + $(ls "$ROOT/share/applications" | wc -l) application entries"
 # for the toolkits that will not read one.
 ICONS="$ROOT/share/icons/hicolor"
 mkdir -p "$ICONS/scalable/apps"
-cp "$PROJECT_ROOT/brand/yantrik-mark.svg" "$ICONS/scalable/apps/yantrik.svg" \
-  || fail "brand/yantrik-mark.svg missing — the apps would ship with an Icon= that resolves to nothing"
+cp "$PROJECT_ROOT/brand/yantrik-icon.svg" "$ICONS/scalable/apps/yantrik.svg" \
+  || fail "brand/yantrik-icon.svg missing — the apps would ship with an Icon= that resolves to nothing"
 for px in 48 128 256; do
   mkdir -p "$ICONS/${px}x${px}/apps"
-  cp "$PROJECT_ROOT/brand/yantrik-mark-${px}.png" "$ICONS/${px}x${px}/apps/yantrik.png" \
-    || fail "brand/yantrik-mark-${px}.png missing — run: python3 brand/render.py"
+  cp "$PROJECT_ROOT/brand/yantrik-icon-${px}.png" "$ICONS/${px}x${px}/apps/yantrik.png" \
+    || fail "brand/yantrik-icon-${px}.png missing — run: python3 brand/render.py"
 done
 echo "   + app icon (svg + 48/128/256) as hicolor 'yantrik'"
 
@@ -494,7 +522,7 @@ EOF
 # it did in the file rather than presenting a guess as a range.
 PREVIOUS="${YANTRIK_PREVIOUS:-}"
 if [ -z "$PREVIOUS" ]; then
-  PREVIOUS="$(git -C "$PROJECT_ROOT" describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)"
+  PREVIOUS="$(git -C "$PROJECT_ROOT" describe --tags --match "v[0-9]*" --abbrev=0 HEAD~1 2>/dev/null || true)"
 fi
 if [ -n "$PREVIOUS" ] && git -C "$PROJECT_ROOT" rev-parse -q --verify "$PREVIOUS^{commit}" >/dev/null 2>&1; then
   CHANGE_RANGE="$PREVIOUS..HEAD"

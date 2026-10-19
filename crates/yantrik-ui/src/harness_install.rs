@@ -22,7 +22,9 @@
 //!
 //! # What is not here
 //!
-//! Nothing writes a config file. "Needs setup" names a path and stops: the file holds an endpoint
+//! Nothing here writes a config file itself. The model step after an install is
+//! `wire::harness_provider::wire_after_install` (the install-time default: the harness's own
+//! adapter in `provider_handoff`, its own file kept for Revert). Otherwise "Needs setup" names a path and stops: the file holds an endpoint
 //! and the name of a variable holding a key, both of which are the person's to write, and a
 //! desktop that offered to fill one in would be a desktop asking for a key it has nowhere to put.
 //! Nothing in this module reads one either, so no output it can produce contains one.
@@ -80,6 +82,36 @@ pub fn busy() -> bool {
     with_board(|board| board.jobs.values().any(|j| j.running))
 }
 
+/// `true` while a job this shell started for `id` is running.
+pub fn running(id: &str) -> bool {
+    with_board(|board| board.jobs.get(id).is_some_and(|j| j.running))
+}
+
+/// Say on a harness's row why an install was not started, as a failed install says why it
+/// failed: in the row's own sentence, with Install offered again.
+///
+/// For an install the desktop would have started by itself (`crate::default_mind`), whose
+/// reason — no internet, no model picked — exists before any command runs. Never over a job
+/// that is running: what that job says is the truth until it ends.
+pub fn refuse(id: &str, why: &str) {
+    with_board(|board| {
+        if board.jobs.get(id).is_some_and(|j| j.running) {
+            return;
+        }
+        board.jobs.insert(
+            id.to_string(),
+            Job {
+                kind: JobKind::Install,
+                doing: String::new(),
+                lines: Vec::new(),
+                running: false,
+                error: why.to_string(),
+            },
+        );
+    });
+    tracing::info!(harness = %id, why = %why, "an install was not started");
+}
+
 /// Run the manifest's install command for `id`.
 ///
 /// Returns the command that was started, so the caller can say what it ran — a person who
@@ -94,14 +126,26 @@ pub fn install(manifest: &Manifest) -> Result<String, String> {
     // An install that worked goes straight on to the harness's own setup, where it has one: a
     // Hermes with no model is a Hermes that attaches and cannot answer, and a row that says "run
     // hermes model in a terminal" is a step the person has to find for themselves.
-    let then: Option<Then> = manifest.configure.is_some().then(|| {
+    //
+    // The model comes first, with no question (the install-time default): a harness the desktop
+    // can wire is pointed at the person's model, and its own model setup is not opened, since the
+    // gateway answers it. One that cannot be wired goes on to its own setup, as before.
+    let then: Option<Then> = {
         let manifest = manifest.clone();
-        Box::new(move || {
-            if let Err(e) = configure(&manifest) {
-                tracing::warn!(harness = %manifest.id, error = %e, "the setup after an install did not open");
+        Some(Box::new(move || {
+            if crate::provider_handoff::adapter_for(&manifest.id).is_some() {
+                crate::wire::harness_provider::wire_after_install(&manifest.id);
+                if crate::provider_handoff::uses_gateway(&crate::wire::harness_provider::home_dir(), &manifest.id) {
+                    return;
+                }
             }
-        }) as Then
-    });
+            if manifest.configure.is_some() {
+                if let Err(e) = configure(&manifest) {
+                    tracing::warn!(harness = %manifest.id, error = %e, "the setup after an install did not open");
+                }
+            }
+        }) as Then)
+    };
     spawn(&manifest.id, JobKind::Install, &doing, command.clone(), then)?;
     Ok(command)
 }
@@ -444,6 +488,31 @@ mod tests {
         let bare = Manifest { id: "hermes".into(), ..Default::default() };
         let refused = start(&bare).unwrap_err();
         assert!(refused.contains("its own service"), "{refused}");
+    }
+
+    #[test]
+    fn an_install_not_started_says_why_on_the_row_and_can_be_tried_again() {
+        let _turn = taking_turns();
+        let id = "job-refused";
+        refuse(id, "Hermes was not set up: this computer cannot reach the internet.");
+        let view = views().remove(id).unwrap();
+        assert!(!view.running && !running(id));
+        assert_eq!(view.error, "Hermes was not set up: this computer cannot reach the internet.");
+        // Install again is an ordinary install, and the refusal does not stand in its way.
+        install(&manifest(id, "true")).unwrap();
+        assert_eq!(settled(id).error, "");
+    }
+
+    #[test]
+    fn a_refusal_never_covers_a_job_that_is_running() {
+        let _turn = taking_turns();
+        let id = "job-refused-running";
+        install(&manifest(id, "sleep 0.5")).unwrap();
+        assert!(running(id));
+        refuse(id, "no internet");
+        let view = views().remove(id).unwrap();
+        assert!(view.running && view.error.is_empty(), "{view:?}");
+        settled(id);
     }
 
     #[test]

@@ -182,7 +182,8 @@ impl Judge for SystemOneJudge {
             }
             let mut reply = request
                 .send_json(&body)
-                .with_context(|| format!("judge {} at {}", self.model, self.endpoint))?;
+                .map_err(crate::refusal::unanswered)
+                .with_context(|| format!("judge {} at {}", self.model, yantrik_shown_address::address_of(&self.endpoint)))?;
             let status = reply.status().as_u16();
             if matches!(status, 429 | 503 | 529) && attempt < BUSY_RETRIES {
                 attempt += 1;
@@ -190,7 +191,7 @@ impl Judge for SystemOneJudge {
                 continue;
             }
             if !(200..300).contains(&status) {
-                bail!("judge {} at {} answered HTTP {status}", self.model, self.endpoint);
+                bail!("judge {} at {} answered HTTP {status}", self.model, yantrik_shown_address::address_of(&self.endpoint));
             }
             let reply: Value = reply.body_mut().read_json().context("judge reply is not JSON")?;
             return parse_answers(&reply, questions, self.dialect);
@@ -348,6 +349,25 @@ mod tests {
         assert!(v.abstained(), "{v:?}");
         assert_eq!(v.by.provider, "kev");
         assert_eq!(v.by.locality, Locality::ThisMachine);
+    }
+
+    #[test]
+    fn a_judge_that_refuses_its_sign_in_abstains_without_saying_it() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        });
+        let j = SystemOneJudge::new(&format!("http://user:pw@127.0.0.1:{port}"), "kev-latest", None, Duration::from_secs(5));
+        let v = j.decide(&json!({}), &tool_question());
+        server.join().unwrap();
+        let Answer::Abstain { reason } = &v.answers["tool"] else { panic!("{v:?}") };
+        assert!(reason.contains("HTTP 401") && reason.contains(&format!("127.0.0.1:{port}")), "{reason}");
+        assert!(!reason.contains("user") && !reason.contains("pw") && !reason.contains('@'), "{reason}");
     }
 
     #[test]

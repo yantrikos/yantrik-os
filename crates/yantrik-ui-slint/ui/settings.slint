@@ -15,7 +15,9 @@ import { DecisionModelCard, DecisionPreset, DecisionUse } from "components/decis
 import { ProviderPresetGroup } from "provider_presets.slint";
 import { YDialog } from "components/y_dialog.slint";
 import { AccountList, ProviderGroup, AddChoice } from "components/minds_panel.slint";
+import { InitiativeSettings } from "components/initiative_settings.slint";
 import { FreeAiCard } from "components/free_ai_card.slint";
+import { AiAccountsCard } from "components/ai_accounts_card.slint";
 export { DecisionPreset, DecisionUse }
 
 // ── Settings sidebar category item ──
@@ -90,8 +92,16 @@ export struct HarnessRowData {
     // "Provider: NVIDIA NIM · model (from your saved providers)", or "its own settings".
     provider-line: string,
     can-assign-provider: bool,
+    can-use-saved: bool,       // "Use a provider" writes a saved provider into its own file
     can-revert-provider: bool,
     docs: string,
+    // The mind that answers for a person who never chose one (Hermes, until Yantrik Mind is ready).
+    is-default: bool,
+    // "Install", or "Install again" once an install has said why it did not happen.
+    install-label: string,
+    // The exact facts, for the card's Details only: its id, its own words, where its files are,
+    // and what it runs on in full (wire/harness.rs).
+    details: string,
 }
 
 // ── AI Model data (for model list) ──
@@ -126,7 +136,8 @@ export struct RunsOnRow {
     state: string,      // "Answering" | "Built in" | "Attached"
     answering: bool,
     runs-on: string,    // "Ollama Cloud · deepseek-v4.1-flash"
-    source: string,     // "its own settings · as it reported" | "set in /opt/yantrik/config.yaml"
+    source: string,     // "Set in its own settings; this is what it says" | "Set in this computer's setup file"
+    details: string,    // the exact line, the address and the mind's own words, for Details only
 }
 
 // A provider the minds run on that is not saved here (runs_on::in_use_not_saved): listed so the
@@ -515,6 +526,9 @@ export component SettingsScreen inherits Rectangle {
     in property <[RunsOnRow]> runs-on-rows: [];
     in property <string> runs-on-summary: "";
     in property <[InUseRow]> in-use-providers: [];
+    // The map's exact facts (addresses, the setup file, each mind's own words) are behind one
+    // Details button, closed until asked for.
+    property <bool> runs-on-details-open: false;
 
     // ── Accounts (category 4): the same accounts, and the same list, as the Minds panel ──
     in property <[ProviderGroup]> account-groups: [];
@@ -548,6 +562,8 @@ export component SettingsScreen inherits Rectangle {
     callback apply-provider();
     callback cancel-provider();
     callback revert-provider(string);
+    // "Use its own models": its own file back, and no install points it at the gateway again.
+    callback use-own-models(string);
     // Whether any row has a job running. Computed in Rust because Slint cannot reduce over a
     // model, and it is what stops the sweep below from animating on an idle machine.
     in property <bool> harness-busy: false;
@@ -601,7 +617,7 @@ export component SettingsScreen inherits Rectangle {
         { icon: Icons.shield, label: "Privacy & Security", id: 5 },
         { icon: Icons.settings, label: "System",             id: 6 },
         { icon: Icons.bolt, label: "Skills",             id: 7 },
-        { icon: Icons.companion, label: "Harnesses",        id: 8 },
+        { icon: Icons.companion, label: "Minds",            id: 8 },
     ];
 
     // Search-filtered categories (set from Rust callback or defaults to all)
@@ -1127,8 +1143,46 @@ export component SettingsScreen inherits Rectangle {
                                             font-size: Theme.fs-caption;
                                             wrap: word-wrap;
                                         }
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            YButton {
+                                                label: root.runs-on-details-open ? "Hide details" : "Details";
+                                                variant: 1;
+                                                size: 0;
+                                                clicked => { root.runs-on-details-open = !root.runs-on-details-open; }
+                                            }
+                                        }
+                                        if root.runs-on-details-open : VerticalLayout {
+                                            spacing: Theme.sp-2;
+                                            for r in root.runs-on-rows : Text {
+                                                text: r.details;
+                                                color: Theme.text-dim;
+                                                font-size: Theme.fs-caption;
+                                                font-family: Theme.font-mono;
+                                                wrap: word-wrap;
+                                            }
+                                        }
                                     }
                                 }
+                            }
+
+                            // ── AI ACCOUNTS ──
+                            // Every account and its models: what the picker and the gateway use.
+                            VerticalLayout {
+                                spacing: Theme.sp-2;
+                                HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    Rectangle { width: 3px; height: 14px; border-radius: 1.5px; background: Theme.accent; }
+                                    Text {
+                                        text: "AI ACCOUNTS";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 600;
+                                        letter-spacing: 3px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                AiAccountsCard { }
                             }
 
                             // ── FREE AI ACCOUNTS ──
@@ -1613,7 +1667,7 @@ export component SettingsScreen inherits Rectangle {
                             }
                             if root.in-use-providers.length > 0 : Text {
                                 text: root.ai-providers.length == 0
-                                    ? "SAVED HERE · nothing yet. A saved provider can be used for the built-in companion and handed to harnesses."
+                                    ? "SAVED HERE · nothing yet. A saved provider can be used for the built-in companion and handed to minds."
                                     : "SAVED HERE";
                                 color: Theme.text-dim;
                                 font-size: Theme.fs-micro;
@@ -2023,7 +2077,7 @@ export component SettingsScreen inherits Rectangle {
                                         // This lists a saved provider's models. With none chosen for the
                                         // companion, its model comes from config.yaml: say which, never "none".
                                         text: root.ai-status.model-name != "" && root.ai-status.provider-type == "from config.yaml"
-                                            ? "The built-in companion uses " + root.ai-status.model-name + ", set in /opt/yantrik/config.yaml. Models are listed here for a provider you save and use for the companion."
+                                            ? "The built-in companion uses " + root.ai-status.model-name + ", set in this computer\u{2019}s setup file. Models are listed here for a provider you save and use for the companion."
                                             : "No models listed yet. Save a provider, use it for the companion, and refresh.";
                                         wrap: word-wrap;
                                         color: Theme.text-dim;
@@ -2881,7 +2935,7 @@ export component SettingsScreen inherits Rectangle {
                                 }
                             }
 
-                            // Nav links: Bond, Personality, Memory
+                            // Nav links: Interaction history, Personality, Memory
                             Rectangle {
                                 background: Theme.bg-card;
                                 border-radius: Theme.r-lg;
@@ -2893,7 +2947,7 @@ export component SettingsScreen inherits Rectangle {
                                     padding-left: Theme.sp-4;
                                     padding-right: Theme.sp-4;
                                     Text {
-                                        text: "Bond";
+                                        text: "Interaction history";
                                         color: Theme.text-primary;
                                         font-size: Theme.fs-body;
                                         horizontal-stretch: 1;
@@ -3456,7 +3510,7 @@ SettingRow{label:"Permissions";description:"Review the shell's tool permissions 
                         Text{text:"System";color:Theme.text-primary;font-size:28px;font-weight:600;}
                         Text{text:"Your device, apps, and system information.";color:Theme.text-secondary;font-size:13px;wrap:word-wrap;}
 
-SettingRow{label:"Yantrik OS";description:"Native desktop workspace";value:root.version-text!=""?root.version-text:"unknown";interactive:false;}
+SettingRow{label:"Yantrik OS";description:"The version of the desktop this computer runs.";value:root.version-text!=""?root.version-text:"unknown";interactive:false;}
 SettingRow{label:"Display";description:"Current display resolution reported by the shell.";value:root.display-resolution!=""?root.display-resolution:"Automatic";interactive:false;}
 SettingRow{label:"System monitor";description:"Inspect processor, memory, storage and running processes.";value:"Open";activated=>{root.navigate-to(10);}}
 SettingRow{label:"Notifications";description:"Review notifications and requests in one place.";value:"Open";activated=>{root.navigate-to(9);}}
@@ -3529,11 +3583,11 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                         SettingRow{
                             label:"AI providers";
                             description: root.account-keys-line != ""
-                                ? root.account-keys-line + ". Keys are managed there, and handed to harnesses from there; they are separate from these sign-ins."
-                                : "API keys and endpoints (OpenAI, NVIDIA NIM, Nous, a local Ollama and more), used by the desktop and handed to harnesses. They are separate from these sign-ins.";
+                                ? root.account-keys-line + ". Keys are managed there, and handed to minds from there; they are separate from these sign-ins."
+                                : "Accounts with OpenAI, NVIDIA NIM, Nous, a local Ollama and more, used by the desktop and handed to minds. They are separate from these sign-ins.";
                             value:"Configure";activated=>{root.active-category=1;}
                         }
-                        SettingRow{label:"Harnesses";description:"The minds that can answer in the chat, which one does, and what each runs on.";value:"Open";activated=>{root.active-category=8;}}
+                        SettingRow{label:"Minds";description:"The minds that can answer in the chat, which one does, and what each runs on.";value:"Open";activated=>{root.active-category=8;}}
 
                         Rectangle{height:24px;}
                     }
@@ -3562,7 +3616,7 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                 drop-shadow-color: Theme.accent-glow;
                             }
                             Text {
-                                text: "HARNESSES";
+                                text: "MINDS";
                                 color: Theme.accent;
                                 font-size: Theme.fs-caption;
                                 font-weight: 600;
@@ -3574,7 +3628,7 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                         // Says the model out loud, because the thing people get wrong about this
                         // screen is expecting to configure a harness here.
                         Text {
-                            text: "Which mind answers when you ask. A harness brings its own models, keys and setup — this screen only decides which one you are talking to.";
+                            text: "Which mind answers when you ask. Each mind brings its own models, keys and setup; this screen decides which one you are talking to.";
                             color: Theme.text-secondary;
                             font-size: Theme.fs-body;
                             wrap: word-wrap;
@@ -3600,7 +3654,8 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                         // card grows to fit what it has to say, because a row mid-install has a
                         // sentence, a bar and six lines of npm output and a fixed 104px card
                         // clipped all three.
-                        for h in root.harness-rows : Rectangle {
+                        for h in root.harness-rows : hcard := Rectangle {
+                            property <bool> details-open: false;
                             background: Theme.bg-card;
                             border-radius: Theme.r-lg;
                             border-width: 1px;
@@ -3622,6 +3677,22 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                         font-weight: 600;
                                         vertical-alignment: center;
                                     }
+                                    // In words: the default is a fact about the machine, and a
+                                    // colour alone would say nothing to a screen reader.
+                                    if h.is-default : Rectangle {
+                                        width: default-text.preferred-width + 16px;
+                                        height: 22px;
+                                        border-radius: 11px;
+                                        border-width: 1px;
+                                        border-color: Theme.border-default;
+                                        default-text := Text {
+                                            text: "Default";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.fs-caption;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                     Rectangle { horizontal-stretch: 1; }
                                     Rectangle {
                                         width: pill-text.preferred-width + 20px;
@@ -3642,15 +3713,6 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                             vertical-alignment: center;
                                         }
                                     }
-                                }
-
-                                // The id in mono, because it is the thing you type — into
-                                // `yos act shell use_harness`, or into your own harness's attach.
-                                Text {
-                                    text: h.detail != "" ? h.id + "  ·  " + h.detail : h.id;
-                                    color: Theme.text-dim;
-                                    font-size: Theme.fs-caption;
-                                    font-family: Theme.font-mono;
                                 }
 
                                 // The one thing to do next. A file path at most — never anything
@@ -3724,36 +3786,47 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                     wrap: word-wrap;
                                 }
 
+                                // Only what the mind actually claimed, in words; an empty row is
+                                // honest about a mind that only talks. Its id, its own words and
+                                // where its files are sit behind Details: the id is what you type
+                                // into `yos act shell use_harness`, and a path beside the buttons
+                                // squeezed them to "Use a provi" and "Cho" in the sweep of 17 October.
                                 HorizontalLayout {
-                                    spacing: Theme.sp-2;
-                                    // Only what the harness actually claimed. An empty row here
-                                    // is honest about a mind that only talks.
+                                    spacing: Theme.sp-3;
                                     if h.tools : Text {
-                                        text: "tools";
+                                        text: "Can use this desktop\u{2019}s apps";
                                         color: Theme.text-dim;
                                         font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                     if h.memory : Text {
-                                        text: "memory";
+                                        text: "Keeps its own memory";
                                         color: Theme.text-dim;
                                         font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
-                                    if h.docs != "" : Text {
-                                        text: h.docs;
-                                        color: Theme.text-dim;
-                                        font-size: Theme.fs-micro;
-                                        font-family: Theme.font-mono;
-                                        vertical-alignment: center;
-                                        // Capped so a long staged path cannot push the buttons
-                                        // off the right-hand edge of the card.
-                                        max-width: 260px;
-                                        overflow: elide;
-                                    }
                                     Rectangle { horizontal-stretch: 1; }
+                                    if h.details != "" : YButton {
+                                        label: hcard.details-open ? "Hide details" : "Details";
+                                        size: 0;
+                                        variant: 1;
+                                        clicked => { hcard.details-open = !hcard.details-open; }
+                                    }
+                                }
+                                if hcard.details-open : Text {
+                                    text: h.details;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-caption;
+                                    font-family: Theme.font-mono;
+                                    wrap: word-wrap;
+                                }
+
+                                // The actions on a row of their own, at their full width.
+                                HorizontalLayout {
+                                    spacing: Theme.sp-2;
+                                    alignment: end;
                                     if h.can-install : YButton {
-                                        label: "Install";
+                                        label: h.install-label;
                                         size: 0;
                                         variant: 1;
                                         clicked => { root.install-harness(h.id); }
@@ -3772,7 +3845,15 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                         variant: 1;
                                         clicked => { root.configure-harness(h.id); }
                                     }
-                                    if h.can-assign-provider && root.assigning-harness != h.id : YButton {
+                                    // Every mind the desktop can point at its model gateway: the
+                                    // accounts from AI & Intelligence, a token of its own, no key.
+                                    if h.can-assign-provider && !h.can-revert-provider : YButton {
+                                        label: "Use Yantrik models";
+                                        size: 0;
+                                        variant: 0;
+                                        clicked => { root.plan-provider(h.id, "yantrik-models"); }
+                                    }
+                                    if h.can-use-saved && h.can-assign-provider && root.assigning-harness != h.id : YButton {
                                         label: "Use a provider";
                                         size: 0;
                                         variant: 1;
@@ -3783,6 +3864,14 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                         size: 0;
                                         variant: 1;
                                         clicked => { root.revert-provider(h.id); }
+                                    }
+                                    // Every mind is wired to the person's model when it is
+                                    // installed; this is the way out, per harness.
+                                    if h.can-revert-provider : YButton {
+                                        label: "Use its own models";
+                                        size: 0;
+                                        variant: 1;
+                                        clicked => { root.use-own-models(h.id); }
                                     }
                                     // Attachment is still the only thing that lets a mind answer.
                                     // A "Use this" on a row that is not attached would be a
@@ -3817,19 +3906,18 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                     font-weight: 600;
                                 }
                                 Text {
-                                    text: "The image stages a manifest beside each harness it ships, and this one has none — so there is nothing here to install or start. Any harness that attaches on its own still appears above while it runs.";
+                                    text: "This computer was built with no other minds to offer, so there is nothing here to install or start. A mind that connects on its own still shows above while it runs.";
                                     color: Theme.text-secondary;
                                     font-size: Theme.fs-caption;
                                     wrap: word-wrap;
                                 }
-                                Text {
-                                    text: "/opt/yantrik/share/harnesses · docs/harness.md";
-                                    color: Theme.text-dim;
-                                    font-size: Theme.fs-caption;
-                                    font-family: Theme.font-mono;
-                                }
                             }
                         }
+
+                        // What the minds may put in front of the person on their own
+                        // (design/initiative-inbox-2026-10-16.md). On this page because it is the
+                        // minds' page; the rows are the person's, whichever mind is answering.
+                        InitiativeSettings { }
                     }
                 }
 

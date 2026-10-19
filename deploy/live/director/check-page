@@ -17,9 +17,12 @@ case "$page" in /*) ;; *) page="$PWD/$page" ;; esac
 [ -f "$page" ] || { echo "no such page: $page"; exit 2; }
 command -v chromium >/dev/null || { echo "chromium is not installed, so the page cannot be checked"; exit 2; }
 
-# A throwaway profile: never the person's, and nothing left behind.
+# A throwaway profile: never the person's, and nothing left behind. HOME too: chromium reads
+# ~/.pki/nssdb (whose pkcs11.txt names libraries to load), and fontconfig and the wrapper read
+# from HOME, which is the Mind's account's when the Director runs this (security review of #857).
 profile=$(mktemp -d)
 trap 'rm -rf "$profile"' EXIT
+export HOME="$profile"
 # The virtual-time budget runs the page's first 3 seconds of timers and animation frames, so an
 # error thrown by the game loop is caught as well as one thrown while the script parses.
 log=$(timeout 40 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile" \

@@ -42,6 +42,19 @@
     <followMouse>no</followMouse>
   </focus>
 
+  <!--
+    Every window fills Mind View. It is a view onto what the mind is doing, not a second desktop
+    to arrange: Mind View opens at 70% of the person's screen (mind_view::SIZE_PERCENT, about
+    896×560 on the VM's 1280×800), and an app opening at its preferred 1100×800 in there was
+    mostly off its edge, so the person watching saw a title bar and a corner. Our apps ask for at
+    least 640×400, which a maximized window in Mind View always has room for.
+  -->
+  <windowRules>
+    <windowRule identifier="*">
+      <action name="Maximize" />
+    </windowRule>
+  </windowRules>
+
   <keyboard>
     <keybind key="A-Tab">
       <action name="NextWindow" />

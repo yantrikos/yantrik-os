@@ -272,7 +272,9 @@ fn checks(r: &Readings) -> Vec<String> {
     let mut out = Vec::new();
     match r.disks.as_slice() {
         [] => {}
-        [one] => out.push(format!("{} at {DISK_LIMIT_PERCENT}% full", one.mount)),
+        // The disk by its name ("the disk"), not its mount point: "Limits: / at 90% full" read as a
+        // value missing before "at" (sweep of 17 October).
+        [one] => out.push(format!("the {} at {DISK_LIMIT_PERCENT}% full", one.name().to_lowercase())),
         _ => out.push(format!("any disk at {DISK_LIMIT_PERCENT}% full")),
     }
     if r.memory.is_some_and(|(t, _)| t > 0) {
@@ -373,7 +375,7 @@ mod tests {
         assert_eq!(s.verdict(), "No limits reached");
         assert_eq!(
             s.thresholds,
-            "Limits: / at 90% full, memory at 90% used, 1-minute load above 4 (the core count)"
+            "Limits: the disk at 90% full, memory at 90% used, 1-minute load above 4 (the core count)"
         );
     }
 

@@ -1,0 +1,6 @@
+#!/bin/sh
+# The person's command for the live instance's task contracts (contracts.py): list, show, accept,
+# reject. Root's, 0700, at /usr/local/sbin/director-contracts; installed by setup-director.sh.
+# Only a person accepts a contract, and on 561 a person is root: the Mind's commands run as
+# yantrik, which can neither run this nor reach the store (the service refuses its account).
+exec /usr/bin/python3 -I /opt/yantrik-live/director/contracts.py cli "$@"

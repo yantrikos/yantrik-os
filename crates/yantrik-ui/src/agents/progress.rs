@@ -339,6 +339,7 @@ mod tests {
                 request: "q-1".into(),
                 prompt: "Keep or Erase the three memories about the old address?".into(),
                 options: vec!["Keep".into(), "Erase".into()],
+                recommended: None,
                 answer: answer.into(),
                 closed: String::new(),
                 asked: 10,

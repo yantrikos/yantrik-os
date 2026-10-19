@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, Model, Timer, TimerMode};
 
 use crate::agents::model::State;
+use crate::mind_panel_words as words;
 use crate::agents::{self, Store, Tab};
 use crate::{App, MindPanelAct, MindPanelAgent, MindPanelNow, MindPanelRecipe, MindPanelState};
 
@@ -149,10 +150,11 @@ pub fn save_choice(path: &Path, choice: Choice) -> Result<(), String> {
     std::fs::rename(&temp, path).map_err(|e| format!("could not replace {}: {e}", path.display()))
 }
 
-/// Whether the panel is drawn open on `screen`: shown there, not in focus mode on the desktop,
-/// and chosen open for that place. The same rule as `mind-panel-open` in app.slint.
-pub fn open_on(choice: Choice, screen: i32, focus_mode: bool) -> bool {
-    shown_on(screen) && !(screen == DESKTOP_SCREEN && focus_mode) && choice.get(Place::of_screen(screen))
+/// Whether the panel is drawn open on `screen`: shown there, not in focus mode on the desktop, no
+/// app window in front ([`crate::mind_panel_room`]), and chosen open for that place. The same rule
+/// as `mind-panel-open` in app.slint.
+pub fn open_on(choice: Choice, screen: i32, focus_mode: bool, app_in_front: bool) -> bool {
+    shown_on(screen) && !(screen == DESKTOP_SCREEN && focus_mode) && !app_in_front && choice.get(Place::of_screen(screen))
 }
 
 // ── Now: the answering mind ──────────────────────────────────────────
@@ -370,7 +372,10 @@ pub struct Act {
 /// One row of Recent actions.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ActLine {
+    /// The plain sentence: "Ran a command" ([`words::act_sentence`]).
     pub what: String,
+    /// The raw id and outcome, for the row's tooltip: "terminal.run · ok".
+    pub detail: String,
     pub when: String,
     pub outcome: String,
 }
@@ -423,15 +428,17 @@ fn parse_audit_line(line: &str) -> Option<Act> {
     })
 }
 
-/// The rows: `app.action`, how long ago, and how it went.
+/// The rows: what was done in words, how long ago, and how it went. A failure more than a day old
+/// is left to the audit view ([`words::still_current`]).
 pub fn act_lines(acts: &[Act], now: u64, count: usize) -> Vec<ActLine> {
-    let mut sorted: Vec<&Act> = acts.iter().collect();
+    let mut sorted: Vec<&Act> = acts.iter().filter(|a| words::still_current(&a.outcome, a.unix, now)).collect();
     sorted.sort_by(|a, b| b.unix.cmp(&a.unix));
     sorted
         .into_iter()
         .take(count)
         .map(|a| ActLine {
-            what: format!("{}.{}", a.app, a.action),
+            what: words::act_sentence(&a.app, &a.action, &a.outcome),
+            detail: words::act_detail(&a.app, &a.action, &a.outcome),
             when: ago(now, a.unix),
             outcome: if a.outcome.trim().is_empty() { "not reported".into() } else { a.outcome.trim().to_string() },
         })
@@ -456,8 +463,10 @@ pub fn ago(now: u64, then: u64) -> String {
 pub struct Inputs {
     /// `None` until the harness host is up.
     pub minds: Option<MindsSeen>,
-    /// The built-in's configured model (`ai-active-provider-label`); empty when none is configured.
-    pub provider_label: String,
+    /// Whether the answering mind's model works, as the picker judged it (`picker::status`):
+    /// (state, words), from a real call or a probe and never from configuration (#673). `None`
+    /// until it has been judged.
+    pub status: Option<(String, String)>,
     pub companion_online: bool,
     pub companion_status: String,
     /// A reply is being written right now, by whichever mind is answering.
@@ -516,50 +525,31 @@ pub fn build(input: &Inputs) -> Panel {
                     .find(|c| c.is_alphanumeric())
                     .map(|c| c.to_uppercase().to_string())
                     .unwrap_or_else(|| "?".into());
-                if m.builtin {
-                    // The built-in runs on what this shell is configured with.
-                    let label = input.provider_label.trim();
-                    let (model, named) = if label.is_empty() {
-                        ("no model configured".to_string(), false)
-                    } else {
-                        (label.to_string(), true)
-                    };
-                    let state = if !input.companion_online {
-                        "offline"
-                    } else if input.generating || input.companion_status == "thinking" {
-                        "thinking"
-                    } else {
-                        "ready"
-                    };
-                    (true, m.name.clone(), initial, true, model, named, state.to_string())
+                // What its model is doing, said only from a real call or a probe: "connected ·
+                // gpt-oss-120b", "key missing", "uses its own models". It used to be the configured
+                // name with ready in front (ready · yantrik-4b on a fresh install with nothing
+                // listening), which was configuration dressed as health.
+                let (state, words) = if m.builtin && !input.companion_online {
+                    ("offline".to_string(), "offline · the companion is not running".to_string())
                 } else {
-                    // An attached mind runs on whatever it said it runs on — and never on the
-                    // shell's configured model, which is not doing the work.
-                    let detail = m.detail.as_deref().map(str::trim).filter(|d| !d.is_empty());
-                    let (model, named) = match detail {
-                        Some(d) => (d.to_string(), true),
-                        None => ("model not reported".to_string(), false),
-                    };
-                    let state = if input.generating { "thinking" } else { "attached" };
-                    (true, m.name.clone(), initial, false, model, named, state.to_string())
-                }
+                    input.status.clone().unwrap_or_else(|| ("checking".to_string(), "checking".to_string()))
+                };
+                let named = state == "connected";
+                let (state, model) = if input.generating || (m.builtin && input.companion_status == "thinking") {
+                    let tail = words.strip_prefix("connected · ").unwrap_or(&words).to_string();
+                    ("thinking".to_string(), format!("thinking · {tail}"))
+                } else {
+                    (state, words)
+                };
+                (true, m.name.clone(), initial, m.builtin, model, named, state)
             }
         },
     };
 
-    let (memory, memory_known) = match input.memory_count {
-        Some(n) => (format!("YantrikDB · {} {}", thousands(n), if n == 1 { "memory" } else { "memories" }), true),
-        None => ("YantrikDB · count not known yet".to_string(), false),
-    };
+    let (memory, memory_known) = (words::memory_words(input.memory_count), input.memory_count.is_some());
     let minds = match &input.minds {
         None => "not known yet".to_string(),
-        Some(seen) => format!(
-            "{} {} · {} {} memory",
-            seen.count,
-            if seen.count == 1 { "mind" } else { "minds" },
-            seen.keep_memory,
-            if seen.keep_memory == 1 { "keeps" } else { "keep" },
-        ),
+        Some(seen) => words::minds_words(seen.count, seen.keep_memory),
     };
     let (services, services_trouble) = services_line(&input.services);
 
@@ -612,29 +602,14 @@ pub fn services_line(services: &[(String, String)]) -> (String, bool) {
     (parts.join(" · "), !failed.is_empty())
 }
 
-fn thousands(n: i64) -> String {
-    let digits = n.unsigned_abs().to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    if n < 0 {
-        format!("-{out}")
-    } else {
-        out
-    }
-}
 
 // ── describe shell, and set_mind_panel ─────────────────────────────
 
 /// What `describe shell` says under `mind_panel`: where it is, whether it is open, what each place
 /// is set to, and how much it is showing.
-pub fn describe_of(choice: Choice, screen: i32, focus_mode: bool, now: &Now, recipes: usize, acts: usize) -> serde_json::Value {
+pub fn describe_of(choice: Choice, screen: i32, focus_mode: bool, app_in_front: bool, now: &Now, recipes: usize, acts: usize) -> serde_json::Value {
     let shown = shown_on(screen);
-    let expanded = open_on(choice, screen, focus_mode);
+    let expanded = open_on(choice, screen, focus_mode, app_in_front);
     serde_json::json!({
         "shown": shown,
         "where": Place::of_screen(screen).key(),
@@ -643,6 +618,8 @@ pub fn describe_of(choice: Choice, screen: i32, focus_mode: bool, now: &Now, rec
         // What `set_mind_panel` changes: one choice per place, kept across restarts.
         "choice": { "desktop": choice.desktop, "elsewhere": choice.elsewhere },
         "focus_mode_holds_it_collapsed": screen == DESKTOP_SCREEN && focus_mode && choice.desktop,
+        // An app window is in front: the panel is its strip, inside the room labwc keeps clear.
+        "app_window_holds_it_collapsed": shown && app_in_front && choice.get(Place::of_screen(screen)),
         "mind": if now.known { serde_json::json!(now.mind) } else { serde_json::Value::Null },
         "model": if now.known { serde_json::json!(now.model) } else { serde_json::Value::Null },
         "at_work": now.running,
@@ -683,6 +660,7 @@ pub fn for_describe(ui: &App) -> serde_json::Value {
         choice_of(&g),
         ui.get_current_screen(),
         ui.get_focus_mode(),
+        ui.get_app_window_in_front(),
         &now,
         g.get_recipes().row_count(),
         g.get_acts().row_count(),
@@ -717,6 +695,12 @@ pub fn wire(ui: &App) {
             let mut choice = choice_of(&g);
             choice.set(place, expanded);
             show_choice(&g, choice);
+            // A click on the panel is a click on the shell, which labwc has just raised over the
+            // app windows: open it now rather than at the compositor's next reading.
+            if expanded {
+                crate::windows::note_shell_clicked();
+                ui.set_app_window_in_front(false);
+            }
             if let Err(e) = save_choice(&choice_path(), choice) {
                 tracing::warn!(error = %e, "The mind panel's choice was not saved");
             }
@@ -739,6 +723,10 @@ pub fn wire(ui: &App) {
 
 /// Read everything once and hand the panel what changed.
 fn refresh(ui: &App) {
+    let in_front = crate::mind_panel_room::app_window_in_front(crate::windows::shell_in_front());
+    if ui.get_app_window_in_front() != in_front {
+        ui.set_app_window_in_front(in_front);
+    }
     let now = agents::model::now();
     let services: Vec<(String, String)> = {
         let model = ui.get_services();
@@ -749,7 +737,7 @@ fn refresh(ui: &App) {
     };
     let input = Inputs {
         minds: minds_seen(),
-        provider_label: ui.get_ai_active_provider_label().to_string(),
+        status: Some(crate::picker::panel_status()),
         companion_online: ui.get_companion_online(),
         companion_status: ui.get_companion_status().to_string(),
         generating: ui.get_is_generating(),
@@ -757,7 +745,9 @@ fn refresh(ui: &App) {
         memory_count: WORKER_UP.load(Ordering::Relaxed).then(|| ui.get_memory_count() as i64),
         working: agents::store().read(|s| working(s, now, AGENT_ROWS)),
         recipes: recipes(),
-        acts: act_lines(&recent_acts(ACT_ROWS), now, ACT_ROWS),
+        // Read past the rows shown: failures older than a day are dropped from what is read, and
+        // the panel should still fill its rows with what is current.
+        acts: act_lines(&recent_acts(AUDIT_SEED), now, ACT_ROWS),
         services,
     };
     publish(ui, &build(&input));
@@ -819,7 +809,12 @@ fn publish(ui: &App, panel: &Panel) {
     let acts: Vec<MindPanelAct> = panel
         .acts
         .iter()
-        .map(|a| MindPanelAct { what: a.what.as_str().into(), when: a.when.as_str().into(), outcome: a.outcome.as_str().into() })
+        .map(|a| MindPanelAct {
+            what: a.what.as_str().into(),
+            detail: a.detail.as_str().into(),
+            when: a.when.as_str().into(),
+            outcome: a.outcome.as_str().into(),
+        })
         .collect();
     if let Some(model) = crate::models::changed(g.get_acts(), acts) {
         g.set_acts(model);
@@ -853,7 +848,7 @@ mod tests {
                 count: 3,
                 keep_memory: 2,
             }),
-            provider_label: "qwen3.5:9b".into(),
+            status: Some(("connected".into(), "connected · qwen3.5:9b".into())),
             companion_online: true,
             companion_status: "idle".into(),
             memory_count: Some(1234),
@@ -863,38 +858,53 @@ mod tests {
     }
 
     #[test]
-    fn now_says_who_is_answering_and_on_what() {
+    fn now_says_who_is_answering_and_whether_its_model_works() {
         let panel = build(&input());
         assert_eq!(panel.now.mind, "Yantrik Companion");
         assert!(panel.now.builtin);
-        assert_eq!(panel.now.model, "qwen3.5:9b", "the built-in runs on the shell's configured model");
+        assert_eq!(panel.now.model, "connected · qwen3.5:9b", "connected only as the status found it");
         assert!(panel.now.model_named);
-        assert_eq!(panel.now.state, "ready");
+        assert_eq!(panel.now.state, "connected");
         assert_eq!(panel.now.initial, "Y");
 
-        // An attached mind runs on what it said it runs on, never on the shell's own setting.
+        // An attached mind says what its status says, never the shell's own setting.
         let mut hermes = input();
         hermes.minds.as_mut().unwrap().answering =
             Some(Mind { name: "hermes".into(), builtin: false, detail: Some("gpt-6 on node1".into()) });
+        hermes.status = Some(("own".into(), "uses its own models".into()));
         let panel = build(&hermes);
-        assert_eq!(panel.now.model, "gpt-6 on node1");
-        assert_eq!(panel.now.state, "attached");
-        assert_eq!(panel.now.initial, "H");
-
-        // One that said nothing about its model is not given the shell's.
-        hermes.minds.as_mut().unwrap().answering.as_mut().unwrap().detail = None;
-        let panel = build(&hermes);
-        assert_eq!(panel.now.model, "model not reported");
+        assert_eq!(panel.now.model, "uses its own models");
+        assert_eq!(panel.now.state, "own");
         assert!(!panel.now.model_named);
-        assert!(!panel.now.model.contains("qwen"), "the shell's setting is not the attached mind's model");
+        assert_eq!(panel.now.initial, "H");
 
         // Writing a reply, whoever is answering.
         hermes.generating = true;
         assert_eq!(build(&hermes).now.state, "thinking");
+        let mut busy = input();
+        busy.generating = true;
+        assert_eq!(build(&busy).now.model, "thinking · qwen3.5:9b");
 
         let mut offline = input();
         offline.companion_online = false;
         assert_eq!(build(&offline).now.state, "offline");
+    }
+
+    #[test]
+    fn a_configured_model_is_never_called_ready_without_a_call_or_a_probe() {
+        // A fresh install: config.yaml names yantrik-4b and nothing listens. Not judged yet is
+        // "checking"; judged, it is what was found — never "ready · yantrik-4b".
+        let mut fresh = input();
+        fresh.status = None;
+        let panel = build(&fresh);
+        assert_eq!((panel.now.state.as_str(), panel.now.model.as_str()), ("checking", "checking"));
+        fresh.status = Some(("not-set-up".into(), "not set up · pick a model".into()));
+        let panel = build(&fresh);
+        assert_eq!(panel.now.state, "not-set-up");
+        assert!(!panel.now.model.contains("ready") && !panel.now.model.contains("yantrik-4b"));
+        let src = include_str!("mind_panel.rs");
+        let hard_coded = ["\"ready\"", "\"ready \u{b7} "].iter().any(|n| src.split("#[cfg(test)]").next().unwrap().contains(n));
+        assert!(!hard_coded, "no `ready` state is made up from configuration");
     }
 
     #[test]
@@ -905,29 +915,24 @@ mod tests {
         assert_eq!(panel.now.mind, "unknown");
         assert_eq!(panel.now.minds, "not known yet");
         assert!(!panel.now.memory_known);
-        assert_eq!(panel.now.memory, "YantrikDB · count not known yet", "not \"0 memories\"");
+        assert_eq!(panel.now.memory, "Not counted yet", "not \"0 memories\"");
         assert!(!panel.now.recipes_known, "no read from the companion yet: recipes are not known, not none");
         assert_eq!(panel.now.project, "", "no project detected is drawn as such by the panel, not invented");
 
         let known = build(&input());
-        assert_eq!(known.now.memory, "YantrikDB · 1,234 memories");
-        assert_eq!(known.now.minds, "3 minds · 2 keep memory");
+        assert_eq!(known.now.memory, "Remembers 1,234 things");
+        assert_eq!(known.now.minds, "3 can answer · 2 remember");
         assert!(known.now.recipes_known);
 
         let mut one = input();
         one.memory_count = Some(1);
         one.minds = Some(MindsSeen { answering: None, count: 1, keep_memory: 1 });
         let panel = build(&one);
-        assert_eq!(panel.now.memory, "YantrikDB · 1 memory");
-        assert_eq!(panel.now.minds, "1 mind · 1 keeps memory");
+        assert_eq!(panel.now.memory, "Remembers 1 thing");
+        assert_eq!(panel.now.minds, "1 can answer · 1 remember");
         assert_eq!(panel.now.mind, "no mind");
         assert_eq!(panel.now.model, "nothing is answering");
 
-        let mut unconfigured = input();
-        unconfigured.provider_label = "  ".into();
-        let panel = build(&unconfigured);
-        assert_eq!(panel.now.model, "no model configured");
-        assert!(!panel.now.model_named);
     }
 
     #[test]
@@ -1037,11 +1042,13 @@ mod tests {
         let now = 1_000_000;
         let lines = act_lines(
             &[
-                act(now - 7_300, "notes", "create", "ok"),
+                act(now - 7_300, "notes", "create_note", "ok"),
                 act(now - 240, "files", "move", "failed"),
                 act(now - 20, "calendar", "add_event", ""),
                 act(now - 200_000, "email", "send", "ok"),
                 act(now - 60, "files", "copy", "ok"),
+                // Eleven days old and failed: in the audit view, not on the panel.
+                act(now - 11 * 86_400, "terminal", "run", "failed"),
             ],
             now,
             ACT_ROWS,
@@ -1050,12 +1057,15 @@ mod tests {
         assert_eq!(
             rows,
             [
-                ("calendar.add_event", "just now", "not reported"),
-                ("files.copy", "1m ago", "ok"),
-                ("files.move", "4m ago", "failed"),
-                ("notes.create", "2h ago", "ok"),
+                ("Added an event to your calendar", "just now", "not reported"),
+                ("Copied in your files", "1m ago", "ok"),
+                ("Couldn\u{2019}t move in your files", "4m ago", "failed"),
+                ("Wrote a note", "2h ago", "ok"),
             ]
         );
+        assert_eq!(lines[2].detail, "files.move · failed", "the raw id stays, in the tooltip");
+        let old_failures = act_lines(&[act(now - 11 * 86_400, "terminal", "run", "failed")], now, ACT_ROWS);
+        assert!(old_failures.is_empty(), "a failure older than a day is aged out of the panel");
         assert_eq!(ago(now, now + 30), "just now", "a clock that disagrees is not a negative age");
         assert_eq!(ago(now, now - 200_000), "2d ago");
     }
@@ -1114,11 +1124,11 @@ mod tests {
         // Nothing saved: open on the desktop, the strip everywhere else.
         let choice = load_choice(&path);
         assert_eq!(choice, Choice { desktop: true, elsewhere: false });
-        assert!(open_on(choice, 1, false), "the desktop opens it");
-        assert!(!open_on(choice, 8, false), "Files gets the strip");
-        assert!(!open_on(choice, 34, false), "so does Agents");
-        assert!(!open_on(choice, 1, true), "focus mode keeps it to the strip");
-        assert!(!open_on(choice, 3, false) && !shown_on(3), "not on the lock screen at all");
+        assert!(open_on(choice, 1, false, false), "the desktop opens it");
+        assert!(!open_on(choice, 8, false, false), "Files gets the strip");
+        assert!(!open_on(choice, 34, false, false), "so does Agents");
+        assert!(!open_on(choice, 1, true, false), "focus mode keeps it to the strip");
+        assert!(!open_on(choice, 3, false, false) && !shown_on(3), "not on the lock screen at all");
 
         let mut chosen = choice;
         chosen.set(Place::Elsewhere, true);
@@ -1126,7 +1136,7 @@ mod tests {
         save_choice(&path, chosen).unwrap();
         let back = load_choice(&path);
         assert_eq!(back, Choice { desktop: false, elsewhere: true });
-        assert!(open_on(back, 8, false) && !open_on(back, 1, false));
+        assert!(open_on(back, 8, false, false) && !open_on(back, 1, false, false));
 
         std::fs::write(&path, "{ not json").unwrap();
         assert_eq!(load_choice(&path), Choice::default(), "a file that cannot be read is the defaults, not a crash");
@@ -1136,7 +1146,7 @@ mod tests {
     #[test]
     fn describe_says_where_it_is_how_open_and_what_each_place_is_set_to() {
         let panel = build(&input());
-        let d = describe_of(Choice::default(), 1, false, &panel.now, 0, 2);
+        let d = describe_of(Choice::default(), 1, false, false, &panel.now, 0, 2);
         assert_eq!(d["where"], "desktop");
         assert_eq!(d["expanded"], true);
         assert_eq!(d["state"], "expanded");
@@ -1145,12 +1155,12 @@ mod tests {
         assert_eq!(d["recipes_in_flight"], 0);
         assert_eq!(d["recent_actions"], 2);
 
-        let d = describe_of(Choice::default(), 8, false, &panel.now, 0, 0);
+        let d = describe_of(Choice::default(), 8, false, false, &panel.now, 0, 0);
         assert_eq!((d["where"].as_str(), d["state"].as_str()), (Some("elsewhere"), Some("collapsed")));
-        let d = describe_of(Choice::default(), 1, true, &panel.now, 0, 0);
+        let d = describe_of(Choice::default(), 1, true, false, &panel.now, 0, 0);
         assert_eq!(d["expanded"], false);
         assert_eq!(d["focus_mode_holds_it_collapsed"], true);
-        let d = describe_of(Choice::default(), 0, false, &build(&Inputs::default()).now, 0, 0);
+        let d = describe_of(Choice::default(), 0, false, false, &build(&Inputs::default()).now, 0, 0);
         assert_eq!(d["state"], "hidden", "boot has no panel");
         assert!(d["mind"].is_null() && d["recipes_in_flight"].is_null(), "unknown is null, not a guess");
 

@@ -141,14 +141,17 @@ export component ShellOverlays inherits Rectangle {
         private-chosen(on) => { root.mind-private-chosen(on); }
         mind-view-chosen(on) => { root.mind-view-chosen(on); }
 
-        // The Wi-Fi tile is the radio, from the same reading the network popover shows; its
-        // chevron opens that popover in place of this panel.
+        // The Wi-Fi tile, from the same reading the network popover shows. Its press does what
+        // its hint says (Rust decides, `wifi_reconnect`); its chevron opens that popover, whose
+        // Wi-Fi switch is the radio, in place of this panel.
         wifi-present: NetworkState.wifi-present;
         wifi-radio-on: NetworkState.radio-on;
         wifi-connected: NetworkState.kind == "wifi" && NetworkState.online;
         wifi-ssid: NetworkState.ssid;
+        wifi-title: NetworkState.tile-title;
+        wifi-hint: NetworkState.tile-hint;
         wired-online: NetworkState.kind == "wired" && NetworkState.online;
-        toggle-wifi => { NetworkState.set-radio(!NetworkState.radio-on); }
+        wifi-pressed => { NetworkState.tile-pressed(); }
         network-details => { root.quick-settings-open = false; root.network-open = true; }
 
         dnd-on: root.dnd-mode;

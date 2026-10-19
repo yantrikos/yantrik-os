@@ -1,8 +1,8 @@
 //! API key validation — verify provider credentials before persisting.
 //!
 //! Validates keys by calling a lightweight provider endpoint (model list or
-//! a minimal inference request). Keys are only stored in the SecretStore
-//! after successful validation.
+//! a minimal inference request). Nothing here persists a key — the caller
+//! stores it only after validation succeeds.
 
 use serde::{Deserialize, Serialize};
 
@@ -161,7 +161,7 @@ impl KeyValidator {
             }
             Err(e) => {
                 let latency = start.elapsed().as_millis() as u64;
-                KeyValidationResult::failure(classify_error(&e.to_string()), latency)
+                KeyValidationResult::failure(classify_ureq_error(&e), latency)
             }
         }
     }
@@ -310,8 +310,8 @@ impl KeyValidator {
 
 /// Classify a ureq error into a KeyValidationError.
 fn classify_ureq_error(err: &ureq::Error) -> KeyValidationError {
-    let msg = err.to_string();
-    classify_error(&msg)
+    // Its text can carry the address it was sent to, and Unknown shows that text in Settings.
+    classify_error(&yantrik_shown_address::without_sign_in(&err.to_string()))
 }
 
 /// Classify an error message string into a KeyValidationError.
@@ -335,39 +335,4 @@ fn classify_error(msg: &str) -> KeyValidationError {
     } else {
         KeyValidationError::Unknown(msg.to_string())
     }
-}
-
-// ── Validate-then-store helper ───────────────────────────────────────────
-
-/// Validate an API key and store it in the SecretStore only on success.
-///
-/// Returns the validation result. If valid, the key is persisted in the store
-/// under the provider's secret ref key.
-pub fn validate_and_store(
-    provider: &ProviderDescriptor,
-    api_key: &str,
-    base_url: Option<&str>,
-    store: &dyn super::secret_store::SecretStore,
-) -> KeyValidationResult {
-    let validator = KeyValidator::default();
-    let result = validator.validate(provider, api_key, base_url);
-
-    if result.is_valid {
-        let ref_key = format!("providers/{}", provider.id);
-        if let Err(e) = store.put(&ref_key, api_key) {
-            tracing::error!(provider = provider.id, error = %e, "failed to store validated key");
-            return KeyValidationResult::failure(
-                KeyValidationError::Unknown(format!("key valid but storage failed: {}", e)),
-                result.latency_ms,
-            );
-        }
-        tracing::info!(
-            provider = provider.id,
-            latency_ms = result.latency_ms,
-            models = result.available_models.len(),
-            "API key validated and stored"
-        );
-    }
-
-    result
 }

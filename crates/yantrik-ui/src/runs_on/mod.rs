@@ -9,6 +9,9 @@
 //! What may be read, and what never is:
 //! - the built-in companion: the address the AI page already resolves (`ai_status::target`), a
 //!   saved provider or config.yaml;
+//! - a mind on this desktop's gateway (its handoff marker says so): what the gateway would do with
+//!   its next call, decided by the gateway's own routing over the person's pick (`GatewayFact`).
+//!   Such a mind asks for "picked" and cannot say where that goes; the desktop can.
 //! - every other mind: only what it said about itself when it attached (`detail`). A mind's own
 //!   settings are its own: the Mind's live under another account, and a harness's hold its key.
 //!   So those rows say "its own settings" and "as it reported", never more than was said.
@@ -16,9 +19,10 @@
 //!   says so; when one does, the mind's row will name the account.
 
 pub mod identity;
+mod plain;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use identity::ProviderRef;
 
@@ -31,6 +35,30 @@ pub struct MindFact {
     pub detail: Option<String>,
     pub answering: bool,
     pub builtin: bool,
+    /// When the mind is wired to this desktop's gateway: where the gateway sends its calls now.
+    /// `None` for a mind with its own provider, whose own words are all there is.
+    pub gateway: Option<GatewayFact>,
+}
+
+/// Where this desktop's gateway sends a mind's calls, as the gateway decides it
+/// (`yantrik_gateway::server::route_call` over the person's one pick, consent and Private mode).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GatewayFact {
+    /// It forwards them to this account's address and model.
+    Sends {
+        /// The account's address, as it is set up.
+        base_url: String,
+        /// The account's provider type ("custom", "litellm", "ollama"): names a proxy as one.
+        provider_kind: String,
+        model: String,
+        /// The private lane, in place of the account the pick names: the person keeps private
+        /// context on this computer for that account.
+        lane: bool,
+    },
+    /// Nothing is picked, and nothing usable is there to pick.
+    NoPick,
+    /// The gateway refuses the call, so nothing is sent: its refusal's code and sentence.
+    Refused { code: String, message: String },
 }
 
 /// What the built-in companion is pointed at: the AI page's own answer.
@@ -88,7 +116,7 @@ impl Backend {
 /// runtime by its default port on this machine), "Ollama Cloud", "10.0.0.2:8000, on this
 /// network". The words a destination or a fallback is named in.
 pub fn seen_at(base_url: &str) -> String {
-    let host = identity::host(base_url);
+    let host = identity::shown_host(base_url);
     match identity::from_url(base_url) {
         ProviderRef::Known(p) if p.kind == yantrik_ml::ProviderKind::Local => format!("{} at {host}", p.display_name),
         ProviderRef::Known(p) => p.display_name.to_string(),
@@ -97,6 +125,7 @@ pub fn seen_at(base_url: &str) -> String {
             None => h,
         },
         ProviderRef::Local(h) => format!("{h}, on this network"),
+        ProviderRef::Custom(h) if h.is_empty() => "a service you set up".to_string(),
         ProviderRef::Custom(h) => h,
         ProviderRef::NotReported => "an address not known".to_string(),
     }
@@ -159,6 +188,8 @@ pub enum SetIn {
     SavedProvider(String),
     /// The mind's own settings, which the desktop does not read.
     OwnSettings,
+    /// This desktop's gateway, by the person's pick.
+    Gateway,
     /// Nothing is set: the companion has no address.
     Nowhere,
 }
@@ -181,9 +212,22 @@ pub struct RunsOn {
     pub fallback: Option<String>,
     /// The companion's address as the desktop read it; empty for every attached mind.
     pub base_url: String,
-    /// What the companion's endpoint was set up as (`CompanionFact::provider_kind`); empty for
-    /// every attached mind.
+    /// What the companion's endpoint was set up as (`CompanionFact::provider_kind`), or the
+    /// gateway account's provider type; empty for every other attached mind.
     pub provider_kind: String,
+    /// What the gateway does with its calls, for a mind on it (`SetIn::Gateway`).
+    pub via_gateway: Option<Via>,
+    /// The mind's own line as it attached ("Hermes 0.21.5 · picked"), for Details only.
+    pub said: Option<String>,
+}
+
+/// What the gateway does with a mind's calls; the address and model are the row's own.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Via {
+    /// Sends them to the row's `base_url` and `model`; `lane`: the private lane.
+    Sends { lane: bool },
+    NoPick,
+    Refused { code: String, message: String },
 }
 
 impl RunsOn {
@@ -200,6 +244,11 @@ impl RunsOn {
         if self.set_in == SetIn::Nowhere {
             return "Nothing set up".to_string();
         }
+        match &self.via_gateway {
+            Some(Via::NoPick) => return "No model picked yet".to_string(),
+            Some(Via::Refused { .. }) => return "Nothing is sent: the gateway refuses it".to_string(),
+            _ => {}
+        }
         match &self.model {
             Some(m) if !m.is_empty() => format!("{} \u{b7} {m}", self.provider.label()),
             _ => self.provider.label(),
@@ -213,6 +262,7 @@ impl RunsOn {
             SetIn::ConfigYaml => "set in /opt/yantrik/config.yaml".to_string(),
             SetIn::SavedProvider(name) => format!("your saved provider \u{201c}{name}\u{201d}"),
             SetIn::OwnSettings => "its own settings".to_string(),
+            SetIn::Gateway => "set by this desktop".to_string(),
             SetIn::Nowhere => "add a provider under Providers".to_string(),
         };
         if self.reported {
@@ -234,9 +284,31 @@ impl RunsOn {
     /// never "stays", loopback included — a daemon on this machine can forward what it is sent,
     /// and the desktop cannot see that it does not — so it is named as it was seen ("Ollama at
     /// 127.0.0.1:11434"), and a proxy or a cloud model behind it is named as forwarding.
+    ///
+    /// A mind on this desktop's gateway is said by where the gateway sends it, the account named
+    /// as a configured provider is, "through this desktop's gateway"; or, when it refuses, that
+    /// nothing is sent and why.
     pub fn destination(&self) -> String {
         let to = |whom: String| format!("Sends your message and conversation context to: {whom}");
         let model = self.model.as_deref().filter(|m| !m.is_empty());
+        match &self.via_gateway {
+            Some(Via::NoPick) => return "No model picked yet: nothing is sent".to_string(),
+            Some(Via::Refused { code, message }) => {
+                return match code.as_str() {
+                    "private_context_not_shared" => format!(
+                        "Nothing is sent: what your minds know about you is not shared with the picked model's account. {message}"
+                    ),
+                    "private_mode" => format!("Nothing is sent. {message}"),
+                    _ => format!("Nothing is sent: the gateway refuses it. {message}"),
+                }
+            }
+            Some(Via::Sends { lane }) => {
+                let said = format!("{} \u{b7} {}", self.seen(model), model.unwrap_or("a model not known"));
+                let lane = if *lane { ", your private lane" } else { "" };
+                return to(format!("{said}{lane}, through this desktop's gateway"));
+            }
+            None => {}
+        }
         let said = match (&self.backend, &self.provider) {
             // The CLI sends to Anthropic whatever address config.yaml also holds.
             (Backend::ClaudeCli, _) => to("Anthropic (Claude CLI)".to_string()),
@@ -251,13 +323,7 @@ impl RunsOn {
                 ProviderRef::Local(h) | ProviderRef::Custom(h) => h.clone(),
                 ProviderRef::NotReported => return String::new(),
             }),
-            (_, provider) => {
-                let seen = if self.base_url.is_empty() { provider.label() } else { seen_at(&self.base_url) };
-                match forwards_elsewhere(provider, &self.provider_kind, model) {
-                    Some(on) => to(format!("{on}, through {seen}")),
-                    None => to(seen),
-                }
-            }
+            _ => to(self.seen(model)),
         };
         let said = match model {
             Some(m) => format!("{said} \u{b7} {m}"),
@@ -266,6 +332,16 @@ impl RunsOn {
         match &self.fallback {
             Some(fb) => format!("{said} \u{b7} falls back to {fb}"),
             None => said,
+        }
+    }
+
+    /// A configured address, said as it was seen, and as forwarding when it is a proxy or a cloud
+    /// model behind a local daemon: "Ollama Cloud, through Ollama at 127.0.0.1:11434".
+    fn seen(&self, model: Option<&str>) -> String {
+        let seen = if self.base_url.is_empty() { self.provider.label() } else { seen_at(&self.base_url) };
+        match forwards_elsewhere(&self.provider, &self.provider_kind, model) {
+            Some(on) => format!("{on}, through {seen}"),
+            None => seen,
         }
     }
 
@@ -309,7 +385,25 @@ fn one(m: &MindFact, companion: Option<&CompanionFact>) -> RunsOn {
         fallback: None,
         base_url: String::new(),
         provider_kind: String::new(),
+        via_gateway: None,
+        said: m.detail.clone().filter(|d| !d.trim().is_empty()),
     };
+    // On the gateway, the gateway's answer is the fact, whatever the mind says (it says "picked").
+    if let Some(g) = &m.gateway {
+        return match g {
+            GatewayFact::Sends { base_url, provider_kind, model, lane } => RunsOn {
+                base_url: base_url.trim().to_string(),
+                provider_kind: provider_kind.clone(),
+                via_gateway: Some(Via::Sends { lane: *lane }),
+                ..base(identity::from_url(base_url), Some(model.trim().to_string()).filter(|s| !s.is_empty()), SetIn::Gateway, false)
+            },
+            GatewayFact::NoPick => RunsOn { via_gateway: Some(Via::NoPick), ..base(ProviderRef::NotReported, None, SetIn::Gateway, false) },
+            GatewayFact::Refused { code, message } => RunsOn {
+                via_gateway: Some(Via::Refused { code: code.clone(), message: message.clone() }),
+                ..base(ProviderRef::NotReported, None, SetIn::Gateway, false)
+            },
+        };
+    }
     if m.builtin {
         return match companion {
             Some(c) if !c.base_url.trim().is_empty() || c.backend != Backend::Api => {
@@ -338,12 +432,14 @@ fn one(m: &MindFact, companion: Option<&CompanionFact>) -> RunsOn {
 /// "Ollama Cloud runs 4 minds. 1 mind does not say what it runs on. No mind here runs on a
 /// signed-in account."
 pub fn summary(rows: &[RunsOn]) -> String {
+    // Counted by the provider's words, not its address: the map above names no host, and two
+    // services someone set up are said together, as what they are.
     let mut counts: Vec<(String, String, usize)> = Vec::new(); // key, label, minds
     for r in rows {
-        if let Some(k) = r.provider.key() {
+        if let Some(k) = plain::provider_words(&r.provider) {
             match counts.iter_mut().find(|(key, _, _)| *key == k) {
                 Some(c) => c.2 += 1,
-                None => counts.push((k, r.provider.label(), 1)),
+                None => counts.push((k.clone(), k, 1)),
             }
         }
     }
@@ -354,7 +450,7 @@ pub fn summary(rows: &[RunsOn]) -> String {
         .collect();
     let silent = rows
         .iter()
-        .filter(|r| r.provider == ProviderRef::NotReported && r.set_in != SetIn::Nowhere && r.backend == Backend::Api)
+        .filter(|r| r.provider == ProviderRef::NotReported && !matches!(r.set_in, SetIn::Nowhere | SetIn::Gateway) && r.backend == Backend::Api)
         .count();
     if silent > 0 {
         parts.push(format!("{silent} {} not say what {} on.", if silent == 1 { "mind does" } else { "minds do" }, if silent == 1 { "it runs" } else { "they run" }));
@@ -391,7 +487,7 @@ pub fn in_use_not_saved(rows: &[RunsOn], companion: Option<&CompanionFact>, save
     let mut out: Vec<(String, InUse, bool)> = Vec::new();
     for r in rows {
         let Some(key) = r.provider.key() else { continue };
-        if saved.contains(&key) || matches!(r.set_in, SetIn::SavedProvider(_) | SetIn::Nowhere) {
+        if saved.contains(&key) || matches!(r.set_in, SetIn::SavedProvider(_) | SetIn::Nowhere | SetIn::Gateway) {
             continue;
         }
         let i = match out.iter().position(|(k, _, _)| *k == key) {
@@ -434,8 +530,8 @@ pub fn in_use_not_saved(rows: &[RunsOn], companion: Option<&CompanionFact>, save
             e.model = e.models.first().cloned().unwrap_or_default();
             let others = e.used_by.len() - usize::from(has_config);
             e.where_set = match (has_config, others) {
-                (true, 0) => "set in /opt/yantrik/config.yaml \u{b7} used by the built-in companion".to_string(),
-                (true, _) => "set in /opt/yantrik/config.yaml for the built-in companion; the other minds keep their own key in their own settings".to_string(),
+                (true, 0) => "set in this computer\u{2019}s setup file \u{b7} used by the built-in companion".to_string(),
+                (true, _) => "set in this computer\u{2019}s setup file for the built-in companion; the other minds keep their own key in their own settings".to_string(),
                 (false, 1) => "kept in that mind's own settings, with its own key".to_string(),
                 (false, _) => "each mind keeps its own key in its own settings".to_string(),
             };

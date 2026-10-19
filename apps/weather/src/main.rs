@@ -135,8 +135,11 @@ fn main() {
             }
         });
     }
-    app.on_proposal_applied(|| {});
-    app.on_agent_context_activated(|_| {});
+    // No `proposal-applied` or `agent-context-activated` handler, on purpose. The proposal card
+    // draws its Apply button only for a proposal with an impact, and every proposal here is an
+    // answer to read (Close goes to `proposal-dismissed`). The rail's context rows are drawn
+    // as plain rows, not buttons, because nothing here opens them (`context-opens` defaults to
+    // false in agent_rail.slint).
     // The rail follows the app's state on a timer.
     //
     // Calling it once at startup was not enough: at that moment Weather has no reading yet and
@@ -1171,13 +1174,11 @@ fn wire(app: &WeatherApp) {
         });
     }
 
-    // ── Back pressed ──
+    // ── Back ──
     //
-    // There is nowhere to go back to from a window of its own, which is why this wrapper sets
-    // `show-back: false` and the arrow is not drawn. The handler stays as the explicit no-op
-    // for a control this window does not have; the shell's embedding of the same screen, where
-    // back does mean something, wires its own.
-    app.on_back_pressed(|| {});
+    // No handler: this is a window of its own with one screen, so there is nowhere to go back to,
+    // and the wrapper sets `show-back: false` so the arrow is not drawn. `dead_control_tests`
+    // holds the wrapper to that.
 
     // ── AI Insights ──
     {
@@ -1337,6 +1338,37 @@ fn day_of_week(date_str: &str) -> String {
     let h = ((h + 7) % 7) as usize;
     let names = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
     names[h].to_string()
+}
+
+#[cfg(test)]
+mod dead_control_tests {
+    //! A control that is drawn must work (design/apps-plan-2026-09-20.md, rule 7). These are the
+    //! callbacks this window deliberately leaves unhandled, and what keeps each one off screen.
+
+    fn main_source() -> String {
+        let src = include_str!("main.rs");
+        src.split("#[cfg(test)]").next().unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn the_back_arrow_is_not_drawn_with_nowhere_to_go() {
+        assert!(include_str!("../ui/app.slint").contains("show-back: false;"));
+        assert!(!main_source().contains("on_back_pressed"));
+    }
+
+    #[test]
+    fn no_proposal_here_draws_an_apply_button() {
+        // The card draws Apply only for a proposal with an impact, and nothing handles Apply.
+        let src = main_source();
+        assert!(!src.contains("impact:"), "a proposal with an impact needs an on_proposal_applied");
+        assert!(!src.contains("on_proposal_applied"));
+    }
+
+    #[test]
+    fn the_rail_rows_are_not_offered_as_buttons() {
+        assert!(!main_source().contains("on_agent_context_activated"));
+        assert!(!include_str!("../../../crates/yantrik-ui-slint/ui/weather.slint").contains("context-opens: true"));
+    }
 }
 
 #[cfg(test)]

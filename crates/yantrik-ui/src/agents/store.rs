@@ -22,7 +22,7 @@
 //! - one event's text is cut at [`EVENT_CAP`]; one call keeps at most [`CARD_CAP`] of output, its
 //!   head and its tail with a marker between.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,11 @@ pub struct Store {
     clock: Box<dyn Fn() -> u64 + Send>,
     /// How many agents it keeps before letting the oldest idle ones go: [`KEEP_AGENTS`].
     keep: usize,
+    /// The last turn of each agent when the person last started a new conversation
+    /// ([`Store::new_conversation`]), or when the shell started ([`Store::load`]). Nothing up to it is handed to another mind (#245): a new
+    /// conversation carries nothing from before. Kept by turn number, not by time, because the
+    /// clock counts seconds and a turn can end in the same second the person presses the button.
+    fence: BTreeMap<AgentId, u64>,
 }
 
 impl Default for Store {
@@ -92,6 +97,7 @@ impl Store {
             pending_deletes: Vec::new(),
             clock,
             keep: KEEP_AGENTS,
+            fence: BTreeMap::new(),
         }
     }
 
@@ -114,6 +120,17 @@ impl Store {
 
     pub fn agents(&self) -> &[Agent] {
         &self.agents
+    }
+
+    /// The person started a new conversation: what every mind has said so far stays in its
+    /// history, and none of it is handed over to the next mind spoken to.
+    pub fn new_conversation(&mut self) {
+        self.fence = self.agents.iter().filter_map(|a| Some((a.meta.id.clone(), a.turns.last()?.n))).collect();
+    }
+
+    /// The number of `id`'s last turn before the last new conversation; 0 if there was none.
+    pub fn fence(&self, id: &AgentId) -> u64 {
+        self.fence.get(id).copied().unwrap_or(0)
     }
 
     pub fn agent(&self, id: &AgentId) -> Option<&Agent> {
@@ -973,6 +990,11 @@ impl Store {
     /// The agents kept in `dir`, the newest [`KEEP_AGENTS`] of them. Older files are deleted, and a
     /// file that cannot be read is left alone and logged. A turn that was open when the shell
     /// stopped is closed, and its open calls interrupted: nothing is still running them.
+    ///
+    /// A start of the shell is a new conversation ([`Store::new_conversation`]): the fence is kept
+    /// in memory only, so without this a restart would read it as 0 and hand the next mind turns
+    /// from before the person's last "+ new conversation" (#802). The fence is set after the open
+    /// turns are closed, so a turn cut off mid-stream is behind it like every other.
     pub fn load(dir: &Path, clock: Box<dyn Fn() -> u64 + Send>) -> Store {
         let mut store = Store::with_clock(clock);
         let now = store.now();
@@ -1000,6 +1022,7 @@ impl Store {
             store.next_seq += 1;
             store.agents.push(agent);
         }
+        store.new_conversation();
         store.revision = 1;
         store
     }
@@ -1208,6 +1231,7 @@ fn what_event(event: &Event) -> String {
         Event::Usage { .. } => "a usage report".to_string(),
         Event::Request { prompt, .. } => format!("a question ({})", clip_text(prompt, 40)),
         Event::Redact { .. } => "a redaction".to_string(),
+        Event::Notice { text } => format!("a notice ({})", clip_text(text, 40)),
     }
 }
 
@@ -1296,9 +1320,12 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
             append(&mut turn.items, cap(delta), true);
         }
         Event::Status { text } => agent.status = cap(text).to_string(),
+        // A notice (#396) the host passed on because a turn was listening: shown as the agent's
+        // line, like a status. One with no turn behind it never reaches here (`Host::event`).
+        Event::Notice { text } => agent.status = cap(text).to_string(),
         // The agent asked the person something (#25): it waits, and says what it asked. The
         // question itself is kept by the host's run store, which alone takes the answer.
-        Event::Request { request_id, prompt, options } => {
+        Event::Request { request_id, prompt, options, recommended } => {
             let turn = turn_for(agent, provenance, now);
             let known = turn.items.iter().any(|i| matches!(i, Item::Question(q) if q.request == *request_id));
             if !known {
@@ -1306,6 +1333,8 @@ fn apply(agent: &mut Agent, event: &Event, provenance: Provenance, now: u64) -> 
                     request: request_id.clone(),
                     prompt: prompt.clone(),
                     options: options.clone(),
+                    // An index past the options is the agent's mistake, and marks nothing.
+                    recommended: recommended.filter(|i| *i < options.len()),
                     answer: String::new(),
                     closed: String::new(),
                     asked: now,
@@ -1504,6 +1533,8 @@ struct QuestionRecord {
     prompt: String,
     #[serde(default)]
     options: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recommended: Option<usize>,
     #[serde(default)]
     answer: String,
     #[serde(default)]
@@ -1614,6 +1645,7 @@ fn serialize(agent: &Agent) -> String {
                     request: q.request.clone(),
                     prompt: q.prompt.clone(),
                     options: q.options.clone(),
+                    recommended: q.recommended,
                     answer: q.answer.clone(),
                     closed: q.closed.clone(),
                     asked: q.asked,
@@ -1735,6 +1767,7 @@ fn parse(text: &str, now: u64) -> Option<Agent> {
                     request: q.request,
                     prompt: q.prompt,
                     options: q.options,
+                    recommended: q.recommended,
                     answer: q.answer,
                     asked: q.asked,
                 }),
@@ -1879,7 +1912,7 @@ mod tests {
         let (mut s, _) = store();
         let pi = id("pi:main");
         s.open_turn(&pi, "clean up Downloads");
-        let ask = Event::Request { request_id: "r1".into(), prompt: "Delete 3 old installers?".into(), options: vec!["Allow".into(), "Deny".into()] };
+        let ask = Event::Request { request_id: "r1".into(), prompt: "Delete 3 old installers?".into(), options: vec!["Allow".into(), "Deny".into()], recommended: None };
         s.event(&pi, &ask, Provenance::Reported);
         let agent = s.agent(&pi).unwrap();
         assert_eq!(agent.state, State::WaitingForYou);
@@ -2260,7 +2293,7 @@ mod tests {
     }
 
     fn asks(request: &str, prompt: &str) -> Event {
-        Event::Request { request_id: request.into(), prompt: prompt.into(), options: vec!["Yes".into(), "No".into()] }
+        Event::Request { request_id: request.into(), prompt: prompt.into(), options: vec!["Yes".into(), "No".into()], recommended: None }
     }
 
     /// A question waits in the session as one card, is answered once, and an approval answered

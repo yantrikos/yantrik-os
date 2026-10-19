@@ -57,14 +57,15 @@ fn app_label_draws_the_label_token_on_whole_pixels() {
     assert!(src.contains("color: Theme.label-shadow;"), "a label on the wallpaper keeps its shadow");
 }
 
-/// The tokens: 13px medium, and a line that is a whole number of pixels tall.
+/// The tokens: 13px medium, and a line that is a whole number of pixels tall, both scaled by the
+/// person's text size (`TextScale.factor`, 1.0 unless they chose Make text bigger).
 #[test]
 fn the_label_tokens_are_13px_medium_on_a_whole_pixel_line() {
     let theme = read("crates/yantrik-design-tokens/slint/theme.slint");
     for token in [
-        "out property <length> fs-label: 13px;",
+        "out property <length> fs-label: 13px * TextScale.factor;",
         "out property <int>    fw-label: 500;",
-        "out property <length> lh-label: 16px;",
+        "out property <length> lh-label: 16px * TextScale.factor;",
         "out property <color> label-on-wallpaper: #ffffff;",
     ] {
         assert!(theme.contains(token), "theme.slint lacks `{token}`");

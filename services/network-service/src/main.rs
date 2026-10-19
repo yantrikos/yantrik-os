@@ -39,6 +39,7 @@
 //! and never puts it in `argv`, in an error, or in a trace. `WifiConnectParams` has a hand-written
 //! `Debug` so that a `{:?}` cannot leak it either.
 
+mod autoconnect;
 mod firewall;
 mod link;
 mod nmcli;
@@ -63,6 +64,12 @@ use nmcli::Trouble;
 const APP: &str = "network";
 
 fn main() {
+    // Logging is set up here rather than left to `run`, because the pass below logs what it
+    // changed and starts before the socket is served.
+    yantrik_service_sdk::init_tracing("network");
+    // Off the thread that serves: a machine with many saved networks is a few nmcli calls each,
+    // and the socket should answer while they run.
+    std::thread::spawn(keep_saved_networks_trying);
     ServiceBuilder::new("network")
         .handler(NetworkHandler::default())
         .run();
@@ -547,8 +554,12 @@ fn wifi_radio(enabled: bool) -> Result<WifiState, ServiceError> {
 }
 
 /// Join a network. The password, when there is one, never touches `argv`.
+///
+/// The profile it was joined with is then set to retry forever (`autoconnect.rs` says why), so a
+/// network joined here is one NetworkManager keeps rejoining after a drop rather than giving up
+/// on after four attempts.
 fn wifi_connect(params: &WifiConnectParams) -> Result<WifiState, ServiceError> {
-    require_adapter()?;
+    let device = require_adapter()?;
     let ssid = params.ssid.trim();
     if ssid.is_empty() {
         return Err(ServiceError {
@@ -557,22 +568,19 @@ fn wifi_connect(params: &WifiConnectParams) -> Result<WifiState, ServiceError> {
         });
     }
 
-    let exit = match params.password.as_deref().filter(|p| !p.is_empty()) {
-        // `--ask` plus the secret on stdin. The alternative, `… password <pw>`, leaves the
-        // passphrase in /proc/<pid>/cmdline for the twenty-five seconds the connect may run,
-        // readable by every other user on the machine.
-        Some(secret) => nmcli::run_with_secret(
-            nmcli::CONNECT_WAIT_SECS,
-            &["device", "wifi", "connect", ssid],
-            secret,
-        ),
-        // No secret: an open network, or one this machine already has credentials for.
-        None => nmcli::run(
-            nmcli::CONNECT_WAIT_SECS,
-            &["device", "wifi", "connect", ssid],
-        ),
-    };
-    nmcli::outcome(&exit).map_err(|t| service_error(&t))?;
+    let kept = autoconnect::connect(&nmcli::System, &device, ssid, params.password.as_deref())
+        .map_err(|t| service_error(&t))?;
+    match &kept {
+        autoconnect::KeptTrying::Set(profile) => {
+            tracing::info!(%profile, "joined; the profile now retries forever after a drop")
+        }
+        autoconnect::KeptTrying::AlreadySet(profile) => {
+            tracing::info!(%profile, "joined; the profile's own retries setting was left as it is")
+        }
+        autoconnect::KeptTrying::Failed(why) => {
+            tracing::warn!(%why, "joined, but the profile could not be set to keep retrying")
+        }
+    }
 
     let state = wifi_state();
     match state.connected_ssid.as_deref() {
@@ -583,6 +591,27 @@ fn wifi_connect(params: &WifiConnectParams) -> Result<WifiState, ServiceError> {
         None => Err(disagreed(&format!(
             "nmcli reported success for \"{ssid}\" and this machine is not joined to any network"
         ))),
+    }
+}
+
+/// Once, at start: the saved Wi-Fi profiles that still have NetworkManager's default of four
+/// retries are set to retry forever, and each one changed is logged. A profile with a value of
+/// its own is left alone, so running this on every start changes a profile at most once.
+fn keep_saved_networks_trying() {
+    if wifi_adapter_name().is_none() {
+        return;
+    }
+    match autoconnect::startup_pass(&nmcli::System) {
+        Ok(touched) => {
+            for row in touched {
+                match row.result {
+                    Ok(true) => tracing::info!(profile = %row.name, "saved Wi-Fi network set to retry forever after a drop (was NetworkManager's default of 4)"),
+                    Ok(false) => {}
+                    Err(why) => tracing::warn!(profile = %row.name, %why, "could not set the saved Wi-Fi network to keep retrying"),
+                }
+            }
+        }
+        Err(trouble) => tracing::warn!(why = %trouble.message(), "could not list the saved Wi-Fi networks to keep them retrying"),
     }
 }
 

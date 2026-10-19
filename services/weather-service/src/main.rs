@@ -8,6 +8,11 @@
 //!   weather.air_quality { lat, lon }             → AirQuality
 //!   weather.geocode   { query }                  → Location
 //!   weather.suggest   { query }                  → Vec<LocationSuggestion>
+//!
+//! `app.describe` reports the last place asked about (or where the machine is): its current
+//! conditions in the summary, and the next `FORECAST_DAYS` days in `state.forecast`. `app.act
+//! set_location` moves it to another place, so "the weekend in Dallas" is set_location, then
+//! describe.
 
 mod machine_place;
 mod recent;
@@ -15,7 +20,7 @@ mod recent;
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
-use recent::Where;
+use recent::{Day, Outlook, Where};
 use yantrik_ipc_contracts::weather::*;
 #[cfg(test)]
 use yantrik_service_sdk::gate::{self, Authority};
@@ -57,7 +62,7 @@ struct Places {
 
 impl Default for Places {
     fn default() -> Self {
-        Places::with_fetch(|at: &Where| fetch_current(&at.location(), at.fahrenheit).map_err(|e| e.message))
+        Places::with_fetch(|at: &Where| fetch_outlook(&at.location(), at.fahrenheit).map_err(|e| e.message))
     }
 }
 
@@ -77,7 +82,7 @@ impl Default for WeatherHandler {
 
 impl Places {
     /// Places whose forecasts come from `fetch`: Open-Meteo, or a stand-in in the tests.
-    fn with_fetch(fetch: impl Fn(&Where) -> Result<CurrentWeather, String> + Send + Sync + 'static) -> Self {
+    fn with_fetch(fetch: impl Fn(&Where) -> Result<Outlook, String> + Send + Sync + 'static) -> Self {
         Places { last_place: Mutex::new(None), forecasts: recent::forecasts(fetch) }
     }
 
@@ -89,8 +94,8 @@ impl Places {
     }
 
     /// Keep a forecast a data call just fetched, so describe need not fetch it again.
-    fn learned(&self, location: &Location, fahrenheit: bool, weather: &CurrentWeather) {
-        self.forecasts.put(Where::of(location, fahrenheit), weather.clone());
+    fn learned(&self, location: &Location, fahrenheit: bool, outlook: Outlook) {
+        self.forecasts.put(Where::of(location, fahrenheit), outlook);
     }
 
     /// The place describe would report on and where it came from, if there is one: the last place
@@ -145,8 +150,10 @@ impl ServiceHandler for WeatherHandler {
                 let loc = parse_location(&params)?;
                 let fahrenheit = params["fahrenheit"].as_bool().unwrap_or(false);
                 self.places.remember(&loc, fahrenheit);
-                let result = fetch_current(&loc, fahrenheit)?;
-                self.places.learned(&loc, fahrenheit, &result);
+                // The same one call describe's forecast comes from, so it is kept for describe whole.
+                let outlook = fetch_outlook(&loc, fahrenheit)?;
+                let result = outlook.current.clone();
+                self.places.learned(&loc, fahrenheit, outlook);
                 Ok(serde_json::to_value(result).unwrap())
             }
             "weather.hourly" => {
@@ -237,7 +244,7 @@ impl Places {
         // "the weather somewhere somebody looked up".
         let source = if from_machine { "where this machine is (desktop settings)" } else { "the last place asked about" };
         match self.forecasts.read(&Where::of(&place.location, place.fahrenheit)) {
-            Reading::Known { value: w, age, fetched_at, last_error } => {
+            Reading::Known { value: Outlook { current: w, days }, age, fetched_at, last_error } => {
                 let stale = age > recent::STALE_AFTER;
                 // How old this is, and, when it is old, why it was not replaced.
                 let freshness = match (&last_error, stale) {
@@ -245,8 +252,10 @@ impl Places {
                     (None, true) => format!("fetched {}, stale; a refresh is under way", recent::ago(age)),
                     (None, false) => format!("fetched {}", recent::ago(age)),
                 };
+                // The days go in the state; the summary only says they are there.
+                let ahead = if days.is_empty() { String::new() } else { format!("; {}-day forecast in state", days.len()) };
                 let summary = format!(
-                    "Weather — {}°{} {} in {}, feels {}°, humidity {}%, wind {} {} ({freshness})",
+                    "Weather — {}°{} {} in {}, feels {}°, humidity {}%, wind {} {}{ahead} ({freshness})",
                     w.temperature.round() as i64,
                     if place.fahrenheit { "F" } else { "C" },
                     w.condition,
@@ -272,6 +281,7 @@ impl Places {
                     .with("uv_index", w.uv_index)
                     .with("pressure_hpa", w.pressure_hpa)
                     .with("visibility_km", w.visibility_km)
+                    .with("forecast", forecast_state(&days))
                     // When these readings were fetched. Whole minutes, so the revision a caller
                     // acts on does not change every time it is read.
                     .with("fetched", true)
@@ -382,7 +392,7 @@ fn weather_actions() -> Vec<Action> {
 /// dispatch nothing checked the arguments' names, so a `name` beside `lat`/`lon` arrived without
 /// ever being published — and a caller reading `describe` could not know it existed.
 fn set_location_action() -> Action {
-    Action::new("set_location", "Choose the place `describe` reports on")
+    Action::new("set_location", "Choose the place `describe` reports on: its current conditions and its daily forecast")
         .arg(Param::text("query").describe("A place name to look up, e.g. 'Dallas, TX'").optional())
         .arg(Param::number("lat").describe("Latitude, if giving coordinates instead of a name").optional())
         .arg(Param::number("lon").describe("Longitude, if giving coordinates instead of a name").optional())
@@ -411,6 +421,10 @@ fn parse_location(params: &serde_json::Value) -> Result<Location, ServiceError> 
 
 // ── Open-Meteo API fetching ──────────────────────────────────────────
 
+/// How many days the forecast call asks for, today first: today and the seven after it, so a
+/// question about any day of the coming week, the weekend after next included, has its day.
+const FORECAST_DAYS: usize = 8;
+
 fn open_meteo_forecast(
     loc: &Location,
     fahrenheit: bool,
@@ -426,8 +440,8 @@ fn open_meteo_forecast(
          is_day,cloud_cover,dew_point_2m\
          &hourly=temperature_2m,weather_code,precipitation_probability\
          &daily=weather_code,temperature_2m_max,temperature_2m_min,\
-         precipitation_sum,sunrise,sunset,uv_index_max\
-         &timezone=auto&forecast_days=7{temp_unit}{wind_unit}",
+         precipitation_sum,precipitation_probability_max,sunrise,sunset,uv_index_max\
+         &timezone=auto&forecast_days={FORECAST_DAYS}{temp_unit}{wind_unit}",
         loc.lat, loc.lon
     );
 
@@ -445,8 +459,17 @@ fn open_meteo_forecast(
     })
 }
 
-fn fetch_current(loc: &Location, fahrenheit: bool) -> Result<CurrentWeather, ServiceError> {
+/// The current conditions and the days ahead, from one Open-Meteo call: what describe keeps.
+fn fetch_outlook(loc: &Location, fahrenheit: bool) -> Result<Outlook, ServiceError> {
     let json = open_meteo_forecast(loc, fahrenheit)?;
+    Ok(parse_outlook(&json))
+}
+
+fn parse_outlook(json: &serde_json::Value) -> Outlook {
+    Outlook { current: parse_current(json), days: parse_days(json, FORECAST_DAYS) }
+}
+
+fn parse_current(json: &serde_json::Value) -> CurrentWeather {
     let c = &json["current"];
     let d = &json["daily"];
 
@@ -460,7 +483,7 @@ fn fetch_current(loc: &Location, fahrenheit: bool) -> Result<CurrentWeather, Ser
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
 
-    Ok(CurrentWeather {
+    CurrentWeather {
         temperature: c["temperature_2m"].as_f64().unwrap_or(0.0),
         feels_like: c["apparent_temperature"].as_f64().unwrap_or(0.0),
         humidity: c["relative_humidity_2m"].as_i64().unwrap_or(0) as i32,
@@ -475,7 +498,7 @@ fn fetch_current(loc: &Location, fahrenheit: bool) -> Result<CurrentWeather, Ser
         dew_point: c["dew_point_2m"].as_f64().unwrap_or(0.0),
         cloud_cover: c["cloud_cover"].as_i64().unwrap_or(0) as i32,
         is_day,
-    })
+    }
 }
 
 fn fetch_hourly(
@@ -535,45 +558,89 @@ fn fetch_daily(
     fahrenheit: bool,
 ) -> Result<Vec<DailyForecast>, ServiceError> {
     let json = open_meteo_forecast(loc, fahrenheit)?;
+    Ok(parse_days(&json, days as usize)
+        .into_iter()
+        .map(|d| DailyForecast {
+            icon: wmo_icon(d.code, true).to_string(),
+            // The chance when Open-Meteo gave one; before it was asked for, this was the day's
+            // millimetres times ten, which is not a percentage of anything.
+            precipitation_chance: d.precipitation_probability.unwrap_or(0) as i32,
+            date: d.date,
+            temp_high: d.max,
+            temp_low: d.min,
+            condition: d.condition,
+            sunrise: d.sunrise,
+            sunset: d.sunset,
+        })
+        .collect())
+}
+
+/// The days of an Open-Meteo forecast answer, today first, at most `days` of them, in the unit
+/// it was asked in. A day missing a field is told with what it has rather than dropped.
+fn parse_days(json: &serde_json::Value, days: usize) -> Vec<Day> {
     let d = &json["daily"];
-
-    let (dates, codes, maxes, mins, precips, sunrises, sunsets) = match (
-        d["time"].as_array(),
-        d["weather_code"].as_array(),
-        d["temperature_2m_max"].as_array(),
-        d["temperature_2m_min"].as_array(),
-        d["precipitation_sum"].as_array(),
-        d["sunrise"].as_array(),
-        d["sunset"].as_array(),
-    ) {
-        (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f), Some(g)) => (a, b, c, d, e, f, g),
-        _ => return Ok(Vec::new()),
+    let Some(dates) = d["time"].as_array() else {
+        return Vec::new();
     };
+    let at = |field: &str, i: usize| d[field].as_array().and_then(|a| a.get(i)).cloned().unwrap_or_default();
+    dates
+        .iter()
+        .take(days)
+        .enumerate()
+        .map(|(i, date)| {
+            let date = date.as_str().unwrap_or("").to_string();
+            let code = at("weather_code", i).as_i64().unwrap_or(0) as i32;
+            Day {
+                code,
+                weekday: weekday(&date).unwrap_or(""),
+                min: at("temperature_2m_min", i).as_f64().unwrap_or(0.0),
+                max: at("temperature_2m_max", i).as_f64().unwrap_or(0.0),
+                condition: wmo_description(code).to_string(),
+                precipitation_probability: at("precipitation_probability_max", i).as_i64(),
+                precipitation_mm: at("precipitation_sum", i).as_f64().unwrap_or(0.0),
+                sunrise: at("sunrise", i).as_str().map(extract_time).unwrap_or_else(|| "--".to_string()),
+                sunset: at("sunset", i).as_str().map(extract_time).unwrap_or_else(|| "--".to_string()),
+                date,
+            }
+        })
+        .collect()
+}
 
-    let mut result = Vec::new();
-    for i in 0..dates.len().min(days as usize) {
-        let code = codes[i].as_i64().unwrap_or(0) as i32;
-        let precip = precips[i].as_f64().unwrap_or(0.0);
+/// The days as describe's `state.forecast` carries them: one object per day, temperatures in
+/// the place's unit (`state.unit`), rounded to a tenth.
+fn forecast_state(days: &[Day]) -> serde_json::Value {
+    let tenth = |v: f64| (v * 10.0).round() / 10.0;
+    days.iter()
+        .map(|d| {
+            let mut day = serde_json::json!({
+                "date": d.date,
+                "weekday": d.weekday,
+                "min": tenth(d.min),
+                "max": tenth(d.max),
+                "condition": d.condition,
+                "precipitation_mm": tenth(d.precipitation_mm),
+            });
+            if let Some(p) = d.precipitation_probability {
+                day["precipitation_probability"] = p.into();
+            }
+            day
+        })
+        .collect()
+}
 
-        result.push(DailyForecast {
-            date: dates[i].as_str().unwrap_or("").to_string(),
-            temp_high: maxes[i].as_f64().unwrap_or(0.0),
-            temp_low: mins[i].as_f64().unwrap_or(0.0),
-            condition: wmo_description(code).to_string(),
-            icon: wmo_icon(code, true).to_string(),
-            precipitation_chance: if precip > 0.0 { (precip * 10.0) as i32 } else { 0 },
-            sunrise: sunrises[i]
-                .as_str()
-                .map(extract_time)
-                .unwrap_or_else(|| "--".to_string()),
-            sunset: sunsets[i]
-                .as_str()
-                .map(extract_time)
-                .unwrap_or_else(|| "--".to_string()),
-        });
+/// The weekday of a `YYYY-MM-DD` date (Sakamoto's method), or `None` for anything else.
+fn weekday(date: &str) -> Option<&'static str> {
+    let mut parts = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (mut y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
     }
-
-    Ok(result)
+    const T: [i64; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    if m < 3 {
+        y -= 1;
+    }
+    let dow = (y + y / 4 - y / 100 + y / 400 + T[(m - 1) as usize] + d).rem_euclid(7);
+    Some(["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dow as usize])
 }
 
 fn fetch_alerts(loc: &Location, fahrenheit: bool) -> Result<Vec<WeatherAlert>, ServiceError> {
@@ -1114,6 +1181,11 @@ mod tests {
         }
     }
 
+    /// The sunny afternoon with no days ahead: what describe said before it had a forecast.
+    fn sunny_now() -> Outlook {
+        Outlook { current: sunny(), days: Vec::new() }
+    }
+
     /// Places whose every fetch takes three seconds — Open-Meteo on a bad day — and then fails.
     fn behind_a_slow_network() -> Places {
         Places::with_fetch(|_| {
@@ -1132,7 +1204,7 @@ mod tests {
     fn describe_answers_from_the_last_forecast_while_a_slow_fetch_replaces_it() {
         let places = behind_a_slow_network();
         places.remember(&dallas(), true);
-        places.forecasts.put_as_of(Where::of(&dallas(), true), sunny(), Duration::from_secs(20 * 60));
+        places.forecasts.put_as_of(Where::of(&dallas(), true), sunny_now(), Duration::from_secs(20 * 60));
 
         let (view, took) = timed(&places);
         assert!(took < QUICK, "describe took {took:?}");
@@ -1154,7 +1226,7 @@ mod tests {
     fn a_forecast_hours_old_is_served_and_called_stale() {
         let places = behind_a_slow_network();
         places.remember(&dallas(), true);
-        places.forecasts.put_as_of(Where::of(&dallas(), true), sunny(), Duration::from_secs(2 * 3_600));
+        places.forecasts.put_as_of(Where::of(&dallas(), true), sunny_now(), Duration::from_secs(2 * 3_600));
 
         let (view, took) = timed(&places);
         assert!(took < QUICK, "describe took {took:?}");
@@ -1184,7 +1256,7 @@ mod tests {
     fn a_forecast_a_data_call_fetched_is_what_describe_reports() {
         let places = behind_a_slow_network();
         places.remember(&dallas(), true);
-        places.learned(&dallas(), true, &sunny());
+        places.learned(&dallas(), true, sunny_now());
 
         let (view, took) = timed(&places);
         assert!(took < QUICK, "describe took {took:?}");
@@ -1202,5 +1274,137 @@ mod tests {
         let (view, took) = timed(&places);
         assert!(took < QUICK, "describe took {took:?}");
         assert_eq!(view.state["error"], "Open-Meteo API error: offline");
+    }
+
+    // ── the days ahead (E.REF1: "the weather in Dallas this weekend") ──
+
+    /// An Open-Meteo forecast answer for Dallas in the shape `open_meteo_forecast` asks for,
+    /// fetched 15 Oct 2026 (a Thursday), in each unit.
+    fn recorded(unit: &str) -> serde_json::Value {
+        let text = match unit {
+            "celsius" => include_str!("../testdata/open-meteo-dallas-celsius.json"),
+            "fahrenheit" => include_str!("../testdata/open-meteo-dallas-fahrenheit.json"),
+            other => panic!("no recording in {other}"),
+        };
+        serde_json::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn the_days_are_read_from_a_recorded_answer() {
+        let outlook = parse_outlook(&recorded("celsius"));
+        assert_eq!(outlook.current.temperature, 27.3);
+        assert_eq!(outlook.days.len(), FORECAST_DAYS);
+        let weekdays: Vec<&str> = outlook.days.iter().map(|d| d.weekday).collect();
+        assert_eq!(
+            weekdays,
+            ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+        );
+        let saturday = &outlook.days[2];
+        assert_eq!(saturday.date, "2026-10-17");
+        assert_eq!((saturday.min, saturday.max), (16.4, 24.6));
+        assert_eq!(saturday.condition, "Slight rain");
+        assert_eq!(saturday.precipitation_probability, Some(70));
+        assert_eq!(saturday.precipitation_mm, 6.4);
+        assert_eq!(saturday.sunrise, "07:32");
+        assert_eq!(outlook.days[7].condition, "Thunderstorm");
+    }
+
+    #[test]
+    fn a_day_without_a_chance_of_rain_is_told_without_one() {
+        let mut json = recorded("celsius");
+        json["daily"].as_object_mut().unwrap().remove("precipitation_probability_max");
+        let days = parse_days(&json, FORECAST_DAYS);
+        assert_eq!(days.len(), FORECAST_DAYS);
+        assert_eq!(days[2].precipitation_probability, None);
+        assert!(forecast_state(&days)[2].get("precipitation_probability").is_none());
+        // The data call's contract keeps a number: no chance given is no chance claimed.
+        assert_eq!(days[2].precipitation_mm, 6.4);
+    }
+
+    #[test]
+    fn weekdays_are_the_calendars() {
+        assert_eq!(weekday("2026-10-15"), Some("Thursday"));
+        assert_eq!(weekday("2024-02-29"), Some("Thursday"));
+        assert_eq!(weekday("2000-01-01"), Some("Saturday"));
+        assert_eq!(weekday("2026-13-01"), None);
+        assert_eq!(weekday("soon"), None);
+    }
+
+    #[test]
+    fn describe_carries_the_days_and_keeps_the_summary_short() {
+        let places = behind_a_slow_network();
+        places.remember(&dallas(), false);
+        places.learned(&dallas(), false, parse_outlook(&recorded("celsius")));
+
+        let (view, took) = timed(&places);
+        assert!(took < QUICK, "describe took {took:?}");
+        assert_eq!(
+            view.summary,
+            "Weather — 27°C Mainly clear in Dallas, feels 28°, humidity 48%, wind 15 SSE; 8-day forecast in state (fetched just now)"
+        );
+        let days = view.state["forecast"].as_array().unwrap();
+        assert_eq!(days.len(), 8);
+        assert_eq!(
+            days[2],
+            serde_json::json!({
+                "date": "2026-10-17", "weekday": "Saturday", "min": 16.4, "max": 24.6,
+                "condition": "Slight rain", "precipitation_probability": 70, "precipitation_mm": 6.4,
+            })
+        );
+        assert_eq!(days[3]["weekday"], "Sunday");
+        assert_eq!(view.state["unit"], "°C");
+    }
+
+    #[test]
+    fn the_days_come_in_the_unit_the_place_is_reported_in() {
+        let places = behind_a_slow_network();
+        places.remember(&dallas(), true);
+        places.learned(&dallas(), true, parse_outlook(&recorded("fahrenheit")));
+
+        let (view, _) = timed(&places);
+        assert!(view.summary.starts_with("Weather — 81°F Mainly clear in Dallas"), "{}", view.summary);
+        assert_eq!(view.state["unit"], "°F");
+        let saturday = &view.state["forecast"][2];
+        assert_eq!((saturday["min"].as_f64(), saturday["max"].as_f64()), (Some(61.5), Some(76.3)));
+    }
+
+    #[test]
+    fn set_location_then_describe_gives_that_places_days() {
+        // Home is wherever the stand-in is not asked about Dallas; Dallas answers from the
+        // recording. Each in the unit it was asked in.
+        let places = Arc::new(Places::with_fetch(|at: &Where| {
+            if (at.lat - 32.78).abs() < 0.01 {
+                let unit = if at.fahrenheit { "fahrenheit" } else { "celsius" };
+                Ok(parse_outlook(&recorded(unit)))
+            } else {
+                Ok(sunny_now())
+            }
+        }));
+        let home = Location { name: "Home".into(), lat: 12.97, lon: 77.59 };
+        places.remember(&home, false);
+        places.learned(&home, false, sunny_now());
+        assert_eq!(places.describe_view().state["forecast"], serde_json::json!([]));
+
+        let handler = WeatherHandler { surface: weather_surface(places.clone()), places: places.clone() };
+        let moved = handler
+            .act(
+                &serde_json::json!({
+                    "action": "set_location",
+                    "args": { "lat": 32.78, "lon": -96.8, "name": "Dallas", "fahrenheit": true },
+                }),
+                at("sensitive", "ask"),
+            )
+            .unwrap();
+        assert_eq!(moved["result"]["location"], "Dallas");
+        // The act settles with the new place's state, so the caller has the days in that answer.
+        assert_eq!(moved["state"]["forecast"][2]["weekday"], "Saturday");
+
+        // The fetch set_location started is a quick one here, so describe waits it out.
+        let view = places.describe_view();
+        assert_eq!(view.state["location"], "Dallas");
+        assert_eq!(view.state["unit"], "°F");
+        let days = view.state["forecast"].as_array().unwrap();
+        assert_eq!(days.len(), 8);
+        assert_eq!((days[3]["weekday"].as_str(), days[3]["max"].as_f64()), (Some("Sunday"), Some(72.1)));
     }
 }

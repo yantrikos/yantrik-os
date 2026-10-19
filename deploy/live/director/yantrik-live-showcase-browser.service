@@ -1,0 +1,56 @@
+# The live instance's showcase window (deploy/live/director/showcase-browser): a locked-down
+# Chromium beside Mind View showing the frame page yantrik-live-showcase.service writes. On VM 561
+# only. Installed by setup-director.sh.
+#
+# The game in it is code the Mind wrote, loaded as file://, and a file:// page can show any file
+# it can name (security review of #840). So the browser is an account of its own, which owns and
+# can write nothing, and in this unit it can name only the published games: /home, /root,
+# /run/user, /var, /opt, /srv, /mnt, /media and /etc/yantrik* are empty or gone, and the one thing
+# bound back in is /opt/yantrik-live/showcase, read-only, with the desktop's Wayland socket and
+# this script. What is left is the system's own world-readable files (/usr, most of /etc).
+#
+# The Wayland grant runs before it, as root, in yantrik-live-showcase-grant.service: a unit of its
+# own, because an ExecStartPre=+ would run inside this namespace, where director.py and /run/user
+# are hidden. Wants=, not Requires=, so a grant that fails (the desktop not up yet at boot) does not
+# end the browser's restarts with "dependency failed": the browser still starts, showcase-browser
+# finds no matching note and exits, and the restart 15 s later pulls the grant in and runs it again.
+[Unit]
+Description=Yantrik Live showcase window (the Mind's games, beside Mind View)
+Wants=yantrik-live-showcase-grant.service
+After=yantrik-mind.service yantrik-live-showcase.service yantrik-live-showcase-grant.service
+StartLimitIntervalSec=0
+
+[Service]
+User=yantrik-showcase
+Group=yantrik-showcase
+ExecStart=/opt/yantrik-live/director/showcase-browser /opt/yantrik-live/showcase/frame.html
+Environment=XDG_RUNTIME_DIR=/run/yantrik-live-showcase WAYLAND_DISPLAY=wayland-0
+ProtectHome=yes
+TemporaryFileSystem=/var /opt
+InaccessiblePaths=-/etc/yantrik -/etc/yantrik-live -/srv -/mnt -/media
+BindReadOnlyPaths=/opt/yantrik-live/showcase /opt/yantrik-live/director/showcase-browser
+BindReadOnlyPaths=/run/user/1000/wayland-0:/run/yantrik-live-showcase/wayland-0
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectProc=invisible
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+# No IP at all. The game is code the Mind wrote; with this, no request it makes leaves the
+# machine or reaches a local service, whatever Chromium's own flags say.
+IPAddressDeny=any
+MemoryMax=1G
+Nice=5
+# The session restarting, or the window closed: open it again, unhurried.
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -22,7 +22,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 
 use crate::chat_template;
 use crate::chat_templates;
-use crate::capability::ModelFamily;
+use crate::capability::{ModelFamily, ModelTier};
 use crate::traits::LLMBackend;
 use crate::types::{ChatMessage, GenerationConfig, LLMResponse};
 
@@ -34,6 +34,8 @@ pub struct LlamaCppLLM {
     inner: Mutex<LlamaCppInner>,
     /// Model family for family-aware template selection.
     family: ModelFamily,
+    /// Capability tier, decides full-JSON vs compact tool definitions.
+    tier: ModelTier,
     /// Model name/path for identification.
     model_name: String,
 }
@@ -87,6 +89,7 @@ impl LlamaCppLLM {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         let family = ModelFamily::from_model_name(&model_name);
+        let tier = ModelTier::from_model_name(&model_name);
 
         Ok(Self {
             inner: Mutex::new(LlamaCppInner {
@@ -95,6 +98,7 @@ impl LlamaCppLLM {
                 context_size,
             }),
             family,
+            tier,
             model_name,
         })
     }
@@ -108,12 +112,13 @@ impl LlamaCppLLM {
         model: &LlamaModel,
         messages: &[ChatMessage],
         family: ModelFamily,
+        tier: ModelTier,
         tools: Option<&[serde_json::Value]>,
     ) -> Result<String> {
         // If tools are provided, inject them into the system message via the family template
         let messages = if let Some(tools) = tools.filter(|t| !t.is_empty()) {
             let template = chat_templates::template_for_family(family);
-            let tool_block = template.format_tools(tools);
+            let tool_block = template.format_tools_compact(tools, tier);
             if tool_block.is_empty() {
                 messages.to_vec()
             } else {
@@ -452,7 +457,7 @@ impl LLMBackend for LlamaCppLLM {
         tools: Option<&[serde_json::Value]>,
     ) -> Result<LLMResponse> {
         let mut inner = self.inner.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        let prompt = Self::format_prompt(&inner.model, messages, self.family, tools)?;
+        let prompt = Self::format_prompt(&inner.model, messages, self.family, self.tier, tools)?;
         Self::generate(&mut inner, &prompt, config, self.family)
     }
 
@@ -464,7 +469,7 @@ impl LLMBackend for LlamaCppLLM {
         on_token: &mut dyn FnMut(&str),
     ) -> Result<LLMResponse> {
         let mut inner = self.inner.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
-        let prompt = Self::format_prompt(&inner.model, messages, self.family, tools)?;
+        let prompt = Self::format_prompt(&inner.model, messages, self.family, self.tier, tools)?;
         Self::generate_streaming(&mut inner, &prompt, config, on_token, self.family)
     }
 

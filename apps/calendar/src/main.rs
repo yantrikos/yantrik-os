@@ -2159,9 +2159,10 @@ fn wire(app: &CalendarApp) -> slint::Timer {
             }
         });
     }
-    // A row in the rail is an event on the day already on screen, so there is nowhere for a
-    // click to go. It stays empty rather than being given something to do for the sake of it.
-    app.on_agent_context_activated(|_| {});
+    // No `agent-context-activated` handler: a row in the rail is an event on the day already on
+    // screen, so there is nowhere for a click to go. The rail draws the rows as plain rows, not
+    // buttons (`context-opens` defaults to false in agent_rail.slint), rather than give them
+    // something to do for the sake of it.
     {
         let weak = app.as_weak();
         app.on_ai_dismiss(move || {
@@ -2217,6 +2218,15 @@ fn wire(app: &CalendarApp) -> slint::Timer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row in the rail is not a button here, so the window must not offer it as one.
+    #[test]
+    fn the_rail_rows_are_not_offered_as_buttons() {
+        let src = include_str!("main.rs");
+        let src = src.split("#[cfg(test)]").next().unwrap_or_default();
+        assert!(!src.contains("on_agent_context_activated"));
+        assert!(!include_str!("../../../crates/yantrik-ui-slint/ui/calendar.slint").contains("context-opens: true"));
+    }
 
     #[test]
     fn a_date_or_an_events_start_names_the_day_to_show() {

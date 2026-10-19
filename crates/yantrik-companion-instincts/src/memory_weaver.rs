@@ -72,17 +72,16 @@ impl Instinct for MemoryWeaverInstinct {
                  \"a week ago\", \"two weeks ago\", \"a month ago\", \"last month\". \
                  \nLook for:\n\
                  - What {user} was working on\n\
-                 - What they were feeling or thinking about\n\
                  - Problems they were solving\n\
                  - Interests they were exploring\n\
+                 Never surface feelings, health, relationships, or anything painful — knowing is not showing.\n\
                  \nIf you find something interesting from the past, share it as a brief \
-                 'On this day' reflection in 2-3 sentences:\n\
+                 'On this day' note in 1-2 sentences, with the date:\n\
                  - What was happening then\n\
-                 - How things have changed (or haven't)\n\
-                 - A brief observation about the journey\n\
+                 - What finished or changed since, if the record shows it\n\
                  \nIf nothing meaningful is found in the lookback, respond with just \
                  \"No time capsule today.\"\n\
-                 IMPORTANT: Be specific — reference actual topics, projects, or feelings \
+                 IMPORTANT: Be specific — reference actual topics or projects \
                  from the recalled memories. Don't be generic.",
             );
 
