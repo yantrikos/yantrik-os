@@ -1054,4 +1054,22 @@ check("check-page runs chromium with HOME its throwaway profile, never the Mind'
       'export HOME="$profile"' in page_script
       and page_script.index('export HOME="$profile"') < page_script.index("chromium --headless"))
 
+# The real check-page against real pages (#869): a body that drew nothing and a page whose only
+# control is hidden must fail the check, and a normal page must pass. Chromium is on the live
+# machine but may be missing on CI, so these skip with a printed line when it is absent.
+import shutil
+if shutil.which("chromium"):
+    for fname, dom, want, line in (
+            ("869-empty.html", "<html><body></body></html>", 1, "drew nothing"),
+            ("869-hidden.html", "<html><body><button hidden>Go</button></body></html>", 1, "hides its controls"),
+            ("869-normal.html", "<html><body><button>Go</button><canvas></canvas></body></html>", 0, "")):
+        fixture = os.path.join(tmp, fname)
+        with open(fixture, "w") as f:
+            f.write(dom)
+        r = subprocess.run([os.path.join(HERE, "check-page"), fixture], capture_output=True, text=True, timeout=90)
+        check(f"check-page exits {want} on {fname}", r.returncode == want and line in r.stdout,
+              repr((r.returncode, r.stdout, r.stderr[-200:])))
+else:
+    print("skipped  check-page's three page fixtures: chromium is not installed")
+
 sys.exit(1 if failed else 0)

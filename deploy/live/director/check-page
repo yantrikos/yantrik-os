@@ -1,6 +1,7 @@
 #!/bin/sh
-# Load a page in headless Chromium and print the errors it throws, one per line. No output and
-# exit 0 means the page loaded clean; exit 1 means it threw; exit 2 means it could not be checked.
+# Load a page in headless Chromium and print what is wrong with it, one line per problem: the
+# errors it throws, a body that drew nothing, controls that are all hidden. No output and exit 0
+# means the page loaded clean; exit 1 means it is broken; exit 2 means it could not be checked.
 #
 # One check for both sides of a live mission: the Mind runs it through its own terminal
 # (agent_run) to look at what it made, and the Director runs it after every turn so that a tick
@@ -21,18 +22,55 @@ command -v chromium >/dev/null || { echo "chromium is not installed, so the page
 # ~/.pki/nssdb (whose pkcs11.txt names libraries to load), and fontconfig and the wrapper read
 # from HOME, which is the Mind's account's when the Director runs this (security review of #857).
 profile=$(mktemp -d)
-trap 'rm -rf "$profile"' EXIT
+errlog=$(mktemp)
+trap 'rm -rf "$profile" "$errlog"' EXIT
 export HOME="$profile"
 # The virtual-time budget runs the page's first 3 seconds of timers and animation frames, so an
-# error thrown by the game loop is caught as well as one thrown while the script parses.
-log=$(timeout 40 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile" \
-    --virtual-time-budget=3000 --enable-logging=stderr --v=0 --dump-dom "file://$page" 2>&1 >/dev/null)
+# error thrown by the game loop is caught as well as one thrown while the script parses. The
+# dumped DOM goes to a variable and the stderr log to a file: the DOM answers "did the page
+# draw anything", the log answers "did it throw" (#869).
+dom=$(timeout 40 chromium --headless=new --disable-gpu --no-first-run --user-data-dir="$profile" \
+    --virtual-time-budget=3000 --enable-logging=stderr --v=0 --dump-dom "file://$page" 2>"$errlog")
 status=$?
 [ "$status" = 124 ] && { echo "the page did not finish loading in 40 seconds"; exit 2; }
+log=$(cat "$errlog")
 
 # Chromium writes console messages as `…:INFO:CONSOLE:<line>] "<message>", source: <url> (<line>)`.
 errors=$(printf '%s\n' "$log" | grep -E ':CONSOLE:[0-9]+\] "(Uncaught|Error|TypeError|ReferenceError|SyntaxError)' \
     | sed -E 's/^.*:CONSOLE:[0-9]+\] //' | sed -E 's#file://[^ ]*/##' | cut -c1-240 | sort -u | head -10)
-[ -z "$errors" ] && exit 0
-printf '%s\n' "$errors"
-exit 1
+if [ -n "$errors" ]; then
+    printf '%s\n' "$errors"
+    exit 1
+fi
+
+# Did the page draw anything? A game.js that never runs leaves the body empty or holding only
+# its own script tags, and 561's Mind ticked a whole plan over one (#869). Strip the script,
+# style and noscript blocks one at a time — a greedy match would eat the real content sitting
+# between two of them — then ask whether any tag or any text is left.
+body=$(printf '%s' "$dom" | tr '\n' ' ' | sed -E 's/.*<body[^>]*>//; s/<\/body>.*//')
+rest=$(printf '%s' "$body" | sed -E '
+    :a
+    s#<script[^>]*>[^<]*(<[^/][^>]*)*</script>##g
+    t a
+    s#<style[^>]*>[^<]*(<[^/][^>]*)*</style>##g
+    t a
+    s#<noscript[^>]*>[^<]*(<[^/][^>]*)*</noscript>##g
+    t a')
+if ! printf '%s' "$rest" | grep -q -E '<[a-zA-Z]|[^[:space:]]'; then
+    echo "the page drew nothing: <body> has no content"
+    exit 1
+fi
+
+# Are its controls all hidden? A page whose every button, input, select, link and click handler
+# carries hidden or a hiding style is one the person cannot operate. A plain read of the dumped
+# DOM: an inline style or a hidden attribute counts, a rule in an external stylesheet does not.
+controls=$(printf '%s' "$body" | grep -o -E '<(button|input|select|textarea)[^>]*>|<a [^>]*href=[^>]*>|<[^>]*onclick=[^>]*>')
+n=$(printf '%s' "$controls" | grep -c .)
+if [ "$n" -gt 0 ]; then
+    visible=$(printf '%s' "$controls" | grep -v -E 'hidden|display[[:space:]]*:[[:space:]]*none|visibility[[:space:]]*:[[:space:]]*hidden|opacity[[:space:]]*:[[:space:]]*0(\.0*)?[[:space:];"]' | grep -c .)
+    if [ "$visible" = 0 ]; then
+        echo "the page hides its controls: $n interactive, all hidden"
+        exit 1
+    fi
+fi
+exit 0
