@@ -373,8 +373,13 @@ write_files:
         # multi-user.target and cloud-final runs after multi-user.target, so it has already
         # finished. Running migrate-minds again is safe; the one-shot is then turned off so
         # nothing runs it later.
-        /opt/yantrik/bin/yantrik-update migrate-minds \
-          || log "WARNING: migrate-minds failed; run 'sudo yantrik-update migrate-minds' once"
+        # On a failure the person-level Mind is turned off all the same (migrate-minds does it
+        # first thing; this covers a run that stopped before): no Mind runs, rather than one
+        # running as the person, outside the mind's account and its egress rules.
+        if ! /opt/yantrik/bin/yantrik-update migrate-minds; then
+          rm -f /etc/systemd/user/*.wants/yantrik-mind.service
+          log "WARNING: migrate-minds failed, so Yantrik Mind does not run; run 'sudo yantrik-update migrate-minds' once"
+        fi
         systemctl disable yantrik-minds-firstboot.service 2>/dev/null || true
       else
         log "no YANTRIK_RELEASE_URL set — desktop will start with nothing to run"

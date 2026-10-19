@@ -802,8 +802,9 @@ ok "YantrikDB at /opt/yantrik/memory ($(sudo du -sh "$ROOTFS/opt/yantrik/memory"
 #
 # Installed and enabled, never configured: the OS holds no model, endpoint or key for
 # it. Its user unit reads the mind's own settings file, and with no model in it the mind
-# asks for one in the desktop chat. Enabled globally (/etc/systemd/user), so it runs for
-# whichever user the installer creates, not only for `yantrik`.
+# asks for one in the desktop chat. Its user unit is enabled globally (/etc/systemd/user) for the
+# live session only: on an installed disk the Mind runs under its own account, set up on the first
+# boot (yantrik-update migrate-minds, #713), and the person-level unit never runs there.
 if [ "${YANTRIK_ISO_WITHOUT_MIND:-0}" = "1" ]; then
     warn "Building WITHOUT a mind (YANTRIK_ISO_WITHOUT_MIND=1) — the desktop will have only its builtin companion"
 else
@@ -837,6 +838,19 @@ else
     sudo chmod 644 "$ROOTFS/etc/systemd/user/yantrik-mind.service" "$ROOTFS/etc/systemd/user/yantrik-memory.service"
     sudo chroot "$ROOTFS" systemctl --global enable yantrik-mind.service \
         || fail "could not enable yantrik-mind.service for users"
+    # The live session only (#713). On a disk installed from this image the Mind runs under its
+    # own account, inside its egress rules (yantrik-update migrate-minds, on the first boot). The
+    # installer turns this enable off on the disk, but the person-level unit must not run there
+    # even if that is missed or the first boot fails: /run/live/medium exists only on the live
+    # medium, and only root can make it under /run.
+    sudo mkdir -p "$ROOTFS/etc/systemd/user/yantrik-mind.service.d"
+    printf '%s\n' \
+        "# Made by build-debian-iso.sh (#713): the person-level Mind runs in the live session only." \
+        "# An installed machine runs the Mind under its own account (yantrik-update migrate-minds)." \
+        "[Unit]" \
+        "ConditionPathIsDirectory=/run/live/medium" \
+        | sudo tee "$ROOTFS/etc/systemd/user/yantrik-mind.service.d/live-only.conf" >/dev/null
+    sudo chmod 644 "$ROOTFS/etc/systemd/user/yantrik-mind.service.d/live-only.conf"
 
     for required in yantrik-mind yantrik-memory; do
         [ -x "$ROOTFS/opt/yantrik-mind/bin/$required" ] \
@@ -844,11 +858,13 @@ else
     done
     [ -L "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-mind.service" ] \
         || fail "yantrik-mind.service is not enabled in the image"
+    grep -qx 'ConditionPathIsDirectory=/run/live/medium' "$ROOTFS/etc/systemd/user/yantrik-mind.service.d/live-only.conf" \
+        || fail "the person-level yantrik-mind.service is not held to the live session; an installed disk would run it as the person"
     # -L as well as -e: the enable link is absolute, so from the host -e alone never sees it.
     { [ ! -e "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ] \
         && [ ! -L "$ROOTFS/etc/systemd/user/default.target.wants/yantrik-memory.service" ]; } \
         || fail "yantrik-memory.service is enabled — it would fight the mind for the memory file"
-    ok "Yantrik Mind $(sed -n 's/^commit=//p' "$ROOTFS/opt/yantrik-mind/BUILD" 2>/dev/null) installed beside the OS, enabled for every user"
+    ok "Yantrik Mind $(sed -n 's/^commit=//p' "$ROOTFS/opt/yantrik-mind/BUILD" 2>/dev/null) installed beside the OS, enabled for the live session's user"
 fi
 
 # ═══════════════════════════════════════════════════════════════
