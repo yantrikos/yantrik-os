@@ -241,7 +241,7 @@ def terms(page):
              "status": "legacy, not contract-enforced",
              "why": "This is the standing session rule the live machine runs on today (#823). Week 2 of the "
                     "contracts plan replaces it with a grant bound to this revision and checked at dispatch."}
-    acceptance = {"checks": [f"check-page loads {page} without an error" if page else "no page to check",
+    acceptance = {"checks": [f"check-page passes {page}: no error, draws, moves in its demo mode, controls on screen" if page else "no page to check",
                              "the folder's code changed since the round began"],
                   "decision": "a person, with director-contracts accept or reject, as root on this machine",
                   "note": "the checks let a FINISHED become delivered; only the decision accepts it"}
