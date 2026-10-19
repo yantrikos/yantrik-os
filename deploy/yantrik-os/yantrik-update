@@ -5913,10 +5913,10 @@ d = json.load(sys.stdin); print(d["public_proxy"], d["proxy"].split(":")[0])')"
           -lt "$(declare -f cmd_migrate_ownership | grep -n -m1 'arm_minds_first_boot' | cut -d: -f1)" ] \
        && echo yes || echo no)"
   is "first boot: migrate-minds installs the mind's unit, starts the proxy, then turns the mind on" "yes" \
-    "$(declare -f cmd_migrate_minds | grep -q 'reconcile_mind_units' \
-       && declare -f cmd_migrate_minds | grep -q 'reconcile_egress' \
-       && declare -f reconcile_egress | grep -q 'systemctl start yantrik-egress.service' \
-       && declare -f cmd_migrate_minds | grep -q 'systemctl enable --now yantrik-mind.service' \
+    "$(declare -f cmd_migrate_minds | grep 'reconcile_mind_units' >/dev/null \
+       && declare -f cmd_migrate_minds | grep 'reconcile_egress' >/dev/null \
+       && declare -f reconcile_egress | grep 'systemctl start yantrik-egress.service' >/dev/null \
+       && declare -f cmd_migrate_minds | grep 'systemctl enable --now yantrik-mind.service' >/dev/null \
        && echo yes || echo no)"
   # Each way of making a machine reaches migrate-ownership on the target, or runs migrate-minds
   # itself on its first boot.
@@ -6003,8 +6003,10 @@ echo "$*" >> "%s/systemctl.log"
   # it, even if the installer's arming were missed.
   local iso; iso="$(dirname "$0")/build-debian-iso.sh"
   if [ -f "$iso" ]; then
+    # `grep >/dev/null`, not `grep -q`: under pipefail, -q exits at the first match and the
+    # `grep -v` feeding it can die of SIGPIPE, which fails the pipeline at random (CI on 23d4069e).
     is "first boot (hole): the image holds the person-level Mind to the live session" "yes" \
-      "$(grep -v '^[[:space:]]*#' "$iso" | grep -qF '"ConditionPathIsDirectory=/run/live/medium"' && echo yes || echo no)"
+      "$(grep -v '^[[:space:]]*#' "$iso" | grep -F '"ConditionPathIsDirectory=/run/live/medium"' >/dev/null && echo yes || echo no)"
     is "first boot (hole): ... written right after its global enable" "yes" \
       "$(l1="$(grep -n -m1 'systemctl --global enable yantrik-mind.service' "$iso" | cut -d: -f1)"
          l2="$(grep -n -m1 'yantrik-mind.service.d/live-only.conf' "$iso" | cut -d: -f1)"
