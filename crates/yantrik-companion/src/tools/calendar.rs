@@ -586,7 +586,9 @@ impl CalendarCreateEventTool {
         };
 
         // The service first, always. It owns the event, and its answer carries the id everything
-        // else on this machine will name the event by.
+        // else on this machine will name the event by. It also holds the cap on adds (#342):
+        // ten a minute for this program, shared by every registry in it — sub-agents included —
+        // and refused before anything is stored, so its refusal lands in the line below.
         let stored = match self.cal.backend.create(&params) {
             Ok(event) => event,
             Err(e) => return format!("The event was NOT created: {e}"),
@@ -684,7 +686,15 @@ struct CalendarDeleteEventTool {
 
 impl Tool for CalendarDeleteEventTool {
     fn name(&self) -> &'static str { "calendar_delete_event" }
-    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    // #342: the event_id names any event in the store — the person's own, a Google-synced one,
+    // another caller's — and a delete cannot be undone. Nothing in the companion asks a person
+    // before a tool runs, and the shipped ceiling (`tools.max_permission: sensitive`) runs every
+    // `sensitive` tool unasked, so `dangerous` is the grade that keeps this tool off the model's
+    // list and refused at the registry under that ceiling. A delete is for the Calendar window,
+    // where its surface asks a person (`delete_event`) or lets a caller take off only what it
+    // made itself (`delete_own_event`, #201). An install that raises the ceiling to `dangerous`
+    // has chosen to let the companion delete unasked.
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Dangerous }
     fn category(&self) -> &'static str { "calendar" }
 
     fn definition(&self) -> serde_json::Value {
@@ -760,7 +770,13 @@ struct CalendarUpdateEventTool {
 
 impl Tool for CalendarUpdateEventTool {
     fn name(&self) -> &'static str { "calendar_update_event" }
-    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
+    // #342: grade by the worst the arguments allow (#332's rule) — the id names any event in
+    // the store, and the companion's creates record no creator, so there is no event it can
+    // call its own. The service grades `update_event` sensitive because its gate asks a person
+    // first; nothing in the companion asks, and the shipped ceiling runs `sensitive` unasked,
+    // so this door is `dangerous`: refused under that ceiling, and off the model's list.
+    // Changing an event is the Calendar's to do, where `update_event` asks a person first.
+    fn permission(&self) -> PermissionLevel { PermissionLevel::Dangerous }
     fn category(&self) -> &'static str { "calendar" }
 
     fn definition(&self) -> serde_json::Value {
@@ -924,6 +940,7 @@ impl CalendarUpdateEventTool {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use super::super::parse_permission;
     use yantrik_ipc_contracts::calendar::{UpsertRemoteEventParams, DEFAULT_REMINDER_MINUTES};
 
     /// A calendar that lives in memory and can be told to refuse.
@@ -1352,5 +1369,51 @@ mod tests {
         assert_eq!(report.moved, 0);
         assert_eq!(report.failed.len(), 1);
         assert!(report.failed[0].contains("Sometime"), "{:?}", report.failed);
+    }
+
+    // ── The grade on the companion's own door (#342) ─────
+
+    /// Under the ceiling the companion ships with (`tools.max_permission: sensitive`), an edit
+    /// or a delete of any stored event — here one with no creator on record, which is what a
+    /// person's form entry, a sync and the companion's own create all store — is refused at the
+    /// registry and the event stays exactly as it was. Both tools are also off the list the
+    /// model is shown. `sensitive` did not do this: nothing in the companion asks a person, and
+    /// the shipped ceiling ran both tools unasked.
+    #[test]
+    fn under_the_shipped_ceiling_the_companion_can_neither_edit_nor_delete_an_event() {
+        let backend = Arc::new(FakeCalendar::default());
+        let cal = calendars(backend.clone());
+        let stored = CalendarCreateEventTool { cal: cal.clone() }.run(&create_args());
+        assert!(stored.contains("ID: stored-1"), "{stored}");
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(CalendarUpdateEventTool { cal: cal.clone() }));
+        reg.register(Box::new(CalendarDeleteEventTool { cal }));
+
+        let db = yantrikdb_core::YantrikDB::new(":memory:", 64).expect("in-memory database");
+        let shipped = parse_permission(&crate::config::ToolsConfig::default().max_permission);
+        assert_eq!(shipped, PermissionLevel::Sensitive, "the ceiling this test is about");
+        let ctx = ToolContext {
+            db: &db,
+            max_permission: shipped,
+            registry_metadata: None,
+            task_manager: None,
+            incognito: true,
+            agent_spawner: None,
+        };
+
+        let update = reg.execute(
+            &ctx,
+            "calendar_update_event",
+            &serde_json::json!({ "event_id": "stored-1", "summary": "Taken" }),
+        );
+        assert!(update.starts_with("Permission denied: 'calendar_update_event'"), "{update}");
+        let delete =
+            reg.execute(&ctx, "calendar_delete_event", &serde_json::json!({ "event_id": "stored-1" }));
+        assert!(delete.starts_with("Permission denied: 'calendar_delete_event'"), "{delete}");
+
+        let events = backend.events.lock().unwrap().clone();
+        assert_eq!(events.len(), 1, "the delete must not have run");
+        assert_eq!(events[0].title, create_args()["summary"].as_str().unwrap(), "nor the edit");
+        assert!(reg.definitions(shipped).is_empty(), "neither tool is offered to the model");
     }
 }
