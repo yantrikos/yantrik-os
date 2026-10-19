@@ -1,0 +1,9 @@
+[package]
+name = "yantrik-shown-address"
+version = "0.1.0"
+edition = "2021"
+description = "A URL as it may be drawn, logged or said: never its sign-in details, query or fragment"
+
+# No dependencies, so every crate that draws or says an address can use this one rule: the shell,
+# the apps (through yantrik_app_runtime::place), the harness host, yantrik-ml and the gateway.
+[dependencies]

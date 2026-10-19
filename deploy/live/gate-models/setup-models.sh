@@ -111,6 +111,7 @@ cat > /etc/nginx/conf.d/live-cloud.conf <<EOF
 limit_req_zone \$server_addr zone=live_ollama_cloud:1m rate=30r/m;
 limit_req_zone \$server_addr zone=live_nanogpt:1m rate=10r/m;
 limit_req_zone \$server_addr zone=live_nim:1m rate=10r/m;
+limit_conn_zone \$server_addr zone=live_model_conn:1m;
 js_shared_dict_zone zone=live_budget:64k type=number timeout=3d state=/var/lib/nginx/live_budget.json;
 js_import live from /etc/nginx/njs/live_models.js;
 EOF
@@ -133,4 +134,4 @@ fi
 systemctl reload nginx || { echo "nginx would not reload; the files are new but the running gate is as it was" >&2; exit 1; }
 # The rotated-out keys leave with the backup once the new configuration is loaded.
 rm -rf /etc/live-gate/before-cloud
-echo "cloud routes live: /ollama-cloud/v1/chat/completions, /nanogpt/api/v1/chat/completions, /nim/v1/chat/completions (and their /models lists)"' < routes.conf
+echo "routes live: /api/chat (the local lane, unstreamed), /ollama-cloud/v1/chat/completions, /nanogpt/api/v1/chat/completions, /nim/v1/chat/completions (and their /models lists)"' < routes.conf

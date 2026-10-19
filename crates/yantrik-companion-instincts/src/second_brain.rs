@@ -30,11 +30,12 @@ use yantrik_companion_core::types::{CompanionState, ModelTier, UrgeSpec};
 /// The six lenses through which SecondBrain examines the user's memory.
 /// Each activation picks the next mode in rotation, ensuring broad coverage
 /// over time rather than fixating on a single analytical angle.
+// "contradictions and tensions" and "energy and mood patterns" are gone (#755): one set the
+// person's words against their actions, the other read mood from their messages. Both diagnose
+// the person instead of helping them.
 const ANALYSIS_MODES: &[&str] = &[
     "recurring themes and desires",
-    "contradictions and tensions",
     "forgotten commitments and follow-ups",
-    "energy and mood patterns",
     "evolving opinions and changed perspectives",
     "unfinished threads worth revisiting",
 ];
@@ -92,24 +93,9 @@ impl SecondBrainInstinct {
                 ),
                 format!(
                     "Look for desires or goals that appear MULTIPLE times across different \
-                     conversations. Pay special attention to things {user} keeps mentioning \
-                     but never acts on — recurring desires that get deferred often point to \
-                     something important. Also note topics that keep surfacing even when the \
-                     conversation is about something else."
-                ),
-            ),
-            "contradictions and tensions" => (
-                format!(
-                    "First, call recall with query \"goals priorities focus direction\". \
-                     Then call recall with query \"excited about new ideas projects\". \
-                     Then call recall with query \"frustrated overwhelmed stressed about\"."
-                ),
-                format!(
-                    "Look for places where {user}'s stated goals CONFLICT with their actions \
-                     or other stated goals. For example: wanting to slow down but constantly \
-                     picking up new projects. Wanting to save money but impulse-buying. \
-                     Saying they value X but spending all their time on Y. Surface the tension \
-                     without judging — both sides usually have valid reasons."
+                     conversations, and topics that keep surfacing even when the conversation \
+                     is about something else. Offer one concrete way to move on one of them; \
+                     never point out how long something has been put off."
                 ),
             ),
             "forgotten commitments and follow-ups" => (
@@ -123,21 +109,6 @@ impl SecondBrainInstinct {
                      since. Phone calls to make, people to reach out to, tasks to complete, \
                      habits to start. The most valuable finds are commitments that clearly \
                      mattered to {user} at the time but slipped through the cracks of daily life."
-                ),
-            ),
-            "energy and mood patterns" => (
-                format!(
-                    "First, call recall with query \"recent conversations this week\". \
-                     Then call recall with query \"good day great mood energized\". \
-                     Then call recall with query \"tired exhausted low energy rough day\"."
-                ),
-                format!(
-                    "Look for correlations between {user}'s activities and their energy or \
-                     engagement level. When are their messages most detailed and enthusiastic \
-                     vs. short and functional? Do certain activities (outdoor time, exercise, \
-                     creative work) correlate with better mood? Do certain patterns (late nights, \
-                     back-to-back meetings, skipped meals) correlate with low energy? The user \
-                     may not notice these patterns themselves."
                 ),
             ),
             "evolving opinions and changed perspectives" => (
@@ -201,9 +172,9 @@ impl SecondBrainInstinct {
                  - Frame WITHOUT JUDGMENT — observe, don't prescribe. \
                    Say \"I noticed X\" or \"Something interesting:\" — NEVER \"You should\" or \
                    \"You need to\" or \"Maybe try.\"\n\
-                 - Be GENUINELY INSIGHTFUL — the user should feel like they learned something \
-                   about themselves they hadn't consciously articulated. If the insight is \
-                   obvious or shallow, it's not worth sharing.\n\
+                 - Be USEFUL — a connection, a commitment that slipped, or a thread worth \
+                   picking up. If the insight is obvious or shallow, it's not worth sharing.\n\
+                 - Never surface feelings, health, relationships, or anything painful.\n\
                  \n\
                  If no clear pattern emerges from the recalled data, respond with exactly: \
                  \"No second brain insight today.\"\n\

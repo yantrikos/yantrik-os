@@ -147,22 +147,109 @@ component SummaryRow inherits HorizontalLayout {
     }
 }
 
-// A small clickable word: Show password, More, Change.
+// What lets Tab reach a control the pointer clicks. The picker, the disk rows and the ticks
+// were TouchAreas alone, so Tab went from text field to button past every one of them (13 Oct
+// 2026). Space and Enter do what a click does; the arrow keys and Escape go to the controls that
+// answer them (`step` and `dismiss` say whether they did), and pass on otherwise. The control
+// draws its own ring from `has-focus`.
+component KeyReach inherits FocusScope {
+    callback activate();
+    callback step(/* -1 up, 1 down */ int) -> bool;
+    callback dismiss() -> bool;
+    key-pressed(event) => {
+        if (event.text == Key.Return || event.text == "\n" || event.text == " ") {
+            if (!event.repeat) { root.activate(); }
+            return accept;
+        }
+        if (event.text == Key.UpArrow && root.step(-1)) { return accept; }
+        if (event.text == Key.DownArrow && root.step(1)) { return accept; }
+        if (event.text == Key.Escape && root.dismiss()) { return accept; }
+        reject
+    }
+}
+
+// A small clickable word: Show password, More, Change. Tab reaches it too.
 component LinkText inherits Rectangle {
     in property <string> text;
     in property <bool> active: false;
     in property <bool> strong: false;
+    // A focus stop of its own (Tab, Enter, Space), with a ring. Off for the links that sit
+    // beside a field whose own keys already reach them.
+    in property <bool> focusable: false;
+    // Each change puts focus here: how a screen drawn over this one hands focus back.
+    in property <int> focus-when: 0;
     callback clicked();
-    width: label.preferred-width;
-    height: label.preferred-height;
+    width: label.preferred-width + (root.focusable ? 8px : 0);
+    height: label.preferred-height + (root.focusable ? 4px : 0);
+    border-radius: 4px;
+    border-width: fs.has-focus ? Theme.focus-ring-width : 0;
+    border-color: Theme.focus-ring;
+    accessible-role: button;
+    accessible-action-default => { root.clicked(); }
+    accessible-label: root.text;
+    changed focus-when => { if root.focusable { fs.focus(); } }
+    fs := FocusScope {
+        enabled: root.focusable;
+        key-pressed(event) => {
+            if (event.text == "\n" || event.text == " ") { if !event.repeat { root.clicked(); } return accept; }
+            reject
+        }
+    }
     label := Text {
+        x: root.focusable ? 4px : 0;
         text: root.text;
-        color: root.strong || root.active || touch.has-hover ? Theme.accent : Theme.text-secondary;
+        color: root.strong || root.active || touch.has-hover || link-key.has-focus ? Theme.accent : Theme.text-secondary;
         font-size: Theme.fs-caption;
+        vertical-alignment: center;
+    }
+    // The ring sits just outside the word, so the word does not move when it shows.
+    if link-key.has-focus : Rectangle {
+        x: -4px;
+        y: -2px;
+        width: parent.width + 8px;
+        height: parent.height + 4px;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: Theme.focus-ring;
+    }
+    link-key := KeyReach {
+        activate => { root.clicked(); }
     }
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+}
+
+// A step's two buttons: Back (or Try it first, or Wait) on the left and the step's own action on
+// the right, as they always sat. The action comes first in the focus chain, so Tab from the last
+// field lands on it and Shift+Tab reaches Back: two pills in a row put Back first.
+component StepButtons inherits Rectangle {
+    in property <string> back-label: "Back";
+    in property <bool> back-shown: true;
+    in property <string> next-label;
+    in property <bool> next-enabled: true;
+    in property <bool> next-destructive: false;
+    in property <length> next-width: 160px;
+    callback back();
+    callback next();
+    property <length> back-room: root.back-shown ? 160px + Theme.sp-3 : 0px;
+    width: root.back-room + root.next-width;
+    height: 42px;
+
+    PillButton {
+        x: root.back-room;
+        width: root.next-width;
+        label: root.next-label;
+        enabled: root.next-enabled;
+        destructive: root.next-destructive;
+        clicked => { root.next(); }
+    }
+    if root.back-shown : PillButton {
+        x: 0px;
+        label: root.back-label;
+        quiet: true;
+        clicked => { root.back(); }
     }
 }
 
@@ -204,9 +291,12 @@ component ModeChip inherits Rectangle {
     preferred-width: 120px;
     horizontal-stretch: 1;
     border-radius: Theme.r-md;
-    border-width: root.on ? 2px : 1px;
-    border-color: root.on ? Theme.accent : Theme.border-default;
+    border-width: root.on || chip-key.has-focus ? 2px : 1px;
+    border-color: chip-key.has-focus ? Theme.focus-ring : root.on ? Theme.accent : Theme.border-default;
     background: root.on ? Theme.accent-glow : chip-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
+    chip-key := KeyReach {
+        activate => { root.clicked(); }
+    }
     chip-touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
@@ -273,6 +363,15 @@ export component InstallerScreen inherits Rectangle {
     callback keyboard-chosen(string);
     // The layout list under the picker is showing.
     in-out property <bool> keyboard-open: false;
+    // The layout the arrow keys move the picker to (installer_rules::layout_after).
+    pure callback layout-after(/* choices */ [KeyboardChoice], /* current */ string, /* step */ int) -> string;
+    // Choose a layout, and tell the shell so it applies it at once.
+    function pick-layout(code: string) {
+        if code != root.keyboard {
+            root.keyboard = code;
+            root.keyboard-chosen(code);
+        }
+    }
     // Leave the installer for the live desktop.
     callback try-first();
     // A Wi-Fi chip still waiting for its driver (wifi_note.rs); "" when there is nothing to say.
@@ -343,6 +442,13 @@ export component InstallerScreen inherits Rectangle {
                              /* keyboard */ string, /* timezone */ string,
                              /* target_disk */ string, /* encrypt */ bool);
     callback reboot();
+    // Who should do the thinking: the full provider selection, the first run's own screens
+    // (onboarding_first_run.slint) drawn over this one. Chosen here, the first boot does not
+    // ask again. Empty: not chosen, and the first boot asks.
+    in property <string> ai-choice: "";
+    // Bumped when the provider screens close: focus comes back to the Thinking row's link.
+    in property <int> ai-returned: 0;
+    callback choose-ai();
 
     // ── The rules (installer_rules.rs); each check answers "" when the value is fine ──
     pure callback derive-username(string) -> string;
@@ -485,8 +591,25 @@ export component InstallerScreen inherits Rectangle {
                         border-radius: Theme.r-xl;
                         background: Theme.bg-input;
                         border-width: 1px;
-                        border-color: root.keyboard-open || kb-touch.has-hover ? Theme.accent : Theme.border-default;
+                        border-color: root.keyboard-open || kb-touch.has-hover || kb-key.has-focus ? Theme.accent : Theme.border-default;
+                        // Focused, it glows as a focused text field does.
+                        drop-shadow-blur: kb-key.has-focus ? 6px : 0;
+                        drop-shadow-color: Theme.accent.transparentize(80%);
 
+                        // Space or Enter opens and closes the list, Up and Down choose the layout
+                        // above or below (open or not, as a system picker does), Escape closes it.
+                        kb-key := KeyReach {
+                            activate => { root.keyboard-open = !root.keyboard-open; }
+                            step(by) => {
+                                root.pick-layout(root.layout-after(root.keyboards, root.keyboard, by));
+                                return true;
+                            }
+                            dismiss => {
+                                if (!root.keyboard-open) { return false; }
+                                root.keyboard-open = false;
+                                return true;
+                            }
+                        }
                         kb-touch := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.keyboard-open = !root.keyboard-open; }
@@ -565,6 +688,8 @@ export component InstallerScreen inherits Rectangle {
                     OnboardField {
                         width: 420px;
                         placeholder: "Type here to try the layout";
+                        // The step's last field: Enter goes on, as Install does.
+                        accepted => { root.step = 1; }
                     }
 
                     // E.g. a Mac's Broadcom Wi-Fi, whose driver arrives over Ethernet.
@@ -581,15 +706,11 @@ export component InstallerScreen inherits Rectangle {
 
                     HorizontalLayout {
                         alignment: center;
-                        spacing: Theme.sp-3;
-                        PillButton {
-                            label: "Try it first";
-                            quiet: true;
-                            clicked => { root.try-first(); }
-                        }
-                        PillButton {
-                            label: "Install";
-                            clicked => { root.step = 1; }
+                        StepButtons {
+                            back-label: "Try it first";
+                            next-label: "Install";
+                            back => { root.try-first(); }
+                            next => { root.step = 1; }
                         }
                     }
                 }
@@ -693,22 +814,19 @@ export component InstallerScreen inherits Rectangle {
                         error: root.hostname-error;
                         hint: "How this computer shows up on your network.";
                         edited => { root.hostname-touched = true; }
+                        // The last field when it shows: Enter goes on, as from the one above.
+                        accepted => { if root.you-ok { root.step = 2; } }
                     }
 
                     Rectangle { height: Theme.sp-2; }
 
                     HorizontalLayout {
                         alignment: center;
-                        spacing: Theme.sp-3;
-                        PillButton {
-                            label: "Back";
-                            quiet: true;
-                            clicked => { root.step = 0; }
-                        }
-                        PillButton {
-                            label: "Next";
-                            enabled: root.you-ok;
-                            clicked => { root.step = 2; }
+                        StepButtons {
+                            next-label: "Next";
+                            next-enabled: root.you-ok;
+                            back => { root.step = 0; }
+                            next => { root.step = 2; }
                         }
                     }
                 }
@@ -783,8 +901,13 @@ export component InstallerScreen inherits Rectangle {
                                     height: 44px;
                                     border-radius: Theme.r-lg;
                                     background: parent.chosen ? Theme.accent-glow : target-row-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                                    border-width: parent.chosen ? 2px : 1px;
-                                    border-color: parent.chosen ? Theme.accent : Theme.border-default;
+                                    border-width: parent.chosen || target-key.has-focus ? 2px : 1px;
+                                    border-color: target-key.has-focus ? Theme.focus-ring : parent.chosen ? Theme.accent : Theme.border-default;
+                                    // Only a row that may be chosen is in the focus chain.
+                                    target-key := KeyReach {
+                                        enabled: s.eligible;
+                                        activate => { root.install-target = s.id; }
+                                    }
                                     target-row-touch := TouchArea {
                                         mouse-cursor: pointer;
                                         clicked => { root.install-target = s.id; }
@@ -913,10 +1036,13 @@ export component InstallerScreen inherits Rectangle {
                         height: 68px;
                         border-radius: Theme.r-lg;
                         background: self.chosen ? Theme.accent-glow : disk-touch.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                        border-width: self.chosen ? 2px : 1px;
-                        border-color: self.chosen ? Theme.accent : Theme.border-default;
+                        border-width: self.chosen || disk-key.has-focus ? 2px : 1px;
+                        border-color: disk-key.has-focus ? Theme.focus-ring : self.chosen ? Theme.accent : Theme.border-default;
                         animate background, border-color { duration: Theme.dur-normal; }
 
+                        disk-key := KeyReach {
+                            activate => { root.selected-disk = disk.name; }
+                        }
                         disk-touch := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.selected-disk = disk.name; }
@@ -981,8 +1107,8 @@ export component InstallerScreen inherits Rectangle {
                                 Rectangle {
                                     width: 16px; height: 16px;
                                     border-radius: 4px;
-                                    border-width: 1.5px;
-                                    border-color: root.macos-confirmed ? Theme.amber : Theme.border-strong;
+                                    border-width: macos-key.has-focus ? 2px : 1.5px;
+                                    border-color: macos-key.has-focus ? Theme.focus-ring : root.macos-confirmed ? Theme.amber : Theme.border-strong;
                                     background: root.macos-confirmed ? Theme.amber.transparentize(80%) : transparent;
                                     if root.macos-confirmed : Icon {
                                         commands: Icons.check;
@@ -1008,6 +1134,9 @@ export component InstallerScreen inherits Rectangle {
                                     wrap: word-wrap;
                                 }
                             }
+                        }
+                        macos-key := KeyReach {
+                            activate => { root.erase-macos-disk = root.macos-confirmed ? "" : root.selected-disk; }
                         }
                         TouchArea {
                             mouse-cursor: pointer;
@@ -1055,8 +1184,8 @@ export component InstallerScreen inherits Rectangle {
                                 Rectangle {
                                     width: 16px; height: 16px;
                                     border-radius: 4px;
-                                    border-width: 1.5px;
-                                    border-color: root.encrypt ? Theme.accent : Theme.border-strong;
+                                    border-width: encrypt-key.has-focus ? 2px : 1.5px;
+                                    border-color: encrypt-key.has-focus ? Theme.focus-ring : root.encrypt ? Theme.accent : Theme.border-strong;
                                     background: root.encrypt ? Theme.accent.transparentize(80%) : transparent;
                                     if root.encrypt : Icon {
                                         commands: Icons.check;
@@ -1093,6 +1222,9 @@ export component InstallerScreen inherits Rectangle {
                                 }
                             }
                         }
+                        encrypt-key := KeyReach {
+                            activate => { root.encrypt = !root.encrypt; }
+                        }
                         TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.encrypt = !root.encrypt; }
@@ -1111,8 +1243,8 @@ export component InstallerScreen inherits Rectangle {
                                 Rectangle {
                                     width: 16px; height: 16px;
                                     border-radius: 4px;
-                                    border-width: 1.5px;
-                                    border-color: root.boot-first ? Theme.accent : Theme.border-strong;
+                                    border-width: boot-first-key.has-focus ? 2px : 1.5px;
+                                    border-color: boot-first-key.has-focus ? Theme.focus-ring : root.boot-first ? Theme.accent : Theme.border-strong;
                                     background: root.boot-first ? Theme.accent.transparentize(80%) : transparent;
                                     if root.boot-first : Icon {
                                         commands: Icons.check;
@@ -1129,6 +1261,9 @@ export component InstallerScreen inherits Rectangle {
                                 wrap: word-wrap;
                             }
                         }
+                        boot-first-key := KeyReach {
+                            activate => { root.boot-first = !root.boot-first; }
+                        }
                         TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.boot-first = !root.boot-first; }
@@ -1139,16 +1274,11 @@ export component InstallerScreen inherits Rectangle {
 
                     HorizontalLayout {
                         alignment: center;
-                        spacing: Theme.sp-3;
-                        PillButton {
-                            label: "Back";
-                            quiet: true;
-                            clicked => { root.step = 1; }
-                        }
-                        PillButton {
-                            label: "Next";
-                            enabled: root.disk-ok;
-                            clicked => { root.step = 3; }
+                        StepButtons {
+                            next-label: "Next";
+                            next-enabled: root.disk-ok;
+                            back => { root.step = 1; }
+                            next => { root.step = 3; }
                         }
                     }
                 }
@@ -1230,6 +1360,37 @@ export component InstallerScreen inherits Rectangle {
                                 accepted => { if root.timezone-error == "" { root.timezone-editing = false; } }
                             }
 
+                            HorizontalLayout {
+                                spacing: Theme.sp-3;
+                                Text {
+                                    text: "Thinking";
+                                    width: 130px;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.fs-body;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.ai-choice != "" ? root.ai-choice : "Not chosen yet; asked at first start";
+                                    horizontal-stretch: 1;
+                                    color: root.ai-choice != "" ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    font-weight: root.ai-choice != "" ? 500 : 400;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    LinkText {
+                                        text: root.ai-choice != "" ? "Change" : "Choose";
+                                        strong: true;
+                                        focusable: true;
+                                        focus-when: root.ai-returned;
+                                        clicked => { root.choose-ai(); }
+                                    }
+                                }
+                            }
+
                             Rectangle { height: 1px; background: Theme.separator; }
 
                             // Installing beside what is there: the target, and that it is all.
@@ -1306,18 +1467,15 @@ export component InstallerScreen inherits Rectangle {
 
                     HorizontalLayout {
                         alignment: center;
-                        spacing: Theme.sp-3;
-                        PillButton {
-                            label: "Back";
-                            quiet: true;
-                            clicked => { root.step = 2; }
-                        }
-                        PillButton {
-                            label: root.into-partition ? "Install into partition" :"Erase disk and install";
-                            destructive: !root.into-partition;
-                            width: 220px;
-                            enabled: root.can-install;
-                            clicked => {
+                        // Tab reaches Install before Back, but nothing focuses it on arrival: Enter
+                        // erases a disk only when the person has gone to the button themselves.
+                        StepButtons {
+                            next-label: root.into-partition ? "Install into partition" : "Erase disk and install";
+                            next-destructive: !root.into-partition;
+                            next-width: 220px;
+                            next-enabled: root.can-install;
+                            back => { root.step = 2; }
+                            next => {
                                 root.install-error = "";
                                 root.installing = true;
                                 root.elapsed-s = 0;
@@ -1437,15 +1595,12 @@ export component InstallerScreen inherits Rectangle {
 
                     HorizontalLayout {
                         alignment: center;
-                        spacing: Theme.sp-3;
-                        if !root.restart-held && root.install-note == "" : PillButton {
-                            label: "Wait";
-                            quiet: true;
-                            clicked => { root.restart-held = true; }
-                        }
-                        PillButton {
-                            label: "Restart now";
-                            clicked => { root.reboot(); }
+                        StepButtons {
+                            back-label: "Wait";
+                            back-shown: !root.restart-held && root.install-note == "";
+                            next-label: "Restart now";
+                            back => { root.restart-held = true; }
+                            next => { root.reboot(); }
                         }
                     }
                 }

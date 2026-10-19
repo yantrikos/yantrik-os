@@ -41,9 +41,9 @@ read by everyone as a measurement.
 
 The three that motivated it, all still in the tree:
 
-- **Spreadsheet** never populates `cell-grid`, `row-count` or `col-count`. `row_count() == 0`, so
-  the guards in cell-click, cell-edit and the formula bar all fail, behind a perfect blank 50x26
-  grid nobody can type into.
+- **Spreadsheet** never populated `cell-grid`, `row-count` or `col-count`. `row_count() == 0`, so
+  the guards in cell-click, cell-edit and the formula bar all failed, behind a perfect blank 50x26
+  grid nobody could type into. (Fixed in October 2026, PR #727: the app is clean under both lints.)
 - **Network Manager** never sets `firewall-enabled` or `wifi-enabled`. "Firewall: Off", drawn in
   warning colour and recorded by the September audit as a finding, is a hardcoded default the app
   never looked up.
@@ -202,7 +202,9 @@ Nothing plays audio. There is no playback engine, no scanner and no library behi
 A shelved app is in the tree and not in the build. Music and ySheets were taken off the shelf on
 20 September 2026 -- removed from the launcher, the Lens, the command palette, the pins, the
 release bundle and every name a mind could open them by, because neither had anything under its
-screen. See `design/shelved-2026-09-20.md`, and `SHELVED` in
+screen. ySheets came back in October 2026 (#727) and Music on 16 October 2026 (#728); both are
+linted like any shipped app again and both are clean on both lints. The file holds no entry
+today, and the example above is Music's old one. See `design/shelved-2026-09-20.md`, and `SHELVED` in
 `crates/yantrik-ui/src/wire/dock.rs`, which is the list the shell itself consults.
 
 They are still workspace members, they still compile, and they are still linted. What this file

@@ -8,6 +8,12 @@ use std::time::Duration;
 use crate::model::*;
 use crate::provider::*;
 
+/// A request that never got an answer, as it may be said: ureq's text starts with the whole
+/// homeserver address, which can hold sign-in details.
+fn unanswered(e: &ureq::Error) -> String {
+    yantrik_shown_address::without_sign_in(&e.to_string())
+}
+
 pub struct MatrixProvider {
     homeserver: String,
     access_token: String,
@@ -46,7 +52,7 @@ impl MatrixProvider {
             .map_err(|e| match e {
                 ureq::Error::Status(429, _) => ChatError::RateLimited(5),
                 ureq::Error::Status(code, _) => ChatError::Provider(format!("HTTP {code}")),
-                e => ChatError::Network(format!("{e}")),
+                e => ChatError::Network(unanswered(&e)),
             })?;
 
         let text = resp.into_string()
@@ -64,7 +70,7 @@ impl MatrixProvider {
             .map_err(|e| match e {
                 ureq::Error::Status(429, _) => ChatError::RateLimited(5),
                 ureq::Error::Status(code, _) => ChatError::Provider(format!("HTTP {code}")),
-                e => ChatError::Network(format!("{e}")),
+                e => ChatError::Network(unanswered(&e)),
             })?;
 
         let text = resp.into_string()
@@ -227,7 +233,7 @@ impl ChatProvider for MatrixProvider {
                 .set("Authorization", &format!("Bearer {}", self.access_token))
                 .set("Content-Type", "application/json")
                 .send_string(&body.to_string())
-                .map_err(|e| ChatError::Network(format!("{e}")))?;
+                .map_err(|e| ChatError::Network(unanswered(&e)))?;
         }
         Ok(())
     }

@@ -1,6 +1,9 @@
 //! GoldenFind instinct — discovers hidden gems the user would love but would
 //! never find on their own.
 //!
+//! Absorbs cultural_radar (#755): new releases and creators that match the person's taste are
+//! the same "one thing worth your time" find, so they live here.
+//!
 //! This is the "I went on a small intellectual adventure FOR YOU and came back
 //! with a gift" instinct. It researches the user's known interests and digs
 //! for genuinely obscure, high-quality resources: tiny YouTube channels,

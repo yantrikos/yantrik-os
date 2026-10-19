@@ -25,6 +25,7 @@ CHUNK = "harness.chunk"
 COMPLETE = "harness.complete"
 FAIL = "harness.fail"
 DETACH = "harness.detach"
+EVENT = "harness.event"
 
 
 class HarnessError(Exception):
@@ -119,6 +120,9 @@ class Ledger:
         self._lock = threading.Lock()
         self._turns: Dict[str, Turn] = {}
         self._messages: Dict[str, Tuple[str, str]] = {}  # message id -> (turn id, text so far)
+        # Messages that are the gateway's status, not the answer: never streamed as text, and
+        # their edits are status too.
+        self._quiet: Dict[str, str] = {}  # message id -> turn id
         self._counter = 0
 
     def open(self, turn_id: str, chat_id: str, text: str) -> Turn:
@@ -146,6 +150,7 @@ class Ledger:
             turn = self._turns.pop(turn_id, None)
             if turn is not None:
                 self._messages = {m: v for m, v in self._messages.items() if v[0] != turn_id}
+                self._quiet = {m: t for m, t in self._quiet.items() if t != turn_id}
             return turn
 
     def route(self, chat_id: str, reply_to: Optional[str]) -> Optional[Turn]:
@@ -171,6 +176,21 @@ class Ledger:
             turn.active = time.monotonic()
             self._messages[message_id] = (turn.turn_id, content)
             return message_id, delta
+
+    def quiet(self, turn: Turn) -> str:
+        """Record a status message on `turn` that is not part of the answer. Returns its id."""
+        with self._lock:
+            self._counter += 1
+            message_id = f"{turn.turn_id}.{self._counter}"
+            self._quiet[message_id] = turn.turn_id
+            turn.active = time.monotonic()
+            return message_id
+
+    def quiet_turn(self, message_id: str) -> Optional[Turn]:
+        """The open turn a status message belongs to, or None if it is not one (or its turn is gone)."""
+        with self._lock:
+            turn_id = self._quiet.get(message_id)
+            return self._turns.get(turn_id) if turn_id is not None else None
 
     def edited(self, message_id: str, content: str) -> Optional[Tuple[Turn, str]]:
         """Record an edit. Returns (turn, the text to stream), or None if its turn is gone.

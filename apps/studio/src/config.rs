@@ -122,7 +122,8 @@ impl Backend {
             )),
             Err(_) => Err(format!(
                 "the environment variable {} is not set, so nothing can be sent to {}",
-                self.api_key_env, self.base_url
+                self.api_key_env,
+                shown_address(&self.base_url)
             )),
         }
     }
@@ -342,12 +343,12 @@ impl Config {
         let place = match kind {
             Kind::Fake => "this machine".to_string(),
             Kind::ComfyUi if on_a_network_you_own => {
-                format!("a ComfyUI server you reach at {}", self.backend.base_url)
+                format!("a ComfyUI server you reach at {}", shown_address(&self.backend.base_url))
             }
             Kind::ComfyUi => {
-                format!("a ComfyUI server away from your network at {}", self.backend.base_url)
+                format!("a ComfyUI server away from your network at {}", shown_address(&self.backend.base_url))
             }
-            Kind::OpenAiImages => format!("a hosted service at {}", self.backend.base_url),
+            Kind::OpenAiImages => format!("a hosted service at {}", shown_address(&self.backend.base_url)),
         };
 
         // The grade follows one rule: does the prompt leave a network the person owns? If it
@@ -424,6 +425,17 @@ impl Config {
             state.insert("note".into(), json!(facts.note));
         }
         json!(state)
+    }
+}
+
+/// The backend's address as Studio says it, in a sentence, a `describe` field or an error: its
+/// scheme, host and path, never sign-in details, a query or a fragment
+/// (`yantrik_app_runtime::place::address_of`, the one rule; review of #856). The saved file keeps
+/// the address as it was written.
+pub fn shown_address(base_url: &str) -> String {
+    match yantrik_app_runtime::place::address_of(base_url) {
+        shown if shown.is_empty() => "an address not shown, as it may hold sign-in details".to_string(),
+        shown => shown,
     }
 }
 

@@ -17,8 +17,9 @@ use crate::{App, ContentBlock, MessageData, ToolCallData};
 /// few enough that the Lens opens at the bottom of it rather than a day ago.
 pub const RESTORED_TURNS: usize = 12;
 
-/// The bubbles for the last `limit` turns of a conversation, oldest first.
-pub fn bubbles(turns: &[Turn], limit: usize) -> Vec<MessageData> {
+/// The bubbles for the last `limit` turns of a conversation, oldest first, each reply signed by
+/// `mind`, whose conversation it is.
+pub fn bubbles(turns: &[Turn], limit: usize, mind: &str) -> Vec<MessageData> {
     let start = turns.len().saturating_sub(limit);
     let mut out = Vec::new();
     for turn in &turns[start..] {
@@ -29,6 +30,8 @@ pub fn bubbles(turns: &[Turn], limit: usize) -> Vec<MessageData> {
                 content: turn.prompt.as_str().into(),
                 is_streaming: false,
                 blocks: ModelRc::default(),
+                mind: Default::default(),
+                model: Default::default(),
             });
         }
         let (content, blocks) = reply(turn);
@@ -39,6 +42,8 @@ pub fn bubbles(turns: &[Turn], limit: usize) -> Vec<MessageData> {
                 content: content.into(),
                 is_streaming: false,
                 blocks: ModelRc::new(VecModel::from(blocks)),
+                mind: mind.into(),
+                model: Default::default(),
             });
         }
     }
@@ -49,6 +54,8 @@ pub fn bubbles(turns: &[Turn], limit: usize) -> Vec<MessageData> {
 fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
     let mut text = Vec::new();
     let mut blocks = Vec::new();
+    // The calls go above the words, as a reply's timeline does: never in the middle of them.
+    let mut steps = Vec::new();
     for item in &turn.items {
         match item {
             Item::Text(capped) => {
@@ -63,11 +70,8 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
                 }));
                 text.push(said);
             }
-            Item::Card(card) => {
-                let card = card.shown();
-                let call = ToolCallData { status: card.state.status().into(), ..card.as_call().to_card() };
-                blocks.push(ContentBlock { block_type: "tool".into(), text: call.summary.clone(), call });
-            }
+            // A step of the reply's timeline, in the Lens's words, as the reply had it live.
+            Item::Card(card) => steps.push(crate::wire::lens_timeline::step_block(card)),
             Item::Note(note) => blocks.push(line(note)),
             // Never the question's words: a bubble is a copy the Lens keeps on screen, which an
             // erasure of them could not reach. The question itself is in Agents.
@@ -90,7 +94,10 @@ fn reply(turn: &Turn) -> (String, Vec<ContentBlock>) {
     if turn.open() && !turn.prompt.trim().is_empty() {
         blocks.push(line("This had not finished when the desktop last stopped; what came of it is in Agents."));
     }
-    (text.join("\n\n"), blocks)
+    // A reply's own trail lines are the same calls told again; the store's are kept.
+    blocks.retain(|b| b.block_type != "tool");
+    steps.extend(blocks);
+    (text.join("\n\n"), steps)
 }
 
 fn line(text: &str) -> ContentBlock {
@@ -120,7 +127,7 @@ pub fn restore_if_empty(ui: &App) -> usize {
     };
     let agent = crate::agents::feed::main_agent(&host.active_id());
     let restored =
-        crate::agents::store().read(|s| s.agent(&agent).map(|a| bubbles(&a.turns, RESTORED_TURNS))).unwrap_or_default();
+        crate::agents::store().read(|s| s.agent(&agent).map(|a| bubbles(&a.turns, RESTORED_TURNS, &a.meta.mind))).unwrap_or_default();
     for bubble in &restored {
         model.push(bubble.clone());
     }
@@ -160,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_becomes_the_request_and_the_reply_with_its_calls_as_cards() {
+    fn a_turn_becomes_the_request_and_the_reply_with_its_calls_as_steps_above_the_words() {
         let card = Card::new(
             "c1",
             "os_act",
@@ -175,14 +182,16 @@ mod tests {
             vec![Item::Card(card), Item::Text(capped("Done. **Market status** is in Notes:\n\n- agenda\n- owners"))],
             true,
         )];
-        let b = bubbles(&turns, RESTORED_TURNS);
+        let b = bubbles(&turns, RESTORED_TURNS, "Yantrik Mind");
         assert_eq!(b.len(), 2, "the request and the reply");
         assert_eq!(b[0].role, "user");
         assert_eq!(b[0].content, "Create a note for tomorrow's market status meeting");
         assert_eq!(b[1].role, "assistant");
         assert!(!b[1].is_streaming, "a restored reply is finished, not streaming");
-        assert_eq!(kinds(&b[1]), vec!["tool", "text", "bullet"], "the call as a card, then the text as markdown");
-        let call = b[1].blocks.row_data(0).unwrap().call;
+        assert_eq!(kinds(&b[1]), vec!["step", "text", "bullet"], "the call as a step of the timeline, then the text as markdown");
+        let step = b[1].blocks.row_data(0).unwrap();
+        assert!(!step.text.contains("os_act"), "said in the Lens's words: {}", step.text);
+        let call = step.call;
         assert_eq!(call.name, "os_act");
         assert!(call.summary.contains("notes.create"), "the card's line names what it touched: {}", call.summary);
     }
@@ -190,7 +199,7 @@ mod tests {
     #[test]
     fn only_the_latest_turns_come_back_oldest_first() {
         let turns: Vec<Turn> = (1..=20).map(|n| turn(n, &format!("question {n}"), vec![Item::Text(capped("answer"))], true)).collect();
-        let b = bubbles(&turns, 3);
+        let b = bubbles(&turns, 3, "Yantrik Mind");
         let asked: Vec<String> = b.iter().filter(|m| m.role == "user").map(|m| m.content.to_string()).collect();
         assert_eq!(asked, vec!["question 18", "question 19", "question 20"]);
     }
@@ -198,7 +207,7 @@ mod tests {
     #[test]
     fn a_turn_the_shell_stopped_in_the_middle_of_says_so() {
         let turns = vec![turn(1, "create a small town model", vec![Item::Text(capped("Starting on the terrain."))], false)];
-        let b = bubbles(&turns, RESTORED_TURNS);
+        let b = bubbles(&turns, RESTORED_TURNS, "Yantrik Mind");
         let last = b[1].blocks.row_data(b[1].blocks.row_count() - 1).unwrap();
         assert!(last.text.contains("had not finished"), "the reply ends by saying it was cut off: {}", last.text);
     }
@@ -206,7 +215,7 @@ mod tests {
     #[test]
     fn a_turn_with_nothing_said_draws_no_empty_reply() {
         let turns = vec![turn(1, "hello", vec![Item::Thinking(capped("hmm"))], true)];
-        let b = bubbles(&turns, RESTORED_TURNS);
+        let b = bubbles(&turns, RESTORED_TURNS, "Yantrik Mind");
         assert_eq!(b.len(), 1, "the request alone; thinking is not a reply");
     }
 }

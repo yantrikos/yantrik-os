@@ -630,7 +630,8 @@ fn refresh_agent_rail(ui: &NetworkManagerApp, state: &State) {
             .wifi
             .device
             .clone()
-            .unwrap_or_else(|| "read from /sys/class/net".to_string())
+            // Where the reading came from, in words; the kernel's file is the source either way.
+            .unwrap_or_else(|| "as this computer reports it".to_string())
             .into(),
         source: "file".into(),
     });

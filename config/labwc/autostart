@@ -8,6 +8,16 @@
 # Each line is guarded by `command -v` so a machine missing one of these still gets the rest,
 # rather than the file dying at the first absence and silently skipping what follows.
 
+# ── The splash, until the shell draws ─────────────────────────────────────────────────
+# First, so it is up as soon as it can be. plymouth's last frame, the emblem on the Lake ground,
+# is on the screen until labwc takes the display (boot-unlock/splash); labwc's own first frames
+# would be black until the shell draws, 1-5 s on a slow machine. This puts the same picture back
+# under it: the same image plymouth draws (boot-unlock/theme/emblem.png), at its own size,
+# centred, on #0e1117. The shell is fullscreen over it, and setting a wallpaper replaces it
+# (pkill swaybg).
+SPLASH=/usr/share/plymouth/themes/yantrik/emblem.png
+command -v swaybg >/dev/null && [ -f "$SPLASH" ] && swaybg -m center -c '#0e1117' -i "$SPLASH" >/dev/null 2>&1 &
+
 # ── Notifications ───────────────────────────────────────────────────────────────────────
 # Nothing is started here any more, and that is the fix rather than an omission.
 #

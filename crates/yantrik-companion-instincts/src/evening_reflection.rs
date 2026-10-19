@@ -57,11 +57,12 @@ impl Instinct for EveningReflectionInstinct {
             .map(|(desc, _, _)| desc.as_str())
             .collect();
 
-        let events_summary = if events_today.is_empty() {
-            "No major events tracked today.".to_string()
-        } else {
-            events_today.join("; ")
-        };
+        // A day with nothing recorded has nothing to reflect on; an evening message anyway would
+        // exist only to bring the person back (#755).
+        if events_today.is_empty() {
+            return vec![];
+        }
+        let events_summary = events_today.join("; ");
 
         let urgency = match state.bond_level {
             BondLevel::Friend => 0.45,
@@ -73,10 +74,10 @@ impl Instinct for EveningReflectionInstinct {
         let execute_msg = match state.model_tier {
             ModelTier::Large => format!(
                 "EXECUTE Give a brief end-of-day reflection. Today's events: [{}]. \
-                     Summarize what stood out, acknowledge effort or progress, and optionally \
-                     suggest what tomorrow might bring. Keep it warm but concise — 2-3 sentences. \
-                     Don't be overly enthusiastic or use exclamation marks. \
-                     Speak like a friend winding down the day together.",
+                     Summarize what stood out and what finished, and optionally note what is \
+                     set for tomorrow. Keep it concise — 2-3 sentences. \
+                     Don't be overly enthusiastic or use exclamation marks. Don't guess how \
+                     the day felt, and don't claim feelings of your own.",
                 events_summary
             ),
             ModelTier::Tiny => format!(

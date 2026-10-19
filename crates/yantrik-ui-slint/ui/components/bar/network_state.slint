@@ -44,6 +44,11 @@ export global NetworkState {
     // A Wi-Fi device exists. Without one there is no Wi-Fi row and no radio tile at all.
     in property <bool> wifi-present: false;
     in property <bool> radio-on: false;
+    // Quick Settings' Wi-Fi tile, in words Rust chose from the same reading (`wifi_reconnect`):
+    // the state ("Wi-Fi is off", "Not connected", the network's name) over what a press does
+    // ("Tap to turn on", "Tap to reconnect", "Tap to manage").
+    in property <string> tile-title: "Wi-Fi";
+    in property <string> tile-hint: "";
     in property <[NetworkRow]> networks: [];
 
     // The row whose password field is open ("" for none). In-out because the popover opens and
@@ -62,8 +67,11 @@ export global NetworkState {
 
     // The popover opened: ask the radio to look for networks.
     callback scan-requested();
-    // The Wi-Fi tile: the radio, on or off.
+    // The Wi-Fi switch in the network list: the radio, on or off.
     callback set-radio(bool);
+    // Quick Settings' Wi-Fi tile was pressed. Rust does what its hint said: turn the radio on,
+    // rejoin a saved network, or open Network Manager. Never the radio off.
+    callback tile-pressed();
     // The connected row's button: leave the network. The radio is not touched.
     callback disconnect();
     // Join a network. `secret` is empty for an open or saved one.

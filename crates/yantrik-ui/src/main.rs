@@ -32,6 +32,12 @@ use std::path::PathBuf;
 use yantrik_companion::CompanionConfig;
 
 mod accounts;
+// The AI accounts the person added and their models (#673): Settings, the picker, the gateway.
+mod ai_accounts;
+// The local model gateway on 127.0.0.1:7460, which forwards a mind's calls to those accounts.
+mod gateway;
+// The one picker for every mind, in the ask bar and the mind panel (#673).
+mod picker;
 mod activity_feed;
 /// Every agent — one conversation with one mind — and its session, drawn by the Agents screen.
 mod agents;
@@ -55,6 +61,7 @@ mod alt_tab;
 mod window_name;
 mod power_status;
 mod control_network;
+mod control_wifi_reconnect;
 mod control_power;
 mod control_installer;
 mod control_installer_consent;
@@ -67,9 +74,15 @@ mod installer_medium;
 mod installer_rules;
 /// What the first-run screens say about a Wi-Fi chip still waiting for its driver (Mac BCM4331).
 mod wifi_note;
+mod wifi_heal;
+mod wifi_reconnect;
 mod control_update;
 mod control_files;
 mod control_screen;
+/// Screenshots and screen recording (design/capture-2026-10-15.md); `control_capture` is its
+/// surface, `wire::capture_bar` its bar.
+mod capture;
+mod control_capture;
 /// The decision model, asked by the person's own surfaces (the browser's commitment check).
 mod control_decide;
 /// Private mode: the Mind off and nothing recorded, until the person turns it off.
@@ -92,6 +105,9 @@ mod control_agents;
 mod control_workroom;
 // The chat in one read, for the Yantrik terminal (`chat_view`).
 mod control_chat;
+// Which of the person's conversations a bridge's private reads count against (`taint_scope`,
+// `taint_mark`), for yos-mcp's taint rule.
+mod control_taint_scope;
 mod jobs;
 mod cards;
 mod card_watch;
@@ -105,6 +121,8 @@ mod fileops;
 // What minds this machine could have, before any of them is running.
 mod harness_catalogue;
 mod harness_install;
+// Hermes as the mind for a person who has not chosen one, until Yantrik Mind is ready.
+mod default_mind;
 mod config_store;
 mod models;
 mod focus;
@@ -124,6 +142,8 @@ mod mind_mode;
 mod never_ask;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
 mod mind_panel;
+mod mind_panel_room;
+mod mind_panel_words;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
 mod mind_view;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
@@ -141,6 +161,10 @@ mod cheat_sheet;
 #[cfg(test)]
 mod rc_keys;
 mod notifications;
+// The For you inbox: which mind notices show, which toast, and what their one button may open.
+mod notice_inbox;
+// Where the harness host posts a mind's notice and reads the person's feedback on it.
+mod notice_desk;
 // The short "Sent by … · verified" line on a notification card.
 mod notification_sender;
 // A mind's turn notices: their words, and the run of them that folds into one group.
@@ -162,6 +186,8 @@ mod running;
 mod streaming;
 mod surfaces;
 mod system_context;
+// The taint's scope: one per mind's conversation in the Lens, begun only by the person's +.
+mod taint_scope;
 mod telegram;
 mod terminal;
 mod terminal_window;
@@ -191,6 +217,15 @@ fn main() {
     // start. The first argument is otherwise a config path, so this also stops `--version`
     // being read as the name of a config file that does not exist.
     yantrik_version::handle_version_flag("yantrik-ui");
+
+    // `yantrik-ui --wire-model <harness>`: an installer's model step (the ISO build, the
+    // installer, harnesses/lib/install's `wire_model`). No window, no TTY, one line, an exit code.
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.first().map(String::as_str) == Some("--wire-model") {
+            std::process::exit(wire::harness_provider::wire_model_cli(&args[1..]));
+        }
+    }
 
     // Private mode lasts until the person turns it off, so it is read back before the companion,
     // the clipboard watcher or the harness socket can start thinking it is off.

@@ -570,8 +570,9 @@ pub struct InstinctSettings {
     /// Hours between tradition keeper research sessions.
     #[serde(default = "default_tradition_keeper_interval")]
     pub tradition_keeper_interval_hours: f64,
-    /// Enable night owl (late-night intellectual companionship, 10 PM – 4 AM only).
-    #[serde(default = "default_true_val")]
+    /// Enable night owl (late-night intellectual companionship, 10 PM – 4 AM only, and only
+    /// inside a conversation already happening). Opt-in (#755).
+    #[serde(default)]
     pub night_owl_enabled: bool,
     /// Hours between night owl thoughts.
     #[serde(default = "default_night_owl_interval")]
@@ -821,7 +822,7 @@ impl Default for InstinctSettings {
             local_pulse_interval_hours: default_local_pulse_interval(),
             tradition_keeper_enabled: true,
             tradition_keeper_interval_hours: default_tradition_keeper_interval(),
-            night_owl_enabled: true,
+            night_owl_enabled: false,
             night_owl_interval_hours: default_night_owl_interval(),
             legacy_builder_enabled: true,
             legacy_builder_interval_hours: default_legacy_builder_interval(),

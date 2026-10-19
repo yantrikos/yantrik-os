@@ -445,13 +445,14 @@ mod tests {
     /// panels drawn over the Lens and the card in its chat.
     #[test]
     fn every_window_moving_action_asks_hold_windows_first() {
-        let held: [(&str, &[&str]); 4] = [
+        let held: [(&str, &[&str]); 5] = [
             (
                 "control.rs",
                 &["focus_window", "show_app", "open_app", "minimise_window", "maximise_window", "configure_harness", "show_desktop"],
             ),
             ("control_files.rs", &["files_open"]),
             ("control_approvals.rs", &["show_mind_audit"]),
+            ("control_wifi_reconnect.rs", &["reconnect_wifi", "choose_wifi_network"]),
             ("control_overlays.rs", &["open_today", "open_quick_settings", "open_power_menu", "open_clipboard", "open_cheat_sheet"]),
         ];
         for (file, actions) in held {

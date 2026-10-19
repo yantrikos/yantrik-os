@@ -130,7 +130,16 @@ pub enum Event {
         /// The answers to offer as buttons, when there is a fixed set ("Allow", "Deny").
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
+        /// Which of `options` the agent recommends, by index, when it says. The card marks it and
+        /// nothing more: it is never chosen for the person. An older desktop ignores the field and
+        /// an older harness leaves it out, so it is absent on the wire rather than null.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recommended: Option<usize>,
     },
+    /// Something the harness says to the person with no turn behind it: a background job
+    /// finished, a watch fired, a download completed (#396). It is not part of a turn's stream,
+    /// so it is accepted even when no turn is in flight.
+    Notice { text: String },
     /// After the person answered *Erase* to the agent's Keep/Erase question `request_id`, the
     /// agent asks the shell to erase the same words from its own copies: the agent's pane
     /// transcript and the run store. The words never travel: each needle is a digest and a length
@@ -147,7 +156,7 @@ impl Event {
     /// Every `kind` this build reads. Anything else is a newer harness talking to an older
     /// desktop, and is ignored; one of these that does not parse is malformed, and is counted.
     pub const KINDS: &'static [&'static str] =
-        &["tool_start", "tool_output", "tool_end", "thinking", "status", "usage", "request", "redact"];
+        &["tool_start", "tool_output", "tool_end", "thinking", "status", "usage", "request", "redact", "notice"];
 
     /// Read one event from the wire. `None` for a kind this build does not know, or one that is
     /// malformed: the caller logs it and carries on, and the turn is not failed over it.
@@ -166,6 +175,7 @@ impl Event {
             Event::Usage { .. } => "usage",
             Event::Request { .. } => "request",
             Event::Redact { .. } => "redact",
+            Event::Notice { .. } => "notice",
         }
     }
 
@@ -235,8 +245,9 @@ mod tests {
             Event::Thinking { delta: "d".into() },
             Event::Status { text: "t".into() },
             Event::Usage { model: String::new(), input_tokens: None, output_tokens: None, cost_usd: None },
-            Event::Request { request_id: "r".into(), prompt: "p".into(), options: vec![] },
+            Event::Request { request_id: "r".into(), prompt: "p".into(), options: vec![], recommended: None },
             Event::Redact { request_id: "r".into(), needles: vec![Needle::of("p")] },
+            Event::Notice { text: "done".into() },
         ];
         assert_eq!(every.len(), Event::KINDS.len());
         for event in every {
@@ -244,6 +255,26 @@ mod tests {
             assert_eq!(wire["kind"], event.kind());
             assert!(Event::KINDS.contains(&event.kind()), "{} is written but not read", event.kind());
         }
+    }
+
+    #[test]
+    fn a_recommended_answer_round_trips_and_a_question_without_one_still_reads() {
+        let ask = Event::Request {
+            request_id: "c1".into(),
+            prompt: "Which days is this weekend for you?".into(),
+            options: vec!["Sat 17 + Sun 18".into(), "Thu + Fri".into()],
+            recommended: Some(0),
+        };
+        let wire = serde_json::to_value(&ask).unwrap();
+        assert_eq!(wire["recommended"], 0);
+        assert_eq!(Event::parse(&wire), Some(ask));
+
+        // What every harness sent before the field existed, and what one that recommends nothing
+        // sends now: no key at all, never `null`, so an older desktop reads the same bytes it did.
+        let older = json!({"kind": "request", "request_id": "r1", "prompt": "Delete 3 old installers?", "options": ["Allow", "Deny"]});
+        let read = Event::parse(&older).expect("a request without `recommended` still parses");
+        assert!(matches!(&read, Event::Request { recommended: None, options, .. } if options.len() == 2));
+        assert_eq!(serde_json::to_value(&read).unwrap(), older, "and is written back without the key");
     }
 
     #[test]

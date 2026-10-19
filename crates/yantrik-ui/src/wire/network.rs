@@ -8,7 +8,9 @@
 //! no radio in it.
 //!
 //! What a person asks of the network from the bar comes back here too, and each ask is its own act:
-//!   * the Wi-Fi tile is the **radio** (`set-radio`),
+//!   * the popover's Wi-Fi switch is the **radio** (`set-radio`). Quick Settings' Wi-Fi tile was
+//!     too, until a press on "Not connected" turned the radio off on a machine that had dropped
+//!     (14 October 2026); it now does what its hint says (`wire::wifi_reconnect`),
 //!   * the connected row's Disconnect is **leave this network** (`disconnect`), and does not touch
 //!     the radio. The Quick Settings tile did both under the caption "Tap to disconnect": it ran
 //!     `nmcli radio wifi off`.
@@ -153,6 +155,8 @@ pub fn wire(ui: &App) {
 
     // Disconnect: leave the network. The radio stays as it is.
     state.on_disconnect(|| {
+        // The person chose this: no "Wi-Fi disconnected" notice for it, and no rejoin by itself.
+        crate::wire::wifi_reconnect::person_left();
         // `true`: it is the person at the machine, who can plug the cable back in.
         std::thread::spawn(|| match yantrik_os::network::disconnect(true) {
             Ok(device) => tracing::info!(%device, "Network disconnected"),
@@ -315,6 +319,8 @@ fn publish(ui: &App, snapshot: &NetworkSnapshot) {
     if state.get_radio_on() != snapshot.radio_on {
         state.set_radio_on(snapshot.radio_on);
     }
+    // Quick Settings' Wi-Fi tile, and the notice a Wi-Fi drop raises.
+    crate::wire::wifi_reconnect::observe(ui, snapshot);
     let rows: Vec<NetworkRow> = snapshot
         .access_points
         .iter()
@@ -482,19 +488,21 @@ mod tests {
 
         let overlays = include_str!("../../../yantrik-ui-slint/ui/components/shell_overlays.slint");
         assert!(
-            overlays.contains("toggle-wifi => { NetworkState.set-radio(!NetworkState.radio-on); }"),
-            "the Quick Settings tile is the radio, through the same callback as the popover's"
+            overlays.contains("wifi-pressed => { NetworkState.tile-pressed(); }"),
+            "the Quick Settings tile's press goes to Rust, which does what its hint says"
         );
+        assert!(!overlays.contains("NetworkState.set-radio(!"), "and is not a flip of the radio");
 
         let callbacks = include_str!("callbacks.rs");
         assert!(!callbacks.contains("\"radio\""), "nothing in callbacks.rs shells out to `nmcli radio` any more");
         let qs = include_str!("../../../yantrik-ui-slint/ui/components/quick_settings.slint");
         assert!(!qs.contains("Tap to disconnect"), "the tile does not promise a disconnect it never did");
-        // The tile says the radio's state in words ("Off", the network's name), presses the radio,
-        // and its chevron is the list: the body and the chevron are separate targets.
-        assert!(qs.contains("root.toggle-wifi()"), "pressing the Wi-Fi tile switches the radio");
+        // The tile's two lines are Rust's words for its state and its press, and its chevron is
+        // the list: the body and the chevron are separate targets.
+        assert!(qs.contains("root.wifi-pressed()"), "pressing the Wi-Fi tile is its own callback");
         assert!(qs.contains("details-requested => { root.network-details(); }"), "its chevron opens the network list");
-        assert!(qs.contains("!root.wifi-radio-on ? \"Off\""), "the tile says the radio is off when it is");
+        assert!(qs.contains("title: root.wifi-present ? root.wifi-title"), "the tile's state is in its first line");
+        assert!(qs.contains("subtitle: root.wifi-present ? root.wifi-hint"), "and what a press does in its second");
     }
 
     fn row(ssid: &str, strength: i32) -> NetworkRow {

@@ -227,14 +227,85 @@ pub fn serving_dir() -> Option<PathBuf> {
     None
 }
 
-/// Which services open a door: the harness (where a mind attaches) and the app surfaces, whose
-/// every change goes through the shell's graded `app.act`. Nothing else, by name, until it is
-/// judged safe for a mind to call. The companion runs tools as the person, a11y drives any window
-/// ungraded, perception streams the person's file activity: on a door each would hand a mind back
-/// the authority its own account exists to take away.
+/// What a mind may call on one door, decided by the service's side of the socket and never by
+/// what the caller says about itself.
+///
+/// Until 16 Oct 2026 every door served every method its handler knew, which was right while the
+/// only services on the door were the harness and the app surfaces. Found that day on VM 541: the
+/// Mind could not read the desktop calendar, because calendar-service is not on the door — and
+/// its socket answers the raw `calendar.*` data methods (create, delete, upsert, ungraded) beside
+/// its graded surface, so putting it on the door as it was would have handed a mind ungraded
+/// writes. A service whose socket carries more than its surface is admitted with
+/// [`MindMethods::SurfaceOnly`], and a mind there reaches the surface and nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MindMethods {
+    /// Every method the service answers. The harness (where a mind attaches) and the app
+    /// surfaces, whose every change already goes through the graded `app.act`: unchanged since
+    /// #411.
+    Every,
+    /// Only [`SURFACE_METHODS`]. Everything else is refused at the door with
+    /// [`crate::RPC_METHOD_NOT_FOUND`] before the service's handler sees it.
+    SurfaceOnly,
+}
+
+/// The agent-facing surface (`yantrik-surface`'s `Surface::answer`): `describe`, the graded
+/// `act` — ceiling, mode, grant, reach, the mind's standing (#411) — and `explain`, the sentence
+/// an approval card shows about one call, which reads and changes nothing. A grant is asked for
+/// and spent at the shell, not here, so nothing else is needed for a mind's card.
+///
+/// The transport's own `rpc.ping` and `rpc.service_id` are answered by the transport before any
+/// handler or policy (`server::dispatch`): they say the socket is alive and whose it is, which the
+/// socket's name already says.
+pub const SURFACE_METHODS: [&str; 3] = ["app.describe", "app.act", "app.explain"];
+
+impl MindMethods {
+    /// Whether a mind on a door with this policy may call `method`.
+    pub fn admits(self, method: &str) -> bool {
+        match self {
+            MindMethods::Every => true,
+            MindMethods::SurfaceOnly => SURFACE_METHODS.contains(&method),
+        }
+    }
+}
+
+/// How a door entry names the services it covers.
+#[derive(Clone, Copy, Debug)]
+enum Named {
+    Exactly(&'static str),
+    Prefix(&'static str),
+}
+
+/// Every service that opens a door, and what a mind may call there: the one place a service is
+/// admitted. Anything not in it opens no door, by name, until it is judged safe for a mind to
+/// call. The companion runs tools as the person, a11y drives any window ungraded, perception
+/// streams the person's file activity: on a door each would hand a mind back the authority its own
+/// account exists to take away.
+///
+/// `calendar` (16 Oct 2026, VM 541): so the Mind can answer "what's coming up this week" without
+/// the Calendar window open. Surface only: a mind reads through the safe `list_events` and asks
+/// through graded `app.act` like any app surface; the raw `calendar.*` methods are not served to it.
+const DOORS: [(Named, MindMethods); 3] = [
+    (Named::Exactly("harness"), MindMethods::Every),
+    (Named::Prefix("app-"), MindMethods::Every),
+    (Named::Exactly("calendar"), MindMethods::SurfaceOnly),
+];
+
+/// What a mind may call on the door for the socket `socket_name` (`calendar.sock`), or `None`
+/// when that socket opens no door.
+pub fn mind_methods(socket_name: &str) -> Option<MindMethods> {
+    let id = socket_name.strip_suffix(".sock")?;
+    DOORS.iter().find_map(|(named, methods)| {
+        let matches = match *named {
+            Named::Exactly(name) => id == name,
+            Named::Prefix(prefix) => id.starts_with(prefix),
+        };
+        matches.then_some(*methods)
+    })
+}
+
+/// Which services open a door: those [`DOORS`] names, and nothing else.
 pub fn opens_a_door(socket_name: &str) -> bool {
-    let Some(id) = socket_name.strip_suffix(".sock") else { return false };
-    id == "harness" || id.starts_with("app-")
+    mind_methods(socket_name).is_some()
 }
 
 /// Where the door socket for the service listening at `address` goes: the same file name in the
@@ -327,12 +398,48 @@ mod tests {
     }
 
     #[test]
-    fn only_the_harness_and_the_app_surfaces_open_a_door() {
-        for yes in ["harness.sock", "app-shell.sock", "app-notes.sock", "app-editor.sock"] {
+    fn only_the_harness_the_app_surfaces_and_the_calendar_open_a_door() {
+        for yes in ["harness.sock", "app-shell.sock", "app-notes.sock", "app-editor.sock", "calendar.sock"] {
             assert!(opens_a_door(yes), "{yes}");
         }
-        for no in ["companion.sock", "a11y.sock", "perception.sock", "notifications.sock", "email.sock", "harness", "vault.sock"] {
+        for no in [
+            "companion.sock", "a11y.sock", "perception.sock", "notifications.sock", "email.sock", "harness",
+            "vault.sock", "calendar", "calendar-sync.sock", "notes.sock", "app-calendar",
+        ] {
             assert!(!opens_a_door(no), "{no} must not be on the mind door");
+        }
+    }
+
+    /// The table is the single source: what opens a door and what a mind may call there are read
+    /// from the same entry, so a service cannot be admitted without a policy.
+    #[test]
+    fn every_door_has_one_policy_and_the_harness_and_apps_keep_every_method() {
+        assert_eq!(mind_methods("harness.sock"), Some(MindMethods::Every));
+        assert_eq!(mind_methods("app-shell.sock"), Some(MindMethods::Every));
+        assert_eq!(mind_methods("app-calendar.sock"), Some(MindMethods::Every), "the Calendar window is an app surface");
+        assert_eq!(mind_methods("calendar.sock"), Some(MindMethods::SurfaceOnly));
+        assert_eq!(mind_methods("companion.sock"), None);
+        for (named, _) in DOORS {
+            let name = match named {
+                Named::Exactly(n) => format!("{n}.sock"),
+                Named::Prefix(p) => format!("{p}x.sock"),
+            };
+            assert_eq!(opens_a_door(&name), mind_methods(&name).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_surface_only_door_admits_the_surface_and_nothing_else() {
+        for yes in SURFACE_METHODS {
+            assert!(MindMethods::SurfaceOnly.admits(yes), "{yes}");
+        }
+        for no in [
+            "calendar.events", "calendar.get_event", "calendar.create_event", "calendar.update_event",
+            "calendar.delete_event", "calendar.upsert_remote", "calendar.revision", "app.describe ",
+            "App.act", "app.", "", "memory_validate",
+        ] {
+            assert!(!MindMethods::SurfaceOnly.admits(no), "{no:?}");
+            assert!(MindMethods::Every.admits(no), "every method, as before: {no:?}");
         }
     }
 }

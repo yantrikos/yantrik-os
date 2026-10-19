@@ -73,6 +73,13 @@ impl Tool for ArchiveCreateTool {
                 Err(e) => return format!("Error (source '{src}'): {e}"),
             }
         }
+        // tar takes the whole tree, and validate_path saw only its top: ~/Pictures would carry
+        // the person's screenshots into an archive any tool reads (security review of #828).
+        for src in &validated_sources {
+            if let Err(e) = yantrik_ipc_contracts::home_paths::may_read_tree(std::path::Path::new(src)) {
+                return format!("Error (source '{src}'): {e}");
+            }
+        }
 
         // Create parent dirs for output
         if let Some(parent) = std::path::Path::new(&out_expanded).parent() {

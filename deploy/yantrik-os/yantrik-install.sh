@@ -375,9 +375,12 @@ chown -R "$UID_NUM:$GID_NUM" "$UHOME"
 ok "Desktop configured"
 
 # ── 12. Auto-login ──
+# Quietly, as the desktop installer does (installer.rs, AUTOLOGIN_FLAGS): no issue, hostname or
+# "automatic login" line from agetty, and with ~/.hushlogin no motd or last login from login.
 mkdir -p "$M/etc/systemd/system/getty@tty1.service.d"
-printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --noclear %%I $TERM\n' "$USERNAME" \
+printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --skip-login --noissue --nohostname --nonewline %%I $TERM\n' "$USERNAME" \
     > "$M/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+touch "$UHOME/.hushlogin" && chown "$UID_NUM:$GID_NUM" "$UHOME/.hushlogin"
 printf 'd /run/user/%s 0700 %s %s -\n' "$UID_NUM" "$USERNAME" "$USERNAME" \
     > "$M/etc/tmpfiles.d/yantrik-xdg.conf"
 
@@ -445,9 +448,18 @@ esac
 # ── 15. GRUB ──
 step "Installing bootloader..."
 # This installer never encrypts, so there is nothing to ask for at boot: the desktop installer's
-# unencrypted line (installer_unlock.rs, cmdline_default(false)). plymouth is in the image for the
-# encrypted pre-boot screen and stays off here; `splash` would start it at every boot and shutdown.
-printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 plymouth.enable=0"\nGRUB_CMDLINE_LINUX=""\n' > "$M/etc/default/grub"
+# unencrypted line (installer_unlock.rs, cmdline_default(false)): the boot splash, from the kernel's
+# first frame to the shell's, and no prompt in it. GRUB's graphics carry into the kernel, and the
+# console before plymouth is the splash's ground with no cursor (installer.rs, grub_defaults).
+printf 'GRUB_DEFAULT=0\nGRUB_TIMEOUT=3\nGRUB_DISTRIBUTOR="Yantrik OS"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles vt.global_cursor_default=0 vt.default_red=0x0e vt.default_grn=0x11 vt.default_blu=0x17"\nGRUB_CMDLINE_LINUX=""\nGRUB_TERMINAL_OUTPUT="gfxterm"\nGRUB_GFXMODE=auto\nGRUB_GFXPAYLOAD_LINUX=keep\n' > "$M/etc/default/grub"
+# The boot menu's theme, as the desktop installer copies it (installer.rs, install_grub_theme), and
+# like it on UEFI only: SeaBIOS stopped at "unaligned pointer" in the themed menu (#819, 15 Oct
+# 2026), and without GRUB_THEME grub-ground writes nothing either (review of #820 at a6c728c5).
+if $IS_EFI && [ -f "$M/usr/share/yantrik/grub-theme/theme.txt" ]; then
+    mkdir -p "$M/boot/grub/themes" && rm -rf "$M/boot/grub/themes/yantrik" \
+        && cp -a "$M/usr/share/yantrik/grub-theme" "$M/boot/grub/themes/yantrik" \
+        && echo 'GRUB_THEME="/boot/grub/themes/yantrik/theme.txt"' >> "$M/etc/default/grub"
+fi
 
 if $IS_EFI; then
     # Two installs, as the desktop installer does (crates/yantrik-ui/src/wire/installer.rs). The
@@ -517,6 +529,11 @@ fi
 # The kernel line must find the root by UUID too, or the disk boots in one USB port and not the
 # next. grub-mkconfig falls back to root=/dev/sdX when udev has not made the by-uuid link yet.
 udevadm settle 2>/dev/null || true
+# The plain entry starts without GRUB's "Loading Linux …" lines; recovery mode keeps them
+# (installer_boot.rs, QUIET_BOOT_SED). A 10_linux without the switch costs the quiet, not the disk.
+sed -i 's/^quiet_boot="0"$/quiet_boot="1"/' "$M/etc/grub.d/10_linux" 2>/dev/null || true
+grep -qx 'quiet_boot="1"' "$M/etc/grub.d/10_linux" 2>/dev/null \
+    || echo -e "   ${A}The boot menu will show GRUB's loading lines: 10_linux has no quiet_boot switch.${N}"
 chroot "$M" update-grub
 if grep -qE 'root=/dev/(sd|nvme|vd|hd|mmcblk)' "$M/boot/grub/grub.cfg"; then
     echo -e "${R}grub.cfg names the root by device, not UUID; it would not boot from another port.${N}" >&2

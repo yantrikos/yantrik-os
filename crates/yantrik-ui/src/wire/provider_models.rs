@@ -46,6 +46,9 @@ pub(crate) enum ListError {
     NotAList,
     /// The URL still has a part the person must fill in, or is not a URL.
     BadUrl,
+    /// The URL's sign-in details cannot be told from its host (a key holding a `/`, `?` or `#`):
+    /// it is neither sent nor named.
+    UnclearAddress,
 }
 
 impl std::fmt::Display for ListError {
@@ -58,6 +61,7 @@ impl std::fmt::Display for ListError {
             Self::Status(code) => write!(f, "The provider answered with an error (HTTP {code})."),
             Self::NotAList => write!(f, "The provider answered, but not with a model list."),
             Self::BadUrl => write!(f, "That URL is not complete. Fill in any part in braces, like {{account_id}}."),
+            Self::UnclearAddress => write!(f, "That URL holds sign-in details that hide where it goes. Put the key in the key field instead."),
         }
     }
 }
@@ -71,6 +75,9 @@ pub(crate) fn list_models(
 ) -> Result<Vec<ListedModel>, ListError> {
     let base = listing_base(base_url);
     let host = host_of(&base);
+    if host.is_empty() && !crate::runs_on::identity::host(&base).is_empty() {
+        return Err(ListError::UnclearAddress);
+    }
     if host.is_empty() || base.contains('{') || !(base.starts_with("http://") || base.starts_with("https://")) {
         return Err(ListError::BadUrl);
     }
@@ -189,45 +196,62 @@ pub(crate) fn list_is_public(base_url: &str, auth_type: &str) -> bool {
 }
 
 /// Send the smallest request that needs the key: one chat completion of one token with
-/// `model`. Only for OpenAI-compatible providers — the ones whose lists can be public.
+/// `model`, in the shape a real companion turn sends ([`key_check_body`]), and through the same
+/// refusal handling (`yantrik_ml::refusal`): a sampling parameter the model refuses is dropped
+/// and remembered for the turns that follow, so "Connected" means a real turn will work. Only
+/// for OpenAI-compatible providers — the ones whose lists can be public.
 pub(crate) fn check_key(base_url: &str, api_key: &str, model: &str) -> KeyCheck {
     let base = listing_base(base_url);
     let host = host_of(&base);
+    if host.is_empty() {
+        return KeyCheck::Unconfirmed(ListError::UnclearAddress.to_string());
+    }
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(CONNECT_TIMEOUT)
         .timeout(TOTAL_TIMEOUT)
         .build();
-    let answer = agent
-        .post(&format!("{base}/chat/completions"))
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .send_json(key_check_body(model));
+    let url = format!("{base}/chat/completions");
+    let post = |body: &serde_json::Value| -> anyhow::Result<Result<Result<(), ureq::Transport>, (u16, String)>> {
+        Ok(match agent.post(&url).set("Authorization", &format!("Bearer {api_key}")).send_json(body) {
+            Ok(_) => Ok(Ok(())),
+            Err(ureq::Error::Status(code, resp)) => Err((code, resp.into_string().unwrap_or_default())),
+            Err(ureq::Error::Transport(t)) => Ok(Err(t)),
+        })
+    };
+    let answer = match yantrik_ml::refusal::send_dropping_refused(&base, model, &key_check_body(&base, model), post) {
+        Ok(answer) => answer,
+        Err(e) => return KeyCheck::Unconfirmed(format!("The test request could not be sent ({e}).")),
+    };
     match answer {
-        Ok(_) | Err(ureq::Error::Status(429, _)) => {
+        Ok(Ok(())) | Err((429, _)) => {
             tracing::info!(host = %host, "Provider accepted the key on a test request");
             KeyCheck::Works
         }
-        Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 => {
+        Err((code, _)) if code == 401 || code == 403 => {
             tracing::warn!(host = %host, status = code, "Provider refused the key on a test request");
             KeyCheck::Refused
         }
-        Err(ureq::Error::Status(code, _)) => {
+        Err((code, said)) => {
             tracing::warn!(host = %host, status = code, "A test request could not confirm the key");
+            let reason = yantrik_ml::refusal::provider_message(&said)
+                .map(|m| format!(": {}", yantrik_ml::refusal::excerpt(&m, Some(api_key)).trim_end_matches('.')))
+                .unwrap_or_default();
             KeyCheck::Unconfirmed(format!(
-                "The provider answered a test request with HTTP {code}, so the key could not be confirmed."
+                "The provider answered a test request with HTTP {code}{reason}, so the key could not be confirmed."
             ))
         }
-        Err(ureq::Error::Transport(t)) => KeyCheck::Unconfirmed(transport_error(&t, &host).to_string()),
+        Ok(Err(t)) => KeyCheck::Unconfirmed(transport_error(&t, &host).to_string()),
     }
 }
 
-/// The test request: one short message, one token back. It costs the person next to nothing,
-/// and it is the least a provider will answer that still needs the key.
-fn key_check_body(model: &str) -> serde_json::Value {
-    serde_json::json!({
-        "model": model,
-        "messages": [{ "role": "user", "content": "Reply with OK." }],
-        "max_tokens": 1,
-    })
+/// The test request: one short message, one token back, built by the companion's own request
+/// builder with the settings a turn uses, so it carries the same parameters a real turn does.
+/// It costs the person next to nothing, and it is the least a provider will answer that still
+/// needs the key.
+fn key_check_body(base: &str, model: &str) -> serde_json::Value {
+    let llm = yantrik_ml::ApiLLM::new(base, None, model);
+    let config = yantrik_ml::GenerationConfig { max_tokens: 1, ..Default::default() };
+    llm.chat_completions_body(&[yantrik_ml::ChatMessage::user("Reply with OK.")], &config, false)
 }
 
 /// The OpenAI-compatible address for a saved base URL: a native one whose API has no
@@ -262,11 +286,11 @@ fn candidate_paths(base: &str) -> Vec<String> {
     }
 }
 
-/// The host (and port) of a URL, without scheme, userinfo or path.
+/// The host errors and logs name: the drawable one (`identity::shown_host`). Empty for a URL whose
+/// sign-in details cannot be told from its host, which is then refused (`UnclearAddress`) rather
+/// than sent, or named by a part of its key ("Could not reach user:p.").
 fn host_of(url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    authority.rsplit('@').next().unwrap_or("").to_string()
+    crate::runs_on::identity::shown_host(url)
 }
 
 fn transport_error(t: &ureq::Transport, host: &str) -> ListError {
@@ -286,6 +310,26 @@ fn transport_error(t: &ureq::Transport, host: &str) -> ListError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An error or log line names the host by the drawable address only, and a URL whose host
+    /// cannot be told from its sign-in details is refused, never sent (review of #844, finding 2).
+    #[test]
+    fn errors_never_name_a_part_of_the_sign_in_details() {
+        for url in crate::runs_on::tests::HOSTILE_URLS {
+            crate::runs_on::tests::assert_clean(url, &host_of(url));
+            for e in [ListError::Unreachable { host: host_of(url) }, ListError::TimedOut { host: host_of(url) }] {
+                crate::runs_on::tests::assert_clean(url, &e.to_string());
+            }
+        }
+        assert_eq!(host_of("https://user:pw@aig.example/v1?api-key=x#f"), "aig.example");
+        assert_eq!(host_of("https://user:pw@[fd00::1]:8443/v1"), "[fd00::1]:8443");
+        assert_eq!(list_models("https://user:p/w@aig.example/v1", Some("k"), "bearer"), Err(ListError::UnclearAddress));
+        assert_eq!(list_models("https://user:p/w@[::1]:4000/v1", None, "none"), Err(ListError::UnclearAddress));
+        match check_key("https://user:p/w@aig.example/v1", "k", "m") {
+            KeyCheck::Unconfirmed(said) => crate::runs_on::tests::assert_clean("https://user:p/w@aig.example/v1", &said),
+            other => panic!("{other:?}"),
+        }
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
@@ -399,9 +443,7 @@ mod tests {
         std::thread::spawn(move || {
             for (status, body) in replies {
                 let Ok((mut stream, _)) = listener.accept() else { return };
-                let mut buf = [0u8; 8192];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = tx.send(read_request(&mut stream));
                 let reason = match status { 200 => "OK", 401 => "Unauthorized", 404 => "Not Found", _ => "Error" };
                 let reply = format!(
                     "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -413,6 +455,29 @@ mod tests {
         (base, rx)
     }
 
+    /// One whole request: the head, then as many body bytes as its Content-Length says. ureq
+    /// writes the head and a JSON body separately, so one read can end before the body arrives.
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            let text = String::from_utf8_lossy(&got).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let length = head
+                    .lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                    .unwrap_or(0);
+                if body.len() >= length {
+                    return text;
+                }
+            }
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => return String::from_utf8_lossy(&got).to_string(),
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+    }
+
     #[test]
     fn a_key_is_confirmed_by_a_one_token_request_and_a_refusal_is_named() {
         let (base, sent) = serve(vec![(200, r#"{"choices":[{"message":{"content":"OK"}}]}"#)]);
@@ -420,8 +485,8 @@ mod tests {
         let request = sent.recv().unwrap();
         assert!(request.starts_with("POST /v1/chat/completions "), "{request}");
         assert!(request.to_lowercase().contains("authorization: bearer nvapi-good"), "{request}");
-        assert_eq!(key_check_body("m/x")["max_tokens"], 1, "one token, not a conversation");
-        assert_eq!(key_check_body("m/x")["model"], "m/x");
+        assert_eq!(key_check_body(&base, "m/x")["max_tokens"], 1, "one token, not a conversation");
+        assert_eq!(key_check_body(&base, "m/x")["model"], "m/x");
 
         let (base, _) = serve(vec![(401, r#"{"error":"bad key nvapi-not-a-real-key"}"#)]);
         assert_eq!(check_key(&format!("{base}/v1"), "nvapi-not-a-real-key", "m/x"), KeyCheck::Refused);
@@ -433,6 +498,63 @@ mod tests {
         match check_key(&format!("{base}/v1"), "k", "m") {
             KeyCheck::Unconfirmed(why) => assert!(why.contains("HTTP 404"), "{why}"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// The request line and body a test request put on the wire.
+    fn body_of(request: &str) -> serde_json::Value {
+        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap_or("")).unwrap()
+    }
+
+    #[test]
+    fn a_model_that_refuses_temperature_is_asked_again_without_it_and_the_key_is_confirmed() {
+        // VM 542, 16 Oct 2026: the key test passed and every turn after it was refused. Now the
+        // test request carries what a turn carries, and is refused the same way, and recovers.
+        let refusal = r#"{"error":{"code":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#;
+        let (base, sent) = serve(vec![(400, refusal), (200, r#"{"choices":[{"message":{"content":"OK"}}]}"#)]);
+        let base = format!("{base}/v1");
+        assert_eq!(check_key(&base, "sk-ant-good", "claude-sonnet-5-5"), KeyCheck::Works);
+        let first = body_of(&sent.recv().unwrap());
+        let retry = body_of(&sent.recv().unwrap());
+        assert!(first.get("temperature").is_some(), "{first}");
+        assert!(retry.get("temperature").is_none(), "{retry}");
+        // And the companion's turns in this process leave it out from the start.
+        assert_eq!(yantrik_ml::refusal::remembered(&base, "claude-sonnet-5-5"), vec!["temperature"]);
+        let turn = yantrik_ml::ApiLLM::new(base.as_str(), None, "claude-sonnet-5-5")
+            .chat_completions_body(&[yantrik_ml::ChatMessage::user("hi")], &Default::default(), true);
+        assert!(turn.get("temperature").is_none(), "{turn}");
+    }
+
+    #[test]
+    fn a_refusal_that_is_not_about_the_key_says_what_the_provider_said() {
+        let (base, _) = serve(vec![(400, r#"{"error":{"message":"model: no-such-model not found"}}"#)]);
+        match check_key(&format!("{base}/v1"), "k", "no-such-model") {
+            KeyCheck::Unconfirmed(why) => assert!(why.contains("HTTP 400: model: no-such-model not found"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_test_request_carries_the_parameters_a_real_turn_carries() {
+        // A companion turn, as `handle_message` builds its config from the companion's settings.
+        let llm = yantrik_companion::config::LLMConfig::default();
+        let turn_config = yantrik_ml::GenerationConfig {
+            max_tokens: llm.max_tokens,
+            temperature: llm.temperature,
+            top_p: Some(0.9),
+            max_context: Some(llm.max_context_tokens),
+            ..Default::default()
+        };
+        let without_content = |mut b: serde_json::Value| {
+            for k in ["messages", "max_tokens", "stream"] {
+                b.as_object_mut().unwrap().remove(k);
+            }
+            b
+        };
+        for base in ["https://api.anthropic.com/v1", "https://api.openai.com/v1", "https://integrate.api.nvidia.com/v1"] {
+            let turn = yantrik_ml::ApiLLM::new(base, None, "m")
+                .chat_completions_body(&[yantrik_ml::ChatMessage::user("hi")], &turn_config, true);
+            assert_eq!(without_content(key_check_body(base, "m")), without_content(turn), "{base}");
         }
     }
 

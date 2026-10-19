@@ -1,0 +1,58 @@
+// RecordingChip — the red dot and the elapsed time, on the status bar while the screen is being
+// recorded. A click stops the recording (so does Super+Shift+R).
+//
+// It shows for every recording, the person's and a mind's alike: being recorded is something a
+// person must be able to see at a glance, whoever started it.
+import { Theme } from "theme.slint";
+
+export component RecordingChip inherits Rectangle {
+    in property <string> elapsed: "";
+    callback clicked();
+
+    height: Theme.bar-chip-h;
+    width: row.preferred-width;
+    border-radius: Theme.bar-chip-radius;
+    background: ta.has-hover ? Theme.color-danger-dim : transparent;
+    border-width: keys.has-focus ? 2px : Theme.hairline;
+    border-color: keys.has-focus ? Theme.focus-ring : Theme.color-danger;
+    accessible-role: button;
+    accessible-label: "Recording the screen, " + root.elapsed + ". Stop recording";
+    accessible-action-default => { root.clicked(); }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if ((event.text == " " || event.text == "\n") && !event.repeat) {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    row := HorizontalLayout {
+        padding-left: Theme.sp-2;
+        padding-right: Theme.sp-3;
+        spacing: Theme.sp-2;
+        alignment: center;
+
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: Theme.color-danger;
+        }
+        Text {
+            text: root.elapsed;
+            color: Theme.text-primary;
+            font-size: Theme.fs-caption;
+            font-weight: Theme.fw-body-strong;
+            vertical-alignment: center;
+        }
+    }
+}

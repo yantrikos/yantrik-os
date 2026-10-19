@@ -1,0 +1,14 @@
+[Unit]
+Description=Check every two minutes whether Broadcom wl's Wi-Fi scanning has wedged
+Documentation=file:///usr/lib/yantrik/yantrik-broadcom-wifi
+
+[Timer]
+# Not at boot: NetworkManager is still joining then, and wl was loaded fresh anyway.
+OnBootSec=3min
+# Counted from the last run's start. The NetworkManager dispatcher also starts the service when
+# Wi-Fi goes down, which starts the clock on the three minutes recover waits.
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

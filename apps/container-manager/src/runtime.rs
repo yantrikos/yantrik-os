@@ -256,6 +256,28 @@ pub fn parse_images(text: &str) -> Vec<Image> {
         .collect()
 }
 
+/// An image's plain first line, from its reference: `docker.io/library/alpine:latest` → "alpine,
+/// the latest version"; `ghcr.io/acme/web:1.4` → "web, version 1.4". The reference stays on the
+/// row as its name (it is what `docker run` takes); this is the line read first, because the sweep
+/// of 17 October found rows that opened with a registry path.
+pub fn plain_image_name(repo_tag: &str) -> String {
+    let reference = repo_tag.trim();
+    if reference.is_empty() || reference.starts_with("<none>") {
+        return "An image with no name".to_string();
+    }
+    let (path, tag) = match reference.rsplit_once(':') {
+        // A colon inside the registry's host:port is not a tag.
+        Some((p, t)) if !t.contains('/') => (p, Some(t)),
+        _ => (reference, None),
+    };
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match tag {
+        Some("latest") | None => format!("{name}, the latest version"),
+        Some("<none>") => format!("{name}, with no version"),
+        Some(t) => format!("{name}, version {t}"),
+    }
+}
+
 pub fn parse_volumes(text: &str) -> Vec<Volume> {
     text.lines()
         .filter(|l| !l.trim().is_empty())

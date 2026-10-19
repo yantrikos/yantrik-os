@@ -19,6 +19,10 @@ export struct ToastData {
     urgency: int,      // 0=low, 1=normal, 2=critical
     icon-char: string, // first char of the app name
     actions: [ToastActionData],
+    // A picture of what it is about: a screenshot's thumbnail. Only the desktop's own captures
+    // carry one (wire/notifications.rs decides); everything else leaves it empty.
+    thumbnail: image,
+    has-thumbnail: bool,
 }
 
 // Toasts, bottom-right, stacking upward with the newest on top.
@@ -187,6 +191,17 @@ export component ToastBanner inherits Rectangle {
                         // descenders, and the cut fell mid-word with no ellipsis.
                         max-height: 38px;
                         overflow: elide;
+                    }
+
+                    // The picture, at a height that leaves the toast a toast: enough to see which
+                    // screenshot it is, never the screenshot itself at full size.
+                    if toast.has-thumbnail : Image {
+                        source: toast.thumbnail;
+                        height: 96px;
+                        image-fit: contain;
+                        horizontal-alignment: left;
+                        accessible-role: image;
+                        accessible-label: "Thumbnail of " + toast.summary;
                     }
 
                     // The sender's buttons. `default` is the freedesktop action for "the person

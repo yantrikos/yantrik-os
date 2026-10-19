@@ -38,7 +38,7 @@ dock.browser: "ब्राउज़र"
 dock.files: "फ़ाइलें"
 dock.notes: "नोट्स"
 dock.editor: "एडिटर"
-dock.bond: "बॉन्ड"
+dock.bond: "बातचीत का इतिहास"
 dock.memory: "मेमोरी"
 dock.alerts: "अलर्ट"
 dock.system: "सिस्टम"
@@ -373,12 +373,9 @@ notifications.no_notifications: "कोई सूचना नहीं"
 notifications.clear_all: "सब साफ़ करें"
 
 # ── Bond ──
-bond.title: "बॉन्ड"
-bond.score: "बॉन्ड स्कोर"
-bond.level: "स्तर"
+bond.title: "बातचीत का इतिहास"
 bond.interactions: "कुल बातचीत"
-bond.days: "साथ बिताए दिन"
-bond.streak: "वर्तमान स्ट्रीक"
+bond.days: "आपकी पहली बातचीत के बाद से दिन"
 
 # ── Power ──
 power.shutdown: "बंद करें"

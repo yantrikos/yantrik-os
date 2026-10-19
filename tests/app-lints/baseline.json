@@ -6,16 +6,9 @@
     "dead-handler"
   ],
   "apps": {
-    "calendar": {
-      "dead-handler": [
-        "agent_context_activated"
-      ]
-    },
     "container-manager": {
       "dead-handler": [
-        "agent_context_activated",
-        "ct_tab",
-        "proposal_applied"
+        "ct_tab"
       ]
     },
     "download-manager": {
@@ -25,128 +18,6 @@
         "agent-unavailable",
         "proposal",
         "proposal-working"
-      ]
-    },
-    "image-viewer": {
-      "unset-property": [
-        "ai-is-working",
-        "ai-response",
-        "proposal-working"
-      ],
-      "dead-handler": [
-        "agent_context_activated",
-        "agent_suggestion_activated",
-        "proposal_applied"
-      ]
-    },
-    "music-player": {
-      "unset-property": [
-        "agent-context",
-        "agent-suggestions",
-        "agent-unavailable",
-        "ai-is-working",
-        "ai-response",
-        "is-scanning",
-        "proposal",
-        "proposal-working",
-        "scan-progress",
-        "scan-status"
-      ],
-      "dead-handler": [
-        "add_to_queue",
-        "ai_dismiss",
-        "ai_explain_pressed",
-        "browse_filter_changed",
-        "browse_item_selected",
-        "music_toggle_folder_watch",
-        "next_track",
-        "play_next",
-        "play_track_index",
-        "playlist_add_track",
-        "playlist_create",
-        "playlist_delete",
-        "playlist_remove_track",
-        "playlist_rename",
-        "prev_track",
-        "queue_clear",
-        "queue_move_down",
-        "queue_move_up",
-        "queue_play_index",
-        "queue_remove",
-        "scan_add_folder",
-        "scan_remove_folder",
-        "scan_rescan"
-      ]
-    },
-    "spreadsheet": {
-      "unset-property": [
-        "active-comment",
-        "cell-grid",
-        "chart-data",
-        "col-count",
-        "filter-active",
-        "find-status",
-        "fmt-align-active",
-        "fmt-bold-active",
-        "fmt-italic-active",
-        "fmt-number-format",
-        "freeze-cols",
-        "freeze-rows",
-        "row-count",
-        "sheet-ai-response",
-        "sheet-ai-working",
-        "sheet-formula-error",
-        "sheet-formula-hints",
-        "sheet-tabs",
-        "sort-ascending",
-        "sort-col",
-        "status-text"
-      ],
-      "dead-handler": [
-        "add_comment",
-        "add_sheet",
-        "clear_filter",
-        "copy_cell",
-        "create_chart",
-        "cut_cell",
-        "delete_col",
-        "delete_comment",
-        "delete_row",
-        "export_csv",
-        "filter_column",
-        "find_next",
-        "find_text",
-        "format_align",
-        "format_bold",
-        "format_italic",
-        "format_number",
-        "freeze_panes",
-        "import_csv",
-        "insert_col",
-        "insert_row",
-        "key_pressed",
-        "load_sheet",
-        "merge_cells",
-        "paste_cell",
-        "redo",
-        "replace_all",
-        "replace_one",
-        "save_sheet",
-        "set_bg_color",
-        "set_text_color",
-        "sheet_ai_analyze",
-        "sheet_ai_apply",
-        "sheet_ai_dismiss",
-        "sheet_ai_formula",
-        "sheet_ai_generate_data",
-        "sheet_ai_insights",
-        "sheet_ai_submit",
-        "sheet_ai_suggest_chart",
-        "sheet_show_formula_help",
-        "sort_column",
-        "switch_sheet",
-        "undo",
-        "unmerge_cells"
       ]
     },
     "system-monitor": {
@@ -161,19 +32,6 @@
         "ai-tokens-today",
         "cpu-frequency",
         "cpu-model"
-      ],
-      "dead-handler": [
-        "agent_context_activated",
-        "back_pressed",
-        "process_search_changed",
-        "proposal_applied"
-      ]
-    },
-    "weather": {
-      "dead-handler": [
-        "agent_context_activated",
-        "back_pressed",
-        "proposal_applied"
       ]
     }
   }

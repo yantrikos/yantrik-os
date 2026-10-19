@@ -405,3 +405,35 @@ fn nothing_is_made_where_it_would_become_a_protected_place() {
     symlink("/etc", home.join("escape")).unwrap();
     assert!(may_create("~/escape/new", &home).unwrap_err().ends_with(" is outside"));
 }
+
+/// Security review of #828, finding 1: a saved screenshot or recording is a picture of the
+/// person's desktop, and no agent reads one by its path, opens its folder, or carries it out in a
+/// copy of the folder above. The person's other pictures and videos are untouched.
+#[test]
+fn the_persons_screenshots_and_recordings_are_no_agents_to_read() {
+    let (_d, home) = home();
+    std::fs::create_dir_all(home.join("Pictures/Screenshots")).unwrap();
+    std::fs::create_dir_all(home.join("Videos/Recordings")).unwrap();
+    let shot = "Screenshot 2026-10-15 at 14.32.07.png";
+    std::fs::write(home.join("Pictures/Screenshots").join(shot), "png").unwrap();
+    std::fs::write(home.join("Videos/Recordings/Recording 2026-10-15 at 14.32.07.mp4"), "mp4").unwrap();
+    std::fs::write(home.join("Pictures/holiday.png"), "png").unwrap();
+    for refused in [
+        format!("~/Pictures/Screenshots/{shot}"),
+        "~/Videos/Recordings/Recording 2026-10-15 at 14.32.07.mp4".to_string(),
+        "~/Pictures/Screenshots".to_string(),
+        "~/pictures/SCREENSHOTS".to_string(),
+    ] {
+        assert_eq!(exists_and_reason(&refused, &home), (json!("unknown"), json!("protected")), "{refused}");
+        assert!(may_read_file(&refused, &home).is_err(), "{refused}");
+    }
+    // Through a link, too: the link is in the home, where it leads is not.
+    symlink(home.join("Pictures/Screenshots"), home.join("shots")).unwrap();
+    assert!(may_read_file(&format!("~/shots/{shot}"), &home).unwrap_err().ends_with(" is protected"));
+    // Copying the folder above them would carry them somewhere readable.
+    assert!(may_land(&home.join("Pictures"), &home.join("notes/Pictures"), &home).unwrap_err().contains("protected"));
+    assert!(may_read_file("~/Pictures/holiday.png", &home).is_ok(), "the person's other pictures");
+    for not in ["/home/ann/Pictures/Screenshots-old/a.png", "/home/ann/Videos/film.mp4", "/home/ann/Recordings/a.mp4"] {
+        assert!(!is_protected(Path::new(not)), "{not}");
+    }
+}

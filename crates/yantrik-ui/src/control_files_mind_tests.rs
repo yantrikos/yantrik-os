@@ -244,3 +244,38 @@ fn a_mind_does_not_undo_a_trash_or_open_the_trash() {
         assert!(may_paste("~").is_err());
     });
 }
+
+/// Security review of #828, finding 1: `files_go ~/Pictures/Screenshots` then `files_open` of a
+/// screenshot put the person's desktop in Mind View with no card, for a safe `read_mind_view` to
+/// read. A mind's Files now neither opens the folders nor opens, selects or trashes a capture in
+/// them (the folder above stays open), and the refusal names the way that asks the person:
+/// `open_capture`, graded and tainted as reading the screen is.
+#[test]
+fn a_mind_reaches_a_saved_capture_only_through_open_capture() {
+    let (_d, home) = home("captures");
+    std::fs::create_dir_all(home.join("Pictures/Screenshots")).unwrap();
+    std::fs::create_dir_all(home.join("Videos/Recordings")).unwrap();
+    std::fs::write(home.join("Pictures/Screenshots/Screenshot 2026-10-15 at 14.32.07.png"), "png").unwrap();
+    std::fs::write(home.join("Videos/Recordings/Recording 2026-10-15 at 14.32.07.mp4"), "mp4").unwrap();
+    std::fs::write(home.join("Pictures/holiday.png"), "png").unwrap();
+
+    assert!(open_verdict("~/Pictures", &home).is_ok(), "the person's other pictures stay open");
+    assert!(entry_verdict("~/Pictures", "holiday.png", &home).is_ok());
+    for folder in ["~/Pictures/Screenshots", "~/Videos/Recordings"] {
+        let err = open_verdict(folder, &home).expect_err(folder);
+        assert!(err.ends_with(" is protected"), "{folder}: {err}");
+        assert!(err.contains("open_capture"), "{folder}: the refusal says how: {err}");
+    }
+    // files_open, files_select, files_trash_selected: each asks entry_verdict of the entry.
+    for (label, name) in [("~/Pictures", "Screenshots"), ("~/Videos", "Recordings")] {
+        let err = entry_verdict(label, name, &home).expect_err(name);
+        assert!(err.ends_with(" is protected") && err.contains("open_capture"), "{name}: {err}");
+    }
+    // Files left showing the folder by the person is hidden from a mind's describe and its acts.
+    assert!(here_verdict("~/Pictures/Screenshots", &home).is_err());
+    let err = entry_verdict("~/Pictures/Screenshots", "Screenshot 2026-10-15 at 14.32.07.png", &home).unwrap_err();
+    assert!(err.contains("files_go"), "{err}");
+    // And the one way in is graded as reading the screen.
+    use yantrik_app_runtime::control::unrecoverable;
+    assert!(unrecoverable(crate::control_capture::OPEN_CAPTURE_PURPOSE));
+}

@@ -54,7 +54,8 @@ if _LIB.is_dir() and str(_LIB) not in sys.path:
 
 from yantrik_harness import (  # noqa: E402
     AGENT_TOKEN_ENV, MAIN, Handler, Harness, PerConversation, Turn, end_process,
-    mind_directory, program_path, summary_line, tool_target,
+    YANTRIKDB_MCP, memory_env, memory_on, mind_directory, private_memory_dir, program_path,
+    summary_line, tool_target,
 )
 
 VERSION = "1.0"
@@ -89,7 +90,7 @@ DESKTOP_PROMPT = """You are answering the Yantrik OS desktop: the chat panel of 
 
 The os_* and web_* tools are this machine. Start with os_apps, which says what is open and what can be opened. Use os_describe on an app before acting on it.
 
-A tool result whose first word is REFUSED is an answer, not an error: the desktop declined that action under the person's current mode or ceiling. Do not retry it and do not look for another route to the same thing — say what was refused and stop. A denied approval is the person saying no; stop and tell them what you were doing.
+A tool result whose first word is REFUSED is an answer, not an error: the desktop declined that action under the person's current mode or ceiling, or because this conversation has read private state. Do not retry it and do not look for another route to the same thing — say what was refused and stop. When it is because this conversation read private state, tell the person what the refusal says and nothing more hopeful: they can do that part themselves, or start a new conversation with + in the Lens and ask there. Do not tell them a new chat, /new or a restart clears it; only their + does. A denied approval is the person saying no; stop and tell them what you were doing.
 
 Report anything you did that nobody asked for as something you did.
 
@@ -122,6 +123,9 @@ class PiConfig:
         # The extension finds the bridge at /opt/yantrik/bin/yos-mcp unless YOS_MCP_BIN says
         # otherwise, and the extension's environment is Pi's, which is this one.
         self.yos_mcp: str = str(data.get("yos_mcp") or "")
+        # YantrikDB as Pi's memory (#677), through the extension: on by default where the image
+        # carries yantrikdb-mcp, off with `"memory": "off"`.
+        self.memory: bool = memory_on(data.get("memory"))
         try:
             self.silence_timeout: float = float(data.get("silence_timeout", DEFAULT_SILENCE_TIMEOUT))
             self.settled_grace: float = float(data.get("settled_grace", SETTLED_GRACE))
@@ -154,6 +158,11 @@ class PiConfig:
         env["PATH"] = program_path(self.path, env.get("PATH", ""))
         if self.yos_mcp:
             env["YOS_MCP_BIN"] = self.yos_mcp
+        if self.memory:
+            env["YANTRIKDB_MCP_BIN"] = YANTRIKDB_MCP
+            env["YANTRIK_MEMORY_SOURCE"] = "pi"
+            env.update(memory_env("pi"))
+            private_memory_dir("pi")
         return env
 
 
@@ -612,7 +621,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     mind = handler(config)
     harness = Harness(
-        id="pi", name="Pi", handler=mind, detail=config.detail, tools=True, memory=False,
+        id="pi", name="Pi", handler=mind, detail=config.detail, tools=True, memory=config.memory,
     )
     try:
         harness.run()

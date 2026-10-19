@@ -6,8 +6,9 @@
 //!   cryptsetup's text prompt with the same words. Only when the keyscript is on the disk: a
 //!   crypttab naming a keyscript the initramfs cannot carry is a disk nothing asks to open.
 //! - `enrol` records whose password it is (a digest of their shadow entry, never the password).
-//! - the boot line shows plymouth only on an encrypted install; an unencrypted one boots as it
-//!   always has, with nothing to ask.
+//! - the boot line is the same encrypted or not: plymouth draws the boot splash (the Yantrik
+//!   emblem) from the kernel's first frame to the shell's, and on an encrypted install asks for
+//!   the disk's password in between, in the same program (theme/yantrik.script).
 //! - the initramfs is checked for the keyscript and the marker, and for whether the Yantrik
 //!   screen or the text prompt will ask.
 
@@ -36,20 +37,31 @@ pub fn keyscript_installed(mount_dir: &str) -> bool {
 }
 
 /// The kernel's command line on the installed system. `loglevel=3`: `quiet` still prints the
-/// kernel's error-level lines, and they scroll over the disk's password prompt. Encrypted, plymouth
-/// draws the pre-boot screen (`splash`): on the framebuffer the firmware left when there is no GPU
-/// driver yet (`plymouth.use-simpledrm`; plymouth otherwise waits for a real driver, and the Mac
-/// mini's i915 is not in the initramfs), and on the screen only (a serial console it also drew on
-/// could take the prompt off the one the person is looking at).
-pub fn cmdline_default(encrypted: bool) -> &'static str {
-    if encrypted {
-        "quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles"
-    } else {
-        // Nothing to ask for. plymouth is in the image now, and off here, so an unencrypted install
-        // boots as it did before it was: no splash, no plymouthd.
-        "quiet loglevel=3 plymouth.enable=0"
-    }
+/// kernel's error-level lines, and they scroll over the splash and the disk's password prompt.
+/// plymouth draws the boot splash (`splash`), and encrypted, the pre-boot screen in it: on the
+/// framebuffer the firmware left when there is no GPU driver yet (`plymouth.use-simpledrm`;
+/// plymouth otherwise waits for a real driver, and the Mac mini's i915 is not in the initramfs),
+/// and on the screen only (a serial console it also drew on could take the prompt off the one the
+/// person is looking at, and the serial line is what the boot test reads).
+///
+/// An unencrypted install used to say `plymouth.enable=0`, so it booted as before plymouth was in
+/// the image: black from GRUB to the shell. It draws the same splash now, and has nothing to ask.
+/// plymouth's frame stays up until labwc holds the display (deploy/yantrik-os/boot-unlock/splash).
+///
+/// Between GRUB and plymouth's first frame (about 2 s on OVMF, #820) the screen is the kernel's
+/// console, which was black with a blinking cursor. [`CONSOLE_GROUND`] makes the console's black
+/// the splash's ground (#0e1117), so that moment is the same colour as GRUB before it and plymouth
+/// after it, and `vt.global_cursor_default=0` takes the cursor off it. The cursor comes back for
+/// every console opened after boot (boot-unlock/splash.d/cursor.conf) and on tty1 when the crash
+/// guard writes there (`splash console`). Neither touches the disk's password prompt: it is
+/// plymouth's, and cryptsetup's text prompt, when plymouth is not there, still writes its words.
+pub fn cmdline_default(_encrypted: bool) -> &'static str {
+    "quiet splash loglevel=3 plymouth.use-simpledrm plymouth.ignore-serial-consoles vt.global_cursor_default=0 vt.default_red=0x0e vt.default_grn=0x11 vt.default_blu=0x17"
 }
+
+/// The kernel console's colour 0 ("black"), the splash's ground, as `cmdline_default` sets it.
+/// Only the first entry of each of vt.default_{red,grn,blu} is given; the other 15 colours stay.
+pub const CONSOLE_GROUND: [u8; 3] = [0x0e, 0x11, 0x17];
 
 /// Record whose password opens the disk, after it is set. A failure costs only the signed-in
 /// start (the lock screen asks, as it always has), so it is logged, not fatal.
@@ -106,13 +118,26 @@ mod tests {
     }
 
     #[test]
-    fn only_an_encrypted_install_draws_the_pre_boot_screen() {
-        assert!(cmdline_default(true).split_whitespace().any(|w| w == "splash"));
-        assert!(cmdline_default(true).contains("loglevel=3"));
-        assert!(cmdline_default(true).contains("plymouth.use-simpledrm"), "the firmware's framebuffer, no GPU driver");
-        assert!(!cmdline_default(false).contains("splash"), "unencrypted boots as it did: nothing to ask");
-        assert!(cmdline_default(false).contains("loglevel=3"));
-        assert!(cmdline_default(false).contains("plymouth.enable=0"), "and plymouth, now in the image, stays off");
+    fn every_install_draws_the_boot_splash() {
+        for encrypted in [true, false] {
+            let line = cmdline_default(encrypted);
+            let words: Vec<&str> = line.split_whitespace().collect();
+            assert!(words.contains(&"splash"), "{line}");
+            assert!(words.contains(&"quiet") && words.contains(&"loglevel=3"), "{line}");
+            assert!(words.contains(&"plymouth.use-simpledrm"), "the firmware's framebuffer, no GPU driver: {line}");
+            assert!(words.contains(&"plymouth.ignore-serial-consoles"), "never on the serial line: {line}");
+            assert!(!line.contains("plymouth.enable=0"), "{line}");
+            // GRUB to plymouth's first frame: the console in the splash's ground, with no cursor
+            // (#820, the OVMF film: about 2 s of black with a blinking cursor).
+            assert!(words.contains(&"vt.global_cursor_default=0"), "{line}");
+            let [r, g, b] = CONSOLE_GROUND;
+            for word in [format!("vt.default_red={r:#04x}"), format!("vt.default_grn={g:#04x}"), format!("vt.default_blu={b:#04x}")] {
+                assert!(words.contains(&word.as_str()), "{word} in {line}");
+            }
+        }
+        // The splash's ground (boot-unlock/theme/yantrik.script, boot.slint): #0e1117.
+        assert_eq!(CONSOLE_GROUND, [0x0e, 0x11, 0x17]);
+        assert_eq!(cmdline_default(true), cmdline_default(false), "one boot line; only the prompt differs");
     }
 
     /// The pre-boot screen shows the account's name and layout, written into the initramfs on the
@@ -123,8 +148,7 @@ mod tests {
         assert!(slint.contains("on a screen that shows your name and keyboard layout before the disk is unlocked"));
     }
 
-    /// The text installer never encrypts, so its boot line is the unencrypted one: never `splash`,
-    /// which with plymouth in the image would start plymouthd at every boot and shutdown.
+    /// The text installer never encrypts, so its boot line is the unencrypted one, splash and all.
     #[test]
     fn the_text_installer_boots_as_an_unencrypted_install() {
         let script = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/yantrik-os/yantrik-install.sh"));
@@ -132,7 +156,6 @@ mod tests {
         assert_eq!(lines.len(), 1, "one boot line in yantrik-install.sh: {lines:?}");
         let wanted = format!("GRUB_CMDLINE_LINUX_DEFAULT=\"{}\"", cmdline_default(false));
         assert!(lines[0].contains(&wanted), "yantrik-install.sh writes {wanted}: {}", lines[0]);
-        assert!(!lines[0].split(|c: char| c.is_whitespace() || c == '"').any(|w| w == "splash"));
     }
 
     const BASE: &str = "cryptroot/crypttab\nusr/sbin/cryptsetup\nusr/lib/cryptsetup/askpass\n";

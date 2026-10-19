@@ -664,6 +664,20 @@ class Surface:
         finally:
             self._lock.release()
 
+    def busy_answer(self):
+        """What a describe gets when the app's thread did not answer it — or None for the timeout.
+
+        `snapshot` belongs to the app's thread, so a describe that cannot reach that thread has
+        nothing to say. An app whose thread is tied up doing something it can report on — a
+        render in flight — returns the same `(summary, state)` it would return from `snapshot`,
+        built from facts it kept somewhere readable while that thread was busy. Called on the
+        caller's thread, never the app's, so nothing it reads may need the app's thread.
+
+        The state is as of the last moment it was safe to read, which is why the summary has to
+        say what is happening now rather than pass the picture off as current.
+        """
+        return None
+
     # ── the wire handler ─────────────────────────────────────────────────────
 
     def handle(self, method, params):
@@ -678,17 +692,28 @@ class Surface:
             wire.RPC_METHOD_NOT_FOUND,
             "unknown method `%s`; this app serves app.describe, app.act" % method)
 
-    def _turn(self, fn, timeout):
+    def _turn(self, fn, timeout, busy=None):
         try:
             return self.run_on_app_thread(fn, timeout)
         except NotAnswered:
+            # A thread that did not turn up is the app not answering — unless it is tied up
+            # doing something it can report on, in which case it gets one chance to say that
+            # before the transport's words. Only the caller that asked for it (`busy`) may be
+            # answered this way: an act has to keep failing, since nothing ran.
+            if busy is not None:
+                answer = busy()
+                if answer is not None:
+                    return answer
             raise wire.RpcError(wire.RPC_TRANSPORT_ERROR,
                                 "app did not answer within %ds" % int(timeout)) from None
         except Refusal as r:
             raise wire.RpcError(wire.RPC_INVALID_PARAMS, str(r)) from None
 
     def _read(self):
-        summary, state = self.snapshot()
+        return self._as_read(self.snapshot())
+
+    def _as_read(self, pair):
+        summary, state = pair
         state = wire.jsonable(state, "the state of %s" % self.app_id)
         summary = str(summary)
         return summary, state, wire.revision(summary, state)
@@ -704,7 +729,19 @@ class Surface:
                 actions = [a.schema(self._grade(a)) for a in self.actions]
             return summary, state, revision, actions
 
-        summary, state, revision, actions = self._turn(read, self.describe_timeout)
+        def busy():
+            # The app's thread is tied up doing something it can report on. Answer from what it
+            # kept readable while that ran: the same actions, so a caller still knows what it
+            # could ask, and the revision of the state it is actually being given.
+            with _Scope(peer, None):
+                answer = self.busy_answer()
+                if answer is None:
+                    return None
+                summary, state, revision = self._as_read(answer)
+                actions = [a.schema(self._grade(a)) for a in self.actions]
+            return summary, state, revision, actions
+
+        summary, state, revision, actions = self._turn(read, self.describe_timeout, busy=busy)
         return {
             "app": self.app_id,
             "protocol": PROTOCOL,

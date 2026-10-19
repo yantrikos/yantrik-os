@@ -10,7 +10,6 @@ pub mod events;
 pub mod event_bus;
 pub mod entity_graph;
 pub mod observer;
-pub mod screenshot;
 /// The machine's volume (PipeWire, through wpctl) and its backlight (sysfs): what the shell's sliders read.
 pub mod audio;
 pub mod backlight;

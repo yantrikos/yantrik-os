@@ -2,19 +2,24 @@
 //
 // A person's words are a right-aligned bubble, at most 85% of the column, with 12/14 padding and a
 // 16px radius. A mind's reply has no bubble: a 6px teal dot in a 16px gutter, the mind's name at the
-// start of a run of its replies, and 16px text. The old "Open the run" link is gone from under
-// every reply; a reply that started work gets a WorkCard from the panel instead, and plain talk
-// gets nothing under it.
+// start of a run of its replies, and 16px text. Teal marks a mind and nothing else; the desktop
+// speaking for itself gets a neutral dot and its own label so it is never read as the mind's.
 //
-// The mind's tool calls are not the reply. They stay on the record (the Agents pane draws them as
-// cards), and here they sit behind one quiet "Show actions" line, so a person reads the answer and
-// not a column of `os_act` lines. Teal marks a mind and nothing else; the desktop speaking for
-// itself gets a neutral dot and its own label so it is never read as the mind's.
+// The mind's work is not the reply's words. It is the reply's timeline (TimelineLine), above the
+// words and the one place the Lens shows it: "Thought for 5 s", a quiet line per step that opens
+// on a click, a question as its card where it was asked, and one live line while the reply
+// arrives. The words under it never hold a step, a status or a heartbeat line. The card under a
+// reply and the strip above the composer that said the same thing are gone from the Lens.
+//
+// A message queued while the mind works ("queued") is the person's bubble drawn as not sent yet:
+// an outline instead of the fill, and under it whose finishing sends it, with × to take it back.
+// One taken back while others stood after it ("withdrawn") draws nothing.
 
 import { Theme } from "theme.slint";
-import { MessageData } from "message_bubble.slint";
-import { ToolCallCard } from "tool_call.slint";
+import { MessageData, ContentBlock } from "message_bubble.slint";
 import { ChatPill } from "chat_parts.slint";
+import { QuestionRequest } from "question_card.slint";
+import { TimelineLine } from "reply_timeline.slint";
 
 export component ChatMessage inherits Rectangle {
     in property <MessageData> data;
@@ -22,17 +27,29 @@ export component ChatMessage inherits Rectangle {
     in property <string> mind-name;
     // True when the previous message was from someone else (or there was none).
     in property <bool> group-start: true;
+    // This reply's timeline while it arrives (wire/lens_timeline.rs), above the words. Empty for
+    // every other message; a reply that has ended carries its own, folded, in its blocks.
+    in property <[ContentBlock]> live: [];
+    // The questions waiting in the Lens, for a waiting question's card in the timeline.
+    in property <[QuestionRequest]> questions: [];
+    // A queued message's line: whose finishing sends it, and a note when it replaced an earlier one.
+    in property <string> queued-mind: "";
+    in property <string> queued-note: "";
 
     // The desktop's own offer, while private, to leave Private mode: the one link a reply still
     // carries, because it is the desktop speaking and not a run.
     callback open-run(string);
+    callback question-answer(string, string, string, bool);   // agent id, request id, answer, pressed
+    callback cancel-queued();
 
-    property <bool> is-user: root.data.role == "user";
+    property <bool> is-queued: root.data.role == "queued";
+    property <bool> is-withdrawn: root.data.role == "withdrawn";
+    property <bool> is-user: root.data.role == "user" || root.is-queued;
     property <bool> is-desktop: root.data.role == "desktop";
     property <bool> has-blocks: root.data.blocks.length > 0 && !root.data.is-streaming;
-    property <bool> actions-open: false;
 
-    height: wrap.preferred-height;
+    height: root.is-withdrawn ? 0px : wrap.preferred-height;
+    visible: !root.is-withdrawn;
     background: transparent;
 
     wrap := VerticalLayout {
@@ -47,21 +64,62 @@ export component ChatMessage inherits Rectangle {
                 width: parent.bubble-w;
                 height: parent.height;
                 border-radius: Theme.chat-radius;
-                background: Theme.chat-user-bubble;
+                background: root.is-queued ? transparent : Theme.chat-user-bubble;
+                border-width: root.is-queued ? 1px : 0px;
+                border-color: Theme.chat-border;
 
                 label := Text {
                     x: 14px;
                     y: 12px;
                     width: parent.width - 28px;
                     text: root.data.content;
-                    color: Theme.chat-user-text;
+                    color: root.is-queued ? Theme.chat-text : Theme.chat-user-text;
                     font-size: Theme.fs-title-2;
                     wrap: word-wrap;
                 }
             }
         }
 
-        if !root.is-user : HorizontalLayout {
+        // Under a queued message: when it goes, and the way to take it back before it does.
+        if root.is-queued : HorizontalLayout {
+            padding-left: Theme.sp-6;
+            padding-right: Theme.sp-4;
+            padding-top: Theme.sp-1;
+            alignment: end;
+            spacing: Theme.sp-1;
+            Text {
+                text: "Sends when " + root.queued-mind + " finishes"
+                    + (root.queued-note != "" ? " \u{00b7} " + root.queued-note : "");
+                color: Theme.chat-text-2;
+                font-size: Theme.fs-caption;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                horizontal-alignment: right;
+                horizontal-stretch: 1;
+            }
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: cancel-ta.has-hover ? Theme.hover-fill : transparent;
+                accessible-role: button;
+                accessible-label: "Don\u{2019}t send this message";
+                accessible-action-default => { root.cancel-queued(); }
+                cancel-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.cancel-queued(); }
+                }
+                Text {
+                    text: "\u{00d7}";
+                    color: Theme.chat-text-2;
+                    font-size: Theme.fs-body;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if !root.is-user && !root.is-withdrawn : HorizontalLayout {
             padding-left: Theme.sp-3;
             padding-right: Theme.sp-6;
             spacing: Theme.sp-2;
@@ -83,8 +141,12 @@ export component ChatMessage inherits Rectangle {
                 horizontal-stretch: 1;
                 spacing: 0;
 
+                // The mind that said it, kept on the message: switching mind never relabels the
+                // past (#673). A message from before minds were kept on it reads as the mind now.
                 if root.group-start : Text {
-                    text: root.is-desktop ? "From the desktop" : root.mind-name;
+                    text: root.is-desktop ? "From the desktop"
+                        : (root.data.mind != "" ? root.data.mind : root.mind-name)
+                          + (root.data.model != "" ? " · " + root.data.model : "");
                     color: Theme.chat-text-2;
                     font-size: Theme.fs-caption;
                     font-weight: 600;
@@ -92,12 +154,43 @@ export component ChatMessage inherits Rectangle {
                 }
                 if root.group-start : Rectangle { height: Theme.sp-1; }
 
-                // Streaming, or no parsed blocks: the plain text.
-                if !root.has-blocks : Text {
+                // The timeline while the reply arrives, above the words still coming in: what the
+                // mind has done. What it is doing now goes under the words (below).
+                if root.data.is-streaming && root.live.length > 0 : VerticalLayout {
+                    padding-bottom: root.data.content != "" ? Theme.sp-2 : 0px;
+                    spacing: 2px;
+                    for block in root.live : VerticalLayout {
+                        if !(block.block-type == "status" || (block.block-type == "question" && block.call.status == "waiting")) : TimelineLine {
+                            block: block;
+                        }
+                    }
+                }
+
+                // Streaming, or no parsed blocks: the plain text. Nothing yet while the first
+                // words have not arrived, so an empty line does not sit under the timeline.
+                if !root.has-blocks && (root.data.content != "" || !root.data.is-streaming) : Text {
                     text: root.data.content;
                     color: Theme.chat-text;
                     font-size: Theme.fs-title-2;
                     wrap: word-wrap;
+                }
+
+                // What the mind is doing now, under the words, where the person is looking: the
+                // live line ("Thinking…", "Looking at your calendar…"), or the card of a question
+                // it waits on, in the order Hermes sends them (it flushes its prose before it
+                // asks). Above the words, a long explanation pushed the card out of view while
+                // the Lens followed the reply's end; and once a card was answered, the live line
+                // that took its place sat at the top, so after a tap nothing moved where the
+                // person had tapped (VM 541, 14 Oct).
+                if root.data.is-streaming && root.live.length > 0 : VerticalLayout {
+                    padding-top: root.data.content != "" ? Theme.sp-2 : 0px;
+                    for block in root.live : VerticalLayout {
+                        if block.block-type == "status" || (block.block-type == "question" && block.call.status == "waiting") : TimelineLine {
+                            block: block;
+                            questions: root.questions;
+                            answered(agent, request, answer, pressed) => { root.question-answer(agent, request, answer, pressed); }
+                        }
+                    }
                 }
 
                 if root.data.run == "private:leave" && !root.data.is-streaming : HorizontalLayout {
@@ -110,33 +203,25 @@ export component ChatMessage inherits Rectangle {
                 }
 
                 for block[i] in root.data.blocks : VerticalLayout {
-                    property <bool> is-tool: block.block-type == "tool";
+                    // A line of the reply's timeline: thinking, a step, a question, or a call its
+                    // own text told ("tool", in a reply from before the timeline).
+                    property <bool> is-line: block.block-type == "thinking" || block.block-type == "step"
+                        || block.block-type == "question" || block.block-type == "status" || block.block-type == "tool";
                     property <bool> is-code: block.block-type == "code";
+                    property <string> before: i > 0 ? root.data.blocks[i - 1].block-type : "";
+                    property <bool> after-line: before == "thinking" || before == "step" || before == "question"
+                        || before == "tool";
                     // A Rectangle takes no size from an `if` child, so each block sits in a layout
                     // (#125, #211); a block that is not drawn is simply an empty layout.
                     padding-left: block.block-type == "bullet" ? 8px : 0px;
-                    // Spacing lives here, not on the column: a tool block that is not drawn must
-                    // not leave a gap behind it.
-                    padding-bottom: is-tool || !root.has-blocks ? 0px : Theme.sp-1;
+                    // The words start a little below the last line of the timeline over them.
+                    padding-top: root.has-blocks && !is-line && after-line ? Theme.sp-2 : 0px;
+                    padding-bottom: !root.has-blocks ? 0px : is-line ? 2px : Theme.sp-1;
 
-                    // "Show actions" once for each run of consecutive tool calls.
-                    if root.has-blocks && is-tool && (i == 0 || root.data.blocks[i - 1].block-type != "tool") : Rectangle {
-                        height: 24px;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.actions-open = !root.actions-open; }
-                        }
-                        Text {
-                            text: root.actions-open ? "Hide actions" : "Show actions";
-                            color: Theme.chat-text-2;
-                            font-size: Theme.fs-caption;
-                            vertical-alignment: center;
-                        }
+                    if root.has-blocks && is-line : TimelineLine {
+                        block: block;
                     }
-                    if root.has-blocks && is-tool && root.actions-open : ToolCallCard {
-                        call: block.call;
-                    }
-                    if root.has-blocks && !is-tool && !is-code : Text {
+                    if root.has-blocks && !is-line && !is-code : Text {
                         text: block.text;
                         color: Theme.chat-text;
                         font-size: block.block-type == "heading" ? Theme.fs-title-1 : Theme.fs-title-2;

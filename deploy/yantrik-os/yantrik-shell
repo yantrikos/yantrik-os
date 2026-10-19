@@ -15,6 +15,13 @@
 #   - the shell keeps dying: YANTRIK_SHELL_MAX_CRASHES exits inside YANTRIK_SHELL_WINDOW_SECS
 #     is a crash loop, and starting it a sixth time only burns the CPU. It says so and stops.
 #
+# Whenever the shell ends, for any reason, a screen recording it started is stopped before
+# anything else is decided. A recording runs in a user unit of its own (yantrik-capture-rec-*), not
+# as the shell's child, so it outlived the shell: between a crash and the restart it recorded with
+# no red dot, and after the crash-loop limit it recorded the desktop with no dot and no lock screen
+# until the disk filled (security review of #828, finding 2). `systemctl --user stop` sends the
+# unit's SIGINT, which finishes the file, so what was recorded is kept and playable.
+#
 # A restart on purpose (a deploy replacing the binary) is `kill` of the shell: this brings the
 # new one up. It counts toward the loop limit like any other exit, which a person replacing
 # the binary five times in two minutes can live with.
@@ -27,6 +34,12 @@ BIN="${YANTRIK_SHELL_BIN:-/opt/yantrik/bin/yantrik-ui}"
 MAX_CRASHES="${YANTRIK_SHELL_MAX_CRASHES:-5}"
 WINDOW_SECS="${YANTRIK_SHELL_WINDOW_SECS:-120}"
 PAUSE_SECS="${YANTRIK_SHELL_PAUSE_SECS:-1}"
+
+# Stop every recording a shell started (see above). Never fails the supervisor: no systemd user
+# manager, or no recording, is nothing to stop.
+stop_recordings() {
+  ${YANTRIK_SHELL_SYSTEMCTL:-systemctl} --user stop 'yantrik-capture-rec-*' >/dev/null 2>&1 || true
+}
 
 # The compositor is gone when its socket is. With no WAYLAND_DISPLAY at all there is no way to
 # tell, and the shell is started again: the loop limit is the backstop.
@@ -44,6 +57,7 @@ supervise() {
   while :; do
     "$BIN" "$@"
     code=$?
+    stop_recordings
     if display_gone; then
       echo "yantrik-shell: the shell ended ($code) and the display has gone with it; the session is over"
       return 0
@@ -86,6 +100,13 @@ sed -i '1d' "$dir/codes" 2>/dev/null
 exit "$code"
 FAKE
   chmod +x "$root/fake"
+  # A systemctl that records what it was asked, and whether the shell was still running then
+  # (it never is: the stop follows each exit).
+  cat >"$root/systemctl" <<'FAKE'
+#!/bin/sh
+echo "$*" >>"$(dirname "$0")/stops"
+FAKE
+  chmod +x "$root/systemctl"
   python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "$root/display" 2>/dev/null \
     || { echo "  skip  no python3 to make a socket with"; return 0; }
 
@@ -99,9 +120,19 @@ FAKE
     fi
     rm -f "$root/runs" "$root/codes"
   }
+  stopped() { # name expected-stops
+    stops=$(grep -c "^--user stop yantrik-capture-rec-\*$" "$root/stops" 2>/dev/null || echo 0)
+    if [ "$stops" -eq "$2" ]; then
+      echo "  ok    $1"
+    else
+      echo "  FAIL  $1: recordings stopped $stops times (wanted $2)"
+      fails=$((fails + 1))
+    fi
+    rm -f "$root/stops"
+  }
   run() { # display-gone-after-run max-exits
     GONE_AFTER="$1" YANTRIK_SHELL_MAX_CRASHES="$2" YANTRIK_SHELL_BIN="$root/fake" \
-      WAYLAND_DISPLAY="$root/display" sh "$0" config >/dev/null 2>&1
+      YANTRIK_SHELL_SYSTEMCTL="$root/systemctl" WAYLAND_DISPLAY="$root/display" sh "$0" config >/dev/null 2>&1
   }
   display() { python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "$root/display"; }
 
@@ -109,15 +140,18 @@ FAKE
   #    person logs out (the display goes, 0).
   printf '101\n139\n0\n' >"$root/codes"
   run 3 5; check "a shell that crashes is started again, twice, until the session ends" 3 0 $?
+  stopped "a recording is stopped after every exit, so none runs with no red dot" 3
   display
 
   # 2. A crash loop stops rather than spinning: five exits inside the window, and no sixth start.
   printf '101\n101\n101\n101\n101\n101\n101\n' >"$root/codes"
   run "" 5; check "a shell that keeps dying is not started a sixth time" 5 101 $?
+  stopped "and when it is given up on, no recording is left running with no dot and no lock" 5
 
   # 3. A logout: the shell ends because the display went away, and nothing is restarted.
   printf '0\n' >"$root/codes"
   run 1 5; check "an ending with the display gone ends the session" 1 0 $?
+  stopped "a logout stops a recording too" 1
   display
 
   # 4. A deploy's `kill` (143) with the display still there brings the new binary up.

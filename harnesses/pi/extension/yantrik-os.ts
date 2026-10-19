@@ -54,6 +54,18 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 const BRIDGE = process.env.YOS_MCP_BIN || "/opt/yantrik/bin/yos-mcp";
 
 /**
+ * YantrikDB, this Pi's memory (#677): `yantrikdb-mcp`, named by the harness (`yantrik_pi.py`) when
+ * memory is on, with the file and embedder in the environment it hands Pi. Empty: no memory tools.
+ * Its tools arrive as `memory_remember`, `memory_recall`, ... and only the four a mind needs.
+ */
+const MEMORY = process.env.YANTRIKDB_MCP_BIN || "";
+const MEMORY_TOOLS = ["remember", "recall", "forget", "correct"];
+const MEMORY_PREFIX = "memory_";
+/** Who every memory written here says wrote it. Set by the harness, never by the model. */
+const MEMORY_SOURCE = process.env.YANTRIK_MEMORY_SOURCE || "pi";
+const MEMORY_TIMEOUT_MS = 60_000;
+
+/**
  * How long one tool call may take.
  *
  * An `os_act` above this session's ceiling asks the person and waits for them inside the
@@ -200,7 +212,7 @@ class Bridge {
  * Writes both lines and closes stdin; the bridge answers each and exits at EOF. Returns an
  * empty list rather than throwing, so a machine with no bridge still starts Pi.
  */
-function listToolsSync(): McpTool[] {
+function listToolsSync(command: string = BRIDGE): McpTool[] {
 	const input =
 		JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT } }) +
 		"\n" +
@@ -208,7 +220,7 @@ function listToolsSync(): McpTool[] {
 		"\n";
 	let out: string;
 	try {
-		const probe = spawnSync(BRIDGE, [], { input, encoding: "utf8", timeout: LIST_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
+		const probe = spawnSync(command, [], { input, encoding: "utf8", timeout: LIST_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
 		if (probe.error || probe.status !== 0) return [];
 		out = probe.stdout || "";
 	} catch {
@@ -278,6 +290,16 @@ export default function (pi: ExtensionAPI) {
 			registerOne(pi, bridge, tool, schema);
 		} catch (err: any) {
 			console.error(`yantrik-os: could not register ${tool.name}: ${err?.message || err}`);
+		}
+	}
+
+	if (MEMORY) {
+		for (const tool of listToolsSync(MEMORY).filter((t) => MEMORY_TOOLS.includes(t.name))) {
+			try {
+				registerMemory(pi, tool);
+			} catch (err: any) {
+				console.error(`yantrik-os: could not register memory ${tool.name}: ${err?.message || err}`);
+			}
 		}
 	}
 
@@ -468,6 +490,104 @@ function registerBash(pi: ExtensionAPI, bridge: Bridge) {
 				}
 				return fail(String(err?.message || err));
 			}
+		},
+	});
+}
+
+// ── YantrikDB, this Pi's memory ──────────────────────────────────────────────────────────
+//
+// One short-lived `yantrikdb-mcp` per call, not a long-lived one: each Pi conversation is a Pi
+// process of its own, and the engine keeps its index in the process that opened the file, so a
+// long-lived server per conversation would not see what another conversation remembered after it
+// started. A fresh one opens the file as it is now.
+
+/** A remember's arguments with this harness as the source of every memory in it. */
+export function stamped(params: any, source: string = MEMORY_SOURCE): any {
+	const args = { ...(params && typeof params === "object" ? params : {}) };
+	args.source = source;
+	const meta = args.metadata && typeof args.metadata === "object" ? args.metadata : {};
+	args.metadata = { ...meta, provenance: source };
+	if (Array.isArray(args.memories)) {
+		args.memories = args.memories.map((m: any) =>
+			m && typeof m === "object"
+				? { ...m, source, metadata: { ...(m.metadata && typeof m.metadata === "object" ? m.metadata : {}), provenance: source } }
+				: m,
+		);
+	}
+	return args;
+}
+
+/** One `tools/call` to a fresh server: initialize, call, close stdin, read the call's answer. */
+function callOnce(command: string, name: string, params: unknown, signal?: AbortSignal): Promise<JsonRpc> {
+	return new Promise<JsonRpc>((resolve, reject) => {
+		const child = spawn(command, [], { stdio: ["pipe", "pipe", "ignore"] });
+		let buffer = "";
+		let done = false;
+		const finish = (fn: () => void) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			fn();
+		};
+		const timer = setTimeout(() => {
+			child.kill();
+			finish(() => reject(new Error(`memory ${name} did not answer within ${MEMORY_TIMEOUT_MS / 1000}s`)));
+		}, MEMORY_TIMEOUT_MS);
+		const onAbort = () => {
+			child.kill();
+			finish(() => reject(new Error("stopped before the memory answered")));
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (piece: string) => {
+			buffer += piece;
+			let cut: number;
+			while ((cut = buffer.indexOf("\n")) >= 0) {
+				const line = buffer.slice(0, cut).trim();
+				buffer = buffer.slice(cut + 1);
+				try {
+					const msg: JsonRpc = JSON.parse(line);
+					if (msg.id === 2) finish(() => resolve(msg));
+				} catch {
+					/* a stray line is not the answer */
+				}
+			}
+		});
+		child.on("error", (err) => finish(() => reject(new Error(`the memory could not be run: ${err.message}`))));
+		child.on("exit", (code) => finish(() => reject(new Error(`the memory exited (${code}) before it answered`))));
+		const lines = [
+			{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT } },
+			{ jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+			{ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: params ?? {} } },
+		];
+		child.stdin.end(lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+	});
+}
+
+function registerMemory(pi: ExtensionAPI, tool: McpTool) {
+	const schema = tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : { type: "object", properties: {} };
+	pi.registerTool({
+		name: MEMORY_PREFIX + tool.name,
+		label: `memory ${tool.name}`,
+		description: tool.description || `YantrikDB's ${tool.name}.`,
+		parameters: Type.Unsafe(schema as any),
+		async execute(_toolCallId: string, params: unknown, signal?: AbortSignal) {
+			const args = tool.name === "remember" ? stamped(params) : params;
+			let msg: JsonRpc;
+			try {
+				msg = await callOnce(MEMORY, tool.name, args, signal);
+			} catch (err: any) {
+				return { content: [{ type: "text", text: String(err?.message || err) }], isError: true, details: {} };
+			}
+			if (msg.error) {
+				return { content: [{ type: "text", text: String(msg.error?.message || msg.error) }], isError: true, details: {} };
+			}
+			return {
+				content: [{ type: "text", text: textOf(msg) || "(the memory returned nothing)" }],
+				isError: Boolean(msg.result?.isError),
+				details: {},
+			};
 		},
 	});
 }

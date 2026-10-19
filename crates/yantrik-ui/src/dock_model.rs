@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn the_mind_button_is_a_glyph_not_a_tile() {
         let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/components/grounded_dock.slint")).unwrap();
-        let mind = &src[src.find("// ── Yantrik Mind ──").expect("the mind button")..];
+        let mind = &src[src.find("// ── The mind ──").expect("the mind button")..];
         let mind = &mind[..mind.find("// ── Show desktop ──").expect("the next section")];
         assert!(mind.contains("DockBtn {"), "the same 40px button, so the same hit area and label");
         assert!(mind.contains("width: Theme.dock-icon;") && mind.contains("height: Theme.dock-icon;"), "the same 32px footprint");

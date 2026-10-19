@@ -236,6 +236,17 @@ jobs:
       - name: The Mind's launcher gives it its name and its person's
         run: python3 deploy/yantrik-os/yantrik-mind-launch-selftest.py
 
+      # The live instance's Director: it resumes a stopped build, holds a FINISHED to the page
+      # loading clean, and goes round the finished builds in polish rounds rather than idling.
+      - name: The live Director keeps its Mind building
+        run: python3 deploy/live/director/director-selftest.py
+
+      # Every mission is a task contract: a malformed report is refused whole, nothing the
+      # Director or the Mind's account can send accepts one, and revisions and events are never
+      # rewritten. Run as root here, it also tries the real service as another account.
+      - name: The live Director's contracts are accepted only by a person
+        run: sudo python3 deploy/live/director/contracts-selftest.py
+
       # First boot left git with no identity, so `git commit` from a mind, an editor or a
       # harness died with "Please tell me who you are" (#680). This runs the session's
       # defaulting block under a temporary HOME with the account faked.
@@ -271,7 +282,9 @@ jobs:
 
       # Intel Macs (the Mac mini 2012). A fake sysfs and dry runs: the Broadcom BCM4331 gets wl
       # when headers exist and b43 when they do not, each blacklisting the other, nothing is
-      # fetched offline, and a USB dongle is not mistaken for the chip. Then mbpfan's settings:
+      # fetched offline, and a USB dongle is not mistaken for the chip. Its recover reloads wl only
+      # when wl's scanning has wedged, at most once per five minutes and backing off to an hour,
+      # through fake nmcli and modprobe. Then mbpfan's settings:
       # the Mac mini's 1800-5500 rpm, the SMC's own limits elsewhere, a person's edits kept.
       - name: A Mac's Wi-Fi driver is fetched, not shipped, and never fights the other driver
         run: bash deploy/yantrik-os/yantrik-broadcom-wifi selftest
@@ -286,6 +299,10 @@ jobs:
           test -L "$link"
           # The link is absolute: its target must exist inside the rootfs, not on this runner.
           test -f "$root$(readlink "$link")"
+          link="$root/etc/systemd/system/timers.target.wants/yantrik-broadcom-wifi-recover.timer"
+          test -L "$link"
+          test -f "$root$(readlink "$link")"
+          test -f "$root/etc/systemd/system/yantrik-broadcom-wifi-recover.service"
           test -f "$root/etc/systemd/system/mbpfan.service.d/yantrik-apple.conf"
 
       # The one-password start (#646): the disk's password typed once, on the pre-boot screen,
@@ -300,6 +317,16 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq initramfs-tools cryptsetup-initramfs \
             plymouth plymouth-label console-setup busybox fonts-dejavu-core kbd xkb-data jq > /dev/null
           sudo sh deploy/yantrik-os/boot-unlock/initramfs-check.sh --scratch-system
+      # The boot menu's theme (stage-grub-theme.sh). GRUB's built-in font draws ASCII and nothing
+      # else, so the stock menu's box lines and the dash in an entry's name were missing-glyph
+      # boxes on the first thing a newcomer sees (13 Oct 2026). The fonts are made from DejaVu
+      # Sans, every font theme.txt names must be one of them and carry every character it writes,
+      # and every menu entry the ISO build writes is ASCII.
+      - name: The boot menu draws every character it uses
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends grub-common fonts-dejavu-core > /dev/null
+          sh deploy/yantrik-os/stage-grub-theme.sh selftest
       - name: The live system's shutdown never ejects an internal disk or waits for ENTER
         run: sh deploy/yantrik-os/yantrik-live-medium-eject selftest
 

@@ -8,8 +8,9 @@
 //! 3. Open new perspectives on familiar topics
 //! 4. Connect ideas across different conversations
 //!
-//! The questions should feel like they come from a friend who's been
-//! genuinely THINKING about what you told them.
+//! The questions build on something the person said, and say when they said it. They never
+//! claim the companion "was thinking about" it (#755: evidence, never testimony), and they never
+//! mine past experiences for more feeling — pain is met when the person raises it.
 
 use yantrik_companion_core::bond::BondLevel;
 use crate::Instinct;
@@ -34,7 +35,7 @@ const QUESTION_STYLES: &[QuestionStyle] = &[
         prompt: "Use recall with query \"beliefs opinions assumptions strong feelings\" to find \
                  a strong opinion or assumption {user} holds. \
                  Ask a question that gently challenges it — not to argue, but to explore. \
-                 Frame it as genuine curiosity: 'I was thinking about what you said about X — \
+                 Frame it as genuine curiosity: 'On Tuesday you said X — \
                  what would change your mind about that?' or 'What would someone who disagrees \
                  with you on X say that you'd have to take seriously?'",
         min_bond: BondLevel::Friend,
@@ -67,15 +68,8 @@ const QUESTION_STYLES: &[QuestionStyle] = &[
                  Make it fun and thought-provoking, not pretentious.",
         min_bond: BondLevel::Friend,
     },
-    QuestionStyle {
-        name: "experience_mining",
-        prompt: "Use recall with query \"experiences stories mentioned things that happened\" \
-                 to find an experience {user} mentioned but didn't fully explore. \
-                 Ask a question that invites them to reflect on it: 'You mentioned X happened — \
-                 looking back, what did that teach you?' or 'You told me about X — what part \
-                 of that experience sticks with you the most?'",
-        min_bond: BondLevel::Friend,
-    },
+    // No "experience_mining" style (#755): asking what an experience taught someone, or what
+    // part of it sticks with them, extracts more from things they chose not to go further into.
 ];
 
 struct QuestionStyle {
@@ -170,7 +164,8 @@ impl Instinct for QuestionAskingInstinct {
                  \nRULES:\n\
                  - The question MUST emerge from something specific in their memory — NOT a generic ice-breaker.\n\
                  - Keep it to 1-2 sentences. Natural, conversational tone.\n\
-                 - Add a brief lead-in that shows you were thinking about what they said.\n\
+                 - Add a brief lead-in that says what they said and when (\"On Tuesday you said...\").\n\
+                 - Never ask about painful, health, or relationship experiences.\n\
                  - If recall returns nothing useful to build on, respond with just \"No question today.\"\n\
                  - Do NOT ask about things they just told you in this conversation — \
                    reference things from previous conversations.",

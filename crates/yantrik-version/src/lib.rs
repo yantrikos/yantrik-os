@@ -33,7 +33,7 @@
 //!    `yantrik-update` on every apply and rollback. It is also the field `yantrik-update`
 //!    compares to decide whether an update exists, so agreeing with it is the point.
 //! 3. `YANTRIK_BUILD_VERSION`, baked by this crate's `build.rs` from the same
-//!    `git describe --tags --always --dirty` the release scripts run. This is the answer during
+//!    `git describe --tags --match "v[0-9]*" --always --dirty` the release scripts run. This is the answer during
 //!    development, where there is no installed tree to read.
 //! 4. This crate's own package version, as a last resort.
 //!
@@ -113,6 +113,24 @@ fn resolve<'a>(
         .unwrap_or(cargo)
 }
 
+/// A version as a person reads it: `v0.1.0-1572-gf063fcef` (git describe: tag, commits since,
+/// commit) → "0.1.0, build 1572"; `v0.2.0` → "0.2.0". Anything else is said as it is. The exact
+/// string stays where it is needed to report a problem (About, `--version`, `describe`); Settings
+/// showed it as the OS's version and the sweep of 17 October read it as a code.
+pub fn plain(version: &str) -> String {
+    let v = version.trim();
+    let bare = v.strip_prefix('v').unwrap_or(v);
+    let parts: Vec<&str> = bare.split('-').collect();
+    let semver = |s: &str| !s.is_empty() && s.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    match parts.as_slice() {
+        [tag] if semver(tag) => tag.to_string(),
+        [tag, count, commit] if semver(tag) && count.chars().all(|c| c.is_ascii_digit()) && commit.starts_with('g') => {
+            format!("{tag}, build {count}")
+        }
+        _ => v.to_string(),
+    }
+}
+
 /// Answer `--version` on the command line and exit, or return and let the program start.
 ///
 /// Called from `init_tracing` in the app runtime, which is the first line of every app binary's
@@ -126,6 +144,13 @@ pub fn handle_version_flag(program: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_version_is_said_without_the_commit() {
+        assert_eq!(super::plain("v0.1.0-1572-gf063fcef"), "0.1.0, build 1572");
+        assert_eq!(super::plain("v0.2.0"), "0.2.0");
+        assert_eq!(super::plain("f063fcef-90-g7be5de4"), "f063fcef-90-g7be5de4", "not a release: said as it is");
+    }
+
     use super::*;
 
     /// A real marker, copied off the live machine on 2026-09-21.

@@ -113,11 +113,104 @@ export component ChatHeader inherits Rectangle {
 // in the composer and stops: nothing is sent until the person sends it.
 export component ChatEmpty inherits Rectangle {
     in property <string> mind-name;
+    // The first run's first success: three first tasks that do something real and visible on this
+    // desktop, each sent with one press, and Type · Talk. The cursor is in the composer, so typing
+    // works at once (13 Oct: the hand-over ended on a chat that took no keys until clicked). The
+    // same three are the Lens's suggestions on a machine with no history (lens.rs, FIRST_TASKS).
+    in property <bool> first-run: false;
     callback starter(string);
+    // A first task, pressed: sent as it is.
+    callback task(string);
+    callback type-chosen();
+    callback talk-chosen();
 
     background: transparent;
 
-    VerticalLayout {
+    if root.first-run : VerticalLayout {
+        alignment: center;
+        padding: Theme.sp-6;
+        spacing: Theme.sp-3;
+        Text {
+            text: "What would you like help with?";
+            color: Theme.chat-text;
+            font-size: Theme.fs-title-1;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Type below, or press one of these to see it work.";
+            color: Theme.chat-text-2;
+            font-size: Theme.fs-body;
+            wrap: word-wrap;
+        }
+        for first-task in [
+            "Make a note called Groceries with milk, eggs and bread",
+            "What's on my calendar this week?",
+            "Open Files and show me what's in Documents",
+        ] : Rectangle {
+            height: task-text.preferred-height + 20px;
+            border-radius: Theme.r-md;
+            background: task-ta.has-hover ? Theme.hover-fill : transparent;
+            border-width: task-fs.has-focus ? Theme.focus-ring-width : 1px;
+            border-color: task-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+            accessible-role: button;
+            accessible-label: first-task;
+            accessible-action-default => { root.task(first-task); }
+            task-fs := FocusScope {
+                key-pressed(event) => {
+                    if (event.text == "\n" || event.text == " ") { if !event.repeat { root.task(first-task); } return accept; }
+                    reject
+                }
+            }
+            task-ta := TouchArea { mouse-cursor: pointer; clicked => { root.task(first-task); } }
+            task-text := Text {
+                x: Theme.sp-4;
+                width: parent.width - 2 * Theme.sp-4;
+                text: first-task;
+                color: Theme.chat-text;
+                font-size: Theme.fs-title-2;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+        HorizontalLayout {
+            alignment: start;
+            spacing: Theme.sp-2;
+            for choice[i] in ["Type", "Talk"] : Rectangle {
+                width: ch-text.preferred-width + 2 * Theme.sp-4;
+                height: ch-text.preferred-height + 14px;
+                border-radius: Theme.r-md;
+                background: ch-ta.has-hover ? Theme.hover-fill : transparent;
+                border-width: ch-fs.has-focus ? Theme.focus-ring-width : 1px;
+                border-color: ch-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+                accessible-role: button;
+                accessible-label: choice;
+                accessible-action-default => { if i == 0 { root.type-chosen(); } else { root.talk-chosen(); } }
+                ch-fs := FocusScope {
+                    key-pressed(event) => {
+                        if (event.text == "\n" || event.text == " ") {
+                            if i == 0 { root.type-chosen(); } else { root.talk-chosen(); }
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+                ch-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { if i == 0 { root.type-chosen(); } else { root.talk-chosen(); } }
+                }
+                ch-text := Text {
+                    text: choice;
+                    color: Theme.chat-text;
+                    font-size: Theme.fs-title-2;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    if !root.first-run : VerticalLayout {
         alignment: center;
         padding: Theme.sp-6;
         spacing: Theme.sp-3;

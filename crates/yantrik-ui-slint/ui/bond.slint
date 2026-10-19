@@ -1,8 +1,13 @@
-// Interaction history (the Bond screen).
-// Shows the usage-derived level, how it was counted, and the plain counts it was counted from.
-// Headed "Interaction history", not "Bond", and the level labelled as derived from use (review of
-// the UI overhaul by GPT-6 Astra, H): it counts conversation, and says nothing about whether a
-// mind understands the person, can be relied on, or may do anything. The scoring is unchanged.
+// Interaction history (the old Bond screen).
+// Plain facts about use: how many turns of conversation, over how many days. Nothing else.
+//
+// It used to show a level ("Partner-in-Crime, Level 5 of 5"), the formula that scored it, a streak
+// ("6 days in a row"), a count of messages that said how you felt and a humor rate. The design
+// rules ban all five (no manufactured pull: no score to grind, no run to keep up, nothing counted
+// about a person's feelings), and Pranab and Astra had already decided the screen is "Interaction
+// history, not relationship gamification". The sweep of 17 October found them still drawn
+// (design/ui-sweep-2026-10-17.md, root cause 2). The companion still keeps its bond state in its
+// own store, where its voice and wording read it; this screen does not draw it.
 
 import { Theme } from "theme.slint";
 import { Icons } from "components/icon.slint";
@@ -10,22 +15,15 @@ import { AppHeader } from "components/app_header.slint";
 import { AppColor } from "components/app_color.slint";
 
 export struct BondData {
-    // False until the companion worker has pushed the store's bond once. This struct's Slint
-    // default used to read "Stranger, 0.0", and the machine rail and `describe shell` showed
-    // that as the relationship for the window between boot and the first push — two minutes
-    // after a restart, over a store that said Partner-in-Crime. Until this is true there is
-    // no level to show, and nothing below is to be read as one.
+    // False until the companion worker has pushed the store's bond once. Until it is true there
+    // is nothing measured to show, and the screen says so rather than drawing zeros.
     loaded: bool,
+    // Read by `describe shell` (control.rs `describe_bond`), not drawn here.
     bond-score: float,
     bond-level: string,
-    // Which of the five levels, 1 (Stranger) to 5 (Partner-in-Crime): "Level 4 of 5".
-    level-number: int,
     total-interactions: int,
+    // Calendar days from the first conversation, the first day counted as one.
     days-together: int,
-    current-streak: int,
-    humor-rate: float,
-    vulnerability-events: int,
-    shared-references: int,
 }
 
 export component BondScreen inherits Rectangle {
@@ -69,200 +67,76 @@ export component BondScreen inherits Rectangle {
             back => { root.back-pressed(); }
         }
 
-        // Scrollable content
         Flickable {
             vertical-stretch: 1;
-            // Without this the column lays itself out at its own preferred width and the stats
-            // card sits in a ribbon down the left, leaving the right half of the screen empty.
-            // A Flickable's viewport defaults to the size its CONTENT asks for, not the size of
-            // the view -- which is right for the scrolling axis and wrong for the other one.
+            // The viewport is the view's width, so the column fills the screen rather than sitting
+            // in a ribbon down the left at its own preferred width.
             viewport-width: self.width;
 
             VerticalLayout {
                 width: parent.width;
                 padding: 24px;
-                // The level block and the stats card: the derivation ends 16px above the card.
                 spacing: Theme.sp-4;
                 alignment: start;
 
-                // The level, and where it comes from.
-                //
-                // There was a full ring here with "5 / 5.0" in it, over counts like "0% humor
-                // rate" — a finished circle whose denominator nobody could see or check. The
-                // level now says which of five it is and what it was counted from, and the line
-                // under it says how, from `BondTracker::score_interaction` (yantrik-companion's
-                // bond.rs) and `BondLevel::from_score`: change those and this line with them.
-                if data.loaded : VerticalLayout {
-                    spacing: 6px;
-                    Text {
-                        text: data.bond-level;
-                        // A heading, not a state: primary text. Amber is only "needs you".
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-display;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        letter-spacing: 1px;
-                    }
-                    Text {
-                        text: "Usage-derived level \u{b7} not a measure of understanding, reliability or permissions";
-                        color: Theme.text-secondary;
-                        font-size: Theme.fs-caption;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: "Level " + data.level-number + " of 5 · from "
-                            + data.total-interactions + (data.total-interactions == 1 ? " interaction" : " interactions")
-                            + " over " + data.days-together + (data.days-together == 1 ? " day" : " days");
-                        color: Theme.text-secondary;
-                        font-size: Theme.fs-body;
-                        horizontal-alignment: center;
-                    }
-                    // How it is counted, one rule to a line, left-aligned in a column no wider than
-                    // 720px: a centred paragraph of numbers is hard to read and harder to check.
-                    HorizontalLayout {
-                        padding-top: Theme.sp-3;
-                        alignment: start;
-                        VerticalLayout {
-                            max-width: 720px;
-                            spacing: 2px;
-                            for line in [
-                                "How this is counted:",
-                                "Each conversation turn adds 0.01 to a score.",
-                                "A longer message adds up to 0.03 more.",
-                                "One that says how you feel (\"I'm worried\", \"I miss…\") adds 0.05 more.",
-                                "The first turn of each day in a run of days adds up to 0.035 more.",
-                                "Laughing at a joke (\"haha\", \"lol\") adds 0.02.",
-                                "The score stops at 5.0 and sets the level:",
-                                "Stranger below 0.5, Acquaintance below 1.5, Friend below 2.5, Confidant below 3.5, Partner-in-Crime from 3.5.",
-                                "It is " + Math.round(data.bond-score * 100) / 100 + " now."
-                            ] : Text {
-                                text: line;
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-label;
-                                horizontal-alignment: left;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
+                // One sentence on top: what is true, in words.
+                Text {
+                    text: !data.loaded ? "Not read yet: the companion has not reported its history since the desktop started."
+                        : data.total-interactions == 0 ? "You have not talked with the companion yet."
+                        : "You have talked with the companion " + data.total-interactions
+                            + (data.total-interactions == 1 ? " time" : " times") + " over "
+                            + data.days-together + (data.days-together == 1 ? " day." : " days.");
+                    color: data.loaded ? Theme.text-primary : Theme.text-secondary;
+                    font-size: Theme.fs-title-1;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "Counted from use. It says nothing about how well a mind understands you, or what it may do.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    wrap: word-wrap;
                 }
 
-                // Stats grid (2 columns)
-                Rectangle {
+                if data.loaded : Rectangle {
                     background: Theme.bg-card;
                     border-radius: Theme.radius-card;
                     height: stats-layout.preferred-height;
 
-                    stats-layout := VerticalLayout {
+                    stats-layout := HorizontalLayout {
                         padding: 16px;
-                        spacing: 12px;
+                        spacing: 16px;
 
-                        // Row 1
-                        HorizontalLayout {
-                            spacing: 16px;
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: data.total-interactions;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                Text {
-                                    text: "interactions";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                text: data.total-interactions;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-display;
+                                font-weight: 600;
                             }
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: data.days-together;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                Text {
-                                    text: "days together";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
+                            Text {
+                                text: "turns of conversation with the companion";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-small;
+                                wrap: word-wrap;
                             }
                         }
 
-                        // Row 2
-                        HorizontalLayout {
-                            spacing: 16px;
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    // "1 days" stood here beside "0 days
-                                    // together" in the audit that became #50.
-                                    text: data.current-streak + (data.current-streak == 1 ? " day" : " days");
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                // A plain count, not a run to keep up.
-                                Text {
-                                    text: "in a row with a conversation";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                text: data.days-together;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-display;
+                                font-weight: 600;
                             }
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: @tr("{}%", Math.round(data.humor-rate * 100));
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                Text {
-                                    text: "humor rate";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
-                            }
-                        }
-
-                        // Row 3
-                        HorizontalLayout {
-                            spacing: 16px;
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: data.vulnerability-events;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                // A plain count of what the scoring counted, not a stage reached.
-                                Text {
-                                    text: "messages that said how you felt";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
-                            }
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: data.shared-references;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.fs-display;
-                                    font-weight: 600;
-                                }
-                                Text {
-                                    text: "shared refs";
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.font-small;
-                                }
+                            Text {
+                                text: data.days-together == 1 ? "day since your first conversation, counting that day"
+                                    : "days since your first conversation, counting that day";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-small;
+                                wrap: word-wrap;
                             }
                         }
                     }

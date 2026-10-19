@@ -2,14 +2,14 @@ use super::identity::{from_reported, from_url, ProviderRef};
 use super::*;
 
 fn mind(id: &str, name: &str, detail: Option<&str>, answering: bool) -> MindFact {
-    MindFact { id: id.into(), name: name.into(), detail: detail.map(String::from), answering, builtin: false }
+    MindFact { id: id.into(), name: name.into(), detail: detail.map(String::from), answering, builtin: false, gateway: None }
 }
 
 /// VM 520 on 30 Sep 2026, verbatim: every mind's own line, and the companion from config.yaml
 /// with nothing saved in Settings.
 fn vm_520() -> (Vec<MindFact>, CompanionFact) {
     let minds = vec![
-        MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: false, builtin: true },
+        MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: false, builtin: true, gateway: None },
         mind("deepseek", "DeepSeek", Some("deepseek-v4.1-flash \u{b7} ollama.com"), false),
         mind("hermes", "Hermes Agent", Some("Hermes 0.14.0 \u{b7} deepseek-v4.1-flash"), false),
         mind("mind", "Yantrik Mind", Some("ollama-cloud:deepseek-v4.1-flash"), true),
@@ -43,7 +43,7 @@ fn vm_520_every_mind_says_what_it_runs_on_and_where_that_is_set() {
     assert_eq!(got, want);
     assert_eq!(
         summary(&rows),
-        "Ollama Cloud runs 4 minds. Custom endpoint \u{b7} aig.mycluster.cyou runs 1 mind. 1 mind does not say what it runs on. No mind here runs on a signed-in account."
+        "Ollama Cloud runs 4 minds. A service you set up runs 1 mind. 1 mind does not say what it runs on. No mind here runs on a signed-in account."
     );
     // The thing that started this: nothing here may name Claude, whose sign-in no mind uses.
     for r in &rows {
@@ -90,7 +90,7 @@ fn addresses_are_named_by_the_catalogue_or_by_their_host() {
 
 #[test]
 fn a_companion_with_no_address_says_nothing_is_set_up_and_a_saved_one_is_named() {
-    let minds = [MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: true, builtin: true }];
+    let minds = [MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: true, builtin: true, gateway: None }];
     let rows = resolve(&minds, None);
     assert_eq!((rows[0].runs_on().as_str(), rows[0].source().as_str()), ("Nothing set up", "add a provider under Providers"));
     let saved = CompanionFact { base_url: "https://integrate.api.nvidia.com/v1".into(), model: "nvidia/x".into(), source: "saved provider".into(), provider_name: "NIM work".into(), ..CompanionFact::default() };
@@ -125,7 +125,7 @@ fn vm_520_the_providers_in_use_are_listed_though_none_is_saved() {
     let aig = &in_use[1];
     assert_eq!(aig.label, "Custom endpoint \u{b7} aig.mycluster.cyou");
     assert_eq!(aig.used_by, ["Yantrik Companion"]);
-    assert_eq!(aig.where_set, "set in /opt/yantrik/config.yaml \u{b7} used by the built-in companion");
+    assert_eq!(aig.where_set, "set in this computer\u{2019}s setup file \u{b7} used by the built-in companion");
     assert_eq!(
         (aig.preset.as_str(), aig.base_url.as_str(), aig.model.as_str()),
         ("custom", "https://aig.mycluster.cyou/v1", "qwen3.8:27b")
@@ -166,7 +166,7 @@ fn the_composer_line_says_where_words_go_or_nothing() {
 /// fallback by name.
 #[test]
 fn stays_on_this_machine_is_said_only_when_it_is_certain() {
-    let builtin = [MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: true, builtin: true }];
+    let builtin = [MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: true, builtin: true, gateway: None }];
     let line = |c: CompanionFact| resolve(&builtin, Some(&c))[0].destination();
     let at = |url: &str, model: &str| CompanionFact { base_url: url.into(), model: model.into(), source: "config.yaml".into(), ..CompanionFact::default() };
 
@@ -259,4 +259,184 @@ fn a_saved_provider_is_not_listed_again_as_in_use() {
     let in_use = in_use_not_saved(&rows, Some(&companion), &["https://ollama.com/v1".to_string()]);
     let labels: Vec<&str> = in_use.iter().map(|u| u.label.as_str()).collect();
     assert_eq!(labels, ["Custom endpoint \u{b7} aig.mycluster.cyou"]);
+}
+
+/// VM 541, 14 Oct 2026: Hermes wired to this desktop's gateway, saying only "Hermes 0.21.5 ·
+/// picked", while the gateway sent its calls to the person's pick.
+fn on_gateway(id: &str, name: &str, detail: &str, gateway: GatewayFact) -> MindFact {
+    MindFact { gateway: Some(gateway), ..mind(id, name, Some(detail), true) }
+}
+
+fn sends(base_url: &str, kind: &str, model: &str) -> GatewayFact {
+    GatewayFact::Sends { base_url: base_url.into(), provider_kind: kind.into(), model: model.into(), lane: false }
+}
+
+const TO: &str = "Sends your message and conversation context to: ";
+
+#[test]
+fn vm_541_a_mind_on_the_gateway_is_said_by_where_the_gateway_sends_it() {
+    let hermes = on_gateway("hermes", "Hermes Agent", "Hermes 0.21.5 \u{b7} picked", sends("https://aig.example/v1", "custom", "qwen3.5:27b"));
+    let rows = resolve(&[hermes], None);
+    let r = &rows[0];
+    assert_eq!(r.destination(), format!("{TO}aig.example \u{b7} qwen3.5:27b, through this desktop's gateway"));
+    assert_eq!(r.runs_on(), "Custom endpoint \u{b7} aig.example \u{b7} qwen3.5:27b");
+    assert_eq!(r.source(), "set by this desktop");
+    assert!(!r.reported, "the answering line says \"set by this desktop\"");
+    // The Minds row says it in words; the exact line is its Details.
+    assert_eq!(crate::wire::runs_on_card::row_line(&rows, "hermes"), "Runs on A service you set up \u{b7} qwen3.5:27b");
+    assert!(crate::wire::runs_on_card::row_details(&rows, "hermes").contains("Custom endpoint \u{b7} aig.example \u{b7} qwen3.5:27b \u{b7} set by this desktop"));
+    // The Minds quick panel's line says where the person's messages go: the host is named.
+    assert_eq!(r.plain_answering(), "A service you set up at aig.example \u{b7} qwen3.5:27b");
+    assert_eq!(summary(&rows), "A service you set up runs 1 mind. No mind here runs on a signed-in account.");
+    assert!(in_use_not_saved(&rows, None, &[]).is_empty(), "the account is the person's own, already set up");
+}
+
+#[test]
+fn a_mind_on_the_gateway_forwarding_elsewhere_is_named_as_forwarding() {
+    let line = |g: GatewayFact| resolve(&[on_gateway("deepseek", "DeepSeek", "picked \u{b7} 127.0.0.1:7460", g)], None)[0].destination();
+    // An Ollama Cloud model through the Ollama on this machine.
+    assert_eq!(
+        line(sends("http://127.0.0.1:11434/v1", "ollama", "gpt-oss:120b-cloud")),
+        format!("{TO}Ollama Cloud, through Ollama at 127.0.0.1:11434 \u{b7} gpt-oss:120b-cloud, through this desktop's gateway")
+    );
+    // The Ollama Cloud account itself.
+    assert_eq!(
+        line(sends("https://ollama.com/v1", "ollama-cloud", "deepseek-v4.1-flash")),
+        format!("{TO}Ollama Cloud \u{b7} deepseek-v4.1-flash, through this desktop's gateway")
+    );
+    // A LiteLLM proxy set up on a port of its own.
+    assert_eq!(
+        line(sends("http://10.0.0.5:9000/v1", "litellm", "gpt-5")),
+        format!("{TO}a proxy that forwards it on, through 10.0.0.5:9000, on this network \u{b7} gpt-5, through this desktop's gateway")
+    );
+}
+
+#[test]
+fn a_loopback_account_through_the_gateway_is_named_as_seen_never_stays() {
+    let rows = resolve(&[on_gateway("mind", "Yantrik Mind", "yantrik-gateway:picked", sends("http://127.0.0.1:11434/v1", "ollama", "qwen3.5:9b"))], None);
+    let line = rows[0].destination();
+    assert_eq!(line, format!("{TO}Ollama at 127.0.0.1:11434 \u{b7} qwen3.5:9b, through this desktop's gateway"));
+    assert!(!line.contains("Stays"));
+}
+
+#[test]
+fn with_no_pick_a_mind_on_the_gateway_says_nothing_is_sent() {
+    let rows = resolve(&[on_gateway("hermes", "Hermes Agent", "Hermes 0.21.5 \u{b7} picked", GatewayFact::NoPick)], None);
+    assert_eq!(rows[0].destination(), "No model picked yet: nothing is sent");
+    assert_eq!(rows[0].runs_on(), "No model picked yet");
+    assert_eq!(rows[0].source(), "set by this desktop");
+    assert_eq!(summary(&rows), "No mind here runs on a signed-in account.", "not counted as a mind that does not say");
+}
+
+#[test]
+fn a_pick_the_gateway_refuses_says_what_the_gateway_does_not_the_pick() {
+    // Sharing Off for the picked account, and no private lane: the gateway's own refusal.
+    let message = yantrik_gateway::policy::not_shared("Ollama Cloud").message;
+    let refused = GatewayFact::Refused { code: "private_context_not_shared".into(), message: message.clone() };
+    let rows = resolve(&[on_gateway("hermes", "Hermes Agent", "Hermes 0.21.5 \u{b7} picked", refused)], None);
+    let line = rows[0].destination();
+    assert_eq!(
+        line,
+        format!("Nothing is sent: what your minds know about you is not shared with the picked model's account. {message}")
+    );
+    assert!(!line.starts_with(TO), "no place is named");
+    assert_eq!(rows[0].runs_on(), "Nothing is sent: the gateway refuses it");
+    // Sharing set to Private lane: the lane's model, which is the one said.
+    let lane = GatewayFact::Sends { base_url: "http://127.0.0.1:11434/v1".into(), provider_kind: "ollama".into(), model: "qwen3.5:9b".into(), lane: true };
+    assert_eq!(
+        resolve(&[on_gateway("hermes", "Hermes Agent", "picked", lane)], None)[0].destination(),
+        format!("{TO}Ollama at 127.0.0.1:11434 \u{b7} qwen3.5:9b, your private lane, through this desktop's gateway")
+    );
+}
+
+#[test]
+fn a_mind_with_its_own_provider_is_said_as_before() {
+    let own = resolve(&[mind("hermes", "Hermes Agent", Some("ollama-cloud:deepseek-v4.1-flash"), true)], None);
+    assert_eq!(own[0].destination(), format!("{TO}Ollama Cloud \u{b7} deepseek-v4.1-flash"));
+    assert_eq!(own[0].source(), "its own settings \u{b7} as it reported");
+    assert_eq!(own[0].via_gateway, None);
+    // And one saying only "picked", with no gateway marker, is not given a destination.
+    let silent = resolve(&[mind("hermes", "Hermes Agent", Some("Hermes 0.21.5 \u{b7} picked"), true)], None);
+    assert_eq!(silent[0].destination(), "");
+}
+
+/// Addresses whose sign-in details, query or fragment must never be drawn, in any face: the
+/// review of #844 (finding 2) saw `https://user:p/w@aig.example/v1` drawn as "Custom endpoint ·
+/// user:p" and "A service you set up at user:p", because a `/` in the key ends the authority early.
+pub(crate) const HOSTILE_URLS: &[&str] = &[
+    "https://user:p/w@aig.example/v1",
+    "https://user:pw@aig.example/v1?api-key=x#f",
+    "http://u@127.0.0.1:11434",
+    "https://user:pw@[fd00::1]:8443/v1",
+    "https://user:p/w@[::1]:4000/v1",
+    "https://user:pw@api.openai.com/v1?api-key=x",
+    // The review of #856's further inputs.
+    "http://u:p@[::1]:11434",
+    "user:pw@aig.example",
+    "user%40x:pw@aig.example",
+    "https://user:p%2Fw@aig.example/v1",
+    "https://aig.example/a@b",
+    "aig.example/v1?api-key=x",
+];
+
+/// What may not appear in anything drawn from those addresses.
+pub(crate) const SECRETS: &[&str] = &["user", "pw", "p/w", "p%2F", "api-key", "u@", "u:p", "%40", "#f", "?"];
+
+pub(crate) fn assert_clean(url: &str, shown: &str) {
+    for secret in SECRETS {
+        assert!(!shown.contains(secret), "{url} draws {secret:?}: {shown:?}");
+    }
+}
+
+#[test]
+fn no_face_draws_any_part_of_an_address_sign_in_query_or_fragment() {
+    for url in HOSTILE_URLS {
+        // The companion set in config.yaml, its fallback, a mind on the gateway, and a mind's own
+        // line naming the address.
+        let companion = CompanionFact { base_url: url.to_string(), model: "qwen3.5:27b".into(), source: "config.yaml".into(), ..CompanionFact::default() };
+        let builtin = MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: true, builtin: true, gateway: None };
+        let minds = [
+            builtin,
+            on_gateway("hermes", "Hermes Agent", "Hermes 0.21.5 \u{b7} picked", sends(url, "custom", "qwen3.5:27b")),
+            mind("pi", "Pi", Some(&format!("qwen3.5:27b \u{b7} {url}")), false),
+        ];
+        let rows = resolve(&minds, Some(&companion));
+        assert_eq!(rows.len(), 3);
+        for r in &rows {
+            for shown in [r.runs_on(), r.source(), r.destination(), r.plain_runs_on(), r.plain_answering(), r.plain_source(), r.details(), r.provider.label()] {
+                assert_clean(url, &shown);
+            }
+            assert_clean(url, &crate::wire::runs_on_card::row_line(&rows, &r.id));
+            assert_clean(url, &crate::wire::runs_on_card::row_details(&rows, &r.id));
+        }
+        assert_clean(url, &summary(&rows));
+        for u in in_use_not_saved(&rows, Some(&companion), &[]) {
+            assert_clean(url, &u.label);
+        }
+        assert_clean(url, &seen_at(url));
+        assert_clean(url, &fallback_label("openai", Some(url)));
+        assert_clean(url, &from_url(url).label());
+    }
+}
+
+#[test]
+fn an_address_whose_host_cannot_be_told_is_a_service_you_set_up() {
+    let at = |url: &str| {
+        let c = CompanionFact { base_url: url.into(), model: "qwen3.5:27b".into(), source: "config.yaml".into(), ..CompanionFact::default() };
+        let builtin = MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: true, builtin: true, gateway: None };
+        resolve(&[builtin], Some(&c)).remove(0)
+    };
+    let odd = at("https://user:p/w@aig.example/v1");
+    assert_eq!(odd.runs_on(), "Custom endpoint \u{b7} qwen3.5:27b");
+    assert_eq!(odd.plain_answering(), "A service you set up \u{b7} qwen3.5:27b");
+    assert!(odd.details().contains("Address: not shown"), "{}", odd.details());
+    // A clean address is still named by its host, and a local one is still local.
+    let clean = at("https://user:pw@aig.example/v1?api-key=x#f");
+    assert_eq!(clean.runs_on(), "Custom endpoint \u{b7} aig.example \u{b7} qwen3.5:27b");
+    assert_eq!(clean.plain_answering(), "A service you set up at aig.example \u{b7} qwen3.5:27b");
+    assert_eq!(at("http://u@127.0.0.1:11434").plain_runs_on(), "A model server on this computer \u{b7} qwen3.5:27b");
+    assert_eq!(at("https://user:pw@[fd00::1]:8443/v1").plain_runs_on(), "A model server on your network \u{b7} qwen3.5:27b");
+    // is_local reads the URL as it always did.
+    assert!(identity::is_local("http://u@127.0.0.1:11434") && identity::is_local("https://user:pw@[fd00::1]:8443/v1"));
+    assert!(!identity::is_local("https://user:pw@aig.example/v1"));
 }

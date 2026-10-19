@@ -74,7 +74,7 @@ the standard library, and the HTTP route above reaches the same agent without an
 
 ## Install
 
-**Settings → Harnesses** lists OpenClaw whether or not it is installed. Its *Install* button
+**Settings → Minds** lists OpenClaw whether or not it is installed. Its *Install* button
 runs OpenClaw's own documented route, `npm install -g openclaw` (pinned to a tested version), through
 `harnesses/lib/install/npm.sh`: a pinned Node 24 into `~/.local` first when there is none new
 enough (the image ships none), then OpenClaw into `~/.local/bin`. Onboarding asks questions, so
@@ -162,6 +162,14 @@ own tools on is the person's call, not this harness's, and it is worth making on
 After editing `mcp.servers`, `openclaw mcp reload` is enough — the gateway does not need
 restarting. Changing `gateway.auth` or `gateway.http` does need a restart, and OpenClaw's config
 watcher performs it itself.
+
+## Yantrik models
+
+**Settings → Minds → OpenClaw → Use Yantrik models** adds one provider to OpenClaw's own
+`~/.openclaw/openclaw.json` (`models.providers.yantrik`, at the desktop's model gateway with a
+gateway token of OpenClaw's own) and asks for `yantrik/picked` through `model` in
+`~/.config/yantrik/openclaw.json`. An `openclaw.json` with comments (JSON5) is left alone, and the
+desktop says so: add the provider by hand. Revert puts both files back and withdraws the token.
 
 ## The config file
 

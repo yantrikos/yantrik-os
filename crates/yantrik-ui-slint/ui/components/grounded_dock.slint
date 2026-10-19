@@ -204,7 +204,9 @@ export component GroundedDock inherits Rectangle {
     callback restore-screen();
 
     in property <string> launcher-label: "Apps";
-    in property <string> mind-label: "Yantrik Mind";
+    // The mind that answers, by name (app.slint binds it). Never a mind by default: the nightly
+    // may ship without Yantrik Mind, and a button named after a mind that is not there is a lie.
+    in property <string> mind-label: "Your mind";
     // Cards waiting for the person, from every mind (card_watch.rs). Any: the amber dot.
     in property <int> cards-waiting: 0;
     in property <bool> companion-online: true;
@@ -523,7 +525,7 @@ export component GroundedDock inherits Rectangle {
                 }
             }
 
-            // ── Yantrik Mind ──
+            // ── The mind ──
             DockBtn {
                 name: root.cards-waiting > 0 ? root.mind-label + ", " + root.cards-waiting + " waiting for you" : root.mind-label;
                 needs-you: root.cards-waiting > 0;

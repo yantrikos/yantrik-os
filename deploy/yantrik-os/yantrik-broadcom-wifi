@@ -25,8 +25,15 @@
 # connection comes up while the chip is still waiting. What it is doing is in
 # /run/yantrik/wifi-driver.status, which the first-run screens read to tell the person.
 #
+# `recover` reloads wl when its scanning has wedged: after an access point drops it, wl can be
+# left with a scan that never finishes, so NetworkManager never sees the network again and
+# never retries (a Mac mini sat offline for seven hours that way). It is run every two minutes
+# by yantrik-broadcom-wifi-recover.timer and by the dispatcher when Wi-Fi goes down, and does
+# nothing unless every condition in cmd_recover holds.
+#
 # Usage:
 #   yantrik-broadcom-wifi [install] [--driver wl|b43] [--dry-run]
+#   yantrik-broadcom-wifi recover [--dry-run]
 #   yantrik-broadcom-wifi status
 #   yantrik-broadcom-wifi selftest
 set -u
@@ -36,6 +43,13 @@ STATE_DIR="${YANTRIK_WIFI_STATE_DIR:-/var/lib/yantrik}"
 MODPROBE_CONF="${YANTRIK_WIFI_MODPROBE_CONF:-/etc/modprobe.d/yantrik-broadcom-wifi.conf}"
 FIRMWARE_DIR="${YANTRIK_WIFI_FIRMWARE_DIR:-/lib/firmware/b43}"
 LOCK_FILE="${YANTRIK_WIFI_LOCK:-/run/yantrik-broadcom-wifi.lock}"
+# recover's clock and backoff. In /run on purpose: a reboot reloads wl anyway, so it starts fresh.
+RECOVER_STATE="${YANTRIK_WIFI_RECOVER_STATE:-/run/yantrik/wifi-recover.state}"
+# How long the device must have been down before a reset, and how long to wait for a scan and
+# for NetworkManager to rejoin afterwards. Seconds; the selftest and a tester shorten them.
+RECOVER_AFTER="${YANTRIK_WIFI_RECOVER_AFTER:-180}"
+SCAN_WAIT="${YANTRIK_WIFI_SCAN_WAIT:-5}"
+CONNECT_WAIT="${YANTRIK_WIFI_CONNECT_WAIT:-60}"
 KERNEL="${YANTRIK_KERNEL:-$(uname -r)}"
 DRY_RUN=0
 REQUESTED=""
@@ -325,6 +339,197 @@ cmd_status() {
     fi
 }
 
+# ── recover: reload wl when its scanning has wedged ──────────────────────────────────────
+
+now() { echo "${YANTRIK_WIFI_NOW:-$(date +%s)}"; }
+
+# The name of this chip's wireless interface, as wifi_up finds it.
+wifi_iface() {
+    local n chip
+    chip="$(readlink -f "$CHIP_DIR")"
+    for n in "$SYSFS"/class/net/*; do
+        [ -d "$n/wireless" ] || [ -e "$n/phy80211" ] || continue
+        if [ "$(readlink -f "$n/device")" = "$chip" ]; then
+            basename "$n"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# NetworkManager's word for the device: connected, connecting (…), disconnected, unavailable…
+nm_state() {
+    nmcli -t -f DEVICE,STATE device 2>/dev/null | sed -n "s/^$1://p" | head -n1
+}
+
+nm_connected() {
+    case "$(nm_state "$1")" in
+        connected*|connecting*) return 0 ;;
+    esac
+    return 1
+}
+
+# Only digits come back. Every value is a number that goes into $(( )), where bash would run a
+# command substitution hidden in a value like a[$(...)], and this runs as root.
+state_get() {
+    local v
+    v="$(sed -n "s/^$1=//p" "$RECOVER_STATE" 2>/dev/null | tail -n1)"
+    case "$v" in
+        ""|*[!0-9]*) ;;
+        *) echo "$v" ;;
+    esac
+}
+
+state_put() { # down_since last_reset failures
+    [ "$DRY_RUN" = 1 ] && return 0
+    mkdir -p "$(dirname "$RECOVER_STATE")" 2>/dev/null || return 0
+    printf 'down_since=%s\nlast_reset=%s\nfailures=%s\n' "$1" "$2" "$3" > "$RECOVER_STATE.tmp.$$" \
+        && mv -f "$RECOVER_STATE.tmp.$$" "$RECOVER_STATE"
+}
+
+# How long after a reset the next may come: five minutes at least, then 10, 20 and 60 while
+# resets keep failing to bring the network back. A reload that cannot cure what is wrong (the
+# network really is gone, a wrong password) costs only a few seconds an hour that way.
+reset_gap() {
+    case "$1" in
+        0|1) echo 300 ;;
+        2) echo 600 ;;
+        3) echo 1200 ;;
+        *) echo 3600 ;;
+    esac
+}
+
+# The wedge itself: wl left with a scan that never finishes, so nothing new is ever seen and the
+# supplicant rejects every new scan as "already pending". The cached results age out within a few
+# minutes, so an empty list after three minutes down, with a rescan refused or coming back empty
+# too, is that state. BSSID rather than SSID: a hidden network has an empty SSID but is a result.
+scan_wedged() {
+    case "${YANTRIK_WIFI_SCAN_WEDGED:-}" in
+        yes) return 0 ;;
+        no) return 1 ;;
+    esac
+    [ -n "$(nmcli -t -f BSSID device wifi list ifname "$1" --rescan no 2>/dev/null)" ] && return 1
+    nmcli device wifi rescan ifname "$1" >/dev/null 2>&1 || return 0
+    sleep "$SCAN_WAIT"
+    [ -z "$(nmcli -t -f BSSID device wifi list ifname "$1" --rescan no 2>/dev/null)" ]
+}
+
+# Adds or replaces a recovered= line, keeping every other line the install wrote. Readers of the
+# status file look keys up by name, so a key they do not know is ignored.
+note_recovered() {
+    [ "$DRY_RUN" = 1 ] && return 0
+    local when tmp
+    when="$(date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$1")"
+    tmp="$STATUS_FILE.tmp.$$"
+    { grep -v '^recovered=' "$STATUS_FILE" 2>/dev/null; printf 'recovered=%s\n' "$when"; } > "$tmp" \
+        || return 0
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$STATUS_FILE"
+}
+
+# Every early return below is silent and succeeds: the timer runs this every two minutes on
+# every machine, and on all but a wedged wl one there is nothing to do or to say.
+cmd_recover() {
+    # Only the chips this script gave wl to. b43 and every other driver are not this script's
+    # to reload, and the wedge is wl's.
+    detect || return 0
+    [ "$(bound_driver 2>/dev/null)" = wl ] || return 0
+    # The install finished and said so. While it is still installing (or failed) a reload would
+    # race it, and there is no working driver to reset yet.
+    grep -qx 'state=ready' "$STATUS_FILE" 2>/dev/null || return 0
+    command -v nmcli >/dev/null 2>&1 || return 0
+    local iface
+    iface="$(wifi_iface)" || return 0
+
+    # The person's own off switch (or airplane mode) leaves the device down on purpose; a reset
+    # must never undo it.
+    [ "$(nmcli radio wifi 2>/dev/null)" = enabled ] || return 0
+
+    local t down_since last_reset failures
+    t="$(now)"
+    down_since="$(state_get down_since)"
+    last_reset="$(state_get last_reset)"
+    failures="$(state_get failures)"
+    failures="${failures:-0}"
+
+    # Connected, or on its way there: the backoff starts over, so the next drop gets a prompt
+    # reset. last_reset is kept, so even then two resets are never closer than five minutes.
+    case "$(nm_state "$iface")" in
+        connected*|connecting*)
+            if [ -n "$down_since" ] || [ "$failures" != 0 ]; then
+                state_put "" "$last_reset" 0
+            fi
+            return 0
+            ;;
+        # Not NetworkManager's to connect, so nothing a reset would let it do.
+        unmanaged|"") return 0 ;;
+    esac
+
+    # Down for three minutes without a break. A roam, a router's restart or the person picking
+    # another network all pass through "disconnected" for seconds; three minutes is long past
+    # NetworkManager's own retries (it gave up after one minute in the Mac mini's journal).
+    if [ -z "$down_since" ]; then
+        down_since="$t"
+        state_put "$down_since" "$last_reset" "$failures"
+    fi
+    [ $((t - down_since)) -ge "$RECOVER_AFTER" ] || return 0
+
+    # Something to reconnect to. Without a saved Wi-Fi profile NetworkManager would not join
+    # anything after the reload, so it would be a reset for nothing.
+    nmcli -t -f TYPE connection show 2>/dev/null | grep -qx '802-11-wireless' || return 0
+
+    # Bounded: one reset per five minutes, backing off while resets do not help.
+    if [ -n "$last_reset" ] && [ $((t - last_reset)) -lt "$(reset_gap "$failures")" ]; then
+        return 0
+    fi
+
+    # Last, because it asks the chip to scan: when networks show up, scanning works and a reset
+    # would cure nothing.
+    scan_wedged "$iface" || return 0
+
+    if [ "$DRY_RUN" != 1 ] && [ "$(id -u)" != 0 ]; then
+        log "recover: must run as root"
+        return 1
+    fi
+    if [ "$DRY_RUN" != 1 ]; then
+        exec 9>"$LOCK_FILE"
+        if ! flock -n 9; then
+            log "recover: an install is running; leaving wl alone"
+            return 0
+        fi
+    fi
+
+    failures=$((failures + 1))
+    # Counted before the reload, so a reload that hangs or kills this run still backs off.
+    state_put "$down_since" "$t" "$failures"
+    log "recover: $iface ($CHIP_NAME, wl) has been down for $(((t - down_since) / 60)) min with a saved network and no scan results; reloading wl (reset $failures since it last worked)"
+    # Only wl, by the module's own name. b43 and the rest are blacklisted on a wl machine.
+    run modprobe -r wl || log "recover: modprobe -r wl failed; loading it again anyway"
+    if ! run modprobe wl; then
+        log "recover: modprobe wl failed: this machine has no Wi-Fi driver loaded now. See: journalctl -u yantrik-broadcom-wifi-recover"
+        return 1
+    fi
+    note_recovered "$t"
+    if ! wait_wifi 20; then
+        log "recover: wl reloaded but $iface did not come back"
+        return 1
+    fi
+    # NetworkManager autoconnects the saved profile on the new device by itself; this only waits
+    # to say whether it did.
+    local _
+    for _ in $(seq 1 "$CONNECT_WAIT"); do
+        nm_connected "$iface" && break
+        sleep 1
+    done
+    if nm_connected "$iface"; then
+        state_put "" "$t" 0
+        log "recover: $iface is back on Wi-Fi"
+    else
+        log "recover: $iface not connected yet; the next reset waits $(($(reset_gap "$failures") / 60)) min"
+    fi
+    return 0
+}
+
 # ── selftest: fake sysfs, dry runs, no apt, no root ──────────────────────────────────────
 cmd_selftest() {
     local self tmp fails=0 out
@@ -347,6 +552,13 @@ cmd_selftest() {
             *"$2"*) echo "FAIL $1: did not expect '$2' in:"; printf '%s\n' "$3" | sed 's/^/       /'; fails=$((fails + 1)) ;;
             *) echo "ok   $1" ;;
         esac
+    }
+    same() { # name expected actual: exactly, where a substring would also match nothing or "10"
+        if [ "$2" = "$3" ]; then
+            echo "ok   $1"
+        else
+            echo "FAIL $1: expected '$2', got:"; printf '%s\n' "$3" | sed 's/^/       /'; fails=$((fails + 1))
+        fi
     }
     t() { # sysfs-root, then extra env assignments
         local root="$1"; shift
@@ -419,6 +631,133 @@ cmd_selftest() {
     out="$(env YANTRIK_SYSFS="$tmp/none" bash "$self" install --dry-run 2>&1)"
     check "dry run: still reports" "absent:" "$out"
 
+    # ── recover, through fake nmcli, modprobe and id on PATH and a clock set by the test ──
+    mkdir -p "$tmp/bin"
+    cat > "$tmp/bin/nmcli" <<'FAKE'
+#!/bin/sh
+echo "nmcli $*" >> "$FAKE_CALLS"
+case "$*" in
+    "radio wifi") echo "$FAKE_NM_RADIO" ;;
+    "-t -f DEVICE,STATE device") printf 'lo:unmanaged\nwlp2s0:%s\n' "$FAKE_NM_STATE" ;;
+    "-t -f TYPE connection show") for p in $FAKE_NM_PROFILES; do echo "$p"; done ;;
+    *"wifi list"*) [ -z "$FAKE_NM_BSSIDS" ] || echo "$FAKE_NM_BSSIDS" ;;
+    *"wifi rescan"*) exit "$FAKE_NM_RESCAN" ;;
+esac
+exit 0
+FAKE
+    printf '#!/bin/sh\necho "modprobe $*" >> "$FAKE_CALLS"\n' > "$tmp/bin/modprobe"
+    printf '#!/bin/sh\necho "systemctl $*" >> "$FAKE_CALLS"\n' > "$tmp/bin/systemctl"
+    printf '#!/bin/sh\necho 0\n' > "$tmp/bin/id"
+    chmod +x "$tmp/bin/"*
+
+    # A BCM4331 bound to wl with its wlp2s0, and one bound to b43.
+    fake_bound() { # root driver
+        fake_chip "$1/bus/pci/devices/0000:02:00.0" 14e4 4331
+        mkdir -p "$1/class/net/wlp2s0/wireless" "$1/bus/drivers/$2"
+        ln -sfn "$1/bus/pci/devices/0000:02:00.0" "$1/class/net/wlp2s0/device"
+        ln -sfn "$1/bus/drivers/$2" "$1/bus/pci/devices/0000:02:00.0/driver"
+    }
+    fake_bound "$tmp/wl" wl
+    fake_bound "$tmp/b43" b43
+    ready() {
+        printf 'state=ready\nchip=BCM4331\ndriver=%s\nmessage=BCM4331 Wi-Fi is working (%s).\n' "$1" "$1" \
+            > "$tmp/rstatus"
+    }
+    # Runs recover at a given second; by default the wedge: radio on, disconnected, a saved
+    # network, no scan results, a rescan refused.
+    rec() { # sysfs-root now, then extra env assignments
+        local root="$1" at="$2"; shift 2
+        : > "$tmp/calls"
+        env YANTRIK_SYSFS="$root" YANTRIK_WIFI_STATUS="$tmp/rstatus" \
+            YANTRIK_WIFI_RECOVER_STATE="$tmp/rstate" YANTRIK_WIFI_LOCK="$tmp/lock" \
+            YANTRIK_WIFI_NOW="$at" YANTRIK_WIFI_SCAN_WAIT=0 YANTRIK_WIFI_CONNECT_WAIT=0 \
+            PATH="$tmp/bin:$PATH" FAKE_CALLS="$tmp/calls" FAKE_NM_RADIO=enabled \
+            FAKE_NM_STATE=disconnected FAKE_NM_PROFILES=802-11-wireless FAKE_NM_BSSIDS="" \
+            FAKE_NM_RESCAN=1 "$@" bash "$self" recover 2>&1
+        resets="$(grep -c '^modprobe -r wl$' "$tmp/calls")"
+    }
+    ready wl
+    rm -f "$tmp/rstate"
+
+    # Down since second 0, so each of these first two would reset but for what it checks.
+    rec "$tmp/wl" 0 > /dev/null
+    rec "$tmp/wl" 1000 FAKE_NM_RADIO=disabled > /dev/null
+    same "recover, radio off: no reset" "0" "$resets"
+    rec "$tmp/wl" 1000 FAKE_NM_STATE=connected > /dev/null
+    same "recover, connected: no reset" "0" "$resets"
+    rec "$tmp/wl" 1000 > /dev/null
+    same "recover, just went down: no reset" "0" "$resets"
+    rec "$tmp/wl" 1179 > /dev/null
+    same "recover, down for less than 3 minutes: no reset" "0" "$resets"
+    rec "$tmp/wl" 1180 FAKE_NM_PROFILES=vpn > /dev/null
+    same "recover, no saved Wi-Fi network: no reset" "0" "$resets"
+    rec "$tmp/wl" 1180 FAKE_NM_BSSIDS=72:7F:F0:56:07:54 > /dev/null
+    same "recover, scanning still finds networks: no reset" "0" "$resets"
+    out="$(rec "$tmp/wl" 1180)"
+    same "recover, wedged for 3 minutes: exactly one unload then load of wl" \
+        "$(printf 'modprobe -r wl\nmodprobe wl')" "$(grep '^modprobe' "$tmp/calls")"
+    check "recover, wedged: says why in the journal" "no scan results; reloading wl" "$out"
+    check "recover, wedged: status keeps its state" "state=ready" "$(cat "$tmp/rstatus")"
+    check "recover, wedged: status keeps its message" "message=BCM4331 Wi-Fi is working (wl)." "$(cat "$tmp/rstatus")"
+    check "recover, wedged: status gains recovered=" "recovered=1970-01-01T00:19:40Z" "$(cat "$tmp/rstatus")"
+    rec "$tmp/wl" 1479 > /dev/null
+    same "recover, again within 5 minutes: no reset" "0" "$resets"
+
+    # Still failing: the gaps grow to 10, 20 and then 60 minutes, and stay there.
+    rec "$tmp/wl" 1480 > /dev/null; same "backoff: second reset after 5 minutes" "1" "$resets"
+    rec "$tmp/wl" 2079 > /dev/null; same "backoff: none before 10 minutes" "0" "$resets"
+    rec "$tmp/wl" 2080 > /dev/null; same "backoff: third reset after 10 minutes" "1" "$resets"
+    rec "$tmp/wl" 3279 > /dev/null; same "backoff: none before 20 minutes" "0" "$resets"
+    rec "$tmp/wl" 3280 > /dev/null; same "backoff: fourth reset after 20 minutes" "1" "$resets"
+    rec "$tmp/wl" 6879 > /dev/null; same "backoff: none before 60 minutes" "0" "$resets"
+    rec "$tmp/wl" 6880 > /dev/null; same "backoff: fifth reset after 60 minutes" "1" "$resets"
+    rec "$tmp/wl" 10479 > /dev/null; same "backoff: stays at 60 minutes" "0" "$resets"
+    same "recover: one recovered= line" "1" "$(grep -c '^recovered=' "$tmp/rstatus")"
+    check "recover: recovered= is the latest reset" "recovered=1970-01-01T01:54:40Z" "$(cat "$tmp/rstatus")"
+    # Back on Wi-Fi: the backoff starts over, so the next drop is reset after 3 minutes again.
+    rec "$tmp/wl" 10500 FAKE_NM_STATE=connected > /dev/null
+    check "backoff: connected clears the failures" "failures=0" "$(cat "$tmp/rstate")"
+    rec "$tmp/wl" 10500 > /dev/null
+    rec "$tmp/wl" 10680 > /dev/null
+    same "backoff: after reconnecting, the next drop is reset after 3 minutes" "1" "$resets"
+    # A state file holding something other than numbers is ignored, not evaluated. t is a
+    # variable recover has set, so set -u would not stop the subscript from running.
+    printf 'down_since=t[$(touch %s)]\nlast_reset=x\nfailures=1x\n' "$tmp/pwned" > "$tmp/rstate"
+    rec "$tmp/wl" 20000 > /dev/null
+    same "recover: a garbled state file runs nothing" "no" "$([ -e "$tmp/pwned" ] && echo yes || echo no)"
+    same "recover: a garbled state file restarts the clock" "0" "$resets"
+
+    # Only a wl machine whose install finished.
+    rm -f "$tmp/rstate"; ready b43
+    rec "$tmp/b43" 0 > /dev/null; rec "$tmp/b43" 1000 > /dev/null
+    same "recover, b43: nothing done" "" "$(cat "$tmp/calls")"
+    rm -f "$tmp/rstate"; echo "state=absent" > "$tmp/rstatus"
+    rec "$tmp/none" 0 > /dev/null; rec "$tmp/none" 1000 > /dev/null
+    same "recover, no Broadcom chip: nothing done" "" "$(cat "$tmp/calls")"
+    rm -f "$tmp/rstate"; printf 'state=installing\ndriver=wl\n' > "$tmp/rstatus"
+    rec "$tmp/wl" 0 > /dev/null; rec "$tmp/wl" 1000 > /dev/null
+    same "recover, install not finished: nothing done" "" "$(cat "$tmp/calls")"
+
+    # The dispatcher: Wi-Fi going down on a wl machine starts recover; needs-network still
+    # starts the install, and nothing else starts anything.
+    disp="$(dirname "$self")/mac/90-yantrik-broadcom-wifi"
+    if [ -f "$disp" ]; then
+        dt() { # status-contents iface action
+            printf '%s\n' "$1" > "$tmp/dstatus"
+            : > "$tmp/calls"
+            env YANTRIK_WIFI_STATUS="$tmp/dstatus" PATH="$tmp/bin:$PATH" FAKE_CALLS="$tmp/calls" \
+                sh "$disp" "$2" "$3"
+            cat "$tmp/calls"
+        }
+        check "dispatcher: wl down starts recover" "systemctl start --no-block yantrik-broadcom-wifi-recover.service" \
+            "$(dt "$(printf 'state=ready\ndriver=wl')" wlp2s0 down)"
+        same "dispatcher: b43 down starts nothing" "" "$(dt "$(printf 'state=ready\ndriver=b43')" wlp2s0 down)"
+        same "dispatcher: no chip, down starts nothing" "" "$(dt "state=absent" eth0 down)"
+        check "dispatcher: needs-network and up starts the install" \
+            "systemctl start --no-block yantrik-broadcom-wifi.service" "$(dt "state=needs-network" eth0 up)"
+        same "dispatcher: wl up starts nothing" "" "$(dt "$(printf 'state=ready\ndriver=wl')" wlp2s0 up)"
+    fi
+
     rm -rf "$tmp"
     if [ "$fails" -gt 0 ]; then
         echo "$fails check(s) failed"
@@ -430,11 +769,11 @@ cmd_selftest() {
 cmd="install"
 while [ $# -gt 0 ]; do
     case "$1" in
-        install|status|selftest) cmd="$1" ;;
+        install|recover|status|selftest) cmd="$1" ;;
         --dry-run) DRY_RUN=1 ;;
         --driver) shift; REQUESTED="${1:-}" ;;
         --driver=*) REQUESTED="${1#--driver=}" ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift

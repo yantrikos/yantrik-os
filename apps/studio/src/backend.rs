@@ -132,7 +132,7 @@ impl ComfyUi {
             Err(ureq::Error::Status(code, response)) => {
                 Err(format!("the server refused the graph (HTTP {code}): {}", explain(response)))
             }
-            Err(ureq::Error::Transport(e)) => Err(unreachable_message(&self.settings.base_url, e)),
+            Err(ureq::Error::Transport(e)) => Err(unreachable_message(&self.settings.base_url, &e)),
         }
     }
 
@@ -165,7 +165,7 @@ impl ComfyUi {
                 // it. Two failures in a row are reported rather than polled forever.
                 Err(ureq::Error::Transport(e)) => {
                     if started.elapsed() > std::time::Duration::from_secs(30) {
-                        return Err(unreachable_message(&self.settings.base_url, e));
+                        return Err(unreachable_message(&self.settings.base_url, &e));
                     }
                 }
                 Err(ureq::Error::Status(code, _)) => {
@@ -196,7 +196,7 @@ impl ComfyUi {
                 found.filename,
                 explain(response)
             )),
-            Err(ureq::Error::Transport(e)) => Err(unreachable_message(&self.settings.base_url, e)),
+            Err(ureq::Error::Transport(e)) => Err(unreachable_message(&self.settings.base_url, &e)),
         }
     }
 
@@ -329,10 +329,22 @@ fn explain(response: ureq::Response) -> String {
     }
 }
 
-fn unreachable_message(base_url: &str, problem: impl std::fmt::Display) -> String {
+fn unreachable_message(base_url: &str, problem: &ureq::Transport) -> String {
     format!(
-        "{base_url} could not be reached ({problem}). Is ComfyUI running there, and is it listening on something other than 127.0.0.1 if this is not the same machine?"
+        "{} could not be reached ({}). Is ComfyUI running there, and is it listening on something other than 127.0.0.1 if this is not the same machine?",
+        crate::config::shown_address(base_url),
+        transport_words(problem)
     )
+}
+
+/// Why a request went nowhere, without the URL: ureq's own `Display` of a transport error begins
+/// with the whole URL it was given, sign-in details and query included (review of #856).
+fn transport_words(problem: &ureq::Transport) -> String {
+    use std::error::Error;
+    match problem.source() {
+        Some(source) => format!("{}: {source}", problem.kind()),
+        None => problem.kind().to_string(),
+    }
 }
 
 // ── OpenAI-compatible images ────────────────────────────────────────────
@@ -425,20 +437,20 @@ impl Backend for OpenAiImages {
             // carry the URL, the status and the server's own words, and none of them is the key.
             .map_err(|e| match e {
                 ureq::Error::Status(code, response) => {
-                    format!("{} refused the request (HTTP {code}): {}", self.settings.base_url, explain(response))
+                    format!("{} refused the request (HTTP {code}): {}", crate::config::shown_address(&self.settings.base_url), explain(response))
                 }
-                ureq::Error::Transport(e) => format!("{} could not be reached ({e})", self.settings.base_url),
+                ureq::Error::Transport(e) => format!("{} could not be reached ({})", crate::config::shown_address(&self.settings.base_url), transport_words(&e)),
             })?;
         drop(key);
 
         let value: serde_json::Value = response
             .into_json()
-            .map_err(|e| format!("the reply from {} was not readable JSON ({e})", self.settings.base_url))?;
+            .map_err(|e| format!("the reply from {} was not readable JSON ({e})", crate::config::shown_address(&self.settings.base_url)))?;
         let first = value
             .get("data")
             .and_then(|d| d.as_array())
             .and_then(|d| d.first())
-            .ok_or_else(|| format!("{} sent no image and no error: {}", self.settings.base_url, value))?;
+            .ok_or_else(|| format!("{} sent no image and no error: {}", crate::config::shown_address(&self.settings.base_url), value))?;
 
         let bytes = if let Some(encoded) = first.get("b64_json").and_then(|b| b.as_str()) {
             use base64::Engine;
@@ -459,7 +471,7 @@ impl Backend for OpenAiImages {
         } else {
             return Err(format!(
                 "the reply from {} held neither image bytes nor a URL: {}",
-                self.settings.base_url,
+                crate::config::shown_address(&self.settings.base_url),
                 first
             ));
         };

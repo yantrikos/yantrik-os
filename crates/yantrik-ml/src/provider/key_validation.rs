@@ -161,7 +161,7 @@ impl KeyValidator {
             }
             Err(e) => {
                 let latency = start.elapsed().as_millis() as u64;
-                KeyValidationResult::failure(classify_error(&e.to_string()), latency)
+                KeyValidationResult::failure(classify_ureq_error(&e), latency)
             }
         }
     }
@@ -310,8 +310,8 @@ impl KeyValidator {
 
 /// Classify a ureq error into a KeyValidationError.
 fn classify_ureq_error(err: &ureq::Error) -> KeyValidationError {
-    let msg = err.to_string();
-    classify_error(&msg)
+    // Its text can carry the address it was sent to, and Unknown shows that text in Settings.
+    classify_error(&yantrik_shown_address::without_sign_in(&err.to_string()))
 }
 
 /// Classify an error message string into a KeyValidationError.

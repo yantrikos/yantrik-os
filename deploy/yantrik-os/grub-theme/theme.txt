@@ -1,0 +1,85 @@
+# The Yantrik OS boot menu (GRUB gfxmenu), on the live image and on every installed machine.
+#
+# It is the first thing a person sees, so it looks like what follows it: the ground and text of
+# the pre-boot unlock screen (boot-unlock/theme/yantrik.script) and the installer, and the
+# system accent (#8fb4e3, theme.slint) on the chosen entry.
+#
+# Every font named here is made by stage-grub-theme.sh from DejaVu Sans, which draws every
+# character this file and the menu entries use. GRUB's built-in font draws ASCII only: the stock
+# menu's box lines and the dash in an entry's name came out as missing-glyph boxes (13 Oct 2026).
+# stage-grub-theme.sh refuses a font name here that it did not make.
+
+title-text: ""
+desktop-color: "#0e1018"
+terminal-font: "DejaVu Sans Regular 16"
+message-font: "DejaVu Sans Regular 16"
+message-color: "#c0c8d6"
+message-bg-color: "#0e1018"
+# The terminal window GRUB shows between Enter and the kernel (about 3 s while it loads the kernel
+# and initrd) has no box here: gfxterm fills the window with its own background colour over any
+# box, black unless `background_color` sets it. That fill was the black rectangle over the menu
+# (#820, the OVMF film). The live grub.cfg (build-debian-iso.sh) and an installed machine's
+# (grub-ground, /etc/grub.d/06_yantrik_ground) set it to this ground, #0e1018.
+
+# GRUB draws a picture at its own size (128 px), whatever width and height say.
++ image {
+    left = 50%-64
+    top = 10%
+    width = 128
+    height = 128
+    file = "icon.png"
+}
+
++ label {
+    left = 0
+    top = 10%+140
+    width = 100%
+    height = 48
+    align = "center"
+    text = "Yantrik OS"
+    font = "DejaVu Sans Bold 28"
+    color = "#f4f6fa"
+}
+
++ boot_menu {
+    left = 50%-280
+    top = 10%+204
+    width = 560
+    height = 264
+    item_font = "DejaVu Sans Regular 20"
+    item_color = "#c0c8d6"
+    selected_item_font = "DejaVu Sans Regular 20"
+    selected_item_color = "#f4f6fa"
+    selected_item_pixmap_style = "select_*.png"
+    item_height = 44
+    item_padding = 16
+    item_spacing = 6
+    icon_width = 0
+    icon_height = 0
+    item_icon_space = 0
+    scrollbar = false
+}
+
++ label {
+    left = 0
+    top = 100%-72
+    width = 100%
+    height = 24
+    align = "center"
+    text = "Use the ↑ and ↓ keys to choose, and Enter to start"
+    font = "DejaVu Sans Regular 16"
+    color = "#8a93a6"
+}
+
+# GRUB fills in the countdown; "%d" is the seconds left ("s", so one second reads right too).
++ label {
+    id = "__timeout__"
+    left = 0
+    top = 100%-44
+    width = 100%
+    height = 24
+    align = "center"
+    text = "Starting in %d s"
+    font = "DejaVu Sans Regular 16"
+    color = "#8a93a6"
+}

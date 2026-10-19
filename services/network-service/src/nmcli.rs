@@ -144,6 +144,30 @@ pub fn run_with_secret(wait_secs: u32, argv: &[&str], secret: &str) -> Exit {
     }
 }
 
+/// The two ways of running nmcli above, as something a test can stand in for.
+///
+/// The functions that change a profile (see `autoconnect.rs`) take one of these rather than call
+/// [`run`] themselves, so a test can record every argv they would have run and answer each one,
+/// on a machine with no NetworkManager — which is the only way to prove that a password never
+/// reaches a command line: look at every command line.
+pub trait Runner {
+    fn run(&self, wait_secs: u32, argv: &[&str]) -> Exit;
+    fn run_with_secret(&self, wait_secs: u32, argv: &[&str], secret: &str) -> Exit;
+}
+
+/// The real nmcli.
+pub struct System;
+
+impl Runner for System {
+    fn run(&self, wait_secs: u32, argv: &[&str]) -> Exit {
+        run(wait_secs, argv)
+    }
+
+    fn run_with_secret(&self, wait_secs: u32, argv: &[&str], secret: &str) -> Exit {
+        run_with_secret(wait_secs, argv, secret)
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // What went wrong
 // ══════════════════════════════════════════════════════════════════════

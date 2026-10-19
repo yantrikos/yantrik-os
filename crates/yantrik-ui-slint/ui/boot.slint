@@ -19,6 +19,16 @@
 // The same scene wallpaper, dimmed. Boot is not a separate place the machine passes through on
 // the way to being itself; it is the machine, earlier. Arriving at the desktop should feel like
 // the lights coming up, not like a different program starting.
+//
+// # Why it opens on the splash
+//
+// Before this screen there is the boot splash: plymouth, the emblem at 132 px, centred on Lake's
+// ground (#0e1117), and nothing else (deploy/yantrik-os/boot-unlock/theme/yantrik.script; labwc
+// puts the same picture under the shell with swaybg, config/labwc/autostart). So the first frame
+// here is that picture exactly: the same emblem, the same size, the same place, the same ground.
+// Then the emblem rises to its place in the lockup and the scene comes up around it. Nothing
+// jumps, and nothing between GRUB and this screen is black. tests/boot_splash.rs holds the
+// three of them to one size and one colour.
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
@@ -100,8 +110,22 @@ export component BootScreen inherits Rectangle {
     in property <int> ambient-interval-ms: 0;
     callback boot-complete();
 
-    background: Theme.bg-deep;
+    // The splash's ground and emblem size: the boot splash's, not the theme's, because the splash
+    // is drawn before any theme is read.
+    property <color> splash-ground: #0e1117;
+    property <length> splash-emblem: 132px;
+    // False for the first frame, which is the splash; then the screen comes up around the emblem.
+    property <bool> settled: false;
+    property <duration> rise: 700ms;
+
+    background: root.splash-ground;
     clip: true;
+
+    Timer {
+        interval: 350ms;
+        running: !root.settled;
+        triggered => { root.settled = true; }
+    }
 
     // ── The scene, dimmed ──
     Image {
@@ -109,174 +133,193 @@ export component BootScreen inherits Rectangle {
         height: 100%;
         source: @image-url("wallpapers/serenity.png");
         image-fit: fill;
-        opacity: 0.45;
+        opacity: root.settled ? 0.45 : 0;
+        animate opacity { duration: root.rise; easing: ease-in-out; }
     }
     // A wash over it, so white text on the horizon stays readable wherever the ridge falls.
     Rectangle {
         width: 100%;
         height: 100%;
+        opacity: root.settled ? 1 : 0;
+        animate opacity { duration: root.rise; easing: ease-in-out; }
         background: @linear-gradient(180deg,
             Theme.bg-deep.transparentize(30%) 0%,
             Theme.bg-deep.transparentize(55%) 45%,
             Theme.bg-deep.transparentize(25%) 100%);
     }
 
-    // ── Corners ──
-    //
-    // The quiet furniture of a product that knows what it is. Four short lines, none of them
-    // competing with the middle.
-    Text {
-        x: 40px;
-        y: 40px;
-        text: "BUILT\nFOR A MORE\nCAPABLE YOU";
-        color: Theme.text-dim;
-        font-size: Theme.fs-micro;
-        letter-spacing: 1.5px;
-    }
-    HorizontalLayout {
-        x: parent.width - self.preferred-width - 40px;
-        y: 40px;
-        // With no height this layout filled the screen, and the 1px rule below — centred in its
-        // parent — landed halfway down the boot screen as a stray dash floating over the
-        // mountains. An absolutely-positioned layout has to be given both.
-        height: 14px;
-        spacing: Theme.sp-3;
-        Rectangle {
-            width: 18px;
-            height: 1px;
-            y: (parent.height - 1px) / 2;
-            background: Theme.text-dim;
-        }
+    // Everything but the emblem comes up with the scene.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        opacity: root.settled ? 1 : 0;
+        animate opacity { duration: root.rise; easing: ease-in-out; }
+
+        // ── Corners ──
+        //
+        // The quiet furniture of a product that knows what it is. Four short lines, none of them
+        // competing with the middle.
         Text {
-            text: "A MORE CAPABLE TOMORROW";
+            x: 40px;
+            y: 40px;
+            text: "BUILT\nFOR A MORE\nCAPABLE YOU";
             color: Theme.text-dim;
             font-size: Theme.fs-micro;
             letter-spacing: 1.5px;
         }
-    }
-    Text {
-        x: 40px;
-        y: parent.height - 40px - self.preferred-height;
-        text: "Yantrik OS   " + root.version;
-        color: Theme.text-dim;
-        font-size: Theme.fs-micro;
-    }
-    Text {
-        x: parent.width - self.preferred-width - 40px;
-        y: parent.height - 40px - self.preferred-height;
-        text: "PRIVATE  /  LOCAL  /  MORE CAPABLE";
-        color: Theme.text-dim;
-        font-size: Theme.fs-micro;
-        letter-spacing: 1.5px;
-    }
-
-    // ── The middle ──
-    VerticalLayout {
-        x: (parent.width - 520px) / 2;
-        width: 520px;
-        y: 76px;
-        height: parent.height - 152px;
-        alignment: start;
-        spacing: 0;
-
         HorizontalLayout {
-            alignment: center;
-            YantrikMark {
-                mark-size: 132px;
-            }
-        }
-
-        Rectangle { height: Theme.sp-5; }
-
-        // The name, as the brand sets it (brand/yantrik-name.svg): the stacked lockup.
-        HorizontalLayout {
-            alignment: center;
-            YantrikName { cap-height: 30px; }
-        }
-        Rectangle { height: Theme.sp-3; }
-        HorizontalLayout {
-            alignment: center;
-            Text {
-                text: "Your computer. More capable.";
-                color: Theme.text-secondary;
-                font-size: Theme.fs-title-2;
-            }
-        }
-
-        Rectangle { height: Theme.sp-6; }
-
-        // ── Progress ──
-        HorizontalLayout {
-            spacing: Theme.sp-4;
-            height: 8px;
-
+            x: parent.width - self.preferred-width - 40px;
+            y: 40px;
+            // With no height this layout filled the screen, and the 1px rule below — centred in its
+            // parent — landed halfway down the boot screen as a stray dash floating over the
+            // mountains. An absolutely-positioned layout has to be given both.
+            height: 14px;
+            spacing: Theme.sp-3;
             Rectangle {
-                horizontal-stretch: 1;
-                height: 6px;
-                y: (parent.height - 6px) / 2;
-                border-radius: 3px;
-                background: Theme.bg-deep.transparentize(35%);
-                border-width: 1px;
-                border-color: Theme.glass-border;
+                width: 18px;
+                height: 1px;
+                y: (parent.height - 1px) / 2;
+                background: Theme.text-dim;
+            }
+            Text {
+                text: "A MORE CAPABLE TOMORROW";
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                letter-spacing: 1.5px;
+            }
+        }
+        Text {
+            x: 40px;
+            y: parent.height - 40px - self.preferred-height;
+            text: "Yantrik OS   " + root.version;
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+        }
+        Text {
+            x: parent.width - self.preferred-width - 40px;
+            y: parent.height - 40px - self.preferred-height;
+            text: "PRIVATE  /  LOCAL  /  MORE CAPABLE";
+            color: Theme.text-dim;
+            font-size: Theme.fs-micro;
+            letter-spacing: 1.5px;
+        }
 
-                Rectangle {
-                    x: 0;
-                    width: parent.width * root.progress;
-                    height: 100%;
-                    border-radius: 3px;
-                    background: Theme.accent;
-                    animate width { duration: 400ms; easing: ease-out; }
+        // ── The middle ──
+        VerticalLayout {
+            x: (parent.width - 520px) / 2;
+            width: 520px;
+            y: 76px;
+            height: parent.height - 152px;
+            alignment: start;
+            spacing: 0;
+
+            // The emblem's place in the lockup. It is drawn below, outside this layout, so it can
+            // start where the splash left it and rise into this place.
+            Rectangle { height: root.splash-emblem; }
+
+            Rectangle { height: Theme.sp-5; }
+
+            // The name, as the brand sets it (brand/yantrik-name.svg): the stacked lockup.
+            HorizontalLayout {
+                alignment: center;
+                YantrikName { cap-height: 30px; }
+            }
+            Rectangle { height: Theme.sp-3; }
+            HorizontalLayout {
+                alignment: center;
+                Text {
+                    text: "Your computer. More capable.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-title-2;
                 }
             }
-            Text {
-                text: Math.round(root.progress * 100) + "%";
-                color: Theme.text-secondary;
-                font-size: Theme.fs-caption;
-                vertical-alignment: center;
-                min-width: 40px;
+
+            Rectangle { height: Theme.sp-6; }
+
+            // ── Progress ──
+            HorizontalLayout {
+                spacing: Theme.sp-4;
+                height: 8px;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 6px;
+                    y: (parent.height - 6px) / 2;
+                    border-radius: 3px;
+                    background: Theme.bg-deep.transparentize(35%);
+                    border-width: 1px;
+                    border-color: Theme.glass-border;
+
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * root.progress;
+                        height: 100%;
+                        border-radius: 3px;
+                        background: Theme.accent;
+                        animate width { duration: 400ms; easing: ease-out; }
+                    }
+                }
+                Text {
+                    text: Math.round(root.progress * 100) + "%";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    min-width: 40px;
+                }
+            }
+
+            Rectangle { height: Theme.sp-5; }
+
+            // ── What is happening ──
+            VerticalLayout {
+                spacing: Theme.sp-2;
+                for s in root.stages : StageRow { stage: s; }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            Rectangle { height: 1px; background: Theme.separator; }
+            Rectangle { height: Theme.sp-4; }
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.sp-2;
+                Icon {
+                    commands: Icons.lock;
+                    size: 14px;
+                    tint: Theme.text-dim;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: "Local-first. Private by default.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle { height: Theme.sp-2; }
+            HorizontalLayout {
+                alignment: center;
+                Text {
+                    // The one line that changes with the machine's own words.
+                    text: root.status-text != ""
+                        ? root.status-text
+                        : "Please wait while Yantrik gets things ready.";
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-caption;
+                }
             }
         }
+    }
 
-        Rectangle { height: Theme.sp-5; }
-
-        // ── What is happening ──
-        VerticalLayout {
-            spacing: Theme.sp-2;
-            for s in root.stages : StageRow { stage: s; }
-        }
-
-        Rectangle { vertical-stretch: 1; }
-
-        Rectangle { height: 1px; background: Theme.separator; }
-        Rectangle { height: Theme.sp-4; }
-
-        HorizontalLayout {
-            alignment: center;
-            spacing: Theme.sp-2;
-            Icon {
-                commands: Icons.lock;
-                size: 14px;
-                tint: Theme.text-dim;
-                y: (parent.height - self.height) / 2;
-            }
-            Text {
-                text: "Local-first. Private by default.";
-                color: Theme.text-secondary;
-                font-size: Theme.fs-caption;
-                vertical-alignment: center;
-            }
-        }
-        Rectangle { height: Theme.sp-2; }
-        HorizontalLayout {
-            alignment: center;
-            Text {
-                // The one line that changes with the machine's own words.
-                text: root.status-text != ""
-                    ? root.status-text
-                    : "Please wait while Yantrik gets things ready.";
-                color: Theme.text-dim;
-                font-size: Theme.fs-caption;
-            }
-        }
+    // ── The emblem ──
+    //
+    // First at the centre of the screen, where the splash drew it; then up to its place in the
+    // lockup above (the layout's top, 76px, centred).
+    YantrikMark {
+        mark-size: root.splash-emblem;
+        x: (root.width - root.splash-emblem) / 2;
+        y: root.settled ? 76px : (root.height - root.splash-emblem) / 2;
+        animate y { duration: root.rise; easing: ease-in-out; }
     }
 }

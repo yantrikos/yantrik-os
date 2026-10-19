@@ -37,6 +37,9 @@ struct Status {
     machine: MachineStatus,
     /// The interval the CPU figures on screen cover; `None` while there is none.
     cpu_window_ms: Option<u64>,
+    /// Every process the last reading listed, before the search filter. Kept so a word typed in
+    /// the search box narrows the list at once instead of on the next two-second poll.
+    procs: Vec<ProcessInfo>,
 }
 
 /// Put the two kinds of bad news on screen, and nothing when there is none.
@@ -164,8 +167,11 @@ fn main() {
             }
         });
     }
-    app.on_proposal_applied(|| {});
-    app.on_agent_context_activated(|_| {});
+    // No `proposal-applied` or `agent-context-activated` handler, on purpose. The proposal card
+    // draws its Apply button only for a proposal with an impact, and every proposal here is an
+    // answer to read (Close goes to `proposal-dismissed`). The rail's context rows are drawn
+    // as plain rows, not buttons, because nothing here opens them (`context-opens` defaults to
+    // false in agent_rail.slint).
     refresh_agent_rail(&app);
 
     run_until_closed(&app, "yantrik-system-monitor");
@@ -576,6 +582,8 @@ fn publish_control(app: &SystemMonitorApp, status: Rc<RefCell<Status>>) {
                 .with("memory_available", ui.get_memory_available_text().to_string())
                 .with("swap_percent", (ui.get_swap_usage() * 10.0).round() as f64 / 10.0)
                 .with("uptime", ui.get_uptime_text().to_string())
+                // What the search box holds: `top_processes` is the top of the FILTERED list.
+                .with("process_filter", ui.get_process_search().to_string())
                 .with("top_processes", serde_json::Value::Array(top))
                 .with("disks", serde_json::Value::Array(disks))
                 .with("interfaces", serde_json::Value::Array(interfaces))
@@ -642,19 +650,32 @@ fn publish_control(app: &SystemMonitorApp, status: Rc<RefCell<Status>>) {
 fn show_reading(ui: &SystemMonitorApp, status: &Rc<RefCell<Status>>, reading: sample::Reading) {
     apply_snapshot(ui, status, &reading.snap);
 
-    // Filtered here, as it is drawn, so a word typed while the reading was being taken applies.
-    let mut procs = reading.procs;
-    let filter = ui.get_process_search().to_string();
-    if !filter.is_empty() {
-        let lower = filter.to_lowercase();
-        procs.retain(|p| p.name.to_lowercase().contains(&lower));
-    }
-    apply_processes(ui, &procs);
+    status.borrow_mut().procs = reading.procs;
+    show_processes(ui, status);
 
     status.borrow_mut().reading = Some(reading.provenance);
     show_status(ui, status);
     // The rail's context is the readings themselves, so it moves with them.
     refresh_agent_rail(ui);
+}
+
+/// Draw the last reading's processes through the search box.
+///
+/// Filtered here, as it is drawn, so a word typed while the reading was being taken applies, and
+/// a word typed between readings applies at once.
+fn show_processes(ui: &SystemMonitorApp, status: &Rc<RefCell<Status>>) {
+    let shown = filter_processes(&status.borrow().procs, &ui.get_process_search());
+    apply_processes(ui, &shown);
+}
+
+/// The processes whose name contains `query`, ignoring case and the spaces around it. An empty
+/// query is no filter.
+fn filter_processes(procs: &[ProcessInfo], query: &str) -> Vec<ProcessInfo> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return procs.to_vec();
+    }
+    procs.iter().filter(|p| p.name.to_lowercase().contains(&needle)).cloned().collect()
 }
 
 /// The busiest hundred; the list shows them all and `describe` names the top ten.
@@ -711,10 +732,15 @@ fn wire(app: &SystemMonitorApp) -> Timer {
         });
     }
 
-    // Process search
+    // Process search. The list narrows as the person types; it used to wait for the next poll,
+    // so the box looked as if it did nothing for up to two seconds after every key.
     {
+        let weak = app.as_weak();
+        let status = status.clone();
         app.on_process_search_changed(move |_query| {
-            // Filtering happens in the timer tick
+            if let Some(ui) = weak.upgrade() {
+                show_processes(&ui, &status);
+            }
         });
     }
 
@@ -779,10 +805,9 @@ fn wire(app: &SystemMonitorApp) -> Timer {
             }
         });
     }
-    // There is nowhere to go back to from a window of its own, which is why this wrapper sets
-    // `show-back: false` and the arrow is not drawn. The callback cannot fire; it logged a line
-    // saying so, which would only ever have appeared if the claim were false.
-    app.on_back_pressed(|| {});
+    // No `back-pressed` handler: this is a window of its own with one screen, so there is nowhere
+    // to go back to, and the wrapper sets `show-back: false` so the arrow is not drawn. A test
+    // below holds the wrapper to that.
 
     timer
 }
@@ -849,6 +874,54 @@ mod tests {
         // from the list the buttons belong to.
         let matching = vec![running(9, "chromium")];
         assert_eq!(selection_after_refresh(7, &matching), -1);
+    }
+
+    #[test]
+    fn the_search_narrows_by_name_ignoring_case_and_spaces() {
+        let procs = vec![running(7, "pi"), running(9, "Chromium"), running(11, "chrome_crashpad")];
+        let names = |q: &str| filter_processes(&procs, q).into_iter().map(|p| p.pid).collect::<Vec<_>>();
+        assert_eq!(names("chrom"), vec![9, 11]);
+        assert_eq!(names("  CHROMIUM "), vec![9]);
+        assert_eq!(names(""), vec![7, 9, 11], "an empty box is no filter");
+        assert_eq!(names("   "), vec![7, 9, 11], "nor is one holding only spaces");
+        assert!(names("firefox").is_empty());
+    }
+
+    /// The source above the tests, so a test mentioning a name cannot satisfy itself.
+    fn main_source() -> String {
+        let src = include_str!("main.rs");
+        src.split("#[cfg(test)]").next().unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn a_key_in_the_search_box_redraws_the_list() {
+        let src = main_source();
+        let at = src.find("app.on_process_search_changed(").expect("the search box is wired");
+        let handler = src[at..].split("});").next().unwrap_or_default();
+        assert!(handler.contains("show_processes("), "typing must narrow the list, not wait for a poll");
+    }
+
+    #[test]
+    fn the_back_arrow_is_not_drawn_with_nowhere_to_go() {
+        // There is no back handler because there is no screen to go back to. If the wrapper ever
+        // draws the arrow, it must come with one.
+        let wrapper = include_str!("../ui/app.slint");
+        assert!(wrapper.contains("show-back: false;"));
+        assert!(!main_source().contains("on_back_pressed"));
+    }
+
+    #[test]
+    fn no_proposal_here_draws_an_apply_button() {
+        // The card draws Apply only for a proposal with an impact, and nothing handles Apply.
+        let src = main_source();
+        assert!(!src.contains("impact:"), "a proposal with an impact needs an on_proposal_applied");
+        assert!(!src.contains("on_proposal_applied"));
+    }
+
+    #[test]
+    fn the_rail_rows_are_not_offered_as_buttons() {
+        assert!(!main_source().contains("on_agent_context_activated"));
+        assert!(!include_str!("../../../crates/yantrik-ui-slint/ui/system_monitor.slint").contains("context-opens: true"));
     }
 
     #[test]

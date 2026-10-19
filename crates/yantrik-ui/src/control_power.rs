@@ -74,6 +74,10 @@ pub fn run(verb: Verb) -> Result<(), String> {
     if verb == Verb::Hibernate && !yantrik_os::login1::can_hibernate() {
         return Err("logind does not offer hibernate on this machine (no swap that can hold memory, or no resume device)".to_string());
     }
+    // A recording is finished before the session that would kill it mid-file ends.
+    if verb.ends_the_session() {
+        crate::capture::before_session_ends();
+    }
     let (program, args) = verb.command()?;
     match std::process::Command::new(program).args(&args).output() {
         Ok(out) if out.status.success() => Ok(()),
