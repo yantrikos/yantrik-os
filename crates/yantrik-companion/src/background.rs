@@ -458,20 +458,28 @@ fn generate_proactive_message(
                     incognito: service.incognito,
                     agent_spawner: None,
                 };
+                // Only a tool this request offered runs: with no EXECUTE urge nothing was offered,
+                // so a call the model or its server made up anyway runs nothing (#832).
+                let offered = crate::tool_markup::offered_in(tools_ref.unwrap_or_default());
+                let mut ran = 0usize;
                 for tc in &tool_calls {
+                    if crate::tool_markup::refuse_unoffered(&tc.name, &offered).is_some() {
+                        continue;
+                    }
                     tracing::info!(tool = %tc.name, "Auto-executing tool from automation");
                     let result = service.registry.execute(&ctx, &tc.name, &tc.arguments);
                     tracing::debug!(tool = %tc.name, result_len = result.len(), "Tool result");
+                    ran += 1;
                 }
 
                 // Strip tool call XML from the text if present
                 if let Some(pos) = response_text.find("<tool_call>") {
                     response_text = response_text[..pos].trim().to_string();
                 }
-                if response_text.is_empty() {
+                if response_text.is_empty() && ran > 0 {
                     response_text = format!(
                         "I ran {} automation action(s) in the background.",
-                        tool_calls.len()
+                        ran
                     );
                 }
             }
@@ -621,4 +629,52 @@ pub fn mark_maintenance_reported(conn: &rusqlite::Connection) {
         [],
     )
     .ok();
+}
+
+#[cfg(test)]
+mod unoffered_call_tests {
+    use std::sync::Arc;
+
+    use yantrikdb_core::YantrikDB;
+
+    use super::*;
+    use crate::config::CompanionConfig;
+    use crate::tool_markup::scripted::{Scripted, native_calls};
+    use crate::types::UrgeSpec;
+
+    /// What the proactive message says when the round ran a tool and had no words of its own.
+    const RAN: &str = "automation action(s) in the background";
+
+    fn said(service: &mut CompanionService) -> Vec<String> {
+        std::iter::from_fn(|| service.take_proactive_message()).map(|m| m.text).collect()
+    }
+
+    /// The model answers every proactive request with a native `calculate` call and no words.
+    fn service() -> (CompanionService, Arc<Scripted>) {
+        let llm = Arc::new(Scripted::new(|_, _| native_calls(&[("call_A", "calculate", serde_json::json!({"expression": "17 * 23"}))])));
+        let db = YantrikDB::new(":memory:", 384).unwrap();
+        let mut config = CompanionConfig::default();
+        config.tools.enabled = true;
+        (CompanionService::new(db, llm.clone(), config), llm)
+    }
+
+    /// The security review of #836: with no EXECUTE urge the request offers no tools, yet a
+    /// native call (or one parsed from text) was auto-run at `max_permission`.
+    #[test]
+    fn a_proactive_message_with_nothing_offered_runs_no_tool() {
+        let (mut service, llm) = service();
+        generate_proactive_message(&mut service, &[UrgeSpec::new("check_in", "Ask how the day went", 0.6)]);
+        assert!(llm.seen.lock().unwrap()[0].offered.is_empty(), "nothing was offered");
+        let said = said(&mut service);
+        assert!(!said.iter().any(|t| t.contains(RAN)), "the call was not run: {said:?}");
+    }
+
+    /// And an EXECUTE urge, which offers the registry, still runs the call it asked for.
+    #[test]
+    fn an_execute_urge_still_runs_an_offered_tool() {
+        let (mut service, llm) = service();
+        generate_proactive_message(&mut service, &[UrgeSpec::new("automation", "EXECUTE work out 17 times 23", 0.9)]);
+        assert!(llm.seen.lock().unwrap()[0].offered.iter().any(|t| t == "calculate"));
+        assert_eq!(said(&mut service), ["I ran 1 automation action(s) in the background."], "the offered call ran");
+    }
 }
