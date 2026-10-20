@@ -4374,7 +4374,9 @@ fn execute_tool_round(
             registry.execute(&ctx, name, args)
         };
 
-        guard.check_tool_result(name, &result, db);
+        // A result that looks like it is trying to instruct the Mind is still given to it, as
+        // information, but under a fixed notice saying so (#882).
+        let flagged = guard.check_tool_result(name, &result, db);
 
         // Dynamic schema injection for discover_tools
         if name == "discover_tools" {
@@ -4423,7 +4425,10 @@ fn execute_tool_round(
         }
 
         let max_len = sanitize::max_result_len_for_tool(name);
-        let safe_result = sanitize::sanitize_tool_result_with_limit(&result, max_len);
+        let mut safe_result = sanitize::sanitize_tool_result_with_limit(&result, max_len);
+        if flagged {
+            safe_result = sanitize::label_flagged_tool_result(&safe_result);
+        }
 
         if use_native_tools {
             // Family-aware tool result format (e.g. Nemotron uses role:user + <tool_response>)
@@ -4571,7 +4576,9 @@ fn execute_tool_round_tracked(
 
         let tool_duration_ms = tool_start.elapsed().as_millis() as u64;
 
-        guard.check_tool_result(name, &result, db);
+        // A result that looks like it is trying to instruct the Mind is still given to it, as
+        // information, but under a fixed notice saying so (#882).
+        let flagged = guard.check_tool_result(name, &result, db);
 
         // MCP security: check if this tool call was potentially manipulated by
         // a previous MCP server response (follow-up action blocking)
@@ -4717,6 +4724,9 @@ fn execute_tool_round_tracked(
 
         let max_len = sanitize::max_result_len_for_tool(name);
         let mut safe_result = sanitize::sanitize_tool_result_with_limit(&result, max_len);
+        if flagged {
+            safe_result = sanitize::label_flagged_tool_result(&safe_result);
+        }
 
         // Error recovery: append hint suggesting alternatives
         if is_error && error_recovery && name != "discover_tools" {
