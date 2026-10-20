@@ -18,6 +18,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Every job reads the repository and nothing else: none posts, pushes or publishes (the ISO
+# workflow, which does, has its own file and its own permissions).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # A CI machine has no reason to build with debug info it will throw away.
@@ -170,8 +175,19 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install && rustc --version
 
+      # On a pull request the baseline is also held to the base branch's copy, so a line added
+      # to it by hand fails like a new break does. Before the baseline exists on the base (the
+      # PR that adds it) there is nothing to hold it to.
       - name: Architecture rules
-        run: cargo run -q --locked -p xtask -- check-architecture
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -n "$BASE_REF" ] && git fetch -q --depth=1 origin "$BASE_REF" \
+             && git show FETCH_HEAD:tools/xtask/architecture-baseline.txt > "$RUNNER_TEMP/base-baseline.txt" 2>/dev/null; then
+            cargo run -q --locked -p xtask -- check-architecture --since "$RUNNER_TEMP/base-baseline.txt"
+          else
+            cargo run -q --locked -p xtask -- check-architecture
+          fi
 
   # What the workspace may depend on (deny.toml): advisories, licences, duplicate versions and
   # sources. It reports and does not enforce yet, as clippy did when it landed: the first runs
@@ -186,7 +202,9 @@ jobs:
 
       - name: cargo-deny
         continue-on-error: true
-        uses: EmbarkStudios/cargo-deny-action@v2
+        # Pinned to a commit, not a tag that can move (v2.1.1): it is a Docker action built from
+        # whatever its tag points at, and the first from outside actions/ in this file.
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           command: check
           arguments: --workspace

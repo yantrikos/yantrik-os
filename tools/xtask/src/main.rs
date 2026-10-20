@@ -1,5 +1,7 @@
-//! `cargo run -q -p xtask -- check-architecture [--write]`: the layers, the build paths and the file sizes of
-//! docs/architecture.md, held by a baseline that may only shrink.
+//! `cargo run -q -p xtask -- check-architecture [--write | --since <old baseline>]`: the layers,
+//! the build paths and the file sizes of docs/architecture.md, held by a baseline that may only
+//! shrink. `--since` also fails on any entry the baseline has that the given older copy of it does
+//! not, so a line added to the baseline by hand is caught (CI passes the pull request's base).
 
 mod layers;
 mod ratchet;
@@ -20,9 +22,13 @@ fn main() -> ExitCode {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["check-architecture"] => check(false),
-        ["check-architecture", "--write"] => check(true),
-        _ => Err("usage: cargo run -q -p xtask -- check-architecture [--write]".to_string()),
+        ["check-architecture"] => check(false, None),
+        ["check-architecture", "--write"] => check(true, None),
+        ["check-architecture", "--since", old] => check(false, Some(Path::new(old))),
+        _ => Err(
+            "usage: cargo run -q -p xtask -- check-architecture [--write | --since <old baseline>]"
+                .to_string(),
+        ),
     };
     match result {
         Ok(true) => ExitCode::SUCCESS,
@@ -34,8 +40,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs every rule; with `write`, rewrites the baseline (which may only shrink).
-fn check(write: bool) -> Result<bool, String> {
+/// Runs every rule; with `write`, rewrites the baseline (which may only shrink); with `since`,
+/// also holds the baseline to that older copy of it.
+fn check(write: bool, since: Option<&Path>) -> Result<bool, String> {
     let root = workspace::root();
     let read = |rel: &str| std::fs::read_to_string(root.join(rel)).ok();
     let placements =
@@ -68,7 +75,23 @@ fn check(write: bool) -> Result<bool, String> {
     }
 
     report(&members, &unplaced, &verdict, soft);
-    Ok(unplaced.is_empty() && verdict.passes())
+    let added = match since {
+        None => Vec::new(),
+        Some(old) => {
+            let old =
+                std::fs::read_to_string(old).map_err(|e| format!("{}: {e}", old.display()))?;
+            ratchet::added(&ratchet::parse(&old)?, &baseline)
+        }
+    };
+    if !added.is_empty() {
+        println!(
+            "\nAdded to {BASELINE} since the base (the list may only shrink; fix these instead):"
+        );
+        added
+            .iter()
+            .for_each(|(rule, subject)| println!("  {rule} {subject}"));
+    }
+    Ok(unplaced.is_empty() && verdict.passes() && added.is_empty())
 }
 
 fn line_counts(root: &Path) -> Result<Vec<(String, usize)>, String> {

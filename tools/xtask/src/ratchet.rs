@@ -115,9 +115,29 @@ pub fn judge(findings: &[Finding], baseline: &Baseline) -> Verdict {
     v
 }
 
+/// Entries in `now` that `before` does not have: what was added to the baseline, by `--write` on
+/// a first run or by hand. A changed line count is not an addition.
+pub fn added(before: &Baseline, now: &Baseline) -> Vec<(String, String)> {
+    now.keys()
+        .filter(|k| !before.contains_key(*k))
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_added_to_the_baseline_is_found() {
+        let before = parse("layer a->b\nsize x.rs 1500\n").unwrap();
+        let now = parse("layer a->b\nsize x.rs 1700\nsize y.rs 1300\n").unwrap();
+        assert_eq!(
+            added(&before, &now),
+            vec![("size".to_string(), "y.rs".to_string())]
+        );
+        assert!(added(&now, &before).is_empty(), "a shrink adds nothing");
+    }
 
     fn sized(subject: &str, lines: usize) -> Finding {
         Finding {

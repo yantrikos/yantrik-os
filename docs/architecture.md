@@ -66,7 +66,7 @@ What broke a rule on the day the rule landed is listed in [tools/xtask/architect
 cargo run -q -p xtask -- check-architecture --write
 ```
 
-`--write` refuses to add entries. The check also reports how many files are over the soft limit, and which listed files grew.
+`--write` refuses to add entries, and on a pull request CI runs the check with `--since` the base branch's baseline, so a line added to it by hand fails too. The check also reports how many files are over the soft limit, and which listed files grew.
 
 **The design lint** (`cargo test -p yantrik-ui-kit design_lint`) holds hex colours, pixel font sizes, private copies of kit controls and `std-widgets` imports to their own baseline, in the same way.
 
