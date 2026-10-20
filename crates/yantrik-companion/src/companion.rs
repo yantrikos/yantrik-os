@@ -2024,7 +2024,7 @@ impl CompanionService {
             );
             final_messages.push(ChatMessage::user(&format!(
                 "Tool {} returned:\n<data:tool_result name=\"{}\">{}</data:tool_result>\n\nBased on this result, respond to the user's request: \"{}\"",
-                tool_name, sanitize::escape_for_prompt(tool_name), shown, user_text
+                sanitize::escape_for_prompt(tool_name), sanitize::escape_for_prompt(tool_name), shown, user_text
             )));
 
             let gen_config = GenerationConfig {
@@ -2039,7 +2039,7 @@ impl CompanionService {
                     let text = tool_markup::text_outside(&r.text);
                     if text.is_empty() { r.text } else { text }
                 }
-                Err(_) => format!("Here's what I found: {}", &tool_result[..tool_result.len().min(500)]),
+                Err(_) => sanitize::tool_result_fallback(tool_result, flagged),
             };
 
             // Clean up response
@@ -2944,7 +2944,7 @@ impl CompanionService {
                 );
                 final_messages.push(ChatMessage::user(&format!(
                     "Tool {} returned:\n<data:tool_result name=\"{}\">{}</data:tool_result>\n\nBased on this result, respond to the user's request: \"{}\"",
-                    tool_name, sanitize::escape_for_prompt(&tool_name), shown, user_text
+                    sanitize::escape_for_prompt(&tool_name), sanitize::escape_for_prompt(&tool_name), shown, user_text
                 )));
 
                 let mut response_text = String::new();
@@ -2956,7 +2956,7 @@ impl CompanionService {
                         if response_text.is_empty() { response_text = r.text; }
                     }
                     Err(_) => {
-                        let fallback = format!("Here's what I found: {}", &tool_result[..tool_result.len().min(500)]);
+                        let fallback = sanitize::tool_result_fallback(&tool_result, flagged);
                         on_token(&fallback);
                         response_text = fallback;
                     }
