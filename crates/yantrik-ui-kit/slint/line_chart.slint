@@ -17,119 +17,64 @@ export component LineChart inherits Rectangle {
     in property <string> title: "CPU";
     in property <[float]> values: [];
     in property <string> current-text: "0%";
-    // Data is the accent by default; teal is only for minds (colour system).
-    in property <color> accent-color: Theme.accent;
-    in property <color> accent-glow: Theme.accent-glow;
+    // The trace's colour: neutral unless the reading is in trouble (the caller passes the danger
+    // colour then). `accent-glow` is kept so callers need not change; nothing glows now.
+    in property <color> accent-color: Theme.text-secondary;
+    in property <color> accent-glow: transparent;
 
-    // Chart dimensions
+    // On the ground, not in a box of its own (art direction, 20 Oct 2026, G): the label and the
+    // value above, the plot under them, three faint gridlines, one 2px trace and a 6% fill. One
+    // plain rectangle per sample per layer and no opacity, so it is cheap on software GL.
     property <length> chart-left: 0px;
-    property <length> chart-top: 44px;
+    property <length> chart-top: 40px;
     property <length> chart-width: root.width;
-    property <length> chart-height: root.height - 44px - 8px;
+    property <length> chart-height: root.height - 40px;
 
     min-height: 140px;
-    border-radius: Theme.radius-card;
-    background: Theme.bg-card;
-    clip: true;
+    background: transparent;
 
-    // ── Header row: title + current value ──
     HorizontalLayout {
-        x: 14px;
-        y: 10px;
-        width: root.width - 28px;
-        height: 28px;
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: 32px;
         alignment: space-between;
-
         Text {
             text: root.title;
             color: Theme.text-secondary;
-            font-size: Theme.fs-caption;
-            letter-spacing: 1.5px;
+            font-size: Theme.fs-body;
             vertical-alignment: center;
         }
-
         Text {
             text: root.current-text;
-            color: root.accent-color;
-            font-size: Theme.fs-display;
-            font-weight: 700;
+            color: root.accent-color == Theme.text-secondary ? Theme.text-primary : root.accent-color;
+            font-size: 24px;
+            font-weight: 500;
             vertical-alignment: center;
         }
     }
 
-    // ── Grid lines (25%, 50%, 75%) ──
-    Rectangle {
+    for f in [0.0, 0.5, 1.0] : Rectangle {
         x: root.chart-left;
-        y: root.chart-top + root.chart-height * 0.25;
+        y: root.chart-top + root.chart-height * f - (f == 1.0 ? 1px : 0px);
         width: root.chart-width;
         height: 1px;
-        background: Theme.bg-elevated;
-        opacity: 0.5;
-    }
-    Rectangle {
-        x: root.chart-left;
-        y: root.chart-top + root.chart-height * 0.50;
-        width: root.chart-width;
-        height: 1px;
-        background: Theme.bg-elevated;
-        opacity: 0.5;
-    }
-    Rectangle {
-        x: root.chart-left;
-        y: root.chart-top + root.chart-height * 0.75;
-        width: root.chart-width;
-        height: 1px;
-        background: Theme.bg-elevated;
-        opacity: 0.5;
+        background: Theme.border-structural;
     }
 
-    // ── Chart area: one bar per data point ──
-    // Each bar is a thin rectangle whose height = value * chart-height.
-    // Positioned from the bottom of the chart area.
     for val[idx] in root.values : Rectangle {
-        // Evenly space bars across chart width
         x: root.chart-left + (root.chart-width * idx / max(1, root.values.length));
         width: max(1px, root.chart-width / max(1, root.values.length));
-
-        // Bar height from bottom
-        height: max(1px, root.chart-height * clamp(val, 0.0, 1.0));
+        height: max(0px, root.chart-height * clamp(val, 0.0, 1.0));
         y: root.chart-top + root.chart-height - self.height;
-
-        // Gradient fill: brighter at top, fading down
-        background: root.accent-color;
-        opacity: 0.25 + 0.15 * clamp(val, 0.0, 1.0);
+        background: root.accent-color.with-alpha(0.06);
     }
 
-    // ── Glow line on top edge of each bar (the "line" in line chart) ──
     for val[idx] in root.values : Rectangle {
         x: root.chart-left + (root.chart-width * idx / max(1, root.values.length));
         width: max(1px, root.chart-width / max(1, root.values.length));
         height: 2px;
-        y: root.chart-top + root.chart-height - max(1px, root.chart-height * clamp(val, 0.0, 1.0));
-
+        y: root.chart-top + root.chart-height - max(2px, root.chart-height * clamp(val, 0.0, 1.0));
         background: root.accent-color;
-        opacity: 0.8;
-    }
-
-    // ── Glow bloom on the top edge (softer, wider) ──
-    for val[idx] in root.values : Rectangle {
-        x: root.chart-left + (root.chart-width * idx / max(1, root.values.length)) - 1px;
-        width: max(3px, root.chart-width / max(1, root.values.length) + 2px);
-        height: 4px;
-        y: root.chart-top + root.chart-height - max(1px, root.chart-height * clamp(val, 0.0, 1.0)) - 1px;
-
-        background: root.accent-glow;
-        opacity: 0.4;
-        border-radius: 2px;
-    }
-
-    // ── Bottom edge baseline ──
-    Rectangle {
-        x: root.chart-left;
-        y: root.chart-top + root.chart-height - 1px;
-        width: root.chart-width;
-        height: 1px;
-        background: Theme.bg-elevated;
-        opacity: 0.6;
     }
 }

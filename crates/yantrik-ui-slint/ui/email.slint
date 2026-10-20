@@ -13,7 +13,10 @@ import { AppColor, AppIdentity } from "components/app_color.slint";
 // ── Data Structures ──
 
 export struct EmailFolderData {
+    // The server's name, which is the folder's id; `label` is what the sidebar says
+    // (apps/email/src/words.rs: "[Gmail]/All Mail" is "All mail").
     name: string,
+    label: string,
     icon: string,
     unread-count: int,
     total-count: int,
@@ -770,8 +773,9 @@ export component EmailClient inherits Rectangle {
                 { id: "refresh", icon: Icons.refresh },
                 { id: "ai",      icon: Icons.spark, label: root.ai-is-working ? "Working" : "Summarize",
                   emphasis: 1, loading: root.ai-is-working },
-                { id: "compose", icon: Icons.pencil, label: "Compose", emphasis: 2, active: root.is-composing },
             ];
+            // One Compose, the sidebar's (art direction, 20 Oct 2026, H): this bar and the empty
+            // reader each had a second and a third.
             search-text <=> root.email-search-query;
             search-accepted(t) => { root.search-emails(t); }
             action(id) => {
@@ -929,7 +933,7 @@ export component EmailClient inherits Rectangle {
                             }
 
                             Text {
-                                text: folder.name;
+                                text: folder.label != "" ? folder.label : folder.name;
                                 color: folder.is-selected ? Theme.text-primary : Theme.text-secondary;
                                 font-size: Theme.fs-body;
                                 font-weight: folder.is-selected ? Theme.fw-body-strong : Theme.fw-body;
@@ -2162,10 +2166,8 @@ export component EmailClient inherits Rectangle {
                 // ══ EMPTY STATE ══
                 if !root.is-composing && root.email-detail.id <= 0 : YEmptyState {
                     icon-path: Icons.mail-open;
-                    title: "Select a message";
-                    description: "Pick a conversation on the left, or start a new one.";
-                    action-label: "Compose";
-                    action-clicked => { root.compose-new(); }
+                    title: "Choose a message";
+                    description: "Your conversation will appear here.";
                 }
             }
         }

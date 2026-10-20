@@ -34,6 +34,7 @@ pub mod dep_check;
 mod callbacks;
 /// How long the Memory screen waits before it says the memories are busy.
 mod memory_wait;
+mod memory_rows;
 pub(crate) mod files;
 /// Where Files lands, and what it says, when a folder cannot be opened.
 mod files_gone;

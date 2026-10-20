@@ -101,16 +101,20 @@ export component SystemDashboard inherits Rectangle {
             vertical-stretch: 1;
 
             VerticalLayout {
-                padding: 20px;
-                spacing: 16px;
+                // Centred, no wider than the readings need (art direction, 20 Oct 2026, G).
+                padding-left: max(24px, (root.width - 1040px) / 2);
+                padding-right: max(24px, (root.width - 1040px) / 2);
+                padding-top: 32px;
+                padding-bottom: 24px;
+                spacing: 12px;
                 alignment: start;
 
                 // ── Resources section ──
                 Text {
-                    text: "RESOURCES";
+                    text: "Resources";
                     color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    letter-spacing: 2px;
+                    font-size: Theme.fs-caption;
+                    font-weight: 500;
                 }
 
                 Rectangle {
@@ -314,38 +318,36 @@ export component SystemDashboard inherits Rectangle {
 
                 // ── Resource graphs section ──
                 Text {
-                    text: "HISTORY (60s)";
+                    text: "Last 60 seconds";
                     color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    letter-spacing: 2px;
+                    font-size: Theme.fs-caption;
+                    font-weight: 500;
                 }
 
                 LineChart {
                     title: "CPU";
                     values: root.cpu-history;
                     current-text: Math.round(root.cpu-usage) + "%";
-                    accent-color: root.cpu-usage > 80 ? Theme.color-emotional : Theme.accent;
-                    accent-glow: root.cpu-usage > 80 ? Theme.color-danger.transparentize(75%) : Theme.accent-glow;
-                    height: 140px;
+                    accent-color: root.cpu-usage > 80 ? Theme.color-danger : Theme.text-secondary;
+                    height: 160px;
                     width: 100%;
                 }
 
                 LineChart {
-                    title: "MEMORY";
+                    title: "Memory";
                     values: root.memory-history;
                     current-text: root.memory-text;
-                    accent-color: root.memory-usage > 85 ? Theme.color-emotional : Theme.accent;
-                    accent-glow: root.memory-usage > 85 ? Theme.color-danger.transparentize(75%) : Theme.accent-glow;
-                    height: 140px;
+                    accent-color: root.memory-usage > 85 ? Theme.color-danger : Theme.text-secondary;
+                    height: 120px;
                     width: 100%;
                 }
 
                 // ── Status section ──
                 Text {
-                    text: "STATUS";
+                    text: "Status";
                     color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    letter-spacing: 2px;
+                    font-size: Theme.fs-caption;
+                    font-weight: 500;
                 }
 
                 Rectangle {
@@ -453,8 +455,8 @@ export component SystemDashboard inherits Rectangle {
                 Text {
                     text: "TOP PROCESSES";
                     color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
-                    letter-spacing: 2px;
+                    font-size: Theme.fs-caption;
+                    font-weight: 500;
                 }
 
                 Rectangle {

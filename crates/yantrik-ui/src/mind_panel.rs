@@ -1179,7 +1179,7 @@ mod tests {
                 act(now - 11 * 86_400, "terminal", "run", "failed"),
             ],
             now,
-            ACT_ROWS,
+            4,
         );
         let rows: Vec<(&str, &str, &str)> = lines.iter().map(|l| (l.what.as_str(), l.when.as_str(), l.outcome.as_str())).collect();
         assert_eq!(
@@ -1196,6 +1196,19 @@ mod tests {
         assert!(old_failures.is_empty(), "a failure older than a day is aged out of the panel");
         assert_eq!(ago(now, now + 30), "just now", "a clock that disagrees is not a negative age");
         assert_eq!(ago(now, now - 200_000), "2d ago");
+    }
+
+    /// The panel's Recent: at most two, from the last two hours. A seven-hour-old render is not
+    /// news; the audit view keeps everything.
+    #[test]
+    fn the_panel_shows_two_recent_things_from_the_last_two_hours() {
+        let act = |unix: u64, app: &str| Act { unix, app: app.into(), action: "run".into(), outcome: "ok".into() };
+        let now = 1_000_000;
+        let all = [act(now - 60, "files"), act(now - 600, "notes"), act(now - 3_000, "calendar"), act(now - 7 * 3600, "blender")];
+        let fresh = fresh_acts(&all, now);
+        assert_eq!(fresh.len(), 3, "the render seven hours ago is not recent");
+        assert_eq!(act_lines(&fresh, now, ACT_ROWS).len(), 2);
+        assert!(fresh_acts(&[act(now - 3 * 3600, "files")], now).is_empty());
     }
 
     #[test]

@@ -356,13 +356,14 @@ pub fn our_app(title: &str) -> Option<&'static str> {
 
 /// The id a window's icon is drawn from (AppTile): the shell's icon id for its app id, or for
 /// one of ours, which sends none, the app its title names. The Browser this OS ships is Chromium,
-/// so its window is drawn with the Browser's icon. Anything else gets its title, which AppTile,
-/// knowing no art for it, draws as its initial on the neutral plate.
+/// so its window is drawn with the Browser's icon. Anything else gets its title behind a `~`, which
+/// no icon id has, so AppTile draws its initial on the neutral plate: a window titled `files` does
+/// not get to wear the Files icon (security review of #876, finding 2).
 pub fn icon_id(w: &Window) -> String {
     let declared = clean(&w.app_id, 60).to_lowercase();
     if declared.is_empty() {
         let title = clean(&w.title, 120);
-        return our_app(&title).map(str::to_string).unwrap_or(title);
+        return our_app(&title).map(str::to_string).unwrap_or_else(|| format!("~{title}"));
     }
     match declared.as_str() {
         "chromium" | "chromium-browser" => "browser".into(),
@@ -576,7 +577,9 @@ mod tests {
         assert_eq!(icon_id(&c), "browser");
         c.app_id = "yantrik-system-monitor".into();
         assert_eq!(icon_id(&c), "sysmonitor");
-        assert_eq!(icon_id(&win(5, "labwc - WL-1", 1)), "labwc - WL-1", "unknown: its title, for the initial");
+        assert_eq!(icon_id(&win(5, "labwc - WL-1", 1)), "~labwc - WL-1", "unknown: its title, for the initial");
+        assert_eq!(icon_id(&win(6, "files", 1)), "~files", "a title cannot borrow one of our icons");
+        assert_eq!(yantrik_ui_kit::app_tile::initial("~files"), "F", "and its initial is still its own");
     }
 
     #[test]

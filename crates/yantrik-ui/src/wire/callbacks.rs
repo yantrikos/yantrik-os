@@ -467,16 +467,15 @@ fn wire_memory_search(ui: &App, ctx: &AppContext) {
                         .unwrap()
                         .as_secs_f64();
 
-                    let items: Vec<MemoryItem> = results
-                        .iter()
-                        .map(|r| MemoryItem {
-                            rid: r.rid.clone().into(),
-                            text: r.text.clone().into(),
-                            memory_type: r.memory_type.clone().into(),
-                            importance: r.importance as f32,
-                            valence: r.valence as f32,
-                            score: r.score as f32,
-                            time_ago: bridge::format_time_ago(now - r.created_at).into(),
+                    // Statements, not database rows (wire/memory_rows.rs): the machine's own records
+                    // off the list, a duplicate folded into one, where each came from in words.
+                    let items: Vec<MemoryItem> = super::memory_rows::rows(&results, now, bridge::format_time_ago)
+                        .into_iter()
+                        .map(|row| MemoryItem {
+                            rid: row.rid.into(),
+                            text: row.text.into(),
+                            origin: row.origin.into(),
+                            score: row.score as f32,
                         })
                         .collect();
                     ui.set_memory_results(ModelRc::new(VecModel::from(items)));

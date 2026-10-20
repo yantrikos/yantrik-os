@@ -1230,7 +1230,7 @@ fn companion_notification_text(text: &str) -> Option<String> {
 /// notification was filed. Both delivery routes — the notification-only route and the Lens-closed
 /// transcript route — come through here, so the rule and the cap are applied exactly once.
 fn notify_companion_thought(text: &str) -> bool {
-    let Some(cleaned) = companion_notification_text(text) else {
+    let Some(cleaned) = companion_notification_text(text).filter(|c| may_interrupt(c)) else {
         tracing::info!(
             text,
             "an unprompted companion thought may not become a notification; leaving it to the Lens"
@@ -1249,6 +1249,24 @@ fn notify_companion_thought(text: &str) -> bool {
     true
 }
 
+/// Whether an unprompted thought the companion's rule lets through may interrupt: short, one
+/// paragraph, and about time or trouble (a reminder, a meeting, something due, expiring or failed).
+///
+/// Pranab, 20 Oct 2026: the Mind's reflections and maintenance reports are not notifications.
+/// The rule above lets through anything that mentions a file, an email or a calendar, so the
+/// centre had filled with morning briefs, memory consolidation reports and readings of the
+/// person's character. Those stay in the Lens's For you; this channel is for what matters now.
+fn may_interrupt(cleaned: &str) -> bool {
+    const TIMELY: &[&str] = &[
+        "reminder", "remind", "don't forget", "do not forget", "remember to", "due", "deadline",
+        "overdue", "appointment", "meeting", "starts in", "starts at", "expires", "expiring",
+        "expired", "failed", "failure", "blocked", "disk full", "almost full", "low battery",
+        "running low", "needs attention", "action needed", "action required",
+    ];
+    let lower = cleaned.to_lowercase();
+    cleaned.chars().count() <= 280 && !cleaned.trim().contains("\n\n") && TIMELY.iter().any(|cue| lower.contains(cue))
+}
+
 /// What kind of words a companion notification carries, said on the card before the words
 /// themselves: a model wrote them (review of the UI overhaul by GPT-6 Astra, E). In the body, so
 /// the toast, Today and the centre all carry it and none can drop it.
@@ -1263,8 +1281,10 @@ enum CompanionPost {
 impl CompanionPost {
     fn label(self) -> &'static str {
         match self {
-            CompanionPost::Reflection => "AI-generated reflection",
-            CompanionPost::Result => "AI-generated result",
+            // Still says a model wrote it (security review of #648, L3), in the OS's own word for it
+            // and without the "AI-generated" prefix the art direction took off every card.
+            CompanionPost::Reflection => "Written by the Mind",
+            CompanionPost::Result => "Result from the Mind",
         }
     }
 }
@@ -1366,9 +1386,9 @@ mod tests {
     #[test]
     fn every_companion_post_says_a_model_wrote_it() {
         use super::{labelled, CompanionPost};
-        assert_eq!(labelled(CompanionPost::Reflection, "Your 9:30 overlaps the standup."), "AI-generated reflection \u{b7} Your 9:30 overlaps the standup.");
-        assert_eq!(labelled(CompanionPost::Reflection, ""), "AI-generated reflection");
-        assert_eq!(labelled(CompanionPost::Result, "Backups checked."), "AI-generated result \u{b7} Backups checked.");
+        assert_eq!(labelled(CompanionPost::Reflection, "Your 9:30 overlaps the standup."), "Written by the Mind \u{b7} Your 9:30 overlaps the standup.");
+        assert_eq!(labelled(CompanionPost::Reflection, ""), "Written by the Mind");
+        assert_eq!(labelled(CompanionPost::Result, "Backups checked."), "Result from the Mind \u{b7} Backups checked.");
         let src = include_str!("notifications.rs");
         let code = src.split("#[cfg(test)]").next().unwrap();
         let body_of = |name: &str| {
@@ -1660,6 +1680,27 @@ mod tests {
             companion_notification_text("Your meeting starts in 15 minutes ☕"),
             Some("Your meeting starts in 15 minutes".to_string())
         );
+    }
+
+    /// What filled the centre on 520 (20 Oct 2026), verbatim in shape: a brief, a maintenance
+    /// report and a reading of the person. None interrupts; a reminder and a failure still do.
+    #[test]
+    fn reflections_and_reports_are_not_notifications() {
+        use super::may_interrupt;
+        let brief = "Good morning, Pranab! Here is your quick start to the day: Weather is a lovely, \
+            sunny morning in Bentonville, Arkansas. The temperature is a crisp 46F with 98% humidity \
+            and light winds. Calendar and Email: I wasn't able to pull up your calendar events or \
+            check your unread emails this morning, as those services aren't currently available.";
+        let report = "Done. Here's the memory consolidation check: Before: 13,594 active memories. \
+            After: 1,744 active. Breakdown: system/watch 2,843 stale system/process entries purged.";
+        let reading = "Your curiosity about technology and science seems to have a practical side, \
+            given the recent attempts to run system commands like system_info and email_check.";
+        for text in [brief, report, reading] {
+            assert!(!may_interrupt(text), "not a notification: {text}");
+        }
+        assert!(may_interrupt("Your meeting starts in 15 minutes"));
+        assert!(may_interrupt("The nightly backup failed."));
+        assert!(may_interrupt("Reminder: call the dentist before 5."));
     }
 
     #[test]

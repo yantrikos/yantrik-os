@@ -8,8 +8,15 @@
 // When the service is not running this says so in a sentence. An empty list and a dead service
 // look identical, and "All caught up" over a service that is down is the confident lie this repo
 // exists to stop.
+//
+// The art direction of 20 Oct 2026 (design/art-direction-2026-10-20.md, E): an inbox for things
+// that matter. A centred list no wider than reading needs (760px), quiet rows on the ground with a
+// hairline between them rather than a stack of raised cards, a two-line preview at reading size,
+// and the blue dot for what is unread. Who sent it stays on every row from any program but this
+// desktop, where it is the defence against a sender posing as Yantrik (#114). On the desktop's own
+// rows it said "Source process confirmed: yantrik-ui" to nobody's benefit, and goes behind them.
 
-import { Theme } from "theme.slint";
+import { Theme, TextScale } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { YEmptyState } from "components/y_empty_state.slint";
 import { AppHeader } from "components/app_header.slint";
@@ -97,6 +104,11 @@ export component NotificationCenter inherits Rectangle {
     pure function badge(n: int) -> string {
         return n > 99 ? "99+" : "\{n}";
     }
+    // The sender line this desktop's own notifications carry (notification_sender.rs, which a test
+    // holds to this): said on every one of them, it told nobody anything.
+    pure function from-this-desktop(sender-short: string) -> bool {
+        return sender-short == "Source process confirmed: yantrik-ui";
+    }
 
     VerticalLayout {
         spacing: 0px;
@@ -135,8 +147,12 @@ export component NotificationCenter inherits Rectangle {
             vertical-stretch: 1;
 
             VerticalLayout {
-                padding: Theme.sp-4;
-                spacing: Theme.sp-1;
+                // Centred, no wider than reading needs.
+                padding-left: max(Theme.sp-6, (root.width - 760px) / 2);
+                padding-right: max(Theme.sp-6, (root.width - 760px) / 2);
+                padding-top: Theme.sp-7;
+                padding-bottom: Theme.sp-4;
+                spacing: 0px;
                 alignment: start;
 
                 // The service is not answering.
@@ -207,11 +223,11 @@ export component NotificationCenter inherits Rectangle {
                                 Rectangle {
                                     width: 28px; height: 28px;
                                     border-radius: Theme.r-md;
-                                    background: Theme.tint-accent;
+                                    background: Theme.bg-surface;
                                     Icon {
                                         commands: Icons.glyph(notif.group-icon);
-                                        size: 15px;
-                                        tint: Theme.accent;
+                                        size: 16px;
+                                        tint: Theme.text-secondary;
                                         x: (parent.width - self.width) / 2;
                                         y: (parent.height - self.height) / 2;
                                     }
@@ -230,8 +246,8 @@ export component NotificationCenter inherits Rectangle {
                                 if notif.group-unread > 0 : Rectangle {
                                     width: max(20px, gct.preferred-width + Theme.sp-3);
                                     height: 20px; y: (parent.height - self.height) / 2;
-                                    border-radius: self.height / 2; background: Theme.tint-accent;
-                                    gct := Text { text: root.badge(notif.group-unread) + " unread"; color: Theme.text-primary; font-size: Theme.fs-micro; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                                    border-radius: self.height / 2; background: Theme.bg-surface;
+                                    gct := Text { text: root.badge(notif.group-unread) + " unread"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; }
                                 }
 
                                 TouchArea {
@@ -260,8 +276,8 @@ export component NotificationCenter inherits Rectangle {
                     // A run of one mind's turn notices, folded: one row that says how many and
                     // when the last was, pressed to show or hide the cards inside it.
                     if notif.is-turn-group : Rectangle {
-                        background: tg.has-hover ? Theme.hover-fill : notif.is-read ? Theme.bg-card : Theme.bg-elevated;
-                        border-radius: Theme.r-lg;
+                        background: tg.has-hover ? Theme.hover-fill : transparent;
+                        border-radius: Theme.r-md;
                         height: tgl.preferred-height;
                         animate background { duration: Theme.dur-fast; }
                         accessible-role: button;
@@ -300,10 +316,10 @@ export component NotificationCenter inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                             }
-                            if notif.sender-short != "" : Text {
+                            if notif.sender-short != "" && !root.from-this-desktop(notif.sender-short) : Text {
                                 text: notif.sender-short;
                                 color: Theme.text-dim;
-                                font-size: Theme.fs-micro;
+                                font-size: Theme.fs-caption;
                                 overflow: elide;
                             }
                         }
@@ -314,8 +330,8 @@ export component NotificationCenter inherits Rectangle {
                         property <bool> hovered: cta.has-hover;
                         // The full sender line, opened from the card's Details control.
                         in-out property <bool> details-open: false;
-                        background: hovered ? Theme.hover-fill : notif.is-read ? Theme.bg-card : Theme.bg-elevated;
-                        border-radius: Theme.r-lg;
+                        background: hovered ? Theme.hover-fill : transparent;
+                        border-radius: Theme.r-md;
                         border-width: notif.urgency == 2 ? 1px : 0px;
                         border-color: notif.urgency == 2 ? Theme.color-danger-dim : transparent;
                         // Everything variable on this card lives inside `nc`, one unconditional
@@ -328,8 +344,11 @@ export component NotificationCenter inherits Rectangle {
                         cta := TouchArea { clicked => { root.notification-tapped(notif.id); } }
 
                         nc := VerticalLayout {
-                            padding: Theme.sp-3;
-                            spacing: Theme.sp-1;
+                            padding-left: Theme.sp-3;
+                            padding-right: Theme.sp-3;
+                            padding-top: Theme.sp-4;
+                            padding-bottom: Theme.sp-4;
+                            spacing: Theme.sp-1h;
 
                             HorizontalLayout {
                                 spacing: Theme.sp-2;
@@ -369,11 +388,14 @@ export component NotificationCenter inherits Rectangle {
                                 }
                             }
 
+                            // Two lines of it, at reading size; the rest is a press away.
                             if notif.body != "" && notif.body != notif.summary : Text {
                                 text: notif.body;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-caption;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-body;
                                 wrap: word-wrap;
+                                overflow: elide;
+                                max-height: 40px * TextScale.factor;
                             }
 
                             // Who sent it. The name on the row is only what the sender said;
@@ -388,12 +410,12 @@ export component NotificationCenter inherits Rectangle {
                             // under Details, for whoever wants to check it against ps. The
                             // verified program leads and the caller's claim (cut short) trails,
                             // so the elision can only ever eat the claim, never the fact.
-                            if notif.sender-short != "" : HorizontalLayout {
+                            if notif.sender-short != "" && !root.from-this-desktop(notif.sender-short) : HorizontalLayout {
                                 spacing: Theme.sp-2;
                                 Text {
                                     text: notif.sender-short;
                                     color: Theme.text-dim;
-                                    font-size: Theme.fs-micro;
+                                    font-size: Theme.fs-caption;
                                     wrap: no-wrap;
                                     overflow: elide;
                                     horizontal-stretch: 1;
@@ -408,7 +430,7 @@ export component NotificationCenter inherits Rectangle {
                                     details-label := Text {
                                         text: card.details-open ? "Hide details" : "Details";
                                         color: parent.has-hover ? Theme.text-secondary : Theme.text-dim;
-                                        font-size: Theme.fs-micro;
+                                        font-size: Theme.fs-caption;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -416,7 +438,7 @@ export component NotificationCenter inherits Rectangle {
                             if card.details-open && notif.sender-line != "" : Text {
                                 text: notif.sender-line;
                                 color: Theme.text-dim;
-                                font-size: Theme.fs-micro;
+                                font-size: Theme.fs-caption;
                                 wrap: word-wrap;
                             }
 
@@ -432,11 +454,11 @@ export component NotificationCenter inherits Rectangle {
 
                                 for action in notif.actions : Rectangle {
                                     width: act-label.preferred-width + Theme.sp-4;
-                                    height: 26px;
-                                    border-radius: Theme.r-sm;
-                                    background: act-ta.has-hover ? Theme.accent.transparentize(75%) : Theme.bg-deep;
+                                    height: 32px;
+                                    border-radius: Theme.r-md;
+                                    background: act-ta.has-hover ? Theme.hover-fill-strong : Theme.bg-surface;
                                     border-width: 1px;
-                                    border-color: Theme.accent.transparentize(70%);
+                                    border-color: Theme.border-floating;
 
                                     act-ta := TouchArea {
                                         mouse-cursor: pointer;
@@ -455,6 +477,7 @@ export component NotificationCenter inherits Rectangle {
                             }
                         }
                     }
+                    if !notif.is-group-header : Rectangle { height: 1px; background: Theme.separator; }
                 }
 
                 Rectangle { height: Theme.sp-5; }

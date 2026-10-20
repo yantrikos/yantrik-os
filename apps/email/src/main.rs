@@ -15,6 +15,7 @@
 //!   no account is configured, an account exists — and says which, on screen and in `describe`.
 
 mod state;
+mod words;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -448,7 +449,8 @@ fn summary_to_list_item(s: &EmailSummary, idx: usize) -> EmailListItem {
         from_addr: s.from.clone().into(),
         subject: s.subject.clone().into(),
         preview: s.snippet.clone().into(),
-        date_text: s.date.clone().into(),
+        // "10:35", "Yesterday", "18 Oct": the full date and time are on the message itself.
+        date_text: words::list_date(&s.date, chrono::Local::now().date_naive()).into(),
         is_read: s.is_read,
         is_flagged: s.is_starred,
         is_selected: false,
@@ -547,6 +549,7 @@ fn folder_to_ui(f: &EmailFolder, selected: bool) -> EmailFolderData {
     let counts = f.counts.unwrap_or_default();
     EmailFolderData {
         name: f.name.clone().into(),
+        label: words::folder_label(&f.name).into(),
         icon: icon.into(),
         unread_count: counts.unread,
         total_count: counts.total,
@@ -2581,7 +2584,7 @@ mod demo {
             ("Trash", "trash", Some((0, 40))), ("Receipts", "custom", None),
         ];
         let folders: Vec<EmailFolderData> = folders.iter().enumerate().map(|(i, (n, t, counts))| EmailFolderData {
-            name: (*n).into(), icon: SharedString::default(),
+            name: (*n).into(), label: (*n).into(), icon: SharedString::default(),
             unread_count: counts.map(|(u, _)| u).unwrap_or(0),
             total_count: counts.map(|(_, c)| c).unwrap_or(0),
             counts_known: counts.is_some(),

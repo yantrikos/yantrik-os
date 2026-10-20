@@ -225,6 +225,16 @@ fn clip_left(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The centre hides this desktop's own sender line by matching it exactly (notification_center
+    /// .slint, `from-this-desktop`): the two must say the same words, or the line comes back on
+    /// every row, or worse, a program's line is hidden.
+    #[test]
+    fn the_centre_knows_this_desktops_own_sender_line() {
+        let slint = include_str!("../../yantrik-ui-slint/ui/notification_center.slint");
+        assert!(slint.contains("return sender-short == \"Source process confirmed: yantrik-ui\";"));
+        assert_eq!(format!("Source process confirmed: {}", "yantrik-ui"), "Source process confirmed: yantrik-ui");
+    }
+
     use super::*;
     use yantrik_ipc_contracts::notifications::Urgency;
     use yantrik_ipc_transport::plain_text::is_bidi_control;
