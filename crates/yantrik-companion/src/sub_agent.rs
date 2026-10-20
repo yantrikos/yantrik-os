@@ -10,6 +10,7 @@ use yantrik_ml::{ChatMessage, GenerationConfig, LLMBackend, parse_tool_calls};
 use yantrikdb_core::YantrikDB;
 
 use crate::config::CompanionConfig;
+use crate::sanitize;
 use crate::tools::{self, PermissionLevel, ToolContext, parse_permission};
 
 /// Configuration for a sub-agent.
@@ -204,6 +205,15 @@ impl SubAgent {
                     "Sub-agent tool result"
                 );
 
+                // Checked, sanitised and labelled like the main loop's (#883, F4): this model
+                // acts with tools too. Without a guard of its own, the static check flags it.
+                let flagged = sanitize::detect_injection(&result);
+                let result = sanitize::tool_result_for_model(
+                    &result,
+                    sanitize::max_result_len_for_tool(&call.name),
+                    flagged,
+                );
+
                 // Append tool result
                 if use_native && !llm_response.api_tool_calls.is_empty() {
                     let call_id = llm_response.api_tool_calls.get(idx)
@@ -213,7 +223,7 @@ impl SubAgent {
                 } else {
                     messages.push(ChatMessage::user(&format!(
                         "<data:tool_result name=\"{}\">\n{}\n</data:tool_result>",
-                        call.name, result
+                        sanitize::escape_for_prompt(&call.name), result
                     )));
                 }
             }

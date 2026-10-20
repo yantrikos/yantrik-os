@@ -2015,9 +2015,16 @@ impl CompanionService {
             final_messages.push(ChatMessage::assistant(&format!(
                 "I'll use the {} tool to help with that.", tool_name
             )));
+            // Checked and sanitised like every tool result a model reads (#883, F4).
+            let flagged = self.guard.check_tool_result(tool_name, tool_result, &self.db);
+            let shown = sanitize::tool_result_for_model(
+                tool_result,
+                sanitize::max_result_len_for_tool(tool_name),
+                flagged,
+            );
             final_messages.push(ChatMessage::user(&format!(
-                "Tool {} returned:\n{}\n\nBased on this result, respond to the user's request: \"{}\"",
-                tool_name, tool_result, user_text
+                "Tool {} returned:\n<data:tool_result name=\"{}\">{}</data:tool_result>\n\nBased on this result, respond to the user's request: \"{}\"",
+                tool_name, sanitize::escape_for_prompt(tool_name), shown, user_text
             )));
 
             let gen_config = GenerationConfig {
@@ -2928,9 +2935,16 @@ impl CompanionService {
                 final_messages.push(ChatMessage::assistant(&format!(
                     "I'll use the {} tool to help with that.", tool_name
                 )));
+                // Checked and sanitised like every tool result a model reads (#883, F4).
+                let flagged = self.guard.check_tool_result(&tool_name, &tool_result, &self.db);
+                let shown = sanitize::tool_result_for_model(
+                    &tool_result,
+                    sanitize::max_result_len_for_tool(&tool_name),
+                    flagged,
+                );
                 final_messages.push(ChatMessage::user(&format!(
-                    "Tool {} returned:\n{}\n\nBased on this result, respond to the user's request: \"{}\"",
-                    tool_name, tool_result, user_text
+                    "Tool {} returned:\n<data:tool_result name=\"{}\">{}</data:tool_result>\n\nBased on this result, respond to the user's request: \"{}\"",
+                    tool_name, sanitize::escape_for_prompt(&tool_name), shown, user_text
                 )));
 
                 let mut response_text = String::new();
@@ -4425,10 +4439,7 @@ fn execute_tool_round(
         }
 
         let max_len = sanitize::max_result_len_for_tool(name);
-        let mut safe_result = sanitize::sanitize_tool_result_with_limit(&result, max_len);
-        if flagged {
-            safe_result = sanitize::label_flagged_tool_result(&safe_result);
-        }
+        let mut safe_result = sanitize::tool_result_for_model(&result, max_len, flagged);
 
         if use_native_tools {
             // Family-aware tool result format (e.g. Nemotron uses role:user + <tool_response>)
@@ -4440,7 +4451,7 @@ fn execute_tool_round(
         } else {
             // Legacy format: user message with data tag
             messages.push(ChatMessage::user(format!(
-                "<data:tool_result name=\"{}\">{}",
+                "<data:tool_result name=\"{}\">{}</data:tool_result>",
                 sanitize::escape_for_prompt(name),
                 safe_result,
             )));
@@ -4547,7 +4558,9 @@ fn execute_tool_round_tracked(
                 messages.push(tmpl.format_tool_result(call_id, name, &result));
             } else {
                 messages.push(ChatMessage::user(format!(
-                    "<data:tool_result name=\"{}\">{}", name, result
+                    "<data:tool_result name=\"{}\">{}</data:tool_result>",
+                    sanitize::escape_for_prompt(name),
+                    result
                 )));
             }
             continue;
@@ -4723,10 +4736,7 @@ fn execute_tool_round_tracked(
         }
 
         let max_len = sanitize::max_result_len_for_tool(name);
-        let mut safe_result = sanitize::sanitize_tool_result_with_limit(&result, max_len);
-        if flagged {
-            safe_result = sanitize::label_flagged_tool_result(&safe_result);
-        }
+        let mut safe_result = sanitize::tool_result_for_model(&result, max_len, flagged);
 
         // Error recovery: append hint suggesting alternatives
         if is_error && error_recovery && name != "discover_tools" {
@@ -4744,7 +4754,7 @@ fn execute_tool_round_tracked(
             messages.push(tmpl.format_tool_result(call_id, name, &safe_result));
         } else {
             messages.push(ChatMessage::user(format!(
-                "<data:tool_result name=\"{}\">{}",
+                "<data:tool_result name=\"{}\">{}</data:tool_result>",
                 sanitize::escape_for_prompt(name),
                 safe_result,
             )));

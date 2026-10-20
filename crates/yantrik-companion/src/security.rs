@@ -339,6 +339,9 @@ impl SecurityGuard {
                     .strip_prefix("Learned attack pattern: ")
                     .map(|s| s.to_lowercase())
             })
+            // Held to the rule attack_phrase learns by: an innocuous window an older build
+            // learned would otherwise go on blocking the person's messages (#883, F5).
+            .filter(|p| p.len() >= 10 && sanitize::detect_injection(p))
             .take(50) // cap loaded patterns
             .collect()
     }
