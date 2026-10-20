@@ -25,6 +25,8 @@ pub fn folder_label(name: &str) -> String {
         "starred" | "flagged" => "Starred".into(),
         "important" => "Important".into(),
         "archive" => "Archive".into(),
+        // Gmail's container for its own folders, listed on its own.
+        "[gmail]" | "[google mail]" => "Gmail".into(),
         _ => bare.to_string(),
     }
 }
@@ -61,6 +63,7 @@ mod tests {
         assert_eq!(folder_label("INBOX.Receipts"), "Receipts");
         assert_eq!(folder_label("Work/Clients"), "Work/Clients", "the person's own keeps its name");
         assert_eq!(folder_label("Junk E-mail"), "Spam");
+        assert_eq!(folder_label("[Gmail]"), "Gmail");
     }
 
     #[test]

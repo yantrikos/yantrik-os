@@ -282,11 +282,28 @@ pub fn group_of(n: &Notification) -> String {
     sender_name(n).to_lowercase()
 }
 
+/// A companion post stored before 20 Oct 2026 begins "AI-generated reflection · …"; it is shown in
+/// today's words ("Written by the Mind · …", wire/notifications.rs `CompanionPost`). Only for one
+/// this desktop verifiably sent: another program's text that opens with those words keeps them,
+/// since relabelling it would be the desktop vouching for it.
+pub(crate) fn relabelled(n: &Notification, body: &str) -> String {
+    if crate::notification_sender::sender_summary(n) != "Source process confirmed: yantrik-ui" {
+        return body.to_string();
+    }
+    for (old, new) in [("AI-generated reflection", "Written by the Mind"), ("AI-generated result", "Result from the Mind")] {
+        if let Some(rest) = body.strip_prefix(old) {
+            return format!("{new}{rest}");
+        }
+    }
+    body.to_string()
+}
+
 /// Convert one notification to the Slint row.
 pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
     // The desktop's agent notices say what happened and keep the prompt in the body; anything
     // else goes through the one title rule (notification_groups.rs, notification_title.rs).
     let (title, body) = crate::notification_groups::display_copy(n);
+    let body = relabelled(n, &body);
     let name = sender_name(n);
     // A mind's notice says which kind it is beside who sent it: the family chip the spec gives
     // the centre, in the words Settings uses for the same row.

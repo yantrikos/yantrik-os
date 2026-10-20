@@ -395,7 +395,8 @@ export component NotificationCenter inherits Rectangle {
                                 font-size: Theme.fs-body;
                                 wrap: word-wrap;
                                 overflow: elide;
-                                max-height: 40px * TextScale.factor;
+                                // Two lines: a height the text cannot grow past, so it elides.
+                                height: min(self.preferred-height, 40px * TextScale.factor);
                             }
 
                             // Who sent it. The name on the row is only what the sender said;

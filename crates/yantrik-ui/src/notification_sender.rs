@@ -276,6 +276,22 @@ mod tests {
         assert_eq!(sender_summary(&n), "Source process confirmed: yantrik-ui");
     }
 
+    /// An old companion post reads in today's words, but only one the desktop sent: a program
+    /// whose text opens "AI-generated reflection" is not relabelled as the Mind's.
+    #[test]
+    fn only_the_desktops_own_old_posts_are_relabelled() {
+        let ours = note(Some("Yantrik"), "yantrik-ui config.yaml (pid 9)", 9, SHELL, true);
+        assert_eq!(
+            crate::notifications::relabelled(&ours, "AI-generated reflection \u{b7} Your meeting moved."),
+            "Written by the Mind \u{b7} Your meeting moved."
+        );
+        let theirs = note(Some("Yantrik"), "python3 evil.py (pid 12)", 12, "/usr/bin/python3", false);
+        assert_eq!(
+            crate::notifications::relabelled(&theirs, "AI-generated reflection \u{b7} Pay now."),
+            "AI-generated reflection \u{b7} Pay now."
+        );
+    }
+
     #[test]
     fn a_bridge_under_the_installed_shell_is_not_the_shell() {
         // The re-review's blocker: `yos` on the socket, `yantrik-ui` above it. The record's `exe`
