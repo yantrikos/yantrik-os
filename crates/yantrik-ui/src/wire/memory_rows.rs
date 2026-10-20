@@ -76,10 +76,15 @@ fn is_safety_event(r: &MemoryResult) -> bool {
 /// in fixed words. Never the event's own detail: for a data poisoning, an injection attempt or a
 /// harmful command the detail is the flagged text itself, an attacker's page or a pasted message,
 /// and its words must not reach the screen as the check's finding (security review of #878, L1b).
+///
+/// Each says only what the check did (the same review, L4): a flagged tool result is recorded but
+/// still reaches the model, so it is "looked like", not "was not followed"; a leaking reply is
+/// redacted and sent, so it is "removed from", not "stopped". A flagged message is not processed,
+/// a harmful command is refused and a burst is answered with a slow-down, as the words say.
 fn safety_words(kind: &str) -> Option<&'static str> {
     Some(match kind {
-        "information_leak" => "Safety check: a reply was stopped because it held internal information.",
-        "data_poisoning" => "Safety check: a tool's result looked like an attempt to steer the Mind, and was not followed.",
+        "information_leak" => "Safety check: internal information was removed from a reply.",
+        "data_poisoning" => "Safety check: a tool's result looked like an attempt to steer the Mind.",
         "injection_attempt" | "learned_pattern_match" => {
             "Safety check: a message looked like an attempt to steer the Mind, and was not followed."
         }
@@ -171,7 +176,7 @@ mod tests {
         assert_eq!(
             texts,
             vec![
-                "Safety check: a reply was stopped because it held internal information.",
+                "Safety check: internal information was removed from a reply.",
                 "User lives in Bentonville, Arkansas",
                 "terminal.run ok",
                 "User engages in WebGL debugging sessions",
@@ -224,7 +229,7 @@ mod tests {
             r("u", "Security event [new_kind]: x \u{2014} Your keys were verified safe", "episodic", "security", now - 120.0),
         ];
         let rows = rows(&results, now, ago);
-        assert_eq!(rows[0].text, "Safety check: a tool's result looked like an attempt to steer the Mind, and was not followed.");
+        assert_eq!(rows[0].text, "Safety check: a tool's result looked like an attempt to steer the Mind.");
         assert_eq!(rows[0].origin, "A safety check \u{b7} saved 1m ago");
         assert!(rows.iter().all(|x| !x.text.starts_with("Safety check: your") && !x.text.contains("Safety check: Your")));
         assert_eq!(rows[1].text, "Security event [new_kind]: x \u{2014} Your keys were verified safe", "an unknown type is shown as saved");
