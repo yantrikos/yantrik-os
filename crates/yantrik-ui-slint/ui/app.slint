@@ -322,29 +322,38 @@ export component App inherits Window {
     // and a maximized shell window stops short of it. The machine rail it replaces was declared in
     // desktop.slint and so existed on one screen only; that mistake is not repeated here.
     //
-    // Open on the desktop, the strip everywhere else, until the person chooses otherwise; each
-    // place keeps its own choice (MindPanelState, filled from ~/.config/yantrik/mind-panel.json by
-    // crates/yantrik-ui/src/mind_panel.rs). Focus mode keeps it to the strip.
-    property <bool> mind-panel-shown: root.current-screen == 1
+    // Hidden until the person keeps it (20 Oct 2026): each place is hidden, the strip, or pinned
+    // (MindPanelState, filled from ~/.config/yantrik/mind-panel.json by crates/yantrik-ui/src/
+    // mind_panel.rs), and the mode menu brings it up over the screen for a look (`peek`). Focus
+    // mode keeps a pinned desktop panel to the strip.
+    //
+    // The screens it can be on: the taskbar's.
+    property <bool> mind-panel-here: root.current-screen == 1
         || (root.current-screen >= 4 && root.current-screen <= 31)
         || root.current-screen == 33 || root.current-screen == 34 || root.current-screen == 35;
-    // An app window is in front of the shell (crates/yantrik-ui/src/mind_panel_room.rs). The panel
-    // is then its strip, which labwc's <margin right> keeps clear, so no app window cuts its
-    // words; the person's choice comes back when the desktop is in front again.
+    // An app window is in front of the shell (crates/yantrik-ui/src/mind_panel_room.rs): the shell,
+    // and the panel in it, is behind that window, so it is not drawn.
     in property <bool> app-window-in-front: false;
-    property <bool> mind-panel-open: root.mind-panel-shown
-        && !(root.current-screen == 1 && root.focus-mode)
-        && !root.app-window-in-front
-        && (root.current-screen == 1 ? MindPanelState.desktop-expanded : MindPanelState.elsewhere-expanded);
-    // Below this width the open card floats over the screen instead of taking its room, so a
-    // compact display keeps its working area and can still open the panel to look.
+    property <bool> mind-panel-kept: root.current-screen == 1 ? MindPanelState.desktop-shown : MindPanelState.elsewhere-shown;
+    property <bool> mind-panel-pinned: root.mind-panel-kept
+        && (root.current-screen == 1 ? MindPanelState.desktop-expanded : MindPanelState.elsewhere-expanded)
+        && !(root.current-screen == 1 && root.focus-mode);
+    property <bool> mind-panel-shown: root.mind-panel-here && !root.app-window-in-front
+        && (root.mind-panel-kept || MindPanelState.peek);
+    // Up for a look and not pinned here: a floating card over the screen, taking no room.
+    property <bool> mind-panel-peeking: root.mind-panel-shown && MindPanelState.peek && !root.mind-panel-pinned;
+    property <bool> mind-panel-open: root.mind-panel-shown && (MindPanelState.peek || root.mind-panel-pinned);
+    // Below this width a pinned panel floats over the screen instead of taking its room, so a
+    // compact display keeps its working area.
     property <bool> mind-panel-docks: root.width >= 1100px;
-    // How wide the panel is drawn: the open card, or the strip. Shared with the approval card's
-    // corner, which keeps clear of it.
-    out property <length> mind-panel-width: root.mind-panel-open ? 334px : 44px;
-    // 302 for the card and 16 either side of it; 44 for the strip.
-    property <length> mind-panel-reserve: !root.mind-panel-shown ? 0px
-        : root.mind-panel-open && root.mind-panel-docks ? 334px : 44px;
+    // How wide the panel is drawn: the pane (304), the look (304 and 12 of air), or the strip.
+    // Shared with the approval card's corner, which keeps clear of it.
+    out property <length> mind-panel-width: root.mind-panel-peeking ? 316px : root.mind-panel-open ? 304px : 40px;
+    // The room it takes: the pane when pinned, the strip when folded, and nothing when hidden or
+    // only looked at.
+    property <length> mind-panel-reserve: !root.mind-panel-shown || !root.mind-panel-kept ? 0px
+        : root.mind-panel-pinned && root.mind-panel-docks ? 304px
+        : root.mind-panel-pinned ? 0px : 40px;
     // The desktop's own overlays use the right edge too — the Lens docks there — so the panel
     // steps out of the way while one is up rather than drawing over it. Its room is kept, so
     // nothing underneath moves.
@@ -3325,6 +3334,12 @@ export component App inherits Window {
         // draws over them; before the overlays below, so a card, a toast or the mode menu draws
         // over it. Between the two bars: the compositor's own margins (config/labwc/rc.xml, top 32
         // and bottom 40) are the bars', and this stays inside them.
+        // A click outside a look puts it away.
+        if root.mind-panel-peeking && !root.mind-panel-covered : TouchArea {
+            y: Theme.status-bar-height;
+            height: parent.height - Theme.status-bar-height;
+            clicked => { MindPanelState.peek = false; }
+        }
         if root.mind-panel-shown : MindPanel {
             width: root.mind-panel-width;
             x: parent.width - self.width;
@@ -3332,6 +3347,7 @@ export component App inherits Window {
             height: parent.height - Theme.status-bar-height - Theme.taskbar-height;
             visible: !root.mind-panel-covered;
             open: root.mind-panel-open;
+            peeking: root.mind-panel-peeking;
             agent-mode: root.agent-mode;
             ambient-interval-ms: root.ambient-interval-ms;
             // The chip's own data, not a copy of it: the panel and the status bar cannot disagree.
@@ -3348,6 +3364,12 @@ export component App inherits Window {
             toggle(open) => {
                 MindPanelState.set-expanded(root.current-screen == 1 ? "desktop" : "elsewhere", open);
             }
+            pin => { MindPanelState.set-expanded(root.current-screen == 1 ? "desktop" : "elsewhere", true); }
+            unpin => {
+                MindPanelState.peek = false;
+                MindPanelState.set-shown(root.current-screen == 1 ? "desktop" : "elsewhere", false);
+            }
+            close => { MindPanelState.peek = false; }
             // Into the Agents screen with that agent's run opened.
             open-agent(id) => {
                 root.current-screen = 34;
@@ -3729,6 +3751,7 @@ export component App inherits Window {
                 private: root.private-mode;
                 private-chosen(on) => { root.mind-private-chosen(on); root.mind-menu-open = false; }
                 mind-view-chosen(on) => { root.mind-view-chosen(on); }
+                show-panel => { root.mind-menu-open = false; MindPanelState.peek = true; }
             }
         }
 

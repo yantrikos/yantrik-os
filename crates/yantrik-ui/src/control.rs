@@ -1039,6 +1039,7 @@ pub fn publish(
                 .with("bar_minds", crate::control_overlays::bar_minds_for_describe(
                     ui.global::<crate::AgentsState>().get_request_minds(),
                     ui.global::<crate::AgentsState>().get_needs_count(),
+                    ui.get_cards_pending(),
                 ))
                 .with("quick_settings", crate::control_overlays::panel_for_describe(ui.get_quick_settings_open(), screen, "close_quick_settings"))
                 .with("power_menu", crate::control_overlays::panel_for_describe(ui.get_power_menu_open(), screen, "close_power_menu"))
@@ -2155,10 +2156,11 @@ pub fn publish(
             // means the panel is as the caller found it.
             Action::new(
                 "set_mind_panel",
-                "Open the mind panel at the right edge, or fold it to its strip. Kept across restarts, one choice for the desktop and one for everywhere else",
+                "Pin the mind panel at the right edge, fold it to its strip, or hide it (the default: it takes no room). Kept across restarts, one choice for the desktop and one for everywhere else",
             )
             .risk("safe")
-            .arg(Param::flag("expanded").describe("true to open the panel, false for the strip"))
+            .arg(Param::text("shape").describe("`pinned`, `strip` or `hidden`").optional())
+            .arg(Param::flag("expanded").describe("Older form: true is `pinned`, false is `strip`").optional())
             .arg(
                 Param::text("where")
                     .describe("`desktop` or `elsewhere`. Left out, wherever the shell is now")
@@ -2166,13 +2168,19 @@ pub fn publish(
             ),
             move |args| {
                 let ui = panel_ui()?;
-                let expanded = args["expanded"].as_bool().ok_or("`expanded` must be true or false")?;
+                let shape = match (args["shape"].as_str(), args["expanded"].as_bool()) {
+                    (Some(s), _) => crate::mind_panel::Shape::parse(s)
+                        .ok_or_else(|| format!("`shape` is `pinned`, `strip` or `hidden`, not `{s}`"))?,
+                    (None, Some(true)) => crate::mind_panel::Shape::Pinned,
+                    (None, Some(false)) => crate::mind_panel::Shape::Strip,
+                    (None, None) => return Err("give `shape`: `pinned`, `strip` or `hidden`".into()),
+                };
                 let place = match args["where"].as_str().map(str::trim).filter(|w| !w.is_empty()) {
                     Some(w) => crate::mind_panel::Place::parse(w)
                         .ok_or_else(|| format!("`where` is `desktop` or `elsewhere`, not `{w}`"))?,
                     None => crate::mind_panel::Place::of_screen(ui.get_current_screen()),
                 };
-                crate::mind_panel::set(&ui, place, expanded)?;
+                crate::mind_panel::set(&ui, place, shape)?;
                 // Read back, the way `pin_app` answers with the pinned list.
                 Ok(crate::mind_panel::for_describe(&ui))
             },

@@ -39,7 +39,9 @@ pub const AGENT_ROWS: usize = 4;
 /// How many recipes in flight it lists.
 pub const RECIPE_ROWS: usize = 3;
 /// How many recent actions it lists.
-pub const ACT_ROWS: usize = 4;
+pub const ACT_ROWS: usize = 2;
+/// How far back the panel's Recent reaches: two hours.
+pub const RECENT_SECS: u64 = 2 * 3600;
 
 /// How often the panel is rebuilt. Its clocks ("2m", "4m ago") move in minutes; a second is below
 /// noticing and costs two short locks.
@@ -90,21 +92,99 @@ pub fn shown_on(screen: i32) -> bool {
     screen == DESKTOP_SCREEN || (4..=31).contains(&screen) || screen == 33 || screen == 34 || screen == 35
 }
 
-/// What the person chose, per place. Open on the desktop and a strip everywhere else until they
-/// say otherwise.
+/// What the person chose, per place: whether the panel is kept there at all (`*_shown`), and if
+/// it is, open or folded to its strip (`desktop`, `elsewhere`). Three shapes, then: hidden, strip
+/// and pinned.
+///
+/// Hidden by default (Pranab, 20 Oct 2026, from the art direction's "not a permanent tenant": the
+/// panel had taken width from every screen). It reserves nothing until the person pins it, and the
+/// mode menu shows it over the screen for a look. A file saved before then has no `*_shown`, and
+/// reads as shown: whoever saved it had a strip or a card there, and keeps it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Choice {
     pub desktop: bool,
     pub elsewhere: bool,
+    #[serde(default = "kept")]
+    pub desktop_shown: bool,
+    #[serde(default = "kept")]
+    pub elsewhere_shown: bool,
+}
+
+fn kept() -> bool {
+    true
 }
 
 impl Default for Choice {
     fn default() -> Self {
-        Choice { desktop: true, elsewhere: false }
+        Choice { desktop: true, elsewhere: false, desktop_shown: false, elsewhere_shown: false }
+    }
+}
+
+/// A place's shape, as `set_mind_panel` and `describe shell` name it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shape {
+    Hidden,
+    Strip,
+    Pinned,
+}
+
+impl Shape {
+    pub fn parse(text: &str) -> Option<Shape> {
+        match text.trim() {
+            "hidden" => Some(Shape::Hidden),
+            "strip" => Some(Shape::Strip),
+            "pinned" => Some(Shape::Pinned),
+            _ => None,
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Shape::Hidden => "hidden",
+            Shape::Strip => "strip",
+            Shape::Pinned => "pinned",
+        }
     }
 }
 
 impl Choice {
+    pub fn shown(self, place: Place) -> bool {
+        match place {
+            Place::Desktop => self.desktop_shown,
+            Place::Elsewhere => self.elsewhere_shown,
+        }
+    }
+
+    pub fn set_shown(&mut self, place: Place, shown: bool) {
+        match place {
+            Place::Desktop => self.desktop_shown = shown,
+            Place::Elsewhere => self.elsewhere_shown = shown,
+        }
+    }
+
+    pub fn shape(self, place: Place) -> Shape {
+        match (self.shown(place), self.get(place)) {
+            (false, _) => Shape::Hidden,
+            (true, false) => Shape::Strip,
+            (true, true) => Shape::Pinned,
+        }
+    }
+
+    /// Hidden keeps the open-or-strip choice it had, so pinning again comes back the same.
+    pub fn set_shape(&mut self, place: Place, shape: Shape) {
+        match shape {
+            Shape::Hidden => self.set_shown(place, false),
+            Shape::Strip => {
+                self.set_shown(place, true);
+                self.set(place, false);
+            }
+            Shape::Pinned => {
+                self.set_shown(place, true);
+                self.set(place, true);
+            }
+        }
+    }
+
     pub fn get(self, place: Place) -> bool {
         match place {
             Place::Desktop => self.desktop,
@@ -150,11 +230,18 @@ pub fn save_choice(path: &Path, choice: Choice) -> Result<(), String> {
     std::fs::rename(&temp, path).map_err(|e| format!("could not replace {}: {e}", path.display()))
 }
 
-/// Whether the panel is drawn open on `screen`: shown there, not in focus mode on the desktop, no
-/// app window in front ([`crate::mind_panel_room`]), and chosen open for that place. The same rule
-/// as `mind-panel-open` in app.slint.
-pub fn open_on(choice: Choice, screen: i32, focus_mode: bool, app_in_front: bool) -> bool {
-    shown_on(screen) && !(screen == DESKTOP_SCREEN && focus_mode) && !app_in_front && choice.get(Place::of_screen(screen))
+/// Whether the panel is drawn on `screen` at all: a screen it belongs on, no app window in front
+/// (the shell is then behind it, [`crate::mind_panel_room`]), and kept there or looked at (`peek`,
+/// the mode menu's "Show what the Mind is doing"). `mind-panel-shown` in app.slint.
+pub fn drawn_on(choice: Choice, screen: i32, app_in_front: bool, peek: bool) -> bool {
+    shown_on(screen) && !app_in_front && (peek || choice.shown(Place::of_screen(screen)))
+}
+
+/// Whether it is drawn open: looked at, or pinned there and not held to its strip by focus mode on
+/// the desktop. The same rule as `mind-panel-open` in app.slint.
+pub fn open_on(choice: Choice, screen: i32, focus_mode: bool, app_in_front: bool, peek: bool) -> bool {
+    drawn_on(choice, screen, app_in_front, peek)
+        && (peek || (choice.shape(Place::of_screen(screen)) == Shape::Pinned && !(screen == DESKTOP_SCREEN && focus_mode)))
 }
 
 // ── Now: the answering mind ──────────────────────────────────────────
@@ -428,6 +515,12 @@ fn parse_audit_line(line: &str) -> Option<Act> {
     })
 }
 
+/// What the panel shows as Recent: the last [`RECENT_SECS`]. A seven-hour-old render is not news;
+/// older acts are in the audit view, a click away (art direction, 20 Oct 2026, C).
+pub fn fresh_acts(acts: &[Act], now: u64) -> Vec<Act> {
+    acts.iter().filter(|a| now.saturating_sub(a.unix) <= RECENT_SECS).cloned().collect()
+}
+
 /// The rows: what was done in words, how long ago, and how it went. A failure more than a day old
 /// is left to the audit view ([`words::still_current`]).
 pub fn act_lines(acts: &[Act], now: u64, count: usize) -> Vec<ActLine> {
@@ -607,19 +700,21 @@ pub fn services_line(services: &[(String, String)]) -> (String, bool) {
 
 /// What `describe shell` says under `mind_panel`: where it is, whether it is open, what each place
 /// is set to, and how much it is showing.
-pub fn describe_of(choice: Choice, screen: i32, focus_mode: bool, app_in_front: bool, now: &Now, recipes: usize, acts: usize) -> serde_json::Value {
-    let shown = shown_on(screen);
-    let expanded = open_on(choice, screen, focus_mode, app_in_front);
+pub fn describe_of(choice: Choice, screen: i32, focus_mode: bool, app_in_front: bool, peek: bool, now: &Now, recipes: usize, acts: usize) -> serde_json::Value {
+    let place = Place::of_screen(screen);
+    let shown = drawn_on(choice, screen, app_in_front, peek);
+    let expanded = open_on(choice, screen, focus_mode, app_in_front, peek);
+    let peeking = shown && peek && choice.shape(place) != Shape::Pinned;
     serde_json::json!({
         "shown": shown,
-        "where": Place::of_screen(screen).key(),
+        "where": place.key(),
         "expanded": expanded,
-        "state": if !shown { "hidden" } else if expanded { "expanded" } else { "collapsed" },
-        // What `set_mind_panel` changes: one choice per place, kept across restarts.
-        "choice": { "desktop": choice.desktop, "elsewhere": choice.elsewhere },
-        "focus_mode_holds_it_collapsed": screen == DESKTOP_SCREEN && focus_mode && choice.desktop,
-        // An app window is in front: the panel is its strip, inside the room labwc keeps clear.
-        "app_window_holds_it_collapsed": shown && app_in_front && choice.get(Place::of_screen(screen)),
+        "state": if !shown { "hidden" } else if peeking { "peeking" } else if expanded { "pinned" } else { "strip" },
+        // What `set_mind_panel` changes: one shape per place, kept across restarts.
+        "choice": { "desktop": choice.shape(Place::Desktop).key(), "elsewhere": choice.shape(Place::Elsewhere).key() },
+        "focus_mode_holds_it_collapsed": screen == DESKTOP_SCREEN && focus_mode && choice.shape(Place::Desktop) == Shape::Pinned && !peek,
+        // An app window is in front: the shell, and the panel with it, is behind that window.
+        "app_window_hides_it": shown_on(screen) && app_in_front && choice.shown(place),
         "mind": if now.known { serde_json::json!(now.mind) } else { serde_json::Value::Null },
         "model": if now.known { serde_json::json!(now.model) } else { serde_json::Value::Null },
         "at_work": now.running,
@@ -631,7 +726,12 @@ pub fn describe_of(choice: Choice, screen: i32, focus_mode: bool, app_in_front: 
 }
 
 fn choice_of(g: &MindPanelState<'_>) -> Choice {
-    Choice { desktop: g.get_desktop_expanded(), elsewhere: g.get_elsewhere_expanded() }
+    Choice {
+        desktop: g.get_desktop_expanded(),
+        elsewhere: g.get_elsewhere_expanded(),
+        desktop_shown: g.get_desktop_shown(),
+        elsewhere_shown: g.get_elsewhere_shown(),
+    }
 }
 
 fn show_choice(g: &MindPanelState<'_>, choice: Choice) {
@@ -640,6 +740,12 @@ fn show_choice(g: &MindPanelState<'_>, choice: Choice) {
     }
     if g.get_elsewhere_expanded() != choice.elsewhere {
         g.set_elsewhere_expanded(choice.elsewhere);
+    }
+    if g.get_desktop_shown() != choice.desktop_shown {
+        g.set_desktop_shown(choice.desktop_shown);
+    }
+    if g.get_elsewhere_shown() != choice.elsewhere_shown {
+        g.set_elsewhere_shown(choice.elsewhere_shown);
     }
 }
 
@@ -661,20 +767,24 @@ pub fn for_describe(ui: &App) -> serde_json::Value {
         ui.get_current_screen(),
         ui.get_focus_mode(),
         ui.get_app_window_in_front(),
+        g.get_peek(),
         &now,
         g.get_recipes().row_count(),
         g.get_acts().row_count(),
     )
 }
 
-/// `set_mind_panel`: open or fold the panel at `place`, and keep it that way. The file first and
-/// the screen after, so an error means nothing changed.
-pub fn set(ui: &App, place: Place, expanded: bool) -> Result<(), String> {
+/// `set_mind_panel`: hide, fold or pin the panel at `place`, and keep it that way. The file first
+/// and the screen after, so an error means nothing changed.
+pub fn set(ui: &App, place: Place, shape: Shape) -> Result<(), String> {
     let g = ui.global::<MindPanelState>();
     let mut choice = choice_of(&g);
-    choice.set(place, expanded);
+    choice.set_shape(place, shape);
     save_choice(&choice_path(), choice)?;
     show_choice(&g, choice);
+    if shape != Shape::Hidden {
+        g.set_peek(false);
+    }
     Ok(())
 }
 
@@ -693,14 +803,32 @@ pub fn wire(ui: &App) {
             let Some(place) = Place::parse(&place) else { return };
             let g = ui.global::<MindPanelState>();
             let mut choice = choice_of(&g);
-            choice.set(place, expanded);
+            // Pin, or fold to the strip: either way the panel is kept at this place now.
+            choice.set_shape(place, if expanded { Shape::Pinned } else { Shape::Strip });
             show_choice(&g, choice);
+            g.set_peek(false);
             // A click on the panel is a click on the shell, which labwc has just raised over the
             // app windows: open it now rather than at the compositor's next reading.
             if expanded {
                 crate::windows::note_shell_clicked();
                 ui.set_app_window_in_front(false);
             }
+            if let Err(e) = save_choice(&choice_path(), choice) {
+                tracing::warn!(error = %e, "The mind panel's choice was not saved");
+            }
+        }
+    });
+
+    // Unpin: the panel is not kept here any more. Its open-or-strip choice is left as it was.
+    g.on_set_shown({
+        let weak = ui.as_weak();
+        move |place, shown| {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(place) = Place::parse(&place) else { return };
+            let g = ui.global::<MindPanelState>();
+            let mut choice = choice_of(&g);
+            choice.set_shown(place, shown);
+            show_choice(&g, choice);
             if let Err(e) = save_choice(&choice_path(), choice) {
                 tracing::warn!(error = %e, "The mind panel's choice was not saved");
             }
@@ -747,7 +875,7 @@ fn refresh(ui: &App) {
         recipes: recipes(),
         // Read past the rows shown: failures older than a day are dropped from what is read, and
         // the panel should still fill its rows with what is current.
-        acts: act_lines(&recent_acts(AUDIT_SEED), now, ACT_ROWS),
+        acts: act_lines(&fresh_acts(&recent_acts(AUDIT_SEED), now), now, ACT_ROWS),
         services,
     };
     publish(ui, &build(&input));
@@ -1121,22 +1249,33 @@ mod tests {
         let path = dir.join("mind-panel.json");
         let _ = std::fs::remove_dir_all(&dir);
 
-        // Nothing saved: open on the desktop, the strip everywhere else.
+        // Nothing saved: hidden everywhere, taking no room, until the person pins it or looks.
         let choice = load_choice(&path);
-        assert_eq!(choice, Choice { desktop: true, elsewhere: false });
-        assert!(open_on(choice, 1, false, false), "the desktop opens it");
-        assert!(!open_on(choice, 8, false, false), "Files gets the strip");
-        assert!(!open_on(choice, 34, false, false), "so does Agents");
-        assert!(!open_on(choice, 1, true, false), "focus mode keeps it to the strip");
-        assert!(!open_on(choice, 3, false, false) && !shown_on(3), "not on the lock screen at all");
+        assert_eq!(choice, Choice::default());
+        assert_eq!((choice.shape(Place::Desktop), choice.shape(Place::Elsewhere)), (Shape::Hidden, Shape::Hidden));
+        assert!(!drawn_on(choice, 1, false, false) && !drawn_on(choice, 8, false, false), "hidden by default");
+        assert!(open_on(choice, 8, false, false, true), "a look opens it over the screen");
+        assert!(!drawn_on(choice, 3, false, true) && !shown_on(3), "not on the lock screen at all");
 
         let mut chosen = choice;
-        chosen.set(Place::Elsewhere, true);
-        chosen.set(Place::Desktop, false);
+        chosen.set_shape(Place::Desktop, Shape::Pinned);
+        chosen.set_shape(Place::Elsewhere, Shape::Strip);
+        assert!(open_on(chosen, 1, false, false, false), "pinned on the desktop: open");
+        assert!(!open_on(chosen, 1, true, false, false), "focus mode keeps it to the strip");
+        assert!(drawn_on(chosen, 8, false, false) && !open_on(chosen, 8, false, false, false), "Files: the strip");
+        assert!(!drawn_on(chosen, 8, true, false), "an app window in front: the shell is behind it");
         save_choice(&path, chosen).unwrap();
         let back = load_choice(&path);
-        assert_eq!(back, Choice { desktop: false, elsewhere: true });
-        assert!(open_on(back, 8, false, false) && !open_on(back, 1, false, false));
+        assert_eq!(back, chosen);
+        chosen.set_shape(Place::Desktop, Shape::Hidden);
+        assert_eq!(chosen.shape(Place::Desktop), Shape::Hidden);
+        chosen.set_shape(Place::Desktop, Shape::Pinned);
+        assert!(chosen.desktop, "pinned again comes back open");
+
+        // A file saved before the shapes: whoever saved it kept a strip or a card, and still does.
+        std::fs::write(&path, "{ \"desktop\": true, \"elsewhere\": false }").unwrap();
+        let old = load_choice(&path);
+        assert_eq!((old.shape(Place::Desktop), old.shape(Place::Elsewhere)), (Shape::Pinned, Shape::Strip));
 
         std::fs::write(&path, "{ not json").unwrap();
         assert_eq!(load_choice(&path), Choice::default(), "a file that cannot be read is the defaults, not a crash");
@@ -1146,21 +1285,30 @@ mod tests {
     #[test]
     fn describe_says_where_it_is_how_open_and_what_each_place_is_set_to() {
         let panel = build(&input());
-        let d = describe_of(Choice::default(), 1, false, false, &panel.now, 0, 2);
+        let mut pinned = Choice::default();
+        pinned.set_shape(Place::Desktop, Shape::Pinned);
+        pinned.set_shape(Place::Elsewhere, Shape::Strip);
+        let d = describe_of(pinned, 1, false, false, false, &panel.now, 0, 2);
         assert_eq!(d["where"], "desktop");
         assert_eq!(d["expanded"], true);
-        assert_eq!(d["state"], "expanded");
-        assert_eq!(d["choice"]["elsewhere"], false);
+        assert_eq!(d["state"], "pinned");
+        assert_eq!(d["choice"]["elsewhere"], "strip");
         assert_eq!(d["mind"], "Yantrik Companion");
         assert_eq!(d["recipes_in_flight"], 0);
         assert_eq!(d["recent_actions"], 2);
 
-        let d = describe_of(Choice::default(), 8, false, false, &panel.now, 0, 0);
-        assert_eq!((d["where"].as_str(), d["state"].as_str()), (Some("elsewhere"), Some("collapsed")));
-        let d = describe_of(Choice::default(), 1, true, false, &panel.now, 0, 0);
+        let d = describe_of(pinned, 8, false, false, false, &panel.now, 0, 0);
+        assert_eq!((d["where"].as_str(), d["state"].as_str()), (Some("elsewhere"), Some("strip")));
+        let d = describe_of(pinned, 1, true, false, false, &panel.now, 0, 0);
         assert_eq!(d["expanded"], false);
         assert_eq!(d["focus_mode_holds_it_collapsed"], true);
-        let d = describe_of(Choice::default(), 0, false, false, &build(&Inputs::default()).now, 0, 0);
+        let d = describe_of(Choice::default(), 8, false, false, false, &panel.now, 0, 0);
+        assert_eq!((d["shown"].as_bool(), d["state"].as_str(), d["choice"]["desktop"].as_str()), (Some(false), Some("hidden"), Some("hidden")));
+        let d = describe_of(Choice::default(), 8, false, false, true, &panel.now, 0, 0);
+        assert_eq!((d["state"].as_str(), d["expanded"].as_bool()), (Some("peeking"), Some(true)));
+        assert_eq!(Shape::parse(" pinned "), Some(Shape::Pinned));
+        assert_eq!(Shape::parse("open"), None);
+        let d = describe_of(Choice::default(), 0, false, false, false, &build(&Inputs::default()).now, 0, 0);
         assert_eq!(d["state"], "hidden", "boot has no panel");
         assert!(d["mind"].is_null() && d["recipes_in_flight"].is_null(), "unknown is null, not a guess");
 
@@ -1189,7 +1337,7 @@ mod tests {
         );
 
         // The panel is drawn on the taskbar's screens, and Rust agrees about which those are.
-        let shown = app.split("property <bool> mind-panel-shown:").nth(1).expect("mind-panel-shown").split(';').next().unwrap().to_string();
+        let shown = app.split("property <bool> mind-panel-here:").nth(1).expect("mind-panel-here").split(';').next().unwrap().to_string();
         for part in ["current-screen == 1", "current-screen >= 4", "current-screen <= 31", "current-screen == 33", "current-screen == 34", "current-screen == 35"] {
             assert!(shown.contains(part), "mind-panel-shown covers `{part}`: {shown}");
         }

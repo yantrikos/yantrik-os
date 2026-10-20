@@ -169,6 +169,8 @@ export component MindModeMenu inherits Rectangle {
     // choice like the modes; nothing on the socket can set it.
     in property <bool> private: false;
     callback private-chosen(bool);
+    // Up over the screen: the Mind panel, which is hidden until the person keeps it.
+    callback show-panel();
 
     // A bypass of either kind: the red chip, the red edge, the selected Bypass row.
     property <bool> in-bypass: root.mode == "bypass" || root.mode == "bypass_all";
@@ -557,6 +559,38 @@ export component MindModeMenu inherits Rectangle {
                     : "Turn every mind off and record nothing, until you end it.";
                 selected: root.private;
                 chosen => { root.private-chosen(!root.private); }
+            }
+
+            // ── The Mind panel ──
+            // Last of all, so every row above keeps its y. The panel is hidden until the person
+            // keeps it; this brings it up over the screen, where its Pin keeps it.
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+            Rectangle {
+                height: 32px;
+                border-radius: Theme.r-sm;
+                background: show-ta.has-hover ? Theme.hover-fill : transparent;
+                show-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.show-panel(); }
+                }
+                HorizontalLayout {
+                    padding-left: Theme.sp-2;
+                    padding-right: Theme.sp-2;
+                    Text {
+                        text: "Show what the Mind is doing";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-caption;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Icon {
+                        commands: Icons.chevron-right;
+                        size: 13px;
+                        tint: Theme.text-secondary;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
             }
         }
     }

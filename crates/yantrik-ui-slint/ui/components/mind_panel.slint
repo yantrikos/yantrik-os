@@ -1,5 +1,16 @@
-// MindPanel — the right edge of every screen: which mind is answering and on what, what it may
-// do, what is working, and what it did.
+// MindPanel — the Mind at the right edge: who is answering and what it may do, what this is,
+// what is running, and what it did lately.
+//
+// Hidden until the person keeps it (Pranab, 20 Oct 2026; design/art-direction-2026-10-20.md, C):
+// it had taken width from every screen and filled it with a status report about the software.
+// Three shapes per place, kept across restarts: hidden (no room taken), a 40px strip, or pinned
+// (a 304px pane beside the screen). The mode menu's "Show what the Mind is doing" brings it up
+// over the screen for a look, as a floating card with a Pin button.
+//
+// What it says is what is useful now: the mind and what it may do, which project this is (or
+// that it is not known), what is running ("Nothing running." when nothing is), and at most two
+// things done in the last two hours. The models, the count of memories and of minds, and the
+// pickers that are in the ask bar anyway went.
 //
 // The OS holds the desk; the mind is at its edge. This is shell furniture: it is declared in
 // app.slint, beside the status bar and the taskbar, so it is on every screen that has them — and
@@ -77,31 +88,63 @@ export struct MindPanelNow {
 }
 
 export global MindPanelState {
-    // Expanded or not, per place. The desktop defaults to open and everything else to the strip;
-    // Rust replaces both with what the person last chose (~/.config/yantrik/mind-panel.json).
+    // Per place: kept there at all (shown), and if so open or the strip (expanded). Hidden by
+    // default; Rust replaces these with what the person last chose (~/.config/yantrik/mind-panel.json).
+    in-out property <bool> desktop-shown: false;
+    in-out property <bool> elsewhere-shown: false;
     in-out property <bool> desktop-expanded: true;
     in-out property <bool> elsewhere-expanded: false;
+    // Up over the screen for a look, from the mode menu. Not kept: gone on Pin, on close, or on a
+    // click outside it.
+    in-out property <bool> peek: false;
     in-out property <MindPanelNow> now;
     in-out property <[MindPanelAgent]> agents;
     in-out property <[MindPanelRecipe]> recipes;
     in-out property <[MindPanelAct]> acts;
-    // The person asked for the panel open (true) or closed, at "desktop" or "elsewhere".
+    // The person pinned it open (true) or folded it to the strip (false), at "desktop" or "elsewhere".
     callback set-expanded(string, bool);
+    // The person unpinned it (false): hidden at that place again.
+    callback set-shown(string, bool);
 }
 
+// A section's name: sentence case, quiet (the art direction's eyebrow, 12/500).
 component SectionLabel inherits Text {
     color: Theme.text-dim;
-    font-size: Theme.fs-micro;
-    font-weight: Theme.fw-micro;
-    letter-spacing: 1px;
+    font-size: Theme.fs-caption;
+    font-weight: 500;
+    letter-spacing: 0.4px;
     vertical-alignment: center;
+}
+
+// A square button with one icon: Pin, Unpin, Close, Fold.
+component IconButton inherits TouchArea {
+    in property <string> icon;
+    in property <string> tip;
+    width: 28px;
+    height: 28px;
+    mouse-cursor: pointer;
+    accessible-role: button;
+    accessible-label: root.tip;
+    Rectangle {
+        border-radius: Theme.r-md;
+        background: root.pressed ? Theme.hover-fill-strong : root.has-hover ? Theme.hover-fill : transparent;
+        Icon {
+            commands: root.icon;
+            size: 15px;
+            thickness: 1.6px;
+            tint: root.has-hover ? Theme.text-primary : Theme.text-secondary;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+    YTooltip { text: root.tip; hovered: root.has-hover; x: parent.width - self.width; y: parent.height + 4px; }
 }
 
 component Separator inherits VerticalLayout {
     vertical-stretch: 0;
-    Rectangle { height: 11px; }
+    Rectangle { height: 14px; }
     Rectangle { height: 1px; background: Theme.separator; }
-    Rectangle { height: 11px; }
+    Rectangle { height: 14px; }
 }
 
 component KeyValue inherits HorizontalLayout {
@@ -218,6 +261,8 @@ component Row inherits TouchArea {
 // ── Expanded ────────────────────────────────────────────────────────
 
 component MindCard inherits Rectangle {
+    // Up for a look, over the screen (a floating card with Pin), or pinned beside it (a pane).
+    in property <bool> peeking;
     in property <bool> agent-mode;
     in property <length> height-ceiling;
     in property <string> mode;
@@ -235,6 +280,9 @@ component MindCard inherits Rectangle {
     in property <string> disk-text;
 
     callback collapse();
+    callback pin();
+    callback unpin();
+    callback close();
     callback open-agent(string);
     callback open-agents();
     callback open-recipe(string);
@@ -265,17 +313,24 @@ component MindCard inherits Rectangle {
         return "The most it may do is not known yet";
     }
 
-    width: 302px;
-    // As tall as what it holds, like the rail it replaces: a card that ran to the taskbar over
-    // nothing would be a dark rectangle claiming something lived there.
-    height: Math.min(body.preferred-height, root.height-ceiling);
-    // A panel on the scale (r-lg), with the hairline every card and panel carries now: one pixel a
-    // little lighter than the surface, the edge that catches the light.
-    border-radius: Theme.r-lg;
-    background: Theme.glass-rail;
-    border-width: 1px;
-    border-color: Theme.border-card;
-    clip: true;
+    width: 304px;
+    // Looked at: as tall as what it holds, floating (level 2, its shadow and a 16px radius).
+    // Pinned: the full height beside the screen, a structural pane (level 1), its one edge a hairline.
+    height: root.peeking ? Math.min(body.preferred-height, root.height-ceiling) : root.height-ceiling;
+    border-radius: root.peeking ? Theme.r-xl : 0px;
+    background: root.peeking ? Theme.bg-card : Theme.bg-surface;
+    border-width: root.peeking ? 1px : 0px;
+    border-color: Theme.border-floating;
+    drop-shadow-blur: root.peeking ? Theme.shadow-float-blur : 0px;
+    drop-shadow-offset-y: root.peeking ? Theme.shadow-float-dy : 0px;
+    drop-shadow-color: Theme.shadow-float;
+    clip: !root.peeking;
+    if !root.peeking : Rectangle {
+        x: 0;
+        width: 1px;
+        height: 100%;
+        background: Theme.border-structural;
+    }
 
     // Clicks between the rows stay on the card.
     TouchArea { width: 100%; height: 100%; }
@@ -283,11 +338,13 @@ component MindCard inherits Rectangle {
     body := VerticalLayout {
         padding: Theme.sp-4;
         spacing: 0;
+        // Pinned, the pane is the full height: what it holds stays at the top, not spread down it.
+        alignment: start;
 
-        // ── Now: who is answering, on what, under which mode ──
+        // ── Who is answering, and what it may do ──
         HorizontalLayout {
             spacing: 10px;
-            height: 40px;
+            height: 44px;
             mind-row := Row {
                 horizontal-stretch: 1;
                 clicked => { root.open-mind(); }
@@ -298,173 +355,118 @@ component MindCard inherits Rectangle {
                         initial: root.now.initial;
                         builtin: root.now.builtin;
                         online: root.now.state != "offline" && root.now.known;
+                        size: 32px;
                         y: (parent.height - self.height) / 2;
                     }
                     VerticalLayout {
                         alignment: center;
-                        spacing: 1px;
+                        spacing: 2px;
                         Text {
                             text: root.now.known ? root.now.mind : "Mind not known yet";
                             color: Theme.text-primary;
-                            font-size: Theme.fs-headline;
-                            font-weight: Theme.fw-headline;
+                            font-size: Theme.fs-title-2;
+                            font-weight: 600;
                             overflow: elide;
                         }
-                        HorizontalLayout {
-                            spacing: 6px;
-                            StateDot { state: root.now.state; y: (parent.height - self.height) / 2; }
-                            Text {
-                                // The whole line comes from Rust: "connected · <model>" only after a
-                                // real call or a probe, else what is wrong (#673).
-                                text: root.now.known ? root.now.model : "the host has not said yet";
-                                color: root.now.model-named ? Theme.text-secondary : Theme.text-dim;
+                        // What it may do, in the words the bar's chip uses. A click opens the mode menu.
+                        mode-ta := TouchArea {
+                            height: meaning.preferred-height;
+                            mouse-cursor: pointer;
+                            clicked => { root.open-mode(); }
+                            meaning := Text {
+                                width: 100%;
+                                text: root.mode-meaning(root.mode, root.ceiling);
+                                color: root.in-bypass ? Theme.color-danger
+                                    : mode-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                                 font-size: Theme.fs-caption;
+                                font-weight: root.in-bypass ? 600 : 400;
                                 overflow: elide;
-                                horizontal-stretch: 1;
                             }
                         }
                     }
                 }
             }
-            collapse-ta := TouchArea {
-                width: 28px;
-                mouse-cursor: pointer;
-                clicked => { root.collapse(); }
-                Rectangle {
-                    width: 28px;
-                    height: 28px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: Theme.r-sm;
-                    background: collapse-ta.has-hover ? Theme.hover-fill : transparent;
-                    Icon {
-                        commands: Icons.chevron-right;
-                        size: 14px;
-                        thickness: 1.8px;
-                        tint: collapse-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                    }
+            if root.peeking : VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 2px;
+                    IconButton { icon: Icons.pushpin; tip: "Pin beside the screen"; clicked => { root.pin(); } }
+                    IconButton { icon: Icons.close; tip: "Close"; clicked => { root.close(); } }
+                }
+            }
+            if !root.peeking : VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 2px;
+                    IconButton { icon: Icons.chevron-right; tip: "Fold to the strip"; clicked => { root.collapse(); } }
+                    IconButton { icon: Icons.close; tip: "Unpin: hide it here"; clicked => { root.unpin(); } }
                 }
             }
         }
-        // The picker (#673): the same [Mind ▾] [Model ▾] [Effort ▾] [📎] as the ask bar, so
-        // switching mind or model is two clicks from here too.
-        Rectangle { height: 8px; }
-        HorizontalLayout {
-            height: 28px;
-            BoundPicker { upward: false; compact: true; show-status: false; menu-width: 280px; }
-            Rectangle { horizontal-stretch: 1; }
-        }
-        Rectangle { height: 10px; }
-        // The mode, and what it means bounded by the machine's ceiling, side by side because
-        // neither means much alone.
-        HorizontalLayout {
-            min-height: 24px;
-            spacing: Theme.sp-2;
-            mode-ta := TouchArea {
-                width: mode-row.preferred-width;
-                height: 24px;
-                mouse-cursor: pointer;
-                clicked => { root.open-mode(); }
-                Rectangle {
-                    width: 100%;
-                    height: 100%;
-                    border-radius: Theme.r-sm;
-                    background: root.in-bypass ? Theme.color-danger-dim
-                        : root.mode == "plan" ? Theme.tint-amber
-                        : mode-ta.has-hover ? Theme.hover-fill-strong : Theme.hover-fill;
-                    border-width: root.in-bypass ? 1px : 0px;
-                    border-color: Theme.color-danger;
-                    mode-row := HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 9px;
-                        spacing: 5px;
-                        Icon {
-                            commands: root.mode == "plan" ? Icons.eye : Icons.shield;
-                            size: 12px;
-                            tint: root.in-bypass ? Theme.color-danger
-                                : root.mode == "plan" ? Theme.amber : Theme.text-secondary;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: "Mode " + root.mode-label;
-                            color: root.in-bypass ? Theme.color-danger
-                                : root.mode == "plan" ? Theme.amber : Theme.text-primary;
-                            font-size: Theme.fs-micro;
-                            font-weight: root.in-bypass ? 700 : 500;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-            meaning := Rectangle {
+        // Only when something is wrong with the mind's model: what, in its own words (#673). A
+        // model that works is not news.
+        if root.now.known && root.now.state != "connected" && root.now.state != "own" && root.now.state != "thinking" && root.now.state != "unknown" : HorizontalLayout {
+            spacing: 6px;
+            padding-top: 6px;
+            StateDot { state: root.now.state; y: (parent.height - self.height) / 2; }
+            Text {
+                text: root.now.model;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
                 horizontal-stretch: 1;
-                min-height: meaning-text.preferred-height;
-                meaning-ta := TouchArea {}
-                YTooltip {
-                    text: root.ceiling-meaning(root.ceiling);
-                    hovered: meaning-ta.has-hover;
-                    x: parent.width - self.width;
-                    y: parent.height + 2px;
-                }
-                meaning-text := Text {
-                    width: 100%;
-                    text: root.mode-meaning(root.mode, root.ceiling);
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-micro;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
-                }
             }
         }
 
         Separator {}
 
-        // ── Context ──
-        SectionLabel { text: "CONTEXT"; height: 16px; }
-        Rectangle { height: 4px; }
-        KeyValue {
-            key: "Project";
-            value: root.now.project != "" ? root.now.project : "not detected";
-            dim: root.now.project == "";
+        // ── Here ──
+        SectionLabel { text: "Here"; height: 18px; }
+        Rectangle { height: 6px; }
+        Text {
+            text: root.now.project != "" ? root.now.project : "It doesn't know which project this is.";
+            color: root.now.project != "" ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.fs-body;
+            font-weight: root.now.project != "" ? 600 : 400;
+            wrap: word-wrap;
         }
-        KeyValue { key: "Memory"; value: root.now.memory; dim: !root.now.memory-known; }
-        KeyValue { key: "Minds"; value: root.now.minds; dim: !root.now.known; }
 
         Separator {}
 
         // ── Working: agents at work, the ones waiting for the person first; recipes in flight ──
         working-ta := TouchArea {
             height: 18px;
+            accessible-role: button;
+            accessible-label: "Now: open Agents";
             mouse-cursor: pointer;
             clicked => { root.open-agents(); }
             HorizontalLayout {
                 spacing: 6px;
                 SectionLabel {
-                    text: "WORKING";
+                    text: "Now";
                     color: working-ta.has-hover ? Theme.text-secondary : Theme.text-dim;
                     horizontal-stretch: 1;
                 }
                 if root.now.needs-you > 0 : Text {
                     text: root.now.needs-you + " need" + (root.now.needs-you == 1 ? "s" : "") + " you";
                     color: Theme.amber;
-                    font-size: Theme.fs-micro;
+                    font-size: Theme.fs-caption;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
                 if root.now.running > 0 : Text {
                     text: root.now.running + " at work";
                     color: Theme.text-secondary;
-                    font-size: Theme.fs-micro;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
             }
         }
-        Rectangle { height: 4px; }
+        Rectangle { height: 6px; }
         if MindPanelState.agents.length == 0 && MindPanelState.recipes.length == 0 : Text {
-            text: root.now.recipes-known ? "Nothing at work." : "No agents at work. Recipes not known yet.";
-            color: Theme.text-dim;
-            font-size: Theme.fs-caption;
+            text: root.now.recipes-known ? "Nothing running." : "Nothing running that it can see.";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
             height: 22px;
             vertical-alignment: center;
         }
@@ -557,37 +559,30 @@ component MindCard inherits Rectangle {
             }
         }
 
-        Separator {}
-
-        // ── Recent actions: from the mind audit today, the ledger (#148) later ──
-        audit-ta := TouchArea {
+        // ── Recent: the last two hours from the mind audit (what ran without anyone being asked; its
+        // tooltip and the audit view say so), only when there is something ──
+        if MindPanelState.acts.length > 0 : Separator {}
+        if MindPanelState.acts.length > 0 : audit-ta := TouchArea {
             height: 18px;
             mouse-cursor: pointer;
             clicked => { root.open-audit(); }
+            accessible-role: button;
+            accessible-label: "Recent: open the audit";
             HorizontalLayout {
                 SectionLabel {
-                    text: "RECENT ACTIONS";
+                    text: "Recent";
                     color: audit-ta.has-hover ? Theme.text-secondary : Theme.text-dim;
                     horizontal-stretch: 1;
                 }
-                // Which record this is, so nobody takes it for everything the mind did: the audit
-                // keeps what ran without anyone being asked.
                 Text {
-                    text: "done without asking";
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
+                    text: "All activity";
+                    color: audit-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    font-size: Theme.fs-caption;
                     vertical-alignment: center;
                 }
             }
         }
-        Rectangle { height: 4px; }
-        if MindPanelState.acts.length == 0 : Text {
-            text: "Nothing has run without asking.";
-            color: Theme.text-dim;
-            font-size: Theme.fs-caption;
-            height: 22px;
-            vertical-alignment: center;
-        }
+        if MindPanelState.acts.length > 0 : Rectangle { height: 6px; }
         // Each row is a sentence ("Ran a command"); its raw id is in the tooltip, and the whole record,
         // older failures included, is one click away in the audit view.
         for act in MindPanelState.acts : Rectangle {
@@ -609,7 +604,7 @@ component MindCard inherits Rectangle {
                 Text {
                     text: act.what;
                     color: act.outcome == "failed" ? Theme.color-danger : Theme.text-primary;
-                    font-size: Theme.fs-caption;
+                    font-size: Theme.fs-body;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                     wrap: word-wrap;
@@ -627,7 +622,7 @@ component MindCard inherits Rectangle {
                 Text {
                     text: act.when;
                     color: Theme.text-dim;
-                    font-size: Theme.fs-micro;
+                    font-size: Theme.fs-caption;
                     horizontal-alignment: right;
                     vertical-alignment: center;
                 }
@@ -637,7 +632,7 @@ component MindCard inherits Rectangle {
         // ── Machine: the rail's LOAD and SERVICES, where agent mode had them ──
         if root.agent-mode : VerticalLayout {
             Separator {}
-            SectionLabel { text: "MACHINE"; height: 16px; }
+            SectionLabel { text: "Machine"; height: 18px; }
             Rectangle { height: 6px; }
             HorizontalLayout {
                 spacing: Theme.sp-3;
@@ -684,26 +679,18 @@ component MindStrip inherits Rectangle {
     callback expand();
 
     property <MindPanelNow> now: MindPanelState.now;
-    // A ring that breathes while someone is waiting on the person. Driven by a timer only while it
-    // is needed; with animation off (a headless or unattended machine) the ring simply stays lit.
-    property <bool> breathing: root.now.needs-you > 0 && root.ambient-interval-ms > 0;
-    property <bool> lit: true;
-    property <int> dots: min(root.now.running, 6);
-    Timer {
-        interval: 700ms;
-        running: root.breathing;
-        triggered => { root.lit = !root.lit; }
-    }
 
-    width: 44px;
-    background: Theme.glass-rail;
+    width: 40px;
+    background: Theme.bg-surface;
+    accessible-role: button;
+    accessible-label: "Open the Mind panel";
 
-    // The strip's one edge, the same hairline as the card's.
+    // The strip's one edge, the structural hairline.
     Rectangle {
         x: 0;
         width: 1px;
         height: 100%;
-        background: Theme.border-card;
+        background: Theme.border-structural;
     }
 
     strip-ta := TouchArea {
@@ -718,60 +705,34 @@ component MindStrip inherits Rectangle {
 
     VerticalLayout {
         padding-top: 10px;
-        padding-bottom: 10px;
         spacing: 10px;
         alignment: start;
-
         HorizontalLayout {
             alignment: center;
-            Rectangle {
-                width: 34px;
-                height: 34px;
-                MindMark {
-                    initial: root.now.initial;
-                    builtin: root.now.builtin;
-                    online: root.now.state != "offline" && root.now.known;
-                    size: 28px;
-                    x: 3px;
-                    y: 3px;
-                }
-                // The pulse: somebody at work is waiting for the person.
-                Rectangle {
-                    width: 34px;
-                    height: 34px;
-                    border-radius: 17px;
-                    border-width: 2px;
-                    border-color: Theme.amber;
-                    background: transparent;
-                    opacity: root.now.needs-you == 0 ? 0 : root.lit ? 1 : 0.2;
-                    animate opacity { duration: 650ms; easing: ease-in-out; }
-                }
+            MindMark {
+                initial: root.now.initial;
+                builtin: root.now.builtin;
+                online: root.now.state != "offline" && root.now.known;
+                size: 28px;
             }
         }
-
-        // A dot per agent at work; the ones waiting for the person first, and amber.
-        for i in root.dots : HorizontalLayout {
+        // How many are waiting for the person: a number, in the colour that means it. Nothing
+        // breathes and nothing is drawn when nobody is waiting.
+        if root.now.needs-you > 0 : HorizontalLayout {
             alignment: center;
-            height: 8px;
             Rectangle {
-                width: 7px;
-                height: 7px;
-                border-radius: 3.5px;
-                background: i < root.now.needs-you ? Theme.amber : Theme.accent;
-            }
-        }
-        if root.now.running > 6 : Text {
-            text: "+" + (root.now.running - 6);
-            color: Theme.text-secondary;
-            font-size: Theme.fs-micro;
-            horizontal-alignment: center;
-        }
-        if MindPanelState.recipes.length > 0 : HorizontalLayout {
-            alignment: center;
-            Icon {
-                commands: Icons.template;
-                size: 12px;
-                tint: Theme.text-secondary;
+                width: 22px;
+                height: 18px;
+                border-radius: 9px;
+                background: Theme.amber;
+                Text {
+                    text: root.now.needs-you;
+                    color: Theme.bg-deep;
+                    font-size: Theme.fs-caption;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
         }
     }
@@ -789,8 +750,10 @@ component MindStrip inherits Rectangle {
 // ── The panel, in whichever shape it is in ──────────────────────────
 
 export component MindPanel inherits Rectangle {
-    // Expanded now. app.slint decides it from the place and the person's choice.
+    // Expanded now, and whether that is a look (over the screen) rather than pinned. app.slint
+    // decides both from the place, the person's choice and MindPanelState.peek.
     in property <bool> open;
+    in property <bool> peeking;
     in property <bool> agent-mode;
     in property <int> ambient-interval-ms: 16;
     in property <string> mode: "ask";
@@ -807,6 +770,9 @@ export component MindPanel inherits Rectangle {
     in property <string> disk-text;
 
     callback toggle(bool);
+    callback pin();
+    callback unpin();
+    callback close();
     callback open-agent(string);
     callback open-agents();
     callback open-recipe(string);
@@ -817,9 +783,10 @@ export component MindPanel inherits Rectangle {
     background: transparent;
 
     if root.open : MindCard {
-        x: parent.width - self.width - Theme.sp-4;
-        y: Theme.sp-4;
-        height-ceiling: parent.height - Theme.sp-4 * 2;
+        x: root.peeking ? parent.width - self.width - Theme.sp-3 : parent.width - self.width;
+        y: root.peeking ? Theme.sp-3 : 0;
+        height-ceiling: root.peeking ? parent.height - Theme.sp-3 * 2 : parent.height;
+        peeking: root.peeking;
         agent-mode: root.agent-mode;
         mode: root.mode;
         mode-label: root.mode-label;
@@ -833,6 +800,9 @@ export component MindPanel inherits Rectangle {
         disk-percent: root.disk-percent;
         disk-text: root.disk-text;
         collapse => { root.toggle(false); }
+        pin => { root.pin(); }
+        unpin => { root.unpin(); }
+        close => { root.close(); }
         open-agent(id) => { root.open-agent(id); }
         open-agents => { root.open-agents(); }
         open-recipe(id) => { root.open-recipe(id); }
