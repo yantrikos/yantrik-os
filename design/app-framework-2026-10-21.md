@@ -117,6 +117,7 @@ Rules that differ from revision 1:
 - Slint generates the components, globals and rail structs into **each app's crate**. `window!` expands there and adapts those generated types to framework-owned plain Rust types (theme, chrome, shortcuts, notice, rail). This adapter contract is explicit: a window must export the kit's `ThemeMode`, `AccentPreset`, `WindowChrome`, `Shortcuts`, `Notice` and, if it has a rail, the rail's types.
 - **UI adapters own retained Slint list models** (`VecModel` and friends). These never live in the app's model.
 - **Approval gate:** the adapter design remains provisional until passing release builds from two separate generated UI crates are attached as evidence (§11 step 2). Neither production adoption nor adapter approval precedes that proof. "One line per app" is the goal; the two-crate build is the proof.
+- **Evidence (21 Oct 2026):** `yantrik_app::Window` and `window!` exist (`frameworks/yantrik-app/src/window.rs`, commit `1c271c86` on `arch/step6a-yantrik-app`). Weather and Notes, two separate generated UI crates, implement it with `yantrik_app::window!(WeatherApp)` and `yantrik_app::window!(NotesApp)`, and `cargo build --release -p yantrik-weather -p yantrik-notes` finished on the build host (rustc 1.92.0, x86_64 Linux) in 2 m 19 s with no error. Their tests pass (Weather 6 and 9, Notes 5, `yantrik-app` 55). The log is attached to the design's pull request. The gate is passed; the adapter is no longer provisional.
 
 ## 3. Features, commands and intents
 
