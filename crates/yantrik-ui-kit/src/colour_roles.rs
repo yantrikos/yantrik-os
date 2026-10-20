@@ -551,6 +551,7 @@ fn the_primary_buttons_ink_reads_on_its_neutral_fill() {
     let inner = button.find("if keyboard.has-focus && root.filled : Rectangle").expect("a filled button's own focus ring");
     let inner = &button[inner..button[inner..].find('}').map(|e| inner + e).unwrap_or(button.len())];
     assert!(inner.contains("border-color: root.fg"), "the inner ring is the button's ink, which reads on its fill:\n{inner}");
+    assert!(button.contains("property <bool> filled: root.variant == 0 ||"), "the primary is a filled kind");
     assert!(
         edge >= 3.0 || button.contains("keyboard.has-focus && !root.filled ? Theme.focus-ring-width"),
         "while focus-ring is {edge:.2}:1 on the primary fill, the edge ring stays off the filled kinds"

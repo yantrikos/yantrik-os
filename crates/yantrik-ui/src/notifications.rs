@@ -382,13 +382,15 @@ fn turn_group_row(run: &crate::notification_groups::Run, open: bool) -> crate::N
 }
 
 /// The group mark: the first letter or digit of the sender's name as the header shows it
-/// (`notification_sender::plain`), or "?". `app` is the caller's own choice, so its first character
-/// could be a shield, a lock or a check mark, which in the mark box would read like a system badge
-/// (security review of #881, finding 2).
+/// (`notification_sender::plain`, cut to `CLAIM_CHARS`), or "?". `app` is the caller's own choice,
+/// so its first character could be a shield, a lock or a check mark, which in the mark box would
+/// read like a system badge (security review of #881, finding 2). Circled and squared letters
+/// (Ⓐ, 🆅, ①) are badges too, and are passed over.
 fn first_letter(app: &str) -> slint::SharedString {
-    crate::notification_sender::plain(app, 64)
+    let enclosed = |c: char| matches!(c as u32, 0x2460..=0x24FF | 0x1F100..=0x1F1FF);
+    crate::notification_sender::plain(app, crate::notification_sender::CLAIM_CHARS)
         .chars()
-        .find(|c| c.is_alphanumeric())
+        .find(|c| c.is_alphanumeric() && !enclosed(*c))
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "?".to_string())
         .into()
@@ -499,6 +501,7 @@ mod tests {
         assert_eq!(first_letter("\u{202e}evil"), "E", "a bidi control is not drawn");
         assert_eq!(first_letter(""), "?");
         assert_eq!(first_letter("2fa codes"), "2");
+        assert_eq!(first_letter("\u{24b6}\u{1f185}\u{2460} Bank"), "B", "circled and squared letters are badges");
     }
 
     fn note(id: &str, app: &str, created_at: &str) -> Notification {
