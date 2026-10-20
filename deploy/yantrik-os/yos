@@ -48,6 +48,8 @@ protocol and prints what came back.
     yos web type <ref> <text> [--enter] type into a field
     yos web press <key> [ref]           Enter, Tab, Escape, PageDown, ctrl+a …
     yos web select <ref> <option>       choose in a list
+    yos web upload <ref> <path>         put a file into a file input (read marks them
+                                        `accepts`) — it asks the person first, every time
     yos web scroll [down|up|top|bottom|<ref>]
     yos web back | forward | reload     the tab's history
     yos web tabs | tab <id> | close <id>
@@ -1626,6 +1628,8 @@ def render_element(e, page_url=""):
         flags.append("password")
     if e.get("frame"):
         flags.append("in a frame")
+    if e.get("hidden"):
+        flags.append("hidden")
     if "in_view" in e and not e["in_view"]:
         flags.append("off screen")
     if flags:
@@ -1634,6 +1638,10 @@ def render_element(e, page_url=""):
         line += " options: " + " | ".join(_flat(o, 30) for o in e["options"])
     if e.get("href"):
         line += " → " + _href(e["href"], page_url)
+    if e.get("accepts"):
+        line += " accepts: %s — upload puts a file here" % _flat(e["accepts"], 60)
+        if e.get("chosen"):
+            line += " (holds %s)" % ", ".join(json.dumps(_flat(n, 60), ensure_ascii=False) for n in e["chosen"])
     if e.get("commitment"):
         line += "  ⚠ commitment (%s): commit asks the person" % e["commitment"]
     return line
@@ -1701,6 +1709,10 @@ def render_consequence(c):
         d = c["dialog"]
         out.append("A %s dialog opened: %s — answer it with dialog (accept or dismiss)."
                    % (d.get("type", "?"), json.dumps(_flat(d.get("message", ""), 160), ensure_ascii=False)))
+    if c.get("chosen") is not None:
+        held = ", ".join(json.dumps(_flat(n, 80), ensure_ascii=False) for n in c["chosen"]) or "nothing"
+        out.append("The input now holds %s. Nothing was sent: the page sends it when its form is "
+                   "submitted, with click or commit." % held)
     if c.get("appeared"):
         out.append(PAGE_BEGINS)
         out.extend("appeared: %s" % json.dumps(_flat(t, 140), ensure_ascii=False) for t in c["appeared"])
@@ -1781,6 +1793,7 @@ WEB_USAGE = """usage: yos web [all]                      what is on the page, wi
        yos web go <url> [--new-tab] | back | forward | reload
        yos web click <ref> | type <ref> <text> [--enter] [--keep] | press <key> [ref]
        yos web select <ref> <option> | scroll [down|up|top|bottom|<ref>] | wait [secs] [text]
+       yos web upload <ref> <path>             put a file into the page — asks the person
        yos web tab <id> | close <id> | dialog accept|dismiss [text]
        yos web commit <ref> <label> <site>     press a commitment — asks the person
        yos web listen [secs]"""
@@ -1826,6 +1839,23 @@ def cmd_web(argv):
         if len(plain_args) < 2:
             die("usage: yos web select <ref> <option>")
         result = browser_act("select", {"ref": web_ref(plain_args[0]), "option": " ".join(plain_args[1:])})
+    elif sub == "upload":
+        if len(plain_args) < 2:
+            die("usage: yos web upload <ref> <path>  (a file input, its label or the button that "
+                "opens its chooser: read marks them `accepts`)")
+        ref, path = web_ref(plain_args[0]), " ".join(plain_args[1:])
+        if not path.startswith(("/", "~")):
+            path = os.path.abspath(path)
+        # First what the card will name, checked as upload checks it: a protected or linked file,
+        # or one too big, is refused here, before the person is asked anything.
+        card = browser_act("upload_check", {"ref": ref, "path": path}) or {}
+        print("upload: %s (%s, sha256 %s…) into %s \"%s\" on %s"
+              % (card.get("path"), card.get("shown_size"), card.get("sha256"), ref,
+                 _flat(card.get("label", ""), 80), card.get("site")))
+        sys.stdout.flush()
+        result = browser_act("upload", {"ref": ref, "path": card.get("path"), "size": card.get("size"),
+                                        "sha256": card.get("sha256"), "site": card.get("site"),
+                                        "label": card.get("label")})
     elif sub == "scroll":
         where = plain_args[0] if plain_args else "down"
         if where in ("down", "up", "top", "bottom"):

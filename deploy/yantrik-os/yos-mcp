@@ -624,6 +624,23 @@ TOOLS = [
         "browser_args": lambda a: {"ref": web_ref(a.get("ref")), "option": a.get("option")},
     },
     {
+        "name": "web_upload",
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True},
+        "description": "Put a file from this machine into a file input on the page: the input, its "
+                       "label or the button that opens its chooser (web_read marks them with "
+                       "`accepts`). A file given to a site cannot be taken back, so it puts a card "
+                       "on the person's screen naming the file, its size and hash, the site and "
+                       "the input, and waits for them, every time. Keys, credentials and other "
+                       "protected files, links and files over 25 MiB are refused before anyone is "
+                       "asked. It only fills the input: send the form with web_click or web_commit.",
+        "inputSchema": {"type": "object", "properties": {
+            "ref": {"type": "string", "description": "the file input, its label or its button"},
+            "path": {"type": "string", "description": "the file: an absolute path or ~/..."}},
+            "required": ["ref", "path"]},
+        "browser_action": "upload",
+        "browser_args": lambda a: upload_args(web_ref(a.get("ref")), a.get("path")),
+    },
+    {
         "name": "web_scroll",
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
         "description": "Scroll the page (down, up, top, bottom) or bring a ref into view; "
@@ -1181,6 +1198,68 @@ def run_browser_tool(tool, args):
 
 
 BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
+
+# ── upload (#874): a file from this machine into a page ──
+#
+# What the person's card names, and so what `browser.upload` is bound to: the file (absolute
+# path, size, sha256 prefix), the site and the input's label, exactly as the browser's own
+# `upload_check` answers them. This bridge raises its card itself (`guard_act`), before the
+# browser hears of the call, so it asks `upload_check` first: a protected or linked file, or one
+# too big, is refused before any card here as it is at the browser's own door, and a card is
+# never raised with facts the browser would not upload.
+UPLOAD_CARD = ("path", "size", "sha256", "site", "label")
+
+
+def browser_check(args):
+    """The browser's `upload_check` for {ref, path[, tab]}: `(card, None)` or `(None, refusal)`."""
+    argv = ["act", "browser", "upload_check"]
+    argv += ["%s=%s" % (k, json.dumps(v)) for k, v in args.items() if v not in (None, "")]
+    p = yos(argv + ["--no-ask", "--full"], SHELL_CALL_TIMEOUT)
+    if p is None:
+        return None, "the browser did not answer upload_check within %ss" % SHELL_CALL_TIMEOUT
+    if p.returncode != 0:
+        return None, ((p.stderr or "").strip() or (p.stdout or "").strip()
+                      or "the browser refused upload_check and said nothing")
+    reply = result_object(p.stdout or "")
+    card = reply.get("result", reply) if isinstance(reply, dict) else None
+    if not isinstance(card, dict) or any(k not in card for k in UPLOAD_CARD):
+        return None, "the browser's upload_check answered nothing that could be read"
+    return card, None
+
+
+def upload_args(ref, path):
+    """web_upload's arguments for `browser.upload`: the ref and the path, with the card's facts
+    when upload_check gives them (when it refuses, `upload_refusal` says why, before any card)."""
+    card, _ = browser_check({"ref": ref, "path": path})
+    out = {"ref": ref, "path": path}
+    if card:
+        out.update({k: card[k] for k in UPLOAD_CARD})
+    return out
+
+
+def is_upload(app, action):
+    return surface_name(app) in BROWSER_NAMES and action == "upload"
+
+
+def upload_refusal(args):
+    """Why an os_act `browser.upload` must not reach a card, or None: upload_check refuses its
+    file or its control, or the facts it carries are not the ones the card would name."""
+    if not is_upload(args.get("app"), str(args.get("action") or "")):
+        return None
+    inner = browser_args(args)
+    card, why = browser_check({k: inner.get(k) for k in ("ref", "path", "tab")})
+    if why:
+        return why
+    sent = {k: inner.get(k) for k in UPLOAD_CARD}
+    if (str(sent["path"]) != card["path"] or str(sent["size"]) != str(card["size"])
+            or str(sent["sha256"] or "").lower()[:len(card["sha256"])] != card["sha256"]
+            or str(sent["site"]) != card["site"] or str(sent["label"]) != card["label"]):
+        return ("PAGE: browser.upload must carry the file and the page as upload_check names them "
+                "now — %s — and it carried %s. Nobody was asked and nothing was uploaded; send "
+                "upload_check's values, or use web_upload, which does."
+                % (json.dumps({k: card[k] for k in UPLOAD_CARD}, ensure_ascii=False),
+                   json.dumps(sent, ensure_ascii=False)))
+    return None
 # The browser's actions that put the caller's words into a page, whatever they are called: typing,
 # a key that types a character, a prompt's answer, a choice in a list. Each is web_type to the taint.
 BROWSER_WRITES = {"type", "press", "dialog", "select"}
@@ -1706,7 +1785,8 @@ COMMANDS = {("terminal", "run"), ("terminal", "send_input"),
 
 def carries_private(app, action, runs_anything=False):
     """Why this hand-off or command must be asked about, from a tainted conversation. "" = no."""
-    if TAINT_OFF or not ((app, action) in HANDOFFS or (app, action) in COMMANDS or runs_anything):
+    if TAINT_OFF or not ((app, action) in HANDOFFS or (app, action) in COMMANDS or runs_anything
+                         or is_upload(app, action)):
         return ""
     sync_scope()
     if not _SAW_PRIVATE:
@@ -1718,6 +1798,15 @@ def carries_private(app, action, runs_anything=False):
                 "anywhere. It is asked about whatever the mode, as typing into a page is refused "
                 "whatever the mode: not a fault, and not something to route around."
                 % (saw, app, action))
+    if is_upload(app, action):
+        # An upload is the browser's own way off this machine (#874): the same rule as a command,
+        # asked about every time from a session that has read private state, whatever the mode.
+        return ("This conversation has already read private state (%s), and %s.%s sends a file "
+                "from this machine to a website, which nothing here can tell from one carrying "
+                "what was read. It is asked about every time, whatever the mode and whatever this "
+                "conversation was allowed before: not a fault. If the person says no, do not look "
+                "for another route to the same site or the same data — a command, a script, a "
+                "sub-agent or typing it into the page is the same route." % (saw, app, action))
     if (app, action) in COMMANDS or runs_anything:
         return ("This conversation has already read private state (%s), and %s.%s runs a command, "
                 "which can carry anything off this machine — a fetch, a lookup, a push — and "
@@ -1742,6 +1831,10 @@ def private_card_line(app, action):
     if (app, action) in HANDOFFS:
         return ("Carries what this conversation has read (%s). Once it is handed on, that cannot be "
                 "undone. %s" % (saw, fresh_card_line()))
+    if is_upload(app, action):
+        return ("This conversation has already read private state (%s), and an upload sends a "
+                "file from this machine to a website, so you are asked whatever the mode. What "
+                "leaves cannot be undone. %s" % (saw, fresh_card_line()))
     return ("This conversation has already read private state (%s), and a command can carry "
             "anything off this machine, so you are asked whatever the mode. What leaves cannot be "
             "undone. %s" % (saw, fresh_card_line()))
@@ -2863,6 +2956,10 @@ def run_tool(tool, args, present=None):
             present = present or routed_text
         agent_call = agent_call or (str(args.get("app")) in ("shell", "app-shell")
                                     and args.get("action", "").startswith("agent_"))
+        # An upload's file and page are checked before anybody is asked (#874).
+        refusal = upload_refusal(args)
+        if refusal is not None:
+            return policy_answer(refusal), False
         refusal, note, audit, grant = guard_act(args)
         if refusal is not None:
             return policy_answer(refusal), False

@@ -99,10 +99,28 @@ pub const PROTECTED: &[&str] = &[
     "videos/recordings",
 ];
 
+/// Names that make a file a key or a secret wherever it sits in the home, matched against every
+/// component of a path, whatever its case: a private key or certificate (`*.key`, `*.pem`) and an
+/// environment file of secrets (`.env`, `.env.local`, `.env.production`). [`PROTECTED`] names
+/// places, and these files turn up anywhere: in a project, in Downloads, beside the code that
+/// reads them. Added when the browser learned to upload a file (#874), the one way a file in the
+/// home goes to a website, so that every surface refuses them alike.
+const SECRET_SUFFIXES: &[&str] = &[".key", ".pem"];
+const SECRET_NAMES: &[&str] = &[".env"];
+
+/// Whether one path component, lower-cased, names a key or a secrets file ([`SECRET_SUFFIXES`],
+/// [`SECRET_NAMES`] and `.env.<anything>`). `.key` alone is a hidden name, not a key's extension.
+fn names_a_secret(part: &str) -> bool {
+    SECRET_NAMES.contains(&part)
+        || SECRET_NAMES.iter().any(|name| part.strip_prefix(name).is_some_and(|rest| rest.starts_with('.') && rest.len() > 1))
+        || SECRET_SUFFIXES.iter().any(|suffix| part.len() > suffix.len() && part.ends_with(suffix))
+}
+
 /// What `.config/...` in [`PROTECTED`] names, found under `$XDG_CONFIG_HOME` instead.
 const CONFIG_PLACES: &[&str] = &["autostart", "systemd", "environment.d", "labwc", "yantrik", "mimeapps.list"];
 
-/// Whether `path` passes through a protected place, compared a whole component at a time and
+/// Whether `path` passes through a protected place, or names a key or secrets file
+/// ([`SECRET_SUFFIXES`], [`SECRET_NAMES`]), compared a whole component at a time and
 /// without regard to case (a case-folding filesystem makes `.SSH` the same folder): `.ssh` is
 /// protected, `.ssh-notes` is not, and `.config/labwc` only as those two in a row.
 ///
@@ -120,7 +138,7 @@ pub fn is_protected_with(path: &Path, xdg_data_home: Option<&Path>, xdg_config_h
     let listed = PROTECTED.iter().any(|place| {
         let want = lowered(Path::new(place));
         !want.is_empty() && parts.windows(want.len()).any(|w| w == want.as_slice())
-    });
+    }) || parts.iter().any(|part| names_a_secret(part));
     let under = |base: &Path, place: &str| {
         // As written and as resolved, since the path may be either.
         let at = base.join(place);

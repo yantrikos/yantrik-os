@@ -12,6 +12,7 @@
 //   target(ref)        scroll one element into view and say where to press it — or what covers it.
 //   focus/clear/pick   the small moves typing and choosing need.
 //   watch()/changes()  what appeared on the page between an action and its settling.
+//   fileTarget/fileInput  the file input a ref puts a file into, for `upload` (#874).
 (() => {
   // A page can make `globalThis.__yb` exist (an element with id="__yb" is a named property of
   // the window, in every world), so the registry is recognised by a mark only it carries.
@@ -80,6 +81,25 @@
   let blindFrames = [];
   const TOP = { win: window, ox: 0, oy: 0, depth: 0, el: null };
 
+  // ── file inputs ──
+  // The <input type=file> a ref puts a file into: the input itself, or the label it is the
+  // control of (GitHub's "Upload a photo" is a styled <label> over a hidden input), or anything
+  // inside such a label. A button whose script opens a chooser has none: `upload` clicks it and
+  // answers the chooser instead.
+  const isFileInput = (n) => !!n && n.nodeType === 1 && n.tagName === 'INPUT' &&
+    (n.getAttribute('type') || '').trim().toLowerCase() === 'file';
+  const fileInputOf = (el) => {
+    if (!el || el.nodeType !== 1) return null;
+    if (isFileInput(el)) return el;
+    const label = el.tagName === 'LABEL' ? el : (el.closest ? el.closest('label') : null);
+    let control = null;
+    try { control = label ? label.control : null; } catch (e) { control = null; }
+    return isFileInput(control) ? control : null;
+  };
+  // What `read` says a file control accepts: the input's accept attribute, as written.
+  const acceptsOf = (input) => clean(input.getAttribute('accept') || '', 120) || 'any file';
+  const chosenIn = (input) => Array.from(input.files || []).slice(0, 10).map((f) => clean(f.name, 80));
+
   // ── what an element is ──
   const INTERACTIVE_ROLES = new Set(['button', 'link', 'tab', 'menuitem', 'menuitemcheckbox',
     'menuitemradio', 'checkbox', 'radio', 'switch', 'option', 'combobox', 'textbox', 'searchbox',
@@ -96,9 +116,11 @@
     if (tag === 'SELECT') return el.multiple ? 'listbox' : 'combobox';
     if (/^H[1-6]$/.test(tag)) return 'heading';
     if (tag === 'DIALOG') return 'dialog';
+    if (tag === 'LABEL') return fileInputOf(el) ? 'button' : '';
     if (tag === 'INPUT') {
       const t = (el.getAttribute('type') || 'text').toLowerCase();
       if (t === 'hidden') return '';
+      if (t === 'file') return 'button';
       if (['submit', 'button', 'reset', 'image'].includes(t)) return 'button';
       if (t === 'checkbox') return 'checkbox';
       if (t === 'radio') return 'radio';
@@ -143,6 +165,7 @@
       if (t === 'image' && el.getAttribute('alt')) return clean(el.getAttribute('alt'), 100);
       if (t === 'submit' || t === 'image') return 'Submit';
       if (t === 'reset') return 'Reset';
+      if (t === 'file') return clean(el.getAttribute('title') || el.getAttribute('name') || '', 100) || 'file input';
       const ph = el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name');
       if (ph) return clean(ph, 100);
       return '';
@@ -212,6 +235,13 @@
       const link = linkOf(el);
       if (link.href) s.href = clean(link.href, 120);
       if (link.scripted) s.scripted = true;
+    }
+    const input = fileInputOf(el);
+    if (input) {
+      s.accepts = acceptsOf(input);
+      if (input.multiple) s.multiple = true;
+      const chosen = chosenIn(input);
+      if (chosen.length) s.chosen = chosen;
     }
     if (el === activeIn(el.ownerDocument)) s.focused = true;
     return s;
@@ -341,9 +371,18 @@
         if (!inView(boxOf(el, frame)) || !handmade(el, frame.win)) continue;
         interactive = true;
       }
-      if (hidden(el, frame.win)) continue;
+      // A file input is usually hidden behind its label or a styled button, and `upload` sets it
+      // directly, so it is listed hidden too: where a file can go is what `accepts` is for.
+      const tucked = hidden(el, frame.win);
+      if (tucked && !isFileInput(el)) continue;
       if (modal && !composedContains(modal, el) && el !== modal) continue;
       const e = entry(el, frame, role);
+      if (tucked) {
+        e.hidden = true;
+        total++;
+        if (items.length < (all ? 400 : 150)) items.push(e);
+        continue;
+      }
       if (context && !e.name) continue;
       if (context) e.context = true;
       total++;
@@ -467,6 +506,7 @@
     e.heading = ctx.heading;
     e.nearby = ctx.nearby;
     if (CONTEXT_ROLES.has(role)) e.not_a_control = true;
+    if (fileInputOf(el)) e.accepts = acceptsOf(fileInputOf(el));
     if (el.tagName === 'A') {
       const link = linkOf(el);
       if (link.href) e.href = link.href;
@@ -602,6 +642,24 @@
     return { mutations, appeared: still.slice(0, 8) };
   }
 
+  // What `upload` needs about a ref, without moving the page: its label as read shows it, and
+  // whether a file input is set directly (`direct`) or a press has to open the chooser.
+  function fileTarget(ref) {
+    const el = byRef(ref);
+    if (!el) return { gone: true };
+    const input = fileInputOf(el);
+    // The label the card names and `upload` is bound to; an icon-only button has none to read.
+    const out = { ref, role: roleOf(el) || 'clickable', name: nameOf(el) || '(no label: an icon)', direct: !!input };
+    if (input) {
+      out.accepts = acceptsOf(input);
+      if (input.multiple) out.multiple = true;
+      if (input.disabled) out.disabled = true;
+    }
+    return out;
+  }
+  // The file input itself, as an object for DOM.setFileInputFiles; null when the ref has none.
+  const fileInput = (ref) => fileInputOf(byRef(ref));
+
   const where = () => ({ url: location.href, title: titleOf(document) });
 
   // The page's videos and sounds: playing or not, where, and whether the player says an advert
@@ -621,6 +679,6 @@
   }
 
   globalThis.__yb = { __yantrik: true, snapshot, find, text, target, focus, pressables, pick,
-                      scrollBy, watch, changes, where, media };
+                      scrollBy, watch, changes, where, media, fileTarget, fileInput };
   return 'installed';
 })()

@@ -11,11 +11,12 @@ that nothing covers it, that it is not disabled, and that its label does not rea
 commitment — which only `commit` presses, and `commit` asks the person.
 """
 
+import os
 import threading
 import time
 import urllib.parse
 
-from . import cdp, commit, hands, judgement
+from . import cdp, commit, hands, judgement, uploads
 
 NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
 ACT_LIMIT = 4.0           # seconds a click or a key is given
@@ -36,6 +37,7 @@ class PageRefused(Refused):
 
 
 BUSY_WAIT = 20.0      # seconds an act waits for the one before it to finish
+CHOOSER_WAIT = 3.0    # seconds a press is given to open a file chooser, for upload
 
 # Controls that Enter or Space presses when they have the focus.
 PRESSED_BY_KEYS = {"button", "link", "clickable", "menuitem", "menuitemcheckbox", "menuitemradio",
@@ -76,8 +78,12 @@ def commitment_of(element):
 
 
 class Driver:
-    def __init__(self, browser=None, judge=None):
+    def __init__(self, browser=None, judge=None, stat=None, runtime=None):
         self.browser = browser or cdp.Browser()
+        # How an upload's path is checked and where its copy is kept (uploads.py); tests give
+        # their own, the service the shell's files_stat and $XDG_RUNTIME_DIR.
+        self.stat = stat
+        self.runtime = runtime
         # The person's decision model, asked when the words say nothing (judgement.py). `False`
         # turns it off (tests of the words alone); None is the shell's `decide`.
         self.judge = None if judge is False else (judge or judgement.Judgement())
@@ -387,6 +393,12 @@ class Driver:
         with self.held():
             t = self._tab(tab)
             target = self._pressable(t, ref)
+            if target.get("accepts"):
+                # Pressed, it opens the desktop's file chooser: a window outside the page that
+                # nothing here can drive, left in front of the person.
+                raise PageRefused("%s (%s \"%s\") opens a file chooser, which a mind cannot drive. A "
+                                  "file is put into it with upload ref=%s path=<the file>, which asks the "
+                                  "person first. Nothing was pressed." % (ref, target["role"], target["name"], ref))
             return self._act(t, "clicked %s \"%s\" (%s)" % (target["role"], target["name"], ref),
                              lambda: hands.click(self.browser, t, target["x"], target["y"]))
 
@@ -412,6 +424,187 @@ class Driver:
                               "since the person was asked." % (ref, target["name"], label))
             return self._act(t, "pressed %s \"%s\" (%s) on %s" % (target["role"], target["name"], ref, here),
                              lambda: hands.click(self.browser, t, target["x"], target["y"]))
+
+    # ── putting a file into the page (#874) ──
+
+    def _upload_target(self, t, ref):
+        found = self._run(t, "fileTarget", ref) or {}
+        if found.get("gone"):
+            raise PageRefused("%s is no longer on the page — it changed since it was read. Read it again "
+                              "and use the new ref. Nothing was uploaded." % ref)
+        if found.get("disabled"):
+            raise PageRefused("%s (\"%s\") is disabled: the page will not take a file there yet. Nothing "
+                              "was uploaded." % (ref, found.get("name")))
+        return found
+
+    def upload_check(self, ref, path, tab=None):
+        """What the person's card for `upload` will name, checked as `upload` checks it: the file
+        (absolute path, size, sha256 prefix), the site and the control's label. Nothing is put
+        into the page; a path that would be refused is refused here, before anyone is asked."""
+        facts = self._facts(path)
+        with self.held():
+            t = self._tab(tab)
+            found = self._upload_target(t, ref)
+            site = fold_site(t.url)
+        out = {"ref": ref, "path": facts.path, "size": facts.size, "sha256": facts.shown,
+               "site": site, "label": found.get("name") or "", "shown_size": uploads.size_words(facts.size)}
+        if found.get("direct"):
+            out["accepts"] = found.get("accepts")
+        else:
+            out["opens_chooser"] = True
+        return out
+
+    def _facts(self, path):
+        try:
+            return uploads.check(path, stat=self.stat)
+        except uploads.Refused as e:
+            raise PageRefused(str(e)) from None
+
+    def _bound(self, t, ref, path, size, sha256, site, label):
+        """Whether the page and the file are still what the person's card named. The Facts read
+        now, and the ref's reading; PageRefused (nothing uploaded) when anything moved."""
+        here = fold_site(t.url)
+        if fold_site(site) != here:
+            raise PageRefused("this tab is on %s, not %s: the page changed since the person was asked. "
+                              "Nothing was uploaded." % (here, fold_site(site)))
+        found = self._upload_target(t, ref)
+        if not commit.same_label(found.get("name"), label):
+            raise PageRefused("%s now reads \"%s\", not \"%s\": the page changed since the person was "
+                              "asked. Nothing was uploaded." % (ref, found.get("name"), label))
+        if path != uploads.expand(path):
+            raise PageRefused("path must be the absolute path upload_check answered (%s), as the person "
+                              "is shown it. Nothing was uploaded." % uploads.expand(path))
+        facts = self._facts(path)
+        want = str(sha256 or "").strip().lower()
+        if len(want) < uploads.SHA_SHOWN or len(want) > 64 or any(c not in "0123456789abcdef" for c in want):
+            raise PageRefused("sha256 must be the %d-digit hash prefix upload_check answered. Nothing was "
+                              "uploaded." % uploads.SHA_SHOWN)
+        if facts.size != size or not facts.sha256.startswith(want):
+            raise PageRefused("%s is not the file the person was shown: it is now %s, sha256 %s, and the "
+                              "card said %s, sha256 %s. It changed after they were asked, so nothing was "
+                              "uploaded." % (facts.path, uploads.size_words(facts.size), facts.shown,
+                                             uploads.size_words(int(size)) if isinstance(size, int) else size, want))
+        return facts, found
+
+    def check_upload(self, ref, path, size, sha256, site, label, tab=None):
+        """`upload`'s check before anyone is asked: a refusal sentence, or None."""
+        try:
+            with self.held():
+                self._bound(self._tab(tab), ref, path, size, sha256, site, label)
+        except (Refused, uploads.Refused) as e:
+            return str(e)
+        return None
+
+    def upload(self, ref, path, size, sha256, site, label, tab=None):
+        """Put the file the person was shown into the page's file input. It never submits."""
+        with self.held():
+            t = self._tab(tab)
+            try:
+                facts, found = self._bound(t, ref, path, size, sha256, site, label)
+                staged = uploads.stage(facts, self.runtime)
+            except uploads.Refused as e:
+                raise PageRefused(str(e)) from None
+            chosen = {}
+            name = os.path.basename(facts.path)
+            if found.get("direct"):
+                doing = "put %s (%s) into %s \"%s\" (%s) on %s" % (
+                    name, uploads.size_words(facts.size), found.get("role"), found.get("name"), ref, fold_site(t.url))
+
+                def work():
+                    node = self.browser.element(t, "fileInput", ref)
+                    if not node:
+                        raise PageRefused("%s has no file input any more. Nothing was uploaded." % ref)
+                    try:
+                        self._call("DOM.setFileInputFiles", {"files": [staged], "objectId": node}, t)
+                        chosen["files"] = self._chosen(t, {"objectId": node})
+                    finally:
+                        self._release(t, node)
+                out = self._act(t, doing, work)
+            else:
+                target = self._pressable(t, ref)
+                doing = "pressed %s \"%s\" (%s) and put %s (%s) into the file chooser it opened on %s" % (
+                    target["role"], target["name"], ref, name, uploads.size_words(facts.size), fold_site(t.url))
+
+                def work():
+                    t.chooser = None
+                    self._call("Page.setInterceptFileChooserDialog", {"enabled": True}, t)
+                    try:
+                        hands.click(self.browser, t, target["x"], target["y"])
+                        deadline = time.monotonic() + CHOOSER_WAIT
+                        while t.chooser is None and time.monotonic() < deadline:
+                            time.sleep(0.05)
+                        opened = t.chooser
+                        if opened is None or not opened.get("node"):
+                            raise PageRefused("%s was pressed, and no file chooser opened within %d s, so "
+                                              "nothing was uploaded. Read the page: it may show what the "
+                                              "press did instead." % (ref, CHOOSER_WAIT))
+                        # The chooser is answered only for this page, on the site the person was shown:
+                        # not for a frame of another site that opened one at the same moment, and not
+                        # after the press took the tab somewhere else.
+                        self._chooser_is_this_pages(t, opened, site)
+                        self._call("DOM.setFileInputFiles", {"files": [staged], "backendNodeId": opened["node"]}, t)
+                        chosen["files"] = self._chosen(t, {"backendNodeId": opened["node"]})
+                    finally:
+                        t.chooser = None
+                        try:
+                            self._call("Page.setInterceptFileChooserDialog", {"enabled": False}, t)
+                        except Refused:
+                            pass
+                out = self._act(t, doing, work)
+            out["file"] = {"path": facts.path, "size": facts.size, "sha256": facts.shown}
+            if chosen.get("files") is not None:
+                out["chosen"] = chosen["files"]
+            out["submitted"] = False
+            return out
+
+    def _chooser_is_this_pages(self, t, opened, site):
+        here = fold_site(t.url)
+        if fold_site(site) != here:
+            raise PageRefused("the press took the tab to %s, not %s: the file chooser was left "
+                              "unanswered and nothing was uploaded." % (here, fold_site(site)))
+        frame = opened.get("frame")
+        if frame and frame != t.main_frame:
+            tree = self._call("Page.getFrameTree", tab=t).get("frameTree") or {}
+            origins = {}
+
+            def walk(node):
+                f = node.get("frame") or {}
+                origins[f.get("id")] = f.get("securityOrigin")
+                for child in node.get("childFrames") or []:
+                    walk(child)
+            walk(tree)
+            top = (tree.get("frame") or {}).get("securityOrigin")
+            if not top or origins.get(frame) != top:
+                raise PageRefused("the file chooser that opened belongs to a frame from another "
+                                  "site (%s), not to %s: it was left unanswered and nothing was "
+                                  "uploaded." % (origins.get(frame) or "unknown", here))
+
+    def _chosen(self, t, node):
+        """The names of the files the input now holds, as the page sees them."""
+        try:
+            if "backendNodeId" in node:
+                got = self._call("DOM.resolveNode", {"backendNodeId": node["backendNodeId"],
+                                                     "executionContextId": t.world}, t)
+                oid = (got.get("object") or {}).get("objectId")
+            else:
+                oid = node["objectId"]
+            if not oid:
+                return None
+            got = self._call("Runtime.callFunctionOn", {
+                "objectId": oid, "returnByValue": True,
+                "functionDeclaration": "function () { return Array.from(this.files || []).map((f) => f.name); }"}, t)
+            if "backendNodeId" in node:
+                self._release(t, oid)
+            value = (got.get("result") or {}).get("value")
+            return value if isinstance(value, list) else None
+        except Refused:
+            return None
+
+    def _release(self, t, oid):
+        try:
+            self._call("Runtime.releaseObject", {"objectId": oid}, t)
+        except Refused:
+            pass
 
     def _key_is_safe(self, t, ref, key, typed=False):
         """Refuse Enter or Space where it could press a commitment: on a focused control that reads

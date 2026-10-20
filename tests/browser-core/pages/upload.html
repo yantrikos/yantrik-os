@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Upload</title>
+<style>
+  .hidden-input { display: none; }
+  .btn { display: inline-block; padding: 6px 12px; border: 1px solid #888; cursor: pointer; }
+</style></head>
+<body>
+  <h1>Profile picture</h1>
+  <!-- GitHub's shape: a styled label over a hidden file input. -->
+  <label class="btn" for="avatar">Upload a photo…</label>
+  <input class="hidden-input" id="avatar" type="file" accept="image/png,image/jpeg">
+  <p id="avatar-name">No file chosen</p>
+
+  <h2>Attachment</h2>
+  <label for="doc">Attach a document</label>
+  <input id="doc" type="file" accept=".pdf">
+
+  <h2>Scripted</h2>
+  <!-- A button whose script opens a chooser for an input that has no label. -->
+  <button id="pick" type="button">Add files</button>
+  <input id="scripted" type="file" style="position:absolute; left:-9999px">
+  <p id="scripted-name">Nothing attached</p>
+
+  <form action="/never" method="post"><button type="submit">Save</button></form>
+<script>
+  const show = (input, where) => input.addEventListener('change', () => {
+    document.getElementById(where).textContent =
+      'Chosen: ' + Array.from(input.files).map((f) => f.name + ' (' + f.size + ' bytes)').join(', ');
+  });
+  show(document.getElementById('avatar'), 'avatar-name');
+  show(document.getElementById('scripted'), 'scripted-name');
+  document.getElementById('pick').addEventListener('click', () => document.getElementById('scripted').click());
+</script>
+</body></html>

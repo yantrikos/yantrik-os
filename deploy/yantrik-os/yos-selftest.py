@@ -1211,7 +1211,13 @@ def main():
                         {"ref": "e7", "role": "link", "name": "Keep shopping",
                          "href": "https://shop.example/aisles"},
                         {"ref": "e9", "role": "button", "name": "Place order", "commitment": "order"},
-                        {"ref": "e10", "role": "alert", "name": "Coupon applied", "context": True}]}
+                        {"ref": "e10", "role": "alert", "name": "Coupon applied", "context": True},
+                        {"ref": "e11", "role": "button", "name": "Upload a photo…", "accepts": "image/*"},
+                        {"ref": "e13", "role": "button", "name": "Upload a photo…", "accepts": "image/*",
+                         "hidden": True, "chosen": ["emblem.png"]}]}
+            card = {"ref": "e11", "path": "/home/ann/Pictures/emblem.png", "size": 2048,
+                    "sha256": "0123456789abcdef", "site": "shop.example", "label": "Upload a photo…",
+                    "shown_size": "2.0 KiB (2048 bytes)", "accepts": "image/*"}
 
             def browser_reply(_s, asked):
                 if asked["method"] != "app.act":
@@ -1220,6 +1226,19 @@ def main():
                 action = asked["params"]["action"]
                 if action == "read":
                     return {"accepted": True, "settled": True, "summary": "Browser", "result": page}
+                if action == "upload_check":
+                    if "/.ssh/" in asked["params"]["args"]["path"]:
+                        return {"__error__": {"code": -32602, "message": (
+                            "PAGE: /home/ann/.ssh/id_ed25519 is in a protected place: keys, "
+                            "credentials, the desktop's own configuration and memory, and key or "
+                            "secrets files (*.key, *.pem, .env) are out of every agent's reach. "
+                            "Nothing was uploaded.")}}
+                    return {"accepted": True, "settled": True, "summary": "Browser", "result": card}
+                if action == "upload":
+                    return {"accepted": True, "settled": True, "summary": "Browser", "result": {
+                        "did": "put emblem.png (2.0 KiB (2048 bytes)) into button \"Upload a photo…\" "
+                               "(e11) on shop.example", "settled_in": 0.3, "chosen": ["emblem.png"],
+                        "submitted": False, "url": page["url"], "title": "Cart"}}
                 return {"accepted": True, "settled": True, "summary": "Browser",
                         "result": {"did": "clicked button \"Apply\" (e12)", "settled_in": 0.4,
                                    "appeared": ["Coupon applied"], "url": page["url"], "title": "Cart"}}
@@ -1244,6 +1263,31 @@ def main():
                 check("yos web commit carries the label and the site the person will be shown",
                       asked_browser[-1]["args"] == {"ref": "e9", "label": "Place order", "site": "shop.example"},
                       asked_browser[-1])
+
+                print("yos web upload: a file into the page, asked about every time (#874)")
+                out, err, code = run(lambda: yos.cmd_web([]))
+                check("read marks where a file can go, a hidden input included, and what it holds",
+                      '[e11] button "Upload a photo…" accepts: image/* — upload puts a file here' in out
+                      and '[e13] button "Upload a photo…" (hidden) accepts: image/*' in out
+                      and '(holds "emblem.png")' in out, out)
+                del asked_browser[:]
+                out, err, code = run(lambda: yos.cmd_web(["upload", "11", "/home/ann/Pictures/emblem.png"]))
+                check("yos web upload checks first, then uploads with exactly what the card names",
+                      [a["action"] for a in asked_browser] == ["upload_check", "upload"]
+                      and asked_browser[0]["args"] == {"ref": "e11", "path": "/home/ann/Pictures/emblem.png"}
+                      and asked_browser[1]["args"] == {k: card[k] for k in
+                                                       ("ref", "path", "size", "sha256", "site", "label")},
+                      asked_browser)
+                check("and says what the input holds, and that nothing was sent",
+                      "The input now holds \"emblem.png\". Nothing was sent" in out
+                      and "sha256 0123456789abcdef…" in out, out)
+                del asked_browser[:]
+                out, err, code = run(lambda: yos.cmd_web(["upload", "e11", "/home/ann/.ssh/id_ed25519"]))
+                check("a protected path is refused with the reason, and upload is never asked",
+                      code == 1 and "protected place" in err
+                      and [a["action"] for a in asked_browser] == ["upload_check"], (code, err, asked_browser))
+                out, err, code = run(lambda: yos.cmd_web(["upload", "e11"]))
+                check("upload without a path is a usage line", code == 1 and "usage: yos web upload" in err, err)
             finally:
                 fake_browser.close()
 

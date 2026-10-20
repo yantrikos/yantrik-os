@@ -8,7 +8,7 @@ the way they reach every other app: `describe browser`, `act browser click ref=e
 the mind door, under the same grades, mode and cards.
 
 Grades:
-  safe       read, find, text, tabs, media, wait, scroll — looking
+  safe       read, find, text, tabs, media, wait, scroll, upload_check — looking
   standard   go, back, forward, reload, click, type, press, select, new_tab, switch_tab,
              close_tab, dialog                       — using a page as a person does
   sensitive  commit                                  — the one press that cannot be taken back:
@@ -16,6 +16,11 @@ Grades:
              cannot be undone, which the gate reads on every door: it asks in every mode but
              full bypass (`bypass_all`) — plain bypass included — and no "allow for this
              session" covers the next one.
+  sensitive  upload                                  — a file from this machine sent to a website
+             (#874): put into the page's file input, never submitted. Asked every time, as commit
+             is, with the card naming the file (path, size, sha256 prefix), the site and the
+             input's label; nothing is put in if any of them changed. Protected places, links,
+             non-regular files and files over uploads.UPLOAD_LIMIT are refused before any card.
 """
 
 import typing
@@ -164,6 +169,36 @@ def build(driver=None, **surface_options):
     def close_tab(tab: typing.Annotated[str, "the tab's id from tabs"]) -> dict:
         """Close a tab"""
         return now(lambda: d.close_tab(tab))
+
+    # ── a file from this machine into the page (#874) ──
+
+    @s.action(grade="safe")
+    def upload_check(ref: Ref, path: typing.Annotated[str, "the file: an absolute path or ~/..."],
+                     tab: Tab = "") -> dict:
+        """What an upload of this file into this control would name on the person's card, checked
+        as upload checks it: the file's absolute path, size and sha256 prefix, the page's site and
+        the control's label. Nothing is put into the page. A file upload will refuse (a protected
+        place, a key, a link, not a regular file, too big) is refused here, before anyone is asked"""
+        return now(lambda: d.upload_check(ref, path, tab or None))
+
+    def upload_is_bound(ref, path, size, sha256, site, label, tab=""):
+        return d.check_upload(ref, path, size, sha256, site, label, tab or None)
+
+    @s.action(grade="sensitive", expected_seconds=3, check=upload_is_bound, description=(
+        "Put a file from this machine into a file input on the named site: the input itself, its "
+        "label or the button that opens its chooser (read marks them with accepts). Once a page "
+        "has a file it can send it on, and a file sent cannot be undone, so it asks the person "
+        "every time. path, size and sha256 must be what upload_check answered, and site and label "
+        "the page's as read shows them; nothing is put in if the file, the page or the control "
+        "has changed. It only fills the input: sending the form stays a click or a commit"))
+    def upload(ref: Ref,
+               path: typing.Annotated[str, "the file's absolute path, as upload_check answered it"],
+               size: typing.Annotated[int, "the file's size in bytes, as upload_check answered it"],
+               sha256: typing.Annotated[str, "the sha256 prefix upload_check answered"],
+               site: typing.Annotated[str, "the page's site, e.g. github.com"],
+               label: typing.Annotated[str, "the control's label, exactly as upload_check answered it"],
+               tab: Tab = "") -> dict:
+        return later(lambda: d.upload(ref, path, size, sha256, site, label, tab or None))
 
     # ── the press that cannot be taken back ──
 

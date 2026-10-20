@@ -56,6 +56,7 @@ class Tab:
         self.loaded = True
         self.navigations = 0
         self.opened_by = None      # the tab this one was opened from, if any
+        self.chooser = None        # {mode, node} once a file chooser opened while intercepted
 
 
 class Browser:
@@ -254,6 +255,11 @@ class Browser:
                           "default": p.get("defaultPrompt", "")}
         elif method == "Page.javascriptDialogClosed":
             tab.dialog = None
+        elif method == "Page.fileChooserOpened":
+            # Only while `upload` intercepts choosers (Page.setInterceptFileChooserDialog): the
+            # chooser is not shown, and this names the input it was opened for.
+            tab.chooser = {"mode": p.get("mode"), "node": p.get("backendNodeId"),
+                           "frame": p.get("frameId")}
         elif method == "Network.requestWillBeSent":
             if p.get("type") not in ("WebSocket", "EventSource"):
                 tab.inflight[p.get("requestId")] = time.monotonic()
@@ -328,6 +334,18 @@ class Browser:
             text = (d.get("exception") or {}).get("description") or d.get("text") or "an error"
             raise CdpError("the page reader failed: %s" % text.splitlines()[0][:200])
         return (got.get("result") or {}).get("value")
+
+    def element(self, tab, fn, *args):
+        """`__yb.<fn>(*args)` in the tab's isolated world as a remote object id, for the commands
+        that act on a node (DOM.setFileInputFiles); None when it answered null. The caller
+        releases it."""
+        self.run(tab, "where")          # the world and the reader are there
+        expression = "globalThis.__yb.%s(%s)" % (fn, ", ".join(json.dumps(a) for a in args))
+        got = self.call("Runtime.evaluate", {"expression": expression, "contextId": tab.world,
+                                             "returnByValue": False}, session=tab.session)
+        if got.get("exceptionDetails"):
+            raise CdpError("the page reader failed to find the element")
+        return (got.get("result") or {}).get("objectId")
 
     def run(self, tab, fn, *args, timeout=CALL_TIMEOUT):
         """Call `__yb.<fn>(*args)` in the tab's isolated world, making it on a page that has none."""

@@ -386,6 +386,11 @@ jobs:
           sudo apt-get install -y -qq python3-websocket >/dev/null
           python3 tests/browser-core/test_live.py
 
+      # The browser's upload (#874): which file may leave (the path guard), and that what the
+      # person's card names is what goes, or nothing does (the binding), with no browser needed.
+      - name: The browser's upload refuses what must not leave and is bound to its card
+        run: python3 -m unittest discover -s apps/browser/tests -v
+
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the
       # public SDK, driven against a fake UNO and over a real socket (its run against a real
