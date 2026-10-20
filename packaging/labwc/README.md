@@ -5,8 +5,8 @@ Debian's labwc 0.8.3-1 with one patch, so Alt+Tab can be drawn by `yantrik-switc
 | File | What it is |
 |---|---|
 | `labwc-window-switcher-renderer-unstable-v1.xml` | The protocol. The one copy: `crates/yantrik-switcher` generates its bindings from it. |
-| `debian-patches/yantrik-window-switcher-renderer.patch` | The labwc change (13 files, ~840 lines). |
-| `build-deb.sh` | Builds `labwc_0.8.3-1yantrik1_amd64.deb` in a Debian 13 system with deb-src. |
+| `debian-patches/yantrik-window-switcher-renderer.patch` | The labwc change (14 files, ~1,180 lines). |
+| `build-deb.sh` | Builds `labwc_0.8.3-1yantrik2_amd64.deb` (`REVISION` in the script; raise it when the patch changes) in a Debian 13 system with deb-src. |
 | `test/switcher-probe.c` | A renderer that only logs. Used to test the protocol without the real UI. |
 
 ## What the patch does

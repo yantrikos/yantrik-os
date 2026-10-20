@@ -275,45 +275,9 @@ pub fn shell_windows() -> Vec<WindowEntry> {
 /// short name instead — `Downloads` for a window called "Download Manager", `Music` for "Music
 /// Player" — so clicking those entries matched no window and did nothing at all, silently.
 ///
-/// If you rename a window, rename it here. There is a test below that lists both.
-/// What each app this OS ships is CALLED. One list, because there were four.
-///
-/// The same application answered to a different name depending on which surface you were
-/// looking at: the dock said "Editor", the launcher said "Text Editor", the window title said
-/// "Text Editor" and the header said whatever the screen author wrote. Downloads was
-/// "Download Manager" in three places and "Downloads" in a fourth. No single one of those was
-/// wrong, which is exactly why it survived — it only reads as sloppy when you see two at once,
-/// and you always do: the taskbar entry sits directly beneath the window it names.
-///
-/// Short names, because that is the family the dock already used and the dock is the surface a
-/// person reads most. The suffixes went rather than being invented away: Container Manager to
-/// Containers, Music Player to Music, Image Viewer to Images. The office three keep the brand
-/// the dock gave them.
-///
-/// Keys are the shell's own app ids on the left, matching `Icons.app`, and the .desktop file
-/// stems for the rest. `app_names_agree_everywhere` in the tests below reads the .desktop files
-/// and each app's Window title and fails if any of them drifts from this.
-pub const APP_NAMES: &[(&str, &str)] = &[
-    ("arcade", "Arcade"),
-    ("browser", "Browser"),
-    ("calendar", "Calendar"),
-    ("containers", "Containers"),
-    ("documents", "yDoc"),
-    ("downloads", "Downloads"),
-    ("editor", "Editor"),
-    ("email", "Email"),
-    ("image", "Images"),
-    ("music", "Music"),
-    ("network", "Network"),
-    ("notes", "Notes"),
-    ("presentation", "yPresent"),
-    ("snippets", "Snippets"),
-    ("spreadsheet", "ySheets"),
-    ("studio", "Studio"),
-    ("sysmonitor", "System Monitor"),
-    ("terminal", "Terminal"),
-    ("weather", "Weather"),
-];
+/// If you rename a window, rename it in yantrik-ui-kit's app_names.rs. There is a test below
+/// that lists both.
+pub use yantrik_ui_kit::app_names::APP_NAMES;
 
 /// The name one of our app ids goes by on screen, for callers outside this file.
 pub fn app_display_name(app_id: &str) -> String {
@@ -893,13 +857,7 @@ pub(crate) fn stream_app_id(declared_id: &str, title: &str) -> String {
         .unwrap_or_else(|| shell_app_id(declared_id, title))
 }
 
-/// The app id whose window is titled exactly this, if it is one of ours.
-///
-/// Exactly, not loosely: "Notes" is Notes and "Notes: Handover" is a note open in it, and a
-/// substring match would make the second one a second copy of the first in every window list.
-fn app_id_for_title(title: &str) -> Option<&'static str> {
-    APP_NAMES.iter().find(|(_, name)| *name == title).map(|(id, _)| *id)
-}
+use yantrik_ui_kit::app_names::app_id_for_title;
 
 /// Derive a normalized app_id from a window title (fallback path only).
 pub(crate) fn derive_app_id(title: &str) -> String {
@@ -1597,7 +1555,7 @@ mod app_name_tests {
         assert!(
             wrong.is_empty(),
             "one application, more than one name:\n  {}\n\n\
-             APP_NAMES in this file is the list. Change it there and change the .desktop entry \
+             APP_NAMES in yantrik-ui-kit's app_names.rs is the list. Change it there and change the .desktop entry \
              and the app's Window title to match.",
             wrong.join("\n  ")
         );

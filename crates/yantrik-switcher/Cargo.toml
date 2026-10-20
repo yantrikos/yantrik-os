@@ -12,12 +12,15 @@ path = "src/main.rs"
 slint = { workspace = true }
 smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"] }
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
 # Bindings for labwc's renderer protocol, generated from packaging/labwc's XML (one copy).
 wayland-scanner = "0.31"
 wayland-backend = "0.3"
 bitflags = "2"
 # So build.rs can resolve the shared theme's include path via `links`.
 yantrik-design-tokens = { workspace = true }
+# AppTile and the app icons, the dock's own (and its include path, via `links`); the app names.
+yantrik-ui-kit = { workspace = true }
 
 [build-dependencies]
 slint-build = "1.17"

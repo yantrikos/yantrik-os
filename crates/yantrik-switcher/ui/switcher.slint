@@ -1,28 +1,57 @@
 // Alt+Tab, drawn (#867). labwc owns the session; this draws what it is told: the windows as a
-// stack in time, the selected one in front, older ones stepping back and fading, a time line of
-// when each was last used, and a caption. Positions, sizes and fades are computed in model.rs and
-// scaled in main.rs, so this file only paints.
+// stack in time, the selected one in front, older ones stepping back up and to the right, a time
+// line of when each was last used, and a caption. Positions, sizes and fades are computed in
+// model.rs and scaled in main.rs, so this file only paints.
 //
-// Fades are baked into the colours (`with-alpha`) rather than `opacity`, which the software
-// renderer would draw through an extra layer per card.
+// The art direction (GPT-6 Astra, 20 Oct 2026): the screenshot is the material, and everything
+// else helps you recognise it, place it in time or choose it. So a card is its window's picture,
+// edge to edge, in its own shape, with no frame or title bar of ours round it; the ground is an
+// opaque navy, so nothing of the desktop competes; the accent blue marks only the selection, and
+// the gold of the emblem stays out of it.
+//
+// The software renderer draws `opacity` through an extra layer the size of the element, so it is
+// 1 everywhere but the one card fading out in front (or in at the back) and the caption's icon.
+// Deeper cards are darkened by a navy veil, which is a plain blend, not a layer.
 import { Theme } from "theme.slint";
+import { AppTile } from "app_tile.slint";
+export { AppInitial } from "app_tile.slint";
+
+// A part of a card that shows (model.rs `uncovered`), in the card's coordinates.
+export struct Pane {
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+}
 
 export struct Card {
     x: length,
     y: length,
     w: length,
     h: length,
-    alpha: float,
+    // How much of the ground's navy is laid over it, for its depth (0 = none).
+    dim: float,
+    // Its opacity: 1 except for a card fading in or out at either end of the stack.
+    fade: float,
+    // In front (or leaving it): it casts the contact shadow and wears the halo.
     front: bool,
+    edge-width: length,
+    edge: color,
+    // Its app's icon, drawn on a card with no picture yet. A picture needs none: our windows
+    // carry their own icon in their header, and a badge of ours sat on top of it (520, 20 Oct).
+    icon-id: string,
     name: string,
-    letter: string,
-    tile: color,
-    ago: string,
-    other-desktop: bool,
-    minimized: bool,
+    // Said on a card with no picture: minimized, on another desktop.
+    note: string,
+    picture: image,
+    has-picture: bool,
+    // Where it shows past the card in front of it: only there is it drawn.
+    panes: [Pane],
 }
 
 export struct Dot {
+    // The window's place on the line: its time, moved apart from its neighbours' just enough that
+    // no two names touch (two windows used "now" read as two dots, not one).
     y: length,
     label: string,
     on: bool,
@@ -33,23 +62,45 @@ export struct Tick {
     label: string,
 }
 
-component Tile inherits Rectangle {
-    in property <string> letter;
-    in property <color> tint;
-    in property <float> alpha: 1.0;
-    in property <length> size: 24px;
-    width: root.size;
-    height: root.size;
-    border-radius: root.size * 0.24;
-    background: root.tint.with-alpha(root.alpha);
+// The colours of this one surface. The accent is the theme's; the rest are its navy family.
+global Ink {
+    out property <color> primary: #edf2f8;
+    out property <color> secondary: #a8b5c6;
+    out property <color> quiet: #7d8fa6;
+    out property <color> rail: #334257;
+    out property <color> dot: #8294aa;
+    out property <color> card: #151e2b;
+    out property <color> veil: #0b1422;
+    out property <color> shadow: #050a12;
+    out property <color> key: #152133;
+    out property <color> key-edge: #35465e;
+}
+
+component Keycap inherits HorizontalLayout {
+    in property <string> key;
+    in property <string> does;
+    in property <float> scale;
+    spacing: 7px * root.scale;
+    Rectangle {
+        width: label.preferred-width + 14px * root.scale;
+        height: 24px * root.scale;
+        border-radius: 5px * root.scale;
+        background: Ink.key;
+        border-width: 1px;
+        border-color: Ink.key-edge;
+        label := Text {
+            text: root.key;
+            color: Ink.primary;
+            font-size: 12px * root.scale;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
     Text {
-        width: parent.width;
-        height: parent.height;
-        text: root.letter;
-        color: Theme.bg-deep.with-alpha(root.alpha);
-        font-size: root.size * 0.52;
-        font-weight: 700;
-        horizontal-alignment: center;
+        text: root.does;
+        color: Ink.secondary;
+        font-size: 12px * root.scale;
         vertical-alignment: center;
     }
 }
@@ -58,23 +109,26 @@ export component SwitcherView inherits Window {
     in property <[Card]> cards;
     in property <[Dot]> dots;
     in property <[Tick]> ticks;
-    in property <length> line-x: 1040px;
-    in property <length> line-top: 120px;
-    in property <length> line-height: 480px;
-    in property <length> caption-x: 150px;
-    in property <length> caption-y: 640px;
+    // The design frame (1280×800) to the output: across, down, and for sizes the smaller of the two.
+    in property <float> sx: 1.0;
+    in property <float> sy: 1.0;
+    in property <float> scale: 1.0;
+    in property <length> marker-y: 140px;
     in property <string> caption-title;
     in property <string> caption-where;
+    in property <string> caption-icon;
+    // The caption fades out and in again as the selection changes; it never slides.
+    in property <float> caption-alpha: 1.0;
     in property <string> typed;
-    in property <string> more;
-    in property <float> scale: 1.0;
 
-    background: transparent;
     default-font-family: "Barlow";
+    background: #080e18;
 
-    // The desktop, dimmed, so the stack reads against anything.
+    // Opaque: the desktop under the stack is noise exactly where the stack needs quiet. A lift of
+    // light behind the top of the stack, nothing more. (On a Rectangle: the software renderer
+    // paints a Window's gradient background as one flat colour.)
     Rectangle {
-        background: #05080dc4;
+        background: @linear-gradient(180deg, #101d30 0%, #080e18 100%);
     }
 
     // Deepest card first, so the selected one is drawn last, on top.
@@ -83,177 +137,231 @@ export component SwitcherView inherits Window {
         y: card.y;
         width: card.w;
         height: card.h;
-        border-radius: 14px * root.scale * card.w / (640px * root.scale);
-        background: Theme.bg-card.with-alpha(card.alpha);
-        clip: true;
+        opacity: card.fade;
 
-        // The card's head: tile, name, how long ago.
+        // A crisp contact shadow, not an imitation blur: one rounded shape, offset down.
+        if card.front: Rectangle {
+            x: -2px * root.scale;
+            y: 4px * root.scale;
+            width: parent.width + 4px * root.scale;
+            height: parent.height + 2px * root.scale;
+            border-radius: 14px * root.scale;
+            background: Ink.shadow;
+        }
+        // A faint halo: a ring, never a translucent fill.
+        if card.front: Rectangle {
+            x: -3px * root.scale;
+            y: -3px * root.scale;
+            width: parent.width + 6px * root.scale;
+            height: parent.height + 6px * root.scale;
+            border-radius: 15px * root.scale;
+            border-width: 2px * root.scale;
+            border-color: Theme.accent.with-alpha(0.12);
+        }
+
         Rectangle {
-            y: 0;
-            height: 44px * root.scale * card.w / (640px * root.scale);
-            background: Theme.bg-elevated.with-alpha(card.alpha);
-            HorizontalLayout {
-                padding-left: parent.height * 0.32;
-                padding-right: parent.height * 0.32;
-                spacing: parent.height * 0.24;
-                alignment: start;
-                VerticalLayout {
+            border-radius: 12px * root.scale;
+            background: card.has-picture ? transparent : Ink.card;
+            clip: true;
+
+            // The window as labwc last drew it, and the depth's veil over it, in the parts that
+            // show. The card is already the picture's shape, and the front one is its exact size
+            // at rest, so it is drawn 1:1.
+            if card.has-picture: Rectangle {
+                for pane in card.panes: Rectangle {
+                    x: pane.x;
+                    y: pane.y;
+                    width: pane.w;
+                    height: pane.h;
+                    clip: true;
+                    Image {
+                        x: -pane.x;
+                        y: -pane.y;
+                        width: card.w;
+                        height: card.h;
+                        source: card.picture;
+                        image-fit: fill;
+                    }
+                    if card.dim > 0.005: Rectangle {
+                        background: Ink.veil.with-alpha(card.dim);
+                    }
+                }
+            }
+            // Until a picture arrives (or for a window with none): the app, by its icon and name.
+            if !card.has-picture: VerticalLayout {
+                alignment: center;
+                spacing: 10px * root.scale;
+                HorizontalLayout {
                     alignment: center;
-                    Tile {
-                        size: 44px * root.scale * card.w / (640px * root.scale) * 0.56;
-                        letter: card.letter;
-                        tint: card.tile;
-                        alpha: card.alpha;
+                    AppTile {
+                        app-id: card.icon-id;
+                        size: round(min(card.w, card.h) * 0.22 / 1px) * 1px;
                     }
                 }
                 Text {
                     text: card.name;
-                    color: Theme.text-primary.with-alpha(card.alpha);
-                    font-size: parent.height * 0.36;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                    color: Ink.secondary;
+                    font-size: 14px * root.scale * card.w / (640px * root.scale);
+                    horizontal-alignment: center;
                     overflow: elide;
-                    horizontal-stretch: 1;
                 }
-                Text {
-                    text: card.ago;
-                    color: Theme.text-secondary.with-alpha(card.alpha);
-                    font-size: parent.height * 0.30;
-                    vertical-alignment: center;
+                if card.note != "": Text {
+                    text: card.note;
+                    color: Ink.quiet;
+                    font-size: 12px * root.scale * card.w / (640px * root.scale);
+                    horizontal-alignment: center;
                 }
+            }
+            // Deeper, darker: the ground's own navy over the card (a picture's is in its panes).
+            if card.dim > 0.005 && !card.has-picture: Rectangle {
+                background: Ink.veil.with-alpha(card.dim);
             }
         }
 
-        // The body: the app's tile, large. Pictures of windows come later (design, "Pictures").
-        Tile {
-            x: (parent.width - self.width) / 2;
-            y: parent.height * 0.5 - self.height * 0.35;
-            size: min(parent.width, parent.height) * 0.26;
-            letter: card.letter;
-            tint: card.tile;
-            alpha: card.alpha;
-        }
-        if card.other-desktop || card.minimized: Text {
-            x: 0;
-            y: parent.height - self.height - parent.height * 0.08;
-            width: parent.width;
-            horizontal-alignment: center;
-            text: card.other-desktop && card.minimized ? "on another desktop · minimized"
-                : card.other-desktop ? "on another desktop" : "minimized";
-            color: Theme.text-dim.with-alpha(card.alpha);
-            font-size: 13px * root.scale;
-        }
-
-        // The edge last, so the head does not cover it.
+        // The edge, inside the picture: the accent on the selected card, a quiet grey behind.
         Rectangle {
-            border-radius: parent.border-radius;
-            border-width: card.front ? 2px : 1px;
-            border-color: card.front ? Theme.accent : Theme.border-card.with-alpha(card.alpha * 0.9);
+            border-radius: 12px * root.scale;
+            border-width: card.edge-width;
+            border-color: card.edge;
         }
     }
 
-    // The time line: when each window was last used.
+    // The time line: when each window was last used. A fine instrument, not a second list.
     Text {
-        x: root.line-x - 80px * root.scale;
-        y: root.line-top - 36px * root.scale;
+        x: 980px * root.sx;
+        y: 96px * root.sy;
         text: "HOW LONG AGO";
-        color: Theme.text-dim;
-        font-size: 12px * root.scale;
-        letter-spacing: 1.2px * root.scale;
+        color: Ink.secondary;
+        font-size: 11px * root.scale;
+        font-weight: 600;
+        letter-spacing: 1px * root.scale;
     }
     Rectangle {
-        x: root.line-x;
-        y: root.line-top;
-        width: 2px * root.scale;
-        height: root.line-height;
-        background: Theme.border-strong;
+        x: 1020px * root.sx;
+        y: 140px * root.sy;
+        width: max(1px, round(root.scale) * 1px);
+        height: 480px * root.sy;
+        background: Ink.rail;
     }
     for tick in root.ticks: Text {
-        x: root.line-x - 72px * root.scale;
-        y: tick.y - 8px * root.scale;
-        width: 62px * root.scale;
+        x: 1006px * root.sx - self.width;
+        y: tick.y - 9px * root.scale;
+        width: 80px * root.scale;
+        height: 18px * root.scale;
         horizontal-alignment: right;
+        vertical-alignment: center;
         text: tick.label;
-        color: Theme.text-dim;
+        color: Ink.quiet;
         font-size: 12px * root.scale;
-        font-family: "JetBrains Mono";
     }
     for dot in root.dots: Rectangle {
-        x: root.line-x + 1px * root.scale - self.width / 2;
-        y: dot.y - self.height / 2;
-        width: (dot.on ? 12px : 8px) * root.scale;
-        height: self.width;
-        border-radius: self.width / 2;
-        background: dot.on ? Theme.accent : Theme.text-dim;
+        Rectangle {
+            x: 1020px * root.sx + 0.5px * root.scale - 3px * root.scale;
+            y: dot.y - 3px * root.scale;
+            width: 6px * root.scale;
+            height: 6px * root.scale;
+            border-radius: 3px * root.scale;
+            background: Ink.dot;
+        }
         Text {
-            x: 18px * root.scale;
-            y: (parent.height - self.height) / 2;
+            x: 1036px * root.sx;
+            y: dot.y - 10px * root.scale;
+            width: 180px * root.scale;
+            height: 20px * root.scale;
+            vertical-alignment: center;
             text: dot.label;
-            color: dot.on ? Theme.text-primary : Theme.text-secondary;
-            font-size: (dot.on ? 15px : 13px) * root.scale;
+            color: dot.on ? Ink.primary : Ink.secondary;
+            font-size: (dot.on ? 14px : 13px) * root.scale;
             font-weight: dot.on ? 600 : 400;
             overflow: elide;
-            width: 200px * root.scale;
+        }
+    }
+    // The selected window's marker, gliding between its dot and the next (main.rs eases it).
+    Rectangle {
+        x: 1020px * root.sx + 0.5px * root.scale - 8px * root.scale;
+        y: root.marker-y - 8px * root.scale;
+        width: 16px * root.scale;
+        height: 16px * root.scale;
+        border-radius: 8px * root.scale;
+        border-width: 1px;
+        border-color: Theme.accent.with-alpha(0.3);
+        Rectangle {
+            x: 3px * root.scale;
+            y: 3px * root.scale;
+            width: 10px * root.scale;
+            height: 10px * root.scale;
+            border-radius: 5px * root.scale;
+            background: Theme.accent;
         }
     }
 
-    // The caption: what the selected window is, where, and when it was last used.
-    VerticalLayout {
-        x: root.caption-x;
-        y: root.caption-y;
-        width: 760px * root.scale;
-        height: 70px * root.scale;
-        spacing: 6px * root.scale;
-        Text {
-            text: root.caption-title;
-            color: Theme.text-primary;
-            font-size: 22px * root.scale;
-            font-weight: 600;
-            overflow: elide;
+    // The caption, fixed under the front card's place: the app, what the window is, where, when.
+    Rectangle {
+        x: 80px * root.sx;
+        y: 682px * root.sy;
+        width: 24px * root.scale;
+        height: 24px * root.scale;
+        opacity: root.caption-alpha;
+        AppTile {
+            size: 24px * root.scale;
+            app-id: root.caption-icon;
         }
-        Text {
-            text: root.caption-where;
-            color: Theme.text-secondary;
-            font-size: 15px * root.scale;
-            overflow: elide;
-        }
+    }
+    Text {
+        x: 116px * root.sx;
+        y: 676px * root.sy;
+        width: 680px * root.scale;
+        height: 32px * root.scale;
+        vertical-alignment: center;
+        text: root.caption-title;
+        color: Ink.primary.with-alpha(root.caption-alpha);
+        font-size: 24px * root.scale;
+        font-weight: 600;
+        overflow: elide;
+    }
+    Text {
+        x: 116px * root.sx;
+        y: 712px * root.sy;
+        width: 680px * root.scale;
+        height: 20px * root.scale;
+        vertical-alignment: center;
+        text: root.caption-where;
+        color: Ink.secondary.with-alpha(root.caption-alpha);
+        font-size: 14px * root.scale;
+        overflow: elide;
     }
 
     if root.typed != "": Rectangle {
-        x: 56px * root.scale;
-        y: 58px * root.scale;
-        width: 360px * root.scale;
-        height: 44px * root.scale;
-        border-radius: 10px * root.scale;
-        background: Theme.bg-card;
+        x: 80px * root.sx;
+        y: 64px * root.sy;
+        width: jump.preferred-width + 32px * root.scale;
+        height: 40px * root.scale;
+        border-radius: 8px * root.scale;
+        background: Ink.key;
         border-width: 1px;
         border-color: Theme.accent;
-        Text {
+        jump := Text {
             x: 16px * root.scale;
-            text: "Jump to: " + root.typed;
-            color: Theme.text-primary;
-            font-size: 16px * root.scale;
+            height: parent.height;
             vertical-alignment: center;
+            text: "Jump to  " + root.typed;
+            color: Ink.primary;
+            font-size: 16px * root.scale;
         }
     }
 
-    if root.more != "": Text {
-        x: 700px * root.scale;
-        y: 40px * root.scale;
-        text: root.more;
-        color: Theme.text-dim;
-        font-size: 13px * root.scale;
-    }
-
     // What the keys do. Arrows and Escape are labwc's, as they always were.
-    Text {
+    HorizontalLayout {
         x: 0;
-        y: root.height - 52px * root.scale;
+        y: 754px * root.sy;
         width: root.width;
-        horizontal-alignment: center;
-        text: "Tab  deeper     Shift+Tab  back up     release Alt  go there     type  jump     Esc  stay put";
-        color: Theme.text-dim;
-        font-size: 13px * root.scale;
-        font-family: "JetBrains Mono";
+        height: 24px * root.scale;
+        alignment: center;
+        spacing: 24px * root.scale;
+        Keycap { key: "Tab"; does: "Next"; scale: root.scale; }
+        Keycap { key: "Shift Tab"; does: "Previous"; scale: root.scale; }
+        Keycap { key: "Alt"; does: "Release to open"; scale: root.scale; }
+        Keycap { key: "A–Z"; does: "Find"; scale: root.scale; }
+        Keycap { key: "Esc"; does: "Cancel"; scale: root.scale; }
     }
 }

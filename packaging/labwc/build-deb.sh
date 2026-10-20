@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build Yantrik's labwc: the labwc Debian has now plus debian-patches/, versioned as Debian's
-# with `yantrik1` appended (0.8.3-1 → 0.8.3-1yantrik1). That sorts above the Debian build it was
+# with `yantrik<REVISION>` appended (0.8.3-1 → 0.8.3-1yantrik2). That sorts above the Debian build it was
 # made from and below any later one, so a Debian security fix replaces it on a machine (the
 # updater never holds it or puts it back), and the next build patches that fix in turn.
 # Run as root in a Debian 13 (trixie) system with deb-src enabled (the labwc-build container on
@@ -16,7 +16,11 @@ apt-get build-dep -y -qq labwc >/dev/null
 # behind it. A binNMU (+b1) has the same source, so it is the binary version that ours extends.
 BINARY="$(apt-cache policy labwc | sed -n 's/^ *Candidate: //p')"
 [ -n "$BINARY" ] && [ "$BINARY" != "(none)" ] || { echo "no labwc in this system's apt sources" >&2; exit 1; }
-OURS="${BINARY}yantrik1"
+# Raised by one whenever debian-patches/ changes, so a machine with the last build installs the
+# new one (the updater installs a version it does not have). It still sorts below any later
+# Debian build: 0.8.3-1yantrik2 < 0.8.3-1+deb13u1.
+REVISION=2
+OURS="${BINARY}yantrik${REVISION}"
 rm -rf "$WORK" && mkdir -p "$WORK" && cd "$WORK"
 apt-get source -qq labwc >/dev/null 2>&1
 cd labwc-*/

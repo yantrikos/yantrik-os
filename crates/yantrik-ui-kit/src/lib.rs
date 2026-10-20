@@ -12,6 +12,7 @@
 
 pub mod lock_shared;
 pub mod app_tile;
+pub mod app_names;
 
 #[cfg(test)]
 mod app_icons;

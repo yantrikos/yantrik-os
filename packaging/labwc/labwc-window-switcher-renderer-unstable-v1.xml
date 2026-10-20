@@ -38,7 +38,7 @@
     backward incompatible changes may be made.
   </description>
 
-  <interface name="zlabwc_window_switcher_renderer_v1" version="1">
+  <interface name="zlabwc_window_switcher_renderer_v1" version="2">
     <description summary="the window switcher, for the client that draws it">
       Every event carries the session it belongs to. A session begins with
       session_start, then one window event per window in the compositor's
@@ -126,6 +126,36 @@
 
     <request name="destroy" type="destructor">
       <description summary="stop drawing the window switcher"/>
+    </request>
+
+    <event name="thumbnail" since="2">
+      <description summary="a picture of one window, as asked for with capture">
+        The window's content as the compositor last drew it, scaled down to fit
+        the size capture asked for, keeping its aspect ratio. fd is a sealed
+        memory file of stride * height bytes: ARGB8888 (little-endian B, G, R,
+        A), alpha premultiplied, rows top to bottom. The client maps or reads
+        it and closes it; it is never written again. Only windows in the
+        session's own list are ever sent, and only to the renderer.
+      </description>
+      <arg name="session" type="uint"/>
+      <arg name="id" type="uint"/>
+      <arg name="fd" type="fd"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="stride" type="uint"/>
+    </event>
+
+    <request name="capture" since="2">
+      <description summary="ask for a picture of one window">
+        Ignored unless the session is current and the id is in its list. The
+        answer is a thumbnail event, or nothing if the window has nothing drawn
+        yet or the compositor is answering too many requests. max_width and
+        max_height are clamped to 16..1024.
+      </description>
+      <arg name="session" type="uint"/>
+      <arg name="id" type="uint"/>
+      <arg name="max_width" type="uint"/>
+      <arg name="max_height" type="uint"/>
     </request>
   </interface>
 </protocol>

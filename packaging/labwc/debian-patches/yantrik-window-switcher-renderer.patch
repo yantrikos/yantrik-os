@@ -2,19 +2,28 @@ Description: Let an external client draw the window switcher session
  labwc keeps the window switcher session (chord, order, selection, commit on
  modifier release). This adds zlabwc_window_switcher_renderer_v1, a private
  protocol offered only to the one client labwc launches itself on a
- pre-connected socket (<windowSwitcher renderer="command">). The renderer is told
+ pre-connected socket (<windowSwitcher renderer="command">), and again as soon as
+ it exits (at most every 5 s). The renderer is told
  the session and may only ask to move the selection. If it has not acknowledged
- a session within 200 ms, or is gone, labwc draws its own OSD as before.
+ a session within 300 ms, or is gone, labwc draws its own OSD as before.
  Text keys labwc does not use during a session are handed to the renderer.
+ Version 2 adds pictures: the renderer may ask for a listed window, which labwc
+ renders offscreen from the window's own scene subtree (as upstream labwc's
+ thumbnail switcher, src/cycle/osd-thumbnail.c, does; at twice the size and
+ averaged down 2x2 when it shrinks by 2 or more) and hands over in a sealed
+ memory file, at most 15 a second. A screen lock ends the session, and no
+ window is captured or selected behind one. While the renderer draws the session, a
+ held Tab steps every 0.7 s (each window stays in front that long)
+ instead of at the keyboard's repeat rate.
  Built for Yantrik OS's Alt+Tab (yantrikos/yantrik-os#867, #849).
 Author: Yantrik OS <dev@yantrikos.com>
 Forwarded: not-yet
-Last-Update: 2026-10-19
-Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed)
+Last-Update: 2026-10-20
+Reviewed-by: security reviews of yantrikos/yantrik-os#872 (findings 1-5 addressed) and #876 (lock finding fixed)
 ---
 --- labwc-0.8.3.orig/include/config/rcxml.h
 +++ labwc-0.8.3/include/config/rcxml.h
-@@ -170,6 +170,7 @@ struct rcxml {
+@@ -170,6 +170,7 @@
  		bool preview;
  		bool outlines;
  		uint32_t criteria;
@@ -24,7 +33,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  
 --- labwc-0.8.3.orig/include/labwc.h
 +++ labwc-0.8.3/include/labwc.h
-@@ -389,6 +389,8 @@ struct server {
+@@ -389,6 +389,8 @@
  		struct multi_rect *preview_outline;
  	} osd_state;
  
@@ -35,7 +44,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  	struct menu *menu_current;
 --- labwc-0.8.3.orig/include/view.h
 +++ labwc-0.8.3/include/view.h
-@@ -202,6 +202,9 @@ struct view {
+@@ -202,6 +202,9 @@
  	enum ssd_preference ssd_preference;
  	bool shaded;
  	bool minimized;
@@ -45,9 +54,9 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  	enum view_axis maximized;
  	bool fullscreen;
  	bool tearing_hint;
---- /dev/null
+--- labwc-0.8.3.orig/include/window-switcher-renderer.h
 +++ labwc-0.8.3/include/window-switcher-renderer.h
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,52 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef LABWC_WINDOW_SWITCHER_RENDERER_H
 +#define LABWC_WINDOW_SWITCHER_RENDERER_H
@@ -84,6 +93,11 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +
 +/* Whether labwc should skip drawing its own OSD for the current session */
 +bool switcher_renderer_draws(struct server *server);
++/*
++ * How often a held key repeats in a window switcher session the renderer draws, in ms (each
++ * window stays in front this long while Tab is held); 0 when labwc's own repeat applies.
++ */
++int switcher_renderer_repeat_ms(struct server *server);
 +
 +/* keyboard.c: end_cycling() commits; mark it before osd_finish() */
 +void switcher_renderer_note_commit(struct server *server);
@@ -95,9 +109,9 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +void switcher_renderer_note_focus(struct view *view);
 +
 +#endif /* LABWC_WINDOW_SWITCHER_RENDERER_H */
---- /dev/null
+--- labwc-0.8.3.orig/protocols/labwc-window-switcher-renderer-unstable-v1.xml
 +++ labwc-0.8.3/protocols/labwc-window-switcher-renderer-unstable-v1.xml
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,161 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<protocol name="labwc_window_switcher_renderer_unstable_v1">
 +  <copyright>
@@ -138,7 +152,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +    backward incompatible changes may be made.
 +  </description>
 +
-+  <interface name="zlabwc_window_switcher_renderer_v1" version="1">
++  <interface name="zlabwc_window_switcher_renderer_v1" version="2">
 +    <description summary="the window switcher, for the client that draws it">
 +      Every event carries the session it belongs to. A session begins with
 +      session_start, then one window event per window in the compositor's
@@ -227,11 +241,41 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +    <request name="destroy" type="destructor">
 +      <description summary="stop drawing the window switcher"/>
 +    </request>
++
++    <event name="thumbnail" since="2">
++      <description summary="a picture of one window, as asked for with capture">
++        The window's content as the compositor last drew it, scaled down to fit
++        the size capture asked for, keeping its aspect ratio. fd is a sealed
++        memory file of stride * height bytes: ARGB8888 (little-endian B, G, R,
++        A), alpha premultiplied, rows top to bottom. The client maps or reads
++        it and closes it; it is never written again. Only windows in the
++        session's own list are ever sent, and only to the renderer.
++      </description>
++      <arg name="session" type="uint"/>
++      <arg name="id" type="uint"/>
++      <arg name="fd" type="fd"/>
++      <arg name="width" type="uint"/>
++      <arg name="height" type="uint"/>
++      <arg name="stride" type="uint"/>
++    </event>
++
++    <request name="capture" since="2">
++      <description summary="ask for a picture of one window">
++        Ignored unless the session is current and the id is in its list. The
++        answer is a thumbnail event, or nothing if the window has nothing drawn
++        yet or the compositor is answering too many requests. max_width and
++        max_height are clamped to 16..1024.
++      </description>
++      <arg name="session" type="uint"/>
++      <arg name="id" type="uint"/>
++      <arg name="max_width" type="uint"/>
++      <arg name="max_height" type="uint"/>
++    </request>
 +  </interface>
 +</protocol>
 --- labwc-0.8.3.orig/protocols/meson.build
 +++ labwc-0.8.3/protocols/meson.build
-@@ -26,6 +26,7 @@ server_protocols = [
+@@ -26,6 +26,7 @@
  	'wlr-layer-shell-unstable-v1.xml',
  	'wlr-input-inhibitor-unstable-v1.xml',
  	'wlr-output-power-management-unstable-v1.xml',
@@ -241,7 +285,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  server_protos_src = []
 --- labwc-0.8.3.orig/src/config/rcxml.c
 +++ labwc-0.8.3/src/config/rcxml.c
-@@ -1169,6 +1169,8 @@ entry(xmlNode *node, char *nodename, cha
+@@ -1169,6 +1169,8 @@
  		set_bool(content, &rc.window_switcher.preview);
  	} else if (!strcasecmp(nodename, "outlines.windowSwitcher")) {
  		set_bool(content, &rc.window_switcher.outlines);
@@ -250,7 +294,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  	} else if (!strcasecmp(nodename, "allWorkspaces.windowSwitcher")) {
  		if (parse_bool(content, -1) == true) {
  			rc.window_switcher.criteria &=
-@@ -1944,6 +1946,7 @@ rcxml_read(const char *filename)
+@@ -1944,6 +1946,7 @@
  void
  rcxml_finish(void)
  {
@@ -268,7 +312,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  #include "menu/menu.h"
  #include "osd.h"
  #include "regions.h"
-@@ -91,6 +92,7 @@ end_cycling(struct server *server)
+@@ -91,6 +92,7 @@
  
  	struct view *cycle_view = server->osd_state.cycle_view;
  	/* FIXME: osd_finish() transiently sets focus to the old surface */
@@ -276,7 +320,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  	osd_finish(server);
  	/* Note that server->osd_state.cycle_view is cleared at this point */
  	desktop_focus_view(cycle_view, /*raise*/ true);
-@@ -560,6 +562,16 @@ handle_compositor_keybindings(struct key
+@@ -560,6 +562,16 @@
  		return true;
  	}
  
@@ -291,6 +335,29 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +	}
 +
  	return false;
+ }
+ 
+@@ -578,6 +590,11 @@
+ 
+ 	handle_compositor_keybindings(keyboard, &event);
+ 	int next_repeat_ms = 1000 / keyboard->keybind_repeat_rate;
++	/* A held key in the drawn window switcher steps at its own pace */
++	int switcher_ms = switcher_renderer_repeat_ms(keyboard->base.seat->server);
++	if (switcher_ms > 0) {
++		next_repeat_ms = switcher_ms;
++	}
+ 	wl_event_source_timer_update(keyboard->keybind_repeat,
+ 		next_repeat_ms);
+ 
+@@ -597,8 +614,9 @@
+ 		keyboard->keybind_repeat_rate = wlr_keyboard->repeat_info.rate;
+ 		keyboard->keybind_repeat = wl_event_loop_add_timer(
+ 			server->wl_event_loop, handle_keybind_repeat, keyboard);
++		int switcher_ms = switcher_renderer_repeat_ms(server);
+ 		wl_event_source_timer_update(keyboard->keybind_repeat,
+-			wlr_keyboard->repeat_info.delay);
++			switcher_ms > 0 ? switcher_ms : wlr_keyboard->repeat_info.delay);
+ 	}
  }
  
 --- labwc-0.8.3.orig/src/meson.build
@@ -311,7 +378,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  #include "workspaces.h"
  
  static void
-@@ -172,6 +173,7 @@ osd_begin(struct server *server, enum la
+@@ -172,6 +173,7 @@
  
  	seat_focus_override_begin(&server->seat,
  		LAB_INPUT_STATE_WINDOW_SWITCHER, LAB_CURSOR_DEFAULT);
@@ -319,7 +386,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  	osd_update(server);
  }
  
-@@ -188,6 +190,7 @@ osd_cycle(struct server *server, enum la
+@@ -188,6 +190,7 @@
  void
  osd_finish(struct server *server)
  {
@@ -327,7 +394,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  	restore_preview_node(server);
  	seat_focus_override_end(&server->seat);
  
-@@ -442,7 +445,10 @@ osd_update(struct server *server)
+@@ -442,7 +445,10 @@
  		goto out;
  	}
  
@@ -349,7 +416,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  #include "workspaces.h"
  #include "xwayland.h"
  
-@@ -291,6 +292,11 @@ server_global_filter(const struct wl_cli
+@@ -291,6 +292,11 @@
  	/* Silence unused var compiler warnings */
  	(void)iface; (void)server;
  
@@ -361,7 +428,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  #if HAVE_XWAYLAND
  	struct wl_client *xwayland_client = (server->xwayland && server->xwayland->server)
  		? server->xwayland->server->client
-@@ -737,11 +743,14 @@ server_start(struct server *server)
+@@ -737,11 +743,14 @@
  	} else {
  		wlr_log(WLR_DEBUG, "WAYLAND_DISPLAY=%s", socket);
  	}
@@ -376,6 +443,31 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  #if HAVE_XWAYLAND
  	xwayland_server_finish(server);
  #endif
+--- labwc-0.8.3.orig/src/session-lock.c
++++ labwc-0.8.3/src/session-lock.c
+@@ -3,6 +3,7 @@
+ #include <assert.h>
+ #include "common/mem.h"
+ #include "labwc.h"
++#include "osd.h"
+ #include "node.h"
+ 
+ struct session_lock_output {
+@@ -330,6 +331,14 @@
+ 	}
+ 	assert(wl_list_empty(&manager->lock_outputs));
+ 
++	/*
++	 * A lock ends a window switcher session, cancelled: nothing is captured or selected
++	 * behind the lock, and Alt's release behind it focuses nothing.
++	 */
++	if (manager->server->input_mode == LAB_INPUT_STATE_WINDOW_SWITCHER) {
++		osd_finish(manager->server);
++	}
++
+ 	/* Remember the focused view to restore it on unlock */
+ 	manager->last_active_view = manager->server->active_view;
+ 	seat_focus_surface(&manager->server->seat, NULL);
 --- labwc-0.8.3.orig/src/view.c
 +++ labwc-0.8.3/src/view.c
 @@ -23,6 +23,7 @@
@@ -386,7 +478,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  #include "window-rules.h"
  #include "wlr/util/log.h"
  #include "workspaces.h"
-@@ -497,6 +498,9 @@ void
+@@ -497,6 +498,9 @@
  view_set_activated(struct view *view, bool activated)
  {
  	assert(view);
@@ -396,9 +488,9 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
  	ssd_set_active(view->ssd, activated);
  	if (view->impl->set_activated) {
  		view->impl->set_activated(view, activated);
---- /dev/null
+--- labwc-0.8.3.orig/src/window-switcher-renderer.c
 +++ labwc-0.8.3/src/window-switcher-renderer.c
-@@ -0,0 +1,528 @@
+@@ -0,0 +1,798 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * An external client that draws the window switcher session.
@@ -412,35 +504,57 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 + * not within ACK_TIMEOUT_MS, or is gone, labwc draws its own OSD for that
 + * session. A session over before the renderer draws (a quick Alt+Tab) shows
 + * nothing at all.
++ *
++ * From version 2 the renderer may ask for a picture of a listed window
++ * (capture). labwc renders the window's own scene subtree into an offscreen
++ * buffer, as upstream labwc's thumbnail switcher does (src/cycle/
++ * osd-thumbnail.c, render_thumb), reads it back and hands it over in a sealed
++ * memory file. Only the renderer labwc launched can ask, only for windows in
++ * the session's list, at most CAPTURES_PER_SECOND a second.
 + */
 +#define _GNU_SOURCE
 +#include <assert.h>
++#include <drm_fourcc.h>
 +#include <fcntl.h>
++#include <math.h>
 +#include <glib.h>
 +#include <signal.h>
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
++#include <sys/mman.h>
 +#include <sys/socket.h>
 +#include <time.h>
 +#include <unistd.h>
 +#include <wayland-server-core.h>
++#include <wlr/render/allocator.h>
++#include <wlr/render/swapchain.h>
++#include <wlr/render/wlr_renderer.h>
++#include <wlr/render/wlr_texture.h>
++#include <wlr/types/wlr_buffer.h>
++#include <wlr/types/wlr_output.h>
++#include <wlr/types/wlr_scene.h>
 +#include <wlr/util/log.h>
 +#include "common/array.h"
 +#include "common/fd-util.h"
 +#include "common/mem.h"
 +#include "config/rcxml.h"
 +#include "labwc.h"
++#include "session-lock.h"
 +#include "osd.h"
 +#include "view.h"
 +#include "workspaces.h"
 +#include "window-switcher-renderer.h"
 +#include "labwc-window-switcher-renderer-unstable-v1-protocol.h"
 +
-+#define RENDERER_VERSION 1
++#define RENDERER_VERSION 2
 +#define ACK_TIMEOUT_MS 300
 +#define RESPAWN_MIN_MS 5000
 +#define TEXT_MAX 512
++#define THUMB_MIN 16
++#define THUMB_MAX 1024
++#define CAPTURES_PER_SECOND 15
++#define SWITCHER_REPEAT_MS 700
 +
 +struct switcher_renderer {
 +	struct server *server;
@@ -449,6 +563,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +	struct wl_listener client_destroy;
 +	struct wl_resource *resource;
 +	struct wl_event_source *ack_timer;
++	struct wl_event_source *respawn_timer;
 +	uint64_t last_spawn_ms;
 +	uint32_t session;
 +	uint32_t next_view_id;
@@ -458,6 +573,8 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +	bool acked;
 +	bool fallback;
 +	bool committing;
++	uint64_t capture_window_ms; /* the second the captures below are counted in */
++	int captures_in_window;
 +};
 +
 +static uint64_t
@@ -495,6 +612,15 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +	return 0;
 +}
 +
++static void spawn(struct switcher_renderer *r);
++
++static int
++handle_respawn(void *data)
++{
++	spawn(data);
++	return 0;
++}
++
 +static void
 +handle_client_destroy(struct wl_listener *listener, void *data)
 +{
@@ -503,6 +629,16 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +	r->client = NULL;
 +	r->resource = NULL;
 +	fall_back(r);
++	/*
++	 * Launched again now, not at the next session: a session that finds no renderer is
++	 * drawn as labwc's OSD, so waiting for one made the first Alt+Tab after a crash (or an
++	 * update) the old list. At most once per RESPAWN_MIN_MS, so one that keeps dying
++	 * cannot keep labwc forking.
++	 */
++	uint64_t t = now_ms();
++	uint64_t since = r->last_spawn_ms ? t - r->last_spawn_ms : RESPAWN_MIN_MS;
++	int wait = since >= RESPAWN_MIN_MS ? 1 : (int)(RESPAWN_MIN_MS - since) + 10;
++	wl_event_source_timer_update(r->respawn_timer, wait);
 +}
 +
 +extern char **environ;
@@ -651,23 +787,23 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +	wl_event_source_timer_update(r->ack_timer, 0);
 +}
 +
-+static void
-+handle_select(struct wl_client *client, struct wl_resource *resource,
-+		uint32_t session, uint32_t id)
++/* The window with this id, if it is in the current session's own list; else NULL */
++static struct view *
++listed_view(struct switcher_renderer *r, uint32_t session, uint32_t id)
 +{
-+	struct switcher_renderer *r = wl_resource_get_user_data(resource);
-+	if (!r || !r->active || session != r->session || id == 0) {
-+		return;
++	/* Never a window behind a lock (a lock also ends the session: session-lock.c) */
++	if (!r->active || session != r->session || id == 0
++			|| r->server->input_mode != LAB_INPUT_STATE_WINDOW_SWITCHER
++			|| r->server->session_lock_manager->locked) {
++		return NULL;
 +	}
-+	struct server *server = r->server;
-+	if (server->input_mode != LAB_INPUT_STATE_WINDOW_SWITCHER) {
-+		return;
++	struct view *target = find_view(r, id);
++	if (!target) {
++		return NULL;
 +	}
-+	/* Only a window in the session's own list may be selected */
 +	struct wl_array views;
 +	wl_array_init(&views);
-+	view_array_append(server, &views, rc.window_switcher.criteria);
-+	struct view *target = find_view(r, id);
++	view_array_append(r->server, &views, rc.window_switcher.criteria);
 +	bool listed = false;
 +	struct view **v;
 +	wl_array_for_each(v, &views) {
@@ -677,11 +813,224 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +		}
 +	}
 +	wl_array_release(&views);
-+	if (!listed || !target) {
++	return listed ? target : NULL;
++}
++
++static void
++handle_select(struct wl_client *client, struct wl_resource *resource,
++		uint32_t session, uint32_t id)
++{
++	struct switcher_renderer *r = wl_resource_get_user_data(resource);
++	if (!r) {
 +		return;
 +	}
-+	server->osd_state.cycle_view = target;
-+	osd_update(server);
++	/* Only a window in the session's own list may be selected */
++	struct view *target = listed_view(r, session, id);
++	if (!target) {
++		return;
++	}
++	r->server->osd_state.cycle_view = target;
++	osd_update(r->server);
++}
++
++/*
++ * One scene node and what is under it, into the pass: surfaces' textures at their place,
++ * scaled by `scale`. Rects are the compositor's own decoration and are left out.
++ */
++static void
++render_node(struct wlr_render_pass *pass, struct wlr_scene_node *node, int x, int y, double scale)
++{
++	if (!node->enabled) {
++		return;
++	}
++	x += node->x;
++	y += node->y;
++	switch (node->type) {
++	case WLR_SCENE_NODE_TREE: {
++		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
++		struct wlr_scene_node *child;
++		wl_list_for_each(child, &tree->children, link) {
++			render_node(pass, child, x, y, scale);
++		}
++		break;
++	}
++	case WLR_SCENE_NODE_BUFFER: {
++		struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
++		if (!scene_buffer->buffer) {
++			break;
++		}
++		struct wlr_client_buffer *client_buffer = wlr_client_buffer_get(scene_buffer->buffer);
++		struct wlr_texture *texture = client_buffer ? client_buffer->texture : NULL;
++		if (!texture) {
++			break;
++		}
++		int w = scene_buffer->dst_width ? scene_buffer->dst_width : (int)texture->width;
++		int h = scene_buffer->dst_height ? scene_buffer->dst_height : (int)texture->height;
++		int x0 = (int)lround(x * scale), y0 = (int)lround(y * scale);
++		wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
++			.texture = texture,
++			.src_box = scene_buffer->src_box,
++			.dst_box = {
++				.x = x0,
++				.y = y0,
++				.width = (int)lround((x + w) * scale) - x0,
++				.height = (int)lround((y + h) * scale) - y0,
++			},
++			.transform = scene_buffer->transform,
++			.filter_mode = WLR_SCALE_FILTER_BILINEAR,
++		});
++		break;
++	}
++	default:
++		break;
++	}
++}
++
++/*
++ * A picture of the view, w x h, in a new sealed memory file; -1 on any failure. Rendered
++ * offscreen from the view's content tree (as upstream's render_thumb) and read back.
++ */
++/*
++ * Shrink a premultiplied ARGB8888 picture by 2 in each direction, each output pixel the mean of
++ * its 2x2 block: an area filter, so a window drawn at a third of its size stays crisp instead of
++ * the one-pass bilinear smear.
++ */
++static void
++halve(const uint8_t *src, uint32_t src_stride, uint8_t *dst, uint32_t dst_stride, int w, int h)
++{
++	for (int y = 0; y < h; y++) {
++		const uint8_t *a = src + (size_t)(2 * y) * src_stride;
++		const uint8_t *b = a + src_stride;
++		uint8_t *o = dst + (size_t)y * dst_stride;
++		for (int x = 0; x < w; x++) {
++			for (int c = 0; c < 4; c++) {
++				unsigned sum = a[8 * x + c] + a[8 * x + 4 + c] + b[8 * x + c] + b[8 * x + 4 + c];
++				o[4 * x + c] = (uint8_t)((sum + 2) / 4);
++			}
++		}
++	}
++}
++
++static int
++render_thumbnail(struct server *server, struct view *view, int w, int h, double scale)
++{
++	/* Twice the size and halved when the window shrinks by 2 or more; at once otherwise */
++	int ss = scale * 2.0 <= 1.0 ? 2 : 1;
++	int rw = w * ss, rh = h * ss;
++	scale *= ss;
++	struct wlr_drm_format fallback = {
++		.format = DRM_FORMAT_ARGB8888,
++		.len = 1,
++		.capacity = 1,
++		.modifiers = (uint64_t[]){ DRM_FORMAT_MOD_INVALID },
++	};
++	const struct wlr_drm_format *format = &fallback;
++	if (view->output && view->output->wlr_output && view->output->wlr_output->swapchain) {
++		format = &view->output->wlr_output->swapchain->format;
++	}
++	struct wlr_buffer *buffer = wlr_allocator_create_buffer(server->allocator, rw, rh, format);
++	if (!buffer) {
++		wlr_log(WLR_ERROR, "window switcher thumbnail: no buffer");
++		return -1;
++	}
++	struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(server->renderer, buffer, NULL);
++	if (!pass) {
++		wlr_buffer_drop(buffer);
++		return -1;
++	}
++	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
++		.box = { .width = rw, .height = rh },
++		.color = { 0, 0, 0, 0 },
++		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
++	});
++	struct wlr_scene_node *content = &view->content_tree->node;
++	/* The content tree's own place in the view is taken back out: the picture starts at 0,0 */
++	render_node(pass, content, -content->x, -content->y, scale);
++	if (!wlr_render_pass_submit(pass)) {
++		wlr_buffer_drop(buffer);
++		return -1;
++	}
++	struct wlr_texture *texture = wlr_texture_from_buffer(server->renderer, buffer);
++	if (!texture) {
++		wlr_buffer_drop(buffer);
++		return -1;
++	}
++	uint32_t stride = (uint32_t)w * 4;
++	size_t size = (size_t)stride * (size_t)h;
++	uint32_t rstride = (uint32_t)rw * 4;
++	uint8_t *rendered = ss > 1 ? malloc((size_t)rstride * (size_t)rh) : NULL;
++	int fd = memfd_create("labwc-switcher-thumbnail", MFD_CLOEXEC | MFD_ALLOW_SEALING);
++	void *map = MAP_FAILED;
++	bool ok = (ss == 1 || rendered) && fd >= 0 && ftruncate(fd, (off_t)size) == 0
++		&& (map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)) != MAP_FAILED;
++	if (ok) {
++		ok = wlr_texture_read_pixels(texture, &(struct wlr_texture_read_pixels_options){
++			.data = ss > 1 ? (void *)rendered : map,
++			.format = DRM_FORMAT_ARGB8888,
++			.stride = ss > 1 ? rstride : stride,
++		});
++		if (ok && ss > 1) {
++			halve(rendered, rstride, map, stride, w, h);
++		}
++		munmap(map, size);
++	}
++	free(rendered);
++	wlr_texture_destroy(texture);
++	wlr_buffer_drop(buffer);
++	/* Sealed: the size and the bytes stay as sent */
++	if (ok && fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL) < 0) {
++		ok = false;
++	}
++	if (!ok) {
++		if (fd >= 0) {
++			close(fd);
++		}
++		return -1;
++	}
++	return fd;
++}
++
++static void
++handle_capture(struct wl_client *client, struct wl_resource *resource,
++		uint32_t session, uint32_t id, uint32_t max_width, uint32_t max_height)
++{
++	struct switcher_renderer *r = wl_resource_get_user_data(resource);
++	if (!r || !r->resource || r->fallback) {
++		return;
++	}
++	struct view *view = listed_view(r, session, id);
++	if (!view || !view->mapped || !view->content_tree) {
++		return;
++	}
++	/* Bounded: a busy renderer cannot keep the compositor rendering pictures */
++	uint64_t t = now_ms();
++	if (t - r->capture_window_ms >= 1000) {
++		r->capture_window_ms = t;
++		r->captures_in_window = 0;
++	}
++	if (r->captures_in_window >= CAPTURES_PER_SECOND) {
++		return;
++	}
++	r->captures_in_window++;
++
++	int vw = view->current.width, vh = view->current.height;
++	if (vw <= 0 || vh <= 0) {
++		return;
++	}
++	double mw = max_width < THUMB_MIN ? THUMB_MIN : max_width > THUMB_MAX ? THUMB_MAX : max_width;
++	double mh = max_height < THUMB_MIN ? THUMB_MIN : max_height > THUMB_MAX ? THUMB_MAX : max_height;
++	double scale = fmin(1.0, fmin(mw / vw, mh / vh));
++	int w = (int)lround(vw * scale), h = (int)lround(vh * scale);
++	if (w < 1 || h < 1) {
++		return;
++	}
++	int fd = render_thumbnail(r->server, view, w, h, scale);
++	if (fd < 0) {
++		return;
++	}
++	zlabwc_window_switcher_renderer_v1_send_thumbnail(r->resource, session, id, fd,
++		(uint32_t)w, (uint32_t)h, (uint32_t)w * 4);
++	close(fd);
 +}
 +
 +static void
@@ -693,6 +1042,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +static const struct zlabwc_window_switcher_renderer_v1_interface renderer_impl = {
 +	.ack = handle_ack,
 +	.select = handle_select,
++	.capture = handle_capture,
 +	.destroy = handle_destroy,
 +};
 +
@@ -738,6 +1088,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +	r->global = wl_global_create(server->wl_display,
 +		&zlabwc_window_switcher_renderer_v1_interface, RENDERER_VERSION, r, handle_bind);
 +	r->ack_timer = wl_event_loop_add_timer(server->wl_event_loop, handle_ack_timeout, r);
++	r->respawn_timer = wl_event_loop_add_timer(server->wl_event_loop, handle_respawn, r);
 +	server->switcher_renderer = r;
 +	spawn(r);
 +}
@@ -761,6 +1112,7 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +	}
 +	wl_array_release(&r->sent);
 +	wl_event_source_remove(r->ack_timer);
++	wl_event_source_remove(r->respawn_timer);
 +	wl_global_destroy(r->global);
 +	server->switcher_renderer = NULL;
 +	free(r);
@@ -875,6 +1227,16 @@ Reviewed-by: security review of yantrikos/yantrik-os#872 (findings 1-5 addressed
 +{
 +	struct switcher_renderer *r = server->switcher_renderer;
 +	return r && r->active && r->resource && !r->fallback;
++}
++
++int
++switcher_renderer_repeat_ms(struct server *server)
++{
++	if (server->input_mode != LAB_INPUT_STATE_WINDOW_SWITCHER
++			|| !switcher_renderer_draws(server)) {
++		return 0;
++	}
++	return SWITCHER_REPEAT_MS;
 +}
 +
 +void
