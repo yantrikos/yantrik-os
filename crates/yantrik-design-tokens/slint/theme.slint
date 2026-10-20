@@ -93,15 +93,15 @@ export global AccentPreset {
 export global ThemeOverrides {
     in-out property <bool> enabled: false;
     // The defaults a theme file falls back to for any key it leaves out: the stock palette.
-    in-out property <color> bg-deep-override:     #0e1117;
-    in-out property <color> bg-surface-override:   #161b23;
-    in-out property <color> bg-card-override:      #212937;
-    in-out property <color> bg-elevated-override:  #2c3545;
+    in-out property <color> bg-deep-override:     #0b121c;
+    in-out property <color> bg-surface-override:   #111b28;
+    in-out property <color> bg-card-override:      #172333;
+    in-out property <color> bg-elevated-override:  #1c293b;
     in-out property <color> amber-override:        #d4a574;
     in-out property <color> cyan-override:         #38d8cd;
-    in-out property <color> text-primary-override: #f4f6fa;
-    in-out property <color> text-secondary-override: #c0c8d6;
-    in-out property <color> text-dim-override:     #95a1b4;
+    in-out property <color> text-primary-override: #edf2f8;
+    in-out property <color> text-secondary-override: #b0bdce;
+    in-out property <color> text-dim-override:     #8d9eb3;
     in-out property <color> accent-override:       #8fb4e3;
 }
 
@@ -141,23 +141,39 @@ export global TextScale {
 //   * One radius scale (below), with the legacy names pointed into it.
 //   * The accent is the same hue, more saturated (AccentPreset).
 //
-// No blur anywhere: Slint has none and the VM renders in software. Panels over the wallpaper
-// stay the glass tokens below, an alpha blend over a wallpaper that is already soft; see the
-// Glass section.
+// No blur anywhere: Slint has none and the VM renders in software.
+//
+// ─── Night architecture (design/art-direction-2026-10-20.md, section 2) ─────
+//
+// The ground and surfaces moved from charcoal to the navy of the brand and of Alt+Tab (#876),
+// whose look Pranab named the quality he wants everywhere. One ground and three surface levels,
+// and elevation means overlap, not importance:
+//
+//   * bg-deep #0b121c, the ground: app content, full-screen places.
+//   * bg-surface #111b28, level 1, structural: sidebars, title bars, grouped settings.
+//   * bg-card #172333, level 2, floating: the dock, the ask field, the Mind panel, the Lens, menus.
+//     A floating surface takes `border-floating` and the `shadow-float` drop shadow.
+//   * bg-elevated #1c293b, level 3, interruptive: approval cards and critical confirmations.
+//
+// The glass tokens are opaque now. A translucent card over a photograph read muddier, not
+// richer ("do not fake glass across the interface"). Their names stay, so every call site keeps
+// working and lands on the matching level. Light is pale mineral paper with navy ink, not dark
+// turned inside out.
 export global Theme {
     // ─── Surface hierarchy (4-tier depth) ─────────────────────────
     // base → default → raised → floating
     // Each tier a clear step in luminance for depth without blur.
     out property <color> bg-deep:     ThemeOverrides.enabled ? ThemeOverrides.bg-deep-override
-        : (ThemeMode.dark ? #0e1117 : #eef1f6);
+        : (ThemeMode.dark ? #0b121c : #f4f6f9);
     out property <color> bg-surface:  ThemeOverrides.enabled ? ThemeOverrides.bg-surface-override
-        : (ThemeMode.dark ? #161b23 : #e6eaf1);
+        : (ThemeMode.dark ? #111b28 : #eaeff5);
     out property <color> bg-card:     ThemeOverrides.enabled ? ThemeOverrides.bg-card-override
-        : (ThemeMode.dark ? #212937 : #ffffff);
+        : (ThemeMode.dark ? #172333 : #ffffff);
     out property <color> bg-elevated: ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
-        : (ThemeMode.dark ? #2c3545 : #ffffff);
-    out property <color> bg-input:    ThemeMode.dark ? #10141b : #f5f7fa;
-    out property <color> bg-selected: ThemeMode.dark ? #243a52 : #dce7f7;
+        : (ThemeMode.dark ? #1c293b : #ffffff);
+    out property <color> bg-input:    ThemeMode.dark ? #0e1724 : #f8fafc;
+    // The accent at 12% over the ground: a selected row (with its 2px leading rule).
+    out property <color> bg-selected: ThemeMode.dark ? #1d2d42 : #dde6f1;
 
     // ─── Glass ────────────────────────────────────────────────────
     //
@@ -179,18 +195,31 @@ export global Theme {
     // considered and not done: it needs a decoder and blur in the shell (no `image` crate
     // here), a full-screen RGBA copy in memory per wallpaper, and every glass panel tracking
     // its own screen position to crop it — for a wallpaper that is already soft.
-    out property <color> glass-card:    ThemeMode.dark ? #212937d6 : #fffffff2;
-    out property <color> glass-panel:   ThemeMode.dark ? #161b23e0 : #f8f9fcf0;
-    out property <color> glass-raised:  ThemeMode.dark ? #2c3545dc : #fffffff5;
+    out property <color> glass-card:    ThemeMode.dark ? #172333 : #ffffff;
+    out property <color> glass-panel:   ThemeMode.dark ? #172333 : #ffffff;
+    out property <color> glass-raised:  ThemeMode.dark ? #1c293b : #ffffff;
     // The hairline that gives a glass edge its shape. Slightly lighter than the fill, because
     // a border darker than what it contains reads as a hole rather than a pane.
     // The two full-height rails. More transparent than a card, because they are the only
     // surfaces large enough for the wallpaper behind them to read as a scene rather than as a
     // sliver -- and because what they hold is labels and numbers, which stay legible over a
     // pre-blurred photograph in a way a paragraph would not.
-    out property <color> glass-rail:    ThemeMode.dark ? #12151ca8 : #f4f5f8ef;
-    out property <color> glass-border:  ThemeMode.dark ? #ffffff21 : #0000001a;
-    out property <color> glass-border-strong: ThemeMode.dark ? #ffffff36 : #00000026;
+    out property <color> glass-rail:    ThemeMode.dark ? #111b28 : #eaeff5;
+    out property <color> glass-border:  ThemeMode.dark ? #ffffff1c : #14253b24;
+    out property <color> glass-border-strong: ThemeMode.dark ? #ffffff29 : #14253b2e;
+    // The three hairlines of the levels: structural (7%), floating (11%), interruptive (16%).
+    out property <color> border-structural: ThemeMode.dark ? #ffffff12 : #14253b1a;
+    out property <color> border-floating:   ThemeMode.dark ? #ffffff1c : #14253b24;
+    out property <color> border-interrupt:  ThemeMode.dark ? #ffffff29 : #14253b2e;
+    // A floating surface's shadow (blur 20, down 6) and an interruptive one's (blur 32, down 10).
+    out property <color> shadow-float:      ThemeMode.dark ? #00000047 : #14253b1f;
+    out property <color> shadow-interrupt:  ThemeMode.dark ? #00000066 : #14253b2e;
+    out property <length> shadow-float-blur: 20px;
+    out property <length> shadow-float-dy: 6px;
+    out property <length> shadow-interrupt-blur: 32px;
+    out property <length> shadow-interrupt-dy: 10px;
+    // A modal's scrim: no blur, the ground's own darkness.
+    out property <color> scrim:             ThemeMode.dark ? #03070d8f : #14253b47;
     // A label drawn straight on the wallpaper, with no card behind it: white in either theme,
     // over a copy of itself 1px lower in 35% black. The wallpaper is a photograph, so no single
     // ink contrasts with all of it; the shadow is what keeps white legible over its light parts.
@@ -302,11 +331,11 @@ export global Theme {
     // Primary near-white, secondary a clear light grey, dim for metadata — every one readable
     // on bg-card, which is where text mostly sits (ratios in the note above Theme).
     out property <color> text-primary:   ThemeOverrides.enabled ? ThemeOverrides.text-primary-override
-        : (ThemeMode.dark ? #f4f6fa : #0e1116);
+        : (ThemeMode.dark ? #edf2f8 : #172437);
     out property <color> text-secondary: ThemeOverrides.enabled ? ThemeOverrides.text-secondary-override
-        : (ThemeMode.dark ? #c0c8d6 : #444e5e);
+        : (ThemeMode.dark ? #b0bdce : #495b72);
     out property <color> text-dim:       ThemeOverrides.enabled ? ThemeOverrides.text-dim-override
-        : (ThemeMode.dark ? #95a1b4 : #5c6778);
+        : (ThemeMode.dark ? #8d9eb3 : #607189);
 
     // ─── Borders & overlays ───────────────────────────────────────
     out property <color> overlay-backdrop:  ThemeMode.dark ? #00000060 : #00000030;
@@ -321,13 +350,13 @@ export global Theme {
     // The hairline on a card or a panel drawn from now on: one pixel, a little lighter than the
     // surface it edges, so the surface has an outline in dark mode and a crisp rim in light
     // mode. New with bright-and-sharp.
-    out property <color> border-card:       ThemeMode.dark ? #ffffff1f : #00000017;
+    out property <color> border-card:       ThemeMode.dark ? #ffffff1c : #14253b24;
     // The solid charcoal of a panel that must read cleanly over any wallpaper: opaque, so
     // nothing behind it shows through the text. The key cheat sheet is the first; a key cap is a
     // small raised chip on it.
-    out property <color> panel-solid:       ThemeMode.dark ? #151a1e : #ffffff;
-    out property <color> keycap-fill:       ThemeMode.dark ? #1f262c : #eef1f5;
-    out property <color> keycap-border:     ThemeMode.dark ? #ffffff24 : #0000001f;
+    out property <color> panel-solid:       ThemeMode.dark ? #172333 : #ffffff;
+    out property <color> keycap-fill:       ThemeMode.dark ? #152133 : #eef2f7;
+    out property <color> keycap-border:     ThemeMode.dark ? #35465e : #14253b29;
     out property <color> separator:         ThemeMode.dark ? #ffffff0e : #0000000f;
     out property <color> hover-fill:        ThemeMode.dark ? #ffffff0a : #0000000a;
     out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff14 : #00000012;
@@ -357,6 +386,9 @@ export global Theme {
     // "say one thing, large, and nothing else near it" — and a desktop whose largest text is
     // the same size as a section header has no focal point at all.
     out property <length> fs-hero: 44px * TextScale.factor;
+    // The desktop's greeting (36/500) and reading-oriented UI: chat, memory statements (15).
+    out property <length> fs-greeting: 36px * TextScale.factor;
+    out property <length> fs-reading: 15px * TextScale.factor;
     out property <int>    fw-hero: 600;
     out property <length> fs-hero-sub: 17px * TextScale.factor;
     out property <int>    fw-hero-sub: 400;
@@ -685,19 +717,19 @@ export global Theme {
     out property <length> shadow-lg-dy: 6px;
     // The keyboard-focus ring on a control that has no border of its own to thicken.
     out property <length> focus-ring-width: 2px;
-    out property <color> focus-ring: ThemeMode.dark ? #f4f6fa : #0e1116;
+    out property <color> focus-ring: ThemeMode.dark ? #edf2f8 : #172437;
     // The groove behind a slider fill. Stronger than border-strong so an empty track still reads
     // on a popover (bg-elevated) in both themes.
-    out property <color> track-bg: ThemeMode.dark ? #343b41 : #00000026;
+    out property <color> track-bg: ThemeMode.dark ? #2a3a50 : #14253b26;
     // The slider thumb: the one near-white surface in the kit, so it reads as a thing you hold.
-    out property <color> knob: ThemeMode.dark ? #f4f6fa : #ffffff;
+    out property <color> knob: ThemeMode.dark ? #edf2f8 : #ffffff;
     out property <color> knob-border: ThemeMode.dark ? #00000040 : #00000030;
     // A toggle tile that is off, then a step lighter on hover and press (neutral steps, not new
     // colours).
     // (Pranab, 2 Oct: tiles disappeared into the panels.) An opaque tile one step lighter than
     // the #151A1E panel it sits on, with its own 1px border, so it stands out from the panel.
-    out property <color> tile-off:         ThemeMode.dark ? #1e252b : #e6eaef;
-    out property <color> tile-off-hover:   ThemeMode.dark ? #262e35 : #dce1e7;
+    out property <color> tile-off:         ThemeMode.dark ? #1c293b : #e6ecf3;
+    out property <color> tile-off-hover:   ThemeMode.dark ? #22324a : #dbe3ed;
     out property <color> tile-off-pressed: ThemeMode.dark ? #2d363e : #d2d8df;
     out property <color> tile-border:      ThemeMode.dark ? #2c343b : #c5ccd4;
     // A notice that informs and waits on nothing (YNoticeBar, tone 0): the same raised neutral

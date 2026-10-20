@@ -50,7 +50,9 @@ pub fn keyscript_installed(mount_dir: &str) -> bool {
 ///
 /// Between GRUB and plymouth's first frame (about 2 s on OVMF, #820) the screen is the kernel's
 /// console, which was black with a blinking cursor. [`CONSOLE_GROUND`] makes the console's black
-/// the splash's ground (#0e1117), so that moment is the same colour as GRUB before it and plymouth
+/// the splash's ground as it was until 20 Oct 2026 (#0e1117; the splash is now #0b121c, a shade
+/// bluer, and installed machines' GRUB lines are not rewritten for a second of console), so that
+/// moment is the same colour as GRUB before it and plymouth
 /// after it, and `vt.global_cursor_default=0` takes the cursor off it. The cursor comes back for
 /// every console opened after boot (boot-unlock/splash.d/cursor.conf) and on tty1 when the crash
 /// guard writes there (`splash console`). Neither touches the disk's password prompt: it is

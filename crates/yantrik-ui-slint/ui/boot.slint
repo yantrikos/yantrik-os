@@ -23,7 +23,7 @@
 // # Why it opens on the splash
 //
 // Before this screen there is the boot splash: plymouth, the emblem at 132 px, centred on Lake's
-// ground (#0e1117), and nothing else (deploy/yantrik-os/boot-unlock/theme/yantrik.script; labwc
+// ground (#0b121c), and nothing else (deploy/yantrik-os/boot-unlock/theme/yantrik.script; labwc
 // puts the same picture under the shell with swaybg, config/labwc/autostart). So the first frame
 // here is that picture exactly: the same emblem, the same size, the same place, the same ground.
 // Then the emblem rises to its place in the lockup and the scene comes up around it. Nothing
@@ -112,7 +112,7 @@ export component BootScreen inherits Rectangle {
 
     // The splash's ground and emblem size: the boot splash's, not the theme's, because the splash
     // is drawn before any theme is read.
-    property <color> splash-ground: #0e1117;
+    property <color> splash-ground: #0b121c;
     property <length> splash-emblem: 132px;
     // False for the first frame, which is the splash; then the screen comes up around the emblem.
     property <bool> settled: false;

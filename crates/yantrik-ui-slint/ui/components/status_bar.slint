@@ -130,7 +130,10 @@ export component StatusBar inherits Rectangle {
             accessible-role: button;
             accessible-label: "Yantrik";
         }
-        BarSlot {
+        // Only when something needs the person: an approval card waiting, or a mind's request. An
+        // idle "Minds" beside the bar's "Mind ·" permission chip said the noun twice and told
+        // nobody anything (art direction, 20 Oct 2026, A). Agents is in the launcher.
+        if root.minds-approvals > 0 || root.minds-needing > 0 : BarSlot {
             MindsChip {
                 needing: root.minds-needing;
                 requests: root.minds-requests;

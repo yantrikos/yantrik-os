@@ -360,7 +360,7 @@ mod tests {
             assert_eq!(&default_of(name), value, "Lake's {name}");
         }
         assert!(!lake().overrides, "stock colours are not overrides");
-        assert!(lake().dark && lake().accent == "cyan", "charcoal and soft blue");
+        assert!(lake().dark && lake().accent == "cyan", "navy and soft blue");
         assert!(find("nightfall").is_some_and(|t| t.overrides), "a theme with its own palette overrides");
     }
 
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn foot_keeps_the_persons_settings_and_swaps_only_the_colours() {
         let block = foot_block(lake());
-        assert!(block.contains("background=0e1117") && block.contains("foreground=c0c8d6"));
+        assert!(block.contains("background=0b121c") && block.contains("foreground=b0bdce"));
 
         // The ISO's file: fonts, scrollback and a [colors] section in the middle.
         let iso = "[main]\nfont=DejaVu Sans Mono:size=11\n\n[colors]\nbackground=0c0b10\nforeground=c8c8d0\nregular0=1a1a2e\n\n[cursor]\nstyle=beam\n";
@@ -420,7 +420,7 @@ mod tests {
         let night = foot_block(find("nightfall").unwrap());
         let again = merge_foot(&merged, &night);
         assert_eq!(again.matches(FOOT_BEGIN).count(), 1, "one block, not two");
-        assert!(again.contains("background=0a0d17") && !again.contains("background=0e1117"));
+        assert!(again.contains("background=0a0d17") && !again.contains("background=0b121c"));
         assert!(again.contains("font=DejaVu Sans Mono:size=11") && again.contains("[cursor]\nstyle=beam"));
         assert_eq!(merge_foot(&again, &night), again, "the same choice twice is the same file");
 
@@ -481,7 +481,7 @@ mod tests {
             "and not replaced by a later copy of ours"
         );
         assert!(back.themerc_changed);
-        assert!(std::fs::read_to_string(dirs.themerc()).unwrap().contains("window.active.title.bg.color: #161b23"));
+        assert!(std::fs::read_to_string(dirs.themerc()).unwrap().contains("window.active.title.bg.color: #111b28"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

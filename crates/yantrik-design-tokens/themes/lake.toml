@@ -1,10 +1,10 @@
-# Lake: the default place. The charcoal and soft blue the shell has always been, over the lake
-# photograph. Its palette is the stock one in theme.slint, so choosing it turns the overrides OFF
+# Lake: the default place. The navy and soft blue of the art direction (20 Oct 2026), over the
+# lake photograph. Its palette is the stock one in theme.slint, so choosing it turns the overrides OFF
 # and the tokens speak for themselves; a test (wire/theme.rs) keeps this file and theme.slint
 # from drifting apart.
 id = "lake"
 name = "Lake"
-description = "Charcoal and soft blue, over a still lake."
+description = "Night navy and soft blue, over a still lake."
 dark = true
 # One of the accents Settings offers (yantrik_app_runtime::theme::ACCENTS): cyan (the soft blue),
 # purple (violet) or pink.
@@ -15,13 +15,13 @@ wallpaper = "lake"
 overrides = false
 
 [palette]
-bg_deep = "#0e1117"
-bg_surface = "#161b23"
-bg_card = "#212937"
-bg_elevated = "#2c3545"
+bg_deep = "#0b121c"
+bg_surface = "#111b28"
+bg_card = "#172333"
+bg_elevated = "#1c293b"
 amber = "#d4a574"
 cyan = "#38d8cd"
-text_primary = "#f4f6fa"
-text_secondary = "#c0c8d6"
-text_dim = "#95a1b4"
+text_primary = "#edf2f8"
+text_secondary = "#b0bdce"
+text_dim = "#8d9eb3"
 accent = "#8fb4e3"

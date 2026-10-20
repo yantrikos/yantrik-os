@@ -85,27 +85,36 @@ pub fn panel_for_describe(open: bool, screen: i32, close_with: &str) -> serde_js
 
 /// What `describe shell` says under `bar_minds`: the top bar's one Minds chip, as a person reads it.
 ///
+/// It is drawn only while something needs the person (`approvals` cards waiting, or a mind with a
+/// request); otherwise `shown` is false and its label empty, as on the screen.
+///
 /// `needing` counts the minds with an unresolved request and `requests` the requests, the two numbers
 /// the chip is drawn from. The label and tooltip are built here from them in the chip's own words
 /// ("Minds · 2 need you", "1 mind has 3 requests"), and `opens` says where a click goes: Agents, on
 /// Needs you when there is something to answer. A mind that reads this knows what the person is
 /// looking at without being told what any request says.
-pub fn bar_minds_for_describe(needing: i32, requests: i32) -> serde_json::Value {
-    let (needing, requests) = (needing.max(0), requests.max(0));
+pub fn bar_minds_for_describe(needing: i32, requests: i32, approvals: i32) -> serde_json::Value {
+    let (needing, requests, approvals) = (needing.max(0), requests.max(0), approvals.max(0));
+    let shown = needing > 0 || approvals > 0;
     let label = match needing {
-        0 => "Minds".to_string(),
+        _ if approvals == 1 => "1 approval".to_string(),
+        _ if approvals > 1 => format!("{approvals} approvals"),
+        0 => String::new(),
         1 => "Minds · 1 needs you".to_string(),
         n => format!("Minds · {n} need you"),
     };
     let tooltip = match (needing, requests) {
+        _ if approvals > 0 => format!("{label} waiting for you"),
         (0, _) => "No mind needs you".to_string(),
         (1, 1) => "1 mind has 1 request".to_string(),
         (1, r) => format!("1 mind has {r} requests"),
         (n, r) => format!("{n} minds have {r} requests"),
     };
     serde_json::json!({
+        "shown": shown,
         "label": label,
         "tooltip": tooltip,
+        "approvals": approvals,
         "minds_needing_you": needing,
         "requests": requests,
         "opens": if needing > 0 { "agents: needs_you" } else { "agents: workroom" },
@@ -413,13 +422,15 @@ mod tests {
     /// The chip says what it draws: minds counted, requests in the tooltip, and the door it opens.
     #[test]
     fn the_minds_chip_is_described_in_its_own_words() {
-        let none = bar_minds_for_describe(0, 0);
-        assert_eq!((none["label"].as_str(), none["opens"].as_str()), (Some("Minds"), Some("agents: workroom")));
-        let one = bar_minds_for_describe(1, 3);
+        let none = bar_minds_for_describe(0, 0, 0);
+        assert_eq!((none["shown"].as_bool(), none["label"].as_str()), (Some(false), Some("")), "not drawn when nothing needs you");
+        let card = bar_minds_for_describe(0, 0, 1);
+        assert_eq!((card["shown"].as_bool(), card["label"].as_str()), (Some(true), Some("1 approval")));
+        let one = bar_minds_for_describe(1, 3, 0);
         assert_eq!(one["label"], "Minds · 1 needs you");
         assert_eq!(one["tooltip"], "1 mind has 3 requests");
         assert_eq!(one["opens"], "agents: needs_you");
-        let two = bar_minds_for_describe(2, 5);
+        let two = bar_minds_for_describe(2, 5, 0);
         assert_eq!((two["label"].as_str(), two["tooltip"].as_str()), (Some("Minds · 2 need you"), Some("2 minds have 5 requests")));
     }
 

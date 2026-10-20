@@ -374,10 +374,11 @@ export component DesktopScreen inherits Rectangle {
             // Centred in what the mind panel, or the open chat, leaves, not under it: with the
             // chat open over its right side the home card's "Open companion" was cut to "Open
             // companio" (13 Oct).
-            x: root.agent-mode ? root.content-left : (parent.width - root.home-inset - self.width) / 2;
-            y: root.agent-mode ? Theme.sp-4 + 4px : (parent.height < 720px ? 24px : 56px);
+            // Up and to the left, over the quiet sky (art direction B: x 96, y 112, 560 wide at 1280x800).
+            x: root.agent-mode ? root.content-left : min(96px, parent.width * 0.075);
+            y: root.agent-mode ? Theme.sp-4 + 4px : (parent.height < 720px ? 48px : 76px);
             width: root.agent-mode ? max(0px, parent.width - root.content-left - root.content-right)
-                                   : min(760px, parent.width - root.home-inset - 48px);
+                                   : min(560px, parent.width - root.home-inset - self.x - 24px);
             height: max(0px, parent.height - self.y - Theme.taskbar-height - 24px);
             agent-mode: root.agent-mode;
             greeting: root.greeting-text;
