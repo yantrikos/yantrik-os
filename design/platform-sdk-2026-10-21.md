@@ -1,6 +1,6 @@
 # The Yantrik Platform SDK, and the code organisation under it
 
-**Status:** proposed, 21 Oct 2026. Pranab's call is needed on the decisions marked ★.
+**Status:** accepted, 21 Oct 2026. Pranab approved all four decisions marked ★ (section 8).
 **Why:** Pranab asked for code that is "modular, organized, like professional and enterprise grade system and not slobs", organised with "standard libraries like Windows, Mac". He also asked for a consultation with Fable and GPT-6 Astra. The briefs and both reviews, kept as written, are in [`platform-sdk/`](platform-sdk/):
 - GPT-6 Astra answered from the briefs: `review-gpt6-astra-architecture.md` and `review-gpt6-astra-sdk.md`.
 - Fable read the repository: `review-fable.md`.
@@ -240,7 +240,7 @@ Astra would put the pure models in a separate `yantrik-shell-model` crate. We st
 - an approval cannot be replayed for a changed action;
 - the build fits the host's memory budget.
 
-## 8. Decisions for Pranab ★
+## 8. Decisions (approved by Pranab, 21 Oct 2026) ★
 
 1. **Adopt this platform shape and the framework names** (YantrikFoundation, YantrikUI, YantrikApp, YantrikIntents, …).
 2. **Folders:** `frameworks/` (public) against `crates/` (internal).
