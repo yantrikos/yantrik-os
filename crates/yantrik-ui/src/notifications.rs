@@ -287,7 +287,7 @@ pub fn group_of(n: &Notification) -> String {
 /// this desktop verifiably sent: another program's text that opens with those words keeps them,
 /// since relabelling it would be the desktop vouching for it.
 pub(crate) fn relabelled(n: &Notification, body: &str) -> String {
-    if crate::notification_sender::sender_summary(n) != "Source process confirmed: yantrik-ui" {
+    if !crate::notification_sender::from_this_desktop(n) {
         return body.to_string();
     }
     for (old, new) in [("AI-generated reflection", "Written by the Mind"), ("AI-generated result", "Result from the Mind")] {
@@ -321,6 +321,7 @@ pub fn to_slint_data(n: &Notification) -> crate::NotificationData {
         is_read: n.read,
         sender_line: sender_line(n).into(),
         sender_short: crate::notification_sender::sender_summary(n).into(),
+        from_desktop: crate::notification_sender::from_this_desktop(n),
         is_group_header: false,
         group_name: name.into(),
         group_icon: first_letter(&n.app),
@@ -365,6 +366,7 @@ fn turn_group_row(run: &crate::notification_groups::Run, open: bool) -> crate::N
         // Every card in a run passed the same test (the desktop itself), so the newest one's
         // line speaks for the run.
         sender_short: first.map(|n| crate::notification_sender::sender_summary(n)).unwrap_or_default().into(),
+        from_desktop: first.is_some_and(|n| crate::notification_sender::from_this_desktop(n)),
         is_group_header: false,
         group_name: slint::SharedString::default(),
         group_icon: slint::SharedString::default(),
@@ -427,6 +429,7 @@ pub fn centre_rows(mirror: &NotificationMirror) -> Vec<crate::NotificationData> 
             is_read: true,
             sender_line: slint::SharedString::default(),
             sender_short: slint::SharedString::default(),
+            from_desktop: false,
             is_group_header: true,
             group_name: name.into(),
             group_icon: first_letter(&first.app),

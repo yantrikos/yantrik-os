@@ -14,7 +14,7 @@
 // hairline between them rather than a stack of raised cards, a two-line preview at reading size,
 // and the blue dot for what is unread. Who sent it stays on every row from any program but this
 // desktop, where it is the defence against a sender posing as Yantrik (#114). On the desktop's own
-// rows it said "Source process confirmed: yantrik-ui" to nobody's benefit, and goes behind them.
+// rows (`from-desktop`, a flag from Rust) it said only that the desktop sent it, and is not drawn.
 
 import { Theme, TextScale } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
@@ -66,6 +66,9 @@ export struct NotificationData {
     // itself “Yantrik”", with the claim cut short so it can only elide itself
     // (notification_sender.rs).
     sender-short: string,
+    // This desktop itself sent it (notification_sender.rs `from_this_desktop`): its plain sender
+    // line is not drawn. A flag from Rust, not a match on the line's words.
+    from-desktop: bool,
 }
 
 export component NotificationCenter inherits Rectangle {
@@ -104,11 +107,7 @@ export component NotificationCenter inherits Rectangle {
     pure function badge(n: int) -> string {
         return n > 99 ? "99+" : "\{n}";
     }
-    // The sender line this desktop's own notifications carry (notification_sender.rs, which a test
-    // holds to this): said on every one of them, it told nobody anything.
-    pure function from-this-desktop(sender-short: string) -> bool {
-        return sender-short == "Source process confirmed: yantrik-ui";
-    }
+
 
     VerticalLayout {
         spacing: 0px;
@@ -316,7 +315,7 @@ export component NotificationCenter inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                             }
-                            if notif.sender-short != "" && !root.from-this-desktop(notif.sender-short) : Text {
+                            if notif.sender-short != "" && !notif.from-desktop : Text {
                                 text: notif.sender-short;
                                 color: Theme.text-dim;
                                 font-size: Theme.fs-caption;
@@ -411,7 +410,7 @@ export component NotificationCenter inherits Rectangle {
                             // under Details, for whoever wants to check it against ps. The
                             // verified program leads and the caller's claim (cut short) trails,
                             // so the elision can only ever eat the claim, never the fact.
-                            if notif.sender-short != "" && !root.from-this-desktop(notif.sender-short) : HorizontalLayout {
+                            if notif.sender-short != "" && !notif.from-desktop : HorizontalLayout {
                                 spacing: Theme.sp-2;
                                 Text {
                                     text: notif.sender-short;

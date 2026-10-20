@@ -15,12 +15,11 @@
 //!
 //! What it can see is whether an app window is in front (`windows::shell_in_front`), and that is
 //! the only time an app window can be over the shell at all: the shell is an ordinary toplevel,
-//! raised over every app when the person clicks it. So, both halves together:
-//! - `<margin right>` reserves the strip's width, so placed, maximized and tiled windows never
-//!   cover the strip;
-//! - while an app window is in front, the panel is drawn as that strip ([`app_window_in_front`]
-//!   feeds `app-window-in-front` in app.slint), and the person's choice comes back the moment the
-//!   desktop is in front again. The saved choice is never changed by this.
+//! raised over every app when the person clicks it. Since 20 Oct 2026 the panel is hidden until the
+//! person keeps it, so labwc reserves nothing (`<margin right>` is 0), and while an app window is
+//! in front the panel is not drawn at all ([`app_window_in_front`] feeds `app-window-in-front` in
+//! app.slint): the shell, and the panel in it, is behind that window. The saved choice is never
+//! changed by this, and it is all back the moment the shell is in front again.
 
 /// The strip's width (`mind-panel-reserve`, `mind-panel-width` in app.slint).
 ///

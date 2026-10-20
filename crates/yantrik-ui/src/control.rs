@@ -2175,6 +2175,11 @@ pub fn publish(
                     (None, Some(false)) => crate::mind_panel::Shape::Strip,
                     (None, None) => return Err("give `shape`: `pinned`, `strip` or `hidden`".into()),
                 };
+                // Hiding it is the person's: what the Mind is doing is not the Mind's to take off the
+                // screen (security review of #878, L2). Pinning or folding it stays open to anyone.
+                if shape == crate::mind_panel::Shape::Hidden {
+                    persons_only("set_mind_panel shape=hidden")?;
+                }
                 let place = match args["where"].as_str().map(str::trim).filter(|w| !w.is_empty()) {
                     Some(w) => crate::mind_panel::Place::parse(w)
                         .ok_or_else(|| format!("`where` is `desktop` or `elsewhere`, not `{w}`"))?,
@@ -3579,6 +3584,21 @@ mod lasting_settings_grade_tests {
                  written:\n{declaration}"
             );
         }
+    }
+
+    /// Security review of #878, L2: an agent may pin or fold the mind panel, but only the person
+    /// may hide it.
+    #[test]
+    fn only_the_person_may_hide_the_mind_panel() {
+        let src = include_str!("control.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let at = code.find("\"set_mind_panel\",").expect("the action");
+        let body = &code[at..at + code[at..].find("crate::mind_panel::for_describe(&ui)").expect("its answer")];
+        assert!(body.contains("if shape == crate::mind_panel::Shape::Hidden {
+                    persons_only(\"set_mind_panel shape=hidden\")?;"), "{body}");
+        let hidden = body.find("persons_only(").unwrap();
+        let applied = body.find("crate::mind_panel::set(&ui, place, shape)").unwrap();
+        assert!(hidden < applied, "refused before anything is changed");
     }
 
     /// And the walk's keeps are keeps: the shell's show, read and window verbs do not write

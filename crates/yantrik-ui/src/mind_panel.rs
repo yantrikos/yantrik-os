@@ -704,7 +704,10 @@ pub fn describe_of(choice: Choice, screen: i32, focus_mode: bool, app_in_front: 
     let place = Place::of_screen(screen);
     let shown = drawn_on(choice, screen, app_in_front, peek);
     let expanded = open_on(choice, screen, focus_mode, app_in_front, peek);
-    let peeking = shown && peek && choice.shape(place) != Shape::Pinned;
+    // As app.slint's `mind-panel-peeking`: a look is a look unless the panel is pinned here and
+    // drawn open (focus mode holds a pinned desktop panel to its strip, so a look then is a look).
+    let pinned_here = choice.shape(place) == Shape::Pinned && !(screen == DESKTOP_SCREEN && focus_mode);
+    let peeking = shown && peek && !pinned_here;
     serde_json::json!({
         "shown": shown,
         "where": place.key(),
@@ -1319,6 +1322,8 @@ mod tests {
         assert_eq!((d["shown"].as_bool(), d["state"].as_str(), d["choice"]["desktop"].as_str()), (Some(false), Some("hidden"), Some("hidden")));
         let d = describe_of(Choice::default(), 8, false, false, true, &panel.now, 0, 0);
         assert_eq!((d["state"].as_str(), d["expanded"].as_bool()), (Some("peeking"), Some(true)));
+        let d = describe_of(pinned, 1, true, false, true, &panel.now, 0, 0);
+        assert_eq!(d["state"], "peeking", "pinned, but focus mode holds it to the strip: the look is a look");
         assert_eq!(Shape::parse(" pinned "), Some(Shape::Pinned));
         assert_eq!(Shape::parse("open"), None);
         let d = describe_of(Choice::default(), 0, false, false, false, &build(&Inputs::default()).now, 0, 0);
