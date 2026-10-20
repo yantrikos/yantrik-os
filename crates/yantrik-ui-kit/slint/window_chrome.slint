@@ -19,9 +19,42 @@ export global WindowChrome {
     // edge, dragging a maximised window away), and the button has to show the action it will
     // do next.
     in-out property <bool> maximized: false;
+    // The app's own id, which AppWindow copies in from `app-id` so the runtime can give it to
+    // the compositor as the window's Wayland app_id (#877). The generated Rust type of an app
+    // carries only what its root component declares, not what AppWindow inherits, and every app
+    // exports this global already — so this is the one road from a Slint property to
+    // `window_chrome!`. Empty for a window that never said, which sets nothing.
+    in property <string> app-id: "";
     callback drag();
     callback minimize();
     callback toggle-maximize();
     callback close();
     callback resized();
+}
+
+// A global can read its own properties, but nothing outside it can be *bound* to one — Slint's
+// language has no `WindowChrome.app-id: …` for a component. This component — which AppWindow
+// instantiates, feeding it its `app-id` — assigns the value across, at the start and on change.
+//
+// Both halves are needed and neither covers the other. A `changed` handler is not run for the
+// value a property starts with, only for later ones, and an app's id is exactly a starting
+// value: `app-id: "notes"` is there before the window is ever seen, which is the one time
+// Wayland takes it. An `init` block is run once while the component is built — reading
+// `from-prop` there asks for the binding, which reads the root's, which is the app's own.
+//
+// Empty is not carried: it means the window never said, and a window that never said must not
+// silence one that did (the global, like Slint's app_id, is one per process). Same rule
+// `chrome::set_app_id` keeps.
+export component CarryAppId inherits Rectangle {
+    in property <string> from-prop;
+    init => {
+        if from-prop != "" {
+            WindowChrome.app-id = from-prop;
+        }
+    }
+    changed from-prop => {
+        if from-prop != "" {
+            WindowChrome.app-id = from-prop;
+        }
+    }
 }

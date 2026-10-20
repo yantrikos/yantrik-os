@@ -48,7 +48,7 @@
 // a name its base has.
 import { Theme } from "theme.slint";
 import { AppHeader, AppAction } from "app_header.slint";
-import { WindowChrome } from "window_chrome.slint";
+import { WindowChrome, CarryAppId } from "window_chrome.slint";
 
 export { WindowChrome }
 
@@ -86,6 +86,10 @@ export component AppWindow inherits Window {
 
     changed width => { WindowChrome.resized(); }
     changed height => { WindowChrome.resized(); }
+
+    // Slint gives no binding of `app-id` to WindowChrome.app-id from a component; this element
+    // assigns it, so the runtime can read the id the app declared (#877).
+    CarryAppId { from-prop: root.app-id; }
 
     if root.show-bar : AppHeader {
         x: 0px;
