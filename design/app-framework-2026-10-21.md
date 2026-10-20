@@ -1,6 +1,6 @@
 # YantrikApp: the framework every app is built on
 
-**Status:** proposed, revision 3, 21 Oct 2026. Decisions for Pranab are marked ★ and listed in §12.
+**Status:** accepted, 21 Oct 2026 (revision 3). GPT-6 Astra's verdict on this revision with the adapter evidence: APPROVE ([review-gpt6-astra-approve.md](app-framework/review-gpt6-astra-approve.md); its sign-off pass is [review-gpt6-astra-signoff.md](app-framework/review-gpt6-astra-signoff.md)). The decisions marked ★ (§12) were taken by Y under the delegation Pranab gave on 20 Oct ("putting you in the driving seat"); any of them is his to overturn.
 
 **Asked for:** "first we need to define a well-structured framework — BaseApp etc — then start working" (Pranab, 20 Oct). The goal is that each app can then be made the best-looking of any OS, with code that is modular and easy to maintain.
 
@@ -359,7 +359,7 @@ crates/
 
 **Can be codemodded:** the startup block, theme lines, `window_chrome!`, `run_until_closed`, atomic writers and `home()`s, `say`/`settle`, and the `#[path]` crates. **Cannot be:** turning callbacks into commands, surfaces into intents, security rules, agent rules, shutdown order and data migrations. That is modelling work, reviewed in each app's framework PR.
 
-## 12. Decisions for Pranab ★
+## 12. Decisions ★ (taken 21 Oct 2026 under Pranab's delegation)
 
 1. **Adopt this app model:** an `App` trait and a framework-owned runner (the equivalent of BaseApp, by composition, not inheritance), Elm-style model/update/render, with buttons and the Mind on the same commands.
 2. **No async runtime in apps:** a bounded job pool returning commands.
