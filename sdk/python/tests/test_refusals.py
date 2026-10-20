@@ -456,3 +456,47 @@ class TestNotAnswering(support.MachineCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAnActionsOwnCheck(support.MachineCase):
+    """`check=`: the action's own refusal before anybody is asked and before a grant is spent, so
+    no card is raised for something the app would not do (browser `upload` of a key, #874)."""
+
+    ceiling = None  # the default: sensitive
+    mode = None     # the default: ask
+
+    def setUp(self):
+        super().setUp()
+        self.spent = []
+        self.s = Surface("files", summary="Files", spend_grant=lambda *a: self.spent.append(a))
+
+        def no_keys(path):
+            return "%s is a key; nothing was sent" % path if path.endswith(".key") else None
+
+        @self.s.action("send_file", grade="sensitive", check=no_keys)
+        def send_file(path: str) -> dict:
+            """Send a file to a website. Once sent it cannot be undone."""
+            return {"sent": path}
+
+    def test_a_call_the_check_refuses_is_refused_before_the_gate(self):
+        self.assertEqual(self.refusal(lambda: self.s.act({"action": "send_file",
+                                                          "args": {"path": "/h/a.key"}})),
+                         "/h/a.key is a key; nothing was sent")
+
+    def test_a_call_the_check_passes_meets_the_gate(self):
+        self.assertTrue(self.refusal(lambda: self.s.act({"action": "send_file",
+                                                         "args": {"path": "/h/a.png"}}))
+                        .startswith("GRANT: files.send_file is graded `sensitive`"))
+
+    def test_a_grant_is_not_spent_on_a_call_the_check_refuses(self):
+        self.assertEqual(self.refusal(lambda: self.s.act({"action": "send_file", "grant": "r1",
+                                                          "args": {"path": "/h/a.key"}})),
+                         "/h/a.key is a key; nothing was sent")
+        self.assertEqual(self.spent, [])
+        self.assertEqual(self.s.act({"action": "send_file", "grant": "r2",
+                                     "args": {"path": "/h/a.png"}})["result"], {"sent": "/h/a.png"})
+        self.assertEqual(len(self.spent), 1)
+
+    def test_the_check_is_not_published(self):
+        (action,) = self.s.describe_json()["actions"]
+        self.assertNotIn("check", action)

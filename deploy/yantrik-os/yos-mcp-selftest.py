@@ -68,6 +68,7 @@ What it is actually checking, in one line each:
     anyway says what it is and where to look.
 """
 
+import ast
 import hashlib
 import importlib.util
 import io
@@ -271,7 +272,22 @@ revision: b0b0
          ref: string - the control's ref
          label: string - its label
          site: string - the page's site
+  act: upload_check(ref, path, tab?)  [safe, settles on return]
+       What an upload of this file into this control would name on the person's card.
+         ref: string - the control's ref
+         path: string - the file
+  act: upload(ref, path, size, sha256, site, label, tab?)  [sensitive, settles on return]
+       Put a file from this machine into a file input. A file sent cannot be undone.
+         ref: string - the control's ref
+         path: string - the file's absolute path
+         size: integer - its size in bytes
+         sha256: string - its sha256 prefix
+         site: string - the page's site
+         label: string - the control's label
 """
+# What the browser's upload_check answers for the one file the upload checks use (#874).
+UPLOAD_CARD = {"ref": "e5", "path": "/home/ann/Pictures/emblem.png", "size": 2048,
+               "sha256": "0123456789abcdef", "site": "github.com", "label": "Upload a photo…"}
 DESCRIBE_TERMINAL = """Terminal - 1 tab
 revision: 7e57
 {
@@ -497,6 +513,15 @@ if argv[:1] == ["act"]:
         state.setdefault("spent", []).append(grant)
         save(state)
 
+    if target == "browser" and action == "upload_check":
+        state.setdefault("web", []).append([action, args])
+        save(state)
+        if "/.ssh/" in str(args.get("path")):
+            die("browser.app.act refused: PAGE: %s is in a protected place: keys, credentials, the "
+                "desktop's own configuration and memory, and key or secrets files (*.key, *.pem, "
+                ".env) are out of every agent's reach. Nothing was uploaded." % args.get("path"))
+        envelope(dict(UPLOAD_CARD, ref=args.get("ref"), shown_size="2.0 KiB (2048 bytes)"))
+        raise SystemExit(0)
     if target == "browser" and args.get("ref") == "e404":
         die("browser.app.act refused: PAGE: e404 is no longer on the page — it changed since it "
             "was read. Read it again and use the new ref.")
@@ -641,6 +666,10 @@ if argv[:1] == ["act"]:
 
 die("unknown command %r" % argv)
 '''
+
+# The fake browser's upload_check answer, as the checks read it: the same dict the fake's own
+# UPLOAD_CARD holds (it runs as a separate script, so it is read from that script's text).
+UPLOAD_CARD = ast.literal_eval(re.search(r"^UPLOAD_CARD = (\{.*?\})$", FAKE_YOS, re.M | re.S).group(1))
 
 
 def load_mcp(fake, state_path, ceiling="standard", requester="", follow=False, wait=4, token=None):
@@ -1523,6 +1552,68 @@ with tempfile.TemporaryDirectory() as d:
           and "PAGE:" not in text and not is_error, (text, is_error))
     check("web_commit is marked destructive",
           module.BY_NAME["web_commit"]["annotations"].get("destructiveHint") is True)
+
+    # 15f. upload (#874): a file from this machine into a page. Asked about every time, with the
+    # card naming the file, its size and hash, the site and the input; a protected file is refused
+    # before any card; and a session that has read private state is asked whatever the mode.
+    check("web_upload is marked destructive",
+          module.BY_NAME["web_upload"]["annotations"].get("destructiveHint") is True)
+    module, state = case(tmp, "web-upload", mode="ask", answer="pending")
+    text, is_error = module.run_tool(module.BY_NAME["web_upload"],
+                                     {"ref": "5", "path": "/home/ann/Pictures/emblem.png"})
+    s = read(state)
+    asked = s.get("requests", [])
+    check("web_upload puts one card up, carrying the file, its size and hash, the site and the label",
+          len(asked) == 1 and asked[0].get("app") == "browser" and asked[0].get("action") == "upload"
+          and asked[0].get("args_json") == {k: UPLOAD_CARD[k] for k in
+                                            ("ref", "path", "size", "sha256", "site", "label")},
+          asked)
+    check("and nothing is put into the page while the person has not answered",
+          not any(w[0] == "upload" for w in s.get("web", [])), s.get("web"))
+    module, state = case(tmp, "web-upload-key", mode="ask", answer="granted")
+    text, is_error = module.run_tool(module.BY_NAME["web_upload"],
+                                     {"ref": "e5", "path": "/home/ann/.ssh/id_ed25519"})
+    s = read(state)
+    check("a protected file is refused with the reason, before any card",
+          text.startswith("REFUSED") and "protected place" in text and not s.get("requests")
+          and not any(w[0] == "upload" for w in s.get("web", [])), (text, s))
+    for mode in ("auto", "bypass_all"):
+        module, state = case(tmp, "web-upload-forged-" + mode, mode=mode, answer="granted",
+                             machine_ceiling="dangerous", ceiling=None)
+        text, is_error = act(module, "browser", "upload", dict(UPLOAD_CARD, sha256="ffffffffffffffff"))
+        s = read(state)
+        check("os_act browser.upload with facts upload_check does not give is refused before any "
+              "card, and uploads nothing (%s)" % mode,
+              text.startswith("REFUSED") and "as upload_check names them" in text
+              and not s.get("requests") and not any(w[0] == "upload" for w in s.get("web", [])),
+              (text, s))
+    module, state = case(tmp, "web-upload-bypass", mode="bypass", answer="pending",
+                         machine_ceiling="dangerous", ceiling=None)
+    module.run_tool(module.BY_NAME["web_upload"], {"ref": "e5", "path": "/home/ann/Pictures/emblem.png"})
+    s = read(state)
+    check("in bypass, web_upload still puts a card up and uploads nothing",
+          [r.get("action") for r in s.get("requests", [])] == ["upload"]
+          and not any(w[0] == "upload" for w in s.get("web", [])), s)
+    for how in ("web_upload", "os_act"):
+        module, state = case(tmp, "web-upload-taint-" + how, mode="bypass_all", answer="pending",
+                             machine_ceiling="dangerous", ceiling=None)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "calendar"})
+        text, is_error = (module.run_tool(module.BY_NAME["web_upload"],
+                                          {"ref": "e5", "path": "/home/ann/Pictures/emblem.png"})
+                          if how == "web_upload" else act(module, "browser", "upload", dict(UPLOAD_CARD)))
+        s = read(state)
+        asked = s.get("requests", [])
+        check("after a private read, an upload (%s) is asked about even in full bypass, as "
+              "shell.agent_run is, and the card says why" % how,
+              len(asked) == 1 and "an upload sends a file from this machine to a website"
+              in str(asked[0].get("purpose")) and "os_describe" in str(asked[0].get("purpose"))
+              and not any(w[0] == "upload" for w in s.get("web", [])), (text, s))
+        check("and the mind is told it is the taint, not a fault (%s)" % how,
+              "sends a file from this machine to a website" in text and "not a fault" in text, text)
+    check("the browser's other names are an upload to the taint too",
+          all(module.is_upload(app, "upload") for app in ("browser", "Chromium", "app-browser"))
+          and module.carries_private("chromium", "upload")
+          and not module.carries_private("browser", "upload_check"), module.carries_private("chromium", "upload"))
 
     # 15d. A display's text, read through os_act, is a private read like os_screen: the next
     # thing typed into a page is refused (#257).

@@ -98,6 +98,8 @@ test_*.py
 !tests/app-lints/test_*.py
 # ...but not the unit tests that ship with a harness plugin.
 !harnesses/*/tests/test_*.py
+# ...nor the browser surface's own (the upload's path guard and card binding, #874; CI runs them).
+!apps/browser/tests/test_*.py
 # ...nor the browser surface's live tests: they are what holds its refusals to what the security
 # reviews found (#477, #480), and the rule above kept all 36 of them out of the PR that needed them.
 !tests/browser-core/test_*.py

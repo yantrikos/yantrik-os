@@ -322,6 +322,34 @@ fn credential_files_are_protected_and_lookalikes_are_not() {
     }
 }
 
+/// Keys and secrets files are protected wherever they sit, and names that only contain the
+/// words are not (#874: the browser's upload is the way a home file reaches a website).
+#[test]
+fn keys_and_secrets_files_are_protected_anywhere_in_the_home() {
+    for p in [
+        "/home/ann/projects/site/server.key",
+        "/home/ann/Downloads/cert.PEM",
+        "/home/ann/projects/app/.env",
+        "/home/ann/projects/app/.env.local",
+        "/home/ann/projects/app/.ENV.production",
+        "/home/ann/keys.pem/readme.txt",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p} must be protected");
+    }
+    for p in [
+        "/home/ann/notes/keynote.txt",
+        "/home/ann/music/song.keys",
+        "/home/ann/.key",
+        "/home/ann/.pem",
+        "/home/ann/notes/.envy",
+        "/home/ann/notes/.env.",
+        "/home/ann/notes/env.md",
+        "/home/ann/pictures/pempek.png",
+    ] {
+        assert!(!is_protected(Path::new(p)), "{p} is not a key or a secrets file");
+    }
+}
+
 #[test]
 fn protected_names_match_whole_components_only() {
     assert!(is_protected(Path::new("/home/ann/.ssh/id_ed25519")));

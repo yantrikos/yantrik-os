@@ -303,6 +303,87 @@ class Live(unittest.TestCase):
         self.assertIsNone(self.d.read().get("dialog"))
 
 
+class Uploads(unittest.TestCase):
+    """`upload` (#874) against a real page: `read` marks where a file can go, a hidden input behind
+    its label is set directly, a button whose script opens a chooser is answered through the
+    intercepted chooser, and a file changed after the card goes nowhere."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.site = Bench.site
+        cls.home = tempfile.mkdtemp(prefix="yb-up-")
+        cls.runtime = os.path.join(cls.home, "run")
+        os.mkdir(cls.runtime, 0o700)
+        cls.photo = os.path.join(os.path.realpath(cls.home), "emblem.png")
+        # The shell's files_stat stands in as "a file in the home"; the checks on the bytes are
+        # the real ones (uploads.py).
+        stat = lambda p: {"exists": True, "kind": "file", "real": p, "via_link": False}
+        cls.d = drv.Driver(Bench.d.browser, judge=False, stat=stat, runtime=cls.runtime)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.home, ignore_errors=True)
+
+    def setUp(self):
+        with open(self.photo, "wb") as f:
+            f.write(b"\x89PNG the emblem")
+        self.d.go(self.site + "/pages/upload.html")
+
+    def element(self, name, **want):
+        for e in self.d.read(all=True)["elements"]:
+            if e.get("name") == name and all(e.get(k) == v for k, v in want.items()):
+                return e
+        self.fail("no %r in %s" % (name, self.d.read(all=True)["elements"]))
+
+    def card(self, ref):
+        got = self.d.upload_check(ref, self.photo)
+        return {k: got[k] for k in ("path", "size", "sha256", "site", "label")}
+
+    def upload(self, ref, card):
+        return self.d.upload(ref, card["path"], card["size"], card["sha256"], card["site"], card["label"])
+
+    def test_read_marks_where_a_file_can_go(self):
+        label = self.element("Upload a photo…")
+        self.assertEqual((label["role"], label["accepts"]), ("button", "image/png,image/jpeg"))
+        hidden = self.element("Upload a photo…", hidden=True)
+        self.assertEqual(hidden["accepts"], "image/png,image/jpeg")
+        self.assertEqual(self.element("Attach a document", role="button", accepts=".pdf")["accepts"], ".pdf")
+        self.assertNotIn("accepts", self.element("Add files"))
+        self.assertNotIn("accepts", self.element("Save"))
+
+    def test_a_hidden_input_behind_its_label_gets_the_file(self):
+        ref = self.element("Upload a photo…", hidden=None)["ref"]
+        card = self.card(ref)
+        self.assertEqual(card["site"], "127.0.0.1")
+        out = self.upload(ref, card)
+        self.assertEqual(out["chosen"], ["emblem.png"])
+        self.assertFalse(out["submitted"])
+        self.assertIn("Chosen: emblem.png (%d bytes)" % len(b"\x89PNG the emblem"), self.d.text()["text"])
+        self.assertEqual(self.element("Upload a photo…", hidden=None)["chosen"], ["emblem.png"])
+
+    def test_a_button_that_opens_a_chooser_is_answered_without_a_dialog(self):
+        ref = self.element("Add files")["ref"]
+        out = self.upload(ref, self.card(ref))
+        self.assertEqual(out["chosen"], ["emblem.png"])
+        self.assertIn("Chosen: emblem.png", self.d.text()["text"])
+
+    def test_a_file_changed_after_the_card_goes_nowhere(self):
+        ref = self.element("Upload a photo…", hidden=None)["ref"]
+        card = self.card(ref)
+        with open(self.photo, "wb") as f:
+            f.write(b"\x89PNG something else")
+        with self.assertRaises(drv.PageRefused) as caught:
+            self.upload(ref, card)
+        self.assertIn("not the file the person was shown", str(caught.exception))
+        self.assertIn("No file chosen", self.d.text()["text"])
+
+    def test_click_on_a_file_control_is_refused_and_points_to_upload(self):
+        ref = self.element("Upload a photo…", hidden=None)["ref"]
+        with self.assertRaises(drv.PageRefused) as caught:
+            self.d.click(ref)
+        self.assertIn("upload ref=%s" % ref, str(caught.exception))
+
+
 class Tricks(unittest.TestCase):
     """What the security review of #477 tried, each one: a way to press a commitment without the
     person's card, or to confuse the reader. None of them may work."""

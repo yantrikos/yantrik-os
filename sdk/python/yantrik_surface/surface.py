@@ -546,6 +546,7 @@ class Surface:
         self._summary = summary
         self._view = None
         self._handlers = {}
+        self._checks = {}         # name -> the action's own check before the gate (see `action`)
         self._overrides = {}
         self._settings_path = settings_path
         self._mode_path = mode_path
@@ -565,15 +566,22 @@ class Surface:
         return fn
 
     def action(self, name=None, *, grade="standard", settles="on return", expected_seconds=None,
-               description=None, params=None, timeout=None, open_ended=False):
+               description=None, params=None, timeout=None, open_ended=False, check=None):
         """Decorator: publish a function as an action. Its arguments come from the signature;
-        it is called with them by name, and what it returns is the answer's `result`."""
+        it is called with them by name, and what it returns is the answer's `result`.
+
+        `check`, when given, is called with the same arguments before the gate is asked and
+        before any grant is spent, and answers a refusal sentence or None: a call it refuses is
+        refused before anybody is asked, so no card is ever raised for something the app would
+        not do (browser `upload` of a protected file, #874). It is not published."""
         def register(fn):
             spec = action_from_function(
                 fn, name if isinstance(name, str) else None, grade=grade, settles=settles,
                 expected_seconds=expected_seconds, description=description, params=params,
                 timeout=timeout, open_ended=open_ended)
             self.add_action(spec, lambda args: fn(**args))
+            if check is not None:
+                self._checks[spec.name] = lambda args: check(**args)
             return fn
         if callable(name):
             return register(name)
@@ -617,6 +625,16 @@ class Surface:
     def configured_mode(self, now=None):
         """The mode as this surface reads it, per call: a `Mode(name, session_rules)`."""
         return gate.configured_mode(self._mode_path, now)
+
+    def _check(self, spec, args):
+        """The action's own check of `args` (see `action`), as a refusal sentence or None."""
+        check = self._checks.get(spec.name)
+        if check is None:
+            return None
+        try:
+            return check(as_declared(spec, args))
+        except Refusal as r:
+            return str(r)
 
     def _find(self, name):
         for spec in self.actions:
@@ -802,7 +820,8 @@ class Surface:
             # grant one agent asked for is not another's to spend.
             if spec is None:
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, self._unknown(name))
-            refusal = (self._within_reach(held, spec, args) or check_arguments(spec, args))
+            refusal = (self._within_reach(held, spec, args) or check_arguments(spec, args)
+                       or self._check(spec, args))
             if refusal is not None:
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, refusal)
             # Not forwarded as the calling agent (#182) — yet. The shell believes a forwarded
@@ -860,7 +879,7 @@ class Surface:
 
         # The arguments first: a malformed call is refused for what is wrong with it, before
         # anything about who may make it — as a grant is never spent on one.
-        refusal = check_arguments(spec, args)
+        refusal = check_arguments(spec, args) or self._check(spec, args)
         if refusal is not None:
             raise Refusal(refusal)
 
