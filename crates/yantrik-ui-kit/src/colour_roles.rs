@@ -542,4 +542,17 @@ fn the_primary_buttons_ink_reads_on_its_neutral_fill() {
     }
     let button = read("crates/yantrik-ui-kit/slint/y_button.slint");
     assert!(button.contains("Theme.primary-fill") && button.contains("Theme.text-on-primary"), "YButton's primary is drawn with them");
+
+    // Focus on the primary (review of #881, finding 1): a ring in Theme.focus-ring on the fill's
+    // edge does not show, so the filled kinds draw it inside, in their own ink.
+    let ring = hexes(token(theme, "focus-ring"));
+    let fill = hexes(token(theme, "primary-fill"));
+    let edge = (0..2).map(|m| contrast(&ring[m], &fill[m])).fold(f64::MAX, f64::min);
+    let inner = button.find("if keyboard.has-focus && root.filled : Rectangle").expect("a filled button's own focus ring");
+    let inner = &button[inner..button[inner..].find('}').map(|e| inner + e).unwrap_or(button.len())];
+    assert!(inner.contains("border-color: root.fg"), "the inner ring is the button's ink, which reads on its fill:\n{inner}");
+    assert!(
+        edge >= 3.0 || button.contains("keyboard.has-focus && !root.filled ? Theme.focus-ring-width"),
+        "while focus-ring is {edge:.2}:1 on the primary fill, the edge ring stays off the filled kinds"
+    );
 }

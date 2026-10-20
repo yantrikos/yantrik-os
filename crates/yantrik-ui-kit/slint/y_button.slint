@@ -12,7 +12,10 @@
 //                  outline until the pointer is on it.
 // Any other value draws as secondary, so a stale call site (2 was a quiet "tertiary" kind,
 // now retired) still draws something valid. Hover and pressed are neutral steps (a lighter or
-// darker fill, a brighter outline), never new colours. Focus keeps the 2px white ring.
+// darker fill, a brighter outline), never new colours. Focus is a 2px ring: on an outline kind
+// it is the button's edge in Theme.focus-ring; on a filled kind (primary, red) it sits 2px inside
+// the edge in the button's own ink, because the neutral primary fill and the focus-ring colour
+// are nearly one colour (1.07:1 dark), and a ring on the edge would not show (review of #881).
 // Sizes: 0 compact 28px, 1 regular 32px, 2 prominent 36px.
 //
 // Icons are stroke paths (`icon-path`, an SVG path on the 20×20 grid from the Icons global),
@@ -66,6 +69,7 @@ export component YButton inherits Rectangle {
     property <bool> pressed: ta.pressed && !root.disabled;
     property <bool> red-filled: root.variant == 3 || (root.variant == 4 && (root.hovered || root.pressed));
     property <color> fg: root.variant == 0 ? Theme.text-on-primary : root.red-filled ? Theme.text-on-danger : root.variant == 4 ? Theme.color-danger : Theme.text-primary;
+    property <bool> filled: root.variant == 0 || root.red-filled;
     property <length> glyph: root.size == 0 ? 13px : 15px;
 
     height: root.size == 0 ? Theme.h-compact : root.size == 2 ? Theme.h-prominent : Theme.h-regular;
@@ -83,8 +87,19 @@ export component YButton inherits Rectangle {
       : root.variant != 0 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)
       :                     (root.pressed ? Theme.primary-fill-pressed : root.hovered ? Theme.primary-fill-hover : Theme.primary-fill);
 
-    border-width: keyboard.has-focus ? 2px : root.variant != 0 && !root.red-filled ? 1px : 0;
+    border-width: keyboard.has-focus && !root.filled ? Theme.focus-ring-width : !root.filled ? 1px : 0;
     border-color: keyboard.has-focus ? Theme.focus-ring : root.pressed ? Theme.text-secondary : root.hovered ? Theme.text-dim : Theme.outline-border;
+
+    // A filled button's focus: a ring in its own ink, inside the edge.
+    if keyboard.has-focus && root.filled : Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: max(0px, Theme.r-md - 2px);
+        border-width: Theme.focus-ring-width;
+        border-color: root.fg;
+    }
 
     animate background { duration: Theme.dur-fast; }
     animate opacity { duration: Theme.dur-fast; }

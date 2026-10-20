@@ -40,7 +40,9 @@ fn slint_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in entries.flatten() {
         let p = e.path();
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if p.is_dir() {
+        // The entry's own type, not its target's: a symlinked folder is not walked, so the walk
+        // stays in the repository and cannot loop.
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
             if name != "target" && name != "node_modules" && !name.starts_with('.') {
                 slint_files(&p, out);
             }
@@ -151,7 +153,7 @@ fn write_baseline(now: &BTreeMap<(String, String), usize>) {
 #[test]
 fn every_screen_is_drawn_with_the_kit_and_the_tokens() {
     let now = current();
-    if std::env::var_os("DESIGN_LINT_WRITE").is_some() {
+    if std::env::var("DESIGN_LINT_WRITE").as_deref() == Ok("1") {
         let before = read_baseline();
         let raised: Vec<String> = now
             .iter()

@@ -381,12 +381,16 @@ fn turn_group_row(run: &crate::notification_groups::Run, open: bool) -> crate::N
     }
 }
 
+/// The group mark: the first letter or digit of the sender's name as the header shows it
+/// (`notification_sender::plain`), or "?". `app` is the caller's own choice, so its first character
+/// could be a shield, a lock or a check mark, which in the mark box would read like a system badge
+/// (security review of #881, finding 2).
 fn first_letter(app: &str) -> slint::SharedString {
-    app.chars()
-        .next()
-        .unwrap_or('?')
-        .to_uppercase()
-        .to_string()
+    crate::notification_sender::plain(app, 64)
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string())
         .into()
 }
 
@@ -486,6 +490,16 @@ pub fn sync_to_ui(mirror: &NotificationMirror, ui_weak: &slint::Weak<crate::App>
 mod tests {
     use super::*;
     use yantrik_ipc_contracts::notifications::{Sender, Source};
+
+    #[test]
+    fn a_group_mark_is_a_letter_of_the_name_never_a_symbol() {
+        assert_eq!(first_letter("calendar"), "C");
+        assert_eq!(first_letter("\u{1f6e1} Bank"), "B", "a shield before the name is not the mark");
+        assert_eq!(first_letter("\u{2713}\u{1f512}"), "?", "nothing but symbols is a question mark");
+        assert_eq!(first_letter("\u{202e}evil"), "E", "a bidi control is not drawn");
+        assert_eq!(first_letter(""), "?");
+        assert_eq!(first_letter("2fa codes"), "2");
+    }
 
     fn note(id: &str, app: &str, created_at: &str) -> Notification {
         Notification {
