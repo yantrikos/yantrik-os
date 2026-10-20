@@ -59,7 +59,7 @@ pub fn parse(text: &str) -> Result<Baseline, String> {
 pub fn render(findings: &[Finding]) -> String {
     let mut text = String::from(
         "# What broke the architecture rules when each rule landed (tools/xtask, docs/architecture.md).\n\
-         # It may only shrink: fix one, then rewrite this with `cargo xtask check-architecture --write`.\n\
+         # It may only shrink: fix one, then rewrite this with `cargo run -q -p xtask -- check-architecture --write`.\n\
          # rule subject [lines]\n",
     );
     let mut sorted = findings.to_vec();

@@ -102,7 +102,7 @@ members = [
     "tests/sysmon-core",
     "tests/weather-core",
     "tests/windows-core",
-    # The workspace's own checks: `cargo xtask check-architecture` (docs/architecture.md).
+    # The workspace's own checks: `cargo run -q -p xtask -- check-architecture` (docs/architecture.md).
     "tools/xtask",
 ]
 

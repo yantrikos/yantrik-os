@@ -171,7 +171,7 @@ jobs:
         run: rustup toolchain install && rustc --version
 
       - name: Architecture rules
-        run: cargo xtask check-architecture
+        run: cargo run -q --locked -p xtask -- check-architecture
 
   # What the workspace may depend on (deny.toml): advisories, licences, duplicate versions and
   # sources. It reports and does not enforce yet, as clippy did when it landed: the first runs

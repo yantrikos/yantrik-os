@@ -55,7 +55,7 @@ The largest break today is the shell linking the companion, `yantrik-ml` and `ya
 
 ## What CI enforces
 
-**`cargo xtask check-architecture`** (the `architecture` job; source in [tools/xtask](../tools/xtask)):
+**`cargo run -q -p xtask -- check-architecture`** (the `architecture` job; source in [tools/xtask](../tools/xtask)):
 - **layer:** a dependency that points up, or from an app to anything but L0–L2;
 - **build-path:** an app's or a framework's `build.rs` that reaches into another crate's folder by a relative path, instead of using that crate's library;
 - **size:** a tracked `.rs` or `.slint` file over 1,200 lines.
@@ -63,7 +63,7 @@ The largest break today is the shell linking the companion, `yantrik-ml` and `ya
 What broke a rule on the day the rule landed is listed in [tools/xtask/architecture-baseline.txt](../tools/xtask/architecture-baseline.txt). The check fails on anything new. It also fails when a listed entry is fixed but still listed, so that a fix is kept. The baseline may only shrink. After a fix, rewrite it with:
 
 ```sh
-cargo xtask check-architecture --write
+cargo run -q -p xtask -- check-architecture --write
 ```
 
 `--write` refuses to add entries. The check also reports how many files are over the soft limit, and which listed files grew.

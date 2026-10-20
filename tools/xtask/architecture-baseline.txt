@@ -1,5 +1,5 @@
 # What broke the architecture rules when each rule landed (tools/xtask, docs/architecture.md).
-# It may only shrink: fix one, then rewrite this with `cargo xtask check-architecture --write`.
+# It may only shrink: fix one, then rewrite this with `cargo run -q -p xtask -- check-architecture --write`.
 # rule subject [lines]
 build-path apps/arcade/build.rs
 build-path apps/calendar/build.rs

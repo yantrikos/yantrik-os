@@ -1,4 +1,4 @@
-//! `cargo xtask check-architecture [--write]`: the layers, the build paths and the file sizes of
+//! `cargo run -q -p xtask -- check-architecture [--write]`: the layers, the build paths and the file sizes of
 //! docs/architecture.md, held by a baseline that may only shrink.
 
 mod layers;
@@ -22,7 +22,7 @@ fn main() -> ExitCode {
     {
         ["check-architecture"] => check(false),
         ["check-architecture", "--write"] => check(true),
-        _ => Err("usage: cargo xtask check-architecture [--write]".to_string()),
+        _ => Err("usage: cargo run -q -p xtask -- check-architecture [--write]".to_string()),
     };
     match result {
         Ok(true) => ExitCode::SUCCESS,
@@ -121,7 +121,7 @@ fn report(members: &[workspace::Member], unplaced: &[String], v: &ratchet::Verdi
         }
     }
     if !v.fixed.is_empty() {
-        println!("\nFixed, so the baseline must come down to keep the fix (cargo xtask check-architecture --write):");
+        println!("\nFixed, so the baseline must come down to keep the fix (cargo run -q -p xtask -- check-architecture --write):");
         v.fixed
             .iter()
             .for_each(|(rule, subject)| println!("  {rule} {subject}"));
