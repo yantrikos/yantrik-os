@@ -183,8 +183,10 @@ jobs:
             mtools dosfstools zstd \
             qemu-system-x86 python3 python3-pip git
 
+      # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
+      # stable is today: `rustup toolchain install` with no name reads that file.
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
         with:
           key: iso-release-v1

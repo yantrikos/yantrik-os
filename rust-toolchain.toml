@@ -1,0 +1,6 @@
+# The one Rust every build uses: the build host that makes the nightly, CI and a laptop. It is the
+# version the nightly has shipped with; moving it is a PR of its own (docs/architecture.md).
+[toolchain]
+channel = "1.92.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

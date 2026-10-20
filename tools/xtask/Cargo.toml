@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The workspace's own checks: `cargo xtask check-architecture` holds the layers, the build paths and the file sizes of docs/architecture.md"
+
+# Reads `cargo metadata` and the files git tracks, nothing else, so it builds in seconds and can
+# run before anything else in CI.
+[dependencies]
+serde_json = { workspace = true }

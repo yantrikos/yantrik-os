@@ -1,0 +1,58 @@
+# Where every workspace crate sits (docs/architecture.md, "The layers"). Dependencies point down:
+# a crate may use crates at its own layer or below, and an `app` only L0-L2. A crate that is not
+# listed here fails the check, so a new crate is placed on purpose.
+#
+# layer   path (a member's folder; `dir/*` places every member under dir)
+#
+# L0 Foundation: types and rules with no UI and no service behind them.
+L0  crates/yantrik-ipc-contracts
+L0  crates/yantrik-ipc-transport
+L0  crates/yantrik-version
+L0  crates/yantrik-manifest
+L0  crates/yantrik-shown-address
+L0  crates/yantrik-email-text
+L0  crates/yantrik-image-core
+L0  crates/yantrik-file-follow
+L0  crates/yantrik-mind-view-title
+L0  crates/yantrik-install-target
+# L1 Design: the tokens and the kit.
+L1  crates/yantrik-design-tokens
+L1  crates/yantrik-ui-kit
+# L2 Platform: what an app or a service is built on.
+L2  crates/yantrik-app-runtime
+L2  crates/yantrik-surface
+L2  crates/yantrik-service-sdk
+# L3 OS services: daemons, the system layer, the harness host, the gateway and egress.
+L3  services/*
+L3  crates/yantrik-shell-core
+L3  crates/yantrik-os
+L3  crates/yantrik-gateway
+L3  crates/yantrik-egress
+L3  crates/yantrik-harness
+L3  crates/yantrik-agent-terminal
+L3  crates/yantrik-term
+L3  crates/yantrik-ocr
+# L4 Shell: the desktop and its separate windows.
+L4  crates/yantrik-ui
+L4  crates/yantrik-ui-slint
+L4  crates/yantrik-lock
+L4  crates/yantrik-switcher
+# L5 Minds: the built-in companion and what only it uses.
+L5  crates/yantrik-companion
+L5  crates/yantrik-companion-core
+L5  crates/yantrik-companion-cortex
+L5  crates/yantrik-companion-instincts
+L5  crates/yantrik-companion-tools
+L5  crates/yantrik-chat
+L5  crates/yantrik-ml
+L5  crates/yantrik-brain
+L5  crates/yantrikdb-server
+L5  crates/yantrik
+# Apps and what an app author copies: L0-L2 only, as a third-party app would be.
+app apps/*
+app examples/*
+app templates/*
+app docs/sdk/samples
+# Not product code: test crates (deleted in migration step 5) and the checks themselves.
+tool tests/*
+tool tools/*

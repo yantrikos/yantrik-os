@@ -1,334 +1,99 @@
-# Yantrik OS — System Architecture
+# Yantrik OS architecture
 
-> Decision document. Finalized via multi-model brainstorm (Claude + GPT-4.1 + DeepSeek).
-> Last updated: 2026-03-11
+How the code is organised, which way dependencies point, and the rules every pull request is held to. The reasoning, the framework catalogue and the full migration are in [design/platform-sdk-2026-10-21.md](../design/platform-sdk-2026-10-21.md), which Pranab accepted on 21 October 2026. The architecture of March 2026, written when the OS was five crates, is kept in [history/architecture-v1-2026-03.md](history/architecture-v1-2026-03.md).
 
----
+Stack: Debian 13 → labwc (Wayland) → the Yantrik shell, apps and services, all in Rust with Slint UI.
 
-## Overview
+## The platform
 
-Yantrik OS is an AI-native desktop OS where the AI IS the shell. Single Rust binary:
-Slint UI + CompanionService + multi-backend LLM + YantrikDB. Supports local and remote
-LLM backends with automatic fallback.
+Yantrik OS is being shaped as a platform: a set of named, documented frameworks that every app, ours and third-party, is built on. These include YantrikFoundation, YantrikUI (the design tokens and the kit), YantrikApp, YantrikIntents (the control surface), Notifications, Services, Mind, Files, Settings and Security, under one `yantrik-sdk` facade. Today most of them exist as crates under other names. The migration (design §7) moves them into place one small PR at a time, without stopping nightly.
 
-Stack: Debian 13 (trixie) → labwc (Wayland compositor) → yantrik-ui (fullscreen Slint shell)
+## Folders
 
-It ships as a live ISO, not as something you install onto a distribution you already have.
-This line said "Alpine Linux" until September 2026; the base has been Debian since spring, and
-`apk`, OpenRC and `/bin/ash` are not on the machine. Anything in this tree still reaching for
-them is dead code.
+| Folder | What lives there |
+|---|---|
+| `frameworks/` | The public SDK, as the frameworks are formed (migration step 6 on). Apps may use only these. |
+| `crates/` | OS internals: the shell, shell-core, the system layer, the companion stack, the harness host, gateway, egress, lock, switcher. |
+| `apps/` | One crate per app. |
+| `services/` | One daemon per service, each with a typed IPC API. |
+| `templates/`, `examples/`, `docs/sdk/samples` | What an app author copies. Held to the same rules as an app. |
+| `tools/` | The workspace's own tooling: `xtask` (these checks), evaluations. |
+| `tests/` | Test crates that `#[path]`-include app sources. They go away when apps become `lib + bin` (step 5). |
+| `docs/` | This file, the HIG (`docs/hig/`, from step 8) and the framework guides. |
 
----
+## The layers
 
-## 5 Crates
+Dependencies point down, and nothing points at the shell or a mind.
 
-```
-crates/
-  yantrik-os/              # System integration (D-Bus, inotify, sysinfo). ZERO AI deps.
-  yantrik-ml/              # AI inference: LLM backends, embeddings, TTS, vision.
-  yantrikdb-core/          # Memory database: SQLite + HNSW vector search, knowledge graph, vault.
-  yantrik-companion/       # AI agent: 65+ instincts, 116+ tools, bond, personality, cortex.
-  yantrik-ui/              # Shell binary. 15+ apps, features, UI, orchestration.
-```
+| Layer | Holds | May use |
+|---|---|---|
+| L5 Minds | the built-in companion and what only it uses (`yantrik-companion*`, `yantrik-ml`, `yantrik-chat`) | L0–L5 |
+| L4 Shell | `yantrik-ui`, `yantrik-ui-slint`, lock, switcher | L0–L4 |
+| L3 OS services | `services/*`, shell-core, `yantrik-os`, gateway, egress, harness host | L0–L3 |
+| L2 Platform | app-runtime, surface, service-sdk | L0–L2 |
+| L1 Design | design tokens, ui-kit | L0–L1 |
+| L0 Foundation | IPC contracts and transport, version, and small pure libraries | L0 |
+| app | `apps/*`, templates, examples | L0–L2 only, never another app |
 
-Dependency graph: `yantrik-ui ← yantrik-companion ← yantrikdb-core ← yantrik-ml`
-                  `yantrik-ui ← yantrik-os`
+Where each crate sits is listed in [tools/xtask/layers.txt](../tools/xtask/layers.txt). A crate that is not listed fails the check, so **a new crate is placed on purpose**: add its line in the same PR.
 
-### yantrik-os
-Pure system observation. No AI, no Slint, no LLM. Watches the machine via D-Bus,
-inotify, and sysinfo. Emits `SystemEvent` variants over a crossbeam channel.
+The largest break today is the shell linking the companion, `yantrik-ml` and `yantrik-chat` (L4 → L5). The trusted UI that draws approval cards should not link the model runtime. That is fixed by making the Mind its own process (step 14), late and behind a flag.
 
-### yantrik-ml
-AI inference layer. Multiple LLM backends (Ollama API, OpenAI-compatible API, Claude CLI,
-llama.cpp) with automatic fallback. MiniLM embeddings, Whisper voice input, vision.
-Model-adaptive intelligence auto-detects model tier (Tiny/Small/Medium/Large) and adjusts
-tool calling strategy.
+## The rules every pull request is held to
 
-### yantrikdb-core
-Memory database. SQLite + HNSW vector search for semantic memory retrieval. Knowledge
-graph, encrypted vault, cognition triggers, distributed conflict resolution.
+1. **One home per concept.** Anything used twice goes into the kit or one shared module, never copied.
+2. **File size:** 600 lines is soft, 1,200 hard. A file over the soft limit is split when next touched: the part being worked on moves into its own focused module. No new file passes the hard limit.
+3. **`main.rs`** is a few lines that start the app: at most 40 for an app, 80 for the shell.
+4. **Logic stays out of `.slint`** beyond layout and visual state. Callbacks dispatch to the model and return. Rules live in pure Rust modules with tests.
+5. **Colours, sizes and spacing come from theme tokens,** and screens are drawn from the kit (the design lint in `yantrik-ui-kit`).
+6. **Errors are typed** with `thiserror`. Sentences appear only at the wire, where the protocol wants them.
+7. **Visibility:** `pub(crate)` facades; nothing is public that another crate does not use.
+8. **No grab bags:** no `utils`, `common`, `manager`, and no single global error type.
+9. **Tests check behaviour.** Tests that read source text are kept only where the rule is about the source itself (consent buttons, dependency direction, labwc keys).
+10. **No dead code,** unused imports, new warnings or stale comments.
+11. **The PR body says what it split, moved or deleted,** not only what it added.
 
-### yantrik-companion
-The AI agent. 65+ instincts (proactive behaviors), 116+ tools, bond system (5 levels),
-personality engine, proactive pipeline (4-stage: Detect → Generate → Score → Deliver),
-cortex (pattern recognition + playbooks), learning/memory evolution, hallucination firewall.
+## What CI enforces
 
-### yantrik-ui
-The shell binary that ties everything together. Owns the Slint event loop, runs
-ProactiveFeatures, routes system events to the brain, renders urges as Whisper Cards.
-15+ built-in apps (spreadsheet, presentations, documents, email, calendar, etc.).
+**`cargo xtask check-architecture`** (the `architecture` job; source in [tools/xtask](../tools/xtask)):
+- **layer:** a dependency that points up, or from an app to anything but L0–L2;
+- **build-path:** an app's or a framework's `build.rs` that reaches into another crate's folder by a relative path, instead of using that crate's library;
+- **size:** a tracked `.rs` or `.slint` file over 1,200 lines.
 
----
+What broke a rule on the day the rule landed is listed in [tools/xtask/architecture-baseline.txt](../tools/xtask/architecture-baseline.txt). The check fails on anything new. It also fails when a listed entry is fixed but still listed, so that a fix is kept. The baseline may only shrink. After a fix, rewrite it with:
 
-## 3 Threads
-
-```
-Thread 1: MAIN — Slint event loop
-  - Owns all UI state (Slint properties = source of truth)
-  - Polls crossbeam receivers via Slint Timer (every 2-5s)
-  - Runs FeatureRegistry.process_event() and .tick()
-  - Updates UI with scored urges
-
-Thread 2: SYSTEM OBSERVER (yantrik-os)
-  - D-Bus listeners (UPower, NetworkManager, Notifications)
-  - inotify file watchers (~/, ~/Downloads, ~/Documents)
-  - sysinfo process polling (every 5s)
-  - Sends SystemEvent via crossbeam channel → main thread
-
-Thread 3: COMPANION WORKER (existing bridge.rs)
-  - LLM inference (Candle, synchronous)
-  - Memory DB queries/writes (YantrikDB)
-  - Instinct evaluation, bond computation
-  - Sends CompanionResponse via crossbeam channel → main thread
+```sh
+cargo xtask check-architecture --write
 ```
 
-### Why 3 Threads?
-- Slint requires main thread for UI rendering
-- LLM inference blocks for seconds — can't be on the main thread
-- D-Bus/inotify listeners need their own event loops
-- crossbeam channels are the simplest correct solution
+`--write` refuses to add entries. The check also reports how many files are over the soft limit, and which listed files grew.
 
----
+**The design lint** (`cargo test -p yantrik-ui-kit design_lint`) holds hex colours, pixel font sizes, private copies of kit controls and `std-widgets` imports to their own baseline, in the same way.
 
-## 3 Architectural Invariants
+**`deny.toml`** (the `dependencies` job, cargo-deny) checks advisories, licences (compatible with GPL-3.0), duplicate versions and sources. It reports and does not fail yet.
 
-1. **Features are pure**: `(events, state) → urges`. No side effects, no direct UI mutation.
-2. **FeatureContext is read-only**: Features can query memory DB but can't write.
-3. **All inter-thread communication via crossbeam channels**. No tokio, no async, no Arc<Mutex>.
+**`rust-toolchain.toml`** pins the Rust the nightly ships with. The build host, CI and a laptop all build with it, and moving it is a PR of its own.
 
----
+To come, as the migration reaches them: the stability tiers (an app uses no `crates/*`), `cargo public-api` and `semver-checks` on the frameworks, a sample app built outside the workspace, and clippy blocking crate by crate.
 
-## ProactiveFeature Trait
+## The breaks in the baseline, and the step that removes each
 
-```rust
-pub trait ProactiveFeature {
-    fn name(&self) -> &str;
-    fn on_event(&mut self, event: &SystemEvent, ctx: &FeatureContext) -> Vec<Urge>;
-    fn on_tick(&mut self, ctx: &FeatureContext) -> Vec<Urge>;
-    fn on_feedback(&mut self, urge_id: &str, outcome: Outcome, ctx: &FeatureContext);
-}
+| Break | Step |
+|---|---|
+| 18 apps compile their screens from `crates/yantrik-ui-slint/ui` (build-path) | 2–3: library paths, app screens into their apps |
+| The shell links the companion, `yantrik-ml` and `yantrik-chat` | 14: the Mind as its own process |
+| The gateway links `yantrik-ml` | 14 (one `yantrik-ml`) |
+| `docs/sdk/samples` uses shell-core and the surface template | 6: the SDK facade |
+| 83 files over 1,200 lines | 9 and 12 for the shell; each file whenever it is next touched |
 
-pub struct FeatureContext<'a> {
-    pub system: &'a SystemSnapshot,     // Current system state
-    pub memory_query: &'a dyn MemoryQuery,  // Read-only memory access
-    pub companion: &'a CompanionSnapshot,   // Bond level, mood, etc.
-    pub config: &'a FeatureConfig,      // Per-feature YAML config
-    pub clock: DateTime<Local>,         // Current time
-}
-```
+## One feature, one directory
 
-**Adding a new feature** = one file + implement trait + one `registry.register()` call.
-No crate changes needed. No wiring. No new channels.
-
----
-
-## Event Flow
+In the shell and in every app (from step 9):
 
 ```
-SystemObserver (Thread 2)
-  → crossbeam channel
-    → Main thread Timer callback (every 2-5s)
-      → system_state.apply(event)           // Update SystemSnapshot
-      → registry.process_event(event, ctx)  // All features evaluate
-        → Vec<Urge>
-      → urgency_scorer.filter(urges)        // pressure = urgency × confidence × interruptibility
-        → Vec<ScoredUrge>
-      → Update Slint UI (Whisper Cards, status bar)
-      → Record event in memory DB via companion bridge
+features/<name>/  mod.rs      the facade: wire, actions, State
+                  model.rs    State and pure rules, no Slint
+                  view.rs     the only file that touches the UI
+                  surface.rs  the intents, from the same State and model functions
+                  tests.rs
 ```
-
-### Urgency Scoring
-
-```
-pressure = urgency × confidence × interruptibility
-
-Tiers:
-  pressure ≥ 0.85  →  Interrupt (floating card, sound)
-  pressure ≥ 0.50  →  Whisper (subtle card, no sound)
-  pressure ≥ 0.25  →  Queue (visible in Quiet Queue only)
-  pressure < 0.25  →  Drop
-```
-
----
-
-## Configuration
-
-Single YAML file: `config/yantrik-os.yaml`
-
-Each feature declares its config schema via serde. Example:
-
-```yaml
-features:
-  resource_guardian:
-    enabled: true
-    battery_warning_threshold: 20
-    disk_warning_threshold_percent: 10
-    cpu_sustained_threshold: 90
-    cpu_sustained_seconds: 60
-  process_sentinel:
-    enabled: true
-    poll_interval_secs: 5
-  focus_flow:
-    enabled: true
-    deep_work_threshold_mins: 20
-    break_reminder_mins: 90
-```
-
----
-
-## Security Model
-
-### v1: Safety by Types
-Features can't do dangerous things because `FeatureContext` is read-only.
-They can only output `Urge` values — the orchestration layer decides what to do.
-
-### v2+: Permission System
-Features output `UrgeAction::RequestAction` for dangerous operations.
-Orchestration layer checks user-configured permissions before executing.
-
-```rust
-pub enum PermissionLevel {
-    AlwaysAllow,    // Read battery, list windows
-    AskOnce,        // Open app, read clipboard
-    AskEvery,       // Type into app, close app, delete file
-    NeverAllow,     // Send email, make purchase
-}
-```
-
----
-
-## File Structure
-
-```
-crates/yantrik-os/src/
-  lib.rs              # Re-exports
-  events.rs           # SystemEvent enum
-  observer.rs         # SystemObserver (spawns listeners, fans into one channel)
-  battery.rs          # UPower D-Bus listener
-  network.rs          # NetworkManager D-Bus listener
-  notifications.rs    # org.freedesktop.Notifications listener
-  files.rs            # inotify file watcher
-  processes.rs        # sysinfo process tracker (poll every 5s)
-  mock.rs             # Mock mode for QEMU dev (fake battery drain, etc.)
-
-crates/yantrik-ml/src/
-  llm/
-    api.rs            # Ollama / OpenAI-compatible API backend
-    claude_cli.rs     # Claude Code CLI backend
-    llamacpp.rs       # llama.cpp backend
-    fallback.rs       # FallbackLLM: primary → fallback auto-switch
-  capability.rs       # ModelCapabilityProfile, model tier detection
-  embeddings.rs       # MiniLM sentence embeddings
-
-crates/yantrik-companion/src/
-  companion.rs        # Agent loop, tool execution, adaptive tool selection
-  instincts/          # 60+ proactive instincts
-  tools/              # 60+ tool implementations
-  cortex/             # Pattern recognition, playbooks, reasoner
-  bond.rs             # Bond level system (Stranger → Partner)
-  proactive_pipeline.rs  # 4-stage: Detect → Generate → Score → Deliver
-  learning.rs         # Memory evolution, fact extraction, write-time dedup
-  hallucination_firewall.rs  # Claim extraction, evidence verification
-
-crates/yantrik-ui/src/
-  main.rs             # Thin: init → event loop → shutdown
-  bridge.rs           # CompanionService bridge
-  apps.rs             # App registry (screen IDs, dock entries)
-  wire/               # App backends (one .rs per app)
-    spreadsheet.rs    # ySheets
-    presentation.rs   # yPresent
-    document_editor.rs # yDocs
-    email.rs          # Email client
-    calendar.rs       # Calendar
-    ...
-  features/
-    mod.rs            # ProactiveFeature trait, FeatureRegistry, UrgencyScorer
-    resource_guardian.rs
-    process_sentinel.rs
-    ...
-```
-
----
-
-## Testing Strategy
-
-Features are tested with mock `FeatureContext`:
-
-```rust
-#[test]
-fn battery_below_threshold_fires_urge() {
-    let mut guardian = ResourceGuardian::new();
-    let ctx = FeatureContext {
-        system: &SystemSnapshot { battery_level: 15, .. },
-        memory_query: &MockMemory::empty(),
-        ..test_context()
-    };
-    let event = SystemEvent::BatteryChanged { level: 15, charging: false, .. };
-    let urges = guardian.on_event(&event, &ctx);
-    assert_eq!(urges.len(), 1);
-    assert!(urges[0].urgency > 0.8);
-}
-```
-
-No Slint, no system access, no D-Bus. Pure logic tests.
-
----
-
-## v1 Proactive Features
-
-### 1. Resource Guardian
-- **Monitors**: Battery (UPower/D-Bus), CPU/RAM (sysinfo), disk (statfs), thermal
-- **Thresholds**: Battery <20% → high, disk <10% → high, CPU >90% sustained 60s → medium
-- **LLM**: Template + context vars → natural phrasing
-- **Bonus**: Celebrate recovery ("You freed 3GB — nice!")
-
-### 2. Process Sentinel
-- **Monitors**: Process list diffs (sysinfo, 5s poll)
-- **Flags**: First-seen process with high CPU/network → alert
-- **Trust flywheel**: User says "that's fine" → never flag again
-- **No LLM needed** — pure heuristic
-
-### 3. Error Companion (Killer Feature)
-- **Monitors**: Process exit codes ≠ 0, signals (SIGSEGV, SIGABRT), terminal errors
-- **Terminal capture**: PROMPT_COMMAND hook → logs command + exit code → inotify
-- **On error**: Embed text → semantic search memory DB → surface past fix
-- **Learning**: "I'll remember your solution next time" → personal troubleshooting KB
-
-### 4. File Lifecycle Tracker
-- **Monitors**: ~/Downloads, ~/Documents, ~/Desktop via inotify
-- **Triggers**: Downloaded not opened (2hr), edited then abandoned (7d),
-  large file >500MB (3d), burst downloads (>10 files/hr)
-- **Memory DB**: Records all file events with timestamps
-
-### 5. Focus Flow
-- **Monitors**: App switch frequency, idle detection
-- **States**: DEEP_WORK (no switch >20min), SCATTERED (>5 switches/min for 3min), NORMAL
-- **DEEP_WORK mode**: Suppress whispers below urgency 0.85
-- **Break reminder**: After 90min continuous, surface during next idle window
-
-### Implementation Order
-1. SystemObserver crate (yantrik-os) — D-Bus + inotify + sysinfo
-2. HeuristicEngine — threshold checks, process diffs, file lifecycle rules
-3. Whisper Card UI component — floating urgency-driven notification cards
-4. Wire into existing urge_queue → UI pipeline
-5. Error Companion shell integration (PROMPT_COMMAND hook)
-6. Focus Flow state machine
-
-### NOT v1 (Needs Infrastructure)
-- RSS/feed filtering
-- Calendar integration
-- Email/messaging bridge
-- Finance/bank statement parsing
-- Browser tab monitoring
-
----
-
-## User Feedback Loop
-
-Every Whisper Card outcome is tracked:
-1. **User acts on it** → high signal (useful)
-2. **User dismisses** → low signal (bad timing or irrelevant)
-3. **Decays naturally** → urgency was too low
-
-After 30 days, urgency thresholds personalize per feature per user.
-LLM called ~5-10x/day total — everything else is heuristic.

@@ -70,8 +70,10 @@ jobs:
             libgbm-dev \
             libegl1-mesa-dev
 
+      # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
+      # stable is today: `rustup toolchain install` with no name reads that file.
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup toolchain install && rustc --version
 
       # Slint's macro expansion is the expensive part of this build, so a cache is the
       # difference between a check that runs on every push and one that gets turned off.
@@ -138,8 +140,10 @@ jobs:
             libgbm-dev \
             libegl1-mesa-dev
 
+      # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
+      # stable is today: `rustup toolchain install` with no name reads that file.
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup toolchain install && rustc --version
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -151,6 +155,41 @@ jobs:
       - name: Clippy
         continue-on-error: true
         run: cargo clippy --workspace --locked -- --cap-lints warn
+
+  # The layers, the build paths and the file sizes of docs/architecture.md (tools/xtask). It
+  # fails only on what is new: what broke a rule on the day it landed is listed in
+  # tools/xtask/architecture-baseline.txt, and that list may only shrink.
+  architecture:
+    name: architecture
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: rustup toolchain install && rustc --version
+
+      - name: Architecture rules
+        run: cargo xtask check-architecture
+
+  # What the workspace may depend on (deny.toml): advisories, licences, duplicate versions and
+  # sources. It reports and does not enforce yet, as clippy did when it landed: the first runs
+  # list what is there, and the job becomes blocking once that list is worked down.
+  dependencies:
+    name: dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo-deny
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --workspace
 
   shell-scripts:
     name: shell scripts

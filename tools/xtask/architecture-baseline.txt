@@ -1,0 +1,110 @@
+# What broke the architecture rules when each rule landed (tools/xtask, docs/architecture.md).
+# It may only shrink: fix one, then rewrite this with `cargo xtask check-architecture --write`.
+# rule subject [lines]
+build-path apps/arcade/build.rs
+build-path apps/calendar/build.rs
+build-path apps/container-manager/build.rs
+build-path apps/document-editor/build.rs
+build-path apps/download-manager/build.rs
+build-path apps/email/build.rs
+build-path apps/image-viewer/build.rs
+build-path apps/music-player/build.rs
+build-path apps/network-manager/build.rs
+build-path apps/notes/build.rs
+build-path apps/presentation/build.rs
+build-path apps/snippet-manager/build.rs
+build-path apps/spreadsheet/build.rs
+build-path apps/studio/build.rs
+build-path apps/system-monitor/build.rs
+build-path apps/terminal/build.rs
+build-path apps/text-editor/build.rs
+build-path apps/weather/build.rs
+layer sdk-guide-samples->my-surface
+layer sdk-guide-samples->yantrik-shell-core
+layer yantrik-gateway->yantrik-ml
+layer yantrik-ui->yantrik-chat
+layer yantrik-ui->yantrik-companion
+layer yantrik-ui->yantrik-ml
+size apps/arcade/src/verify.rs 1584
+size apps/calendar/src/main.rs 2271
+size apps/document-editor/src/main.rs 1630
+size apps/download-manager/src/engine.rs 2039
+size apps/email/src/main.rs 2686
+size apps/music-player/src/main.rs 1233
+size apps/network-manager/src/main.rs 1261
+size apps/notes/src/main.rs 1904
+size apps/presentation/src/main.rs 1610
+size apps/snippet-manager/src/main.rs 1336
+size apps/studio/src/engine.rs 1712
+size apps/studio/src/tests.rs 1986
+size apps/text-editor/src/main.rs 1988
+size apps/weather/src/main.rs 1458
+size crates/yantrik-app-runtime/src/control.rs 2066
+size crates/yantrik-companion-core/src/config.rs 1839
+size crates/yantrik-companion-tools/src/browser.rs 2860
+size crates/yantrik-companion-tools/src/coder.rs 1593
+size crates/yantrik-companion/src/companion.rs 6898
+size crates/yantrik-companion/src/hallucination_firewall.rs 1621
+size crates/yantrik-companion/src/life_assistant/orchestrator.rs 1569
+size crates/yantrik-companion/src/memory_evolution.rs 1480
+size crates/yantrik-companion/src/recipe.rs 2291
+size crates/yantrik-companion/src/recipe_executor.rs 3217
+size crates/yantrik-companion/src/recipe_view.rs 1717
+size crates/yantrik-companion/src/tools/calendar.rs 1356
+size crates/yantrik-companion/src/tools/email.rs 1354
+size crates/yantrik-companion/src/world_graph.rs 1248
+size crates/yantrik-companion/src/world_model.rs 1911
+size crates/yantrik-harness/src/host.rs 4539
+size crates/yantrik-ipc-transport/src/gate.rs 1860
+size crates/yantrik-ml/src/llm/api.rs 1288
+size crates/yantrik-ml/src/llm/cognitive_router.rs 1420
+size crates/yantrik-surface/src/registry.rs 1358
+size crates/yantrik-ui-slint/ui/agents.slint 1326
+size crates/yantrik-ui-slint/ui/app.slint 3839
+size crates/yantrik-ui-slint/ui/components/intent_lens.slint 2551
+size crates/yantrik-ui-slint/ui/device_dashboard.slint 1360
+size crates/yantrik-ui-slint/ui/download_manager.slint 1231
+size crates/yantrik-ui-slint/ui/email.slint 2286
+size crates/yantrik-ui-slint/ui/installer.slint 1610
+size crates/yantrik-ui-slint/ui/network_manager.slint 1463
+size crates/yantrik-ui-slint/ui/notes_editor.slint 1574
+size crates/yantrik-ui-slint/ui/onboarding.slint 1426
+size crates/yantrik-ui-slint/ui/onboarding_first_run.slint 1220
+size crates/yantrik-ui-slint/ui/permission_dashboard.slint 1781
+size crates/yantrik-ui-slint/ui/presentation.slint 1290
+size crates/yantrik-ui-slint/ui/settings.slint 3955
+size crates/yantrik-ui-slint/ui/system_monitor.slint 1392
+size crates/yantrik-ui-slint/ui/weather.slint 1521
+size crates/yantrik-ui/src/agents/model.rs 1322
+size crates/yantrik-ui/src/agents/store.rs 2785
+size crates/yantrik-ui/src/approvals.rs 2613
+size crates/yantrik-ui/src/bridge.rs 3731
+size crates/yantrik-ui/src/control.rs 3766
+size crates/yantrik-ui/src/control_agents.rs 1960
+size crates/yantrik-ui/src/control_approvals.rs 4003
+size crates/yantrik-ui/src/harness_catalogue.rs 1520
+size crates/yantrik-ui/src/lens.rs 1720
+size crates/yantrik-ui/src/mind_mode.rs 3629
+size crates/yantrik-ui/src/mind_panel.rs 1238
+size crates/yantrik-ui/src/windows.rs 1729
+size crates/yantrik-ui/src/wire/agents.rs 3188
+size crates/yantrik-ui/src/wire/agents_workroom.rs 1359
+size crates/yantrik-ui/src/wire/device_dashboard.rs 1348
+size crates/yantrik-ui/src/wire/dock.rs 2540
+size crates/yantrik-ui/src/wire/files.rs 1324
+size crates/yantrik-ui/src/wire/installer.rs 2124
+size crates/yantrik-ui/src/wire/notifications.rs 1724
+size crates/yantrik-ui/src/wire/onboarding.rs 2004
+size crates/yantrik-ui/src/wire/settings.rs 1739
+size services/calendar-service/src/main.rs 1730
+size services/email-service/src/main.rs 1463
+size services/network-service/src/main.rs 1575
+size services/notifications-service/src/main.rs 1562
+size services/notifications-service/src/notices.rs 1448
+size services/notifications-service/src/reminders.rs 1238
+size services/notifications-service/src/store.rs 1230
+size services/system-monitor-service/src/main.rs 1431
+size services/weather-service/src/main.rs 1410
+size tests/calendar-core/lib.rs 1852
+size tests/email-core/lib.rs 1905
+size tests/ui-preview/preview.slint 1251
