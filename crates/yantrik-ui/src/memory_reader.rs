@@ -54,7 +54,7 @@ fn newest_from(db_path: &str, limit: usize) -> Result<Vec<MemoryResult>, String>
         .map_err(|e| e.to_string())? as usize;
     let mut page = conn
         .prepare(
-            "SELECT rid, type, text, created_at, importance, valence, domain FROM memories \
+            "SELECT rid, type, text, created_at, importance, valence, domain, source FROM memories \
              WHERE consolidation_status = 'active' ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| e.to_string())?;
@@ -73,6 +73,7 @@ fn newest_from(db_path: &str, limit: usize) -> Result<Vec<MemoryResult>, String>
                         valence: r.get(5)?,
                         score: 0.0,
                         domain: r.get(6)?,
+                        source: r.get(7)?,
                     })
                 })
                 .map_err(|e| e.to_string())?
@@ -98,12 +99,13 @@ mod tests {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
             "CREATE TABLE memories (rid TEXT, type TEXT, text TEXT, created_at REAL, importance REAL, \
-             valence REAL, domain TEXT, consolidation_status TEXT);",
+             valence REAL, domain TEXT, consolidation_status TEXT, source TEXT NOT NULL DEFAULT 'user');",
         )
         .unwrap();
         for (rid, text, at, domain, status) in rows {
             conn.execute(
-                "INSERT INTO memories VALUES (?1, 'semantic', ?2, ?3, 0.5, 0.0, ?4, ?5)",
+                "INSERT INTO memories (rid, type, text, created_at, importance, valence, domain, consolidation_status) \
+                 VALUES (?1, 'semantic', ?2, ?3, 0.5, 0.0, ?4, ?5)",
                 rusqlite::params![rid, text, at, domain, status],
             )
             .unwrap();

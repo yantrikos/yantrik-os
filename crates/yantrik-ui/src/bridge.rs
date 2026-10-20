@@ -336,6 +336,10 @@ pub struct MemoryResult {
     /// The memory's domain: `audit/tools` lines are the companion's record of what its tools
     /// did, and are not handed to a program on its socket.
     pub domain: String,
+    /// Who wrote it, as the store recorded: `self` for the companion's own machinery (the safety
+    /// layer, security.rs), `companion` for what a model-called tool saved. No tool lets a model
+    /// set it, so the Memory screen keys trust on it, never on the domain (security review of #878).
+    pub source: String,
 }
 
 /// Urge data for the UI.
@@ -1648,6 +1652,7 @@ fn worker_loop(
                                 score: r.score,
                                 created_at: r.created_at,
                                 domain: r.domain,
+                                source: r.source,
                             })
                             .collect();
                         let _ = reply_tx.send(items);
@@ -1679,6 +1684,7 @@ fn worker_loop(
                                 score: 0.0,
                                 created_at: m.created_at,
                                 domain: m.domain,
+                                source: m.source,
                             })
                             .collect();
                         let _ = reply_tx.send(items);

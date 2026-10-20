@@ -467,8 +467,8 @@ fn wire_memory_search(ui: &App, ctx: &AppContext) {
                         .unwrap()
                         .as_secs_f64();
 
-                    // Statements, not database rows (wire/memory_rows.rs): the machine's own records
-                    // off the list, a duplicate folded into one, where each came from in words.
+                    // Statements, not database rows (wire/memory_rows.rs): every row recalled, a
+                    // duplicate folded into one, where each came from in words.
                     let items: Vec<MemoryItem> = super::memory_rows::rows(&results, now, bridge::format_time_ago)
                         .into_iter()
                         .map(|row| MemoryItem {

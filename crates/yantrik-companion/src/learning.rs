@@ -151,7 +151,9 @@ pub fn extract_and_learn(
             entry.get("valence").and_then(|v| v.as_f64()).unwrap_or(0.0)
         );
         let raw_domain = entry.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
-        let domain = sanitize::validate_domain(raw_domain);
+        // The extractor's JSON is a model's answer about a conversation that may carry injected
+        // text: the same refusal as a model-called `remember` (security review of #878, delta L3).
+        let domain = crate::tools::memory::model_domain(sanitize::validate_domain(raw_domain));
 
         // Validate memory text — reject injection attempts
         let memory_text = match sanitize::validate_memory_text(raw_text) {
