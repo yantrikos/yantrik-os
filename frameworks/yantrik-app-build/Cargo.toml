@@ -1,0 +1,11 @@
+[package]
+name = "yantrik-app-build"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "How a Yantrik app's UI is compiled: the platform's style, YantrikUI's tokens and kit on the import paths, as @yantrik-design and @yantrik-kit"
+
+# A build-dependency: an app's build.rs is `yantrik_app_build::UiBuild::new().compile("ui/app.slint")`.
+[dependencies]
+slint-build = "1.17"

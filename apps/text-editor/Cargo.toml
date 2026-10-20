@@ -25,7 +25,7 @@ libc = "0.2"
 regex = "1"
 
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }
 
 [dev-dependencies]
 png = "0.18"

@@ -28,4 +28,4 @@ pulldown-cmark = { version = "0.13.1", default-features = false }
 png = "0.18"
 
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }

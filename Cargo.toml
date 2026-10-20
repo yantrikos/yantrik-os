@@ -102,6 +102,8 @@ members = [
     "tests/sysmon-core",
     "tests/weather-core",
     "tests/windows-core",
+    # How an app's UI is compiled: the style, YantrikUI's tokens and kit as libraries (step 2).
+    "frameworks/yantrik-app-build",
     # The workspace's own checks: `cargo run -q -p xtask -- check-architecture` (docs/architecture.md).
     "tools/xtask",
 ]
@@ -189,6 +191,7 @@ yantrik-service-sdk = { path = "crates/yantrik-service-sdk" }
 yantrik-surface = { path = "crates/yantrik-surface" }
 yantrik-app-runtime = { path = "crates/yantrik-app-runtime" }
 yantrik-shown-address = { path = "crates/yantrik-shown-address" }
+yantrik-app-build = { path = "frameworks/yantrik-app-build" }
 yantrik-file-follow = { path = "crates/yantrik-file-follow" }
 yantrik-install-target = { path = "crates/yantrik-install-target" }
 yantrik-manifest = { path = "crates/yantrik-manifest" }

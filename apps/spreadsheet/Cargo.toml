@@ -27,4 +27,4 @@ zbus = { workspace = true }
 png = "0.18"
 
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }

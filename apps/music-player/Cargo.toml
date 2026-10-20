@@ -21,7 +21,7 @@ tracing = { workspace = true }
 libc = { workspace = true }
 
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }
 
 [dev-dependencies]
 # The answer-later slot a real dispatch opens, so the tests run actions the way the socket does.

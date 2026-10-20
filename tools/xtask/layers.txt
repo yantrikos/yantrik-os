@@ -19,6 +19,7 @@ L0  crates/yantrik-install-target
 L1  crates/yantrik-design-tokens
 L1  crates/yantrik-ui-kit
 # L2 Platform: what an app or a service is built on.
+L2  frameworks/yantrik-app-build
 L2  crates/yantrik-app-runtime
 L2  crates/yantrik-surface
 L2  crates/yantrik-service-sdk

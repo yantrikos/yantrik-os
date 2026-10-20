@@ -46,4 +46,4 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 png = "0.18"
 
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }

@@ -26,4 +26,4 @@ chrono = { workspace = true }
 libc = { workspace = true }
 
 [build-dependencies]
-slint-build = "1.17"
+yantrik-app-build = { workspace = true }
