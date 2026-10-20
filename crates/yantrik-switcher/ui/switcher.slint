@@ -14,6 +14,7 @@
 // Deeper cards are darkened by a navy veil, which is a plain blend, not a layer.
 import { Theme } from "theme.slint";
 import { AppTile } from "app_tile.slint";
+import { YKeyHint } from "y_keycap.slint";
 export { AppInitial } from "app_tile.slint";
 
 // A part of a card that shows (model.rs `uncovered`), in the card's coordinates.
@@ -36,7 +37,9 @@ export struct Card {
     // In front (or leaving it): it casts the contact shadow and wears the halo.
     front: bool,
     edge-width: length,
-    edge: color,
+    // How much it shows as the selected one, 0..=1 (model::chosen): its edge goes from the stack's
+    // grey to the accent as it comes to the front, both the theme's.
+    chosen: float,
     // Its app's icon, drawn on a card with no picture yet. A picture needs none: our windows
     // carry their own icon in their header, and a badge of ours sat on top of it (520, 20 Oct).
     icon-id: string,
@@ -62,49 +65,6 @@ export struct Tick {
     label: string,
 }
 
-// The colours of this one surface. The accent is the theme's; the rest are its navy family.
-global Ink {
-    out property <color> primary: #edf2f8;
-    out property <color> secondary: #a8b5c6;
-    out property <color> quiet: #7d8fa6;
-    out property <color> rail: #334257;
-    out property <color> dot: #8294aa;
-    out property <color> card: #151e2b;
-    out property <color> veil: #0b1422;
-    out property <color> shadow: #050a12;
-    out property <color> key: #152133;
-    out property <color> key-edge: #35465e;
-}
-
-component Keycap inherits HorizontalLayout {
-    in property <string> key;
-    in property <string> does;
-    in property <float> scale;
-    spacing: 7px * root.scale;
-    Rectangle {
-        width: label.preferred-width + 14px * root.scale;
-        height: 24px * root.scale;
-        border-radius: 5px * root.scale;
-        background: Ink.key;
-        border-width: 1px;
-        border-color: Ink.key-edge;
-        label := Text {
-            text: root.key;
-            color: Ink.primary;
-            font-size: 12px * root.scale;
-            font-weight: 600;
-            vertical-alignment: center;
-            horizontal-alignment: center;
-        }
-    }
-    Text {
-        text: root.does;
-        color: Ink.secondary;
-        font-size: 12px * root.scale;
-        vertical-alignment: center;
-    }
-}
-
 export component SwitcherView inherits Window {
     in property <[Card]> cards;
     in property <[Dot]> dots;
@@ -122,13 +82,13 @@ export component SwitcherView inherits Window {
     in property <string> typed;
 
     default-font-family: "Barlow";
-    background: #080e18;
+    background: Theme.bg-deep;
 
     // Opaque: the desktop under the stack is noise exactly where the stack needs quiet. A lift of
     // light behind the top of the stack, nothing more. (On a Rectangle: the software renderer
     // paints a Window's gradient background as one flat colour.)
     Rectangle {
-        background: @linear-gradient(180deg, #101d30 0%, #080e18 100%);
+        background: @linear-gradient(180deg, Theme.bg-surface 0%, Theme.bg-deep 100%);
     }
 
     // Deepest card first, so the selected one is drawn last, on top.
@@ -146,7 +106,7 @@ export component SwitcherView inherits Window {
             width: parent.width + 4px * root.scale;
             height: parent.height + 2px * root.scale;
             border-radius: 14px * root.scale;
-            background: Ink.shadow;
+            background: Theme.bg-deep.darker(60%);
         }
         // A faint halo: a ring, never a translucent fill.
         if card.front: Rectangle {
@@ -161,7 +121,7 @@ export component SwitcherView inherits Window {
 
         Rectangle {
             border-radius: 12px * root.scale;
-            background: card.has-picture ? transparent : Ink.card;
+            background: card.has-picture ? transparent : Theme.bg-card;
             clip: true;
 
             // The window as labwc last drew it, and the depth's veil over it, in the parts that
@@ -183,7 +143,7 @@ export component SwitcherView inherits Window {
                         image-fit: fill;
                     }
                     if card.dim > 0.005: Rectangle {
-                        background: Ink.veil.with-alpha(card.dim);
+                        background: Theme.bg-deep.with-alpha(card.dim);
                     }
                 }
             }
@@ -200,21 +160,21 @@ export component SwitcherView inherits Window {
                 }
                 Text {
                     text: card.name;
-                    color: Ink.secondary;
+                    color: Theme.text-secondary;
                     font-size: 14px * root.scale * card.w / (640px * root.scale);
                     horizontal-alignment: center;
                     overflow: elide;
                 }
                 if card.note != "": Text {
                     text: card.note;
-                    color: Ink.quiet;
+                    color: Theme.text-dim;
                     font-size: 12px * root.scale * card.w / (640px * root.scale);
                     horizontal-alignment: center;
                 }
             }
             // Deeper, darker: the ground's own navy over the card (a picture's is in its panes).
             if card.dim > 0.005 && !card.has-picture: Rectangle {
-                background: Ink.veil.with-alpha(card.dim);
+                background: Theme.bg-deep.with-alpha(card.dim);
             }
         }
 
@@ -222,7 +182,7 @@ export component SwitcherView inherits Window {
         Rectangle {
             border-radius: 12px * root.scale;
             border-width: card.edge-width;
-            border-color: card.edge;
+            border-color: Theme.accent.mix(Theme.border-strong, card.chosen);
         }
     }
 
@@ -231,7 +191,7 @@ export component SwitcherView inherits Window {
         x: 980px * root.sx;
         y: 96px * root.sy;
         text: "HOW LONG AGO";
-        color: Ink.secondary;
+        color: Theme.text-secondary;
         font-size: 11px * root.scale;
         font-weight: 600;
         letter-spacing: 1px * root.scale;
@@ -241,7 +201,7 @@ export component SwitcherView inherits Window {
         y: 140px * root.sy;
         width: max(1px, round(root.scale) * 1px);
         height: 480px * root.sy;
-        background: Ink.rail;
+        background: Theme.border-strong;
     }
     for tick in root.ticks: Text {
         x: 1006px * root.sx - self.width;
@@ -251,7 +211,7 @@ export component SwitcherView inherits Window {
         horizontal-alignment: right;
         vertical-alignment: center;
         text: tick.label;
-        color: Ink.quiet;
+        color: Theme.text-dim;
         font-size: 12px * root.scale;
     }
     for dot in root.dots: Rectangle {
@@ -261,7 +221,7 @@ export component SwitcherView inherits Window {
             width: 6px * root.scale;
             height: 6px * root.scale;
             border-radius: 3px * root.scale;
-            background: Ink.dot;
+            background: Theme.text-dim;
         }
         Text {
             x: 1036px * root.sx;
@@ -270,7 +230,7 @@ export component SwitcherView inherits Window {
             height: 20px * root.scale;
             vertical-alignment: center;
             text: dot.label;
-            color: dot.on ? Ink.primary : Ink.secondary;
+            color: dot.on ? Theme.text-primary : Theme.text-secondary;
             font-size: (dot.on ? 14px : 13px) * root.scale;
             font-weight: dot.on ? 600 : 400;
             overflow: elide;
@@ -314,7 +274,7 @@ export component SwitcherView inherits Window {
         height: 32px * root.scale;
         vertical-alignment: center;
         text: root.caption-title;
-        color: Ink.primary.with-alpha(root.caption-alpha);
+        color: Theme.text-primary.with-alpha(root.caption-alpha);
         font-size: 24px * root.scale;
         font-weight: 600;
         overflow: elide;
@@ -326,7 +286,7 @@ export component SwitcherView inherits Window {
         height: 20px * root.scale;
         vertical-alignment: center;
         text: root.caption-where;
-        color: Ink.secondary.with-alpha(root.caption-alpha);
+        color: Theme.text-secondary.with-alpha(root.caption-alpha);
         font-size: 14px * root.scale;
         overflow: elide;
     }
@@ -337,7 +297,7 @@ export component SwitcherView inherits Window {
         width: jump.preferred-width + 32px * root.scale;
         height: 40px * root.scale;
         border-radius: 8px * root.scale;
-        background: Ink.key;
+        background: Theme.keycap-fill;
         border-width: 1px;
         border-color: Theme.accent;
         jump := Text {
@@ -345,7 +305,7 @@ export component SwitcherView inherits Window {
             height: parent.height;
             vertical-alignment: center;
             text: "Jump to  " + root.typed;
-            color: Ink.primary;
+            color: Theme.text-primary;
             font-size: 16px * root.scale;
         }
     }
@@ -358,10 +318,10 @@ export component SwitcherView inherits Window {
         height: 24px * root.scale;
         alignment: center;
         spacing: 24px * root.scale;
-        Keycap { key: "Tab"; does: "Next"; scale: root.scale; }
-        Keycap { key: "Shift Tab"; does: "Previous"; scale: root.scale; }
-        Keycap { key: "Alt"; does: "Release to open"; scale: root.scale; }
-        Keycap { key: "A–Z"; does: "Find"; scale: root.scale; }
-        Keycap { key: "Esc"; does: "Cancel"; scale: root.scale; }
+        YKeyHint { key: "Tab"; does: "Next"; scale: root.scale; }
+        YKeyHint { key: "Shift Tab"; does: "Previous"; scale: root.scale; }
+        YKeyHint { key: "Alt"; does: "Release to open"; scale: root.scale; }
+        YKeyHint { key: "A–Z"; does: "Find"; scale: root.scale; }
+        YKeyHint { key: "Esc"; does: "Cancel"; scale: root.scale; }
     }
 }

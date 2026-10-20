@@ -147,8 +147,8 @@ export component NotificationCenter inherits Rectangle {
 
             VerticalLayout {
                 // Centred, no wider than reading needs.
-                padding-left: max(Theme.sp-6, (root.width - 760px) / 2);
-                padding-right: max(Theme.sp-6, (root.width - 760px) / 2);
+                padding-left: Theme.column-inset(root.width, Theme.measure-reading);
+                padding-right: Theme.column-inset(root.width, Theme.measure-reading);
                 padding-top: Theme.sp-7;
                 padding-bottom: Theme.sp-4;
                 spacing: 0px;
@@ -223,12 +223,15 @@ export component NotificationCenter inherits Rectangle {
                                     width: 28px; height: 28px;
                                     border-radius: Theme.r-md;
                                     background: Theme.bg-surface;
-                                    Icon {
-                                        commands: Icons.glyph(notif.group-icon);
-                                        size: 16px;
-                                        tint: Theme.text-secondary;
-                                        x: (parent.width - self.width) / 2;
-                                        y: (parent.height - self.height) / 2;
+                                    // The sender's initial (`group-icon` is its first letter, which
+                                    // no icon is drawn from: the box was empty).
+                                    Text {
+                                        text: notif.group-icon;
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-body;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
                                 }
 
@@ -387,15 +390,19 @@ export component NotificationCenter inherits Rectangle {
                                 }
                             }
 
-                            // Two lines of it, at reading size; the rest is a press away.
-                            if notif.body != "" && notif.body != notif.summary : Text {
-                                text: notif.body;
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-body;
-                                wrap: word-wrap;
-                                overflow: elide;
-                                // Two lines: a height the text cannot grow past, so it elides.
-                                height: min(self.preferred-height, 40px * TextScale.factor);
+                            // Two lines of it, at reading size, under the title's own edge (past the
+                            // unread dot); the rest is a press away.
+                            if notif.body != "" && notif.body != notif.summary : HorizontalLayout {
+                                padding-left: 8px + Theme.sp-2;
+                                Text {
+                                    text: notif.body;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-body;
+                                    wrap: word-wrap;
+                                    overflow: elide;
+                                    // Two lines: a height the text cannot grow past, so it elides.
+                                    height: min(self.preferred-height, 40px * TextScale.factor);
+                                }
                             }
 
                             // Who sent it. The name on the row is only what the sender said;

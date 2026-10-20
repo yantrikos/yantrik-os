@@ -102,8 +102,8 @@ export component SystemDashboard inherits Rectangle {
 
             VerticalLayout {
                 // Centred, no wider than the readings need (art direction, 20 Oct 2026, G).
-                padding-left: max(24px, (root.width - 1040px) / 2);
-                padding-right: max(24px, (root.width - 1040px) / 2);
+                padding-left: Theme.column-inset(root.width, Theme.measure-wide);
+                padding-right: Theme.column-inset(root.width, Theme.measure-wide);
                 padding-top: 32px;
                 padding-bottom: 24px;
                 spacing: 12px;

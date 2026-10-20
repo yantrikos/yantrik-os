@@ -180,11 +180,11 @@ export component TerminalWorkbench inherits Rectangle {
                 height: 32px; background: Theme.bg-surface;
                 HorizontalLayout { padding-left: 16px; padding-right: 10px; spacing: 12px;
                     Rectangle { width: 5px; height: 5px; y: (parent.height - self.height) / 2; border-radius: 3px; background: root.alive ? #78c9b8 : Theme.text-dim; }
-                    Text { text: root.status; color: Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
-                    Text { text: root.directory; color: Theme.text-secondary; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: root.status; color: Theme.text-secondary; font-size: Theme.fs-caption; vertical-alignment: center; }
+                    Text { text: root.directory; color: Theme.text-secondary; font-size: Theme.fs-caption; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                     if root.scrollback > 0 : YButton { label: "Back to live"; size: 0; variant: 1; clicked => { root.action("live"); terminal-keys.focus(); } }
-                    if root.scrollback == 0 && root.width >= 780px : Text { text: "Ctrl Shift T  New tab   ·   Ctrl Shift F  Find"; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
-                    Text { text: "\{root.font-size}px"; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
+                    if root.scrollback == 0 && root.width >= 780px : Text { text: "Ctrl Shift T  New tab   ·   Ctrl Shift F  Find"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
+                    Text { text: "\{root.font-size}px"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
                 }
             }
         }

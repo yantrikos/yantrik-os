@@ -94,8 +94,8 @@ export component MemoryBrowser inherits Rectangle {
             viewport-height: list.preferred-height;
             list := VerticalLayout {
                 width: parent.width;
-                padding-left: max(Theme.sp-6, (root.width - 760px) / 2);
-                padding-right: max(Theme.sp-6, (root.width - 760px) / 2);
+                padding-left: Theme.column-inset(root.width, Theme.measure-reading);
+                padding-right: Theme.column-inset(root.width, Theme.measure-reading);
                 padding-top: Theme.sp-6;
                 padding-bottom: Theme.sp-6;
                 spacing: 0;

@@ -28,7 +28,6 @@
 // Nothing here is a placeholder: what is not known says so.
 
 import { Theme } from "theme.slint";
-import { BoundPicker } from "picker_state.slint";
 import { Icon, Icons } from "icon.slint";
 import { YTooltip } from "y_tooltip.slint";
 
@@ -145,34 +144,6 @@ component Separator inherits VerticalLayout {
     Rectangle { height: 14px; }
     Rectangle { height: 1px; background: Theme.separator; }
     Rectangle { height: 14px; }
-}
-
-component KeyValue inherits HorizontalLayout {
-    vertical-stretch: 0;
-    in property <string> key;
-    in property <string> value;
-    in property <bool> dim: false;
-    // At least a line, and taller when the value needs two: the sweep of 17 October found values
-    // cut mid-word on every screen, and a value is a sentence now, not a code.
-    min-height: 22px;
-    spacing: Theme.sp-2;
-    Text {
-        text: root.key;
-        color: Theme.text-secondary;
-        font-size: Theme.fs-caption;
-        vertical-alignment: center;
-        width: 62px;
-    }
-    Text {
-        text: root.value;
-        color: root.dim ? Theme.text-dim : Theme.text-primary;
-        font-size: Theme.fs-caption;
-        font-weight: root.dim ? 400 : 500;
-        horizontal-alignment: right;
-        vertical-alignment: center;
-        horizontal-stretch: 1;
-        wrap: word-wrap;
-    }
 }
 
 // The answering mind's mark: its initial on a disc. A harness brings no icon of its own, and a

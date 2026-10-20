@@ -525,3 +525,21 @@ fn nothing_on_a_red_fill_is_white_or_another_ink() {
     );
     assert!(fills >= 10, "found the red fills, {fills} of them");
 }
+
+/// The primary button is high-contrast neutral (art direction, 20 Oct 2026): its ink reads on its
+/// fill at rest, hovered and pressed, in both themes, with room to spare over the 4.5:1 floor.
+#[test]
+fn the_primary_buttons_ink_reads_on_its_neutral_fill() {
+    let tokens = read("crates/yantrik-design-tokens/slint/theme.slint");
+    let theme = &tokens[tokens.find("export global Theme {").expect("the Theme global")..];
+    let ink = hexes(token(theme, "text-on-primary"));
+    for name in ["primary-fill", "primary-fill-hover", "primary-fill-pressed"] {
+        let fill = hexes(token(theme, name));
+        for mode in 0..2 {
+            let ratio = contrast(&ink[mode], &fill[mode]);
+            assert!(ratio >= 7.0, "{name} ({}) under {} is {ratio:.1}:1", ["dark", "light"][mode], ink[mode]);
+        }
+    }
+    let button = read("crates/yantrik-ui-kit/slint/y_button.slint");
+    assert!(button.contains("Theme.primary-fill") && button.contains("Theme.text-on-primary"), "YButton's primary is drawn with them");
+}

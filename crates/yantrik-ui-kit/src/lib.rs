@@ -22,6 +22,8 @@ mod app_labels;
 mod colour_roles;
 #[cfg(test)]
 mod slint_source;
+#[cfg(test)]
+mod design_lint;
 
 #[cfg(test)]
 mod app_header_is_mandatory {

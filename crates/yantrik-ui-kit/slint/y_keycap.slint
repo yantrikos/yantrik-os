@@ -1,0 +1,42 @@
+// YKeycap — a key, drawn the one way every surface draws one: the desktop's ask field ("Super" "K"),
+// the cheat sheet, Alt+Tab's hint row. Three copies of this had grown, each a little different
+// (art direction, 20 Oct 2026, section 5: one keycap, shared). YKeyHint is a key and what it does.
+//
+// `word` draws the "or" between two keys: the same box and type, with no cap round it.
+import { Theme } from "theme.slint";
+
+export component YKeycap inherits Rectangle {
+    in property <string> key;
+    in property <bool> word: false;
+    // For a surface drawn at its own scale (Alt+Tab draws in design pixels times a factor).
+    in property <float> scale: 1.0;
+
+    height: 24px * root.scale;
+    width: root.word ? label.preferred-width + 8px * root.scale : max(24px * root.scale, label.preferred-width + 14px * root.scale);
+    border-radius: Theme.r-xs * root.scale;
+    background: root.word ? transparent : Theme.keycap-fill;
+    border-width: root.word ? 0px : 1px;
+    border-color: Theme.keycap-border;
+    label := Text {
+        text: root.key;
+        color: root.word ? Theme.text-dim : Theme.text-primary;
+        font-size: Theme.fs-keycap * root.scale;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component YKeyHint inherits HorizontalLayout {
+    in property <string> key;
+    in property <string> does;
+    in property <float> scale: 1.0;
+    spacing: 7px * root.scale;
+    YKeycap { key: root.key; scale: root.scale; }
+    Text {
+        text: root.does;
+        color: Theme.text-secondary;
+        font-size: Theme.fs-keycap * root.scale;
+        vertical-alignment: center;
+    }
+}

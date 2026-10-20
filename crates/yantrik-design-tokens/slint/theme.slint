@@ -315,6 +315,14 @@ export global Theme {
     out property <color> text-on-accent: ThemeMode.dark ? Theme.bg-deep : #ffffff;
     out property <color> accent-button-hover: ThemeMode.dark ? Theme.accent-light : Theme.accent.darker(8%);
     out property <color> accent-button-pressed: ThemeMode.dark ? Theme.accent-dim : Theme.accent.darker(16%);
+    // The primary button: high-contrast neutral, not the accent (art direction, 20 Oct 2026,
+    // "accent discipline"). Blue means the selection, keyboard focus or the thing being acted on;
+    // a primary action is the strongest thing in its group by contrast, not by colour. Pale
+    // mineral with navy ink in dark mode, deep navy with white ink in light.
+    out property <color> primary-fill:         ThemeMode.dark ? #e4ebf4 : #20334d;
+    out property <color> primary-fill-hover:   ThemeMode.dark ? #f2f6fb : #2a4262;
+    out property <color> primary-fill-pressed: ThemeMode.dark ? #cfd9e6 : #172539;
+    out property <color> text-on-primary:      ThemeMode.dark ? #111b28 : #ffffff;
 
     // AI/overlay panel background
     out property <color> bg-overlay-panel: ThemeMode.dark ? #1a2230 : #e8eef4;
@@ -407,7 +415,11 @@ export global Theme {
     out property <int>    fw-body-strong: 500;
     out property <length> fs-caption: 12px * TextScale.factor;      // Status bar, metadata, timestamps
     out property <int>    fw-caption: 400;
-    out property <length> fs-micro: 11px * TextScale.factor;        // Badges, fine detail
+    // Fine detail, badges. 12, not 11: the art direction (20 Oct 2026, section 2) found the 9-11px
+    // metadata the largest single thing making the OS look like a scaled-down prototype. 11 is for
+    // keycaps only (`fs-keycap`).
+    out property <length> fs-micro: 12px * TextScale.factor;
+    out property <length> fs-keycap: 11px * TextScale.factor;
     out property <int>    fw-micro: 500;
     // An app's name under its tile: the desktop's workspace, the launcher, the window switcher,
     // a mind's desk and the dock's hover label, all drawn by AppLabel. It was 11-12px regular,
@@ -420,6 +432,18 @@ export global Theme {
     out property <length> fs-mono: 13px * TextScale.factor;         // Terminal, code, IDs
 
     // ─── Spacing scale (8px base grid) ────────────────────────────
+    // ─── Content measures ─────────────────────────────────────────
+    // How wide a full screen's content may run, centred in what is left (art direction, 20 Oct
+    // 2026, section 2): a reading list (Notifications, Memory) and a wide one (System). One rule
+    // for every screen that centres its content, `column-inset`.
+    out property <length> measure-reading: 760px;
+    out property <length> measure-wide: 1040px;
+    // The side padding that centres a column of `measure` in `available`, never less than the
+    // window's own 24px.
+    public pure function column-inset(available: length, measure: length) -> length {
+        return max(24px, (available - measure) / 2);
+    }
+
     out property <length> sp-1: 4px;
     out property <length> sp-2: 8px;
     out property <length> sp-3: 12px;

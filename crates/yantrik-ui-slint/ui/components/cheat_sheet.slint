@@ -8,6 +8,7 @@
 // the matching has to see the key names as well as the words.
 
 import { Theme } from "theme.slint";
+import { YKeycap } from "y_keycap.slint";
 
 export struct CheatRowData {
     // A section heading when true; `text` is then the section's name and `caps` is empty.
@@ -16,28 +17,6 @@ export struct CheatRowData {
     // One cap per entry. A row two keys reach has both, with "or" between (`cheat_sheet::OR`),
     // drawn as a word and not a cap.
     caps: [string],
-}
-
-component KeyCap inherits Rectangle {
-    in property <string> label;
-    // The "or" between two keys: the same box and type, with no cap drawn round it.
-    in property <bool> word: false;
-
-    height: 24px;
-    width: root.word ? cap-text.preferred-width + 8px : max(24px, cap-text.preferred-width + 14px);
-    border-radius: Theme.r-sm;
-    background: root.word ? transparent : Theme.keycap-fill;
-    border-width: root.word ? 0px : 1px;
-    border-color: Theme.keycap-border;
-
-    cap-text := Text {
-        text: root.label;
-        color: root.word ? Theme.text-dim : Theme.text-primary;
-        font-size: Theme.font-small;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
 }
 
 export component CheatSheet inherits Rectangle {
@@ -189,8 +168,8 @@ export component CheatSheet inherits Rectangle {
                                 HorizontalLayout {
                                     spacing: 4px;
                                     alignment: start;
-                                    for label in row.caps : KeyCap {
-                                        label: label;
+                                    for label in row.caps : YKeycap {
+                                        key: label;
                                         word: label == "or";
                                         y: (parent.height - self.height) / 2;
                                     }

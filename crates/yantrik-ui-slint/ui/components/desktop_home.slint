@@ -17,26 +17,8 @@ import { Icon, Icons } from "icon.slint";
 import { DockItem } from "app_dock.slint";
 import { LensResult } from "intent_lens.slint";
 import { YButton } from "y_button.slint";
+import { YKeycap } from "y_keycap.slint";
 import { UrgeCardData, GlanceCard } from "glance_card.slint";
-
-// A key, as the hints draw it everywhere (the Alt+Tab row's keycaps).
-component Keycap inherits Rectangle {
-    in property <string> key;
-    width: label.preferred-width + 14px;
-    height: 24px;
-    border-radius: Theme.r-xs;
-    background: Theme.bg-surface;
-    border-width: 1px;
-    border-color: Theme.border-floating;
-    label := Text {
-        text: root.key;
-        color: Theme.text-secondary;
-        font-size: Theme.fs-micro;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
 
 export component DesktopHome inherits Rectangle {
     // The machine's desk rather than a person's: adds suggestions, drops recents and the mind line.
@@ -133,8 +115,8 @@ export component DesktopHome inherits Rectangle {
                         alignment: center;
                         HorizontalLayout {
                             spacing: 4px;
-                            Keycap { key: "Super"; }
-                            Keycap { key: "K"; }
+                            YKeycap { key: "Super"; }
+                            YKeycap { key: "K"; }
                         }
                     }
                 }

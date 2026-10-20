@@ -73,7 +73,7 @@ export component ArcadeApp inherits AppWindow {
                 background: Theme.bg-surface;
                 VerticalLayout {
                     padding: 14px; spacing: 8px;
-                    Text { text: "GAMES"; color: Theme.text-dim; font-size: 10px; font-weight: 600; letter-spacing: 1.6px; height: 18px; }
+                    Text { text: "GAMES"; color: Theme.text-dim; font-size: Theme.fs-caption; font-weight: 600; letter-spacing: 1.6px; height: 18px; }
                     ScrollView {
                         vertical-stretch: 3;
                         VerticalLayout {
@@ -86,7 +86,7 @@ export component ArcadeApp inherits AppWindow {
                                     padding-left: 10px; padding-right: 10px; padding-top: 6px;
                                     spacing: 2px;
                                     Text { text: row.title; color: Theme.text-primary; font-size: 13px; font-weight: 600; overflow: elide; }
-                                    Text { text: row.detail; color: Theme.text-dim; font-size: 11px; overflow: elide; }
+                                    Text { text: row.detail; color: Theme.text-dim; font-size: Theme.fs-caption; overflow: elide; }
                                 }
                                 TouchArea { clicked => { root.pick-game(row.slug); } }
                             }
@@ -96,7 +96,7 @@ export component ArcadeApp inherits AppWindow {
                             }
                         }
                     }
-                    Text { text: "CHARACTERS"; color: Theme.text-dim; font-size: 10px; font-weight: 600; letter-spacing: 1.6px; height: 18px; }
+                    Text { text: "CHARACTERS"; color: Theme.text-dim; font-size: Theme.fs-caption; font-weight: 600; letter-spacing: 1.6px; height: 18px; }
                     ScrollView {
                         vertical-stretch: 2;
                         VerticalLayout {
@@ -108,7 +108,7 @@ export component ArcadeApp inherits AppWindow {
                                 HorizontalLayout {
                                     padding-left: 10px; padding-right: 10px; spacing: 6px; alignment: space-between;
                                     Text { text: row.name; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
-                                    Text { text: row.archetype; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: row.archetype; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
                                 }
                                 TouchArea { clicked => { root.pick-character(row.slug); } }
                             }
@@ -129,7 +129,7 @@ export component ArcadeApp inherits AppWindow {
                     padding: 16px; spacing: 10px;
                     Text {
                         text: "SPEC — a character or a game, as JSON";
-                        color: Theme.text-dim; font-size: 10px; font-weight: 600; letter-spacing: 1.6px; height: 16px;
+                        color: Theme.text-dim; font-size: Theme.fs-caption; font-weight: 600; letter-spacing: 1.6px; height: 16px;
                     }
                     TextEdit {
                         text <=> root.spec-text;

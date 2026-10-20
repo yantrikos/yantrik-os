@@ -271,7 +271,7 @@ component TerminalCells inherits Rectangle {
     measure := Text {
         text: "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM";
         font-family: Theme.font-mono;
-        font-size: 11px;
+        font-size: Theme.fs-caption;
         visible: false;
     }
     for run in root.runs : Rectangle {
@@ -288,7 +288,7 @@ component TerminalCells inherits Rectangle {
             text: run.text;
             color: run.fg;
             font-family: Theme.font-mono;
-            font-size: 11px;
+            font-size: Theme.fs-caption;
             font-weight: run.bold ? 700 : 400;
             vertical-alignment: center;
         }

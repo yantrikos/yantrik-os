@@ -77,9 +77,6 @@ const SHOW_AFTER: Duration = Duration::from_millis(100);
 const MOST_TYPED: usize = 24;
 /// The frame the design was drawn in; the output is scaled from it.
 const DESIGN: (f32, f32) = (1280.0, 800.0);
-/// A card's edge behind the front, and the selected one's (the theme's accent).
-const EDGE: (u8, u8, u8) = (0x34, 0x42, 0x54);
-const ACCENT: (u8, u8, u8) = (0x8f, 0xb4, 0xe3);
 /// The time line's marker moves to a new window's time in this long.
 const MARKER_GLIDE: f32 = 0.18;
 /// The caption fades out in this long, changes, and fades in again in CAPTION_IN.
@@ -386,7 +383,7 @@ fn warm_up(window: &Rc<MinimalSoftwareWindow>, view: &SwitcherView) {
         fade: 0.5,
         front: true,
         edge_width: 2.0,
-        edge: slint::Color::from_rgb_u8(ACCENT.0, ACCENT.1, ACCENT.2),
+        chosen: 1.0,
         icon_id: icon.into(),
         name: "Warming up ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789".into(),
         note: "minimized".into(),
@@ -662,7 +659,6 @@ impl App {
                     }
                     (x, y, cw, ch) = (x.round(), y.round(), cw.round(), ch.round());
                     let k = model::chosen(d);
-                    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
                     let note = match (pic.is_some(), !win.current_workspace, win.minimized) {
                         (true, _, _) | (false, false, false) => "",
                         (false, true, true) => "on another desktop · minimized",
@@ -681,7 +677,7 @@ impl App {
                             fade: model::fade(d) * appear,
                             front: d < 0.5,
                             edge_width: if k > 0.5 { 2.0 * scale } else { scale.max(1.0) },
-                            edge: slint::Color::from_rgb_u8(mix(EDGE.0, ACCENT.0), mix(EDGE.1, ACCENT.1), mix(EDGE.2, ACCENT.2)),
+                            chosen: k,
                             icon_id: model::icon_id(win).into(),
                             name: model::name(win).into(),
                             note: note.into(),
