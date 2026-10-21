@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use yantrik_ipc_contracts::control_surface::{Action, Param, View};
 use yantrik_ipc_transport::gate::{Authority, Mode};
 
-use crate::private::{private_view, show_problem, PRIVATE_SUMMARY, RESERVED_KEYS};
+use crate::private::{private_view, show_problem, Hold, PRIVATE_SUMMARY, RESERVED_KEYS, WITHHELD, WITHHELD_REFUSAL};
 use crate::registry::LocalRegistry;
 
 /// In every place an app could put the person's words: the summary, a key, a nested value.
@@ -35,6 +35,12 @@ fn calendar(reads: Rc<Cell<u32>>) -> LocalRegistry {
         Box::new(|args| Ok(json!({ "renamed_to": args["to"].clone() }))),
     );
     reg.add(Action::new("today", "Answer with today's date").stateless(), Box::new(|_| Ok(json!("2026-10-21"))));
+    // What a careless handler answers and refuses with: the person's words.
+    reg.add(Action::new("read_next", "Read the next event").stateless(), Box::new(|_| Ok(json!({ "title": SENTINEL }))));
+    reg.add(
+        Action::new("open_event", "Open an event").arg(Param::text("id")),
+        Box::new(|_| Err(format!("no event like that; the open one is {SENTINEL}"))),
+    );
     reg
 }
 
@@ -66,7 +72,7 @@ fn in_private_mode_describe_answers_with_the_id_the_marker_and_nothing_the_app_h
     has_no_sentinel(&answer);
     // Still there, still drivable by the person: the actions and their grades are the author's.
     let actions: Vec<&str> = answer["actions"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
-    assert_eq!(actions, ["rename", "today"]);
+    assert_eq!(actions, ["rename", "today", "read_next", "open_event"]);
     // The revision is the private view's, so it says nothing about what changed underneath.
     assert_eq!(answer["revision"], private_view(None, &[], None).revision());
     assert_ne!(answer["revision"], reg.snapshot().revision());
@@ -113,7 +119,7 @@ fn the_window_facts_come_from_presence_and_nothing_else_of_it_does() {
 #[test]
 fn an_act_in_private_mode_replies_with_the_private_view() {
     let reg = calendar(Rc::new(Cell::new(0)));
-    let reply = reg.act_in("rename", &json!({ "to": "x" }), None, "t#1", &open(), true).unwrap();
+    let reply = reg.act_in("rename", &json!({ "to": "x" }), None, "t#1", &open(), Hold::Withheld).unwrap();
     assert_eq!(reply["accepted"], true);
     assert_eq!(reply["private"], true);
     assert_eq!(reply["summary"], PRIVATE_SUMMARY);
@@ -121,11 +127,11 @@ fn an_act_in_private_mode_replies_with_the_private_view() {
     assert_eq!(reply["revision"], reg.describe_in(true)["revision"]);
     has_no_sentinel(&reply);
     // A stateless reply carries no state either way, and is still marked.
-    let today = reg.act_in("today", &json!({}), None, "t#2", &open(), true).unwrap();
+    let today = reg.act_in("today", &json!({}), None, "t#2", &open(), Hold::Withheld).unwrap();
     assert!(today.get("state").is_none() && today.get("summary").is_none());
     assert_eq!(today["private"], true);
     // Off, the reply is the app's own, unmarked.
-    let off = reg.act_in("rename", &json!({ "to": "x" }), None, "t#3", &open(), false).unwrap();
+    let off = reg.act_in("rename", &json!({ "to": "x" }), None, "t#3", &open(), Hold::Open).unwrap();
     assert_eq!(off["state"]["next_event"], SENTINEL);
     assert!(off.get("private").is_none());
 }
@@ -137,11 +143,42 @@ fn the_guard_in_private_mode_holds_a_call_to_what_its_caller_could_see_and_says_
     let shown = reg.describe_in(true)["revision"].as_str().unwrap().to_string();
     // The real revision is not something a private caller could have read, and taking it would
     // make the guard an oracle on the app's contents.
-    let stale = reg.act_in("rename", &json!({ "to": "x" }), Some(&real), "t#1", &open(), true).unwrap_err();
+    let stale = reg.act_in("rename", &json!({ "to": "x" }), Some(&real), "t#1", &open(), Hold::Withheld).unwrap_err();
     assert!(stale.starts_with("STALE:"), "{stale}");
     assert!(stale.contains(PRIVATE_SUMMARY), "{stale}");
     assert!(!stale.contains("SENTINEL-924"), "the refusal leaked the summary: {stale}");
-    assert!(reg.act_in("rename", &json!({ "to": "x" }), Some(&shown), "t#2", &open(), true).is_ok());
+    assert!(reg.act_in("rename", &json!({ "to": "x" }), Some(&shown), "t#2", &open(), Hold::Withheld).is_ok());
+}
+
+/// #926 review, M1: in Private mode a caller nobody vouches for is told the action ran, or was
+/// refused, and nothing it said; the shell, the app's own program and the listed desktop programs
+/// (`Hold::Vouched`) get its own answer and refusal, beside the private view.
+#[test]
+fn an_unvouched_caller_gets_no_result_and_no_refusal_text_and_a_vouched_one_gets_both() {
+    let reg = calendar(Rc::new(Cell::new(0)));
+    let withheld = reg.act_in("read_next", &json!({}), None, "t#1", &open(), Hold::Withheld).unwrap();
+    assert_eq!(withheld["accepted"], true);
+    assert_eq!(withheld["result"], Value::Null);
+    assert_eq!(withheld["withheld"], WITHHELD);
+    assert_eq!(withheld["private"], true);
+    has_no_sentinel(&withheld);
+    let refused = reg.act_in("open_event", &json!({ "id": "e1" }), None, "t#2", &open(), Hold::Withheld).unwrap_err();
+    assert_eq!(refused, WITHHELD_REFUSAL);
+    // The dispatch's own refusals are its words, not the app's, and stay as they were.
+    let unknown = reg.act_in("nope", &json!({}), None, "t#3", &open(), Hold::Withheld).unwrap_err();
+    assert!(unknown.starts_with("unknown action `nope`"), "{unknown}");
+
+    let vouched = reg.act_in("read_next", &json!({}), None, "t#4", &open(), Hold::Vouched).unwrap();
+    assert_eq!(vouched["result"]["title"], SENTINEL, "the shell, the app's own program, yantrik-term");
+    assert_eq!(vouched["private"], true);
+    assert!(vouched.get("withheld").is_none());
+    let why = reg.act_in("open_event", &json!({ "id": "e1" }), None, "t#5", &open(), Hold::Vouched).unwrap_err();
+    assert!(why.contains(SENTINEL), "{why}");
+
+    assert_eq!((Hold::of(false, true), Hold::of(true, true), Hold::of(true, false)), (Hold::Open, Hold::Vouched, Hold::Withheld));
+    assert_eq!(Hold::for_caller(false, None), Hold::Open);
+    assert_eq!(Hold::for_caller(true, None), Hold::Withheld, "no pid is nobody's");
+    assert_eq!(Hold::for_caller(true, Some(std::process::id() as i32)), Hold::Withheld, "a test binary is not installed");
 }
 
 #[test]

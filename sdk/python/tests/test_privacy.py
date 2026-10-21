@@ -15,6 +15,7 @@ from yantrik_surface import Surface, mind_door, privacy, wire
 
 PRIVACY_RS = "crates/yantrik-ipc-transport/src/privacy.rs"
 SURFACE_PRIVATE_RS = "crates/yantrik-surface/src/private.rs"
+OWNER_RS = "crates/yantrik-ipc-transport/src/private_owner.rs"
 
 
 class TestTheFile(support.MachineCase):
@@ -137,6 +138,48 @@ class TestPrivateSurface(test_mind_door.TestTheDoor):
         self.assertIs(described["private"], True, described)
         self.assertEqual(described["summary"], privacy.PRIVATE_SUMMARY)
         self.assertNotIn("SENTINEL-924", json.dumps(described))
+
+    def test_an_unvouched_caller_gets_neither_the_result_nor_the_refusal_text(self):
+        # #926 review, M1: this test process is not an installed desktop program.
+        from yantrik_surface import Refusal
+        sentinel = "Call Priya SENTINEL-924"
+        s = Surface("notes")
+
+        @s.action("read_note", grade="safe")
+        def read_note() -> dict:
+            "Answer with the open note."
+            return {"text": sentinel}
+
+        @s.action("open_note", grade="safe")
+        def open_note(title: str) -> dict:
+            "Open a note by title."
+            raise Refusal("no note %r; the open one is %s" % (title, sentinel))
+
+        server = s.serve_in_thread()
+        self.addCleanup(s.stop)
+        self.assertEqual(self.call(server.path, "app.act", {"action": "read_note", "args": {}})
+                         ["result"]["result"], {"text": sentinel})
+        self.private()
+        read = self.call(server.path, "app.act", {"action": "read_note", "args": {}})["result"]
+        self.assertIs(read["accepted"], True)
+        self.assertIsNone(read["result"])
+        self.assertEqual(read["withheld"], privacy.WITHHELD)
+        self.assertNotIn("SENTINEL-924", json.dumps(read))
+        refused = self.call(server.path, "app.act", {"action": "open_note", "args": {"title": "x"}})
+        self.assertEqual(refused["error"]["message"], privacy.WITHHELD_REFUSAL)
+
+    def test_the_readers_while_private_are_the_crates(self):
+        d = privacy.INSTALL_DIR
+        own = d + "/yantrik-notes"
+        for yes in (d + "/yantrik-ui", d + "/yantrik-term", own, own + " (deleted)"):
+            self.assertTrue(privacy.is_private_reader_in(yes, own, d), yes)
+        for no in ("/tmp/yantrik-term", d + "/yantrik-email", "/usr/bin/python3", "yantrik-ui", ""):
+            self.assertFalse(privacy.is_private_reader_in(no, own, d), no)
+        self.assertFalse(privacy.reads_while_private(os.getpid()))
+        support.quoted(self, OWNER_RS, 'pub const PRIVATE_READERS: &[&str] = &[')
+        support.quoted(self, OWNER_RS, '    "yantrik-term",\n];')
+        support.quoted(self, SURFACE_PRIVATE_RS, 'pub const WITHHELD: &str = "%s";' % privacy.WITHHELD)
+        support.quoted(self, SURFACE_PRIVATE_RS, '"%s";' % privacy.WITHHELD_REFUSAL)
 
     def test_an_app_cannot_show_the_private_views_own_keys(self):
         s = Surface("notes")

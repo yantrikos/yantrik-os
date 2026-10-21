@@ -10,7 +10,7 @@ use yantrik_ipc_transport::server::{PeerCred, RpcServer, ServiceHandler};
 
 use crate::call::{next_action_id, refusal, service_id_for, ActCall, NO_SUCH_METHOD};
 use crate::context::{AgentTokenScope, Caller, CallerScope, LaterScope};
-use crate::private::{finish_later_published, recheck_private};
+use crate::private::{finish_later_published, recheck_private, recheck_refusal, Hold};
 use crate::registry::{Registry, SharedDescriber, SharedHandler};
 
 /// One surface — what it reports, what it can be asked to do — answering `app.describe`,
@@ -108,7 +108,7 @@ impl Surface {
                 // answer is built (`crate::private`).
                 let private = yantrik_ipc_transport::privacy::is_private();
                 let mut answer = self.registry.describe_in(private);
-                recheck_private(private, &mut answer, || Some(self.registry.published(true)));
+                recheck_private(private, peer.map(|p| p.pid), &mut answer, || Some(self.registry.published(true)));
                 Some(Ok(answer))
             }
             "app.act" => Some(self.act(params, peer, Authority::now())),
@@ -177,23 +177,26 @@ impl Surface {
         call.log(&action_id, &authority, who);
 
         let ActCall { action, args, agent_token, expect_revision, .. } = call;
-        // What the reply may carry of the app: the private view while the person is private.
+        // What the reply may carry of the app: the private view while the person is private, and
+        // the action's own answer only for a caller the kernel vouches for (`Hold`).
         let private = yantrik_ipc_transport::privacy::is_private();
+        let caller = peer.map(|p| p.pid);
+        let hold = Hold::for_caller(private, caller);
         let (answer, later) = {
             let _caller = CallerScope::enter(who);
             let _token = AgentTokenScope::enter(agent_token);
             let later = LaterScope::enter();
             let answer = self.registry.within_reach(reach.as_ref(), &action, &args).and_then(|()| {
                 let expect = expect_revision.as_deref();
-                self.registry.act_in(&action, &args, expect, &action_id, &authority, private)
+                self.registry.act_in(&action, &args, expect, &action_id, &authority, hold)
             });
             (answer, later.take())
         };
-        let mut envelope = answer.map_err(refusal)?;
-        recheck_private(private, &mut envelope, || Some(self.registry.published(true)));
+        let mut envelope = answer.map_err(|why| refusal(recheck_refusal(private, caller, why)))?;
+        recheck_private(private, caller, &mut envelope, || Some(self.registry.published(true)));
         match later {
             Some(work) => {
-                finish_later_published(envelope, work, |private| Some(self.registry.published(private)))
+                finish_later_published(envelope, work, caller, |private| Some(self.registry.published(private)))
             }
             None => Ok(envelope),
         }

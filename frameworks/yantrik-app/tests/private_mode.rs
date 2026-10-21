@@ -16,6 +16,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use yantrik_app::app::{App, Boot, Changed, Startup, WindowId};
 use yantrik_app::control::private_mode::PRIVATE_SUMMARY;
+use yantrik_surface::{WITHHELD, WITHHELD_REFUSAL};
 use yantrik_app::control::{self, answer_later, Action, Param, View};
 use yantrik_app::cx::Cx;
 use yantrik_app::effects::Effects;
@@ -221,6 +222,14 @@ fn door() -> &'static str {
                     |_| Ok(json!({ "marked": true })),
                 )
                 .action(
+                    Action::new("read_open", "Answer with the open message").risk("safe"),
+                    |_| Ok(json!({ "subject": SENTINEL, "body": format!("see you at 4, {SENTINEL}") })),
+                )
+                .action(
+                    Action::new("open_message", "Open a message by id").risk("safe").arg(Param::text("id")),
+                    |_| Err(format!("no such message; the open one is {SENTINEL}")),
+                )
+                .action(
                     Action::new("go_private", "Turn Private mode on, as the person might mid-call").risk("safe"),
                     |_| {
                         privacy::publish(true, 1).map_err(|e| e.to_string())?;
@@ -299,7 +308,9 @@ fn an_act_on_the_socket_in_private_mode_replies_and_refuses_with_nothing_the_app
 fn work_finished_later_is_read_back_under_private_mode_as_it_is_then() {
     let _machine = machine();
     let reply = call("app.act", json!({ "action": "sync", "args": {} }));
-    assert_eq!(reply["result"]["result"], json!({ "fetched": 1 }), "{reply}");
+    // The work ran; what it answered is not this unvouched caller's to read.
+    assert_eq!(reply["result"]["result"], Value::Null, "{reply}");
+    assert_eq!(reply["result"]["withheld"], WITHHELD);
     assert_eq!(reply["result"]["private"], true, "Private mode came on while the work ran: {reply}");
     assert_eq!(reply["result"]["summary"], PRIVATE_SUMMARY);
     assert!(!leaks(&reply), "{reply}");
@@ -323,3 +334,39 @@ fn private_mode_turned_on_during_a_call_holds_for_that_calls_answer() {
     assert!(!leaks(&described), "{described}");
 }
 
+/// #926 review, M1: in Private mode the action still runs for a caller the kernel does not vouch
+/// for (this test binary is not installed), but its answer is withheld and a handler's refusal is
+/// a neutral sentence; with Private mode off both are the app's own.
+#[test]
+fn an_unvouched_caller_on_the_socket_gets_neither_the_result_nor_the_refusal_text() {
+    let machine = machine();
+    let open = call("app.act", json!({ "action": "read_open", "args": {} }));
+    assert_eq!(open["result"]["result"]["subject"], SENTINEL, "off, the answer is the app's");
+    machine.private(true);
+    let read = call("app.act", json!({ "action": "read_open", "args": {} }));
+    assert_eq!(read["result"]["accepted"], true, "{read}");
+    assert_eq!(read["result"]["result"], Value::Null);
+    assert_eq!(read["result"]["withheld"], WITHHELD);
+    assert!(!leaks(&read), "{read}");
+    let refused = call("app.act", json!({ "action": "open_message", "args": { "id": "m1" } }));
+    assert_eq!(refused["error"]["message"], WITHHELD_REFUSAL, "{refused}");
+    assert!(!leaks(&refused), "{refused}");
+    machine.private(false);
+    let why = call("app.act", json!({ "action": "open_message", "args": { "id": "m1" } }));
+    assert!(leaks(&why), "off, the app's own refusal: {why}");
+}
+
+/// #926 review, M1: a second launch while the person is private reads the `private` marker, not a
+/// `result` it may not be shown, and says the launch was handed over. (This running copy has no
+/// window, so with Private mode off it truthfully says so.)
+#[test]
+fn a_second_launch_while_private_is_handed_over_and_says_so() {
+    use yantrik_app::present::{self, Presented};
+    let machine = machine();
+    door();
+    assert_eq!(present::ask(SURFACE), Presented::NoWindow, "off, the running copy's own answer");
+    machine.private(true);
+    let answered = present::ask(SURFACE);
+    assert_eq!(answered, Presented::Shown, "{answered:?}");
+    assert_eq!(answered.sentence(SURFACE), None, "nothing false is printed for the person");
+}

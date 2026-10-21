@@ -10,7 +10,9 @@ use serde_json::{json, Value};
 use yantrik_ipc_transport::privacy;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use yantrik_surface::{answer_later, Action, LocalRegistry, Surface, View, PRIVATE_SUMMARY};
+use yantrik_surface::{
+    answer_later, Action, LocalRegistry, Param, Surface, View, PRIVATE_SUMMARY, WITHHELD, WITHHELD_REFUSAL,
+};
 
 /// Set by a test: the next describe turns Private mode on while it runs.
 static FLIP_IN_DESCRIBE: AtomicBool = AtomicBool::new(false);
@@ -43,6 +45,13 @@ fn reminders() -> Surface {
             }
             View::new(format!("Reminders — next: {SENTINEL}")).with("next", SENTINEL)
         })
+        .action(Action::new("read_next", "Answer with the next reminder").risk("safe"), |_| {
+            Ok(json!({ "next": SENTINEL }))
+        })
+        .action(
+            Action::new("open_reminder", "Open a reminder by id").risk("safe").arg(Param::text("id")),
+            |_| Err(format!("no reminder like that; the next is {SENTINEL}")),
+        )
         .action(Action::new("go_private", "Turn Private mode on mid-call").risk("safe"), |_| {
             privacy::publish(true, 1).map_err(|e| e.to_string())?;
             Ok(json!({ "ok": true }))
@@ -75,7 +84,8 @@ fn a_services_describe_and_act_follow_private_mode_from_the_next_call() {
     assert_eq!(hidden["state"], json!({ "private": true }), "a service has no window and keeps nothing");
     assert!(!leaks(&hidden), "{hidden}");
     let acted = answer(&surface, "app.act", json!({ "action": "snooze", "args": {} }));
-    assert_eq!(acted["result"], json!({ "snoozed": true }), "the person's own call still runs");
+    assert_eq!(acted["accepted"], true, "the person's own call still runs");
+    assert_eq!(acted["result"], Value::Null, "and what it answered is withheld from an unvouched caller");
     assert_eq!(acted["private"], true);
     assert!(!leaks(&acted), "{acted}");
 
@@ -88,7 +98,8 @@ fn a_services_work_finished_later_is_read_back_under_private_mode_as_it_is_then(
     let _machine = machine();
     let surface = reminders();
     let reply = answer(&surface, "app.act", json!({ "action": "sync", "args": {} }));
-    assert_eq!(reply["result"], json!({ "fetched": 1 }), "{reply}");
+    assert_eq!(reply["result"], Value::Null, "{reply}");
+    assert_eq!(reply["withheld"], WITHHELD);
     assert_eq!(reply["private"], true, "Private mode came on while the work ran: {reply}");
     assert!(!leaks(&reply), "{reply}");
     privacy::publish(false, 1).unwrap();
@@ -128,3 +139,21 @@ fn a_privacy_source_cannot_make_a_surface_less_private_than_the_file() {
     assert_eq!(reg.describe()["state"]["next"], SENTINEL);
 }
 
+/// #926 review, M1: at a service's door, in Private mode, a caller the kernel does not vouch for
+/// (no peer, here) gets the action run and nothing it said.
+#[test]
+fn an_unvouched_caller_at_a_services_door_gets_neither_the_result_nor_the_refusal_text() {
+    let _machine = machine();
+    let surface = reminders();
+    assert_eq!(answer(&surface, "app.act", json!({ "action": "read_next", "args": {} }))["result"]["next"], SENTINEL);
+    privacy::publish(true, 1).unwrap();
+    let read = answer(&surface, "app.act", json!({ "action": "read_next", "args": {} }));
+    assert_eq!((read["accepted"].clone(), read["result"].clone()), (json!(true), Value::Null), "{read}");
+    assert!(!leaks(&read), "{read}");
+    let refused = surface
+        .answer("app.act", &json!({ "action": "open_reminder", "args": { "id": "r1" } }), None)
+        .expect("a surface method")
+        .unwrap_err();
+    assert_eq!(refused.message, WITHHELD_REFUSAL);
+    privacy::publish(false, 1).unwrap();
+}

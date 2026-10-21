@@ -144,6 +144,10 @@ fn read(reply: Result<serde_json::Value, yantrik_ipc_transport::RpcError>) -> Pr
     match reply {
         Err(e) if e.code == yantrik_surface::REFUSED => Presented::Refused(e.message),
         Err(e) => Presented::Unanswered(e.message),
+        // In Private mode a caller the kernel does not vouch for (a launch from outside the install
+        // directory, a developer's build) is not shown what `present` answered; the act was
+        // accepted, so the running copy took the launch, and that is what the second launch says.
+        Ok(reply) if reply["private"] == true && reply.get("withheld").is_some() => Presented::Shown,
         Ok(reply) => {
             let result = &reply["result"];
             if result["window"] != true {

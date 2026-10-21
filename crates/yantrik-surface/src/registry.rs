@@ -8,7 +8,7 @@ use yantrik_ipc_transport::gate::{self, decide, Authority, LADDER};
 use yantrik_ipc_transport::reach::{self, Reach};
 
 use crate::args::{as_declared, check_arguments, declaration_problems};
-use crate::private::{mark, PrivacySource};
+use crate::private::{Hold, PrivacySource};
 
 /// What an app reports about itself, for a surface whose describe closure lives on one thread.
 pub type Describer = dyn Fn() -> View;
@@ -337,12 +337,14 @@ where
         action_id: &str,
         authority: &Authority,
     ) -> Result<Value, String> {
-        self.act_in(name, args, expect_revision, action_id, authority, self.private_now())
+        // In process (the rail, a test) nobody is vouched for: the app itself reads its own model.
+        self.act_in(name, args, expect_revision, action_id, authority, Hold::of(self.private_now(), false))
     }
 
-    /// [`Registry::act`] with Private mode as the door read it for this call: the guard holds the
-    /// call to the view the caller could have read, and the reply carries that view, so no
-    /// refusal and no reply says more than `describe` would.
+    /// [`Registry::act`] under the [`Hold`] the door worked out for this call: in Private mode the
+    /// guard holds the call to the view the caller could have read and the reply carries that
+    /// view, and for a caller nobody vouches for the handler's own answer and refusal are withheld,
+    /// so no reply and no refusal says more than `describe` would.
     pub fn act_in(
         &self,
         name: &str,
@@ -350,8 +352,9 @@ where
         expect_revision: Option<&str>,
         action_id: &str,
         authority: &Authority,
-        private: bool,
+        hold: Hold,
     ) -> Result<Value, String> {
+        let private = hold.is_private();
         let Some((spec, run)) = self.actions.iter().find(|(a, _)| a.name == name) else {
             return Err(self.unknown(name));
         };
@@ -391,7 +394,7 @@ where
 
         // The handler reads what it declared: every argument of its declared type, converted where
         // it arrived as something that converts without loss, and every default filled in.
-        let result = run(&as_declared(spec, args))?;
+        let result = run(&as_declared(spec, args)).map_err(|why| hold.refusal(why))?;
 
         // An answer about something other than this app carries nothing of it, and the app is not
         // read again for a reply that would not use it. Otherwise it is read back through the same
@@ -403,9 +406,7 @@ where
         } else {
             act_json(&self.app_id, action_id, !spec.deferred, result, &self.published(private))
         };
-        if private {
-            mark(&mut reply);
-        }
+        hold.seal(&mut reply);
         Ok(reply)
     }
 }

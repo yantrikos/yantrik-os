@@ -255,10 +255,20 @@ person from the person — `describe` carries no token — so on every door a su
 | `actions` | As always: the declarations and grades are the author's, and the shell builds the person's approval cards from them. |
 
 The call is answered, not refused: the shell and a mind deciding whether to wait still need to
-know the app is there. `app.act` replies with the same view in place of the app's (its `result` is
-the call's own), and the revision guard holds the call to the private revision, so a `STALE:`
-refusal says no more than `describe` would. An act whose work finishes later is read back under
-Private mode as it is then.
+know the app is there. `app.act` replies with the same view in place of the app's, and the revision
+guard holds the call to the private revision, so a `STALE:` refusal says no more than `describe`
+would. Private mode is read for the call and again once its answer is built, and an act whose work
+finishes later is read back under Private mode as it is then.
+
+The action still runs for the person's own calls, but what it said reaches only a caller the kernel
+vouches for: the shell, the called app's own installed program (a second launch handing over), and
+the short list `yantrik_ipc_transport::private_owner::PRIVATE_READERS` keeps, each entry with its
+reason (`yantrik-term` today). Who is calling is the `SO_PEERCRED` pid and its `/proc/<pid>/exe`,
+compared with the install directory — a directory and a name, never a name alone. Every other caller
+gets `"result": null` with `"withheld"` saying why, and a handler's refusal as the one sentence
+`PRIVATE: the app refused this call, and while the person has Private mode on its reason is not
+shown to this caller.`; the dispatch's own refusals (unknown action, arguments, `CEILING:`,
+`GRANT:`, `STALE:`) are unchanged. A second launch reads `private` and `withheld` as "handed over".
 
 ### `app.explain` (optional)
 

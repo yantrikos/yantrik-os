@@ -1,4 +1,9 @@
-//! Private mode for a service an app keeps its content in (#924 follow-up; #926 review, M2).
+//! Private mode, and the callers the kernel vouches for while it is on (#924; #926 review, M1/M2).
+//!
+//! Two questions, one answer to who is calling. [`reads_while_private`]: may this caller read an
+//! `app.act`'s own `result` and refusals while the person is private — the shell, the called app's
+//! own installed program (a second launch handing over), and [`PRIVATE_READERS`]. And
+//! [`content_for_owners`], below:
 //!
 //! Notes, mail and calendar events live in services the person's own apps read them through. A
 //! blanket refusal while the person is private would leave their own Notes, Email and Calendar
@@ -29,6 +34,40 @@ use crate::server::PeerCred;
 /// What Linux appends to `/proc/<pid>/exe` when the program has been replaced under a running
 /// process, as an update does. That process is still the program it was started as.
 const DELETED: &str = " (deleted)";
+
+/// The desktop's programs, besides the shell and the called app's own, that read an `app.act`'s
+/// `result` and refusals while the person is private. Installed in the install directory; a name
+/// elsewhere is not one of them. Every entry says why, and an addition is a decision for a reader.
+pub const PRIVATE_READERS: &[&str] = &[
+    // The person's chat with the Mind in a terminal: it reads `chat_view` and `send_message`'s
+    // results from the shell, so without it the person's own terminal goes blank while they are
+    // private. Residual, accepted until #43: an agent can exec yantrik-term itself and read the
+    // chat view — the person's Mind conversation, not any app's contents.
+    "yantrik-term",
+];
+
+/// Whether `exe` — the caller's `/proc/<pid>/exe` resolved — may read an act's own answer while the
+/// person is private: the shell, one of [`PRIVATE_READERS`], or the same program as `own` (this
+/// process's, the app the call is to), each sitting directly in `dir`. Pure, so the rule is a test.
+pub fn is_private_reader_in(exe: &str, own: Option<&str>, dir: &Path) -> bool {
+    let strip = |e: &str| e.strip_suffix(DELETED).unwrap_or(e).to_string();
+    let exe = strip(exe);
+    let path = Path::new(&exe);
+    if !path.is_absolute() || path.parent() != Some(dir) {
+        return false;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    name == SHELL_BINARY || PRIVATE_READERS.contains(&name) || own.map(strip).as_deref() == Some(exe.as_str())
+}
+
+/// Whether the process `pid` — the kernel's account of an `app.act` caller — may read the act's
+/// own `result` and refusals while the person is private ([`is_private_reader_in`], against this
+/// process's own program and the install directory). Unidentifiable is no.
+pub fn reads_while_private(pid: i32) -> bool {
+    let Some(exe) = exe_of(pid) else { return false };
+    let own = exe_of(std::process::id() as i32);
+    is_private_reader_in(&exe, own.as_deref(), Path::new(INSTALL_DIR))
+}
 
 /// Whether `exe` — `/proc/<pid>/exe` resolved — is one of `owners`, or the shell, sitting directly
 /// in `dir`. Pure, so the rule is a test.
@@ -71,6 +110,34 @@ mod tests {
     use super::*;
 
     const DIR: &str = "/opt/yantrik/bin";
+
+    #[test]
+    fn the_readers_while_private_are_the_shell_the_apps_own_program_and_the_list() {
+        let dir = Path::new(DIR);
+        let own = Some("/opt/yantrik/bin/yantrik-notes");
+        for yes in [
+            "/opt/yantrik/bin/yantrik-ui",
+            "/opt/yantrik/bin/yantrik-term",
+            "/opt/yantrik/bin/yantrik-notes",
+            "/opt/yantrik/bin/yantrik-notes (deleted)",
+        ] {
+            assert!(is_private_reader_in(yes, own, dir), "{yes}");
+        }
+        for no in [
+            "/opt/yantrik/bin/yantrik-email",
+            "/tmp/yantrik-term",
+            "/home/p/target/release/yantrik-notes",
+            "/usr/bin/python3.11",
+            "yantrik-ui",
+            "",
+        ] {
+            assert!(!is_private_reader_in(no, own, dir), "{no}");
+        }
+        // An app's own program counts only installed: a test binary calling its own socket is no one.
+        assert!(!is_private_reader_in("/build/t/deps/x-1a2b", Some("/build/t/deps/x-1a2b"), dir));
+        assert!(!reads_while_private(std::process::id() as i32), "this test binary is not installed");
+        assert_eq!(PRIVATE_READERS, ["yantrik-term"], "an addition is a decision for a reader");
+    }
 
     #[test]
     fn the_owner_is_the_installed_app_or_the_shell_and_nothing_with_its_name_elsewhere() {

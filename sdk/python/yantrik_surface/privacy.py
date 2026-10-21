@@ -28,6 +28,47 @@ REFUSAL = ("PRIVATE: the person has turned on Private mode. Nothing on this desk
 PRIVATE_SUMMARY = "Private mode is on; this app's contents are hidden."
 RESERVED_KEYS = ("private", "open", "windows_open")
 
+# The crate's `WITHHELD` and `WITHHELD_REFUSAL` (#926 review, M1): what a caller the kernel does
+# not vouch for reads, in Private mode, in place of an act's result and a handler's refusal.
+WITHHELD = "Private mode is on; what this action answered is not shown to this caller."
+WITHHELD_REFUSAL = ("PRIVATE: the app refused this call, and while the person has Private mode on "
+                    "its reason is not shown to this caller.")
+
+# `yantrik_ipc_transport::private_owner`'s, quoted from it: the shell, the called app's own program,
+# and these read an act's own answer while the person is private. Why each is there is said there.
+SHELL_BINARY = "yantrik-ui"
+PRIVATE_READERS = ("yantrik-term",)
+INSTALL_DIR = "/opt/yantrik/bin"
+_DELETED = " (deleted)"
+
+
+def is_private_reader_in(exe, own, directory):
+    """Whether `exe` (a caller's /proc/<pid>/exe) may read an act's own answer while the person is
+    private: the shell, a listed reader, or `own` (this process's program), directly in `directory`."""
+    def strip(e):
+        return e[:-len(_DELETED)] if e.endswith(_DELETED) else e
+    exe = strip(exe or "")
+    if not os.path.isabs(exe) or os.path.dirname(exe) != directory:
+        return False
+    name = os.path.basename(exe)
+    return name == SHELL_BINARY or name in PRIVATE_READERS or (own is not None and strip(own) == exe)
+
+
+def _exe_of(pid):
+    try:
+        return os.readlink("/proc/%d/exe" % pid)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def reads_while_private(pid):
+    """Whether the process `pid`, as the kernel named the caller, may read an act's own answer
+    while the person is private. Unidentifiable is no."""
+    exe = _exe_of(pid) if isinstance(pid, int) and pid > 0 else None
+    if exe is None:
+        return False
+    return is_private_reader_in(exe, _exe_of(os.getpid()), INSTALL_DIR)
+
 
 def privacy_path():
     """Where the shell publishes Private mode, or None when this process cannot tell whose home it
