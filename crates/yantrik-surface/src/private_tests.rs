@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use yantrik_ipc_contracts::control_surface::{Action, Param, View};
 use yantrik_ipc_transport::gate::{Authority, Mode};
 
-use crate::private::{private_view, show_problem, Hold, PRIVATE_SUMMARY, RESERVED_KEYS, WITHHELD, WITHHELD_REFUSAL};
+use crate::private::{private_view, show_problem, Hold, ReplyTo, PRIVATE_SUMMARY, RESERVED_KEYS, WITHHELD, WITHHELD_REFUSAL};
 use crate::registry::LocalRegistry;
 
 /// In every place an app could put the person's words: the summary, a key, a nested value.
@@ -176,9 +176,11 @@ fn an_unvouched_caller_gets_no_result_and_no_refusal_text_and_a_vouched_one_gets
     assert!(why.contains(SENTINEL), "{why}");
 
     assert_eq!((Hold::of(false, true), Hold::of(true, true), Hold::of(true, false)), (Hold::Open, Hold::Vouched, Hold::Withheld));
-    assert_eq!(Hold::for_caller(false, None), Hold::Open);
-    assert_eq!(Hold::for_caller(true, None), Hold::Withheld, "no pid is nobody's");
-    assert_eq!(Hold::for_caller(true, Some(std::process::id() as i32)), Hold::Withheld, "a test binary is not installed");
+    let nobody = ReplyTo { pid: None, surface: "calendar" };
+    let me = ReplyTo { pid: Some(std::process::id() as i32), surface: "calendar" };
+    assert_eq!(Hold::for_caller(false, nobody), Hold::Open);
+    assert_eq!(Hold::for_caller(true, nobody), Hold::Withheld, "no pid is nobody's");
+    assert_eq!(Hold::for_caller(true, me), Hold::Withheld, "a test binary is not installed");
 }
 
 #[test]

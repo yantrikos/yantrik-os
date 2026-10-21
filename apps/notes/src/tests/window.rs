@@ -34,13 +34,13 @@ fn write_png(name: &str, width: u32, height: u32, pixels: &[u8]) {
     png.write_header().unwrap().write_image_data(pixels).unwrap();
 }
 
-fn screenshot(app: &TestApp<Notes>, name: &str) {
+pub(super) fn screenshot(app: &TestApp<Notes>, name: &str) {
     let (width, height, pixels) = app.ui(snapshot);
     write_png(name, width, height, &pixels);
 }
 
 /// The first window and `second` side by side in one picture, as they stand on the desktop.
-fn screenshot_two(app: &TestApp<Notes>, second: WindowId, name: &str) {
+pub(super) fn screenshot_two(app: &TestApp<Notes>, second: WindowId, name: &str) {
     const GAP: u32 = 24;
     let shots = [app.ui(snapshot), app.window(second, snapshot).expect("the second window is open")];
     let width = shots.iter().map(|s| s.0).sum::<u32>() + GAP;
@@ -192,8 +192,10 @@ fn real_notes_autosave_navigation_conflict_trash_preview_and_idle() {
     });
     settle(&app);
     assert!(ui(&app, |ui| ui.get_modified()));
-    assert!(ui(&app, |ui| ui.get_notice().to_string()).contains("another program changed this note"));
+    assert!(super::notice(&app).contains("another program changed this note"), "the refusal is the notice");
     assert_eq!(ui(&app, |ui| ui.get_outside()), 1, "the choices are offered");
+    // The bar says it, so the window's notice line does not say it again.
+    assert_eq!(ui(&app, |ui| ui.get_notice().to_string()), "");
     ui(&app, |ui| ui.invoke_action("new".into()));
     settle(&app);
     assert_eq!(ui(&app, |ui| ui.get_note_title().to_string()), "Draft kept");

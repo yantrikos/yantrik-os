@@ -28,82 +28,22 @@ use serde_json::Value;
 use yantrik_app::app::{App, Boot, Event, ExitReason};
 use yantrik_app::cx::{Core, Cx, Inbound, Parts};
 use yantrik_app::intents::{self, Intents};
-use yantrik_app::jobs::{Cancel, Deliver, Executor, Job, JobId, Manual};
+use yantrik_app::jobs::Manual;
 use yantrik_app::paths::Paths;
-use yantrik_app::persist::{Lane, ManualLane, Report, Write};
+use yantrik_app::persist::{ManualLane, Report};
 use yantrik_app::queue::Post;
 use yantrik_app::refused::Refused;
-use yantrik_app::timers::{Fire, ManualTimers, Sink, TimerId, Timers};
+use yantrik_app::timers::{Fired, ManualTimers, Sink};
 use yantrik_app::watch::Seen;
 use yantrik_app::window::Window;
 use yantrik_ipc_transport::gate::{Authority, Mode};
 use yantrik_surface::{AgentTokenScope, CallerScope, Later, LaterScope, LocalRegistry};
 
+pub mod headless;
+mod shared;
 mod windows;
 
-pub mod headless {
-    //! Slint on a software window with no window system.
-
-    use slint::platform::{
-        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
-        EventLoopProxy, Platform, WindowAdapter,
-    };
-    use std::rc::Rc;
-
-    struct Proxy;
-
-    impl EventLoopProxy for Proxy {
-        fn quit_event_loop(&self) -> Result<(), slint::EventLoopError> {
-            Ok(())
-        }
-
-        fn invoke_from_event_loop(
-            &self,
-            event: Box<dyn FnOnce() + Send>,
-        ) -> Result<(), slint::EventLoopError> {
-            // Onto the one UI thread, as a step of its own, whichever thread asked: a closure
-            // that upgrades a `slint::Weak` must run where the component was made. A panic in
-            // it is said and does not take the thread (and every later test) with it.
-            let step: super::Step = Box::new(move || {
-                if let Err(panic) =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(event))
-                {
-                    let what = panic
-                        .downcast_ref::<String>()
-                        .cloned()
-                        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
-                        .unwrap_or_else(|| "a non-string payload".into());
-                    eprintln!(
-                        "yantrik-testing: a closure posted to the UI thread panicked: {what}"
-                    );
-                }
-            });
-            super::ui_thread()
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .send(step)
-                .map_err(|_| slint::EventLoopError::EventLoopTerminated)
-        }
-    }
-
-    struct Headless;
-
-    impl Platform for Headless {
-        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-            Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
-        }
-
-        fn new_event_loop_proxy(&self) -> Option<Box<dyn EventLoopProxy>> {
-            Some(Box::new(Proxy))
-        }
-    }
-
-    /// Installs the platform on the calling thread. Once per process; a second call is nothing.
-    pub fn install() {
-        // Err means a platform is already set: fine.
-        let _ = slint::platform::set_platform(Box::new(Headless));
-    }
-}
+use shared::{AppClock, SharedJobs, SharedLane, SharedTimers};
 
 // ── The one UI thread ───────────────────────────────────────────────
 
@@ -152,84 +92,11 @@ fn on_ui<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
     }
 }
 
-// ── What the core is given ──────────────────────────────────────────
-
-/// The manual executor, shared between the core and the test (both on the UI thread).
-#[derive(Clone)]
-struct SharedJobs<C: Send + 'static>(Arc<Mutex<Manual<C>>>);
-
-impl<C: Send + 'static> Executor<C> for SharedJobs<C> {
-    fn spawn(&mut self, id: JobId, cancel: Cancel, job: Job<C>, deliver: Arc<dyn Deliver<C>>) {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .spawn(id, cancel, job, deliver);
-    }
-
-    fn running(&self) -> usize {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).running()
-    }
-
-    fn drain(&self, grace: Duration) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .drain(grace)
-    }
-}
-
-/// The virtual clock, shared between the core and the test.
-type Clock<C> = Rc<RefCell<ManualTimers<C>>>;
-
-struct SharedTimers<C: 'static>(Clock<C>);
-
-impl<C: 'static> Timers<C> for SharedTimers<C> {
-    fn every(&mut self, id: TimerId, period: Duration, fire: Fire<C>) {
-        self.0.borrow_mut().every(id, period, fire);
-    }
-
-    fn after(&mut self, id: TimerId, delay: Duration, fire: Fire<C>) {
-        self.0.borrow_mut().after(id, delay, fire);
-    }
-
-    fn stop(&mut self, id: TimerId) {
-        self.0.borrow_mut().stop(id);
-    }
-
-    fn stop_all(&mut self) {
-        self.0.borrow_mut().stop_all();
-    }
-
-    fn armed(&self) -> usize {
-        self.0.borrow().armed()
-    }
-}
-
-/// The manual persistence lane, shared between the core and the test.
-#[derive(Clone)]
-struct SharedLane(Arc<ManualLane>);
-
-impl Lane for SharedLane {
-    fn write(&mut self, write: Write) {
-        // `ManualLane::write` takes `&mut`, but its queue is behind a lock: the shared handle
-        // may push through it.
-        self.0.push(write);
-    }
-
-    fn waiting(&self) -> usize {
-        self.0.waiting()
-    }
-
-    fn drain(&self, grace: Duration) -> bool {
-        self.0.drain(grace)
-    }
-}
-
 /// What lives on the UI thread for one app under test.
 struct Under<A: App> {
     core: Rc<Core<A>>,
     jobs: SharedJobs<A::Command>,
-    clock: Clock<A::Command>,
+    clock: AppClock<A::Command>,
     lane: Arc<ManualLane>,
     paths: Paths,
     registry: Rc<LocalRegistry>,
@@ -364,7 +231,7 @@ impl<A: App> TestApp<A> {
                 .unwrap_or_else(|e| panic!("{}: the model did not start: {e}", A::ID));
             let ui = A::Ui::make().unwrap_or_else(|e| panic!("{}: no headless window: {e}", A::ID));
             let jobs = SharedJobs(Arc::new(Mutex::new(Manual::new())));
-            let made: Rc<RefCell<Option<Clock<A::Command>>>> = Rc::new(RefCell::new(None));
+            let made: Rc<RefCell<Option<AppClock<A::Command>>>> = Rc::new(RefCell::new(None));
             let made_out = made.clone();
             let lane_made: Arc<Mutex<Option<Arc<ManualLane>>>> = Arc::new(Mutex::new(None));
             let lane_out = lane_made.clone();
@@ -373,7 +240,7 @@ impl<A: App> TestApp<A> {
                 ui,
                 Parts {
                     executor: Box::new(jobs.clone()),
-                    timers: Box::new(move |sink: Sink<A::Command>| {
+                    timers: Box::new(move |sink: Sink<Fired<A::Command>>| {
                         let timers = Rc::new(RefCell::new(ManualTimers::new(sink)));
                         *made_out.borrow_mut() = Some(timers.clone());
                         Box::new(SharedTimers(timers))
@@ -485,7 +352,7 @@ impl<A: App> TestApp<A> {
             loop {
                 let fired = u.clock.borrow_mut().fire_next(until);
                 match fired {
-                    Some(command) => u.core.run(command),
+                    Some(fired) => u.core.fired(fired),
                     None => break,
                 }
             }
@@ -633,6 +500,12 @@ impl<A: App> TestApp<A> {
     /// with no one having asked the app to end: the app is owed its logout. `shutdown` follows.
     pub fn display_gone(&self) {
         self.with(|u| u.core.display_gone());
+    }
+
+    /// How long the shutdown's writes may take, given the usual `grace`: longer after a
+    /// signal's logout (`Core::write_window`).
+    pub fn write_window(&self, grace: Duration) -> Duration {
+        self.with(move |u| u.core.write_window(grace))
     }
 
     /// The end, as the runner does it.

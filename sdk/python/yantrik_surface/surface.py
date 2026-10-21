@@ -32,6 +32,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 import types
 import typing
 
@@ -507,10 +508,34 @@ def action_from_function(fn, name=None, *, grade="standard", settles="on return"
 # ── the surface ──────────────────────────────────────────────────────────────
 
 
-def _vouched(peer):
-    """Whether the kernel vouches for `peer` reading an act's own answer while the person is private
-    (`privacy.reads_while_private`). No peer is nobody's."""
-    return peer is not None and privacy.reads_while_private(getattr(peer, "pid", None))
+def _vouched(peer, surface):
+    """Whether the kernel vouches for `peer` reading an act's own answer from `surface` while the
+    person is private (`privacy.reads_while_private`). No peer is nobody's."""
+    return peer is not None and privacy.reads_while_private(getattr(peer, "pid", None), surface)
+
+
+class _HeldFaults:
+    """A handler's unhandled fault, held like its refusal (#926 review, M1): when the reply is
+    withheld, or Private mode is on once the fault arrives and nobody vouches for the caller, the
+    fault is printed to stderr as the wire prints it and the caller gets `WITHHELD_REFUSAL` — never
+    the exception's text, which so often names what the person had open. `RpcError`, `Refusal` and
+    `NotAnswered` are the dispatch's own words and pass through."""
+
+    def __init__(self, peer, surface, withheld):
+        self.peer, self.surface, self.withheld = peer, surface, withheld
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, trace):
+        if error is None or isinstance(error, (wire.RpcError, Refusal, NotAnswered)):
+            return False
+        if not isinstance(error, Exception):
+            return False
+        if not (self.withheld or (privacy.is_private() and not _vouched(self.peer, self.surface))):
+            return False
+        traceback.print_exception(kind, error, trace, file=sys.stderr)
+        raise wire.RpcError(wire.RPC_INVALID_PARAMS, privacy.WITHHELD_REFUSAL) from None
 
 
 class Surface:
@@ -786,7 +811,8 @@ class Surface:
                 actions = [a.schema(self._grade(a)) for a in self.actions]
             return summary, state, revision, actions
 
-        summary, state, revision, actions = self._turn(read, self.describe_timeout, busy=busy)
+        with _HeldFaults(peer, self.app_id, private and not _vouched(peer, self.app_id)):
+            summary, state, revision, actions = self._turn(read, self.describe_timeout, busy=busy)
         answer = {
             "app": self.app_id,
             "protocol": PROTOCOL,
@@ -816,7 +842,7 @@ class Surface:
         if "summary" in reply or "state" in reply:
             reply.update(summary=summary, state=state, revision=revision)
         reply["private"] = True
-        if "result" in reply and not _vouched(peer):
+        if "result" in reply and not _vouched(peer, self.app_id):
             reply.update(result=None, withheld=privacy.WITHHELD)
 
     # ── act ──────────────────────────────────────────────────────────────────
@@ -888,7 +914,7 @@ class Surface:
         # private, for the person's own calls too (#924); and the action's own answer and refusal
         # only for a caller the kernel vouches for (#926 review, M1).
         private = privacy.is_private()
-        withheld = private and not _vouched(peer)
+        withheld = private and not _vouched(peer, self.app_id)
 
         def turn():
             with _Scope(peer, token):
@@ -902,11 +928,12 @@ class Surface:
 
         timeout = (spec.timeout if spec is not None and spec.timeout else self.act_timeout)
         try:
-            outcome = self._turn(turn, timeout)
+            with _HeldFaults(peer, self.app_id, withheld):
+                outcome = self._turn(turn, timeout)
         except wire.RpcError as e:
             # Private mode came on during the call: a refusal is held to it as a reply would be.
             if (not private and e.code == wire.RPC_INVALID_PARAMS and privacy.is_private()
-                    and not _vouched(peer)):
+                    and not _vouched(peer, self.app_id)):
                 raise wire.RpcError(wire.RPC_INVALID_PARAMS, privacy.WITHHELD_REFUSAL) from None
             raise
         spec, result, later, summary, state, revision = outcome
@@ -914,14 +941,15 @@ class Surface:
         if later is not None:
             with _Scope(peer, token):
                 try:
-                    result = wire.jsonable(later.work(), "the answer of %s" % name)
+                    with _HeldFaults(peer, self.app_id, withheld):
+                        result = wire.jsonable(later.work(), "the answer of %s" % name)
                 except Refusal as r:
                     said = (privacy.WITHHELD_REFUSAL
-                            if privacy.is_private() and not _vouched(peer) else str(r))
+                            if privacy.is_private() and not _vouched(peer, self.app_id) else str(r))
                     raise wire.RpcError(wire.RPC_INVALID_PARAMS, said) from None
             # Under Private mode as it is once the work is done, not as it was when it started.
             private = privacy.is_private()
-            withheld = private and not _vouched(peer)
+            withheld = private and not _vouched(peer, self.app_id)
             try:
                 summary, state, revision = self._turn(lambda: self._published(private), timeout)
             except wire.RpcError:

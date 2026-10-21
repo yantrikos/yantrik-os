@@ -4,10 +4,11 @@ import { AppWindow } from "app_window.slint";
 export { WindowChrome } from "app_window.slint";
 import { YButton, YIconButton } from "y_button.slint";
 import { YInput } from "y_input.slint";
+import { YStatusPill } from "y_status_pill.slint";
 import { Icon, Icons } from "icon.slint";
 import { ScrollView } from "std-widgets.slint";
 export { ThemeMode, AccentPreset }
-export struct NoteRow { id:string, title:string, preview:string, date:string, pinned:bool, selected:bool }
+export struct NoteRow { id:string, title:string, preview:string, date:string, marker:string, pinned:bool, selected:bool }
 export struct BookRow { name:string, count:int, selected:bool }
 export struct PreviewBlock { text:string, kind:int }
 export component NotesApp inherits AppWindow {
@@ -50,6 +51,8 @@ export component NotesApp inherits AppWindow {
  in property <string> close-said;
  // The prompt offers Save: there is something to save, in a library that may be written.
  in property <bool> close-saves;
+ // Its label: "Save as new" for a note whose file is gone.
+ in property <string> close-save-label:"Save";
  // Unsaved text from before Notes closed, offered back: the bar's sentence, empty when none.
  in property <string> recovery-said;
  // Where the bar's offer stands: 0 none, 1 its note open (its text drawn), 2 its note listed
@@ -61,6 +64,8 @@ export component NotesApp inherits AppWindow {
  // An outside change the person chooses about: 0 none, 1 changed under unsaved edits, 2 file gone.
  in property <int> outside;
  in property <string> outside-said;
+ // A file gone under edits the person made: the bar's last choice reads Discard, not Let it go.
+ in property <bool> outside-edited;
  // The file's side of the comparison, or that it is gone.
  in property <string> theirs;
  in property <bool> theirs-gone;
@@ -97,6 +102,8 @@ export component NotesApp inherits AppWindow {
    if(event.text=="f"){root.focus-mode=false;root.view-changed();search.focus();return accept;}
    if(event.text=="p"){root.action("preview");return accept;}
    if(event.text=="e"){root.action("focus");return accept;}
+   // Ctrl+Q: quit Notes, asking once about every unsaved note in every window.
+   if(event.text=="q"){root.action("quit");return accept;}
   }
   if(event.text==Key.F5){root.action("reload");return accept;}
   if(event.text==Key.Escape){root.dialog=0;root.focus-mode=false;root.view-changed();root.focus-content();return accept;}
@@ -128,6 +135,8 @@ export component NotesApp inherits AppWindow {
     if root.outside==1 : YButton{label:"Take theirs";variant:1;size:0;clicked=>{root.action("take-theirs");}}
     if root.outside==1 : YButton{label:"Compare";variant:1;size:0;clicked=>{root.action("compare");}}
     YButton{label:"Not now";variant:1;size:0;clicked=>{root.action("not-now");}}
+    // A file gone: the person deleted it, so letting the text go too is theirs to say.
+    if root.outside==2 : YButton{label:root.outside-edited?"Discard":"Let it go";variant:3;size:0;clicked=>{root.action("let-go");}}
    }
   }
   HorizontalLayout {spacing:0px;
@@ -166,7 +175,9 @@ export component NotesApp inherits AppWindow {
          VerticalLayout {padding:12px;spacing:5px;
           HorizontalLayout{spacing:5px;
            if note.pinned : Icon{commands:Icons.star;size:12px;tint:Theme.amber;y:(parent.height - self.height)/2;}
-           Text{text:note.title;color:Theme.text-primary;font-size:14px;font-weight:600;overflow:elide;}
+           Text{text:note.title;color:Theme.text-primary;font-size:14px;font-weight:600;overflow:elide;horizontal-stretch:1;}
+           // A copy or a recovered note has the title of the note it was kept from: its card says which it is.
+           if note.marker!="" : YStatusPill{text:note.marker;}
           }
           Text{text:note.preview;color:Theme.text-secondary;font-size:12px;overflow:elide;}
           Text{text:note.date;color:Theme.text-dim;font-size:10px;overflow:elide;}
@@ -201,7 +212,7 @@ export component NotesApp inherits AppWindow {
     Rectangle {vertical-stretch:1;clip:true;
      if !root.opened : VerticalLayout {padding:50px;alignment:center;spacing:18px;
       Icon{commands:Icons.notes;size:46px;tint:Theme.amber;}
-      Text{text:"A little space to think.";color:Theme.text-primary;font-size:30px;font-weight:600;horizontal-alignment:center;}
+      Text{text:"A little space to think.";color:Theme.text-primary;font-size:30px;font-weight:600;wrap:word-wrap;horizontal-alignment:center;}
       Text{text:"Gather ideas. Keep the details. Make something of them.\nChoose a note, or start a fresh page.";color:Theme.text-secondary;font-size:14px;wrap:word-wrap;horizontal-alignment:center;}
       HorizontalLayout{alignment:center;YButton{label:"Create a note";variant:0;clicked=>{root.action("new");}}}
       Text{text:"Ctrl+N  New     Ctrl+F  Search     Ctrl+E  Focus";color:Theme.text-dim;font-size:11px;horizontal-alignment:center;}
@@ -297,7 +308,7 @@ export component NotesApp inherits AppWindow {
     HorizontalLayout{alignment:end;spacing:Theme.sp-2;
      YButton{label:"Cancel";variant:2;clicked=>{root.action("close-cancel");}}
      YButton{label:"Don't save";variant:1;clicked=>{root.action("close-discard");}}
-     if root.close-saves : YButton{label:"Save";variant:0;clicked=>{root.action("close-save");}}
+     if root.close-saves : YButton{label:root.close-save-label;variant:0;clicked=>{root.action("close-save");}}
     }
    }
   }

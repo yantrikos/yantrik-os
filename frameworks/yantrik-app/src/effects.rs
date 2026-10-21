@@ -80,6 +80,9 @@ pub enum Request<A: App> {
     /// Another window, under this id: made, wired by `App::wire_window`, drawn and shown.
     OpenWindow(WindowId),
     Close(WindowId),
+    /// Keep running once this command's closes leave no window, until `fx.exit()` or the
+    /// backstop: `crate::cx`'s `linger`.
+    Linger(Duration),
     Exit,
     /// A person asked the app to quit: raised as `Event::ExitRequested(ExitReason::Person)`.
     RequestQuit,
@@ -346,6 +349,23 @@ impl<A: App> Effects<A> {
         self.requests.push(Request::Close(window));
     }
 
+    /// Keep the process running after this command closes the last window, so work still in
+    /// flight (a write to a service, say) can land and its outcome be known, until the app runs
+    /// `fx.exit()` or `backstop` passes, when the framework ends it and logs that it did. The
+    /// backstop is capped at [`crate::cx::MAX_LINGER`].
+    ///
+    /// Only in the command that closes the last open window (`fx.close`), as the answer to its
+    /// `CloseRequested` or the end of the close flow it started; anywhere else it is ignored,
+    /// with a warning, and the usual rule holds: the last window closing ends the process.
+    ///
+    /// While it lingers there is no window; the dock still shows the app running. A second
+    /// launch opens the first window again and raises `Event::Presented`, where the app cancels
+    /// the exit it was waiting to make. A logout still ends it, within the signal deadline
+    /// (`crate::quit::SIGNAL_DEADLINE`). `Event::Presented` documents what the app sees.
+    pub fn linger(&mut self, backstop: Duration) {
+        self.requests.push(Request::Linger(backstop));
+    }
+
     /// End the process, in order.
     pub fn exit(&mut self) {
         self.requests.push(Request::Exit);
@@ -395,6 +415,7 @@ impl<A: App> Request<A> {
             Request::ApplyAsAgent { .. } => "apply_as_agent",
             Request::OpenWindow(_) => "open_window",
             Request::Close(_) => "close",
+            Request::Linger(_) => "linger",
             Request::Exit => "exit",
             Request::RequestQuit => "request_quit",
         }

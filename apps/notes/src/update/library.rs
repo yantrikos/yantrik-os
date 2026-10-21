@@ -17,7 +17,7 @@ use super::{
 };
 use crate::command::Command;
 use crate::model::{Model, Work};
-use crate::note::Note;
+use crate::note::{Kept, Note};
 use crate::store::{Loaded, MAX_NOTES, VAULT_LIMIT};
 use crate::view::render::{CHROME, STATUS};
 use crate::Notes;
@@ -136,10 +136,8 @@ pub fn trashed(m: &mut Model, fx: &mut Effects<Notes>, id: &str, result: Result<
             // the window only: it becomes a note of its own, saved at once, never closed away.
             let typed = m.current().filter(|c| c.id() == id && c.unsaved()).map(|c| c.content().clone());
             let doc = m.current_id();
-            if let (Some(_), Some(d)) = (&typed, doc.and_then(|doc| m.documents.get_mut(doc))) {
-                // Its text moves to the new note, whose own draft takes over.
-                drafts::discard(d, fx);
-            }
+            // Its text moves to the new note, whose own draft takes over.
+            let from = doc.and_then(|doc| m.documents.get(doc)).and_then(drafts::kept_name);
             show_note(m, fx, None);
             // The note is in the Trash for every window that showed it.
             if let Some(doc) = doc {
@@ -147,9 +145,10 @@ pub fn trashed(m: &mut Model, fx: &mut Effects<Notes>, id: &str, result: Result<
             }
             match typed {
                 Some(content) => {
-                    let kept = Note { id: format!("recovered-{}.md", uuid7::uuid7()), content, ..Note::default() };
+                    let kept = Note { id: Kept::Recovered.new_id(), content, ..Note::default() };
                     m.library.push(kept.clone());
                     show_note(m, fx, Some(kept));
+                    drafts::moved(m, fx, from);
                     show(m, fx);
                     // Said until the next action: the save that lands next must not take it back.
                     m.notice = said::TYPED_DURING_TRASH.into();

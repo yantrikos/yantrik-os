@@ -8,6 +8,7 @@ use yantrik_surface::{AgentTokenScope, CallerScope, LaterScope, LocalRegistry};
 use super::Core;
 use crate::app::{App, Changed};
 use crate::rail::{self, RailCommand};
+use crate::timers::Fired;
 
 impl<A: App> Core<A> {
     /// The surface this app serves, for what the core itself raises through it (the rail).
@@ -50,11 +51,8 @@ impl<A: App> Core<A> {
             return;
         }
         if let Some(refresh) = A::rail(RailCommand::Refresh) {
-            self.timers.borrow_mut().after(
-                rail::DEBOUNCE,
-                rail::DEBOUNCE_FOR,
-                Box::new(move || refresh.clone()),
-            );
+            let fire = Box::new(move || Fired::Command(refresh.clone()));
+            self.timers.borrow_mut().after(rail::DEBOUNCE, rail::DEBOUNCE_FOR, fire);
         }
     }
 }

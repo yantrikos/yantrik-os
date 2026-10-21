@@ -111,7 +111,7 @@ pub use context::{
     LaterScope,
 };
 pub use private::{
-    finish_later_published, private_view, recheck_private, recheck_refusal, show_problem, Hold, PrivacySource,
+    finish_later_published, private_view, recheck_private, recheck_refusal, show_problem, Hold, PrivacySource, ReplyTo,
     PRIVATE_SUMMARY, RESERVED_KEYS, WITHHELD, WITHHELD_REFUSAL,
 };
 pub use registry::{

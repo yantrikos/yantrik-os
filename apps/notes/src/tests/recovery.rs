@@ -353,3 +353,22 @@ fn an_offer_is_drawn_whole_copied_and_exported_as_shown_and_restores_its_own_sid
     assert!(std::fs::read_to_string(path.with_extension("meta")).unwrap().contains("tags:mine"));
 }
 
+
+/// The 520 run of #925: while an offer is shown, `describe` says what the window shows: the
+/// offered text, unsaved, kept as a draft; the same keys as always.
+#[test]
+fn describe_agrees_with_the_window_while_an_offer_is_shown() {
+    let typed = "# Shown\n\nthe text from before the crash";
+    let (app, _) = typed_then_killed("Shown", typed);
+    let described = state(&app);
+    assert_eq!(described["content"], typed, "the text the window shows");
+    assert_eq!((described["unsaved"].clone(), described["draft"].clone()), (json!(true), json!("kept")));
+    assert_eq!(described["windows"][0]["unsaved"], true);
+    assert_eq!(described["status"], said::WAITING_ON_RECOVERY);
+    let summary = app.describe()["summary"].as_str().unwrap().to_string();
+    assert!(summary.contains("unsaved"), "{summary}");
+    act(&app, "discard_draft", json!({})).expect("discarded");
+    let described = state(&app);
+    assert_eq!((described["unsaved"].clone(), described["draft"].clone()), (json!(false), json!("none")));
+    assert_eq!(described["content"], "# Shown\n\n", "and the file's text once the offer is gone");
+}

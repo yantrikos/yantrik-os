@@ -10,7 +10,7 @@ use yantrik_app::documents::disk::Step;
 
 use super::records::Record;
 use super::{read, valid_id, validate, Vault, LIMIT, MAX_NOTES, META_LIMIT, RECORD_LIMIT, VAULT_LIMIT};
-use crate::note::{Note, NoteText};
+use crate::note::{Kept, Note, NoteText};
 
 /// The library as read, and what to tell the person about it (empty when nothing).
 #[derive(Debug, Clone)]
@@ -39,7 +39,7 @@ pub struct Interrupted {
 /// A note a resolution or a recovery made, as its file name says. At the library's limit these
 /// are read first: they hold text the person may have nowhere else.
 fn kept_first(id: &str) -> bool {
-    id.starts_with("recovered-") || id.starts_with("copy-")
+    Kept::of(id).is_some()
 }
 
 /// The most directory entries read: the note limit, with room for sidecars and strays.
@@ -201,7 +201,7 @@ impl Vault {
             .iter()
             .any(|a| !a.trash && a.id == r.id && a.content.text == r.text && a.content.meta == r.meta);
         if !identical {
-            let id = format!("recovered-{}.md", uuid7::uuid7());
+            let id = Kept::Recovered.new_id();
             let content = r.content();
             let saved = self
                 .write_note(&id, &content, None, |text| text.is_none(), str::is_empty)

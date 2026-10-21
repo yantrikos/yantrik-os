@@ -46,6 +46,14 @@ pub const WITHHELD: &str = "Private mode is on; what this action answered is not
 pub const WITHHELD_REFUSAL: &str =
     "PRIVATE: the app refused this call, and while the person has Private mode on its reason is not shown to this caller.";
 
+/// Who one reply is for: the pid the kernel stamped on the call, and the surface it is to — a
+/// listed reader is vouched for toward its own surface only (`PRIVATE_READERS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplyTo<'a> {
+    pub pid: Option<i32>,
+    pub surface: &'a str,
+}
+
 /// What one `app.act` reply may carry of the app (#924; #926 review, M1).
 ///
 /// In Private mode every reply carries the private view. The action's own `result`, and a
@@ -72,10 +80,11 @@ impl Hold {
         }
     }
 
-    /// For a door: Private mode as it read it, and the caller's pid as the kernel stamped it. The
-    /// caller is looked up (`/proc`) only while the person is private.
-    pub fn for_caller(private: bool, caller: Option<i32>) -> Hold {
-        let vouched = private && caller.is_some_and(yantrik_ipc_transport::private_owner::reads_while_private);
+    /// For a door: Private mode as it read it, and who the reply is for. The caller is looked up
+    /// (`/proc`) only while the person is private.
+    pub fn for_caller(private: bool, to: ReplyTo<'_>) -> Hold {
+        let vouched = private
+            && to.pid.is_some_and(|pid| yantrik_ipc_transport::private_owner::reads_while_private(pid, to.surface));
         Hold::of(private, vouched)
     }
 
@@ -219,17 +228,17 @@ where
 }
 
 /// [`crate::finish_later`], under Private mode as it is once the work is done: a deferred act can
-/// run for minutes, and the person may have turned Private mode on meanwhile. `caller` is the pid
-/// the kernel stamped on the call, for the [`Hold`] on its answer; `read` is handed whether the
-/// person is private and returns the view as published under it.
+/// run for minutes, and the person may have turned Private mode on meanwhile. `to` is who the
+/// reply is for, for the [`Hold`] on its answer; `read` is handed whether the person is private and
+/// returns the view as published under it.
 pub fn finish_later_published(
     envelope: Value,
     later: Later,
-    caller: Option<i32>,
+    to: ReplyTo<'_>,
     read: impl FnOnce(bool) -> Option<View>,
 ) -> Result<Value, ServiceError> {
     let outcome = off_the_reactor(later);
-    let hold = Hold::for_caller(yantrik_ipc_transport::privacy::is_private(), caller);
+    let hold = Hold::for_caller(yantrik_ipc_transport::privacy::is_private(), to);
     let result = outcome.map_err(|why| refusal(hold.refusal(why)))?;
     let mut reply = envelope;
     reply["result"] = result;
@@ -250,7 +259,7 @@ pub fn finish_later_published(
 /// after work finished later (#926 review, L1).
 pub fn recheck_private(
     was_private: bool,
-    caller: Option<i32>,
+    to: ReplyTo<'_>,
     reply: &mut Value,
     republish: impl FnOnce() -> Option<View>,
 ) {
@@ -265,16 +274,16 @@ pub fn recheck_private(
             map.insert("state".to_string(), view.state);
         }
     }
-    Hold::for_caller(true, caller).seal(reply);
+    Hold::for_caller(true, to).seal(reply);
 }
 
 /// A refusal built under `was_private`, held to Private mode as it is once it is built — the
 /// refusal side of [`recheck_private`]: for a caller nobody vouches for, the neutral sentence.
-pub fn recheck_refusal(was_private: bool, caller: Option<i32>, why: String) -> String {
+pub fn recheck_refusal(was_private: bool, to: ReplyTo<'_>, why: String) -> String {
     if was_private || !yantrik_ipc_transport::privacy::is_private() {
         return why;
     }
-    Hold::for_caller(true, caller).refusal(why)
+    Hold::for_caller(true, to).refusal(why)
 }
 
 /// `"private": true` beside `app` in a reply.

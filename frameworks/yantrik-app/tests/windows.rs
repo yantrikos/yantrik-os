@@ -2,7 +2,8 @@
 //! a window opened by a command is wired with its own id, drawn whole, and drawn again on every
 //! change; closing one leaves the app running; the first window is not privileged; the last
 //! window closing ends the process. A window the window manager activates raises one
-//! `Event::Activated`, and only an open window that was not already active raises it.
+//! `Event::Activated`, and only an open window that was not already active raises it. A second
+//! launch's `present` raises `Event::Presented` for the window it showed, focus or not.
 
 use yantrik_app::app::{App, Boot, Changed, Event, ExitReason, Startup, WindowId};
 use yantrik_app::cx::{Cx, Inbound};
@@ -34,6 +35,8 @@ struct Model {
     bumps: Vec<WindowId>,
     /// Each `Event::Activated`, in the order it was raised.
     activated: Vec<WindowId>,
+    /// Each `Event::Presented`, in the order it was raised.
+    presented: Vec<WindowId>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +48,7 @@ enum Command {
     /// Asks the process to end, then for a window.
     ExitThenOpen,
     Activated(WindowId),
+    Presented(WindowId),
 }
 
 struct Pair;
@@ -84,6 +88,7 @@ impl App for Pair {
                 m.opened.push(fx.open_window());
             }
             Command::Activated(window) => m.activated.push(window),
+            Command::Presented(window) => m.presented.push(window),
         }
         Ok(())
     }
@@ -91,6 +96,7 @@ impl App for Pair {
     fn event(event: Event<()>, _: &Model) -> Option<Command> {
         match event {
             Event::Activated(window) => Some(Command::Activated(window)),
+            Event::Presented(window) => Some(Command::Presented(window)),
             _ => None,
         }
     }
@@ -194,6 +200,7 @@ fn a_second_launch_brings_forward_an_open_window_and_never_a_closed_one() {
     app.close_requested(WindowId::PRIMARY);
     assert!(app.present().is_ok());
     assert_eq!(app.windows(), vec![second], "the closed first window stays closed");
+    assert_eq!(app.model(|m| m.presented.clone()), vec![second], "the app is told which");
     // What is on screen, not only what the core lists.
     assert!(!app.ui(|ui| ui.window().is_visible()), "the first window is not shown again");
     assert_eq!(app.window(second, |ui| ui.window().is_visible()), Some(true));
@@ -229,6 +236,29 @@ fn no_window_is_made_once_the_process_is_ending() {
     app.run(Command::ExitThenOpen);
     assert_eq!(app.exit_reason(), Some(ExitReason::App));
     assert_eq!(app.windows(), vec![WindowId::PRIMARY], "nothing flashes up while ending");
+}
+
+/// `present` used to show the window and say nothing: the app heard of it only if the window
+/// manager then gave the window the keyboard, which Mind View, or a compositor that refuses focus,
+/// may never do (#921).
+#[test]
+fn a_second_launch_tells_the_app_which_window_it_showed_with_no_focus_after_it() {
+    let app = TestApp::<Pair>::start();
+    assert!(app.present().is_ok());
+    assert_eq!(app.model(|m| m.presented.clone()), vec![WindowId::PRIMARY]);
+    assert!(activated(&app).is_empty(), "no activation is made up for it");
+    // Every time, also for a window already in front: the person asked again.
+    assert!(app.present().is_ok());
+    assert_eq!(app.model(|m| m.presented.clone()), vec![WindowId::PRIMARY; 2]);
+}
+
+/// The launch handed over by a second copy shows the window through the same core.
+#[test]
+fn a_launch_handed_over_tells_the_app_which_window_it_showed() {
+    let app = TestApp::<Pair>::start();
+    let answer = app.launch_again().expect("the launch is handed over");
+    assert_eq!(answer["window"], true, "{answer}");
+    assert_eq!(app.model(|m| m.presented.clone()), vec![WindowId::PRIMARY]);
 }
 
 fn activated(app: &TestApp<Pair>) -> Vec<WindowId> {

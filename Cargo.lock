@@ -11430,20 +11430,16 @@ name = "yantrik-email"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "imap",
- "lettre",
- "native-tls",
  "serde",
  "serde_json",
  "slint",
  "tracing",
- "ureq 2.12.1",
- "uuid7",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-testing",
  "yantrik-ui-kit",
 ]
 

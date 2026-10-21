@@ -24,7 +24,6 @@ size apps/arcade/src/verify.rs 1584
 size apps/calendar/src/main.rs 2271
 size apps/document-editor/src/main.rs 1630
 size apps/download-manager/src/engine.rs 2039
-size apps/email/src/main.rs 2689
 size apps/music-player/src/main.rs 1233
 size apps/network-manager/ui/network_manager.slint 1463
 size apps/presentation/src/main.rs 1610

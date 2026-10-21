@@ -96,6 +96,7 @@ export component EmailClient inherits Rectangle {
     in property <EmailDetailData> email-detail: { id: 0 };
     in property <bool> is-loading: false;
     in property <bool> is-composing: false;
+    in property <bool> is-sending: false;  // a send is in flight: Send says so and takes no press
     in property <bool> ai-is-working: false;
     in property <int> selected-folder-index: 0;
     in property <string> account-name: "";
@@ -1445,7 +1446,7 @@ export component EmailClient inherits Rectangle {
                             }
 
                             YButton {
-                                label: "Send";
+                                label: root.is-sending ? "Sending…" : "Send"; disabled: root.is-sending; loading: root.is-sending;
                                 icon-path: Icons.send;
                                 variant: 0;
                                 clicked => {

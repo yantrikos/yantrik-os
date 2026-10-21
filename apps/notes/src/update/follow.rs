@@ -37,7 +37,7 @@ pub fn follow(m: &mut Model, fx: &mut Effects<Notes>) {
     // Notes that held the text when last read; the job reads their files to know if one still does.
     let alike = m.alike(c.content(), c.id());
     let ours = m.ours(c.file).then(|| {
-        let kept_id = format!("{}-{}.md", Resolution::TakeTheirs.kept_prefix(), uuid7::uuid7());
+        let kept_id = Resolution::TakeTheirs.kept().new_id();
         (kept_id, c.content().clone())
     });
     if unsaved {

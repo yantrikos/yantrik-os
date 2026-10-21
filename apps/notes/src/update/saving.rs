@@ -152,6 +152,7 @@ pub fn landed(m: &mut Model, fx: &mut Effects<Notes>, doc: DocumentId, seq: u64,
             if let Some((key, path, seen)) = d.watch_entry() {
                 fx.watch(&key, path, seen);
             }
+            let key = d.source.key();
             let Some(file) = m.files.get_mut(&doc) else { return };
             file.on_disk = Some(saved.content.clone());
             file.meta_unsure = None;
@@ -175,6 +176,8 @@ pub fn landed(m: &mut Model, fx: &mut Effects<Notes>, doc: DocumentId, seq: u64,
                 None if !m.lasting_notice && still_failed(m, doc).is_empty() => m.notice.clear(),
                 None => {}
             }
+            // On disk: a draft it took over from another note is not needed any more.
+            drafts::released(m, fx, &key);
             refreshed(m, fx);
             relist(m, fx);
             if let Some(ticket) = follow_up {

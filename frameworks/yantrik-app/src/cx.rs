@@ -36,19 +36,22 @@ use crate::problems;
 use crate::queue::{self, Inbox, Post, Wake};
 use crate::refused::Refused;
 use crate::settings::Store;
-use crate::timers::Timers;
+use crate::timers::{Fired, Timers};
 use crate::rail::{self, RailCommand};
 use crate::watch::Seen;
 use yantrik_surface::LocalRegistry;
 
+mod events;
 mod handle;
 mod jobs_table;
+mod linger;
 mod persisted;
 mod quitting;
 mod rail_hooks;
 mod settlement;
 mod windows;
 pub use handle::{Cx, UiRef};
+pub use linger::MAX_LINGER;
 pub(crate) use windows::next_window_id;
 use settlement::Open;
 
@@ -90,7 +93,7 @@ pub struct Core<A: App> {
     id: &'static str,
     model: RefCell<A::Model>,
     ui: A::Ui,
-    timers: RefCell<Box<dyn Timers<A::Command>>>,
+    timers: RefCell<Box<dyn Timers<Fired<A::Command>>>>,
     executor: RefCell<Box<dyn Executor<A::Command>>>,
     settings: RefCell<Store<A::Settings>>,
     lane: RefCell<Box<dyn Lane>>,
@@ -123,6 +126,8 @@ pub struct Core<A: App> {
     exit: Cell<Option<ExitReason>>,
     /// The logout raised, once: what asked for it and when (`quitting`).
     logout: Cell<Option<crate::quit::LoggedOut>>,
+    /// Running on with no window since the last one closed, by `fx.linger` (`cx/linger.rs`).
+    linger: Cell<Option<linger::Lingering>>,
     /// The windows beyond the first, and whether the first is open (`cx/windows.rs`).
     windows: RefCell<windows::Windows<A::Ui>>,
     /// This core, weakly: a window opened later is wired through a `Cx` made from it.
@@ -153,7 +158,7 @@ pub type MakeLane = Box<dyn FnOnce(Arc<dyn Report>) -> Box<dyn Lane>>;
 pub struct Parts<A: App> {
     /// The job pool.
     pub executor: Box<dyn Executor<A::Command>>,
-    pub timers: MakeTimers<A::Command>,
+    pub timers: MakeTimers<Fired<A::Command>>,
     pub lane: MakeLane,
     /// The settings as opened for the boot.
     pub settings: Store<A::Settings>,
@@ -170,9 +175,9 @@ impl<A: App> Core<A> {
         let report: Arc<dyn Report> = Arc::new(persisted::PostWritten(post.clone()));
         Rc::new_cyclic(|weak: &Weak<Core<A>>| {
             let sink_core = weak.clone();
-            let sink: crate::timers::Sink<A::Command> = Rc::new(move |command| {
+            let sink: crate::timers::Sink<Fired<A::Command>> = Rc::new(move |fired| {
                 if let Some(core) = sink_core.upgrade() {
-                    core.run(command);
+                    core.fired(fired);
                 }
             });
             Core {
@@ -203,6 +208,7 @@ impl<A: App> Core<A> {
                 last_refusal: RefCell::new(None),
                 exit: Cell::new(None),
                 logout: Cell::new(None),
+                linger: Cell::new(None),
                 windows: RefCell::new(windows::Windows::new()),
                 me: weak.clone(),
                 registry: RefCell::new(None),
@@ -271,9 +277,8 @@ impl<A: App> Core<A> {
         // An app with a rail: the first refresh now, and the fallback tick from here on.
         if let Some(refresh) = A::rail(RailCommand::Refresh) {
             let tick = refresh.clone();
-            self.timers
-                .borrow_mut()
-                .every(rail::TICK, rail::TICK_EVERY, Box::new(move || tick.clone()));
+            let fire = Box::new(move || Fired::Command(tick.clone()));
+            self.timers.borrow_mut().every(rail::TICK, rail::TICK_EVERY, fire);
             self.queue(None, refresh);
         }
         self.applying.set(false);
@@ -428,6 +433,7 @@ impl<A: App> Core<A> {
         // Closed after everything else this command asked for, so a window it replaces is on
         // screen before the old one goes.
         let mut closing = Vec::new();
+        let mut linger = None;
         let mut quit = false;
         for request in requests {
             match request {
@@ -445,14 +451,12 @@ impl<A: App> Core<A> {
                     period,
                     command,
                 } => {
-                    self.timers
-                        .borrow_mut()
-                        .every(id, period, Box::new(move || command.clone()));
+                    let fire = Box::new(move || Fired::Command(command.clone()));
+                    self.timers.borrow_mut().every(id, period, fire);
                 }
                 Request::After { id, delay, command } => {
-                    self.timers
-                        .borrow_mut()
-                        .after(id, delay, Box::new(move || command.clone()));
+                    let fire = Box::new(move || Fired::Command(command.clone()));
+                    self.timers.borrow_mut().after(id, delay, fire);
                 }
                 Request::StopTimer(id) => self.timers.borrow_mut().stop(id),
                 Request::Report { what, error } => {
@@ -498,17 +502,14 @@ impl<A: App> Core<A> {
                 }
                 Request::OpenWindow(window) => self.open_window(window),
                 Request::Close(window) => closing.push(window),
+                Request::Linger(backstop) => linger = Some(backstop),
                 Request::Exit => self.request_exit(ExitReason::App),
                 Request::RequestQuit => quit = true,
             }
         }
-        // Once every effect is applied: a close and an open in one command replace a window.
-        if !closing.is_empty() {
-            for window in closing {
-                self.close_window(window);
-            }
-            self.exit_if_no_window();
-        }
+        // Once every effect is applied: a close and an open in one command replace a window,
+        // and a close of the last one ends the process, or lingers if the command asked.
+        self.closed(closing, linger);
         if quit {
             self.quit_requested();
         }
@@ -537,54 +538,6 @@ impl<A: App> Core<A> {
         self.in_wake.set(false);
     }
 
-    /// An event: the app's command for it, or the default. The runner raises the first
-    /// `Event::Launch` through this; a test may raise any.
-    pub fn event(&self, event: Event<A::Settings>) {
-        // An activation queued behind a command that closed its window: said of no window.
-        if matches!(&event, Event::Activated(w) if !self.windows_open().contains(w)) {
-            return;
-        }
-        // An app with a rail: the rail hears of the Mind's reach whatever the app makes of it.
-        if let Event::ReachChanged(reach) = &event {
-            if let Some(command) = A::rail(RailCommand::Reach(*reach)) {
-                self.run(command);
-            }
-        }
-        let command = A::event(event.clone(), &self.model.borrow());
-        match (command, event) {
-            (Some(command), _) => self.run(command),
-            (None, Event::Launch(_)) => {}
-            (None, Event::CloseRequested(window)) => {
-                self.close_window(window);
-                self.exit_if_no_window();
-            }
-            (None, Event::ExitRequested(reason)) => self.request_exit(reason),
-            (None, Event::Activated(_)) => {}
-            (None, Event::SettingsSaved) => {}
-            (None, Event::SettingsChangedOutside(_)) => {}
-            (None, Event::SettingsNotSaved(sentence)) => {
-                problems::record_failure(self.id, "settings", &sentence);
-            }
-            // The app's own value stands and the file is brought back to it; never silently
-            // (§6): the outside edit that lost is written down, so it can be found.
-            (None, Event::SettingsConflict { mine, .. }) => {
-                let why = "the settings file was edited outside the app while a save was \
-                           pending; the app's value stands and was written over the edit";
-                tracing::warn!(app = self.id, why);
-                problems::record_failure(self.id, "settings_conflict", why);
-                self.resolve_settings(mine);
-            }
-            (None, Event::DraftSaved(_)) => {}
-            (None, Event::DraftNotSaved { name, why }) => {
-                problems::record_failure(self.id, "draft", &format!("{name}: {why}"));
-            }
-            (None, Event::ReachChanged(_)) => {}
-            (None, Event::FileChanged { .. }) => {}
-            // Already logged and filed by the window table.
-            (None, Event::WindowNotOpened { .. }) => {}
-        }
-    }
-
     /// The end, in order: a signal still queued heard (its logout raised and applied), no more
     /// posts, no more timers, the writes owed handed to the lane, every open answer refused,
     /// every job cancelled, then one bounded wait shared by the lane and the pool (§4: the grace
@@ -593,7 +546,7 @@ impl<A: App> Core<A> {
     pub fn shutdown(&self, grace: Duration) -> bool {
         self.hear_last_signals();
         let deadline = Instant::now() + grace;
-        let lane_deadline = Instant::now() + self.lane_grace(grace);
+        let lane_deadline = Instant::now() + self.write_window(grace);
         self.inbox.close();
         self.timers.borrow_mut().stop_all();
         // A save asked for is a save made, before the process ends.

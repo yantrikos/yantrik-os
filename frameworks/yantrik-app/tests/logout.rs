@@ -2,9 +2,12 @@
 //! SIGTERM goes to the whole session at once, the compositor exits within milliseconds, and the
 //! event loop ends with the display gone before the UI thread has drained the signal. The signal
 //! still queued is heard at shutdown, the display going is a logout of its own, and either way
-//! the logout's draft reaches the disk. A person's quit during a logout asks nothing.
+//! the logout's draft reaches the disk, in the window a signal's logout gets. A person's quit
+//! during a logout asks nothing.
 
 mod common;
+
+use std::time::Duration;
 
 use yantrik_app::app::ExitReason;
 use yantrik_app::cx::Inbound;
@@ -86,4 +89,68 @@ fn a_persons_quit_during_a_logout_puts_up_no_prompt() {
     assert_eq!(app.exit_reason(), None, "the logout ends it, not the quit");
     app.run(Command::Saved);
     assert_eq!(app.exit_reason(), Some(ExitReason::App));
+}
+
+/// The runner's usual grace, against which the write window is judged.
+const GRACE: Duration = Duration::from_secs(2);
+
+/// A window a signal's logout gets: what is left of the 20 s deadline, well over the grace.
+fn signals_window(app: &TestApp<Quitter>) -> bool {
+    app.write_window(GRACE) > Duration::from_secs(10)
+}
+
+#[test]
+fn a_signal_queued_when_the_display_goes_first_gets_the_signals_write_window() {
+    let app = TestApp::<Quitter>::start();
+    app.run(Command::Edit);
+    // This OS's shutdown: the SIGTERM is posted, and the loop ends with the display gone
+    // before the UI thread drained it.
+    signal(&app, Signal::Terminate);
+    app.display_gone();
+    assert_eq!(app.model(|m| m.logouts), 1);
+    assert!(signals_window(&app), "the logout is the signal's: {:?}", app.write_window(GRACE));
+    app.shutdown();
+    assert_eq!(draft_on_disk(&app).as_deref(), Some(DRAFT_TEXT));
+}
+
+#[test]
+fn an_app_that_ends_in_its_logout_still_gets_the_signals_write_window() {
+    // Nothing unsaved: the logout ends the app in the command that answers it, as Notes' does,
+    // before the shutdown looks at the queue.
+    let app = TestApp::<Quitter>::start();
+    signal(&app, Signal::Terminate);
+    app.display_gone();
+    assert_eq!(app.exit_reason(), Some(ExitReason::App));
+    assert!(signals_window(&app));
+}
+
+#[test]
+fn a_signal_heard_after_the_displays_logout_makes_it_the_signals() {
+    let app = TestApp::<Quitter>::start();
+    app.run(Command::Edit);
+    app.display_gone();
+    assert_eq!(app.write_window(GRACE), GRACE, "no signal yet: the usual grace");
+    // The SIGTERM lands between the display going and the shutdown.
+    signal(&app, Signal::Terminate);
+    app.shutdown();
+    assert_eq!(app.model(|m| m.logouts), 1, "not raised again");
+    assert!(signals_window(&app));
+}
+
+#[test]
+fn a_signal_delivered_on_the_ui_thread_gets_the_signals_write_window() {
+    let app = TestApp::<Quitter>::start();
+    app.run(Command::Edit);
+    signal(&app, Signal::HangUp);
+    app.tick();
+    assert!(signals_window(&app));
+}
+
+#[test]
+fn the_display_going_with_no_signal_keeps_the_usual_grace() {
+    let app = TestApp::<Quitter>::start();
+    app.run(Command::Edit);
+    app.display_gone();
+    app.shutdown();
+    assert_eq!(app.write_window(GRACE), GRACE);
 }

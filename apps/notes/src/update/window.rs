@@ -2,7 +2,7 @@
 
 use yantrik_app::effects::Effects;
 
-use super::{closing, editing, library, navigate, outside, reblock, recovery, saving, windows};
+use super::{closing, editing, leaving, library, navigate, outside, reblock, recovery, said, saving, windows};
 use crate::command::{Resolution, Step, WindowAction};
 use crate::model::{Model, Pending};
 use crate::pane::Cue;
@@ -45,10 +45,17 @@ pub fn act(m: &mut Model, fx: &mut Effects<Notes>, action: WindowAction) {
             editing::undo(m, fx, true);
         }
         WindowAction::NotNow => outside::not_now(m, fx),
-        // The close prompt answers while a save it asked for is in flight.
-        WindowAction::Close(choice) => closing::answer(m, fx, choice),
+        // The close prompt answers while a save it asked for is in flight. The same prompt asks
+        // before leaving a note whose file is gone.
+        WindowAction::Close(choice) if leaving::asks_in(m, m.pane.window) => leaving::answer(m, fx, choice),
+        WindowAction::Close(choice) => closing::answer_from(m, fx, choice),
+        // Drops the note and its draft, neither of which is the store's: nothing to wait for.
+        WindowAction::LetGo => leaving::let_go_pressed(m, fx),
         // Drops a draft, which is not the store's: nothing to wait for.
         WindowAction::DiscardDraft => recovery::discard(m, fx),
+        // Asked of the framework, which answers with `Command::Quit`: its close flow waits for the
+        // store itself, and asks before anything unsaved is left.
+        WindowAction::Quit => fx.request_quit(),
         other => {
             if may_go_on(m, fx, &other) {
                 guarded(m, fx, other);
@@ -61,7 +68,7 @@ pub fn act(m: &mut Model, fx: &mut Effects<Notes>, action: WindowAction) {
 /// open note is saved before anything leaves it (the action then waits for that save).
 fn may_go_on(m: &mut Model, fx: &mut Effects<Notes>, action: &WindowAction) -> bool {
     if m.busy.is_some() {
-        m.notice = "Please wait for the current operation.".into();
+        m.notice = said::WAIT_FOR_THE_STORE.into();
         fx.changed(STATUS);
         return false;
     }
@@ -71,6 +78,11 @@ fn may_go_on(m: &mut Model, fx: &mut Effects<Notes>, action: &WindowAction) -> b
         if *action == WindowAction::Reload {
             library::load(m, fx);
         }
+        return false;
+    }
+    // Never refused off a note whose file is gone: the person is asked what to do with its text.
+    if leaving::asks(m, action) {
+        leaving::ask(m, fx, action.clone());
         return false;
     }
     if saves_first(m, action) {
@@ -139,7 +151,9 @@ fn guarded(m: &mut Model, fx: &mut Effects<Notes>, action: WindowAction) {
         | WindowAction::Redo
         | WindowAction::NotNow
         | WindowAction::Close(_)
-        | WindowAction::DiscardDraft => {}
+        | WindowAction::DiscardDraft
+        | WindowAction::LetGo
+        | WindowAction::Quit => {}
     }
 }
 

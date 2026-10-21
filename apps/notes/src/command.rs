@@ -3,7 +3,7 @@
 use yantrik_app::app::WindowId;
 use yantrik_app::documents::{Choice, DocumentId, Observed};
 
-use crate::note::{Note, NoteText};
+use crate::note::{Kept, Note, NoteText};
 use crate::store::{Loaded, Reread, Resolved, SaveFailed, Saved};
 
 #[derive(Clone)]
@@ -31,9 +31,11 @@ pub enum Command {
     /// The autosave's debounce ran out.
     Autosave,
     CloseRequested(WindowId),
-    /// The app was asked to end: the close flow over every note with edits not on disk.
+    /// A person asked Notes to quit (Ctrl+Q): the close flow over every note with edits not on
+    /// disk, asked once, and *Cancel* keeps Notes running.
     Quit,
-    /// The session is ending, with no one to ask: drafts written, then the end.
+    /// The session or the system is ending Notes (SIGTERM, SIGHUP), with no one to ask: drafts
+    /// written at once, then the end, well inside the framework's `quit::SIGNAL_DEADLINE`.
     LoggingOut,
     /// The open note's latest draft reached the disk.
     DraftSaved(String),
@@ -97,6 +99,12 @@ pub enum WindowAction {
     ShowDraft,
     /// The open note, in a window of its own as well: one note, two views.
     NewWindow,
+    /// The deleted bar's *Let it go* (*Discard*, when the note was edited): the note whose file is
+    /// gone, and its draft, let go at the person's word.
+    LetGo,
+    /// Ctrl+Q: the person asks Notes to quit. The framework raises it back as a person's
+    /// `ExitRequested`, which is `Command::Quit`: one prompt over every unsaved note in every window.
+    Quit,
 }
 
 /// How an outside change to the open note is resolved. Either way the window's text is kept as a
@@ -110,12 +118,12 @@ pub enum Resolution {
 }
 
 impl Resolution {
-    /// What the kept note's file name starts with: a copy, as *Save a copy* names one, or a
-    /// recovered note, as the journal's replay names one.
-    pub fn kept_prefix(self) -> &'static str {
+    /// What the kept note is: a copy, as *Save a copy* makes one, or a recovered note, as the
+    /// journal's replay makes one.
+    pub fn kept(self) -> Kept {
         match self {
-            Resolution::KeepMine => "copy",
-            Resolution::TakeTheirs => "recovered",
+            Resolution::KeepMine => Kept::Copy,
+            Resolution::TakeTheirs => Kept::Recovered,
         }
     }
 }
@@ -150,6 +158,8 @@ impl WindowAction {
             "discard-draft" => WindowAction::DiscardDraft,
             "show-draft" => WindowAction::ShowDraft,
             "new-window" => WindowAction::NewWindow,
+            "quit" => WindowAction::Quit,
+            "let-go" => WindowAction::LetGo,
             other => {
                 if let Some(title) = other.strip_prefix("new:") {
                     WindowAction::New(Some(title.into()))

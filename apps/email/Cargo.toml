@@ -2,14 +2,20 @@
 name = "yantrik-email"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik Email — AI-native email client with IMAP/SMTP"
+description = "Yantrik Email — AI-native email client with IMAP/SMTP, on YantrikApp"
+
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, against a scripted mail service and
+# a fake Mind. IMAP and SMTP are the mail service's; this process only asks it.
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "yantrik-email"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
@@ -18,12 +24,10 @@ slint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-ureq = { workspace = true }
-imap = { workspace = true }
-native-tls = { workspace = true }
-lettre = { workspace = true }
 chrono = { workspace = true }
-uuid7 = { workspace = true }
+
+[dev-dependencies]
+yantrik-testing = { workspace = true }
 
 [build-dependencies]
 yantrik-app-build = { workspace = true }

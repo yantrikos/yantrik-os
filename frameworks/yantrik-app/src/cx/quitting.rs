@@ -46,22 +46,33 @@ impl<A: App> Core<A> {
 
     /// The display went (the compositor exited) before anything asked the app to end: the
     /// runner calls this after the event loop, and before `shutdown`. No one is there, so the
-    /// app is owed its logout as for a signal; its writes need no display.
+    /// app is owed its logout as for a signal; its writes need no display. A signal already
+    /// queued is heard first: on this OS's shutdown the SIGTERM reaches the whole session as the
+    /// compositor exits, and the logout is then the signal's, with its write window. What else is
+    /// queued is dropped, as the shutdown that follows would drop it.
     pub fn display_gone(&self) {
+        self.hear_last_signals();
         self.logout(None);
     }
 
     /// Raised once as `Event::ExitRequested(Logout)`, whichever asked first. One asked while the
     /// first is still being answered is not raised again, so a second SIGTERM, or the display
-    /// going after one, stacks nothing; one after the app ended is too late to matter.
+    /// going after one, stacks nothing; one after the app ended is too late to matter. A signal
+    /// heard after a logout the display raised raises nothing either, but makes it the signal's:
+    /// the system's stop timeout is running, and the writes get the signal's window.
     fn logout(&self, signal: Option<Signal>) {
         let said = signal.map_or("the display went", Signal::name);
-        if self.exit.get().is_some() {
-            return;
-        }
         if let Some(first) = self.logout.get() {
+            if let (None, Some(signal)) = (first.signal, signal) {
+                tracing::info!(app = self.id, "{said} after the display went; the writes get its window");
+                self.logout.set(Some(LoggedOut { signal: Some(signal), at: Instant::now() }));
+                return;
+            }
             let first = first.signal.map_or("the display going", Signal::name);
             tracing::info!(app = self.id, "{said} while the app answers {first}; not asked again");
+            return;
+        }
+        if self.exit.get().is_some() {
             return;
         }
         self.logout.set(Some(LoggedOut { signal, at: Instant::now() }));
@@ -79,14 +90,12 @@ impl<A: App> Core<A> {
         self.request_exit(ExitReason::Logout);
     }
 
-    /// At shutdown, before the inbox closes: a signal still queued, because the event loop ended
-    /// first (the display went at the same moment), is heard, and its logout applied, so its
-    /// writes are handed to the lane. Only while the app has not ended for its own reason; the
-    /// rest of what is queued is dropped, as the closing inbox always dropped it.
+    /// At shutdown, before the inbox closes, and when the display went: a signal still queued,
+    /// because the event loop ended first, is heard (`logout`): its logout raised and applied, so
+    /// its writes are handed to the lane, unless the app had ended for its own reason; or a
+    /// logout the display raised made the signal's. The rest of what is queued is dropped, as
+    /// the closing inbox always dropped it.
     pub(super) fn hear_last_signals(&self) {
-        if self.exit.get().is_some() {
-            return;
-        }
         let queued = self.inbox.drain();
         let signal = queued.iter().find_map(|inbound| match inbound {
             Inbound::Signal(signal) => Some(*signal),
@@ -97,8 +106,10 @@ impl<A: App> Core<A> {
         }
     }
 
-    /// How long the shutdown's writes may take: after a signal, what is left of the deadline.
-    pub(super) fn lane_grace(&self, grace: Duration) -> Duration {
+    /// How long the shutdown's writes may take: `grace`, or after a signal's logout, what is left
+    /// of `quit::SIGNAL_DEADLINE` if that is longer. A logout only the display raised has no stop
+    /// timeout behind it and keeps `grace`.
+    pub fn write_window(&self, grace: Duration) -> Duration {
         let since = self.logout.get().filter(|l| l.signal.is_some()).map(|l| l.at.elapsed());
         crate::quit::lane_grace(grace, since)
     }

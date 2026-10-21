@@ -35,23 +35,35 @@ WITHHELD_REFUSAL = ("PRIVATE: the app refused this call, and while the person ha
                     "its reason is not shown to this caller.")
 
 # `yantrik_ipc_transport::private_owner`'s, quoted from it: the shell, the called app's own program,
-# and these read an act's own answer while the person is private. Why each is there is said there.
+# and each reader toward the one surface it is listed for read an act's own answer while the person
+# is private; the caller must also be in this mount namespace and run the file its path names. Why
+# each reader is there, and what this does not stop (#43), is said there.
 SHELL_BINARY = "yantrik-ui"
-PRIVATE_READERS = ("yantrik-term",)
+PRIVATE_READERS = (("yantrik-term", "shell"),)
 INSTALL_DIR = "/opt/yantrik/bin"
 _DELETED = " (deleted)"
 
 
-def is_private_reader_in(exe, own, directory):
-    """Whether `exe` (a caller's /proc/<pid>/exe) may read an act's own answer while the person is
-    private: the shell, a listed reader, or `own` (this process's program), directly in `directory`."""
-    def strip(e):
-        return e[:-len(_DELETED)] if e.endswith(_DELETED) else e
-    exe = strip(exe or "")
+def _strip(exe):
+    return exe[:-len(_DELETED)] if exe.endswith(_DELETED) else exe
+
+
+def is_private_reader_in(exe, own, directory, surface):
+    """Whether `exe` (a caller's /proc/<pid>/exe) may read an act's own answer from `surface` while
+    the person is private: the shell, a reader listed for that surface, or `own` (this process's
+    program), directly in `directory`. The path half of the rule."""
+    exe = _strip(exe or "")
     if not os.path.isabs(exe) or os.path.dirname(exe) != directory:
         return False
     name = os.path.basename(exe)
-    return name == SHELL_BINARY or name in PRIVATE_READERS or (own is not None and strip(own) == exe)
+    return (name == SHELL_BINARY or (name, surface) in PRIVATE_READERS
+            or (own is not None and _strip(own) == exe))
+
+
+def is_vouched(exe, same_mount_ns, same_file, own, directory, surface):
+    """`private_owner::is_vouched`: in this mount namespace, running the file its path names, and a
+    reader by `is_private_reader_in`."""
+    return bool(same_mount_ns and same_file and is_private_reader_in(exe, own, directory, surface))
 
 
 def _exe_of(pid):
@@ -61,13 +73,33 @@ def _exe_of(pid):
         return None
 
 
-def reads_while_private(pid):
-    """Whether the process `pid`, as the kernel named the caller, may read an act's own answer
-    while the person is private. Unidentifiable is no."""
+def _facts_of(pid):
+    """(exe, same mount namespace, same file) for `pid`, or None when /proc will not say."""
     exe = _exe_of(pid) if isinstance(pid, int) and pid > 0 else None
     if exe is None:
+        return None
+    try:
+        same_ns = os.readlink("/proc/%d/ns/mnt" % pid) == os.readlink("/proc/self/ns/mnt")
+    except OSError:
+        same_ns = False
+    if exe.endswith(_DELETED):
+        same_file = True
+    else:
+        try:
+            running, named = os.stat("/proc/%d/exe" % pid), os.stat(exe)
+            same_file = (running.st_dev, running.st_ino) == (named.st_dev, named.st_ino)
+        except OSError:
+            same_file = False
+    return exe, same_ns, same_file
+
+
+def reads_while_private(pid, surface):
+    """Whether the process `pid`, as the kernel named the caller, may read an act's own answer from
+    `surface` while the person is private. Unidentifiable is no."""
+    facts = _facts_of(pid)
+    if facts is None:
         return False
-    return is_private_reader_in(exe, _exe_of(os.getpid()), INSTALL_DIR)
+    return is_vouched(*facts, _exe_of(os.getpid()), INSTALL_DIR, surface)
 
 
 def privacy_path():

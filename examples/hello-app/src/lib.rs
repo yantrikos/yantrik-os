@@ -627,7 +627,7 @@ mod tests {
         // A second copy hands its launch over; a retry with the same request id opens nothing twice.
         let handed = Launch::of_files("default", std::path::Path::new("/"), [PathBuf::from("/tmp/c.txt")]);
         let answer = app.act("launch", json!({ "launch": handed })).unwrap();
-        assert_eq!(answer.envelope()["result"]["window"], json!(false), "headless: no window to show");
+        assert_eq!(answer.envelope()["result"]["window"], json!(true), "shown through the core, headless too");
         assert_eq!(app.model(|m| m.opened.len()), 3);
         app.act("launch", json!({ "launch": handed })).unwrap();
         assert_eq!(app.model(|m| m.opened.len()), 3, "the retry is answered, not applied");

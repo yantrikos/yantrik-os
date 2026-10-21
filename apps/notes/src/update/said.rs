@@ -5,8 +5,12 @@
 
 use yantrik_app::documents::{Durability, OutsideState, Replaced, SaveError};
 
+use crate::note::Kept;
+
 /// The footer while saving waits on the person's choice about an outside change.
 pub const WAITING_ON_CHOICE: &str = "Not saved · changed outside Notes";
+/// The footer while the note's file is gone: its text is on no disk until it is saved as new.
+pub const FILE_GONE: &str = "Not saved · its file was moved or deleted";
 /// The footer while the open note's unsaved text from before Notes closed waits on the person.
 pub const WAITING_ON_RECOVERY: &str = "Not saved · unsaved text from before Notes closed: Restore or Discard";
 
@@ -224,9 +228,20 @@ pub const RESTORED_BESIDE: &str = "Your text is back. The note on disk changed a
 /// Restored for a note whose file is gone: there is one version, and the bar offers Save as new.
 pub const RESTORED_GONE: &str = "Your text is back. The note's file is gone; Save as new keeps your text.";
 pub const DISCARDED: &str = "The unsaved text was discarded; the note is as it is on disk.";
+/// The same, for a note whose file is gone: there is no note on disk to be as it was.
+pub const DISCARDED_GONE: &str = "The unsaved text was discarded. Its note's file was already gone, so nothing of it is kept.";
 /// An edit refused on a note whose offer waits.
 pub const CHOOSE_FIRST: &str =
     "This note has unsaved text from before Notes closed. Restore or Discard it first, then edit.";
+
+/// The word on a library card for a note Notes made to keep text aside, so it is told apart from
+/// the note it was kept from, whose title it has.
+pub fn kept_marker(kept: Kept) -> &'static str {
+    match kept {
+        Kept::Copy => "Copy",
+        Kept::Recovered => "Recovered",
+    }
+}
 
 /// Typed while the note was moved to the Trash: kept, as a note of its own.
 pub const TYPED_DURING_TRASH: &str = "Moved to Trash. What you typed meanwhile is kept as a new note.";
@@ -297,6 +312,63 @@ pub fn close_prompt(titles: &[String], quitting: bool, read_only: bool, unstored
     }
     (heading, body)
 }
+
+/// What the person is about to do when a note whose file is gone asks first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leaving {
+    /// Open another note, make one, Refresh: the window moves off the note.
+    Note,
+    /// Close the window.
+    Window,
+    /// Quit Notes.
+    Notes,
+}
+
+/// The prompt for one note whose file is gone: its text is on no disk, so leaving it asks. *Save
+/// as new* keeps it as a new note; *Don't save* lets it go. `edited`: the person changed it, so
+/// what is at stake is their changes, not only a text they may have meant to delete.
+pub fn gone_prompt(title: &str, leaving: Leaving, edited: bool) -> (String, String) {
+    let heading = match leaving {
+        Leaving::Note => format!("Save \"{title}\" as a new note first?"),
+        Leaving::Window => format!("Save \"{title}\" as a new note before closing?"),
+        Leaving::Notes => format!("Save \"{title}\" as a new note before Notes closes?"),
+    };
+    let body = if edited {
+        "Its file was moved or deleted outside Notes, and your changes to it are not saved. Save as new keeps \
+         them as a new note; Don't save lets them go."
+    } else {
+        "Its file was moved or deleted outside Notes, so this text is on no disk. Save as new keeps it as a new \
+         note; Don't save lets it go."
+    };
+    (heading, body.to_string())
+}
+
+/// Said beside a close prompt over several notes, for those of them whose file is gone.
+pub fn gone_among(titles: &[String]) -> String {
+    match titles {
+        [one] => format!("\"{one}\" has no file any more: Save keeps it as a new note."),
+        many => format!("{} have no file any more: Save keeps each as a new note.", many.join(", ")),
+    }
+}
+
+/// *Let it go* (or *Discard*, when it was edited) on a note whose file is gone: said once.
+pub fn let_go(title: &str, edited: bool) -> String {
+    if edited {
+        format!("\"{title}\" and your unsaved changes to it are let go; nothing was kept.")
+    } else {
+        format!("\"{title}\" is let go; nothing was kept.")
+    }
+}
+
+/// The prompt's *Save*, and its *Save as new* for a note whose file is gone.
+pub const SAVE: &str = "Save";
+pub const SAVE_AS_NEW: &str = "Save as new";
+
+/// An action that needs the store while it is busy.
+pub const WAIT_FOR_THE_STORE: &str = "Please wait for the current operation.";
+
+/// *Let it go* with no note whose file is gone open.
+pub const NOTHING_TO_LET_GO: &str = "Nothing to let go: the open note's file is still there.";
 
 /// A reason from the store or the disk, as the middle of a sentence: no closing stop, and a
 /// leading capital lowered unless it starts an acronym ("Permission denied" reads "permission

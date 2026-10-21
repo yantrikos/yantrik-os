@@ -437,7 +437,9 @@ fn launch_handler<A: App>(
         } else {
             tracing::info!(app = A::ID, "a launch handed over twice; applied once");
         }
-        crate::present::handle(args)
+        // Shown through this core, as the runner's presenter does: the window open brought
+        // forward, or the first opened again during a linger, and `Event::Presented` raised.
+        crate::present::answer_with(Some(&|| core.present()), args)
     }
 }
 

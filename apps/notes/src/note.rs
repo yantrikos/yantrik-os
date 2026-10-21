@@ -70,6 +70,36 @@ pub struct Note {
     pub stored: bool,
 }
 
+/// A note Notes made to keep someone's text aside, as its file name says: the copy *Keep mine as a
+/// copy*, *Save as new* and *Save a copy* make (`copy-…`), or the note a recovery makes
+/// (`recovered-…`: *Take theirs*, text typed while a note went to the Trash, an interrupted save's
+/// journal). Its text keeps the title it was written with, so its card says which it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kept {
+    Copy,
+    Recovered,
+}
+
+impl Kept {
+    /// What its file name starts with, before the `-`.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Kept::Copy => "copy",
+            Kept::Recovered => "recovered",
+        }
+    }
+
+    /// A new file name of this kind.
+    pub fn new_id(self) -> String {
+        format!("{}-{}.md", self.prefix(), uuid7::uuid7())
+    }
+
+    /// Which kind `id` names, if it is one.
+    pub fn of(id: &str) -> Option<Kept> {
+        [Kept::Copy, Kept::Recovered].into_iter().find(|k| id.strip_prefix(k.prefix()).is_some_and(|r| r.starts_with('-')))
+    }
+}
+
 impl Note {
     /// A fresh page titled `title`, under a new file name.
     pub fn blank(title: &str) -> Note {

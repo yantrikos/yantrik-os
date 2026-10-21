@@ -170,7 +170,7 @@ use yantrik_ipc_transport::privacy;
 use yantrik_ipc_transport::server::{PeerCred, RpcServer, ServiceHandler};
 use yantrik_surface::{
     finish_later_published, next_action_id, recheck_private, recheck_refusal, refusal, ActCall, Hold, Later,
-    LaterScope, LocalRegistry,
+    LaterScope, LocalRegistry, ReplyTo,
     NO_SUCH_METHOD, UNANSWERED,
 };
 
@@ -607,7 +607,8 @@ impl ServiceHandler for ControlRpc {
             // The work runs here, off the UI thread, and the view beside its result is read
             // again on the UI thread once it has — under Private mode as it is then.
             (Ok(envelope), Some(later)) if method == "app.act" => {
-                finish_later_published(envelope, later, who.map(|c| c.pid), move |private| {
+                let to = ReplyTo { pid: who.map(|c| c.pid), surface: &self.app_id };
+                finish_later_published(envelope, later, to, move |private| {
                     on_ui_thread(who, move |reg| {
                         let _agent = AgentTokenScope::enter(token);
                         reg.published(private)
@@ -633,8 +634,8 @@ impl ControlRpc {
             "app.describe" => {
                 let private = privacy::is_private();
                 let mut answer = on_ui_thread(who, move |reg| reg.describe_in(private)).map_err(unanswered)?;
-                let caller = who.map(|c| c.pid);
-                recheck_private(private, caller, &mut answer, || on_ui_thread(who, |reg| reg.published(true)).ok());
+                let to = ReplyTo { pid: who.map(|c| c.pid), surface: &self.app_id };
+                recheck_private(private, to, &mut answer, || on_ui_thread(who, |reg| reg.published(true)).ok());
                 Ok(answer)
             }
 
@@ -688,8 +689,8 @@ impl ControlRpc {
                 // person is private, for the person's own calls too; and the action's own answer
                 // and refusal only for a caller the kernel vouches for (`Hold`, #926 review M1).
                 let private = privacy::is_private();
-                let caller = who.map(|c| c.pid);
-                let hold = Hold::for_caller(private, caller);
+                let to = ReplyTo { pid: who.map(|c| c.pid), surface: &self.app_id };
+                let hold = Hold::for_caller(private, to);
                 on_ui_thread(who, move |reg| {
                     let _agent = AgentTokenScope::enter(agent_token);
                     // So a handler can tell the act a person just allowed from any other: see
@@ -711,9 +712,9 @@ impl ControlRpc {
                 .map_err(unanswered)?
                 // An action that legitimately refuses is an application error, not a transport
                 // failure: -32602 keeps it out of the client's circuit breaker.
-                .map_err(|why| refusal(recheck_refusal(private, caller, why)))
+                .map_err(|why| refusal(recheck_refusal(private, to, why)))
                 .map(|mut reply| {
-                    recheck_private(private, caller, &mut reply, || on_ui_thread(who, |reg| reg.published(true)).ok());
+                    recheck_private(private, to, &mut reply, || on_ui_thread(who, |reg| reg.published(true)).ok());
                     reply
                 })
             }

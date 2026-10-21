@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use crate::email::ServiceError;
 
+/// The WMO code table: a code's words and the icon kind that draws it.
+pub mod codes;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurrentWeather {
     pub temperature: f64,
@@ -14,8 +17,8 @@ pub struct CurrentWeather {
     #[serde(default)]
     pub wind_degrees: f64,
     pub condition: String,
-    /// Icon kind for the vector icon set: sun, moon, partly, cloud, rain, snow, fog, storm.
-    /// (Was emoji; the UI now draws its own icon per kind.)
+    /// Icon kind for the vector icon set: one of `codes::ICON_KINDS` (sun, moon, partly,
+    /// cloud, rain, snow, fog, storm), as `codes::icon_kind` names it.
     pub icon: String,
     pub uv_index: f64,
     pub visibility_km: f64,

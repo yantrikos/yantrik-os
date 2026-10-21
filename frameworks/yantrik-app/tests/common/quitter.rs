@@ -1,8 +1,8 @@
 //! A toy app with a close flow shaped as Notes' is (apps/notes/src/update/closing.rs): a quit
 //! with unsaved work asks once, *Cancel* keeps it running, *Don't save* ends it; a logout saves
-//! without asking (a draft, written now), and ends once that save lands. Shared by
-//! `tests/quit.rs` and `tests/signals.rs`, the second its own binary because it raises SIGTERM at
-//! its own process.
+//! without asking (a draft, written now) and ends once that save lands, or at once with nothing
+//! unsaved. Shared by `tests/quit.rs`, `tests/logout.rs` and `tests/signals.rs`, the last its own
+//! binary because it raises SIGTERM at its own process.
 
 #![allow(dead_code)]
 
@@ -105,12 +105,15 @@ impl App for Quitter {
             Command::Answer(Answer::Cancel) => m.asking = false,
             Command::Answer(Answer::DontSave) => fx.exit(),
             Command::LoggingOut => {
-                // Saved without asking: the unsaved text as a draft, written now.
-                if m.unsaved {
-                    fx.checkpoint_draft(DRAFT, DRAFT_TEXT.to_vec());
-                }
                 m.logouts += 1;
                 m.logout_thread = Some(std::thread::current().id());
+                // Nothing unsaved: the end now, as Notes' logout ends.
+                if !m.unsaved {
+                    fx.exit();
+                    return Ok(());
+                }
+                // Saved without asking: the unsaved text as a draft, written now.
+                fx.checkpoint_draft(DRAFT, DRAFT_TEXT.to_vec());
                 m.asking = false;
                 m.saving = true;
             }

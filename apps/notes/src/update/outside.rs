@@ -22,7 +22,7 @@ use yantrik_app::documents::{DocumentId, Fingerprint, Observed, OutsideState};
 use yantrik_app::effects::Effects;
 
 use super::navigate::show_note;
-use super::{after_store, begin, failed, follow, refreshed, relist, said, save_state, set_status, show, windows};
+use super::{after_store, begin, drafts, failed, follow, leaving, refreshed, relist, said, save_state, set_status, show, windows};
 use crate::command::{Command, Resolution};
 use crate::model::{Current, Model, Work};
 use crate::note::{now, Note, NoteText};
@@ -38,6 +38,13 @@ pub const COMPARE_DIALOG: i32 = 3;
 /// change after *Not now* brings the bar back: it is news the person has not seen.
 pub fn seen(m: &mut Model, fx: &mut Effects<Notes>, key: &str, seen: Observed) {
     let Some(d) = m.documents.by_key(key).and_then(|id| m.documents.get_mut(id)) else { return };
+    // A file back after it was found gone, with nothing typed since: the note is as clean as it
+    // was, so what came back is read again (or is the same), not a conflict over no edits.
+    let back = d.outside == OutsideState::Deleted && matches!(seen, Observed::File(_));
+    if let Some(file) = m.files.get_mut(&d.id).filter(|f| back && f.gone_at == Some(d.seq)) {
+        d.saved_seq = d.seq;
+        file.gone_at = None;
+    }
     let before = d.outside.clone();
     let after = d.observe(seen).clone();
     if let Some((key, path, seen)) = d.rewatch() {
@@ -46,6 +53,9 @@ pub fn seen(m: &mut Model, fx: &mut Effects<Notes>, key: &str, seen: Observed) {
     if after != before {
         // News for every window on the note, *Not now* or not.
         let doc = d.id;
+        if before == OutsideState::Deleted {
+            leaving::no_longer_gone(m, fx, doc);
+        }
         for window in m.windows_showing(doc) {
             if let Some(pane) = m.pane_of_mut(window) {
                 pane.outside_later = false;
@@ -86,7 +96,7 @@ pub fn resolve(m: &mut Model, fx: &mut Effects<Notes>, resolution: Resolution) {
     }
     let Some(c) = m.current() else { return };
     let (doc, id, mine, seq) = (c.doc.id, c.id().to_string(), c.content().clone(), c.doc.seq);
-    let kept_id = format!("{}-{}.md", resolution.kept_prefix(), uuid7::uuid7());
+    let kept_id = resolution.kept().new_id();
     let lost = Command::Resolved { doc, seq, resolution, result: Err(said::JOB_LOST.into()) };
     begin(m, fx, Work::Resolve, lost, move |vault| Command::Resolved {
         doc,
@@ -108,7 +118,7 @@ pub fn resolved(
     m.busy = None;
     let resolved = match result {
         Ok(resolved) => *resolved,
-        Err(e) => return failed(m, fx, None, said::not_kept(&e)),
+        Err(e) => return failed(m, fx, Some(doc), said::not_kept(&e)),
     };
     m.library.push(resolved.kept.clone());
     if let Some(asked) = m.asked.as_mut() {
@@ -159,7 +169,8 @@ pub(super) fn take_theirs(m: &mut Model, fx: &mut Effects<Notes>, doc: DocumentI
 
 /// The window moves to the kept note. The original is listed as its files hold it now, or not at
 /// all when its file is gone; anything typed while the job ran goes on as an unsaved edit of the
-/// kept note, saved by the autosave like any other.
+/// kept note, saved by the autosave like any other. The original's draft goes: its text is the kept
+/// note's now, and a start must not offer it again (`drafts::moved`).
 fn switch_to_kept(
     m: &mut Model,
     fx: &mut Effects<Notes>,
@@ -182,6 +193,7 @@ fn switch_to_kept(
         }
     }
     let typed_meanwhile = latest != kept.content;
+    let from = m.documents.get(doc).and_then(drafts::kept_name);
     // The kept note is a write of ours: another program replacing it keeps it again (follow.rs).
     m.written.insert(kept.id.clone(), Fingerprint::of_bytes(kept.content.text.as_bytes()));
     show_note(m, fx, Some(kept.clone()));
@@ -192,6 +204,7 @@ fn switch_to_kept(
     }
     // The text moved to the kept note in every window that showed it.
     windows::follow_to(m, fx, doc, Some(&kept));
+    drafts::moved(m, fx, from);
     shown_resolved(m, fx, sentence);
     if m.unsaved() {
         refreshed(m, fx);

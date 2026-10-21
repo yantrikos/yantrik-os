@@ -21,6 +21,21 @@ pub type Fire<C> = Box<dyn Fn() -> C + 'static>;
 /// Where a fired command goes: the runtime's queue.
 pub type Sink<C> = std::rc::Rc<dyn Fn(C)>;
 
+/// What a timer the core arms fires: one of the app's commands, or a deadline of the framework's
+/// own that no command of the app's stands for. The core's timers carry these, so the
+/// framework's deadline runs on the same clock as the app's, and a test moves both with
+/// `TestApp::advance`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fired<C> {
+    Command(C),
+    /// A linger's backstop (`fx.linger`): the app has run on without a window for as long as it
+    /// asked, and the framework ends it.
+    LingerOver,
+}
+
+/// The timer a linger's backstop is armed under. Reserved: an app's own timer never needs it.
+pub const LINGER: TimerId = TimerId("yantrik-app.linger");
+
 pub trait Timers<C: 'static> {
     fn every(&mut self, id: TimerId, period: Duration, fire: Fire<C>);
     fn after(&mut self, id: TimerId, delay: Duration, fire: Fire<C>);

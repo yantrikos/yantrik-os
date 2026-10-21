@@ -73,14 +73,17 @@ pub(crate) fn handle(args: &serde_json::Value) -> Result<serde_json::Value, Stri
                 .into(),
         );
     }
+    WINDOW.with(|cell| answer_with(cell.borrow().as_deref(), args))
+}
+
+/// What a copy answers the call `args`, showing its window with `show` (`None`: it has none):
+/// `present`'s answer, with the presenter installed, and `launch`'s, through its own core.
+pub(crate) fn answer_with(
+    show: Option<&dyn Fn() -> Result<(), String>>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let here = std::env::var("WAYLAND_DISPLAY").ok();
-    WINDOW.with(|cell| {
-        answer(
-            cell.borrow().as_deref(),
-            here.as_deref(),
-            args["display"].as_str(),
-        )
-    })
+    answer(show, here.as_deref(), args["display"].as_str())
 }
 
 /// What the first copy answers, given how it shows its window (if it has one), the display it

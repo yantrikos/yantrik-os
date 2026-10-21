@@ -17,6 +17,7 @@ use yantrik_app::intents::InvocationId;
 use crate::claim::Claim;
 use crate::command::Step;
 use crate::note::{Note, NoteText};
+use crate::notice::ScopedNotice;
 use crate::pane::Pane;
 use crate::recovery::Recovery;
 use crate::store::Vault;
@@ -45,16 +46,29 @@ pub struct Model {
     /// The notice says something a person may not see while typing on (a save replaced another
     /// program's write): the next save that lands leaves it, and the next action takes it back.
     pub lasting_notice: bool,
+    /// The window the notice is about, when it is about one window only (its close was refused
+    /// while another window's prompt waits): drawn there and nowhere else. Kept with the sentence
+    /// it was said with, so any later notice, which replaces the sentence, is every window's again.
+    pub notice_in: Option<ScopedNotice>,
     /// An action waiting for the open note to be saved first.
     pub pending: Option<Pending>,
     /// A close or a quit asking about unsaved notes, or waiting on their saves.
     pub closing: Option<CloseFlow>,
+    /// The window the close prompt asks in, while `closing` asks: the window asked to close, or
+    /// the one a quit was asked from. It is drawn and answered there and nowhere else.
+    pub close_asked_in: WindowId,
+    /// An action that would leave a note whose file is gone, waiting on the person's answer
+    /// (update/leaving.rs).
+    pub leaving: Option<Pending>,
     /// Text kept from a run that ended before it was saved, offered back note by note.
     pub recovery: Recovery,
     /// This run's last landed write to each note, by file name: the fingerprint of its text. A
     /// note whose file still holds it is ours to keep if another program replaces it
     /// (update/follow.rs), however often it was closed, reopened or reloaded since.
     pub written: BTreeMap<String, Fingerprint>,
+    /// Drafts whose text moved to another note, by the draft that took it over: each old draft is
+    /// removed once the new one is on disk, or the note it moved to is saved (update/drafts.rs).
+    pub handed_over: Vec<(String, String)>,
     /// The document, and its edit, whose draft could not be written: tried again at its next edit.
     pub draft_failed_at: Option<(DocumentId, u64)>,
     /// A call from the surface waiting for the work it started.
@@ -77,6 +91,9 @@ pub struct NoteFile {
     /// A sidecar of ours a failed save may have left on disk.
     pub meta_unsure: Option<String>,
     pub modified: u64,
+    /// The edit `Model::keep_unsaved_dirty` made when the note's file was found gone, while no
+    /// other edit has followed it: the file coming back undoes it (update/outside.rs).
+    pub gone_at: Option<u64>,
 }
 
 /// One store job, by what it does.
@@ -177,11 +194,21 @@ impl Current<'_> {
         &self.doc.outside
     }
 
-    /// Edits not on disk: the content is not what the files hold.
+    /// Edits not on disk: the content is not what the files hold, or the files are gone (moved or
+    /// deleted outside Notes), so the text is on no disk at all until the person keeps it.
     pub fn unsaved(&self) -> bool {
+        if self.doc.outside == OutsideState::Deleted {
+            return true;
+        }
         let disk = self.file.on_disk.as_ref();
         disk.map(|d| d.text.as_str()) != Some(self.text())
             || disk.map(|d| d.meta.as_str()).unwrap_or("") != self.content().meta
+    }
+
+    /// Whether the person changed the note since its file was found gone, or before (its edits were
+    /// unsaved then): what letting it go would drop is their changes, not only its text.
+    pub fn edited_since_gone(&self) -> bool {
+        self.file.gone_at != Some(self.doc.seq)
     }
 
     /// The note as the library lists it, with this view's unsaved content.
@@ -215,10 +242,14 @@ impl Model {
             job_window: WindowId::PRIMARY,
             notice: String::new(),
             lasting_notice: false,
+            notice_in: None,
             pending: None,
             closing: None,
+            close_asked_in: WindowId::PRIMARY,
+            leaving: None,
             recovery,
             written: BTreeMap::new(),
+            handed_over: Vec::new(),
             draft_failed_at: None,
             asked: None,
             answer: Value::Null,
@@ -260,19 +291,29 @@ impl Model {
 
     /// Makes every document with edits not on disk (`unsaved_doc`) dirty to the framework as well:
     /// a save starts only for a dirty document, a draft is kept only for one, and a close asks only
-    /// about one. Every change is an edit of its document, so the two never part; if they ever did,
-    /// a test fails here, and a running Notes says so in its log and makes the document dirty, so
-    /// the text is saved, kept and asked about rather than closed away as if it were on disk.
+    /// about one.
+    ///
+    /// A note whose file was found gone is the one way the two part on their own: nothing was
+    /// typed, and yet its text is on no disk. It is made dirty here, so its draft is kept, a close
+    /// asks about it, and nothing calls it saved (`gone_at` remembers the edit, undone if the file
+    /// comes back). Every other change is an edit of its document, so the two never part; if they
+    /// ever did, a test fails here, and a running Notes says so in its log and makes the document
+    /// dirty, so the text is saved, kept and asked about rather than closed away as if on disk.
     pub fn keep_unsaved_dirty(&mut self) {
         let parted: Vec<DocumentId> =
             self.documents.iter().filter(|d| !d.dirty() && self.unsaved_doc(d.id)).map(|d| d.id).collect();
         for id in parted {
-            if cfg!(test) {
-                panic!("Notes' unsaved note must be a dirty document");
+            let Some(d) = self.documents.get_mut(id) else { continue };
+            let gone = d.outside == OutsideState::Deleted;
+            if !gone {
+                if cfg!(test) {
+                    panic!("Notes' unsaved note must be a dirty document");
+                }
+                tracing::error!("an unsaved note was not a dirty document; it is made one, so it is saved and asked about");
             }
-            tracing::error!("an unsaved note was not a dirty document; it is made one, so it is saved and asked about");
-            if let Some(d) = self.documents.get_mut(id) {
-                d.edit(|_| ());
+            let seq = d.edit(|_| ());
+            if let Some(file) = self.files.get_mut(&id).filter(|_| gone) {
+                file.gone_at = Some(seq);
             }
         }
     }

@@ -364,10 +364,14 @@ fn a_replaced_version_that_cannot_be_written_is_kept_as_a_draft_and_counted_at_c
     assert!(!app.ui(|ui| ui.get_close_saves()), "there is nothing for Save to save");
     app.ui(|ui| ui.invoke_action("close-discard".into()));
     let again = super::killed_and_started_again(app);
+    // The store's journal of that write comes back as a recovered note at the start, so the text
+    // is on disk once already. Its draft is not offered as well (#925 review, finding 3): Restore
+    // would have written it a second time.
     let offered = again.model(|m| m.recovery.offers.iter().map(|o| o.content.text.clone()).collect::<Vec<_>>());
-    assert_eq!(offered, vec![theirs.to_string()], "the next start offers it back");
-    super::act(&again, "restore_draft", serde_json::json!({})).expect("restored");
-    assert_eq!(file(&vault(&again).join(&kept)), theirs, "and Restore writes it");
+    let holding = again.model(move |m| m.library.iter().filter(|n| n.content.text == theirs && n.stored).count());
+    assert_eq!((offered.len(), holding), (0, 1), "the next start has it once, on disk: {offered:?}");
+    again.run_writes();
+    assert!(!super::draft_file(&again, &vault(&again).join(&kept)).exists(), "and its draft is removed");
 }
 
 /// #917 review finding 6: a version a save kept is said even when the landing itself is one the

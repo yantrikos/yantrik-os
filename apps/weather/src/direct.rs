@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use yantrik_ipc_contracts::weather::codes;
+
 use crate::forecast::{Aqi, Current, Day, Hour, Reading};
 
 /// A provider that has not answered in this long is not going to.
@@ -77,8 +79,8 @@ pub fn read(json: &serde_json::Value, location_name: &str, use_fahrenheit: bool)
     let current = Current {
         temperature: format!("{:.0}{}", temp, deg_symbol),
         feels_like: format!("{:.0}{}", apparent, deg_symbol),
-        condition: wmo_description(weather_code).into(),
-        icon: wmo_icon(weather_code, is_day).into(),
+        condition: codes::description(weather_code).into(),
+        icon: codes::icon_kind(weather_code, is_day).into(),
         location: location_name.into(),
         humidity: format!("{}%", humidity),
         wind_speed: format!("{:.0} {}", wind_speed, wind_label),
@@ -115,7 +117,7 @@ pub fn read(json: &serde_json::Value, location_name: &str, use_fahrenheit: bool)
                     .unwrap_or(0);
                 hourly.push(Hour {
                     time: if is_current { "Now".into() } else { format!("{}:00", hour) },
-                    icon: wmo_icon(code, is_day_hour).into(),
+                    icon: codes::icon_kind(code, is_day_hour).into(),
                     temp: format!("{:.0}\u{00B0}", t),
                     precip: if chance > 0 { format!("{}%", chance) } else { String::new() },
                     is_current,
@@ -162,7 +164,7 @@ pub fn read(json: &serde_json::Value, location_name: &str, use_fahrenheit: bool)
             let precip = precips[i].as_f64().unwrap_or(0.0);
             daily.push(Day {
                 day_name: if i == 0 { "Today".to_string() } else { day_of_week(date_str) },
-                icon: wmo_icon(code, true).into(),
+                icon: codes::icon_kind(code, true).into(),
                 high: format!("{:.0}\u{00B0}", hi),
                 low: format!("{:.0}\u{00B0}", lo),
                 precip_chance: if precip > 0.0 { format!("{:.0}mm", precip) } else { "0mm".into() },
@@ -181,51 +183,6 @@ pub fn read(json: &serde_json::Value, location_name: &str, use_fahrenheit: bool)
         alerts: Vec::new(),
         aqi: Aqi::default(),
         error: None,
-    }
-}
-
-pub fn wmo_icon(code: i32, is_day: bool) -> &'static str {
-    match code {
-        0 => if is_day { "\u{2600}\u{FE0F}" } else { "\u{1F319}" },
-        1 | 2 => if is_day { "\u{26C5}" } else { "\u{1F319}" },
-        3 => "\u{2601}\u{FE0F}",
-        45 | 48 => "\u{1F32B}\u{FE0F}",
-        51 | 53 | 55 => "\u{1F326}\u{FE0F}",
-        56 | 57 | 61 | 63 | 65 | 66 | 67 | 80 | 81 | 82 => "\u{1F327}\u{FE0F}",
-        71 | 73 | 75 | 77 | 85 | 86 => "\u{1F328}\u{FE0F}",
-        95 | 96 | 99 => "\u{26C8}\u{FE0F}",
-        _ => "\u{2601}\u{FE0F}",
-    }
-}
-
-pub fn wmo_description(code: i32) -> &'static str {
-    match code {
-        0 => "Clear sky",
-        1 => "Mainly clear",
-        2 => "Partly cloudy",
-        3 => "Overcast",
-        45 => "Fog",
-        48 => "Depositing rime fog",
-        51 => "Light drizzle",
-        53 => "Moderate drizzle",
-        55 => "Dense drizzle",
-        56 | 57 => "Freezing drizzle",
-        61 => "Slight rain",
-        63 => "Moderate rain",
-        65 => "Heavy rain",
-        66 | 67 => "Freezing rain",
-        71 => "Slight snow",
-        73 => "Moderate snow",
-        75 => "Heavy snow",
-        77 => "Snow grains",
-        80 => "Slight rain showers",
-        81 => "Moderate rain showers",
-        82 => "Violent rain showers",
-        85 => "Slight snow showers",
-        86 => "Heavy snow showers",
-        95 => "Thunderstorm",
-        96 | 99 => "Thunderstorm with hail",
-        _ => "Unknown",
     }
 }
 
@@ -301,6 +258,47 @@ mod tests {
         assert_eq!(r.daily[1].day_name, "Thu");
         assert_eq!(r.daily[0].precip_chance, "2mm");
         assert_eq!(day_of_week("2026-10-20"), "Tue");
-        assert_eq!(wmo_description(95), "Thunderstorm");
+        assert_eq!(codes::description(95), "Thunderstorm");
+        // The icons are the kit's names, not emoji the kit would draw as a cloud.
+        assert_eq!(c.icon, "rain");
+        assert_eq!((r.daily[0].icon.as_str(), r.daily[1].icon.as_str()), ("rain", "cloud"));
+    }
+
+    /// The kit's icon source, which the Weather UI's `Icons.weather-kind()` calls compile from.
+    fn kit_icon_source() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/yantrik-ui-kit/slint/icon.slint");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// The names `Icons.weather-kind()` matches, read from the kit's source, each with the glyph
+    /// it draws. Anything else it is handed falls through to the cloud.
+    fn kit_weather_kinds(src: &str) -> Vec<(String, String)> {
+        let start = src.find("public pure function weather-kind(").expect("the kit has weather-kind");
+        let body = &src[start..start + src[start..].find("\n    }").expect("weather-kind ends")];
+        body.lines()
+            .filter_map(|line| {
+                let (kind, rest) = line[line.find("kind == \"")? + 9..].split_once('"')?;
+                let glyph = rest.split_once("? root.")?.1.trim();
+                Some((kind.to_string(), glyph.to_string()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_wmo_code_draws_a_glyph_the_kit_has_by_day_and_night() {
+        let src = kit_icon_source();
+        let kit = kit_weather_kinds(&src);
+        let names: Vec<&str> = kit.iter().map(|(k, _)| k.as_str()).collect();
+        // The two lists are one list: a kind the kit drops, or one it adds, fails here.
+        assert_eq!(names, codes::ICON_KINDS, "codes::ICON_KINDS and the kit's weather-kind differ");
+        for (kind, glyph) in &kit {
+            assert!(src.contains(&format!("out property <string> {glyph}:")), "`{kind}` draws root.{glyph}, which the kit lacks");
+        }
+        for code in 0..=99 {
+            for is_day in [true, false] {
+                let kind = codes::icon_kind(code, is_day);
+                assert!(names.contains(&kind), "WMO {code} (day {is_day}) names `{kind}`, which weather-kind does not match");
+            }
+        }
     }
 }

@@ -187,9 +187,22 @@ impl ServiceHandler for A11y {
     ) -> Result<serde_json::Value, ServiceError> {
         // Every window's title and every element's text, and acting on them: nobody's while the
         // person is private (#926 review, M2). `a11y.status` is counts, and still answers.
-        if matches!(method, "a11y.windows" | "a11y.describe" | "a11y.act") {
+        let guarded = matches!(method, "a11y.windows" | "a11y.describe" | "a11y.act");
+        if guarded {
             yantrik_service_sdk::refuse_while_private(self.private)?;
         }
+        let answer = self.answer(method, params);
+        // And again once the bus has answered: walking a browser's tree can take seconds, and the
+        // person may have turned Private mode on meanwhile (#926 review, L2).
+        if guarded {
+            yantrik_service_sdk::refuse_while_private(self.private)?;
+        }
+        answer
+    }
+}
+
+impl A11y {
+    fn answer(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, ServiceError> {
         match method {
             "a11y.windows" => self.ask(Request::Windows),
 
@@ -253,5 +266,26 @@ mod private_mode_tests {
             assert!(err.message.starts_with("PRIVATE:"), "{method}: {}", err.message);
         }
         assert!(rx.try_recv().is_err(), "the accessibility thread was asked nothing");
+    }
+
+    /// #926 review, L2: Private mode turned on while the bus was answering holds for the answer.
+    #[test]
+    fn private_mode_turned_on_while_the_bus_answers_holds_for_that_answer() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        // Not private when the call is let in, private by the time the bus has answered.
+        fn comes_on_during_the_call() -> bool {
+            READS.fetch_add(1, Ordering::SeqCst) >= 1
+        }
+        let (tx, rx) = mpsc::channel::<Request>();
+        std::thread::spawn(move || {
+            if let Ok(Request::Windows(reply)) = rx.recv() {
+                let _ = reply.send(Ok(serde_json::json!({ "windows": [{ "title": "Bank statement SENTINEL-924" }] })));
+            }
+        });
+        let a11y = A11y { tx, private: comes_on_during_the_call };
+        let err = a11y.handle("a11y.windows", serde_json::json!({})).unwrap_err();
+        assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{}", err.message);
+        assert_eq!(READS.load(Ordering::SeqCst), 2, "read before and after the bus");
     }
 }

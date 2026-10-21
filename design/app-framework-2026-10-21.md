@@ -71,6 +71,7 @@ pub enum Event {
     ExitRequested(ExitReason),               // quit, logout, shutdown
     SettingsCommitted(Revision), SettingsConflict, SettingsChangedOutside,
     Activated(WindowId),
+    Presented(WindowId),                     // a second launch showed this window (or reopened it during a linger)
     ReachChanged(Reach),
 }
 ```
@@ -105,6 +106,8 @@ Rules that differ from revision 1:
     - stop timers and cancel jobs;
     - flush the persistence lane only within the shutdown grace deadline. At expiry the process exits without an unbounded join or flush; unfinished writes are not reported as durable, and recovery uses the last durably committed revision;
     - unwind the socket and claim.
+
+    The command that closes the last window may ask to **linger** instead (`fx.linger(backstop)`, capped at 60 s), so work still in flight can land and its outcome be known. The process then runs with no window until `fx.exit()` or the backstop, which ends it and logs. A second launch reopens the first window, drawn whole, and raises `Event::Presented`, where the app cancels its exit. A logout still ends it within the signal deadline.
 
     A failure anywhere in startup unwinds what it took.
 

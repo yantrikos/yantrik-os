@@ -1,7 +1,8 @@
 //! The library list: which notes a section and a search show, in what order, and the counts and
 //! notebooks beside them.
 
-use crate::note::Note;
+use crate::note::{Kept, Note};
+use crate::update::said;
 
 /// One row as the list draws it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +12,9 @@ pub struct Row {
     pub title: String,
     pub preview: String,
     pub date: String,
+    /// Said beside the date for a note Notes made to keep text aside (a copy, a recovered note),
+    /// whose title is the note's it was kept from; empty for any other.
+    pub marker: &'static str,
     pub pinned: bool,
     pub selected: bool,
 }
@@ -98,6 +102,7 @@ pub fn list(library: &[Note], open: Option<&Note>, folder: &str, query: &str, no
                 date: chrono::DateTime::from_timestamp(n.modified as i64, 0)
                     .map(|d| d.with_timezone(&chrono::Local).format("%b %-d · %H:%M").to_string())
                     .unwrap_or_default(),
+                marker: Kept::of(&n.id).map(said::kept_marker).unwrap_or_default(),
                 pinned: n.content.pinned(),
                 selected: is_open(n),
             })

@@ -518,8 +518,8 @@ fn parse_current(json: &serde_json::Value) -> CurrentWeather {
         wind_speed: c["wind_speed_10m"].as_f64().unwrap_or(0.0),
         wind_direction: wind_direction_str(wind_degrees).to_string(),
         wind_degrees,
-        condition: wmo_description(weather_code).to_string(),
-        icon: wmo_icon(weather_code, is_day).to_string(),
+        condition: codes::description(weather_code).to_string(),
+        icon: codes::icon_kind(weather_code, is_day).to_string(),
         uv_index,
         visibility_km: 10.0, // Open-Meteo free tier doesn't provide visibility
         pressure_hpa: c["surface_pressure"].as_f64().unwrap_or(0.0),
@@ -576,8 +576,8 @@ fn parse_hourly(json: &serde_json::Value, hours: u32) -> Vec<HourlyForecast> {
                 format!("{:02}:00", hour)
             },
             temperature: temps[i].as_f64().unwrap_or(0.0),
-            condition: wmo_description(code).to_string(),
-            icon: wmo_icon(code, is_day_hour).to_string(),
+            condition: codes::description(code).to_string(),
+            icon: codes::icon_kind(code, is_day_hour).to_string(),
             precipitation_chance: precip,
         });
     }
@@ -599,7 +599,7 @@ fn parse_daily(json: &serde_json::Value, days: u32) -> Vec<DailyForecast> {
     parse_days(json, days as usize)
         .into_iter()
         .map(|d| DailyForecast {
-            icon: wmo_icon(d.code, true).to_string(),
+            icon: codes::icon_kind(d.code, true).to_string(),
             // The chance when Open-Meteo gave one; before it was asked for, this was the day's
             // millimetres times ten, which is not a percentage of anything.
             precipitation_chance: d.precipitation_probability.unwrap_or(0) as i32,
@@ -633,7 +633,7 @@ fn parse_days(json: &serde_json::Value, days: usize) -> Vec<Day> {
                 weekday: weekday(&date).unwrap_or(""),
                 min: at("temperature_2m_min", i).as_f64().unwrap_or(0.0),
                 max: at("temperature_2m_max", i).as_f64().unwrap_or(0.0),
-                condition: wmo_description(code).to_string(),
+                condition: codes::description(code).to_string(),
                 precipitation_probability: at("precipitation_probability_max", i).as_i64(),
                 precipitation_mm: at("precipitation_sum", i).as_f64().unwrap_or(0.0),
                 sunrise: at("sunrise", i).as_str().map(extract_time).unwrap_or_else(|| "--".to_string()),
@@ -904,57 +904,6 @@ fn generate_alerts(
     }
 
     alerts
-}
-
-// ── WMO code helpers (moved from wire/weather.rs) ────────────────────
-
-/// Vector icon kind the UI draws for a WMO code. The dashboard maps these to
-/// stroke icons (sun / moon / partly / cloud / rain / snow / fog / storm), so
-/// rendering is identical on every platform — no emoji-font dependence.
-fn wmo_icon(code: i32, is_day: bool) -> &'static str {
-    match code {
-        0 => if is_day { "sun" } else { "moon" },
-        1 | 2 => if is_day { "partly" } else { "moon" },
-        3 => "cloud",
-        45 | 48 => "fog",
-        51 | 53 | 55 => "rain",
-        56 | 57 | 66 | 67 => "rain",
-        61 | 63 | 65 | 80 | 81 | 82 => "rain",
-        71 | 73 | 75 | 77 | 85 | 86 => "snow",
-        95 | 96 | 99 => "storm",
-        _ => "cloud",
-    }
-}
-
-fn wmo_description(code: i32) -> &'static str {
-    match code {
-        0 => "Clear sky",
-        1 => "Mainly clear",
-        2 => "Partly cloudy",
-        3 => "Overcast",
-        45 => "Fog",
-        48 => "Depositing rime fog",
-        51 => "Light drizzle",
-        53 => "Moderate drizzle",
-        55 => "Dense drizzle",
-        56 | 57 => "Freezing drizzle",
-        61 => "Slight rain",
-        63 => "Moderate rain",
-        65 => "Heavy rain",
-        66 | 67 => "Freezing rain",
-        71 => "Slight snow",
-        73 => "Moderate snow",
-        75 => "Heavy snow",
-        77 => "Snow grains",
-        80 => "Slight rain showers",
-        81 => "Moderate rain showers",
-        82 => "Violent rain showers",
-        85 => "Slight snow showers",
-        86 => "Heavy snow showers",
-        95 => "Thunderstorm",
-        96 | 99 => "Thunderstorm with hail",
-        _ => "Unknown",
-    }
 }
 
 fn wind_direction_str(degrees: f64) -> &'static str {

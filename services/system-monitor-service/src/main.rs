@@ -87,6 +87,8 @@ impl ServiceHandler for SysMonHandler {
                 let sort_by = params["sort_by"].as_str().unwrap_or("cpu");
                 let limit = params["limit"].as_u64().unwrap_or(20) as u32;
                 let procs = read_processes(sort_by, limit)?;
+                // Read again once the list is read (#926 review, L2).
+                yantrik_service_sdk::refuse_while_private(self.private)?;
                 Ok(serde_json::to_value(procs).unwrap())
             }
             "sysmon.kill_process" => {
@@ -953,6 +955,21 @@ mod tests {
         assert!(private.handle_from("sysmon.snapshot", serde_json::json!({}), None).is_ok());
         let open = super::SysMonHandler { private: || false, ..super::SysMonHandler::new() };
         assert!(open.handle_from("sysmon.processes", serde_json::json!({ "limit": 5 }), None).is_ok());
+    }
+
+    /// #926 review, L2: Private mode turned on while the list was being read holds for it.
+    #[test]
+    fn private_mode_turned_on_while_the_processes_are_read_holds_for_the_list() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use yantrik_service_sdk::ServiceHandler as _;
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        fn comes_on_during_the_call() -> bool {
+            READS.fetch_add(1, Ordering::SeqCst) >= 1
+        }
+        let handler = super::SysMonHandler { private: comes_on_during_the_call, ..super::SysMonHandler::new() };
+        let err = handler.handle_from("sysmon.processes", serde_json::json!({ "limit": 5 }), None).unwrap_err();
+        assert!(err.message.starts_with("PRIVATE:"), "{}", err.message);
+        assert_eq!(READS.load(Ordering::SeqCst), 2, "read before and after the list");
     }
 
     /// #161: the raw kill answers only the desktop's own programs. This test binary is none of

@@ -38,6 +38,7 @@ export component EmailApp inherits AppWindow {
     in property <EmailDetailData> email-detail <=> client.email-detail;
     in property <bool> is-loading <=> client.is-loading;
     in property <bool> is-composing <=> client.is-composing;
+    in property <bool> is-sending <=> client.is-sending;
     in property <bool> ai-is-working <=> client.ai-is-working;
     in property <int> selected-folder-index <=> client.selected-folder-index;
     in property <string> account-name <=> client.account-name;
@@ -145,6 +146,16 @@ export component EmailApp inherits AppWindow {
     callback save-account <=> client.save-account;
     callback test-connection <=> client.test-connection;
     callback cancel-setup <=> client.cancel-setup;
+
+    // The window's own edits reach the app's model, which `describe` reads: the composer's
+    // fields and the search box.
+    callback edited();
+    changed compose-to => { root.edited(); }
+    changed compose-cc => { root.edited(); }
+    changed compose-bcc => { root.edited(); }
+    changed compose-subject => { root.edited(); }
+    changed compose-body => { root.edited(); }
+    changed email-search-query => { root.edited(); }
 
     client := EmailClient {
         window-bar: true;

@@ -10,7 +10,7 @@ use yantrik_ipc_transport::server::{PeerCred, RpcServer, ServiceHandler};
 
 use crate::call::{next_action_id, refusal, service_id_for, ActCall, NO_SUCH_METHOD};
 use crate::context::{AgentTokenScope, Caller, CallerScope, LaterScope};
-use crate::private::{finish_later_published, recheck_private, recheck_refusal, Hold};
+use crate::private::{finish_later_published, recheck_private, recheck_refusal, Hold, ReplyTo};
 use crate::registry::{Registry, SharedDescriber, SharedHandler};
 
 /// One surface — what it reports, what it can be asked to do — answering `app.describe`,
@@ -108,7 +108,8 @@ impl Surface {
                 // answer is built (`crate::private`).
                 let private = yantrik_ipc_transport::privacy::is_private();
                 let mut answer = self.registry.describe_in(private);
-                recheck_private(private, peer.map(|p| p.pid), &mut answer, || Some(self.registry.published(true)));
+                let to = ReplyTo { pid: peer.map(|p| p.pid), surface: self.registry.app_id() };
+                recheck_private(private, to, &mut answer, || Some(self.registry.published(true)));
                 Some(Ok(answer))
             }
             "app.act" => Some(self.act(params, peer, Authority::now())),
@@ -180,8 +181,8 @@ impl Surface {
         // What the reply may carry of the app: the private view while the person is private, and
         // the action's own answer only for a caller the kernel vouches for (`Hold`).
         let private = yantrik_ipc_transport::privacy::is_private();
-        let caller = peer.map(|p| p.pid);
-        let hold = Hold::for_caller(private, caller);
+        let to = ReplyTo { pid: peer.map(|p| p.pid), surface: self.registry.app_id() };
+        let hold = Hold::for_caller(private, to);
         let (answer, later) = {
             let _caller = CallerScope::enter(who);
             let _token = AgentTokenScope::enter(agent_token);
@@ -192,11 +193,11 @@ impl Surface {
             });
             (answer, later.take())
         };
-        let mut envelope = answer.map_err(|why| refusal(recheck_refusal(private, caller, why)))?;
-        recheck_private(private, caller, &mut envelope, || Some(self.registry.published(true)));
+        let mut envelope = answer.map_err(|why| refusal(recheck_refusal(private, to, why)))?;
+        recheck_private(private, to, &mut envelope, || Some(self.registry.published(true)));
         match later {
             Some(work) => {
-                finish_later_published(envelope, work, caller, |private| Some(self.registry.published(private)))
+                finish_later_published(envelope, work, to, |private| Some(self.registry.published(private)))
             }
             None => Ok(envelope),
         }

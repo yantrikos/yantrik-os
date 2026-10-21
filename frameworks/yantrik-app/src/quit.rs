@@ -1,7 +1,10 @@
 //! Quitting: the ways an app is asked to end while its windows are open, and who asked.
 //!
-//! Closing the last window ends the process (`ExitReason::LastWindowClosed`). Two more ways reach
-//! the app as `Event::ExitRequested`, and its reason says whether anyone is there to answer:
+//! Closing the last window ends the process (`ExitReason::LastWindowClosed`), unless the command
+//! that closed it asked to linger (`fx.linger`): the app then runs on with no window until it
+//! runs `fx.exit()` or its backstop passes, and what follows applies during a linger too. Two
+//! more ways reach the app as `Event::ExitRequested`, and its reason says whether anyone is there
+//! to answer:
 //!
 //! - **A person** (`ExitReason::Person`): the app's `fx.request_quit()`, which it raises from
 //!   Ctrl+Q or a Quit menu. The app's close flow runs over every window and may ask about unsaved

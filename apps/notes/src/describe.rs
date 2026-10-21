@@ -24,11 +24,15 @@ pub fn view(m: &Model) -> View {
         if trashed == 0 { String::new() } else { format!(", {trashed} in trash") }
     );
     let open = m.current();
+    // While its unsaved text from before Notes closed is offered, the window shows that text, not
+    // yet in the note and on no disk but its draft: so does every key below about the text.
+    let offered = m.offered().is_some();
+    let shown = m.shown();
     let mut summary = match &open {
         _ if !m.ready => "Notes — the library has not opened".to_string(),
         None => format!("Notes — nothing open, {library}"),
         Some(n) => {
-            let lines = n.text().lines().count();
+            let lines = shown.map_or(0, |s| s.text.lines().count());
             // What waits on a choice about an outside change is said in the line a mind reads first.
             let waiting = match n.outside() {
                 OutsideState::Conflict { .. } => ", changed outside Notes",
@@ -37,13 +41,13 @@ pub fn view(m: &Model) -> View {
             };
             format!(
                 "Notes — \"{}\" open{} ({} line{}, {}{waiting}), {library}",
-                n.title(),
+                shown.map(|s| s.title()).unwrap_or_else(|| n.title()),
                 if n.trash() { " from Trash" } else { "" },
                 lines,
                 if lines == 1 { "" } else { "s" },
                 if n.trash() {
                     "deleted"
-                } else if n.unsaved() {
+                } else if n.unsaved() || offered {
                     "unsaved"
                 } else {
                     "saved"
@@ -59,15 +63,16 @@ pub fn view(m: &Model) -> View {
     }
     View::new(summary)
         .with("open_note", open.as_ref().map(|n| n.id().to_string()))
-        .with("title", open.as_ref().map(|n| n.title()))
+        .with("title", shown.map(|s| s.title()))
         .with("path", open.as_ref().map(|n| m.vault.dir().join(n.id()).display().to_string()))
-        .with("unsaved", open.as_ref().is_some_and(|n| n.unsaved()))
-        .with("lines", open.as_ref().map(|n| n.text().lines().count() as i64))
-        .with("characters", open.as_ref().map(|n| n.text().chars().count() as i64))
+        .with("unsaved", open.as_ref().is_some_and(|n| n.unsaved()) || offered)
+        .with("lines", shown.map(|s| s.text.lines().count() as i64))
+        .with("characters", shown.map(|s| s.text.chars().count() as i64))
         .with("trashed_note_open", open.as_ref().is_some_and(|n| n.trash()))
         .with("outside", open.as_ref().map(|n| outside(n.outside())))
         .with("save_failure", open.as_ref().and_then(|n| save_failure(&n.doc.save)))
-        .with("draft", open.as_ref().map(|n| draft(&n.doc.draft)))
+        // An offered text is kept, as the draft it was read from.
+        .with("draft", open.as_ref().map(|n| if offered { "kept" } else { draft(&n.doc.draft) }))
         .with(
             "recovery",
             crate::update::recovery::in_order(m)
@@ -75,11 +80,11 @@ pub fn view(m: &Model) -> View {
                 .map(|o| json!({ "filename": o.id, "title": o.content.title(), "characters": o.content.text.chars().count() }))
                 .collect::<Vec<_>>(),
         )
-        .with("content", open.as_ref().map(|n| n.text().chars().take(4000).collect::<String>()))
+        .with("content", shown.map(|s| s.text.chars().take(4000).collect::<String>()))
         // The `.meta` sidecar travels with the text — `tags`, `notebook` and `pinned` live in it —
         // so it belongs in the view a revision is hashed from: a caller whose "unchanged since I
         // read it" check compares revisions must see a tag change as a change.
-        .with("metadata", open.as_ref().map(|n| n.content().meta.clone()))
+        .with("metadata", shown.map(|s| s.meta.clone()))
         .with("notes_directory", m.vault.dir().display().to_string())
         .with("library_ready", m.ready)
         .with("busy", m.busy.is_some())
@@ -128,8 +133,8 @@ fn windows(m: &Model) -> Vec<Value> {
                 "window": p.window.0,
                 "focused": p.window == m.pane.window,
                 "open_note": note.as_ref().map(|n| n.id().to_string()),
-                "title": note.as_ref().map(|n| n.title()),
-                "unsaved": note.as_ref().is_some_and(|n| n.unsaved()),
+                "title": m.shown_in(p).map(|s| s.title()),
+                "unsaved": note.as_ref().is_some_and(|n| n.unsaved()) || m.offered_in(p).is_some(),
             })
         })
         .collect()

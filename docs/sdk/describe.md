@@ -102,7 +102,7 @@ mind could assume it; what the answer holds; and what cannot be taken back. The 
 also the sentence on the approval card the person reads. Email's `compose` is the model of the
 second part:
 
-<!-- from: apps/email/src/main.rs -->
+<!-- from: apps/email/src/intents.rs -->
 ```rust
             Action::new(
                 "compose",

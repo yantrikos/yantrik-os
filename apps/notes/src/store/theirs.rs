@@ -17,7 +17,7 @@ use yantrik_app::documents::disk::{Displaced, Step};
 use yantrik_app::documents::{Replaced, SaveTicket, Witnessed};
 
 use super::{read, validate, Vault, LIMIT};
-use crate::note::{Note, NoteText};
+use crate::note::{Kept, Note, NoteText};
 
 /// The other program's version a save replaced, and where it is now.
 #[derive(Debug, Clone)]
@@ -72,7 +72,7 @@ impl Vault {
         let text = std::str::from_utf8(bytes).ok().filter(|t| validate(t).is_ok());
         let Some(text) = text else { return self.aside(bytes) };
         let content = NoteText { text: text.into(), meta: String::new() };
-        let id = format!("recovered-{}.md", uuid7::uuid7());
+        let id = Kept::Recovered.new_id();
         match self.save_new(&id, &content) {
             Ok(saved) => Theirs::Kept(Note { id, content: saved.content, modified: saved.modified, trash: false, stored: true }),
             Err(why) => Theirs::Unwritten { note: Note { id, content, ..Note::default() }, why },

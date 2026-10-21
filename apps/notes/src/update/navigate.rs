@@ -1,12 +1,12 @@
 //! Which note the pane shows: opening one from the library, making one, copying one. Every open
 //! note is a document; its file is watched while it is open and no longer once it closes.
 
-use yantrik_app::documents::{Fingerprint, Source};
+use yantrik_app::documents::{Fingerprint, OutsideState, Source};
 use yantrik_app::effects::Effects;
 
 use super::{drafts, saving, show};
 use crate::model::{Model, NoteFile};
-use crate::note::Note;
+use crate::note::{Kept, Note};
 use crate::pane::Cue;
 use crate::store::{validate, MAX_NOTES, VAULT_LIMIT};
 use crate::view::render::{CHROME, CUES, STATUS};
@@ -20,7 +20,8 @@ pub const LIBRARY_FULL: &str = "Library reached its note or text limit (2,000 no
 
 /// The focused window shows `note` (or nothing): as the document another window has open for it,
 /// or as a document of its own. The document it showed is closed, and its file no longer watched,
-/// once no window shows it.
+/// once no window shows it. A note whose file was gone is then gone from the library too: nothing
+/// of it is on disk, and its text was let go or kept as another note before it could close.
 pub fn show_note(m: &mut Model, fx: &mut Effects<Notes>, note: Option<Note>) {
     // What the pane held about the last note's outside change is not about this one.
     m.pane.outside_later = false;
@@ -37,6 +38,10 @@ pub fn show_note(m: &mut Model, fx: &mut Effects<Notes>, note: Option<Note>) {
                     fx.unwatch(&closed.source.key());
                 }
                 drafts::closing(&closed, fx);
+                if let Some(gone) = m.files.get(&doc).filter(|_| closed.outside == OutsideState::Deleted) {
+                    let id = gone.id.clone();
+                    m.library.retain(|n| n.trash || n.id != id);
+                }
             }
             m.files.remove(&doc);
         }
@@ -71,7 +76,7 @@ pub fn show_note(m: &mut Model, fx: &mut Effects<Notes>, note: Option<Note>) {
     }
     m.files.insert(
         doc,
-        NoteFile { id: note.id, trash: note.trash, on_disk, meta_unsure: None, modified: note.modified },
+        NoteFile { id: note.id, trash: note.trash, on_disk, meta_unsure: None, modified: note.modified, gone_at: None },
     );
     m.pane.view = Some(m.documents.show(doc, m.pane.window));
 }
@@ -119,7 +124,8 @@ pub fn new_note(m: &mut Model, fx: &mut Effects<Notes>, title: &str, body: &str)
 }
 
 /// The open note, unsaved edits and all, as a new note under its own file name; the original
-/// file is left as it is. The way out of "this note changed on disk".
+/// file is left as it is. The way out of "this note changed on disk". The unsaved text is the
+/// copy's now, so the original's draft goes with it (`drafts::moved`).
 pub fn copy(m: &mut Model, fx: &mut Effects<Notes>) {
     // As the window shows it: an offered text waiting on the person is copied, offer and all.
     let Some(mut note) = m.shown_note() else { return };
@@ -128,11 +134,13 @@ pub fn copy(m: &mut Model, fx: &mut Effects<Notes>) {
         fx.changed(STATUS);
         return;
     }
-    note.id = format!("copy-{}.md", uuid7::uuid7());
+    note.id = Kept::Copy.new_id();
     note.stored = false;
     note.trash = false;
+    let from = m.current_id().and_then(|id| m.documents.get(id)).and_then(drafts::kept_name);
     m.library.push(note.clone());
     show_note(m, fx, Some(note));
+    drafts::moved(m, fx, from);
     show(m, fx);
     saving::save(m, fx, saving::How::Asked);
 }

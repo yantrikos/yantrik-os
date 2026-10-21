@@ -61,7 +61,7 @@ Stopping a container interrupts whatever it was serving, though it can be starte
 And a grade can be about what an action does to the *person* rather than to the machine. Email's
 sign-in changes nothing by itself, and is still `sensitive`:
 
-<!-- from: apps/email/src/main.rs -->
+<!-- from: apps/email/src/intents.rs -->
 ```rust
             // `sensitive` rather than `standard`, and the grade is about what it does to the
             // person rather than to the machine. By itself it changes nothing — no account is

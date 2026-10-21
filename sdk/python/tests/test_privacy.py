@@ -168,16 +168,68 @@ class TestPrivateSurface(test_mind_door.TestTheDoor):
         refused = self.call(server.path, "app.act", {"action": "open_note", "args": {"title": "x"}})
         self.assertEqual(refused["error"]["message"], privacy.WITHHELD_REFUSAL)
 
+    def test_an_unhandled_fault_reaches_an_unvouched_caller_as_the_neutral_sentence(self):
+        # #926 review, M1: KeyError, ValueError, the deferred path and a failing view.
+        from yantrik_surface import Later
+        sentinel = "Salary review SENTINEL-924"
+        broken_view = []
+        s = Surface("sheet")
+
+        @s.view
+        def state():
+            if broken_view:
+                raise KeyError(sentinel)
+            return {"rows": 3}
+
+        # Kept in Private mode, so the private describe reads the view, and meets its fault.
+        s.show_in_private("rows")
+
+        @s.action("cell", grade="safe")
+        def cell() -> dict:
+            "Read a cell."
+            raise KeyError(sentinel)
+
+        @s.action("parse", grade="safe")
+        def parse() -> dict:
+            "Parse a cell."
+            raise ValueError("cannot parse %s" % sentinel)
+
+        @s.action("export", grade="safe")
+        def export():
+            "Export, off the app's thread."
+            def work():
+                raise KeyError(sentinel)
+            return Later(work)
+
+        server = s.serve_in_thread()
+        self.addCleanup(s.stop)
+        off = self.call(server.path, "app.act", {"action": "cell", "args": {}})
+        self.assertIn("SENTINEL-924", json.dumps(off), "off, the fault is the app's own words")
+        self.private()
+        for action in ("cell", "parse", "export"):
+            refused = self.call(server.path, "app.act", {"action": action, "args": {}})
+            self.assertEqual(refused["error"]["message"], privacy.WITHHELD_REFUSAL, (action, refused))
+            self.assertNotIn("SENTINEL-924", json.dumps(refused), action)
+        broken_view.append(True)
+        described = self.call(server.path, "app.describe")
+        self.assertNotIn("SENTINEL-924", json.dumps(described), described)
+
     def test_the_readers_while_private_are_the_crates(self):
         d = privacy.INSTALL_DIR
         own = d + "/yantrik-notes"
-        for yes in (d + "/yantrik-ui", d + "/yantrik-term", own, own + " (deleted)"):
-            self.assertTrue(privacy.is_private_reader_in(yes, own, d), yes)
+        for yes in (d + "/yantrik-ui", own, own + " (deleted)"):
+            self.assertTrue(privacy.is_private_reader_in(yes, own, d, "notes"), yes)
         for no in ("/tmp/yantrik-term", d + "/yantrik-email", "/usr/bin/python3", "yantrik-ui", ""):
-            self.assertFalse(privacy.is_private_reader_in(no, own, d), no)
-        self.assertFalse(privacy.reads_while_private(os.getpid()))
-        support.quoted(self, OWNER_RS, 'pub const PRIVATE_READERS: &[&str] = &[')
-        support.quoted(self, OWNER_RS, '    "yantrik-term",\n];')
+            self.assertFalse(privacy.is_private_reader_in(no, own, d, "notes"), no)
+        # yantrik-term toward the shell only; another namespace or another file is nobody.
+        term = d + "/yantrik-term"
+        self.assertTrue(privacy.is_vouched(term, True, True, None, d, "shell"))
+        self.assertFalse(privacy.is_vouched(term, True, True, None, d, "notes"))
+        self.assertFalse(privacy.is_vouched(term, False, True, None, d, "shell"))
+        self.assertFalse(privacy.is_vouched(term, True, False, None, d, "shell"))
+        self.assertFalse(privacy.reads_while_private(os.getpid(), "shell"))
+        support.quoted(self, OWNER_RS, 'pub const PRIVATE_READERS: &[(&str, &str)] = &[')
+        support.quoted(self, OWNER_RS, '    ("yantrik-term", "shell"),\n];')
         support.quoted(self, SURFACE_PRIVATE_RS, 'pub const WITHHELD: &str = "%s";' % privacy.WITHHELD)
         support.quoted(self, SURFACE_PRIVATE_RS, '"%s";' % privacy.WITHHELD_REFUSAL)
 

@@ -19,7 +19,7 @@
 
 /// The app's side: which of three states it is in, which message a caller means, the draft, and
 /// what the setup form makes of what was typed.
-#[path = "../../apps/email/src/state.rs"]
+#[path = "../../apps/email/src/state/mod.rs"]
 pub mod state;
 
 /// The service's side: where accounts live, how they are picked, and how they are written.
@@ -1812,7 +1812,7 @@ mod tests {
     // click that only meant "let me see the layout" must not tell the sender the mail was
     // opened, when, and from which address — which is exactly what the invisible pictures in
     // notification mail exist to report. What the cleaning keeps and drops is a decision, and
-    // the decisions live in `state.rs` so they can be checked here without a window.
+    // the decisions live in `state/original.rs` so they can be checked here without a window.
 
     #[test]
     fn every_image_that_would_fetch_is_gone_before_the_browser_gets_the_mail() {

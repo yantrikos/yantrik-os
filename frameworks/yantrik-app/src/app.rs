@@ -33,7 +33,7 @@ impl WindowId {
 /// whether anyone is there to answer a question (`crate::quit`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitReason {
-    /// The last window closed.
+    /// The last window closed, or a linger after it ran past its backstop (`fx.linger`).
     LastWindowClosed,
     /// The app ended itself (`fx.exit()`): the reason recorded, never raised as an event by the
     /// framework.
@@ -43,7 +43,9 @@ pub enum ExitReason {
     /// to answer, and the process is killed after a grace period whatever the app does: save
     /// without asking, then `fx.exit()`. A bounded chance to save, not a completed interactive
     /// save; after a signal the framework ends the process itself if the app has not within
-    /// [`crate::quit::SIGNAL_DEADLINE`].
+    /// [`crate::quit::SIGNAL_DEADLINE`]. Hand the save over in the command that answers (a draft
+    /// checkpointed, the settings saved): at the end, a `then` or a job's result still queued is
+    /// not applied.
     Logout,
     /// A person asked the app to quit: the app's `fx.request_quit()`, from Ctrl+Q or a Quit
     /// menu. Someone is there to answer: the app may ask about unsaved work, once over every
@@ -63,7 +65,9 @@ pub enum Event<S> {
     /// hand-over is graded standard or below. The app runs it as the person's own command.
     Launch(Launch),
     /// The person asked a window to close. `None` from [`App::event`] closes it now; a command
-    /// keeps it open until something runs `fx.close(window)`, so "Save changes?" is a flow.
+    /// keeps it open until something runs `fx.close(window)`, so "Save changes?" is a flow. The
+    /// command that closes the last window may also run `fx.linger`, to finish work still in
+    /// flight with no window before it ends.
     CloseRequested(WindowId),
     /// The process is asked to end: by a person (`ExitReason::Person`) or by the session or the
     /// system (`ExitReason::Logout`). `None` ends it now; a command may save first and then
@@ -79,6 +83,15 @@ pub enum Event<S> {
     /// is applied in the drain right after, and one queued behind a command that closed its
     /// window is dropped. `None` does nothing.
     Activated(WindowId),
+    /// A second launch brought this window to the person: the desktop's `present`, or a launch
+    /// handed over (`launch`, after its `Event::Launch`). Raised once the window is shown, every
+    /// time, whether or not the window manager then gives it the keyboard, so it is the reliable
+    /// word that the person is back; `Activated` follows only if the window manager says so.
+    ///
+    /// During a linger (`fx.linger`) no window is open, and the first window is opened again,
+    /// drawn whole from the model: the linger is over, the app runs on as before it closed, and
+    /// this is where it cancels the exit it was waiting to make. `None` does nothing.
+    Presented(WindowId),
     /// The last `fx.save_settings` reached the disk. `None` does nothing.
     SettingsSaved,
     /// A save did not reach the disk; the value is kept in memory and will be tried again with
