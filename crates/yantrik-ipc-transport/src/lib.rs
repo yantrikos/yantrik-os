@@ -19,6 +19,7 @@ pub mod peer_identity;
 pub mod plain_text;
 /// Private mode: while it is on, no agent sees or does anything on this desktop.
 pub mod privacy;
+pub mod private_owner;
 // An agent's reach: what a role from the agent catalog may touch (design/desk-and-mind, section 5).
 pub mod reach;
 pub mod service;
