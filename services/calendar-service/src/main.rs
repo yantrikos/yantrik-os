@@ -77,7 +77,12 @@ struct CalendarHandler {
     store: Arc<EventStore>,
     /// `app.describe` and `app.act`, dispatched as an app window's are.
     surface: Surface,
+    /// Whether the person is in Private mode, read per call; a stand-in in tests.
+    private: fn() -> bool,
 }
+
+/// Who reads the events while the person is private: the Calendar app (and the shell, always).
+const CALENDAR_OWNERS: &[&str] = &["yantrik-calendar"];
 
 impl Default for CalendarHandler {
     fn default() -> Self {
@@ -85,6 +90,7 @@ impl Default for CalendarHandler {
         CalendarHandler {
             store: store.clone(),
             surface: calendar_surface(store, Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW))),
+            private: yantrik_service_sdk::is_private,
         }
     }
 }
@@ -134,6 +140,11 @@ impl ServiceHandler for CalendarHandler {
         // grant, exactly as before. A method that is not one of this service's is left to the
         // unknown-method answer below, whoever asks: the protocol's `-32601` for a name nobody
         // serves is the checker's (`yos check`) and every caller's to get.
+        // The events themselves, while the person is private: the Calendar app's and the shell's
+        // only, narrower than the desktop's programs the raw methods answer otherwise.
+        if matches!(method_name, method::EVENTS | method::GET_EVENT) {
+            yantrik_service_sdk::private_content_for(peer, method_name, CALENDAR_OWNERS, self.private)?;
+        }
         if method_name.starts_with("calendar.") {
             if let Err(why) = own_process_only(peer) {
                 return Err(ServiceError { code: -32001, message: why });
@@ -219,6 +230,7 @@ impl CalendarHandler {
                 store,
                 Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW)),
             ),
+            private: || false,
         }
     }
 }
@@ -1726,5 +1738,24 @@ mod tests {
         assert!(!is_own_binary("/usr/bin/python3"));
         assert!(!is_own_binary("yantrik-ui"), "not an absolute path");
         assert!(!is_own_binary(""));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod private_mode_tests {
+    /// #924 follow-up: while the person is private the events go to the Calendar app and the
+    /// shell only, in the transport's sentence, ahead of the desktop-programs rule.
+    #[test]
+    fn in_private_mode_the_events_go_only_to_the_calendar_app() {
+        use yantrik_service_sdk::ServiceHandler as _;
+        let dir = std::env::temp_dir().join(format!("calendar-private-{}", std::process::id()));
+        let private = super::CalendarHandler { private: || true, ..super::CalendarHandler::over(dir.clone()) };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        for method in [super::method::EVENTS, super::method::GET_EVENT] {
+            let err = private.handle_from(method, serde_json::json!({ "id": "e1" }), me).unwrap_err();
+            assert_eq!(err.code, -32602, "{method}");
+            assert!(err.message.starts_with("PRIVATE:"), "{method}: {}", err.message);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

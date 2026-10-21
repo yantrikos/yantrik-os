@@ -23,7 +23,7 @@ fn main() {
     std::fs::create_dir_all(notes_dir()).ok();
 
     ServiceBuilder::new("notes")
-        .handler(NotesHandler { dir: notes_dir() })
+        .handler(NotesHandler { dir: notes_dir(), private: yantrik_service_sdk::is_private })
         .run();
 }
 
@@ -38,7 +38,12 @@ fn notes_dir() -> PathBuf {
 
 struct NotesHandler {
     dir: PathBuf,
+    /// Whether the person is in Private mode, read per call; a stand-in in tests.
+    private: fn() -> bool,
 }
+
+/// Who reads the notes while the person is private: the Notes app (and the shell, always).
+const NOTES_OWNERS: &[&str] = &["yantrik-notes"];
 
 impl ServiceHandler for NotesHandler {
     fn service_id(&self) -> &str {
@@ -56,6 +61,10 @@ impl ServiceHandler for NotesHandler {
     ) -> Result<serde_json::Value, ServiceError> {
         if matches!(method, "notes.create" | "notes.update" | "notes.delete" | "notes.set_pinned" | "notes.set_tags") {
             yantrik_service_sdk::desktop_programs_only(peer, method)?;
+        }
+        // The notes themselves, while the person is private: the Notes app's and the shell's only.
+        if matches!(method, "notes.list" | "notes.get" | "notes.search") {
+            yantrik_service_sdk::private_content_for(peer, method, NOTES_OWNERS, self.private)?;
         }
         self.handle(method, params)
     }
@@ -441,7 +450,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.join("notes");
         std::fs::create_dir_all(&dir).unwrap();
-        (root, NotesHandler { dir })
+        (root, NotesHandler { dir, private: || false })
     }
 
     /// #161: a raw write answers only the desktop's own programs. This test binary is none of
@@ -503,5 +512,34 @@ mine").unwrap();
         notes.handle("notes.delete", serde_json::json!({ "id": id })).unwrap();
         assert!(notes.handle("notes.get", serde_json::json!({ "id": id })).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod private_mode_tests {
+    use super::*;
+
+    /// #924 follow-up: while the person is private a note's title and text go to the Notes app
+    /// and the shell only; this test binary is neither, so it reads nothing.
+    #[test]
+    fn in_private_mode_the_notes_go_only_to_the_notes_app() {
+        let root = std::env::temp_dir().join(format!("notes-private-{}", std::process::id()));
+        let dir = root.join("notes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let open = NotesHandler { dir: dir.clone(), private: || false };
+        let made = open.handle("notes.create", serde_json::json!({ "title": "Therapy SENTINEL-924", "body": "x" })).unwrap();
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        let private = NotesHandler { dir, private: || true };
+        for (method, params) in [
+            ("notes.list", serde_json::json!({})),
+            ("notes.get", serde_json::json!({ "id": made["id"] })),
+            ("notes.search", serde_json::json!({ "query": "SENTINEL" })),
+        ] {
+            let err = private.handle_from(method, params.clone(), me).unwrap_err();
+            assert_eq!(err.code, -32602, "{method}");
+            assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{method}: {}", err.message);
+            assert!(open.handle_from(method, params, me).is_ok(), "{method} answers when not private");
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

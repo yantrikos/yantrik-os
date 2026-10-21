@@ -123,12 +123,14 @@ struct NotificationsHandler {
     link: Arc<freedesktop::Link>,
     /// `app.describe` and `app.act`, dispatched as an app window's are.
     surface: Surface,
+    /// Whether the person is in Private mode, read per call; a stand-in in tests.
+    private: fn() -> bool,
 }
 
 impl NotificationsHandler {
     fn new(store: Arc<store::Store>, link: Arc<freedesktop::Link>) -> NotificationsHandler {
         let surface = notifications_surface(store.clone(), link.clone());
-        NotificationsHandler { store, link, surface }
+        NotificationsHandler { store, link, surface, private: yantrik_service_sdk::is_private }
     }
 }
 
@@ -173,6 +175,10 @@ impl NotificationsHandler {
         // `notifications.add` below.
         if let Some(answer) = self.surface.answer(method, &params, peer) {
             return answer;
+        }
+        // What the notifications say, while the person is private: the shell's alone (#924).
+        if method == LIST {
+            yantrik_service_sdk::private_content_for(peer, method, &[], self.private)?;
         }
         match method {
             LIST => Ok(serde_json::to_value(self.store.list_for(is_desktop(peer))).unwrap_or_default()),
@@ -1558,5 +1564,27 @@ mod tests {
         // Made with no socket, the same call has nobody to attribute it to.
         let direct = handler().act(&notify(None), None, at("sensitive", "ask")).unwrap();
         assert_eq!(direct["result"]["sender"]["verified"], peer_identity::UNIDENTIFIED);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod private_mode_tests {
+    /// #924 follow-up: while the person is private the notifications' text goes to the shell only.
+    #[test]
+    fn in_private_mode_the_notifications_go_only_to_the_shell() {
+        let path = std::env::temp_dir().join(format!("yantrik-notifications-private-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let handler = super::NotificationsHandler {
+            private: || true,
+            ..super::NotificationsHandler::new(
+                std::sync::Arc::new(super::store::Store::open(path.clone())),
+                std::sync::Arc::new(super::freedesktop::Link::new()),
+            )
+        };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        let err = handler.dispatch(super::LIST, serde_json::json!({}), me).unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.starts_with("PRIVATE:"), "{}", err.message);
+        let _ = std::fs::remove_file(path);
     }
 }
