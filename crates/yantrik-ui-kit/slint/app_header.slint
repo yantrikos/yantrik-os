@@ -177,293 +177,305 @@ export component AppHeader inherits Rectangle {
         background: Theme.separator;
     }
 
-    // A viewport isolates intrinsic child sizes from the containing split pane.
-    // The header itself never scrolls; only its bounded action strip can scroll.
-    Flickable {
+    // The header is a component of its own, so the buttons in its row are on the Tab tour only
+    // if the header holds a focus to hand on, and it held none. What `forward-focus` names has to
+    // exist whatever the app puts in the row, and every control in the row sits inside an `if` —
+    // so the scope goes around the viewport, and focus lands on the first control the app shows.
+    forward-focus: row-keys;
+    row-keys := FocusScope {
+        // A scope is not a Rectangle: with no size of its own it collapses the row it holds.
         width: 100%; height: 100%;
-        viewport-width: self.width;
-        viewport-height: self.height;
-        interactive: false;
+        // A press in the bar is a drag or a button's own, not a request for the keyboard.
+        focus-on-click: false;
 
-        // Behind the row, so anything in the row that takes a press takes it first. The move
-        // starts once the pointer has travelled a few pixels, not on the press itself: a press
-        // handed to the compositor at once would never arrive here as the second half of a
-        // double-click.
-        bar-drag := TouchArea {
-            enabled: root.draggable || root.window-bar;
-            width: parent.width;
-            height: parent.height;
-            moved => {
-                if (self.pressed
-                    && (abs(self.mouse-x - self.pressed-x) > 4px
-                        || abs(self.mouse-y - self.pressed-y) > 4px)) {
-                    if (root.window-bar) { WindowChrome.drag(); } else { root.drag(); }
+        // A viewport isolates intrinsic child sizes from the containing split pane.
+        // The header itself never scrolls; only its bounded action strip can scroll.
+        Flickable {
+            width: 100%; height: 100%;
+            viewport-width: self.width;
+            viewport-height: self.height;
+            interactive: false;
+
+            // Behind the row, so anything in the row that takes a press takes it first. The move
+            // starts once the pointer has travelled a few pixels, not on the press itself: a press
+            // handed to the compositor at once would never arrive here as the second half of a
+            // double-click.
+            bar-drag := TouchArea {
+                enabled: root.draggable || root.window-bar;
+                width: parent.width;
+                height: parent.height;
+                moved => {
+                    if (self.pressed
+                        && (abs(self.mouse-x - self.pressed-x) > 4px
+                            || abs(self.mouse-y - self.pressed-y) > 4px)) {
+                        if (root.window-bar) { WindowChrome.drag(); } else { root.drag(); }
+                    }
                 }
-            }
-            double-clicked => {
-                if (root.window-bar) { WindowChrome.toggle-maximize(); } else { root.toggle-maximize(); }
-            }
-        }
-
-        HorizontalLayout {
-            padding-left: root.show-back ? Theme.sp-2 : Theme.sp-4;
-            padding-right: root.controls-shown ? 0px : Theme.sp-3;
-            spacing: root.width < 1000px ? Theme.sp-2 : Theme.sp-3;
-
-            // ── Back ──
-            if root.show-back : VerticalLayout {
-                alignment: center;
-                horizontal-stretch: 0;
-                YButton {
-                    icon-path: Icons.arrow-left;
-                    icon-only: true;
-                    size: 0;
-                    variant: 1;
-                    clicked => { root.back(); }
+                double-clicked => {
+                    if (root.window-bar) { WindowChrome.toggle-maximize(); } else { root.toggle-maximize(); }
                 }
             }
 
-            // ── App glyph ──
-            if root.icon != "" : Rectangle {
-                width: 32px;
-                height: 32px;
-                y: (parent.height - 32px) / 2;
-                border-radius: Theme.r-sm;
-                background: root.app-id != "" ? AppColor.tint-for-app(root.app-id) : Theme.tint-accent;
-                Icon {
-                    commands: root.icon;
-                    size: 16px;
-                    tint: root.app-id != "" ? AppColor.for-app(root.app-id) : Theme.accent;
-                    thickness: 1.7px;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
-            }
+            HorizontalLayout {
+                padding-left: root.show-back ? Theme.sp-2 : Theme.sp-4;
+                padding-right: root.controls-shown ? 0px : Theme.sp-3;
+                spacing: root.width < 1000px ? Theme.sp-2 : Theme.sp-3;
 
-            // ── Title ──
-            //
-            // horizontal-stretch: 0 so the spacer further down takes the slack. Without it the title
-            // block and the spacer split it, and the modified dot drifts away from the word it marks.
-            VerticalLayout {
-                alignment: center;
-                spacing: 1px;
-                horizontal-stretch: 0;
-                width: min(180px, root.width * 0.20);
-
-                Text {
-                    text: root.title;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-title-2;
-                    font-weight: Theme.fw-title-2;
-                    letter-spacing: -0.2px;
-                    overflow: elide;
-                    min-width: 0px;
-                    max-width: 180px;
+                // ── Back ──
+                if root.show-back : VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    YButton {
+                        icon-path: Icons.arrow-left;
+                        icon-only: true;
+                        size: 0;
+                        variant: 1;
+                        clicked => { root.back(); }
+                    }
                 }
 
-                if root.subtitle != "" : Text {
-                    text: root.subtitle;
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-micro;
-                    overflow: elide;
-                    min-width: 0px;
-                    max-width: 180px;
-                }
-            }
-
-            if root.modified : Rectangle {
-                width: 7px;
-                height: 7px;
-                y: (parent.height - 7px) / 2;
-                border-radius: 3.5px;
-                background: Theme.amber;
-                horizontal-stretch: 0;
-            }
-
-            if root.status != "" : Text {
-                text: root.status;
-                color: Theme.accent;
-                font-size: Theme.fs-caption;
-                vertical-alignment: center;
-                overflow: elide;
-                max-width: 160px;
-                horizontal-stretch: 0;
-            }
-
-            if root.leading-actions.length > 0 : HorizontalLayout {
-                alignment: start;
-                spacing: Theme.sp-1;
-                horizontal-stretch: 0;
-                // Centred by arithmetic rather than a hardcoded 10px, so the row stays centred if
-                // the header height token ever moves.
-                padding-top: (root.height - Theme.h-compact) / 2;
-                padding-bottom: (root.height - Theme.h-compact) / 2;
-
-                for a in root.leading-actions : YButton {
-                    label: a.label != "" ? a.label : a.id;
-                    icon-path: a.icon;
-                    icon-only: a.label == "";
-                    size: 0;
-                    disabled: a.disabled;
-                    loading: a.loading;
-                    variant: a.active ? 0
-                           : a.emphasis == 3 ? 3
-                           : a.emphasis == 2 ? 0
-                           : a.emphasis == 1 ? 1
-                           : 2;
-                    clicked => { root.action(a.id); }
-                }
-            }
-
-            if root.segments.length > 0 : VerticalLayout {
-                alignment: center;
-                horizontal-stretch: 0;
-                YSegmented {
-                    label: root.segments-label;
-                    items: root.segments;
-                    selected: root.segment;
-                    chosen(i) => { root.segment-chosen(i); }
-                }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-
-            // ── Search ──
-            if root.show-search : Rectangle {
-                width: max(140px, min(240px, root.width * 0.18));
-                height: Theme.h-regular;
-                y: (parent.height - Theme.h-regular) / 2;
-                horizontal-stretch: 0;
-                border-radius: Theme.r-md;
-                background: Theme.bg-input;
-                border-width: 1px;
-                border-color: search-input.has-focus ? Theme.accent-dim : Theme.border-default;
-                clip: true;
-                animate border-color { duration: Theme.dur-fast; }
-
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 8px;
-                    spacing: 8px;
-
+                // ── App glyph ──
+                if root.icon != "" : Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    y: (parent.height - 32px) / 2;
+                    border-radius: Theme.r-sm;
+                    background: root.app-id != "" ? AppColor.tint-for-app(root.app-id) : Theme.tint-accent;
                     Icon {
-                        commands: Icons.search;
-                        size: 14px;
-                        tint: Theme.text-dim;
-                        thickness: 1.6px;
+                        commands: root.icon;
+                        size: 16px;
+                        tint: root.app-id != "" ? AppColor.for-app(root.app-id) : Theme.accent;
+                        thickness: 1.7px;
+                        x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
                     }
+                }
 
-                    search-input := TextInput {
-                        text <=> root.search-text;
+                // ── Title ──
+                //
+                // horizontal-stretch: 0 so the spacer further down takes the slack. Without it the title
+                // block and the spacer split it, and the modified dot drifts away from the word it marks.
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    horizontal-stretch: 0;
+                    width: min(180px, root.width * 0.20);
+
+                    Text {
+                        text: root.title;
                         color: Theme.text-primary;
-                        font-size: Theme.fs-body;
-                        vertical-alignment: center;
-                        single-line: true;
-                        edited => { root.search-edited(self.text); }
-                        accepted => { root.search-accepted(self.text); }
+                        font-size: Theme.fs-title-2;
+                        font-weight: Theme.fw-title-2;
+                        letter-spacing: -0.2px;
+                        overflow: elide;
+                        min-width: 0px;
+                        max-width: 180px;
+                    }
+
+                    if root.subtitle != "" : Text {
+                        text: root.subtitle;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-micro;
+                        overflow: elide;
+                        min-width: 0px;
+                        max-width: 180px;
                     }
                 }
 
-                if root.search-text == "" && !search-input.has-focus : Text {
-                    x: 32px;
-                    text: root.search-placeholder;
-                    color: Theme.text-dim;
-                    font-size: Theme.fs-body;
-                    vertical-alignment: center;
-                    height: 100%;
-                }
-            }
-
-            // ── Actions ──
-            if root.actions.length > 0 : HorizontalLayout {
-                height: root.height;
-                horizontal-stretch: 0;
-                spacing: Theme.sp-1;
-                action-row := HorizontalLayout {
-                    height: root.height;
-                    alignment: end;
-                    spacing: 0px;
+                if root.modified : Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    y: (parent.height - 7px) / 2;
+                    border-radius: 3.5px;
+                    background: Theme.amber;
                     horizontal-stretch: 0;
+                }
+
+                if root.status != "" : Text {
+                    text: root.status;
+                    color: Theme.accent;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    max-width: 160px;
+                    horizontal-stretch: 0;
+                }
+
+                if root.leading-actions.length > 0 : HorizontalLayout {
+                    alignment: start;
+                    spacing: Theme.sp-1;
+                    horizontal-stretch: 0;
+                    // Centred by arithmetic rather than a hardcoded 10px, so the row stays centred if
+                    // the header height token ever moves.
                     padding-top: (root.height - Theme.h-compact) / 2;
                     padding-bottom: (root.height - Theme.h-compact) / 2;
 
-                    for a[idx] in root.actions : VerticalLayout {
-                        alignment: center;
-                        horizontal-stretch: 0;
-                        padding-right: idx < root.inline-count ? Theme.sp-1 : 0px;
-                        // A separator is a slot in the same list rather than a second property, so the
-                        // order of a toolbar is still one readable array in the app.
-                        if idx < root.inline-count && a.separator : Rectangle {
-                            width: 1px;
-                            height: 18px;
-                            // border-strong, not separator: Theme.separator is 3% white, which is right
-                            // for a hairline between two large surfaces and invisible as an 18px tick
-                            // between two buttons. Measured off a screenshot, not guessed -- at 3% the
-                            // groups read as uneven spacing rather than as groups.
-                            background: Theme.border-strong;
+                    for a in root.leading-actions : YButton {
+                        label: a.label != "" ? a.label : a.id;
+                        icon-path: a.icon;
+                        icon-only: a.label == "";
+                        size: 0;
+                        disabled: a.disabled;
+                        loading: a.loading;
+                        variant: a.active ? 0
+                               : a.emphasis == 3 ? 3
+                               : a.emphasis == 2 ? 0
+                               : a.emphasis == 1 ? 1
+                               : 2;
+                        clicked => { root.action(a.id); }
+                    }
+                }
+
+                if root.segments.length > 0 : VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+                    YSegmented {
+                        label: root.segments-label;
+                        items: root.segments;
+                        selected: root.segment;
+                        chosen(i) => { root.segment-chosen(i); }
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // ── Search ──
+                if root.show-search : Rectangle {
+                    width: max(140px, min(240px, root.width * 0.18));
+                    height: Theme.h-regular;
+                    y: (parent.height - Theme.h-regular) / 2;
+                    horizontal-stretch: 0;
+                    border-radius: Theme.r-md;
+                    background: Theme.bg-input;
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.accent-dim : Theme.border-default;
+                    clip: true;
+                    animate border-color { duration: Theme.dur-fast; }
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 8px;
+                        spacing: 8px;
+
+                        Icon {
+                            commands: Icons.search;
+                            size: 14px;
+                            tint: Theme.text-dim;
+                            thickness: 1.6px;
+                            y: (parent.height - self.height) / 2;
                         }
-                        if idx < root.inline-count && !a.separator : YButton {
-                            label: a.label != "" ? a.label : a.id;
-                            icon-path: a.icon;
-                            icon-trailing: a.trailing-icon;
-                            icon-only: a.label == "" || (root.width < 720px && a.icon != "");
-                            size: 0;
-                            disabled: a.disabled;
-                            loading: a.loading;
-                            tooltip: a.tooltip;
-                            variant: a.active ? 0
-                                   : a.emphasis == 3 ? 3
-                                   : a.emphasis == 2 ? 0
-                                   : a.emphasis == 1 ? 1
-                                   : 2;
-                            clicked => { root.action(a.id); }
-                            // Cleared only by the button that set it: moving straight from one
-                            // button to the next may report the arrival before the departure.
-                            changed pointer-over => {
-                                if (self.pointer-over && a.tooltip != "") {
-                                    root.tip-index = idx;
-                                    root.tip-x = self.anchor-x - bar-drag.absolute-position.x;
-                                } else if (root.tip-index == idx) {
-                                    root.tip-index = -1;
+
+                        search-input := TextInput {
+                            text <=> root.search-text;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-body;
+                            vertical-alignment: center;
+                            single-line: true;
+                            edited => { root.search-edited(self.text); }
+                            accepted => { root.search-accepted(self.text); }
+                        }
+                    }
+
+                    if root.search-text == "" && !search-input.has-focus : Text {
+                        x: 32px;
+                        text: root.search-placeholder;
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-body;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                }
+
+                // ── Actions ──
+                if root.actions.length > 0 : HorizontalLayout {
+                    height: root.height;
+                    horizontal-stretch: 0;
+                    spacing: Theme.sp-1;
+                    action-row := HorizontalLayout {
+                        height: root.height;
+                        alignment: end;
+                        spacing: 0px;
+                        horizontal-stretch: 0;
+                        padding-top: (root.height - Theme.h-compact) / 2;
+                        padding-bottom: (root.height - Theme.h-compact) / 2;
+
+                        for a[idx] in root.actions : VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            padding-right: idx < root.inline-count ? Theme.sp-1 : 0px;
+                            // A separator is a slot in the same list rather than a second property, so the
+                            // order of a toolbar is still one readable array in the app.
+                            if idx < root.inline-count && a.separator : Rectangle {
+                                width: 1px;
+                                height: 18px;
+                                // border-strong, not separator: Theme.separator is 3% white, which is right
+                                // for a hairline between two large surfaces and invisible as an 18px tick
+                                // between two buttons. Measured off a screenshot, not guessed -- at 3% the
+                                // groups read as uneven spacing rather than as groups.
+                                background: Theme.border-strong;
+                            }
+                            if idx < root.inline-count && !a.separator : YButton {
+                                label: a.label != "" ? a.label : a.id;
+                                icon-path: a.icon;
+                                icon-trailing: a.trailing-icon;
+                                icon-only: a.label == "" || (root.width < 720px && a.icon != "");
+                                size: 0;
+                                disabled: a.disabled;
+                                loading: a.loading;
+                                tooltip: a.tooltip;
+                                variant: a.active ? 0
+                                       : a.emphasis == 3 ? 3
+                                       : a.emphasis == 2 ? 0
+                                       : a.emphasis == 1 ? 1
+                                       : 2;
+                                clicked => { root.action(a.id); }
+                                // Cleared only by the button that set it: moving straight from one
+                                // button to the next may report the arrival before the departure.
+                                changed pointer-over => {
+                                    if (self.pointer-over && a.tooltip != "") {
+                                        root.tip-index = idx;
+                                        root.tip-x = self.anchor-x - bar-drag.absolute-position.x;
+                                    } else if (root.tip-index == idx) {
+                                        root.tip-index = -1;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                if root.has-overflow : VerticalLayout {
-                    alignment: center;
-                    YButton {
-                        label: "More";
-                        icon-path: Icons.chevron-down;
-                        icon-trailing: true;
-                        variant: 1;
-                        size: 0;
-                        clicked => {
-                            root.menu-index = root.inline-count;
-                            if (root.actions[root.menu-index].separator) { root.menu-index += 1; }
-                            overflow-menu.show();
+                    if root.has-overflow : VerticalLayout {
+                        alignment: center;
+                        YButton {
+                            label: "More";
+                            icon-path: Icons.chevron-down;
+                            icon-trailing: true;
+                            variant: 1;
+                            size: 0;
+                            clicked => {
+                                root.menu-index = root.inline-count;
+                                if (root.actions[root.menu-index].separator) { root.menu-index += 1; }
+                                overflow-menu.show();
+                            }
                         }
                     }
                 }
-            }
 
-            // -- Window controls --
-            //
-            // Last, and hard against the corner: no padding, no gap, because the top-right corner
-            // of a screen is an infinitely large target and giving it away to an 8px margin is the
-            // one mistake a titlebar cannot afford. The layout's own padding-right is dropped for
-            // the same reason when these are shown.
-            if root.controls-shown : VerticalLayout {
-                alignment: start;
-                horizontal-stretch: 0;
-                WindowControls {
-                    bar-height: Theme.h-app-header;
-                    maximized: root.window-bar ? WindowChrome.maximized : root.maximized;
-                    show-minimize: root.can-minimize;
-                    minimize => { if (root.window-bar) { WindowChrome.minimize(); } else { root.minimize(); } }
-                    toggle-maximize => { if (root.window-bar) { WindowChrome.toggle-maximize(); } else { root.toggle-maximize(); } }
-                    close => { if (root.window-bar) { WindowChrome.close(); } else { root.close-window(); } }
+                // -- Window controls --
+                //
+                // Last, and hard against the corner: no padding, no gap, because the top-right corner
+                // of a screen is an infinitely large target and giving it away to an 8px margin is the
+                // one mistake a titlebar cannot afford. The layout's own padding-right is dropped for
+                // the same reason when these are shown.
+                if root.controls-shown : VerticalLayout {
+                    alignment: start;
+                    horizontal-stretch: 0;
+                    WindowControls {
+                        bar-height: Theme.h-app-header;
+                        maximized: root.window-bar ? WindowChrome.maximized : root.maximized;
+                        show-minimize: root.can-minimize;
+                        minimize => { if (root.window-bar) { WindowChrome.minimize(); } else { root.minimize(); } }
+                        toggle-maximize => { if (root.window-bar) { WindowChrome.toggle-maximize(); } else { root.toggle-maximize(); } }
+                        close => { if (root.window-bar) { WindowChrome.close(); } else { root.close-window(); } }
+                    }
                 }
             }
         }
