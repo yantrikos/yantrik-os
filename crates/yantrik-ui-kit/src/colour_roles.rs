@@ -585,3 +585,43 @@ fn the_primary_buttons_ink_reads_on_its_neutral_fill() {
         "while focus-ring is {edge:.2}:1 on the primary fill, the edge ring stays off the filled kinds"
     );
 }
+
+/// High contrast (issue #21). With the choice on, every text grey reads on every surface at 7:1
+/// or better — the AAA floor — in both themes, and the global exists and is off until the person
+/// asks. A community palette is an override too, so the four surfaces check ContrastPrefs before
+/// ThemeOverrides: a theme may recolour the desktop, never thin it out under someone who asked
+/// for the sharpest one.
+#[test]
+fn high_contrast_pairs_meet_seven_to_one() {
+    let tokens = read("crates/yantrik-design-tokens/slint/theme.slint");
+    let start = tokens.find("export global ContrastPrefs").expect("the ContrastPrefs global");
+    let prefs = &tokens[start..start + tokens[start..].find("\n}\n").expect("the ContrastPrefs end")];
+    assert!(prefs.contains("in-out property <bool> high: false;"), "off until the person turns it on");
+
+    let pair = |name: &str| -> Vec<String> {
+        let key = format!("in-out property <color> {name}:");
+        let line = prefs.lines().find(|l| l.trim_start().starts_with(&key))
+            .unwrap_or_else(|| panic!("ContrastPrefs has no {name}"));
+        let h = hexes(line);
+        assert_eq!(h.len(), 2, "{name} gives one value per theme, got {h:?}");
+        h
+    };
+    let texts: Vec<(&str, Vec<String>)> = ["text-primary", "text-secondary", "text-dim"]
+        .iter().map(|n| (*n, pair(n))).collect();
+    let surfaces: Vec<(&str, Vec<String>)> = ["bg-deep", "bg-surface", "bg-card", "bg-elevated"]
+        .iter().map(|n| (*n, pair(n))).collect();
+
+    for (tname, t) in &texts {
+        for (sname, s) in &surfaces {
+            for mode in 0..2 {
+                let ratio = contrast(&t[mode], &s[mode]);
+                assert!(ratio >= 7.0, "{tname} on {sname} ({}) is {ratio:.1}:1", ["dark", "light"][mode]);
+            }
+        }
+    }
+
+    let theme = &tokens[tokens.find("export global Theme {").expect("the Theme global")..];
+    for name in ["bg-deep", "bg-surface", "bg-card", "bg-elevated", "text-primary", "text-secondary", "text-dim"] {
+        assert!(token(theme, name).trim().starts_with("ContrastPrefs.high ?"), "{name} puts high contrast above the palette");
+    }
+}
