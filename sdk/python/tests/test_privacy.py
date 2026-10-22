@@ -214,6 +214,40 @@ class TestPrivateSurface(test_mind_door.TestTheDoor):
         described = self.call(server.path, "app.describe")
         self.assertNotIn("SENTINEL-924", json.dumps(described), described)
 
+    def test_a_handler_error_and_a_refusing_view_are_held_too(self):
+        # #935: a wire.RpcError from a handler and a Refusal from the view are the app's own
+        # words about the person's data — held, whatever shape the refusal arrives in.
+        from yantrik_surface import Refusal
+        sentinel = "Call Priya SENTINEL-924"
+        s = Surface("notes")
+
+        @s.view
+        def state():
+            raise Refusal(sentinel)
+
+        # A listed key, so a private describe reads the view and meets its refusal (#924).
+        s.show_in_private("rows")
+
+        @s.action("open_note", grade="safe")
+        def open_note(title: str) -> dict:
+            "Open a note by title."
+            raise wire.RpcError(wire.RPC_INVALID_PARAMS,
+                                "no note %r; the open one is %s" % (title, sentinel))
+
+        server = s.serve_in_thread()
+        self.addCleanup(s.stop)
+        off = self.call(server.path, "app.act", {"action": "open_note", "args": {"title": "x"}})
+        self.assertIn("SENTINEL-924", json.dumps(off), "off, the app's words are its own")
+        self.private()
+        refused = self.call(server.path, "app.act", {"action": "open_note", "args": {"title": "x"}})
+        self.assertEqual(refused["error"]["message"], privacy.WITHHELD_REFUSAL, refused)
+        self.assertNotIn("SENTINEL-924", json.dumps(refused))
+        described = self.call(server.path, "app.describe")
+        self.assertEqual(described["error"]["message"], privacy.WITHHELD_REFUSAL, described)
+        self.assertNotIn("SENTINEL-924", json.dumps(described))
+        # A vouched caller is nobody here: this process is not an installed desktop program.
+        self.assertFalse(privacy.reads_while_private(os.getpid(), "notes"))
+
     def test_the_readers_while_private_are_the_crates(self):
         d = privacy.INSTALL_DIR
         own = d + "/yantrik-notes"
