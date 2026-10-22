@@ -16,6 +16,9 @@ pub const PART_PLACES: &str = "places";
 pub const PART_NOTICE: &str = "notice";
 pub const PART_UPDATED: &str = "updated";
 
+/// How a change that was not kept starts, in the notice and in an intent's answer.
+pub const NOT_KEPT: &str = "Could not keep the change";
+
 /// The first words of the strip the fetch path writes, so that a later good reading can clear
 /// its own message without wiping one that is still true.
 pub const DEGRADED_NOTICE: &str = "Readings came straight from Open-Meteo";
@@ -52,6 +55,10 @@ pub struct Model {
     pub fall_back: bool,
     /// Where the prefs live, as `describe` and the intents say it.
     pub config_file: String,
+    /// Why a change is not being kept: the file is not usable (recovery), or the last save did
+    /// not land. `None` once a save lands or the file is usable again. An intent that changes
+    /// the prefs answers by it, never with a file nothing was written to.
+    pub not_kept: Option<String>,
 }
 
 impl Model {
@@ -110,6 +117,7 @@ impl Model {
             mind: Arc::new(yantrik_app::mind::fake::FakeMind::new()),
             fall_back: false,
             config_file: String::new(),
+            not_kept: None,
         }
     }
 }
@@ -154,8 +162,10 @@ pub enum Command {
     TickUpdated,
     /// The prefs as the file says now (edited outside this app).
     PrefsFromFile(Prefs),
-    /// A line for the notice strip (what could not be kept).
-    Note(String),
+    /// A save did not keep the change, and why (`Event::SettingsNotSaved`).
+    NotKept(String),
+    /// A save landed (`Event::SettingsSaved`).
+    Kept,
     /// The notice, read and closed.
     DismissNotice,
     Rail(RailCommand),

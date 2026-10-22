@@ -169,7 +169,9 @@ impl<S: Settings> Boot<S> {
     ) -> Result<(Boot<S>, Store<S>), Startup> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let launch = Launch::parse(paths.id(), paths.profile(), &cwd, &args)?;
-        let store = Store::<S>::open(paths.config_file().to_path_buf());
+        // Settings from the old shared place, once, before the app's own file is opened.
+        crate::settings::former::import::<S>(&paths);
+        let store = Store::<S>::open(paths.config_file().to_path_buf(), paths.id());
         let drafts = Drafts::read(paths.state_dir());
         let boot = Boot {
             args,

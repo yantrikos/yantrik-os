@@ -249,7 +249,7 @@ pub enum Concurrency { Parallel, RejectIfRunning, ReplacePrevious }
 
 | Kind | Path | Holds |
 |---|---|---|
-| config | `$XDG_CONFIG_HOME/yantrik/<id>.json` | preferences |
+| config | `$XDG_CONFIG_HOME/yantrik/apps/<id>/settings.json` | preferences |
 | data | `$XDG_DATA_HOME/yantrik/<id>/` | the app's own data |
 | state | `$XDG_STATE_HOME/yantrik/<id>/` | drafts and recovery |
 | cache | `$XDG_CACHE_HOME/yantrik/<id>/` | disposable |
@@ -257,6 +257,7 @@ pub enum Concurrency { Parallel, RejectIfRunning, ReplacePrevious }
 - `$YANTRIK_HOME` roots all four for a second profile. Tests inject a `Paths` value instead of changing process environment, which parallel tests cannot share safely.
 - ★ The per-app `$YANTRIK_<APP>_DIR` overrides warn for one release and are then removed.
 - Existing files are imported once, backed up, never deleted.
+- The settings live in `yantrik/apps/`, a directory only the framework writes. The first rule, `yantrik/<id>.json`, put them beside the services' own files, and Email's were email-service's account file, which holds the account password. Each file carries a mark (`"kind": "yantrik-app-settings"`, `"app": "<id>"`), and the store never reads past the mark of a file without it, never writes over one, and logs only its path. An app's settings at the old place come across once, only if they are the framework's envelope or the app's own shape from before (`Settings::FORMER_FILE`, `Settings::legacy`), and the old file stays where it was as the backup. `paths/others.rs` lists what every other component keeps under the four roots, and a test holds every app id clear of it.
 
 **Ownership.** The settings store owns the *committed* value. The model holds the value the app is using. Changes go through commands, and write results and outside changes come back as events.
 

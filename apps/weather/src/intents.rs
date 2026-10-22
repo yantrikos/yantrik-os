@@ -9,8 +9,25 @@ use yantrik_app::control::{Action, Param};
 use yantrik_app::intents::{Intent, Intents, Settle};
 use yantrik_app::Refused;
 
-use crate::model::{Command, Model};
+use crate::model::{Command, Model, NOT_KEPT};
 use crate::Weather;
+
+/// What became of a change to the prefs, for an intent's answer: where it is kept, or that it
+/// was not, and why, in the window's own words. Never a file nothing was written to.
+fn kept(m: &Model) -> serde_json::Map<String, serde_json::Value> {
+    let mut said = serde_json::Map::new();
+    match &m.not_kept {
+        None => {
+            said.insert("kept".into(), json!(true));
+            said.insert("saved_to".into(), json!(m.config_file));
+        }
+        Some(why) => {
+            said.insert("kept".into(), json!(false));
+            said.insert("not_kept".into(), json!(format!("{NOT_KEPT}: {why}")));
+        }
+    }
+    said
+}
 
 /// How long a place lookup may take before the Mind is told it did not finish.
 const ADD_WITHIN: Duration = Duration::from_secs(15);
@@ -48,13 +65,12 @@ pub fn table(table: &mut Intents<Weather>) {
         .settles(Settle::Explicit { within: ADD_WITHIN })
         .reply(|m: &Model| {
             let loc = m.active();
-            json!({
-                "added": loc.name,
-                "lat": loc.lat,
-                "lon": loc.lon,
-                "saved_to": m.config_file,
-                "saved_locations": m.prefs.locations.len(),
-            })
+            let mut said = kept(m);
+            said.insert("added".into(), json!(loc.name));
+            said.insert("lat".into(), json!(loc.lat));
+            said.insert("lon".into(), json!(loc.lon));
+            said.insert("saved_locations".into(), json!(m.prefs.locations.len()));
+            serde_json::Value::Object(said)
         }),
     );
     table.add(
@@ -72,10 +88,9 @@ pub fn table(table: &mut Intents<Weather>) {
             },
         )
         .reply(|m: &Model| {
-            json!({
-                "units": if m.prefs.fahrenheit { "fahrenheit" } else { "celsius" },
-                "saved_to": m.config_file,
-            })
+            let mut said = kept(m);
+            said.insert("units".into(), json!(if m.prefs.fahrenheit { "fahrenheit" } else { "celsius" }));
+            serde_json::Value::Object(said)
         }),
     );
 }

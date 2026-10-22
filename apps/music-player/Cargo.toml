@@ -2,16 +2,22 @@
 name = "yantrik-music-player"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik Music Player — a scanned library, a queue, and playback through mpv"
+description = "Yantrik Music Player — a scanned library, a queue, and playback through mpv, on YantrikApp"
+
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, against a stand-in mpv that speaks
+# mpv's JSON IPC (`src/tests/fake.rs`) and, where it is installed, the real one.
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "yantrik-music-player"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
+yantrik-foundation = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
-yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 slint = { workspace = true }
@@ -20,9 +26,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 libc = { workspace = true }
 
+[dev-dependencies]
+# `activate` and `display_gone`: the window manager and the compositor, as the runner hears them.
+yantrik-testing = { workspace = true, features = ["testing"] }
+
 [build-dependencies]
 yantrik-app-build = { workspace = true }
-
-[dev-dependencies]
-# The answer-later slot a real dispatch opens, so the tests run actions the way the socket does.
-yantrik-surface = { workspace = true }

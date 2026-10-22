@@ -28,6 +28,8 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 yantrik-testing = { workspace = true }
+# The log, captured, so a test can say the account file's password never reaches it.
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 yantrik-app-build = { workspace = true }

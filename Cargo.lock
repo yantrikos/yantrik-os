@@ -11434,6 +11434,7 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
+ "tracing-subscriber",
  "yantrik-app",
  "yantrik-app-build",
  "yantrik-design-tokens",
@@ -11660,12 +11661,12 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
- "yantrik-surface",
+ "yantrik-testing",
  "yantrik-ui-kit",
 ]
 

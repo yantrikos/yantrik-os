@@ -29,8 +29,28 @@ pub const LOG_TAIL: usize = 40;
 /// the record stays a small file, well inside the intake's body limit.
 pub const BACKTRACE_MAX: usize = 16 * 1024;
 
-/// Where records live: `$XDG_DATA_HOME/yantrik/problems`, or `~/.local/share/yantrik/problems`.
+/// The folder this process files into, when it runs somewhere other than the session's own
+/// data folder: an app under `$YANTRIK_HOME` (a second profile, a scratch run) files into that
+/// home, never into the person's `problems/`.
+static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Files this process's records into `dir` from now on, panics included. The first call wins:
+/// a process has one home. Says whether this call was the one taken.
+pub fn set_dir(dir: PathBuf) -> bool {
+    DIR.set(dir).is_ok()
+}
+
+/// Where records live: the folder [`set_dir`] gave, else `$XDG_DATA_HOME/yantrik/problems`, or
+/// `~/.local/share/yantrik/problems`.
 pub fn dir() -> PathBuf {
+    if let Some(dir) = DIR.get() {
+        return dir.clone();
+    }
+    default_dir()
+}
+
+/// The session's own folder, whatever [`set_dir`] said.
+pub fn default_dir() -> PathBuf {
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())

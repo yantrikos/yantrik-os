@@ -16,10 +16,11 @@
 //! Where the kernel or the filesystem has no such rename (NFS, 9p, FUSE, an old kernel, a
 //! sandbox that forbids it), a plain rename is used and the answer is [`Displaced::Unknown`].
 
-use std::io::{Read as _, Write as _};
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
 use super::disk::{DiskError, Displaced, Exchanged, RealDisk, Step};
+use crate::quiet::{self, Looked};
 
 /// Read back at most this much of a replaced file; a larger one is kept under its temp name.
 pub(super) const READ_BACK_LIMIT: u64 = 64 * 1024 * 1024;
@@ -83,42 +84,85 @@ pub(super) fn swap_in(temp: &Path, path: &Path, limit: u64) -> Result<Displaced,
 }
 
 /// The replaced file's bytes, the temp removed; or the temp kept, unread, when it cannot be read
-/// back safely (opened without following a link or blocking, a regular file, within `limit`).
+/// back safely ([`crate::quiet::read_within`]: a regular file within `limit`, never a link).
 fn read_back(temp: &Path, limit: u64) -> Displaced {
-    let bytes = (|| {
-        let file = open_quietly(temp)?;
-        let meta = file.metadata()?;
-        if !meta.is_file() || meta.len() > limit {
-            return Err(std::io::Error::other("not a regular file within the limit"));
-        }
-        let mut bytes = Vec::new();
-        file.take(limit + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > limit {
-            return Err(std::io::Error::other("grew past the limit"));
-        }
-        Ok(bytes)
-    })();
-    match bytes {
-        Ok(bytes) => {
+    match quiet::read_within(temp, limit) {
+        Ok(Looked::Read(bytes)) => {
             let _ = std::fs::remove_file(temp);
             Displaced::Bytes(bytes)
         }
-        Err(_) => Displaced::Unread(temp.to_path_buf()),
+        _ => Displaced::Unread(temp.to_path_buf()),
     }
 }
 
-#[cfg(unix)]
-fn open_quietly(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)
+/// What a replace that only lands over what it accepts came to ([`replace_if`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Guarded {
+    /// The bytes are at the path; what they replaced, if anything, was accepted.
+    Placed,
+    /// What was at the path is not accepted: it is back at the path, and the bytes are not.
+    Refused,
+    /// What was at the path is not accepted and could not be put back: the bytes are at the
+    /// path, and what they replaced is kept, whole, under this name beside it.
+    KeptAside(PathBuf),
 }
 
-#[cfg(not(unix))]
-fn open_quietly(path: &Path) -> std::io::Result<std::fs::File> {
-    std::fs::File::open(path)
+/// Replaces `path` with `bytes` only over nothing, or over a regular file within `limit` whose
+/// bytes `accept` takes. The check is made on what the exchange actually displaced, not on a
+/// look taken before it, so nothing that arrives in between is replaced unseen. Where the
+/// filesystem has no exchange, a plain rename is used; the caller's own look before is then the
+/// only check (the limit `Placed` cannot remove there).
+pub(crate) fn replace_if(path: &Path, bytes: &[u8], limit: u64, accept: impl Fn(&[u8]) -> bool) -> std::io::Result<Guarded> {
+    let (temp, mut file) = RealDisk::create_temp(path, false)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    let placed = match place(&temp, path) {
+        Ok(placed) => placed,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+    };
+    let outcome = match placed {
+        Placed::Created | Placed::Renamed => Guarded::Placed,
+        Placed::Exchanged => match quiet::read_within(&temp, limit) {
+            Ok(Looked::Read(theirs)) if accept(&theirs) => {
+                let _ = std::fs::remove_file(&temp);
+                Guarded::Placed
+            }
+            // Not accepted, or not readable as a file: theirs goes back where it was.
+            _ => match exchange_names(&temp, path) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&temp);
+                    Guarded::Refused
+                }
+                Err(_) => Guarded::KeptAside(keep_aside(&temp, path)?),
+            },
+        },
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
+    }
+    Ok(outcome)
+}
+
+/// Moves what a replace displaced off its temp name (which a sweep of stale temps would remove)
+/// to `<file>.set-aside-<n>.json` beside the path.
+fn keep_aside(temp: &Path, path: &Path) -> std::io::Result<PathBuf> {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    for n in 0..1000u32 {
+        let kept = path.with_file_name(format!("{name}.set-aside-{}-{n}.json", std::process::id()));
+        if std::fs::symlink_metadata(&kept).is_ok() {
+            continue;
+        }
+        std::fs::rename(temp, &kept)?;
+        return Ok(kept);
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free name to keep the displaced file under"))
 }
 
 /// How the new file took its place.

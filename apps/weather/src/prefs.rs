@@ -1,8 +1,9 @@
 //! What Weather remembers between runs: the unit, the saved places and which is shown.
 //!
-//! The file is the one it always was, `~/.config/yantrik/weather.json`. Before the framework it
-//! held these three fields bare; the framework's store wraps them in a schema envelope, and a
-//! bare file is imported once (`Settings::legacy`) and backed up beside the new one.
+//! The file is the framework's, `~/.config/yantrik/apps/weather/settings.json`. Weather kept them
+//! at `~/.config/yantrik/weather.json` before (`FORMER_FILE`): bare, these three fields, until
+//! the framework, then in its schema envelope. Either shape there is brought across once, and
+//! that file is left as it was, the backup; a file of any other shape there is not taken.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -77,6 +78,7 @@ impl Prefs {
 
 impl Settings for Prefs {
     const SCHEMA: u32 = 1;
+    const FORMER_FILE: Option<&'static str> = Some("weather.json");
 
     /// The file as it was before the framework: the three fields, no envelope.
     fn legacy(raw: Value) -> Option<Value> {

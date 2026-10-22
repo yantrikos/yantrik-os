@@ -114,6 +114,7 @@ pub(crate) fn listed(app: &TestApp<Email>) -> Vec<(i32, String)> {
     })
 }
 
+mod account_file;
 mod ai;
 mod compose;
 mod logout;
