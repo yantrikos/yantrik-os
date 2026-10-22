@@ -13,6 +13,7 @@
 //! the engine, so a test can point the whole app at the `fake` backend or at a socket in this
 //! process and exercise the real window without a GPU or an API key.
 
+mod agent_rule;
 mod backend;
 mod config;
 mod engine;
@@ -548,7 +549,12 @@ fn publish_control(engine: &Engine) {
     let described = engine.clone();
     let mut app = App::new("studio").describe(move || view(&described));
     for (spec, run) in surface(engine.clone()) {
-        app = app.action(spec, run);
+        // Every action passes the rule for agents' files first (#942 review, finding 1).
+        let (name, said) = (spec.name.clone(), engine.clone());
+        app = app.action(spec, move |args| {
+            agent_rule::admit(&name, args).map_err(|problem| refuse(&said, problem))?;
+            run(args)
+        });
     }
     app.serve();
 

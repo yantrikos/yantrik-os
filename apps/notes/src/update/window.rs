@@ -139,8 +139,8 @@ fn guarded(m: &mut Model, fx: &mut Effects<Notes>, action: WindowAction) {
         WindowAction::Confirm { path } => {
             m.pane.path = path.clone();
             match m.pane.dialog {
-                1 => confirmed(m, fx, Dialog::Import, &path),
-                2 => confirmed(m, fx, Dialog::Export, &path),
+                1 => confirmed(m, fx, Dialog::Import, &path, false),
+                2 => confirmed(m, fx, Dialog::Export, &path, false),
                 _ => {}
             }
         }
@@ -164,15 +164,15 @@ fn open_dialog(m: &mut Model, fx: &mut Effects<Notes>, dialog: Dialog) {
 }
 
 /// An import or export the surface asked for, once the open note is saved: held to the same
-/// guards as the dialog's Continue, without opening the dialog.
-pub fn confirm(m: &mut Model, fx: &mut Effects<Notes>, dialog: Dialog, path: &str) {
+/// guards as the dialog's Continue, without opening the dialog. `agent`: an agent asked.
+pub fn confirm(m: &mut Model, fx: &mut Effects<Notes>, dialog: Dialog, path: &str, agent: bool) {
     let action = WindowAction::Confirm { path: path.into() };
     if may_go_on(m, fx, &action) {
-        confirmed(m, fx, dialog, path);
+        confirmed(m, fx, dialog, path, agent);
     }
 }
 
-fn confirmed(m: &mut Model, fx: &mut Effects<Notes>, dialog: Dialog, path: &str) {
+fn confirmed(m: &mut Model, fx: &mut Effects<Notes>, dialog: Dialog, path: &str, agent: bool) {
     let path = expand_home(path.trim());
     if !path.is_absolute() {
         m.notice = "Enter an absolute file path.".into();
@@ -180,8 +180,8 @@ fn confirmed(m: &mut Model, fx: &mut Effects<Notes>, dialog: Dialog, path: &str)
         return;
     }
     match dialog {
-        Dialog::Import => library::import(m, fx, path),
-        Dialog::Export => library::export(m, fx, path),
+        Dialog::Import => library::import(m, fx, path, agent),
+        Dialog::Export => library::export(m, fx, path, agent),
     }
 }
 

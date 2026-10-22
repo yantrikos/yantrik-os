@@ -2,7 +2,12 @@
 //! the build paths, the test-only features and the file sizes of docs/architecture.md, held by a baseline that may only
 //! shrink. `--since` also fails on any entry the baseline has that the given older copy of it does
 //! not, so a line added to the baseline by hand is caught (CI passes the pull request's base).
+//!
+//! `cargo run -q -p xtask -- check-agent-files`: every action an agent can reach that names a file
+//! is held to the rule for agents' files, or says why it needs none (agent_files.rs). It also runs
+//! as this crate's test, so `cargo test --workspace` holds it.
 
+mod agent_files;
 mod layers;
 mod ratchet;
 mod rules;
@@ -25,8 +30,15 @@ fn main() -> ExitCode {
         ["check-architecture"] => check(false, None),
         ["check-architecture", "--write"] => check(true, None),
         ["check-architecture", "--since", old] => check(false, Some(Path::new(old))),
+        ["check-agent-files"] => agent_files::check(&workspace::root()).map(|problems| {
+            problems.iter().for_each(|p| println!("  {p}"));
+            if problems.is_empty() {
+                println!("Every action an agent can reach that names a file is held ({}).", agent_files::REGISTRY);
+            }
+            problems.is_empty()
+        }),
         _ => Err(
-            "usage: cargo run -q -p xtask -- check-architecture [--write | --since <old baseline>]"
+            "usage: cargo run -q -p xtask -- check-architecture [--write | --since <old baseline>] | check-agent-files"
                 .to_string(),
         ),
     };

@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use super::{is_protected, where_programs_look, HIDDEN_RULE};
+use super::{is_protected, is_protected_in, where_programs_look, HIDDEN_RULE};
 
 /// A tree larger than this is not checked entry by entry; the caller refuses it.
 const MAX_CHECKED: usize = 20_000;
@@ -36,7 +36,7 @@ pub fn may_land(src: &Path, landing: &Path, home: &Path) -> Result<(), String> {
                 .checked_sub(1)
                 .ok_or_else(|| format!("more than {MAX_CHECKED} entries below {}; too many to check", src.display()))?;
             let (child, lands) = (entry.path(), to.join(entry.file_name()));
-            if is_protected(&child) || is_protected(&lands) {
+            if is_protected_in(&child, Some(home)) || is_protected_in(&lands, Some(home)) {
                 return Err(format!("{RULE}; {} is protected", lands.display()));
             }
             if where_programs_look(&lands, home) {

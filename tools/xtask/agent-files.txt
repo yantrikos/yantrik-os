@@ -1,0 +1,51 @@
+# Every action an agent can reach that names a file, and what holds it to the rule for agents'
+# files (#443; security review of #942, finding 1): `yantrik_ipc_contracts::home_paths`, or the
+# Python SDK's `yantrik_surface.files`, which asks the shell for it. Checked by
+# `cargo run -q -p xtask -- check-agent-files` and by xtask's own test.
+#
+# <source file> <action> <param> <guard file that applies the rule>
+# <source file> <action> <param> - <why it needs none>
+#
+# The shell's Files actions that take a `name` in the folder on screen (files_enter, files_open,
+# files_new_folder, files_new_file, files_rename, files_delete, files_paste) are held in
+# crates/yantrik-ui/src/control_files_mind.rs too; `name` is too common a word to scan for.
+# The companion's own file tools (crates/yantrik-companion-tools) are the Mind's, not an app's:
+# each takes its path through `validate_path` or `validate_write_path`.
+
+adapters/libreoffice/yantrik_libreoffice/surface.py open path adapters/libreoffice/yantrik_libreoffice/surface.py
+adapters/libreoffice/yantrik_libreoffice/surface.py save_as path adapters/libreoffice/yantrik_libreoffice/surface.py
+adapters/libreoffice/yantrik_libreoffice/surface.py export_pdf path adapters/libreoffice/yantrik_libreoffice/surface.py
+apps/blender/addon/yantrik_blender/surface.py import_model path apps/blender/addon/yantrik_blender/surface.py
+apps/blender/addon/yantrik_blender/surface.py open path apps/blender/addon/yantrik_blender/surface.py
+apps/blender/addon/yantrik_blender/surface.py save path apps/blender/addon/yantrik_blender/surface.py
+apps/blender/addon/yantrik_blender/surface.py render output apps/blender/addon/yantrik_blender/surface.py
+apps/blender/addon/yantrik_blender/surface.py screenshot output apps/blender/addon/yantrik_blender/surface.py
+apps/document-editor/src/main.rs open path apps/document-editor/src/agent_rule.rs
+apps/document-editor/src/main.rs save_as path apps/document-editor/src/agent_rule.rs
+apps/document-editor/src/main.rs export_markdown path apps/document-editor/src/agent_rule.rs
+apps/download-manager/src/main.rs add save_dir apps/download-manager/src/agent_rule.rs
+apps/email/src/intents.rs select_folder folder - an IMAP folder's name on the mail server, not a path on disk
+apps/image-viewer/src/intents.rs open path apps/image-viewer/src/agent_rule.rs
+apps/music-player/src/main.rs play_file path apps/music-player/src/main.rs
+apps/notes/src/intents/files.rs import path apps/notes/src/update/library.rs
+apps/notes/src/intents/files.rs export path apps/notes/src/update/library.rs
+apps/notes/src/intents/library.rs set_folder folder - a section of the Notes library list, not a path on disk
+apps/presentation/src/main.rs open path apps/presentation/src/agent_rule.rs
+apps/presentation/src/main.rs save_as path apps/presentation/src/agent_rule.rs
+apps/presentation/src/main.rs export_markdown path apps/presentation/src/agent_rule.rs
+apps/snippet-manager/src/intents.rs import path - held by #940's agent import (`update/files.rs`, `home_paths::may_read_file`); this line names that file once #940 lands
+apps/spreadsheet/src/surface.rs open path apps/spreadsheet/src/agent_rule.rs
+apps/spreadsheet/src/surface.rs save path apps/spreadsheet/src/agent_rule.rs
+apps/spreadsheet/src/surface.rs save_over path apps/spreadsheet/src/agent_rule.rs
+apps/studio/src/main.rs upscale path apps/studio/src/agent_rule.rs
+apps/studio/src/main.rs open path apps/studio/src/agent_rule.rs
+apps/studio/src/main.rs variations of apps/studio/src/agent_rule.rs
+apps/studio/src/main.rs set_backend workflow apps/studio/src/agent_rule.rs
+apps/studio/src/main.rs delete path - moves only Studio's own pictures, inside its gallery (`Engine::resolve(_, true)`), whoever asks
+apps/terminal/src/main.rs open_directory directory - a shell's working directory, graded sensitive: the shell it starts reaches any file the person can, as `run` does
+apps/text-editor/src/intents/documents.rs open path apps/text-editor/src/agent_rule.rs
+apps/text-editor/src/intents/documents.rs save_as path apps/text-editor/src/agent_rule.rs
+crates/yantrik-ui/src/control.rs report_problem record - names one of the shell's own problem records (`wire/problem_report.rs`), never a path
+crates/yantrik-ui/src/control_agent_terminal.rs agent_run cwd - the working directory of a command the person sees on a card; the command itself reaches any file (open-ended)
+crates/yantrik-ui/src/control_files.rs files_go path crates/yantrik-ui/src/control_files_mind.rs
+crates/yantrik-ui/src/control_files.rs files_stat path crates/yantrik-ui/src/control_files.rs

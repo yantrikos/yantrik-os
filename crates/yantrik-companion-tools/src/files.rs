@@ -283,8 +283,12 @@ fn search_dir(
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         // The protected places below the folder asked for, which validate_path checked only at
-        // the top: ~/Pictures holds the person's screenshots (security review of #828).
-        if yantrik_ipc_contracts::home_paths::is_protected(&path) {
+        // the top: ~/Pictures holds the person's screenshots (security review of #828). A link
+        // is not followed: checked as written, a link in the home into a protected tree was read
+        // through (security review of #942, finding 2).
+        if entry.file_type().map_or(true, |kind| kind.is_symlink())
+            || yantrik_ipc_contracts::home_paths::is_protected(&path)
+        {
             continue;
         }
 
@@ -509,5 +513,28 @@ mod write_rule_tests {
         assert!(said.contains("hidden folders or dotfiles"), "a .git/config below: {said}");
         assert!(base.join("project/.git/config").exists(), "nothing moved");
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    /// `search_files` does not read through a link met while recursing: one in the home into a
+    /// protected tree was read, since each entry was checked as written (security review of #942,
+    /// finding 2).
+    #[test]
+    fn search_files_does_not_read_through_a_link_found_below_the_folder() {
+        let root = std::env::temp_dir().join(format!("yantrik-search-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("tree")).unwrap();
+        std::fs::create_dir_all(root.join("parent")).unwrap();
+        std::fs::write(root.join("tree/snippets.json"), "sentinel behind the link").unwrap();
+        std::fs::write(root.join("parent/own.txt"), "sentinel of its own").unwrap();
+        std::os::unix::fs::symlink(root.join("tree"), root.join("parent/lnk")).unwrap();
+        std::os::unix::fs::symlink(root.join("tree/snippets.json"), root.join("parent/file-lnk")).unwrap();
+        let mut matches = Vec::new();
+        super::search_dir(&root.join("parent").to_string_lossy(), "sentinel", "*", 0, 8, &mut matches);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(matches.len(), 1, "{matches:?}");
+        assert!(matches[0].2.contains("of its own"), "{matches:?}");
     }
 }

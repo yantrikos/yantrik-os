@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 yantrik-app = { workspace = true }
+# The rule for which files an agent may name (`home_paths`), for `import` and `export`.
+yantrik-ipc-contracts = { workspace = true }
 yantrik-design-tokens = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 slint = { workspace = true }

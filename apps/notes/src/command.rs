@@ -221,8 +221,10 @@ pub enum Step {
     Window(WindowAction),
     /// The surface's `new_note`: a title and a body.
     NewNote { title: String, body: String },
-    Import { path: String },
-    Export { path: String },
+    /// `agent`: an agent asked, so the file is held to the rule for agents' files when the job
+    /// runs, however long the save before it took.
+    Import { path: String, agent: bool },
+    Export { path: String, agent: bool },
 }
 
 /// A call from the surface, its arguments read.

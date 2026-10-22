@@ -2,7 +2,7 @@
 //!
 //! Tools: detect_projects, set_active_project, get_project_context.
 
-use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, expand_home};
+use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(DetectProjectsTool));
@@ -51,7 +51,12 @@ impl Tool for DetectProjectsTool {
         let base_dir = args.get("base_dir")
             .and_then(|v| v.as_str())
             .unwrap_or("~/");
-        let expanded = expand_home(base_dir);
+        // The folder to look under is held to the file tools' rule, as every other path is: it
+        // named and listed the repositories anywhere the person can read (#942's audit).
+        let expanded = match validate_path(base_dir) {
+            Ok(path) => path,
+            Err(e) => return format!("Error: {e}"),
+        };
 
         let start = std::time::Instant::now();
         let mut repos = Vec::new();

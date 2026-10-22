@@ -213,9 +213,12 @@ fn search_dir_recursive(
 
         // Skip hidden dirs and common noise, and every protected place below the folder asked
         // for: validate_path checked only the top, and ~/Pictures held the person's screenshots
-        // (security review of #828, finding 1).
+        // (security review of #828, finding 1). A link is not followed, as `grep -r` does not:
+        // checked as written, a link in the home into a protected tree was read through
+        // (security review of #942, finding 2).
         if name.starts_with('.') || name == "node_modules" || name == "target"
             || name == "__pycache__" || name == ".git"
+            || entry.file_type().map_or(true, |kind| kind.is_symlink())
             || yantrik_ipc_contracts::home_paths::is_protected(&path)
         {
             continue;
@@ -269,5 +272,30 @@ fn search_dir_recursive(
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    /// A link met while recursing is not followed: one in the home into a protected tree was read
+    /// through, since each entry was checked as written (security review of #942, finding 2).
+    #[test]
+    fn grep_does_not_read_through_a_link_found_below_the_folder() {
+        let root = std::env::temp_dir().join(format!("yantrik-grep-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("tree")).unwrap();
+        std::fs::create_dir_all(root.join("parent")).unwrap();
+        std::fs::write(root.join("tree/snippets.json"), "SENTINEL behind the link").unwrap();
+        std::fs::write(root.join("parent/own.txt"), "SENTINEL of its own").unwrap();
+        std::os::unix::fs::symlink(root.join("tree"), root.join("parent/lnk")).unwrap();
+        std::os::unix::fs::symlink(root.join("tree/snippets.json"), root.join("parent/file-lnk")).unwrap();
+        let re = regex::Regex::new("SENTINEL").unwrap();
+        let (mut lines, mut files) = (Vec::new(), Vec::new());
+        let parent = root.join("parent").to_string_lossy().to_string();
+        super::search_dir_recursive(&re, &parent, "*", 0, 100, false, &mut lines, &mut files, 0);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(lines.iter().any(|l| l.contains("of its own")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("behind the link")), "{lines:?}");
+        assert_eq!(files.len(), 1, "{files:?}");
     }
 }

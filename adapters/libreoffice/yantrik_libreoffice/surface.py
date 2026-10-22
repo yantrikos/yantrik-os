@@ -24,7 +24,7 @@ that `sensitive` work may run unasked.
 
 from typing import Annotated, Literal, Optional
 
-from yantrik_surface import Later, Refusal, Surface
+from yantrik_surface import Later, Refusal, Surface, files
 
 from .office import NotReachable, Office, OfficeError
 
@@ -91,10 +91,36 @@ def _answer(work, *args, **kwargs):
         raise Refusal(str(e)) from None
 
 
-def build(office=None, app_id=APP_ID, **kwargs):
+# Why an agent's call on a document the person opened from a place an agent may not read is
+# refused.
+HIDDEN = ("the document is a file an agent is not shown, and it is left alone; `open` one in the "
+          "person's home")
+
+
+def agents_files(stat=None):
+    """The rule `Office.admit` is held to (#443): an agent names only files in the person's
+    home, outside its protected places, and acts on no document the person opened from
+    anywhere else — `read_text` was any file the person can read, graded `safe` (#942's audit).
+    `stat` stands in for the shell's `files_stat` in a test."""
+    def admit(what, path):
+        if what == "read":
+            files.may_read_file(path, stat)
+        elif what == "write":
+            files.may_write_file(path, stat)
+        elif path and files.agent_is_calling():
+            try:
+                files.may_read_file(path, stat)
+            except Refusal:
+                raise Refusal(HIDDEN) from None
+    return admit
+
+
+def build(office=None, app_id=APP_ID, stat=None, **kwargs):
     """LibreOffice's surface over `office` (a fresh `Office` on the default pipe when None).
-    `kwargs` go to the SDK's `Surface` — tests pin the ceiling and mode files with them."""
+    `kwargs` go to the SDK's `Surface` — tests pin the ceiling and mode files with them, and
+    `stat` stands in for the shell's `files_stat`."""
     office = office if office is not None else Office()
+    office.admit = agents_files(stat)
     surface = LibreOfficeSurface(office, app_id, **kwargs)
 
     @surface.action("open", expected_seconds=15, timeout=120)

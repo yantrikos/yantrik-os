@@ -24,7 +24,9 @@ number 0.2 and `location` the text `1,2,3` — which is what `yos act` sends for
 argument, where the scene used to parse it.
 """
 
-from yantrik_surface import Action, NotAnswered, Param
+import os
+
+from yantrik_surface import Action, NotAnswered, Param, files
 from yantrik_surface import Surface as _Surface
 
 from .bridge import BridgeTimeout
@@ -155,6 +157,19 @@ ACTIONS = [
 ]
 
 
+# The file each action reads or writes, by the argument that names it. An agent names only files
+# in the person's home, outside its protected places, and writes nowhere programs read their
+# startup (#443; #942's audit): `save` overwrote any file the person can write, and `render` and
+# `screenshot` wrote a PNG anywhere and made the folders on the way. `run_python` is not here: it
+# runs whatever it is given, which is why it asks every time.
+FILES = {
+    "import_model": ("path", files.may_read_file),
+    "open": ("path", files.may_read_file),
+    "save": ("path", files.may_write_file),
+    "render": ("output", files.may_write_file),
+    "screenshot": ("output", files.may_write_file),
+}
+
 
 class Surface(_Surface):
     """Blender's surface: the SDK's dispatch over `scene.Scene`, across the main-thread bridge.
@@ -167,11 +182,13 @@ class Surface(_Surface):
     act_timeout = DEFAULT_TIMEOUT
 
     def __init__(self, scene, bridge, app_id="blender", settings_path=None, mode_path=None,
-                 spend_grant=None):
+                 spend_grant=None, ask_shell=None, stat=None):
         super().__init__(app_id, settings_path=settings_path, mode_path=mode_path,
-                         spend_grant=spend_grant)
+                         spend_grant=spend_grant, ask_shell=ask_shell)
         self.scene = scene
         self.bridge = bridge
+        # Stands in for the shell's `files_stat` in a test.
+        self.stat = stat
         for spec in ACTIONS:
             self.add_action(spec, self._runner(spec.name))
 
@@ -195,9 +212,19 @@ class Surface(_Surface):
         except BridgeTimeout:
             raise NotAnswered() from None
 
+    def _agents_file(self, name, args):
+        """The rule for an agent's file, on the path the action will use: `~` expanded, and a
+        relative path made absolute as the scene makes it. Asked of the shell, on this thread,
+        just before the scene reads or writes the same file here."""
+        named = FILES.get(name)
+        value = args.get(named[0]) if named else None
+        if isinstance(value, str) and value.strip():
+            named[1](os.path.abspath(os.path.expanduser(value.strip())), self.stat)
+
     def _runner(self, name):
         def run(args):
             try:
+                self._agents_file(name, args)
                 result = self.scene.run(name, args)
             except Refusal as refusal:
                 self.scene.notice = str(refusal)

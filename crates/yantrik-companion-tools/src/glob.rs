@@ -180,9 +180,11 @@ fn collect_matching_files(
         let name = entry.file_name().to_string_lossy().to_string();
 
         // Skip hidden dirs and common noise, and the protected places below the folder asked
-        // for, which validate_path checked only at the top.
+        // for, which validate_path checked only at the top. A link is not followed, so the
+        // names in a protected tree are not listed through one (security review of #942).
         if name.starts_with('.') || name == "node_modules" || name == "target"
             || name == "__pycache__"
+            || entry.file_type().map_or(true, |kind| kind.is_symlink())
             || yantrik_ipc_contracts::home_paths::is_protected(&path)
         {
             continue;
@@ -202,5 +204,27 @@ fn collect_matching_files(
                 .unwrap_or(std::time::UNIX_EPOCH);
             results.push((path.to_string_lossy().to_string(), mtime));
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    /// A link met while recursing is not followed, so the names in a protected tree are not
+    /// listed through one (security review of #942, finding 2).
+    #[test]
+    fn glob_does_not_list_through_a_link_found_below_the_folder() {
+        let root = std::env::temp_dir().join(format!("yantrik-glob-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("tree")).unwrap();
+        std::fs::create_dir_all(root.join("parent")).unwrap();
+        std::fs::write(root.join("tree/snippets.json"), "{}").unwrap();
+        std::fs::write(root.join("parent/own.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(root.join("tree"), root.join("parent/lnk")).unwrap();
+        let mut found = Vec::new();
+        super::collect_matching_files(&root.join("parent").to_string_lossy(), "*.json", true, &mut found, 0);
+        let _ = std::fs::remove_dir_all(&root);
+        let names: Vec<_> = found.iter().map(|(p, _)| p.clone()).collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(names[0].ends_with("own.json"), "{names:?}");
     }
 }

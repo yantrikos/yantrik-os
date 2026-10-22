@@ -46,6 +46,17 @@ fn an_agent_names_only_files_in_the_home_and_is_not_shown_the_persons_other_file
         assert!(!err.contains(SENTINEL), "{err}");
     };
     refused("open", json!({ "path": "~/.ssh/id_ed25519" }), " is protected");
+    // Yantrik's own data and state: the snippets store, an Email draft, a Notes draft (#940
+    // review, High 1). Each app's data goes through its own door.
+    for own in [
+        "~/.local/share/yantrik/snippets/snippets.json",
+        "~/.local/share/yantrik/email/draft.json",
+        "~/.local/state/yantrik/email/drafts/composing.json",
+        "~/.local/state/yantrik/notes/drafts/note-today.json",
+        "~/.local/share/yantrik-mind/yantrik-memory.token",
+    ] {
+        refused("open", json!({ "path": own }), " is protected");
+    }
     refused("open", json!({ "path": "/etc/hostname" }), " is outside");
     refused("open", json!({ "path": tab.display().to_string() }), " is outside");
     refused("save", none(), " is outside");
@@ -76,6 +87,11 @@ fn an_agent_names_only_files_in_the_home_and_is_not_shown_the_persons_other_file
     }
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     assert!(!home.join("Documents/copied-out.txt").exists(), "nothing was copied out");
+    // The person is not asked: their own open of Yantrik's own places is as it was.
+    for own in ["~/.local/share/yantrik/snippets/snippets.json", "~/.local/state/yantrik/email/drafts/composing.json"] {
+        let path = yantrik_ipc_contracts::home_paths::expand(own, &home).expect("a path");
+        assert_eq!(crate::agent_rule::may_read(false, &path), Ok(()), "{own}");
+    }
     assert!(text(&app).contains(SENTINEL), "the tab is untouched");
     assert_eq!(file(&tab), format!("omega {SENTINEL}\n"));
 

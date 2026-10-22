@@ -359,20 +359,20 @@ fn which_program_opens_what_is_protected() {
 #[test]
 fn desktop_entries_under_a_moved_data_home_are_protected() {
     let xdg = Path::new("/srv/ann-data");
-    assert!(is_protected_with(Path::new("/srv/ann-data/applications/term.desktop"), Some(xdg), None));
-    assert!(is_protected_with(Path::new("/srv/ann-data/applications"), Some(xdg), None));
-    assert!(!is_protected_with(Path::new("/srv/ann-data/applications-old/a"), Some(xdg), None));
-    assert!(!is_protected_with(Path::new("/srv/ann-data/fonts/a.ttf"), Some(xdg), None));
-    assert!(!is_protected_with(Path::new("/srv/ann-data/applications/a"), None, None));
+    assert!(is_protected_with(Path::new("/srv/ann-data/applications/term.desktop"), &data(xdg)));
+    assert!(is_protected_with(Path::new("/srv/ann-data/applications"), &data(xdg)));
+    assert!(!is_protected_with(Path::new("/srv/ann-data/applications-old/a"), &data(xdg)));
+    assert!(!is_protected_with(Path::new("/srv/ann-data/fonts/a.ttf"), &data(xdg)));
+    assert!(!is_protected_with(Path::new("/srv/ann-data/applications/a"), &Places::default()));
 }
 
 #[test]
 fn startup_places_under_a_moved_config_home_are_protected() {
     let xdg = Path::new("/srv/ann-config");
     for place in ["autostart/run.desktop", "systemd/user/a.service", "environment.d/x.conf", "labwc/rc.xml", "yantrik/config.yaml", "mimeapps.list"] {
-        assert!(is_protected_with(&xdg.join(place), None, Some(xdg)), "{place}");
+        assert!(is_protected_with(&xdg.join(place), &Places { config_home: Some(xdg), ..Places::default() }), "{place}");
     }
-    assert!(!is_protected_with(Path::new("/srv/ann-config/gtk-3.0/settings.ini"), None, Some(xdg)));
+    assert!(!is_protected_with(Path::new("/srv/ann-config/gtk-3.0/settings.ini"), &Places { config_home: Some(xdg), ..Places::default() }));
 }
 
 #[test]
@@ -436,4 +436,121 @@ fn the_persons_screenshots_and_recordings_are_no_agents_to_read() {
     for not in ["/home/ann/Pictures/Screenshots-old/a.png", "/home/ann/Videos/film.mp4", "/home/ann/Recordings/a.mp4"] {
         assert!(!is_protected(Path::new(not)), "{not}");
     }
+}
+
+fn data(home: &Path) -> Places<'_> {
+    Places { data_home: Some(home), ..Places::default() }
+}
+
+/// Yantrik's own data and state are whole trees no agent reads as a file: the snippets library and
+/// its exports, Email's draft and its unsent mail, Notes' drafts, and whatever else an app keeps
+/// there. Each app's data goes through that app's own door. Names that merely start the same are
+/// not protected (security review of #940, High 1).
+#[test]
+fn yantriks_own_data_and_state_are_protected_and_lookalikes_are_not() {
+    for p in [
+        "/home/ann/.local/share/yantrik/snippets/snippets.json",
+        "/home/ann/.local/share/yantrik/snippets/export-1789862400.json",
+        "/home/ann/.local/state/yantrik/snippets/drafts/snippet-3.json",
+        "/home/ann/.local/share/yantrik/email/draft.json",
+        "/home/ann/.local/state/yantrik/email/drafts/composing.json",
+        "/home/ann/.local/state/yantrik/notes/drafts/note-today.json",
+        "/home/ann/.local/share/yantrik",
+        "/home/ann/.LOCAL/Share/Yantrik/x",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p} must be protected");
+    }
+    for p in ["/home/ann/.local/share/yantrik-minds-old/x", "/home/ann/.local/share/yantrikos/x", "/home/ann/yantrik/notes.md", "/home/ann/.local/share/fonts/a.ttf"] {
+        assert!(!is_protected(Path::new(p)), "{p} is not Yantrik's own");
+    }
+    // The same trees where the session moved its data and state homes.
+    let moved = Places { data_home: Some(Path::new("/srv/ann-data")), state_home: Some(Path::new("/srv/ann-state")), config_home: None, home: None };
+    assert!(is_protected_with(Path::new("/srv/ann-data/yantrik/snippets/snippets.json"), &moved));
+    assert!(is_protected_with(Path::new("/srv/ann-state/yantrik/email/drafts/composing.json"), &moved));
+    assert!(!is_protected_with(Path::new("/srv/ann-state/yantrik-old/x"), &moved));
+    assert!(!is_protected_with(Path::new("/srv/ann-state/yantrik/x"), &Places::default()), "only where the session put it");
+}
+
+/// What an agent asking for one of them is told: protected, before anything is looked at, whether
+/// or not the file is there.
+#[test]
+fn an_agent_reading_yantriks_own_files_is_refused_as_protected() {
+    let (_d, home) = home();
+    std::fs::create_dir_all(home.join(".local/share/yantrik/snippets")).unwrap();
+    std::fs::write(home.join(".local/share/yantrik/snippets/snippets.json"), "{}").unwrap();
+    for asked in [
+        "~/.local/share/yantrik/snippets/snippets.json",
+        "~/.local/state/yantrik/email/drafts/composing.json",
+        "~/.local/state/yantrik/notes/drafts/note-a.json",
+    ] {
+        assert!(may_read_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
+        assert!(may_write_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
+    }
+}
+
+/// The Mind's folders from before `yantrik-update migrate-minds`: its database, egress key and
+/// tokens, and the environment file its service starts from. Under the home and where the session
+/// moved its data and configuration homes (security review of #942, finding 4).
+#[test]
+fn the_minds_own_folders_are_protected() {
+    for p in [
+        "/home/ann/.local/share/yantrik-mind/mind.db",
+        "/home/ann/.local/share/yantrik-mind/egress.key",
+        "/home/ann/.local/share/yantrik-mind/yantrik-memory.token",
+        "/home/ann/.config/yantrik-mind/console.token",
+        "/home/ann/.config/yantrik-mind.env",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p} must be protected");
+    }
+    let moved = Places { data_home: Some(Path::new("/srv/ann-data")), config_home: Some(Path::new("/srv/ann-config")), ..Places::default() };
+    assert!(is_protected_with(Path::new("/srv/ann-data/yantrik-mind/console.token"), &moved));
+    assert!(is_protected_with(Path::new("/srv/ann-config/yantrik-mind.env"), &moved));
+    assert!(is_protected_with(Path::new("/srv/ann-config/yantrik-mind/x"), &moved));
+    assert!(!is_protected_with(Path::new("/srv/ann-config/yantrik-mind.env.example"), &moved));
+    let (_d, home) = home();
+    std::fs::create_dir_all(home.join(".local/share/yantrik-mind")).unwrap();
+    std::fs::write(home.join(".local/share/yantrik-mind/yantrik-memory.token"), "SENTINEL").unwrap();
+    std::fs::create_dir_all(home.join(".config")).unwrap();
+    std::fs::write(home.join(".config/yantrik-mind.env"), "SENTINEL").unwrap();
+    for asked in ["~/.local/share/yantrik-mind/yantrik-memory.token", "~/.config/yantrik-mind.env"] {
+        assert!(may_read_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
+    }
+}
+
+/// A dotfile manager's links: `~/.local`, `~/.config` and `~/.ssh` each a link to a folder
+/// elsewhere in the home. A protected place is protected where it really is, not only by the name
+/// the link gives it, and so is one not made yet (security review of #942, finding 3).
+#[test]
+fn a_protected_place_moved_behind_a_link_is_protected_where_it_really_is() {
+    let (_d, home) = home();
+    let dot = home.join("dotfiles");
+    for dir in ["local/share/yantrik/snippets", "local/share/fonts", "config/autostart", "config/gtk-3.0", "ssh"] {
+        std::fs::create_dir_all(dot.join(dir)).unwrap();
+    }
+    for file in ["local/share/yantrik/snippets/snippets.json", "local/share/fonts/a.ttf", "config/gtk-3.0/settings.ini", "ssh/id_ed25519"] {
+        std::fs::write(dot.join(file), "SENTINEL").unwrap();
+    }
+    symlink(dot.join("local"), home.join(".local")).unwrap();
+    symlink(dot.join("config"), home.join(".config")).unwrap();
+    symlink(dot.join("ssh"), home.join(".ssh")).unwrap();
+
+    for asked in [
+        "~/dotfiles/local/share/yantrik/snippets/snippets.json",
+        "~/.local/share/yantrik/snippets/snippets.json",
+        "~/dotfiles/ssh/id_ed25519",
+    ] {
+        assert!(may_read_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
+        assert!(may_write_file(asked, &home).unwrap_err().ends_with(" is protected"), "{asked}");
+    }
+    for (asked, real) in [
+        ("~/dotfiles/config/autostart/x.desktop", "local autostart"),
+        ("~/dotfiles/local/state/yantrik/snippets/draft.json", "a state tree not made yet"),
+        ("~/dotfiles/local/share/yantrik/new.json", "a new file in the data tree"),
+    ] {
+        assert_eq!(exists_and_reason(asked, &home), (json!("unknown"), json!("protected")), "{real}: {asked}");
+    }
+    assert!(may_create("~/dotfiles/local/share/yantrik/newdir", &home).unwrap_err().ends_with(" is protected"));
+    // The rest of the folders behind the links are the person's own, as they were.
+    assert_eq!(may_read_file("~/dotfiles/local/share/fonts/a.ttf", &home), Ok(()));
+    assert_eq!(may_read_file("~/dotfiles/config/gtk-3.0/settings.ini", &home), Ok(()));
 }

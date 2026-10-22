@@ -15,6 +15,7 @@ use crate::command::Command;
 use crate::update::{said, AUTOSAVE_AFTER};
 use crate::Notes;
 
+mod agent_files;
 mod asking;
 mod closing;
 mod drawn;

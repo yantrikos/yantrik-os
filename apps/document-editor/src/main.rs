@@ -19,6 +19,7 @@
 //! can open, write, search and save one over the control surface. The buttons that were not
 //! backed by any of that are off the screen, each with the reason at the site it left.
 
+mod agent_rule;
 mod document;
 
 use document::{Document, Format, Saved};
@@ -1406,23 +1407,30 @@ fn publish_control(ui: &DocumentEditorApp, state: State) {
             };
             let b = st.borrow();
             let d = &b.doc;
-            let text = &d.text;
+            // A document the person opened from a place an agent may not read is not read back
+            // to one: not its text, its outline, its size, its name, or a match count over it.
+            let hidden = agent_rule::hidden_from_caller(d.path.as_deref());
+            let text = if hidden.is_some() { "" } else { d.text.as_str() };
             let words = document::word_count(text);
             let total = document::char_count(text);
             let excerpt: String = text.chars().take(EXCERPT_CHARS).collect();
-            let where_it_lives = d
-                .path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "no file yet".into());
+            let (title, path) = match hidden {
+                Some(_) => (agent_rule::HIDDEN.to_string(), serde_json::json!(agent_rule::HIDDEN)),
+                None => (d.title(), serde_json::json!(d.path)),
+            };
+            let where_it_lives = match (&hidden, &d.path) {
+                (Some(_), _) => agent_rule::HIDDEN.to_string(),
+                (None, Some(p)) => p.display().to_string(),
+                (None, None) => "no file yet".into(),
+            };
             View::new(format!(
-                "yDoc — \u{201c}{}\u{201d}, {words} words, {} \u{b7} {where_it_lives}",
-                d.title(),
+                "yDoc — \u{201c}{title}\u{201d}, {words} words, {} \u{b7} {where_it_lives}",
                 if d.dirty() { "unsaved" } else { "saved" },
             ))
             .with("format", "markdown")
-            .with("path", serde_json::json!(d.path))
-            .with("title", d.title())
+            .with("path", path)
+            .with("title", title)
+            .with("content_hidden", hidden.is_some().then_some("the document is a file an agent is not shown"))
             .with("dirty", d.dirty())
             .with("recovered_draft", d.recovered)
             .with("words", words)
@@ -1440,8 +1448,8 @@ fn publish_control(ui: &DocumentEditorApp, state: State) {
             .with("content", excerpt.clone())
             .with("content_chars_shown", document::char_count(&excerpt))
             .with("content_chars_total", total)
-            .with("find_query", ui.get_doc_find_query().to_string())
-            .with("find_matches", b.matches.len())
+            .with("find_query", if hidden.is_some() { String::new() } else { ui.get_doc_find_query().to_string() })
+            .with("find_matches", if hidden.is_some() { 0 } else { b.matches.len() })
             // A prompt is open in the window, so a person is part-way through something and an
             // action that changed the document under them would be a surprise.
             .with("prompt_open", ui.get_doc_dialog() != DIALOG_NONE)
@@ -1462,9 +1470,16 @@ fn publish_control(ui: &DocumentEditorApp, state: State) {
             let weak = ui.as_weak();
             let st = state.clone();
             let run = $run;
-            app = app.action($spec, move |args| {
+            let spec: Action = $spec;
+            let name = spec.name.clone();
+            app = app.action(spec, move |args| {
                 let ui = weak.upgrade().ok_or("yDoc is closing")?;
                 ready(&ui)?;
+                // The one door an agent's call passes (#942 review, finding 1).
+                let doc = st.borrow().doc.path.clone();
+                if let Err(e) = agent_rule::admit(&name, args, doc.as_deref(), expanded) {
+                    return report(&ui, Err(e));
+                }
                 report(&ui, run(&ui, &st, args))
             });
         }};

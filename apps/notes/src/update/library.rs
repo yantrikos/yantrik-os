@@ -5,10 +5,11 @@
 //! reload, an import or a restore lands. That text is never closed away: the note stays open and
 //! unsaved, its autosave owed, and the window says what the job could not do because of it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use yantrik_app::app::WindowId;
 use yantrik_app::effects::Effects;
+use yantrik_ipc_contracts::home_paths;
 
 use super::navigate::show_note;
 use super::saving::{self, How};
@@ -173,7 +174,19 @@ pub fn restore(m: &mut Model, fx: &mut Effects<Notes>) {
     });
 }
 
-pub fn import(m: &mut Model, fx: &mut Effects<Notes>, path: PathBuf) {
+/// An agent names only a file in the person's home, outside its protected places (#443, as the
+/// Text Editor's `open`): read as a note, any file the person can read was `describe`'s 4000
+/// characters, the snippets store and every Notes draft included (security review of #942,
+/// finding 1). Asked in the job, before the file is looked at; the person names any file.
+fn agents_file(agent: bool, path: &Path, rule: fn(&str, &Path) -> Result<(), String>) -> Result<(), String> {
+    if !agent {
+        return Ok(());
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    rule(&path.to_string_lossy(), &home).map_err(|why| format!("an agent names only a file in the person's home, outside its protected places: {why}"))
+}
+
+pub fn import(m: &mut Model, fx: &mut Effects<Notes>, path: PathBuf, agent: bool) {
     if m.library.len() >= MAX_NOTES {
         m.notice = "The library supports up to 2,000 notes.".into();
         fx.changed(STATUS);
@@ -181,15 +194,15 @@ pub fn import(m: &mut Model, fx: &mut Effects<Notes>, path: PathBuf) {
     }
     let room = VAULT_LIMIT.saturating_sub(m.library_text());
     begin(m, fx, Work::Import, Command::Imported(Err(WORKER_STOPPED.into())), move |vault| {
-        Command::Imported(vault.import(&path, room))
+        Command::Imported(agents_file(agent, &path, home_paths::may_read_file).and_then(|()| vault.import(&path, room)))
     });
 }
 
-pub fn export(m: &mut Model, fx: &mut Effects<Notes>, path: PathBuf) {
+pub fn export(m: &mut Model, fx: &mut Effects<Notes>, path: PathBuf, agent: bool) {
     // What the window shows: an offered text while it waits.
     let text = m.shown().map(|c| c.text.clone()).unwrap_or_default();
     begin(m, fx, Work::Export, Command::Exported(Err(WORKER_STOPPED.into())), move |vault| {
-        Command::Exported(vault.export(&path, &text))
+        Command::Exported(agents_file(agent, &path, home_paths::may_write_file).and_then(|()| vault.export(&path, &text)))
     });
 }
 

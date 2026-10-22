@@ -7,6 +7,7 @@
 
 use serde_json::{json, Value};
 use yantrik_app::effects::Effects;
+use yantrik_app::intents::Origin;
 use yantrik_app::Refused;
 
 use super::editing::Undone;
@@ -119,7 +120,8 @@ pub fn act(m: &mut Model, fx: &mut Effects<Notes>, act: Act) {
             }
             if library_open(m, fx) {
                 ask(m, fx, Expect::Imported { from });
-                save_then(m, fx, Step::Import { path });
+                let agent = by_agent(fx);
+                save_then(m, fx, Step::Import { path, agent });
             }
         }
         Act::OpenInNewWindow { wanted } => open_in_new_window(m, fx, &wanted),
@@ -141,14 +143,21 @@ pub fn act(m: &mut Model, fx: &mut Effects<Notes>, act: Act) {
                 ask(m, fx, Expect::Exported { to, text });
                 // A read-only library would refuse the save first; the export writes the text as
                 // it is in the window, outside the vault, which is how it gets out.
+                let agent = by_agent(fx);
                 if m.vault.read_only().is_some() {
-                    run(m, fx, Step::Export { path });
+                    run(m, fx, Step::Export { path, agent });
                 } else {
-                    save_then(m, fx, Step::Export { path });
+                    save_then(m, fx, Step::Export { path, agent });
                 }
             }
         }
     }
+}
+
+/// Whether the call being run is an agent's. Read here, as the call arrives: the step it asks
+/// for runs once a save lands, which may be a save the person's typing started.
+fn by_agent(fx: &Effects<Notes>) -> bool {
+    matches!(fx.origin(), Origin::Surface { agent: true })
 }
 
 /// Answers the call waiting in `Model::asked`, once nothing of it runs or waits any more. Only

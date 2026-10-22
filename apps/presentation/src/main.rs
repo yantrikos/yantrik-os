@@ -18,6 +18,7 @@
 //! surface, and unsaved work is written to a recovery file that the next start offers back.
 //! The arithmetic of all of that is in `deck.rs`, with no Slint in it, so it can be tested.
 
+mod agent_rule;
 mod deck;
 
 use std::cell::{Cell, RefCell};
@@ -1200,6 +1201,16 @@ fn publish_control(app: &PresentationApp, state: Shared) {
         let Ok(ui) = describe_ui() else { return View::new("yPresent — closed") };
         let s = describe_state.borrow();
         let d = &s.deck;
+        // A deck the person opened from a place an agent may not read is not read back to one:
+        // not its slides, its titles, its name, or a match count over it.
+        if let Some(why) = agent_rule::hidden_from_caller(d.path.as_deref()) {
+            return View::new(format!("yPresent — {}", agent_rule::HIDDEN))
+                .with("file", agent_rule::HIDDEN)
+                .with("content_hidden", why)
+                .with("dirty", d.dirty())
+                .with("presenting", ui.get_is_presenting())
+                .with("notice", ui.get_notice().to_string());
+        }
         let at = d.current();
         let titles = d.outline();
         View::new(format!(
@@ -1210,6 +1221,7 @@ fn publish_control(app: &PresentationApp, state: Shared) {
             if d.dirty() { " · unsaved" } else { "" }
         ))
         .with("file", d.path.as_ref().map(|p| p.display().to_string()))
+        .with("content_hidden", serde_json::Value::Null)
         .with("dirty", d.dirty())
         .with("recovered", d.recovered)
         .with("slides", d.len())
@@ -1247,7 +1259,22 @@ fn publish_control(app: &PresentationApp, state: Shared) {
         .with("notice", ui.get_notice().to_string())
     };
 
-    let mut surface = Surface::new("presentation").describe(describe);
+    // Every action passes the agent rule first (#942 review, finding 1).
+    let mut surface = {
+        let (st, notice) = (state.clone(), ui_for.clone());
+        agent_rule::Gated::new(
+            Surface::new("presentation").describe(describe),
+            move |rule| {
+                let s = st.borrow();
+                rule(&agent_rule::Front { path: s.deck.path.as_deref(), dirty: s.deck.dirty() })
+            },
+            move |why| {
+                if let Ok(ui) = notice() {
+                    ui.set_notice(why.into());
+                }
+            },
+        )
+    };
 
     {
         let ui_for = ui_for.clone();

@@ -324,7 +324,7 @@ fn run(m: &mut Model, fx: &mut Effects<Notes>, step: Step) {
                 }
             }
         }
-        Step::Import { path } => window::confirm(m, fx, window::Dialog::Import, &path),
-        Step::Export { path } => window::confirm(m, fx, window::Dialog::Export, &path),
+        Step::Import { path, agent } => window::confirm(m, fx, window::Dialog::Import, &path, agent),
+        Step::Export { path, agent } => window::confirm(m, fx, window::Dialog::Export, &path, agent),
     }
 }

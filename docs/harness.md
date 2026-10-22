@@ -747,6 +747,13 @@ stopped), and the command runs in the agent's terminal in its pane. A command th
 for input comes back still running, saying so, rather than hanging: the person can answer it in
 its card. With Pi's built-in tools on, the extension never shadows them.
 
+Pi runs in a working directory of the desktop's own, `~/.local/share/yantrik/minds/pi/<conversation>`,
+so a person's `~/CLAUDE.md` does not steer it (#183). That directory is inside Yantrik's own data
+tree, which no agent reads or writes through the desktop's file tools (#942): Pi's own tools work
+there as before, but a file Pi writes there cannot be opened in the Text Editor, Files, Spreadsheet
+or any other app on Pi's request. Write work the person should see, or that an app should open, to
+a folder in their home such as `~/Documents`.
+
 Three things it taught, all about ending:
 
 - **An agent has more ways to finish than to start.** `agent_settled`, an `agent_end` that is

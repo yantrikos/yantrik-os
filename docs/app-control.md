@@ -136,6 +136,17 @@ worse.
 passphrase, a PIN or a password among them is shown to whoever reads either; `yos check` fails a
 parameter named like one.
 
+**A file an agent names is held to the rule for agents' files.** An app runs as the person, so
+`open` for an agent reads anything the person can read, and `describe` reads it back. An agent
+names only a file in the person's home, outside its protected places (keys, credentials, Yantrik's
+own data and state, the files that run as the person), and writes nowhere hidden where programs
+read their startup: `yantrik_ipc_contracts::home_paths` (`may_read_file`, `may_write_file`), or in
+Python `yantrik_surface.files`, which asks the shell for the same rule. A document the person
+opened from anywhere else is not read back to an agent, nor changed or copied out for one. The
+person is not asked. Every action that takes a path is listed in `tools/xtask/agent-files.txt`
+with the file that applies the rule, or why it needs none; `cargo run -q -p xtask --
+check-agent-files` (and `cargo test -p xtask`) fails an action that is not.
+
 ### Grades, and who is asked
 
 Every action declares its grade — `safe`, `standard`, `sensitive`, `dangerous` — and the default is

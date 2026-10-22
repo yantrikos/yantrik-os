@@ -158,11 +158,25 @@ class Office:
     not. `hidden` opens documents without a window (for the adapter's own headless LibreOffice).
     """
 
-    def __init__(self, pipe=PIPE, uno_module=None, hidden=False):
+    def __init__(self, pipe=PIPE, uno_module=None, hidden=False, admit=None):
         self.pipe = pipe
         self.hidden = hidden
         self._uno = uno_module
         self._desktop = None
+        # `admit(what, path)`: the rule for the files a caller names ("read", "write") and for
+        # the document a call lands on ("document", its file or None), raising to refuse. The
+        # surface sets it (surface.py); left None, every file is the caller's to name.
+        self.admit = admit
+
+    def _admit(self, what, path):
+        if self.admit is None:
+            return
+        try:
+            self.admit(what, path)
+        except OfficeError:
+            raise
+        except Exception as e:  # noqa: BLE001 - the rule's refusal is the caller's sentence
+            raise OfficeError(str(e)) from None
 
     # ── the connection ──────────────────────────────────────────────────────
 
@@ -298,6 +312,13 @@ class Office:
         return None
 
     def _find(self, desktop, which):
+        """The document `which` names, once the rule has had its say about it: every action on
+        a document finds it here, so none reads or changes one the caller may not."""
+        doc = self._pick(desktop, which)
+        self._admit("document", self.path_of(doc))
+        return doc
+
+    def _pick(self, desktop, which):
         docs = self._documents(desktop)
         if not docs:
             raise OfficeError("no document is open in LibreOffice; `open` one first")
@@ -379,6 +400,7 @@ class Office:
 
     def open(self, path, read_only=False):
         path = absolute(path)
+        self._admit("read", path)
         if not os.path.isfile(path):
             raise OfficeError("no file at %s" % path)
 
@@ -552,6 +574,7 @@ class Office:
             if not path:
                 raise OfficeError("`%s` has never been saved, so it has no file to save over; "
                                   "`save_as` it to a path" % self.name_of(doc))
+            self._admit("write", path)
             self._writable(doc)
             doc.store()
             return {"document": self.name_of(doc), "path": path, "modified": bool(doc.isModified())}
@@ -560,6 +583,7 @@ class Office:
     def _new_file(self, path, suffixes):
         """A path to a file that does not exist yet, in a directory that does."""
         path = absolute(path)
+        self._admit("write", path)
         if os.path.lexists(path):
             raise OfficeError("a file is already at %s, and this action never replaces one; "
                               "choose another path" % path)
