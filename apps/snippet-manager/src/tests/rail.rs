@@ -29,7 +29,7 @@ fn the_rail_offers_the_one_question_about_the_open_snippet() {
     f.app.advance(Duration::from_millis(300));
     let (context, suggestions) = f.app.model(|m| (m.rail.context().to_vec(), m.rail.suggestions().to_vec()));
     assert_eq!(context[0].label, "Tail the journal");
-    assert_eq!(context[0].detail, "Shell, 1 lines");
+    assert_eq!(context[0].detail, "Shell", "no measure of the code");
     assert_eq!(suggestions[0].id, "explain");
     f.app.ui(|ui| ui.invoke_agent_suggestion_activated("explain".into()));
     f.quiet();

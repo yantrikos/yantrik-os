@@ -12,8 +12,11 @@
 //!   in the draft lane and offered back on the recovery bar, after a refused save or a restart.
 //!   `refused.rs`: a refused or unfinished write never loses the typing or offers it wrongly.
 //!   `kept.rs`: a draft goes only on a landed write or a Discard, under random failures too.
+//! - `agent_exposure.rs`: no snippet code in `describe` or an agent's search, and an agent's
+//!   import only of a file in the person's home.
 //! - `secrets.rs`: a snippet's code is never in a log, an answer, `describe` or a debug print.
 //! - `rail.rs`: the agent rail and the AI button. `private_mode.rs`: `describe` in Private mode.
+//! - `folders.rs`: the library's and the drafts' folders are the person's alone (0700).
 
 use std::sync::Arc;
 
@@ -27,10 +30,12 @@ use crate::disk::testing::{self as faulty, Faulty};
 use crate::store::{file, Library};
 use crate::SnippetManager;
 
+mod agent_exposure;
 mod copying;
 mod editing;
 mod ending;
 mod files;
+mod folders;
 mod kept;
 mod parity;
 mod private_mode;

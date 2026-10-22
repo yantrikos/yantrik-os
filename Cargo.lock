@@ -11844,6 +11844,7 @@ dependencies = [
  "yantrik-app-build",
  "yantrik-design-tokens",
  "yantrik-foundation",
+ "yantrik-ipc-contracts",
  "yantrik-testing",
  "yantrik-ui-kit",
 ]

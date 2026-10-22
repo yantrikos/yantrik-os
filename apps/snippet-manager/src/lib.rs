@@ -76,12 +76,22 @@ impl App for SnippetManager {
     const ID: &'static str = "snippets";
 
     fn model(boot: &Boot<()>) -> Result<Model, Startup> {
-        let path = store::file::state_path(&store_dir(&boot.paths));
+        let dir = store_dir(&boot.paths);
+        // The library's folder and the drafts', the person's alone before anything is written
+        // in them (#948, item 5). A folder that cannot be made is said by the load and the save.
+        let state = boot.paths.state_dir();
+        for folder in [dir.clone(), state.to_path_buf(), state.join(yantrik_app::drafts::DIR)] {
+            if let Err(e) = store::file::private_folder(&folder) {
+                tracing::warn!(folder = %folder.display(), error = %e, "could not make the folder private");
+            }
+        }
+        let path = store::file::state_path(&dir);
         // Read once, before any window exists: the window opens on what is kept.
         let loaded = store::file::load(&path);
         let mut m = Model {
             library: loaded.library,
             query: String::new(),
+            query_by: store::Matched::Everything,
             tag: String::new(),
             collection: store::ALL,
             selected: -1,

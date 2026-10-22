@@ -4,7 +4,7 @@
 //! The copy itself is the thing being asked for and it either happened or it did not; recording
 //! that it happened is bookkeeping, and a bookkeeping failure is not reported as a failed copy —
 //! the code really is on the clipboard by then. The code goes to the clipboard and nowhere else:
-//! no answer, notice or log line carries it, only its length.
+//! no answer, notice or log line carries it, nor its length.
 
 use std::time::Duration;
 
@@ -81,7 +81,6 @@ fn start(m: &mut Model, fx: &mut Fx, id: i32, from_window: bool) {
         Command::Copied(Box::new(Copied {
             id: snippet.id,
             title: snippet.title,
-            bytes: snippet.code.len(),
             use_count: snippet.use_count,
             result,
             from_window,
@@ -98,11 +97,11 @@ fn landed(m: &mut Model, copied: Copied, fx: &mut Fx) {
     }
     m.copied = true;
     fx.after(COPY_FEEDBACK_TIMER, COPY_FEEDBACK, Command::CopyFeedbackOver);
-    let unsaved = answers::copied(copied.id, &copied.title, copied.bytes, copied.use_count, false);
+    let unsaved = answers::copied(copied.id, &copied.title, copied.use_count, false);
     let restore = m.restore_point();
     match m.library.mark_used(copied.id) {
         Ok(used) => {
-            let saved = answers::copied(copied.id, &copied.title, copied.bytes, used.use_count, true);
+            let saved = answers::copied(copied.id, &copied.title, used.use_count, true);
             let after = After::Counted { saved, unsaved, from_window: copied.from_window };
             written::write(m, fx, after, restore);
             fx.changed(PART_LIST);

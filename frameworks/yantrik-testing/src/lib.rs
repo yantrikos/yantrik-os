@@ -489,6 +489,9 @@ impl<A: App> TestApp<A> {
         self.with(move |u| {
             let _agent = AgentTokenScope::enter(call.agent_token.clone());
             let _who = CallerScope::enter(None);
+            // As the socket's dispatch does: a call that carries a person's Allow is one the
+            // handler sees as granted (`control::call_was_granted`).
+            let _granted = yantrik_app::control::GrantedScope::enter(call.granted);
             let later = LaterScope::enter();
             let authority = Authority {
                 ceiling: "dangerous".into(),

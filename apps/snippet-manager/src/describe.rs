@@ -1,6 +1,11 @@
 //! What the Mind reads: the same keys and values the app published before the framework, read off
 //! the committed model.
 //!
+//! No line of a snippet's code is in it, and no measure of it. The list's `preview`, its first
+//! line, was, and so were its line counts (`lines`, `open_lines`); a snippet may be a password or
+//! a key, and a four-line block is a kind and a size of key. What a snippet is called (title,
+//! language, tags) says what it is for without saying what it holds. The window keeps all of it.
+//!
 //! In Private mode the framework replaces all of it (#924); this app keeps none of its keys there
 //! (`tests/private_mode.rs`), because every one names, counts or quotes the person's snippets.
 
@@ -42,8 +47,6 @@ pub fn view(m: &Model) -> View {
                 "tags": s.tag_list(),
                 "favorite": s.favorite,
                 "collection": m.library.collection_name(s.collection),
-                "lines": s.code.lines().count(),
-                "preview": s.preview(),
             })
         })
         .collect();
@@ -65,7 +68,6 @@ pub fn view(m: &Model) -> View {
         .with("open_id", open.as_ref().map(|s| s.id as i64))
         .with("open_language", open.as_ref().map(|s| s.language.clone()))
         .with("open_favorite", open.as_ref().map(|s| s.favorite))
-        .with("open_lines", open.as_ref().map(|s| s.code.lines().count() as i64))
         .with("store", m.lane.path().display().to_string())
         .with("copied_recently", m.copied)
         .with("notice", m.notice.clone())

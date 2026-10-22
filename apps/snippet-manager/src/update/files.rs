@@ -5,6 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use yantrik_app::Refused;
+use yantrik_foundation::place;
+use yantrik_ipc_contracts::home_paths;
 
 use super::changes::commit;
 use super::{fail, say, written, Fx};
@@ -38,7 +40,16 @@ pub(super) fn update(m: &mut Model, command: Command, fx: &mut Fx) -> Result<(),
 fn read(m: &mut Model, fx: &mut Fx, path: PathBuf, from: From) {
     m.work += 1;
     let collection = m.collection;
+    let agent = super::browsing::agent(fx);
     fx.spawn_or(Command::WorkFailed(Box::new(Work::Import)), move |_| {
+        // An agent names only a file in the person's home, outside its protected places (#443, as
+        // Images' `open`), asked before the path is looked at all; the person names any file.
+        if agent {
+            if let Err(why) = home_paths::may_read_file(&path.to_string_lossy(), &place::home()) {
+                let result = Err(format!("an agent may import only a file in the person's home, outside its protected places: {why}"));
+                return Command::Read(Box::new(Read { path, from, result, missing: true, collection }));
+            }
+        }
         // The Mind is told plainly there is no such file, before anything is decided; a file on
         // the command line that is not there is said on the notice line like any other failure.
         let missing = from == From::Surface && !path.is_file();

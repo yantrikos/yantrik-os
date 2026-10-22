@@ -127,6 +127,32 @@ pub fn encode_bundle(library: &Library) -> Result<Vec<u8>, String> {
     serde_json::to_vec_pretty(&bundle).map_err(|e| e.to_string())
 }
 
+/// Make `dir` if it is missing, and keep it the person's alone: 0700, as every file in it is
+/// 0600 (#948, item 5). The atomic writer makes a missing folder with the process's umask, which
+/// left the library's and the drafts' folders 0775. One already there is tightened, unless it is
+/// a link: a folder the person pointed elsewhere is theirs to set.
+pub fn private_folder(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        let meta = std::fs::symlink_metadata(dir)?;
+        if meta.is_dir() && meta.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)
+}
+
 /// Write bytes over `path`, whole or not at all, and say why not in words.
 pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     yantrik_foundation::json_store::write_atomically(path, bytes)

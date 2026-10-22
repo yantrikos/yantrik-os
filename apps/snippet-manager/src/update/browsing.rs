@@ -2,17 +2,20 @@
 //! and the editor's typing. Nothing here writes, except the typing kept before the editor moves.
 
 use serde_json::{json, Value};
+use yantrik_app::intents::Origin;
 use yantrik_app::Refused;
 
 use super::{changes, fail, worked, written, Fx};
 use crate::answers;
 use crate::command::{After, Command};
 use crate::model::{Model, PART_DETAIL, PART_LIST, PART_RAISE};
+use crate::store::Matched;
 
 pub(super) fn update(m: &mut Model, command: Command, fx: &mut Fx) -> Result<(), Refused> {
     match command {
         Command::Search(query) => {
             m.query = query;
+            m.query_by = Matched::Everything;
             fx.changed(PART_LIST);
         }
         Command::TagFilter(tag) => {
@@ -49,6 +52,10 @@ pub(super) fn update(m: &mut Model, command: Command, fx: &mut Fx) -> Result<(),
         }
         Command::Find(query) => {
             m.query = query.clone();
+            // An agent's search is matched against what snippets are called, never their code,
+            // and so is the list it leaves on screen and in `describe`: neither answers a count
+            // an agent could read a secret out of.
+            m.query_by = if agent(fx) { Matched::Labels } else { Matched::Everything };
             fx.changed(PART_LIST);
             let answer = answers::searched(m, &query);
             answers::settle(m, fx, answer);
@@ -61,6 +68,11 @@ pub(super) fn update(m: &mut Model, command: Command, fx: &mut Fx) -> Result<(),
         _ => {}
     }
     Ok(())
+}
+
+/// The command runs for an agent's call.
+pub(super) fn agent(fx: &Fx) -> bool {
+    matches!(fx.origin(), Origin::Surface { agent: true })
 }
 
 /// The id of the snippet a caller named, or a refusal saying why not.

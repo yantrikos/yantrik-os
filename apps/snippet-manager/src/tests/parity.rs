@@ -3,6 +3,14 @@
 //! `apps/snippet-manager/src/main.rs` at 2be8dd24 (`publish_control`), with the string literals
 //! evaluated as rustc reads them, not copied by hand from the new intents, so a word changed in
 //! `intents.rs` fails here.
+//!
+//! Changed on purpose since, each a security fix (`fix/snippets-agent-exposure`), and marked where
+//! it is:
+//! - `search`'s `query` and `import`'s `path` say what an agent's call may match and read;
+//! - the list in `describe` carries no `preview` and no `lines`, and `describe` no `open_lines`;
+//! - `copy`, `new`, `save` and `open` answer without `bytes`;
+//! - `copy` holds an agent to the person's Allow (an agent rule; its row in the table is
+//!   unchanged).
 
 use serde_json::{json, Value};
 use yantrik_app::app::App as _;
@@ -58,7 +66,8 @@ const BEFORE: &[Golden] = &[
         risk: "safe",
         description: r#"Narrow the list to what matches"#,
         params: &[
-            ("query", "string", true, r#"Matched against title, code, tags and language"#),
+            // Security: an agent's search never matches code.
+            ("query", "string", true, r#"Matched against title, code, tags and language; an agent's search matches title, tags and language only"#),
         ],
     },
     Golden {
@@ -90,7 +99,8 @@ const BEFORE: &[Golden] = &[
         risk: "standard",
         description: r#"Keep a file as a snippet, or read back an export"#,
         params: &[
-            ("path", "string", true, r#"A source file, or a file `export` wrote"#),
+            // Security: an agent's import reads only a file in the person's home (#443).
+            ("path", "string", true, r#"A source file, or a file `export` wrote; an agent may name only a file in the person's home, outside its protected places"#),
         ],
     },
     Golden {
@@ -102,7 +112,9 @@ const BEFORE: &[Golden] = &[
 ];
 
 const KEYS: &[&str] = &["total", "matching", "shown", "snippets", "favorites", "query", "tag", "collection", "collections", "open", "open_id", "open_language", "open_favorite", "open_lines", "store", "copied_recently", "notice"];
-const ROW_KEYS: &[&str] = &["id", "title", "language", "tags", "favorite", "collection", "lines", "preview"];
+// Security: `preview`, the first line of each snippet's code, is gone from the list.
+// Security: `lines`, a size hint, is gone too.
+const ROW_KEYS: &[&str] = &["id", "title", "language", "tags", "favorite", "collection"];
 
 #[test]
 fn the_nine_actions_are_published_as_they_were() {
@@ -181,10 +193,11 @@ fn sorted(list: &[&str]) -> Vec<String> {
     keys
 }
 
-/// The keys as before, and the one added on purpose: `recovery`, what the recovery bar offers
-/// back (titles only), as Notes' `describe.recovery`.
+/// The keys as before, less `open_lines` (security: a line count is a size hint), and the one added
+/// on purpose: `recovery`, what the recovery bar offers back (titles only), as Notes'
+/// `describe.recovery`.
 fn described() -> Vec<String> {
-    let mut keys = KEYS.to_vec();
+    let mut keys: Vec<&str> = KEYS.iter().copied().filter(|k| *k != "open_lines").collect();
     keys.push("recovery");
     sorted(&keys)
 }
@@ -201,7 +214,7 @@ fn an_empty_store_is_described_as_it_was() {
         json!({
             "total": 0, "matching": 0, "shown": 0, "snippets": [], "favorites": 0,
             "query": "", "tag": "", "collection": "All Snippets", "collections": [],
-            "open": null, "open_id": null, "open_language": null, "open_favorite": null, "open_lines": null,
+            "open": null, "open_id": null, "open_language": null, "open_favorite": null,
             "store": f.path().display().to_string(), "copied_recently": false, "notice": "", "recovery": [],
         })
     );
@@ -226,14 +239,12 @@ fn a_store_with_a_snippet_open_is_described_as_it_was() {
     assert_eq!(s["open_id"], json!(journal));
     assert_eq!(s["open_language"], json!("Shell"));
     assert_eq!(s["open_favorite"], json!(true));
-    assert_eq!(s["open_lines"], json!(1));
     let row = s["snippets"].as_array().unwrap().iter().find(|r| r["id"] == json!(borrow)).cloned().unwrap();
     assert_eq!(
         row,
         json!({
             "id": borrow, "title": "Borrow checker dance", "language": "Rust", "tags": ["rust", "borrow"],
-            "favorite": false, "collection": "All Snippets", "lines": 1,
-            "preview": "let mut guard = state.borrow_mut();",
+            "favorite": false, "collection": "All Snippets",
         })
     );
     // A search narrows the summary as it did.
@@ -246,4 +257,30 @@ fn a_store_with_a_snippet_open_is_described_as_it_was() {
     assert_eq!(f.describe()["summary"], json!("Snippets \u{2014} 1 of 2 match \u{201c}BORROW\u{201d}, none open"));
     f.act("search", json!({ "query": " " })).unwrap();
     assert_eq!(f.describe()["summary"], json!("Snippets \u{2014} 2 kept, none open"));
+}
+
+/// What `copy`, `new`, `save` and `open` answer: the keys the old app answered with, less one.
+/// Security (`fix/snippets-agent-exposure`): `bytes`, the code's length, is gone from all four; a
+/// length is a hint at a secret.
+#[test]
+fn copy_new_save_and_open_answer_as_they_did_without_the_length() {
+    const BEFORE_COPY: &[&str] = &["copied", "id", "bytes", "with", "use_count", "use_count_saved"];
+    let f = open();
+    let (journal, _) = f.seeded();
+    let answer = f.act("copy", json!({ "id": journal.to_string() })).unwrap();
+    let now: Vec<&str> = BEFORE_COPY.iter().copied().filter(|k| *k != "bytes").collect();
+    assert_eq!(keys(&answer), sorted(&now));
+    // `new`, `save` and `open` answered the snippet as stored (the old `stored_answer`).
+    const BEFORE_STORED: &[&str] =
+        &["id", "title", "language", "tags", "favorite", "collection", "bytes", "stored_in", "total"];
+    let now: Vec<&str> = BEFORE_STORED.iter().copied().filter(|k| *k != "bytes").collect();
+    let made = f.act("new", json!({ "title": "Pinned", "language": "Rust", "code": "x" })).unwrap();
+    let id = made["id"].to_string();
+    for answer in [
+        made,
+        f.act("save", json!({ "id": id, "code": "y" })).unwrap(),
+        f.act("open", json!({ "id": id })).unwrap(),
+    ] {
+        assert_eq!(keys(&answer), sorted(&now), "{answer}");
+    }
 }

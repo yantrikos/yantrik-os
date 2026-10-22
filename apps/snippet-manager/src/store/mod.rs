@@ -111,12 +111,25 @@ impl Snippet {
             .collect()
     }
 
-    fn matches(&self, needle: &str) -> bool {
+    fn matches(&self, needle: &str, by: Matched) -> bool {
         self.title.to_lowercase().contains(needle)
-            || self.code.to_lowercase().contains(needle)
+            || (by == Matched::Everything && self.code.to_lowercase().contains(needle))
             || self.tags.to_lowercase().contains(needle)
             || self.language.to_lowercase().contains(needle)
     }
+}
+
+/// What a search is matched against.
+///
+/// The person's own search matches the code too: it is their code, on their screen. An agent's
+/// matches only what a snippet is called (title, tags, language): a search over the code answers
+/// with counts and titles, and an agent asking `TOKEN=a`, `TOKEN=b`, … could read a secret back
+/// out of them a character at a time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Matched {
+    #[default]
+    Everything,
+    Labels,
 }
 
 /// A collection a person made. The two built-in filters are not in here.
@@ -251,6 +264,11 @@ impl Library {
     /// which at this app's scale costs nothing and keeps searching honest — there is no index to
     /// fall out of step with the snippets.
     pub fn matching(&self, query: &str, tag: &str, collection: i32) -> Vec<Snippet> {
+        self.matching_by(query, tag, collection, Matched::Everything)
+    }
+
+    /// [`Library::matching`], with the query matched against `by`.
+    pub fn matching_by(&self, query: &str, tag: &str, collection: i32, by: Matched) -> Vec<Snippet> {
         let needle = query.trim().to_lowercase();
         let tag = tag.trim().to_lowercase();
         let mut rows: Vec<Snippet> = self
@@ -262,7 +280,7 @@ impl Library {
                 other => s.collection == other,
             })
             .filter(|s| tag.is_empty() || s.tag_list().iter().any(|t| t.to_lowercase() == tag))
-            .filter(|s| needle.is_empty() || s.matches(&needle))
+            .filter(|s| needle.is_empty() || s.matches(&needle, by))
             .cloned()
             .collect();
         rows.sort_by(|a, b| b.updated.cmp(&a.updated).then(b.id.cmp(&a.id)));

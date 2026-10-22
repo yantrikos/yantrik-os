@@ -9,7 +9,7 @@ use yantrik_app::rail::Rail;
 
 use crate::clipboard::Clipboard;
 use crate::lane::Lane;
-use crate::store::{Library, Patch, Snippet};
+use crate::store::{Library, Matched, Patch, Snippet};
 
 /// The parts of the model `render` redraws by name. Every command names what it changed.
 pub const NOTHING: &str = "nothing";
@@ -139,6 +139,9 @@ pub struct Model {
     pub library: Library,
     /// The search box, the tag chip and the sidebar's collection: what the person is looking at.
     pub query: String,
+    /// What the query is matched against: the person's own search matches the code too, an
+    /// agent's only what snippets are called (`Matched`).
+    pub query_by: Matched,
     pub tag: String,
     pub collection: i32,
     /// The snippet open in the editor, or -1. The editor's `id` is always this.
@@ -179,7 +182,7 @@ impl Model {
 
     /// The rows the list shows.
     pub fn rows(&self) -> Vec<Snippet> {
-        self.library.matching(&self.query, &self.tag, self.collection)
+        self.library.matching_by(&self.query, &self.tag, self.collection, self.query_by)
     }
 
     /// The editor holds typing the store has not taken.

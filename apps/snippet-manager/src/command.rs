@@ -126,10 +126,9 @@ pub struct Written {
 #[derive(Clone)]
 pub struct Copied {
     /// The snippet as it was when the copy began. Its code went to the clipboard and is not
-    /// carried back, only how long it was.
+    /// carried back, nor its length.
     pub id: i32,
     pub title: String,
-    pub bytes: usize,
     pub use_count: i32,
     pub result: Result<(), String>,
     pub from_window: bool,
@@ -141,7 +140,8 @@ pub struct Read {
     pub path: PathBuf,
     pub from: From,
     pub result: Result<Incoming, String>,
-    /// The Mind named a file that is not there: refused, and not said on the notice line.
+    /// The Mind named a file that is not there, or one an agent may not have read: refused, and
+    /// not said on the notice line.
     pub missing: bool,
     /// The collection selected when the import was asked for: what comes in is filed there.
     pub collection: i32,

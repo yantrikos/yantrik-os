@@ -17,6 +17,8 @@ path = "src/main.rs"
 [dependencies]
 yantrik-app = { workspace = true }
 yantrik-foundation = { workspace = true }
+# The one rule for which files an agent may have an app read (`home_paths`, #443).
+yantrik-ipc-contracts = { workspace = true }
 yantrik-design-tokens = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 slint = { workspace = true }

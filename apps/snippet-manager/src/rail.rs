@@ -20,21 +20,17 @@ fn about(title: &str) -> String {
 }
 
 impl Source for Model {
-    /// The open snippet, read off the editor, so the rail says what the person is looking at.
+    /// The open snippet, read off the editor, so the rail says what the person is looking at: by
+    /// title and language, with no measure of its code.
     fn context(&self) -> Vec<ContextItem> {
         if self.editor.id < 0 {
             return Vec::new();
         }
-        let lines = self.editor.code.lines().count();
         let language = &self.editor.language;
         vec![ContextItem {
             id: self.editor.id.to_string(),
             label: self.editor.title.clone(),
-            detail: if language.is_empty() {
-                format!("{lines} lines")
-            } else {
-                format!("{language}, {lines} lines")
-            },
+            detail: if language.is_empty() { "snippet".into() } else { language.clone() },
             source: "file".into(),
         }]
     }

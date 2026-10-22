@@ -355,8 +355,8 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | notes | `open_in_new_window` | standard | shows a note (the focused window's, or the one `title` names) in a new window of its own; both windows show the same note, so an edit in either is in both, each window keeps its own undo history, and closing one of them asks nothing. Nothing is copied or saved. The new window is the focused one afterwards, and every other action acts on the focused window's note (`describe.focused_window`; `describe.windows` lists each window and its note). The note header's *Open in new window*, and Ctrl+Shift+N |
 | presentation | `open`, `show`, `save`, `save_as`, `new_deck`, `add_slide`, `set_slide`, `move_slide`, `go_to`, `next`, `previous`, `present`, `export_markdown` | standard | deck content, editable again |
 | presentation | `delete_slide` | sensitive | takes the slide and its contents off the deck |
-| snippets | `open`, `search`, `show` | safe | reads |
-| snippets | `new`, `save`, `copy`, `toggle_favorite`, `import` | standard | library content, paired verbs |
+| snippets | `open`, `search`, `show` | safe | reads; an agent's `search` matches titles, tags and language, never a snippet's code, and `describe` carries no line of any snippet's code and no line count. The person's own search query and its match count over code do show in `describe` while it stands (Private mode hides them) |
+| snippets | `new`, `save`, `copy`, `toggle_favorite`, `import` | standard | library content, paired verbs; an agent's `import` names only a file in the person's home outside its protected places (`home_paths`, as Images' `open`); `new`, `save`, `open` and `copy` answer with neither the code nor its length, and an agent's `copy` runs only as a call the person allowed on a card: the clipboard is where an agent could read the code back |
 | snippets | `delete` | sensitive | no trash |
 | studio | `refresh` | safe | reads |
 | studio | `generate`, `variations` | standard ⇄ sensitive | regraded at runtime: `standard` to a model on the machine, `sensitive` when the backend sends the prompt to a hosted service |

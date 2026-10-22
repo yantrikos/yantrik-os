@@ -1,5 +1,5 @@
 //! Copy: the code onto the clipboard, the use count kept, and "Copied!" said for a moment. The
-//! answer says how long the code was and never what it was.
+//! answer says that it copied, never what, nor how long it was.
 
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ fn copy_puts_the_code_on_the_clipboard_and_counts_it() {
     assert_eq!(
         answer,
         json!({
-            "copied": "Tail the journal", "id": journal, "bytes": 25, "with": "wl-copy",
+            "copied": "Tail the journal", "id": journal, "with": "wl-copy",
             "use_count": 1, "use_count_saved": true,
         })
     );

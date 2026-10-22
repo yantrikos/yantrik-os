@@ -175,7 +175,6 @@ fn a_minds_save_keeps_the_persons_typing_first() {
     f.type_into("The person's title", "journalctl");
     let answer = f.act("save", json!({ "id": journal.to_string(), "code": "journalctl -f" })).unwrap();
     assert_eq!(answer["title"], json!("The person's title"));
-    assert_eq!(answer["bytes"], json!(13));
     let kept = f.on_disk().get(journal).cloned().unwrap();
     assert_eq!((kept.title.as_str(), kept.code.as_str()), ("The person's title", "journalctl -f"));
     assert_eq!(f.app.ui(|ui| ui.get_detail_code().to_string()), "journalctl -f");
