@@ -16,10 +16,11 @@
 //! Where the kernel or the filesystem has no such rename (NFS, 9p, FUSE, an old kernel, a
 //! sandbox that forbids it), a plain rename is used and the answer is [`Displaced::Unknown`].
 
-use std::io::{Read as _, Write as _};
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
 use super::disk::{DiskError, Displaced, Exchanged, RealDisk, Step};
+use crate::quiet::{self, Looked};
 
 /// Read back at most this much of a replaced file; a larger one is kept under its temp name.
 pub(super) const READ_BACK_LIMIT: u64 = 64 * 1024 * 1024;
@@ -83,42 +84,112 @@ pub(super) fn swap_in(temp: &Path, path: &Path, limit: u64) -> Result<Displaced,
 }
 
 /// The replaced file's bytes, the temp removed; or the temp kept, unread, when it cannot be read
-/// back safely (opened without following a link or blocking, a regular file, within `limit`).
+/// back safely ([`crate::quiet::read_within`]: a regular file within `limit`, never a link).
 fn read_back(temp: &Path, limit: u64) -> Displaced {
-    let bytes = (|| {
-        let file = open_quietly(temp)?;
-        let meta = file.metadata()?;
-        if !meta.is_file() || meta.len() > limit {
-            return Err(std::io::Error::other("not a regular file within the limit"));
-        }
-        let mut bytes = Vec::new();
-        file.take(limit + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > limit {
-            return Err(std::io::Error::other("grew past the limit"));
-        }
-        Ok(bytes)
-    })();
-    match bytes {
-        Ok(bytes) => {
+    match quiet::read_within(temp, limit) {
+        Ok(Looked::Read(bytes)) => {
             let _ = std::fs::remove_file(temp);
             Displaced::Bytes(bytes)
         }
-        Err(_) => Displaced::Unread(temp.to_path_buf()),
+        _ => Displaced::Unread(temp.to_path_buf()),
     }
 }
 
-#[cfg(unix)]
-fn open_quietly(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)
+/// What a replace that only lands over what it accepts came to ([`replace_if`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Guarded {
+    /// The bytes are at the path; what they replaced, if anything, was accepted.
+    Placed,
+    /// What was at the path is not accepted: it is back at the path, and the bytes are not.
+    Refused,
+    /// What was at the path is not accepted and could not be put back: the bytes are at the
+    /// path, and what they replaced is kept, whole, under this name beside it.
+    KeptAside(PathBuf),
 }
 
-#[cfg(not(unix))]
-fn open_quietly(path: &Path) -> std::io::Result<std::fs::File> {
-    std::fs::File::open(path)
+/// The suffix of [`replace_if`]'s temp, `.<file>.<pid>.<n>.exchange`. Not `.tmp`: after an
+/// exchange the temp holds what was displaced, someone else's file with its own age, and the
+/// stale-temp sweep for `.tmp` names would remove it unread. Only a sweep that recognises the
+/// temp's content as the app's own may remove one of these (`settings::file::sweep_own_temps`).
+pub(crate) const EXCHANGE_SUFFIX: &str = "exchange";
+
+/// Replaces `path` with `bytes` only over nothing, or over a regular file of one name within
+/// `limit` whose bytes `accept` takes ([`crate::quiet::read_own`]). The check is made on what
+/// the exchange actually displaced, not on a look taken before it, so nothing that arrives in
+/// between is replaced unseen. Nothing is removed unless it is known: the displaced file once
+/// accepted, the app's own bytes once they are back under the temp name. Anything else is kept
+/// aside under a name of its own. Where the filesystem has no exchange, a plain rename is used;
+/// the caller's own look before is then the only check (the limit `Placed` cannot remove there).
+pub(crate) fn replace_if(path: &Path, bytes: &[u8], limit: u64, accept: impl Fn(&[u8]) -> bool) -> std::io::Result<Guarded> {
+    let (temp, mut file) = RealDisk::create_temp_as(path, false, EXCHANGE_SUFFIX)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    let placed = match place(&temp, path) {
+        Ok(placed) => placed,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+    };
+    let outcome = match placed {
+        Placed::Created | Placed::Renamed => Guarded::Placed,
+        Placed::Exchanged => match quiet::read_own(&temp, limit) {
+            Ok(Looked::Read(theirs)) if accept(&theirs) => {
+                let _ = std::fs::remove_file(&temp);
+                Guarded::Placed
+            }
+            // Not accepted, or not readable as a file of one name: theirs goes back.
+            _ => match exchange_names(&temp, path) {
+                Ok(()) => {
+                    // What came back under the temp name is removed only if it is ours: a third
+                    // writer may have put its own file at the path in that instant.
+                    match quiet::read_own(&temp, limit) {
+                        Ok(Looked::Read(back)) if back == bytes => {
+                            let _ = std::fs::remove_file(&temp);
+                        }
+                        _ => {
+                            let kept = keep_aside(&temp, path)?;
+                            tracing::warn!(file = %path.display(), kept = %kept.display(), "a file that arrived at the path as it was put back is kept beside it, unread");
+                        }
+                    }
+                    Guarded::Refused
+                }
+                Err(_) => Guarded::KeptAside(keep_aside(&temp, path)?),
+            },
+        },
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
+    }
+    Ok(outcome)
+}
+
+/// Moves what a replace displaced off its temp name to `<file>.set-aside-<pid>-<n>.json` beside
+/// the path, never over a name that is there (`RENAME_NOREPLACE`; a look and a plain rename
+/// where the filesystem has none). If no name can be had, it stays under the temp name, which
+/// no sweep removes unless it holds the app's own bytes.
+fn keep_aside(temp: &Path, path: &Path) -> std::io::Result<PathBuf> {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    for n in 0..1000u32 {
+        let kept = path.with_file_name(format!("{name}.set-aside-{}-{n}.json", std::process::id()));
+        match publish_new(temp, &kept) {
+            Ok(()) => return Ok(kept),
+            Err(e) if is_present(&e) => continue,
+            Err(e) if unsupported(&e) => {
+                if std::fs::symlink_metadata(&kept).is_ok() {
+                    continue;
+                }
+                std::fs::rename(temp, &kept)?;
+                return Ok(kept);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free name to keep the displaced file under"))
 }
 
 /// How the new file took its place.
@@ -216,4 +287,28 @@ fn is_present(_: &std::io::Error) -> bool {
 #[cfg(not(target_os = "linux"))]
 fn unsupported(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::Unsupported
+}
+
+#[cfg(test)]
+mod keep_aside_tests {
+    use super::*;
+
+    /// A displaced file is kept under a name of its own, never over one that is there.
+    #[test]
+    fn a_displaced_file_is_never_kept_over_a_name_that_is_there() {
+        let d = std::env::temp_dir().join(format!("yantrik-keep-aside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("settings.json");
+        let first = d.join(format!("settings.json.set-aside-{}-0.json", std::process::id()));
+        std::fs::write(&first, "kept before").unwrap();
+        let temp = d.join(format!(".settings.json.{}.9.{EXCHANGE_SUFFIX}", std::process::id()));
+        std::fs::write(&temp, "theirs").unwrap();
+        let kept = keep_aside(&temp, &path).unwrap();
+        assert_ne!(kept, first);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "kept before");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "theirs");
+        assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

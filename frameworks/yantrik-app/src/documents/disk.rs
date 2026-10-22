@@ -111,10 +111,15 @@ impl RealDisk {
     /// For a replace (`wear_mode`) it then carries the destination's own mode; a create has no
     /// destination to take one from, and stays private.
     pub(super) fn create_temp(path: &Path, wear_mode: bool) -> std::io::Result<(PathBuf, std::fs::File)> {
+        RealDisk::create_temp_as(path, wear_mode, "tmp")
+    }
+
+    /// [`RealDisk::create_temp`], named `.<file>.<pid>.<n>.<suffix>`.
+    pub(super) fn create_temp_as(path: &Path, wear_mode: bool, suffix: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
         let parent = path.parent().ok_or_else(|| std::io::Error::other("no parent directory"))?;
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let temp = parent.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
+        let temp = parent.join(format!(".{name}.{}.{n}.{suffix}", std::process::id()));
         let mut options = std::fs::OpenOptions::new();
         options.create_new(true).write(true);
         #[cfg(unix)]

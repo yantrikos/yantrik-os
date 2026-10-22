@@ -149,13 +149,15 @@ impl Queue {
 fn perform(write: Write, report: &dyn Report) {
     let removed = matches!(write.op, Op::Remove);
     let result = match write.op {
-        Op::Put(bytes) => write_atomically(&write.path, &bytes),
+        // A settings save replaces only a file with the app's own mark, or nothing: a file that
+        // arrived after the save was queued and is not this app's is left as it is.
+        Op::Put(bytes) if write.key == PersistKey::Settings => crate::settings::file::replace(&write.path, &bytes),
+        Op::Put(bytes) => write_atomically(&write.path, &bytes).map_err(|e| e.to_string()),
         Op::Remove => match std::fs::remove_file(&write.path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
             _ => Ok(()),
         },
-    }
-    .map_err(|e| e.to_string());
+    };
     report.written(Written {
         key: write.key,
         revision: write.revision,
@@ -354,6 +356,11 @@ mod tests {
         }
     }
 
+    /// A settings file's bytes, as the store renders them: marked as app `t`'s.
+    fn marked(text: &str) -> Vec<u8> {
+        crate::settings::file::render_raw("t", 1, serde_json::json!(text)).unwrap()
+    }
+
     /// A settings save (no delay) goes before a draft that is still debouncing, whichever was
     /// queued first; and a key whose debounce keeps restarting is still written once its hold is up.
     #[test]
@@ -386,11 +393,11 @@ mod tests {
         let log = Arc::new(Log(Mutex::new(Vec::new())));
         let path = dir("order").join("s.json");
         let mut lane = ManualLane::new(log.clone());
-        lane.write(put(PersistKey::Settings, 1, &path, b"one", Duration::ZERO));
-        lane.write(put(PersistKey::Settings, 2, &path, b"two", Duration::ZERO));
+        lane.write(put(PersistKey::Settings, 1, &path, &marked("one"), Duration::ZERO));
+        lane.write(put(PersistKey::Settings, 2, &path, &marked("two"), Duration::ZERO));
         lane.write(put(PersistKey::Draft("a".into()), 1, &path.with_extension("draft"), b"d", Duration::ZERO));
         lane.write_all();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+        assert_eq!(std::fs::read(&path).unwrap(), marked("two"));
         let outcomes: Vec<(u64, bool)> = log.0.lock().unwrap().iter().map(|w| (w.revision, w.result.is_ok())).collect();
         assert_eq!(outcomes, vec![(1, false), (2, true), (1, true)], "revision 1 of the settings was superseded, not written");
         assert_eq!(log.0.lock().unwrap()[0].result, Err(SUPERSEDED.into()));
@@ -414,10 +421,33 @@ mod tests {
         let log = Arc::new(Log(Mutex::new(Vec::new())));
         let path = dir("thread").join("s.json");
         let mut lane = Threaded::new("test", log.clone());
-        lane.write(put(PersistKey::Settings, 1, &path, b"x", Duration::ZERO));
+        lane.write(put(PersistKey::Settings, 1, &path, &marked("x"), Duration::ZERO));
         assert!(lane.drain(Duration::from_secs(5)));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+        assert_eq!(std::fs::read(&path).unwrap(), marked("x"));
         assert_eq!(log.0.lock().unwrap().len(), 1);
+    }
+
+    /// A file that arrived after a settings save was queued, and is not the app's (another
+    /// component's, by name or by link), is not written over: the save fails and says the path.
+    #[test]
+    fn a_settings_save_never_lands_over_a_file_that_is_not_the_apps() {
+        let log = Arc::new(Log(Mutex::new(Vec::new())));
+        let path = dir("guard").join("s.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let account = r#"[{"password":"SENTINEL-PASSWORD-3"}]"#;
+        std::fs::write(&path, account).unwrap();
+        let mut lane = ManualLane::new(log.clone());
+        lane.write(put(PersistKey::Settings, 1, &path, &marked("mine"), Duration::ZERO));
+        lane.write_all();
+        // Bytes without a mark are not a settings save the store made: refused even onto nothing.
+        let bare = path.with_file_name("bare.json");
+        lane.write(put(PersistKey::Settings, 2, &bare, b"{}", Duration::ZERO));
+        lane.write_all();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), account);
+        assert!(!bare.exists());
+        let said: Vec<String> = log.0.lock().unwrap().iter().filter_map(|w| w.result.clone().err()).collect();
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said.iter().all(|e| !e.contains("SENTINEL") && e.contains("left as it is")), "{said:?}");
     }
 
     #[test]

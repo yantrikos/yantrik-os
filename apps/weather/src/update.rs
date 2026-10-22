@@ -8,7 +8,7 @@ use yantrik_app::Refused;
 
 use crate::forecast;
 use crate::geocode;
-use crate::model::{Command, Model, DEGRADED_NOTICE, PART_NOTICE, PART_PLACES, PART_READING, PART_UPDATED};
+use crate::model::{Command, Model, DEGRADED_NOTICE, NOT_KEPT, PART_NOTICE, PART_PLACES, PART_READING, PART_UPDATED};
 use crate::places;
 use crate::{Weather, UPDATED_TICK};
 
@@ -130,14 +130,18 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Weather>) -> Res
             arm_age_tick(m, fx);
         }
         Command::PrefsFromFile(prefs) => {
+            // The file is usable again: what is in it is what is kept.
+            m.not_kept = None;
             m.prefs = prefs.normalised();
             fx.changed(PART_PLACES);
             start_fetch(m, fx);
         }
-        Command::Note(line) => {
-            m.notice = line;
+        Command::NotKept(why) => {
+            m.notice = format!("{NOT_KEPT}: {why}");
+            m.not_kept = Some(why);
             fx.changed(PART_NOTICE);
         }
+        Command::Kept => m.not_kept = None,
         Command::DismissNotice => {
             m.notice.clear();
             fx.changed(PART_NOTICE);

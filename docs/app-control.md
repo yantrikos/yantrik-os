@@ -370,7 +370,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | editor | `discard`, `set_content` | sensitive | throws work away; replaces the buffer wholesale |
 | weather | `refresh` | standard | fetches again, stores nothing |
 | weather | `show_location` | standard | a showing: moves an already-saved place onto the screen — the prefs line it touches is which place was being shown, not what is saved |
-| weather | `add_location` | sensitive | **regraded (#48)**: saves a place into `~/.config/yantrik/weather.json`, still saved after a restart |
+| weather | `add_location` | sensitive | **regraded (#48)**: saves a place into `~/.config/yantrik/apps/weather/settings.json`, still saved after a restart |
 | weather | `set_units` | sensitive | **regraded (#48)**: the stored unit choice decides the units every future reading arrives in |
 | weather-service | `set_location` | standard | moves which place describe reports on (conditions and daily forecast); remembered in memory for this run only; the service writes no file — the app's `add_location` is the storing one |
 | system-monitor-service | `find_process` | safe | reads |

@@ -72,6 +72,10 @@ impl App for Weather {
                     format!("The saved places could not be read ({e}); using the defaults.")
                 }
             },
+            not_kept: match &boot.settings_health {
+                yantrik_app::Health::Fine => None,
+                yantrik_app::Health::Recovery(e) => Some(e.to_string()),
+            },
             last_fetch: None,
             now: std::time::Instant::now(),
             rail: Rail::new(boot.mind.clone()),
@@ -125,7 +129,8 @@ impl App for Weather {
     fn event(event: Event<Prefs>, _: &Model) -> Option<Command> {
         match event {
             Event::SettingsChangedOutside(prefs) => Some(Command::PrefsFromFile(prefs)),
-            Event::SettingsNotSaved(why) => Some(Command::Note(format!("Could not keep the change: {why}"))),
+            Event::SettingsNotSaved(why) => Some(Command::NotKept(why)),
+            Event::SettingsSaved => Some(Command::Kept),
             _ => None,
         }
     }
@@ -216,7 +221,7 @@ mod tests {
         assert_eq!(state["units"], json!("celsius"));
         assert_eq!(state["reading_from"], json!("weather-service"));
         assert_eq!(state["saved_locations"], json!([{ "name": "London", "active": true }]));
-        assert!(state["config_file"].as_str().unwrap().ends_with("weather.json"));
+        assert!(state["config_file"].as_str().unwrap().ends_with("apps/weather/settings.json"));
         assert_eq!(app.describe()["summary"], json!("Weather — 21°C in London, Overcast, feels like 19°C"));
         // Under fifteen minutes and from the service: no freshness line at all.
         assert_eq!(app.ui(|ui| ui.get_freshness()), "");
@@ -295,23 +300,29 @@ mod tests {
         assert_eq!(app.last_refusal().unwrap().kind, "last_place");
     }
 
+    /// Both shapes Weather kept at `~/.config/yantrik/weather.json`: bare, from before the
+    /// framework, and the framework's envelope from before the mark. Each is brought across once
+    /// to the app's own file and left exactly as it was.
     #[test]
-    fn the_file_from_before_the_framework_is_read_and_kept() {
-        let paths = Paths::temporary(Weather::ID);
-        std::fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
-        std::fs::write(
-            paths.config_file(),
-            r#"{"fahrenheit":true,"active":1,"locations":[{"name":"London","lat":51.5,"lon":-0.1},{"name":"Oslo","lat":59.9,"lon":10.7}]}"#,
-        )
-        .unwrap();
-        let (_, mind, services) = fakes(FakeWeather::new().forecasting(Ok(forecast_at(1.0))));
-        let app = TestApp::<Weather>::start_at_with(paths.clone(), Vec::new(), mind, services);
-        assert!(app.model(|m| m.prefs.fahrenheit));
-        assert_eq!(app.model(|m| m.active().name), "Oslo");
-        assert_eq!(app.model(|m| m.notice.clone()), "", "an import is not recovery");
-        app.run_writes();
-        assert!(std::fs::read_to_string(paths.config_file()).unwrap().contains("\"schema\""));
-        assert!(paths.config_file().with_file_name("weather.json.legacy.json").exists());
+    fn the_file_from_before_is_brought_across_and_kept() {
+        let bare = r#"{"fahrenheit":true,"active":1,"locations":[{"name":"London","lat":51.5,"lon":-0.1},{"name":"Oslo","lat":59.9,"lon":10.7}]}"#;
+        let envelope = format!(r#"{{"schema":1,"settings":{bare}}}"#);
+        for before in [bare.to_string(), envelope] {
+            let paths = Paths::temporary(Weather::ID);
+            let former = paths.former_config_file("weather.json").expect("Weather's own former file");
+            std::fs::create_dir_all(former.parent().unwrap()).unwrap();
+            std::fs::write(&former, &before).unwrap();
+            let (_, mind, services) = fakes(FakeWeather::new().forecasting(Ok(forecast_at(1.0))));
+            let app = TestApp::<Weather>::start_at_with(paths.clone(), Vec::new(), mind, services);
+            assert!(app.model(|m| m.prefs.fahrenheit), "{before}");
+            assert_eq!(app.model(|m| m.active().name), "Oslo");
+            assert_eq!(app.model(|m| m.notice.clone()), "", "an import is not recovery");
+            app.run(Command::SetUnits(false));
+            app.run_writes();
+            let now = std::fs::read_to_string(paths.config_file()).unwrap();
+            assert!(now.contains("\"schema\"") && now.contains("yantrik-app-settings") && now.contains("Oslo"), "{now}");
+            assert_eq!(std::fs::read_to_string(&former).unwrap(), before, "the old file is the backup, never rewritten");
+        }
     }
 
     /// The step-6 gate (design §7, row 6): a worker that panics, a shutdown mid-refresh, and an

@@ -47,11 +47,14 @@ pub fn run<A: App>() -> ExitCode {
     boot::init_tracing_for(A::ID, Some(boot::crate_of::<A>()));
     boot::choose_backend();
     let paths = Paths::for_app(A::ID);
+    // Every record from here on, a panic's included, goes where this run's other files go.
+    problems::set_dir(paths.problems_dir());
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     // The launch is parsed before the claim: a command line this app does not take is said and
     // refused here, whichever copy would have run it. Opening the settings and drafts writes
-    // nothing a copy that hands over would regret: the one write, a pre-framework file's backup
-    // (`<file>.legacy.json`), is made once and never overwritten, so two copies make the same.
+    // nothing a copy that hands over would regret: the one write, settings brought across from
+    // the old shared place (`settings::former`), is made only while the app's own file is
+    // missing, from the same old file, so two copies make the same.
     let (mut boot, store) = match Boot::<A::Settings>::open(
         paths.clone(),
         args,

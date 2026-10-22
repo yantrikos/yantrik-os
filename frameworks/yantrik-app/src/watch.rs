@@ -58,7 +58,7 @@ impl Watch {
         std::thread::Builder::new()
             .name(format!("{name}-watch"))
             .spawn(move || {
-                let mut settings_seen = Fingerprint::of(&settings_file);
+                let mut settings_seen = Fingerprint::of_settings(&settings_file);
                 let shell_settings = theme::settings_path();
                 let mut shell_seen = Fingerprint::of(&shell_settings);
                 let mut theme_seen = theme_now;
@@ -75,7 +75,7 @@ impl Watch {
                         reach_seen = Some(reach_now);
                         notice.seen(Seen::Reach(reach_now));
                     }
-                    let now = Fingerprint::of(&settings_file);
+                    let now = Fingerprint::of_settings(&settings_file);
                     if now != settings_seen {
                         settings_seen = now;
                         notice.seen(Seen::SettingsFile);

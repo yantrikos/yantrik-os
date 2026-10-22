@@ -41,7 +41,9 @@ ONE_JOB = ("Remember the places someone saved and the scale they chose, across a
 APP = "weather"
 APP_BIN = "/opt/yantrik/bin/yantrik-weather"
 SERVICE_BIN = "/opt/yantrik/bin/weather-service"
-CONFIG = pathlib.Path.home() / ".config/yantrik/weather.json"
+# The framework's own place for an app's settings (frameworks/yantrik-app/src/paths.rs); the
+# file is the envelope {"kind", "app", "schema", "settings"}.
+CONFIG = pathlib.Path.home() / ".config/yantrik/apps/weather/settings.json"
 APP_SOCK = lib.SOCKET_DIR / "app-weather.sock"
 NOWHERE = "Zzxqvnowhereville"
 
@@ -55,11 +57,13 @@ OUTCOME = {
 def on_disk():
     """The prefs as the next launch will read them, or why they could not be read."""
     try:
-        return json.loads(CONFIG.read_text())
+        doc = json.loads(CONFIG.read_text())
     except FileNotFoundError:
         return {}
     except Exception as exc:  # noqa: BLE001 - an unreadable file is a result, not a crash
         return {"unreadable": "%s: %s" % (type(exc).__name__, exc)}
+    settings = doc.get("settings") if isinstance(doc, dict) else None
+    return settings if isinstance(settings, dict) else {"unreadable": "not the framework's settings envelope"}
 
 
 def saved_places(prefs=None):
@@ -169,7 +173,7 @@ def run():
                 # The store, not the window. This is the assertion the old code failed: the property
                 # was set, the file was never written, and both looked the same from outside.
                 probe.check(
-                    "the choice reached ~/.config/yantrik/weather.json",
+                    "the choice reached ~/.config/yantrik/apps/weather/settings.json",
                     on_disk().get("fahrenheit") == (want == "fahrenheit"),
                     contract=2, evidence={"asked_for": want, "on_disk": on_disk()})
 
