@@ -79,7 +79,15 @@ struct CalendarHandler {
     surface: Surface,
     /// Whether the person is in Private mode, read per call; a stand-in in tests.
     private: fn() -> bool,
+    /// The raw methods' peer check; a stand-in in tests, so they can reach the dispatch.
+    own: fn(Option<PeerCred>) -> Result<(), String>,
 }
+
+/// Every method that answers with stored event content, writes included: `update_event` with
+/// only an id changes nothing and returns the whole record, and `upsert_remote` overwrites and
+/// returns one (#930 review, H1). While the person is private all of them are the owners' only.
+const CONTENT_METHODS: &[&str] =
+    &[method::EVENTS, method::GET_EVENT, method::UPDATE_EVENT, method::UPSERT_REMOTE];
 
 /// Who reads the events while the person is private: the Calendar app (and the shell, always).
 const CALENDAR_OWNERS: &[&str] = &["yantrik-calendar"];
@@ -91,6 +99,7 @@ impl Default for CalendarHandler {
             store: store.clone(),
             surface: calendar_surface(store, Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW))),
             private: yantrik_service_sdk::is_private,
+            own: own_process_only,
         }
     }
 }
@@ -135,7 +144,7 @@ impl CalendarHandler {
     /// Private mode may have come on while the answer was read (#930 review, L1): the events go
     /// out only if the caller is still an owner now.
     fn still_vouched(&self, method_name: &str, peer: Option<PeerCred>) -> Result<(), ServiceError> {
-        if matches!(method_name, method::EVENTS | method::GET_EVENT) {
+        if CONTENT_METHODS.contains(&method_name) {
             yantrik_service_sdk::private_content_for(peer, method_name, CALENDAR_OWNERS, self.private)?;
         }
         Ok(())
@@ -164,11 +173,11 @@ impl CalendarHandler {
         // serves is the checker's (`yos check`) and every caller's to get.
         // The events themselves, while the person is private: the Calendar app's and the shell's
         // only, narrower than the desktop's programs the raw methods answer otherwise.
-        if matches!(method_name, method::EVENTS | method::GET_EVENT) {
+        if CONTENT_METHODS.contains(&method_name) {
             yantrik_service_sdk::private_content_for(peer, method_name, CALENDAR_OWNERS, self.private)?;
         }
         if method_name.starts_with("calendar.") {
-            if let Err(why) = own_process_only(peer) {
+            if let Err(why) = (self.own)(peer) {
                 return Err(ServiceError { code: -32001, message: why });
             }
         }
@@ -253,6 +262,7 @@ impl CalendarHandler {
                 Arc::new(BurstGate::new(ADD_BURST_LIMIT, ADD_BURST_WINDOW)),
             ),
             private: || false,
+            own: own_process_only,
         }
     }
 }
@@ -1781,22 +1791,59 @@ mod private_mode_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// #930 review, H1: the writes that return an event are the owners' only, each with a
+    /// sentinel in the stored record. `update_event {"id"}` changes nothing and reads everything.
+    #[test]
+    fn in_private_mode_no_method_returns_an_event_to_a_non_owner() {
+        use yantrik_service_sdk::ServiceHandler as _;
+        let dir = std::env::temp_dir().join(format!("calendar-private-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let open = super::CalendarHandler { own: |_| Ok(()), ..super::CalendarHandler::over(dir.clone()) };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        let made = open
+            .handle_from(
+                super::method::CREATE_EVENT,
+                serde_json::json!({ "title": "t", "start": "2026-10-26T10:00:00", "end": "2026-10-26T11:00:00",
+                                    "description": "DESC-SENTINEL" }),
+                me,
+            )
+            .expect("created");
+        let id = made["id"].as_str().unwrap().to_string();
+        let private = super::CalendarHandler { private: || true, ..open };
+        for (method, params) in [
+            (super::method::EVENTS, serde_json::json!({ "start_date": "2026-10-01", "end_date": "2026-10-31" })),
+            (super::method::GET_EVENT, serde_json::json!({ "id": id })),
+            (super::method::UPDATE_EVENT, serde_json::json!({ "id": id })),
+            (super::method::UPSERT_REMOTE, serde_json::json!({ "remote_id": "r1", "id": id })),
+        ] {
+            assert!(super::CONTENT_METHODS.contains(&method), "{method} is gated");
+            let err = private.handle_from(method, params, me).unwrap_err();
+            assert_eq!(err.code, -32602, "{method}");
+            assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{method}: {}", err.message);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// #930 review, L1: Private mode turned on while the events are read holds for the answer.
+    /// It goes through `handle_from`, so removing the re-check there fails it.
     #[test]
     fn private_mode_turned_on_while_the_events_are_read_holds_for_that_answer() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use yantrik_service_sdk::ServiceHandler as _;
         static READS: AtomicUsize = AtomicUsize::new(0);
         fn comes_on_during_the_call() -> bool {
             READS.fetch_add(1, Ordering::SeqCst) >= 1
         }
         let dir = std::env::temp_dir().join(format!("calendar-private-race-{}", std::process::id()));
-        let racing = super::CalendarHandler { private: comes_on_during_the_call, ..super::CalendarHandler::over(dir.clone()) };
+        let racing = super::CalendarHandler {
+            private: comes_on_during_the_call,
+            own: |_| Ok(()),
+            ..super::CalendarHandler::over(dir.clone())
+        };
         let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
-        // Let in while not private, as the Calendar's own process would be; private on the way out.
-        racing.still_vouched("calendar.events", me).unwrap();
-        let err = racing.still_vouched("calendar.events", me).unwrap_err();
+        let err = racing.handle_from(super::method::EVENTS, serde_json::json!({ "start_date": "2026-10-01", "end_date": "2026-10-31" }), me).unwrap_err();
         assert!(err.message.starts_with("PRIVATE:"), "{}", err.message);
-        assert_eq!(READS.load(Ordering::SeqCst), 2);
+        assert_eq!(READS.load(Ordering::SeqCst), 2, "read before and after the work");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

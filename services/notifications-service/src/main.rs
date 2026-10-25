@@ -178,8 +178,10 @@ impl NotificationsHandler {
         }
         // What the notifications say, while the person is private: the shell's alone (#924).
         // `since` carries the same records `list` does (#930 review, M1).
+        // `action` names the app behind any sequential id and presses its button, so it is the
+        // shell's alone too (#930 review, L3); it changes state, so it is checked before only.
         let gated = matches!(method, LIST | SINCE);
-        if gated {
+        if gated || method == ACTION {
             yantrik_service_sdk::private_content_for(peer, method, &[], self.private)?;
         }
         let answer = self.serve(method, params, peer)?;
@@ -1609,6 +1611,36 @@ mod private_mode_tests {
             let err = handler.dispatch(method, params, me).unwrap_err();
             assert_eq!(err.code, -32602, "{method}");
             assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{method}: {}", err.message);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// #930 review, L3: `action` on a sequential id names the app behind it; while private it is
+    /// the shell's alone.
+    #[test]
+    fn in_private_mode_action_does_not_name_the_app_behind_an_id() {
+        let path = std::env::temp_dir().join(format!("yantrik-notifications-action-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let handler = super::NotificationsHandler {
+            private: || true,
+            ..super::NotificationsHandler::new(
+                std::sync::Arc::new(super::store::Store::open(path.clone())),
+                std::sync::Arc::new(super::freedesktop::Link::new()),
+            )
+        };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        let made = handler.store.add(super::AddRequest {
+            app: "Signal-SENTINEL".into(),
+            title: "t".into(),
+            body: "b".into(),
+            ..Default::default()
+        });
+        for id in [made.id.as_str(), "1", "2"] {
+            let err = handler
+                .dispatch(super::ACTION, serde_json::json!({ "id": id, "action_id": "x" }), me)
+                .unwrap_err();
+            assert_eq!(err.code, -32602, "{id}");
+            assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{}", err.message);
         }
         let _ = std::fs::remove_file(path);
     }
