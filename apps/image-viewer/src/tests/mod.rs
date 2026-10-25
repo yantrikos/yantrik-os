@@ -4,5 +4,6 @@
 mod agents;
 mod fixture;
 mod opening;
+mod rest;
 mod screen;
 mod viewing;

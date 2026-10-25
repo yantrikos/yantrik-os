@@ -97,7 +97,6 @@ members = [
     "tests/performance-core",
     "tests/presentation-core",
     "tests/settings-core",
-    "tests/snippets-core",
     "tests/windows-core",
     # How an app's UI is compiled: the style, YantrikUI's tokens and kit as libraries (step 2).
     "frameworks/yantrik-app-build",

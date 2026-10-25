@@ -33,7 +33,7 @@ are `standard`, which is why it is the default.
 **`sensitive`: the person should see it first.** Deleting one named thing with no trash — the
 calendar's author explains why that is `sensitive` and not `dangerous`:
 
-<!-- from: apps/calendar/src/main.rs -->
+<!-- from: apps/calendar/src/intents/writing.rs -->
 ```rust
             // Graded `sensitive`, and the reason is that there is no trash. A delete here removes
             // the file the event lives in; nothing on this machine keeps a copy, so an appointment

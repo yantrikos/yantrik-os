@@ -36,7 +36,7 @@ const IMAGES: &str = "sha256:aa\tdocker.io/library/nginx:latest\t187MB\t2026-09-
 const VOLUMES: &str = "pgdata\tlocal\t/var/lib/docker/volumes/pgdata/_data\n";
 
 /// A working docker with `web` (running) and `db`, one image and one volume.
-fn machine() -> Arc<FakeExec> {
+pub(crate) fn machine() -> Arc<FakeExec> {
     let exec = FakeExec::new();
     exec.ps(&two("running"));
     exec.ok(&format!("images --format {}", crate::runtime::IMAGES_FORMAT), IMAGES);
@@ -53,7 +53,7 @@ fn start_with(exec: Arc<FakeExec>) -> (TestApp<Containers>, Arc<FakeMind>) {
 }
 
 /// Started, and the first listing landed.
-fn started(exec: Arc<FakeExec>) -> (TestApp<Containers>, Arc<FakeMind>) {
+pub(crate) fn started(exec: Arc<FakeExec>) -> (TestApp<Containers>, Arc<FakeMind>) {
     let (app, mind) = start_with(exec);
     app.run_jobs();
     (app, mind)

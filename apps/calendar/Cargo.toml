@@ -2,14 +2,20 @@
 name = "yantrik-calendar"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik Calendar — AI-native calendar with event management"
+description = "Yantrik Calendar — AI-native calendar with event management, on YantrikApp"
+
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, against an in-memory calendar
+# service and a fake Mind.
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "yantrik-calendar"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
@@ -18,8 +24,11 @@ slint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-ureq = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+# `activate`: the window manager giving the window the keyboard, as the runner hears it.
+yantrik-testing = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
 yantrik-app-build = { workspace = true }

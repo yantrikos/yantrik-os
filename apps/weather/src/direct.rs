@@ -20,7 +20,7 @@ pub fn fetch(lat: f64, lon: f64, location_name: &str, use_fahrenheit: bool) -> R
          &current=temperature_2m,relative_humidity_2m,apparent_temperature,\
          weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,\
          is_day,cloud_cover\
-         &hourly=temperature_2m,weather_code,precipitation_probability\
+         &hourly=temperature_2m,weather_code,precipitation_probability,is_day\
          &daily=weather_code,temperature_2m_max,temperature_2m_min,\
          precipitation_sum,sunrise,sunset,uv_index_max\
          &timezone=auto&forecast_days=5{temp_unit}{wind_unit}"
@@ -108,7 +108,7 @@ pub fn read(json: &serde_json::Value, location_name: &str, use_fahrenheit: bool)
             let hour = extract_hour(times[i].as_str().unwrap_or(""));
             let t = temps[i].as_f64().unwrap_or(0.0);
             let code = codes[i].as_i64().unwrap_or(0) as i32;
-            let is_day_hour = (6..20).contains(&hour);
+            let is_day_hour = codes::hour_is_day(json, i);
             let is_current = i == current_hour;
             if i >= current_hour && hourly.len() < 24 {
                 let chance = precip_probs
@@ -262,6 +262,28 @@ mod tests {
         // The icons are the kit's names, not emoji the kit would draw as a cloud.
         assert_eq!(c.icon, "rain");
         assert_eq!((r.daily[0].icon.as_str(), r.daily[1].icon.as_str()), ("rain", "cloud"));
+    }
+
+    /// Bentonville at 18:00 on 21 Oct, sunset 18:32: the clear 19:00 is drawn as night, though
+    /// it is before 20:00; and where the provider flags each hour, its flag is the hour's word.
+    #[test]
+    fn the_hourly_row_draws_night_after_sunset() {
+        // The provider's day, from midnight, clear all day; the reader starts at the current hour.
+        let times: Vec<String> = (0..24).map(|h| format!("2026-10-21T{h:02}:00")).collect();
+        let mut json = serde_json::json!({
+            "current": { "time": "2026-10-21T18:00", "weather_code": 0, "is_day": 1 },
+            "hourly": { "time": times, "temperature_2m": vec![15.0; 24], "weather_code": vec![0; 24] },
+            "daily": { "time": ["2026-10-21"], "weather_code": [0], "temperature_2m_max": [24.0],
+                       "temperature_2m_min": [9.0], "precipitation_sum": [0.0],
+                       "sunrise": ["2026-10-21T07:24"], "sunset": ["2026-10-21T18:32"], "uv_index_max": [4.0] }
+        });
+        let icons = |json: &serde_json::Value| -> Vec<String> {
+            read(json, "Bentonville", false).hourly.iter().take(3).map(|h| format!("{} {}", h.time, h.icon)).collect()
+        };
+        assert_eq!(icons(&json), ["Now sun", "19:00 moon", "20:00 moon"], "by the sun's own times");
+        let flags: Vec<i64> = (0..24).map(|h| i64::from((8..18).contains(&h))).collect();
+        json["hourly"]["is_day"] = serde_json::json!(flags);
+        assert_eq!(icons(&json), ["Now moon", "19:00 moon", "20:00 moon"], "by the provider's flag");
     }
 
     /// The kit's icon source, which the Weather UI's `Icons.weather-kind()` calls compile from.

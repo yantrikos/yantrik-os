@@ -379,8 +379,9 @@ export component SystemMonitor inherits Rectangle {
                                         background: transparent;
                                         // Clip to show percentage (using opacity trick)
                                         opacity: root.cpu-measured ? root.cpu-usage / 100 : 0;
-                                        animate opacity { duration: 300ms; }
-                                        animate border-color { duration: 300ms; }
+                                        // Drawn where the reading lands, not eased to it: a reading every two seconds, each
+                                        // eased for 300 ms, was the window redrawing a fifth of the time it was open
+                                        // (design/art-direction-2026-10-20.md: never animate resource values).
                                     }
 
                                     // Center text
@@ -498,7 +499,6 @@ export component SystemMonitor inherits Rectangle {
                                         height: 100%;
                                         border-radius: 4px;
                                         background: core.usage > 80 ? Theme.color-emotional : Theme.accent;
-                                        animate width { duration: 300ms; }
                                         changed x => { root.core-fill-x = self.x; }
                                         changed width => { root.core-fill-width = self.width; }
                                     }
@@ -559,8 +559,6 @@ export component SystemMonitor inherits Rectangle {
                                         border-color: root.memory-usage > 85 ? Theme.color-emotional : Theme.accent;
                                         background: transparent;
                                         opacity: root.memory-usage / 100;
-                                        animate opacity { duration: 300ms; }
-                                        animate border-color { duration: 300ms; }
                                     }
 
                                     Text {
@@ -667,7 +665,6 @@ export component SystemMonitor inherits Rectangle {
                                     border-radius: 3px;
                                     background: root.swap-usage > 80 ? Theme.color-emotional : Theme.accent;
                                     opacity: 0.8;
-                                    animate width { duration: 300ms; }
                                 }
                             }
                         }
@@ -750,7 +747,6 @@ export component SystemMonitor inherits Rectangle {
                                             // (machine_status::disk_needs_you), so the bar and
                                             // the row cannot disagree about where the limit is.
                                             background: disk.needs-you ? Theme.amber : Theme.accent;
-                                            animate width { duration: 300ms; }
                                             changed x => { root.disk-fill-x = self.x; }
                                             changed width => { root.disk-fill-width = self.width; }
                                         }

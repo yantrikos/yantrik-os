@@ -18,6 +18,18 @@
 # callbacks (`snip_save`).
 
 [unset-property]
+calendar = [
+  { name = "agent-context", reason = "Written by the framework's rail: `yantrik_app::rail_window!(CalendarApp)` in apps/calendar/src/lib.rs implements RailView, whose render_rail sets the rail's rows from the model on every rail change. The macro's expansion is not text under apps/calendar/src, so the lint cannot see the setter; tests/window.rs reads the rows back off the window." },
+  { name = "agent-suggestions", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the suggestions; tests/window.rs reads them back." },
+  { name = "agent-unavailable", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the sentence shown when the Mind cannot answer." },
+]
+snippet-manager = [
+  { name = "agent-context", reason = "Written by the framework's rail: `yantrik_app::rail_window!(SnippetManagerApp)` in apps/snippet-manager/src/lib.rs implements RailView, and view.rs calls its render_rail whenever the rail part changes. The macro's expansion is not text under apps/snippet-manager/src, so the lint cannot see the setter; tests/rail.rs reads the rows back." },
+  { name = "agent-suggestions", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the suggestions; tests/rail.rs reads them back." },
+  { name = "agent-unavailable", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the sentence shown when the Mind cannot answer." },
+  { name = "proposal", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, draws the card the Mind's answer lands on; tests/rail.rs reads its body back off the window." },
+  { name = "proposal-working", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets it while the Mind is asked; the header's AI and the pane's AI Explain draw from it." },
+]
 
 [dead-handler]
 image-viewer = [

@@ -122,6 +122,7 @@ mod markup;
 mod message;
 mod parity;
 mod private_mode;
+mod rest;
 mod robust;
 mod setup;
 mod unsent;

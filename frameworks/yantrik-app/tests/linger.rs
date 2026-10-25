@@ -12,6 +12,7 @@ use yantrik_app::cx::{Cx, Inbound, MAX_LINGER};
 use yantrik_app::effects::Effects;
 use yantrik_app::quit::Signal;
 use yantrik_app::refused::Refused;
+use yantrik_app::timers::TimerId;
 use yantrik_testing::TestApp;
 
 slint::slint! {
@@ -31,6 +32,9 @@ impl yantrik_app::Window for LingerWin {
 /// The app's own backstop for its writes.
 const BACKSTOP: Duration = Duration::from_secs(10);
 
+/// The name the framework arms a linger's backstop under, as an app could spell it.
+const BACKSTOP_TIMER: TimerId = TimerId("yantrik-app.linger");
+
 #[derive(Default)]
 struct Model {
     /// Writes handed to a service whose outcome is not known yet.
@@ -43,6 +47,7 @@ struct Model {
     launches: u32,
     presented: Vec<WindowId>,
     opened: Vec<WindowId>,
+    ticks: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +61,9 @@ enum Command {
     Launched,
     Presented(WindowId),
     LoggingOut,
+    /// Tries to stop the backstop and arm its own timer in its place.
+    Disarm,
+    Tick,
 }
 
 struct Lingerer;
@@ -104,6 +112,12 @@ impl App for Lingerer {
                 m.presented.push(window);
                 m.closing = false;
             }
+            Command::Disarm => {
+                fx.stop_timer(BACKSTOP_TIMER);
+                fx.after(BACKSTOP_TIMER, Duration::from_secs(1), Command::Tick);
+                fx.every(BACKSTOP_TIMER, Duration::from_secs(1), Command::Tick);
+            }
+            Command::Tick => m.ticks += 1,
             Command::LoggingOut => {
                 m.ending = true;
                 if m.writes == 0 {
@@ -315,4 +329,44 @@ fn a_close_with_nothing_in_flight_ends_at_once() {
     app.close_requested(WindowId::PRIMARY);
     assert!(!app.lingering());
     assert_eq!(app.exit_reason(), Some(ExitReason::LastWindowClosed));
+}
+
+/// #932 review, Low 1: the backstop shared the app's timer names, so an app's `stop_timer` or a
+/// re-arm under its name left a process with no window running for ever.
+#[test]
+fn the_app_cannot_stop_or_replace_the_backstop() {
+    assert!(BACKSTOP_TIMER.is_framework());
+    let mut fx = Effects::<Lingerer>::recording();
+    fx.stop_timer(BACKSTOP_TIMER);
+    fx.after(BACKSTOP_TIMER, Duration::from_secs(1), Command::Tick);
+    assert!(fx.requests().is_empty(), "the framework's timer is not the app's to ask for");
+
+    let app = lingering();
+    app.run(Command::Disarm);
+    assert_eq!(app.timers_armed(), 1, "the backstop, and nothing of the app's under its name");
+    app.advance(BACKSTOP);
+    assert_eq!(app.model(|m| m.ticks), 0);
+    assert_eq!(app.exit_reason(), Some(ExitReason::LastWindowClosed), "the backstop still ends it");
+}
+
+/// #932 review, Low 2: the process is ending for the logout, and says so, when the backstop
+/// cuts the logout's wait short.
+#[test]
+fn a_backstop_during_a_logout_ends_the_app_for_the_logout() {
+    let app = lingering();
+    post(&app, Inbound::Signal(Signal::Terminate));
+    assert_eq!(app.exit_reason(), None, "the logout waits for its write");
+    app.advance(BACKSTOP);
+    assert_eq!(app.exit_reason(), Some(ExitReason::Logout));
+}
+
+/// #932 review, Info 3: a launch handed to an app the backstop has ended applies nothing.
+#[test]
+fn a_launch_after_the_backstop_is_refused_and_applies_nothing() {
+    let app = lingering();
+    app.advance(BACKSTOP);
+    let refused = app.launch_again().expect_err("the app is ending");
+    assert!(refused.contains("ending"), "{refused}");
+    assert_eq!(app.model(|m| (m.launches, m.presented.len())), (1, 0), "only the first launch");
+    assert!(app.windows().is_empty());
 }

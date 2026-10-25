@@ -27,6 +27,9 @@
 //! - A logout is raised as ever (`Event::ExitRequested(Logout)`), and the signal deadline
 //!   (`crate::quit::SIGNAL_DEADLINE`) still ends the app, whatever its backstop.
 //! - The backstop, at most [`MAX_LINGER`], ends the app if nothing else has, and logs that it did.
+//!   It is the framework's own timer: no `fx.stop_timer`, `fx.after` or `fx.every` of the app's
+//!   can stop or replace it. During a logout it ends the app for the logout.
+//! - A launch handed over once the app is ending is refused, and applies nothing.
 //!
 //! Only the command that closes the last open window may linger. Anywhere else the request is
 //! ignored with a warning, and the last window closing ends the process as it always has.
@@ -128,12 +131,22 @@ impl<A: App> Core<A> {
     }
 
     /// The backstop passed with the app still lingering: the framework ends it. A late fire, after
-    /// a window came back or the app ended, does nothing.
+    /// a window came back or the app ended, does nothing. During a logout the process is ending
+    /// for the logout, and is said to: the backstop only cut the app's wait short.
     fn linger_over(&self) {
         let Some(lingered) = self.linger.take() else {
             return;
         };
         if self.exit.get().is_some() {
+            return;
+        }
+        if self.logout.get().is_some() {
+            tracing::warn!(
+                app = self.id,
+                backstop = ?lingered.backstop,
+                "the linger's backstop passed while the app answered a logout; ending it for the logout"
+            );
+            self.request_exit(ExitReason::Logout);
             return;
         }
         tracing::warn!(

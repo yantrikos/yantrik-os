@@ -1,19 +1,23 @@
 //! The only code that writes the window: the model, drawn, for the parts that changed.
 
-use slint::{ModelRc, VecModel};
 use yantrik_app::app::Changed;
 use yantrik_app::rail::{self, RailView as _};
+use yantrik_app::rows;
 use yantrik_ipc_contracts::system_monitor::ProcessInfo;
 
+use crate::figures::Figures;
 use crate::model::{Model, PART_AI, PART_NOTICE, PART_PROCESSES, PART_READINGS};
-use crate::{CpuCoreData, DiskData, MonitorProcessData, NetworkInterfaceData, SystemMonitorApp};
+use crate::SystemMonitorApp;
 
 pub fn render(ui: &SystemMonitorApp, m: &Model, changed: &Changed) {
-    if changed.has(PART_READINGS) {
-        readings(ui, m);
-    }
-    if changed.has(PART_PROCESSES) {
-        processes(ui, m);
+    if changed.has(PART_READINGS) || changed.has(PART_PROCESSES) {
+        let figures = Figures::of(m);
+        if changed.has(PART_READINGS) {
+            readings(ui, &figures);
+        }
+        if changed.has(PART_PROCESSES) {
+            processes(ui, m, figures.processes);
+        }
     }
     if changed.has(PART_NOTICE) {
         ui.set_notice(m.notice().into());
@@ -29,64 +33,42 @@ pub fn render(ui: &SystemMonitorApp, m: &Model, changed: &Changed) {
     }
 }
 
-fn readings(ui: &SystemMonitorApp, m: &Model) {
-    let r = &m.readout;
-    ui.set_cpu_measured(r.cpu_measured);
-    ui.set_cpu_usage(r.cpu_usage);
-    ui.set_load_avg_1(r.load_avg[0].as_str().into());
-    ui.set_load_avg_5(r.load_avg[1].as_str().into());
-    ui.set_load_avg_15(r.load_avg[2].as_str().into());
-    let cores: Vec<CpuCoreData> = r.cores.iter().map(|c| CpuCoreData { core_id: c.id, usage: c.usage }).collect();
-    ui.set_cpu_cores(ModelRc::new(VecModel::from(cores)));
+/// The sample, on screen, at the precision drawn (`crate::figures`). Every property is set to its
+/// value, which Slint compares, and every list through `rows::set`, so a sample that moves
+/// nothing visible draws nothing.
+fn readings(ui: &SystemMonitorApp, f: &Figures) {
+    ui.set_cpu_measured(f.cpu_measured);
+    ui.set_cpu_usage(f.cpu_usage);
+    ui.set_load_avg_1(f.load_avg[0].clone());
+    ui.set_load_avg_5(f.load_avg[1].clone());
+    ui.set_load_avg_15(f.load_avg[2].clone());
+    rows::set(ui.get_cpu_cores(), f.cores.clone(), |list| ui.set_cpu_cores(list));
 
-    ui.set_memory_usage(r.memory_usage);
-    ui.set_memory_used_text(r.memory_used.as_str().into());
-    ui.set_memory_total_text(r.memory_total.as_str().into());
-    ui.set_memory_available_text(r.memory_available.as_str().into());
-    ui.set_memory_cached_text(r.memory_cached.as_str().into());
-    ui.set_memory_buffers_text(r.memory_buffers.as_str().into());
-    ui.set_swap_usage(r.swap_usage);
-    ui.set_swap_used_text(r.swap_used.as_str().into());
-    ui.set_swap_total_text(r.swap_total.as_str().into());
+    ui.set_memory_usage(f.memory_usage);
+    ui.set_memory_used_text(f.memory_used.clone());
+    ui.set_memory_total_text(f.memory_total.clone());
+    ui.set_memory_available_text(f.memory_available.clone());
+    ui.set_memory_cached_text(f.memory_cached.clone());
+    ui.set_memory_buffers_text(f.memory_buffers.clone());
+    ui.set_swap_usage(f.swap_usage);
+    ui.set_swap_used_text(f.swap_used.clone());
+    ui.set_swap_total_text(f.swap_total.clone());
 
-    let disks: Vec<DiskData> = r
-        .disks
-        .iter()
-        .map(|d| DiskData {
-            mount_point: d.mount_point.as_str().into(),
-            filesystem: d.filesystem.as_str().into(),
-            used_bytes: d.used.as_str().into(),
-            total_bytes: d.total.as_str().into(),
-            usage_percent: d.usage_percent,
-            needs_you: d.needs_you,
-        })
-        .collect();
-    ui.set_disks(ModelRc::new(VecModel::from(disks)));
+    rows::set(ui.get_disks(), f.disks.clone(), |list| ui.set_disks(list));
+    rows::set(ui.get_network_interfaces(), f.interfaces.clone(), |list| {
+        ui.set_network_interfaces(list)
+    });
 
-    let nets: Vec<NetworkInterfaceData> = r
-        .interfaces
-        .iter()
-        .map(|n| NetworkInterfaceData {
-            name: n.name.as_str().into(),
-            ip_address: "".into(),
-            rx_bytes: n.rx_bytes.as_str().into(),
-            tx_bytes: n.tx_bytes.as_str().into(),
-            rx_speed: n.rx_speed.as_str().into(),
-            tx_speed: n.tx_speed.as_str().into(),
-        })
-        .collect();
-    ui.set_network_interfaces(ModelRc::new(VecModel::from(nets)));
-
-    ui.set_uptime_text(r.uptime.as_str().into());
+    ui.set_uptime_text(f.uptime.clone());
 
     // What it adds up to: the status row.
-    ui.set_status_lead(m.status.lead.as_str().into());
-    ui.set_status_rest(m.status.rest.as_str().into());
-    ui.set_status_thresholds(m.status.thresholds.as_str().into());
-    ui.set_status_needs_you(m.status.needs_you());
+    ui.set_status_lead(f.status_lead.clone());
+    ui.set_status_rest(f.status_rest.clone());
+    ui.set_status_thresholds(f.status_thresholds.clone());
+    ui.set_status_needs_you(f.status_needs_you);
 }
 
-fn processes(ui: &SystemMonitorApp, m: &Model) {
+fn processes(ui: &SystemMonitorApp, m: &Model, rows: Vec<crate::MonitorProcessData>) {
     if ui.get_sort_column() != m.sort_column {
         ui.set_sort_column(m.sort_column);
     }
@@ -95,17 +77,7 @@ fn processes(ui: &SystemMonitorApp, m: &Model) {
         ui.set_process_search(m.search.as_str().into());
     }
     let shown = m.shown();
-    let items: Vec<MonitorProcessData> = shown
-        .iter()
-        .map(|p| MonitorProcessData {
-            pid: p.pid as i32,
-            name: p.name.as_str().into(),
-            cpu_percent: p.cpu_percent as f32,
-            mem_percent: p.mem_percent as f32,
-            status: p.state.as_str().into(),
-        })
-        .collect();
-    ui.set_processes(ModelRc::new(VecModel::from(items)));
+    rows::set(ui.get_processes(), rows, |list| ui.set_processes(list));
     // The list was just rebuilt under the selection, and the row the selection points at may
     // not have survived it. Dropping a stale pid here is what hides End and Force Kill with the
     // row they act on (#220). The selection is the list's own (a row press sets it), so it is

@@ -4,13 +4,14 @@
 //! A reading is taken every two seconds in a job: the `system-monitor` service's snapshot and
 //! process list, or the local `sysinfo` crate when the service does not answer, and then the
 //! window and `describe` both say so, because a reading taken by the fallback is not the same
-//! reading. Ending a process is a job too, and its answer is read back from the process table.
+//! reading. A reading is drawn where it lands, in one frame, and only when it moves something
+//! drawn; with the window off screen it is taken every thirty seconds instead, for `describe`. Ending a process is a job too, and its answer is read back from the process table.
 //! The agent rail is the framework's; the three actions are intents, graded as they were; there
 //! are no settings; and `main.rs` is three lines.
 
 use std::time::Duration;
 
-use yantrik_app::app::{App, Boot, Changed, Startup, WindowId};
+use yantrik_app::app::{App, Boot, Changed, Event, Startup, WindowId};
 use yantrik_app::control::View;
 use yantrik_app::cx::Cx;
 use yantrik_app::effects::Effects;
@@ -20,6 +21,7 @@ use yantrik_app::timers::TimerId;
 use yantrik_app::Refused;
 
 mod describe;
+mod figures;
 mod intents;
 mod machine;
 mod model;
@@ -32,6 +34,10 @@ mod update;
 mod view;
 #[cfg(test)]
 mod app_tests;
+#[cfg(test)]
+mod busy_tests;
+#[cfg(test)]
+mod rest_tests;
 // The kill tests end children of their own and read `/proc`, as the old crate's did.
 #[cfg(all(test, target_os = "linux"))]
 mod outcome_tests;
@@ -42,9 +48,12 @@ slint::include_modules!();
 yantrik_app::window!(SystemMonitorApp);
 yantrik_app::rail_window!(SystemMonitorApp);
 
-/// A reading is taken this often.
+/// A reading is taken this often while the window is on screen.
 pub const POLL: TimerId = TimerId("system-monitor.poll");
 pub const POLL_EVERY: Duration = Duration::from_secs(2);
+/// And this often while it is not (minimised, covered, or put away by Show desktop): nothing is
+/// drawn, and `describe` is never older than this (`yantrik_app::shown`).
+pub const OFF_SCREEN_EVERY: Duration = Duration::from_secs(30);
 
 pub struct SystemMonitor;
 
@@ -95,6 +104,13 @@ impl App for SystemMonitor {
 
     fn describe(m: &Model) -> View {
         describe::view(m)
+    }
+
+    fn event(event: Event<()>, _: &Model) -> Option<Command> {
+        match event {
+            Event::Activated(_) | Event::Presented(_) => Some(Command::Back),
+            _ => None,
+        }
     }
 
     fn intents(table: &mut Intents<Self>) {

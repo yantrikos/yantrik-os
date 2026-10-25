@@ -94,8 +94,12 @@ pub fn refresh_compositor_windows() -> usize {
     count
 }
 
-/// The last reading, without taking a new one. Empty list until something has refreshed it.
+/// The last reading, without taking a new one: the compositor's live stream while the shell
+/// follows it (`live_windows`), else the last `wlrctl` reading. Empty until one has been taken.
 fn compositor_snapshot() -> (Vec<WindowEntry>, Option<String>) {
+    if let Some(live) = crate::live_windows::now() {
+        return live;
+    }
     COMPOSITOR
         .lock()
         .ok()
@@ -162,7 +166,7 @@ pub fn list_windows_throttled() -> Vec<WindowEntry> {
 /// focus at all, so the marker sat on whatever the registry's alphabetical sort put first —
 /// Calendar in every screenshot of one person's working morning — while other windows took
 /// turns being the one in front.
-fn merge_windows(
+pub(crate) fn merge_windows(
     launched: &[crate::running::RunningApp],
     mut discovered: Vec<WindowEntry>,
     front: Option<&str>,
@@ -661,11 +665,14 @@ fn wlrctl_windows() -> Vec<WindowEntry> {
         // is always this process — so on a machine with nothing launched, the taskbar and the
         // desktop's own "open windows" list both offered to switch you to the desktop you are
         // already looking at.
-        .filter(|line| split_toplevel_line(line).0 != SHELL_WINDOW_TITLE)
-        .filter(|line| split_toplevel_line(line).0 != OSD_WINDOW_TITLE)
-        .filter(|line| split_toplevel_line(line).0 != CAPTURE_WINDOW_TITLE)
+        .filter(|line| !is_shell_surface(&split_toplevel_line(line).0))
         .map(toplevel_entry)
         .collect()
+}
+
+/// Whether `title` is one of the shell's own surfaces (desktop, OSD, capture bar): never a window.
+pub(crate) fn is_shell_surface(title: &str) -> bool {
+    [SHELL_WINDOW_TITLE, OSD_WINDOW_TITLE, CAPTURE_WINDOW_TITLE].contains(&title)
 }
 
 /// Which toplevel the compositor says is in front, right now, as `wlrctl toplevel list
@@ -806,13 +813,17 @@ pub(crate) fn toplevel_entry(line: &str) -> WindowEntry {
         // A foreign toplevel with no separator at all is all title.
         _ => ("", line.trim()),
     };
-    let title = title.to_string();
-    let app_id = shell_app_id(declared_id, &title);
+    window_entry(declared_id, title)
+}
+
+/// A window as the list names it, from `wlrctl` ([`toplevel_entry`]) or the stream (`live_windows`).
+pub(crate) fn window_entry(declared_id: &str, title: &str) -> WindowEntry {
+    let app_id = shell_app_id(declared_id, title);
     WindowEntry {
         icon_char: icon_for_app(&app_id).to_string(),
-        subtitle: derive_context(&title, &app_id),
+        subtitle: derive_context(title, &app_id),
         wayland_app_id: declared_id.to_string(),
-        title,
+        title: title.to_string(),
         app_id,
     }
 }

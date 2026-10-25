@@ -48,11 +48,13 @@ pub(crate) struct Windows<U> {
     theme: Option<ThemeSettings>,
     /// The window the window manager last gave the keyboard to, while it has it.
     active: Option<WindowId>,
+    /// Frames drawn by every window since the app started (`cx/drawn.rs`).
+    pub(super) frames: u64,
 }
 
 impl<U> Windows<U> {
     pub(crate) fn new() -> Windows<U> {
-        Windows { first_open: true, more: BTreeMap::new(), theme: None, active: None }
+        Windows { first_open: true, more: BTreeMap::new(), theme: None, active: None, frames: 0 }
     }
 
     /// `window` is not the active one any more: it lost the keyboard, or it closed.
@@ -133,7 +135,7 @@ impl<A: App> Core<A> {
         let theme = self.windows.borrow().theme.unwrap_or_else(theme::load);
         ui.apply_theme(&theme);
         ui.connect_chrome();
-        self.hear_activation(id, &ui);
+        self.hear_window(id, &ui);
         let post = self.post();
         ui.window().on_close_requested(move || {
             // As the first window's: the app decides, a close now or a flow ending in `fx.close`.
@@ -179,19 +181,27 @@ impl<A: App> Core<A> {
     }
 
     /// `ui`, as `window`, tells the core when the window manager gives it the keyboard or takes
-    /// it away (winit's `Focused`). The runner installs the first window's; `open_window` every
-    /// later one's. The hook holds the core weakly: the window it lives in is the core's.
+    /// it away (winit's `Focused`), and each frame it draws (`RedrawRequested`, counted by
+    /// [`Core::frame_drawn`]). The runner installs the first window's; `open_window` every later
+    /// one's. The hook holds the core weakly: the window it lives in is the core's.
     ///
     /// The hook only enqueues, as the close handler does: the app's `update` runs in the drain
-    /// after it, not inside winit's dispatch of the event.
-    pub(crate) fn hear_activation(&self, window: WindowId, ui: &A::Ui) {
+    /// after it, not inside winit's dispatch of the event. A frame is only counted.
+    pub(crate) fn hear_window(&self, window: WindowId, ui: &A::Ui) {
         let core = self.me.clone();
-        crate::chrome::on_focus_changed(ui.window(), move |focused| {
+        let drew = self.me.clone();
+        let focused = move |focused| {
             let posted = core.upgrade().is_some_and(|core| core.focus_changed(window, focused));
             if posted {
                 crate::runner::drain_on_ui_thread();
             }
-        });
+        };
+        let drawn = move || {
+            if let Some(core) = drew.upgrade() {
+                core.frame_drawn();
+            }
+        };
+        crate::chrome::hear(ui.window(), focused, drawn);
     }
 
     /// The window manager's word on `window`: it has the keyboard now, or it lost it. Gaining it
@@ -220,7 +230,7 @@ impl<A: App> Core<A> {
 
     /// What the window manager would say, for a test (the headless platform has none): `window`
     /// gained the keyboard (`true`) or lost it (`false`). The same path as winit's `Focused`
-    /// through [`Core::hear_activation`]'s hook, with the drain called here, as `TestApp::seen`
+    /// through [`Core::hear_window`]'s hook, with the drain called here, as `TestApp::seen`
     /// drains what it posts. Behind the `testing` feature, as `TestApp` reaches it.
     #[cfg(any(test, feature = "testing"))]
     pub fn focus_for_test(&self, window: WindowId, focused: bool) {

@@ -14,12 +14,14 @@
 //! set_location` moves it to another place, so "the weekend in Dallas" is set_location, then
 //! describe.
 
+mod hourly;
 mod machine_place;
 mod recent;
 
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
+use hourly::parse_hourly;
 use recent::{Day, Outlook, Where};
 use yantrik_ipc_contracts::weather::*;
 #[cfg(test)]
@@ -466,7 +468,7 @@ fn open_meteo_forecast(
          &current=temperature_2m,relative_humidity_2m,apparent_temperature,\
          weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,\
          is_day,cloud_cover,dew_point_2m\
-         &hourly=temperature_2m,weather_code,precipitation_probability\
+         &hourly=temperature_2m,weather_code,precipitation_probability,is_day\
          &daily=weather_code,temperature_2m_max,temperature_2m_min,\
          precipitation_sum,precipitation_probability_max,sunrise,sunset,uv_index_max\
          &timezone=auto&forecast_days={FORECAST_DAYS}{temp_unit}{wind_unit}",
@@ -536,53 +538,6 @@ fn fetch_hourly(
 ) -> Result<Vec<HourlyForecast>, ServiceError> {
     let json = open_meteo_forecast(loc, fahrenheit)?;
     Ok(parse_hourly(&json, hours))
-}
-
-/// The hours from the current one on, at most `hours` of them, out of one provider answer.
-fn parse_hourly(json: &serde_json::Value, hours: u32) -> Vec<HourlyForecast> {
-    let h = &json["hourly"];
-
-    let (times, temps, codes) = match (
-        h["time"].as_array(),
-        h["temperature_2m"].as_array(),
-        h["weather_code"].as_array(),
-    ) {
-        (Some(t), Some(te), Some(c)) => (t, te, c),
-        _ => return Vec::new(),
-    };
-
-    let precip_probs = h["precipitation_probability"].as_array();
-
-    let current_hour = json["current"]["time"]
-        .as_str()
-        .map(extract_hour)
-        .unwrap_or(0);
-
-    let mut result = Vec::new();
-    for i in current_hour..times.len().min(current_hour + hours as usize) {
-        let time_str = times[i].as_str().unwrap_or("");
-        let hour = extract_hour(time_str);
-        let code = codes[i].as_i64().unwrap_or(0) as i32;
-        let is_day_hour = (6..20).contains(&hour);
-        let precip = precip_probs
-            .and_then(|p| p.get(i))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
-
-        result.push(HourlyForecast {
-            time: if i == current_hour {
-                "Now".to_string()
-            } else {
-                format!("{:02}:00", hour)
-            },
-            temperature: temps[i].as_f64().unwrap_or(0.0),
-            condition: codes::description(code).to_string(),
-            icon: codes::icon_kind(code, is_day_hour).to_string(),
-            precipitation_chance: precip,
-        });
-    }
-
-    result
 }
 
 fn fetch_daily(

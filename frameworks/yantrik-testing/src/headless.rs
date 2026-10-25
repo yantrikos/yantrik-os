@@ -4,7 +4,15 @@ use slint::platform::{
     software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     EventLoopProxy, Platform, WindowAdapter,
 };
-use std::rc::Rc;
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+use std::time::Duration;
+
+thread_local! {
+    /// Every window this platform made, so a test can draw the one behind a component: the
+    /// frames a window asks for are what it costs at rest (`TestApp::at_rest`).
+    static MADE: RefCell<Vec<Weak<MinimalSoftwareWindow>>> = const { RefCell::new(Vec::new()) };
+}
 
 struct Proxy;
 
@@ -46,11 +54,21 @@ struct Headless;
 
 impl Platform for Headless {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-        Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        MADE.with(|made| {
+            let mut made = made.borrow_mut();
+            made.retain(|w| w.strong_count() > 0);
+            made.push(Rc::downgrade(&window));
+        });
+        Ok(window)
     }
 
     fn new_event_loop_proxy(&self) -> Option<Box<dyn EventLoopProxy>> {
         Some(Box::new(Proxy))
+    }
+
+    fn duration_since_start(&self) -> Duration {
+        crate::display_clock::now()
     }
 }
 
@@ -58,4 +76,26 @@ impl Platform for Headless {
 pub fn install() {
     // Err means a platform is already set: fine.
     let _ = slint::platform::set_platform(Box::new(Headless));
+}
+
+/// Draws `window` if it asked to be drawn since it was last drawn, with Slint's own software
+/// renderer into a buffer of the window's size, as a display would: whether it drew. Drawing is
+/// what registers the properties a frame reads, so a window that is never drawn never asks again.
+/// `false` for a window this platform did not make.
+pub(crate) fn draw_if_needed(window: &slint::Window) -> bool {
+    let adapter = MADE.with(|made| {
+        made.borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|w| std::ptr::eq(w.window(), window))
+    });
+    let Some(adapter) = adapter else {
+        return false;
+    };
+    let size = adapter.size();
+    let (width, height) = (size.width.max(1), size.height.max(1));
+    let mut buffer = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, height);
+    adapter.draw_if_needed(|renderer| {
+        renderer.render(buffer.make_mut_slice(), width as usize);
+    })
 }

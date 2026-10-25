@@ -24,6 +24,10 @@ export component CalendarApp inherits AppWindow {
     in property <AgentProposal> proposal <=> cal.proposal;
     in property <bool> proposal-working <=> cal.proposal-working;
     callback proposal-dismissed <=> cal.proposal-dismissed;
+    // The card's Apply, which the framework's rail binds in every app that has one. Nothing on
+    // this card is ever applied: the companion's answer about a day is read, and the screen sends
+    // the card's one button to `proposal-dismissed`.
+    callback proposal-applied();
 
     // What app this window is.
     //

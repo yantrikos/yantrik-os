@@ -39,9 +39,13 @@ use yantrik_app::window::Window;
 use yantrik_ipc_transport::gate::{Authority, Mode};
 use yantrik_surface::{AgentTokenScope, CallerScope, Later, LaterScope, LocalRegistry};
 
+mod display_clock;
+mod frames;
 pub mod headless;
 mod shared;
 mod windows;
+
+pub use frames::AtRest;
 
 use shared::{AppClock, SharedJobs, SharedLane, SharedTimers};
 
@@ -347,18 +351,29 @@ impl<A: App> TestApp<A> {
     /// Moves the virtual clock, firing every timer that comes due. Each timer's command runs
     /// with the clock released, so a command that arms or stops a timer is fine.
     pub fn advance(&self, by: Duration) {
+        self.advance_counting(by);
+    }
+
+    /// [`TestApp::advance`], saying how many timers fired on the way: the app's and the
+    /// framework's, each repeat of a repeating one counted.
+    pub(crate) fn advance_counting(&self, by: Duration) -> usize {
         self.with(move |u| {
             let until = u.clock.borrow().now() + by;
+            let mut count = 0;
             loop {
                 let fired = u.clock.borrow_mut().fire_next(until);
                 match fired {
-                    Some(fired) => u.core.fired(fired),
+                    Some(fired) => {
+                        count += 1;
+                        u.core.fired(fired);
+                    }
                     None => break,
                 }
             }
             u.clock.borrow_mut().settle(until);
             u.core.drain();
-        });
+            count
+        })
     }
 
     /// Does every write waiting in the persistence lane, in order, and applies what came of

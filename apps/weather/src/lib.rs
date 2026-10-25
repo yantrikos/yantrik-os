@@ -30,6 +30,8 @@ mod rail;
 mod update;
 mod view;
 #[cfg(test)]
+mod rest_tests;
+#[cfg(test)]
 mod store_tests;
 
 pub use forecast::{Reading, Source};
@@ -43,9 +45,10 @@ yantrik_app::rail_window!(WeatherApp);
 /// The reading is fetched again this often.
 pub const REFETCH: TimerId = TimerId("weather.refetch");
 pub const REFETCH_EVERY: Duration = Duration::from_secs(30 * 60);
-/// The "Updated … ago" corner is re-said this often.
+/// The reading's age, looked at once, when its words are next due to change ("Updated 3 min
+/// ago" becomes "4 min" on the reading's minute, "1 hr" on its hour): a one-shot, armed again
+/// each time, never a period. See `model::next_age_change`.
 pub const UPDATED_TICK: TimerId = TimerId("weather.updated");
-pub const UPDATED_EVERY: Duration = Duration::from_secs(30);
 
 pub struct Weather;
 
@@ -70,6 +73,7 @@ impl App for Weather {
                 }
             },
             last_fetch: None,
+            now: std::time::Instant::now(),
             rail: Rail::new(boot.mind.clone()),
             weather: boot.services.weather.clone(),
             mind: boot.mind.clone(),
@@ -99,7 +103,6 @@ impl App for Weather {
 
     fn start(_: &Model, fx: &mut Effects<Self>) {
         fx.every(REFETCH, REFETCH_EVERY, Command::Refresh);
-        fx.every(UPDATED_TICK, UPDATED_EVERY, Command::TickUpdated);
         fx.then(Command::Refresh);
     }
 
@@ -162,7 +165,7 @@ mod tests {
     use yantrik_services::ServiceError;
     use yantrik_testing::TestApp;
 
-    fn forecast_at(temperature: f64) -> yantrik_ipc_contracts::weather::Forecast {
+    pub(crate) fn forecast_at(temperature: f64) -> yantrik_ipc_contracts::weather::Forecast {
         let mut f = FakeWeather::empty_forecast();
         f.current.temperature = temperature;
         f.current.feels_like = temperature - 2.0;
@@ -177,7 +180,7 @@ mod tests {
         (weather, mind, services)
     }
 
-    fn start(weather: FakeWeather) -> (TestApp<Weather>, Arc<FakeWeather>, Arc<FakeMind>) {
+    pub(crate) fn start(weather: FakeWeather) -> (TestApp<Weather>, Arc<FakeWeather>, Arc<FakeMind>) {
         let (weather, mind, services) = fakes(weather);
         let app = TestApp::<Weather>::start_at_with(Paths::temporary(Weather::ID), Vec::new(), mind.clone(), services);
         (app, weather, mind)

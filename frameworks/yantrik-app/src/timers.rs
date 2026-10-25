@@ -9,7 +9,7 @@
 //! is a virtual clock for tests, so no test sleeps through a four-second tick.
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A timer's name within the app: `TimerId("forecast.tick")`. Stable, so re-arming finds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -33,8 +33,20 @@ pub enum Fired<C> {
     LingerOver,
 }
 
-/// The timer a linger's backstop is armed under. Reserved: an app's own timer never needs it.
-pub const LINGER: TimerId = TimerId("yantrik-app.linger");
+/// The names of the framework's own timers start with this. An app's `fx.every`, `fx.after` or
+/// `fx.stop_timer` under one is dropped, with a warning (`Effects`), so no command of the app's
+/// can stop, replace or re-arm a deadline the framework keeps.
+const FRAMEWORK: &str = "yantrik-app.";
+
+/// The timer a linger's backstop is armed under: the framework's own.
+pub(crate) const LINGER: TimerId = TimerId("yantrik-app.linger");
+
+impl TimerId {
+    /// Whether this is one of the framework's own timers, which the app may not touch.
+    pub fn is_framework(self) -> bool {
+        self.0.starts_with(FRAMEWORK)
+    }
+}
 
 pub trait Timers<C: 'static> {
     fn every(&mut self, id: TimerId, period: Duration, fire: Fire<C>);
@@ -42,6 +54,8 @@ pub trait Timers<C: 'static> {
     fn stop(&mut self, id: TimerId);
     fn stop_all(&mut self);
     fn armed(&self) -> usize;
+    /// What this clock reads: the machine's time for real timers, the virtual time for a test's.
+    fn instant(&self) -> Instant;
 }
 
 /// The runtime's timers: `slint::Timer`s on the UI thread, which stop when dropped.
@@ -87,10 +101,16 @@ impl<C: 'static> Timers<C> for SlintTimers<C> {
     fn armed(&self) -> usize {
         self.timers.len()
     }
+
+    fn instant(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 /// A virtual clock: timers fire when a test advances it, in deadline order.
 pub struct ManualTimers<C: 'static> {
+    /// The instant the clock reads at zero: when it was made.
+    epoch: Instant,
     now: Duration,
     due: BTreeMap<(Duration, TimerId), (Option<Duration>, Fire<C>)>,
     sink: Sink<C>,
@@ -99,6 +119,7 @@ pub struct ManualTimers<C: 'static> {
 impl<C: 'static> ManualTimers<C> {
     pub fn new(sink: Sink<C>) -> ManualTimers<C> {
         ManualTimers {
+            epoch: Instant::now(),
             now: Duration::ZERO,
             due: BTreeMap::new(),
             sink,
@@ -169,6 +190,10 @@ impl<C: 'static> Timers<C> for ManualTimers<C> {
 
     fn armed(&self) -> usize {
         self.due.len()
+    }
+
+    fn instant(&self) -> Instant {
+        self.epoch + self.now
     }
 }
 

@@ -1,18 +1,16 @@
 //! The only function that changes the model: every button, intent, timer and job result lands
 //! here as a `Command`, and asks for its effects.
 
-use std::time::Instant;
-
 use yantrik_app::effects::Effects;
 use yantrik_app::jobs::{Concurrency, JobKey, Scope};
-use yantrik_app::rail;
+use yantrik_app::rail::{self, RailCommand};
 use yantrik_app::Refused;
 
 use crate::forecast;
 use crate::geocode;
 use crate::model::{Command, Model, DEGRADED_NOTICE, PART_NOTICE, PART_PLACES, PART_READING, PART_UPDATED};
 use crate::places;
-use crate::Weather;
+use crate::{Weather, UPDATED_TICK};
 
 /// The sentence shown when the fetch itself failed to come back.
 const FETCH_DID_NOT_FINISH: &str = "The fetch did not finish; try again.";
@@ -39,7 +37,8 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Weather>) -> Res
             }
             m.source = fetched.source;
             m.loading = false;
-            m.last_fetch = Some(Instant::now());
+            m.now = fx.now();
+            m.last_fetch = Some(m.now);
             // The fallback is the freshness line's to say; the notice strip is for what could
             // not be done. A strip an older build wrote is cleared.
             if m.notice.starts_with(DEGRADED_NOTICE) {
@@ -49,6 +48,7 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Weather>) -> Res
             fx.changed(PART_READING);
             fx.changed(PART_NOTICE);
             fx.changed(PART_UPDATED);
+            arm_age_tick(m, fx);
         }
         Command::FetchFailed(why) => {
             m.loading = false;
@@ -115,7 +115,20 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Weather>) -> Res
             kept(m, fx);
             start_fetch(m, fx);
         }
-        Command::TickUpdated => fx.changed(PART_UPDATED),
+        Command::TickUpdated => {
+            // The age is looked at when its words are due to change, and only what changed
+            // redraws: the corner's line when it did (it says nothing for the first fifteen
+            // minutes), the rail's row through the rail's own refresh, in this command, so the
+            // two are one frame and the rail's debounce has nothing to follow. Then armed for the
+            // next change, so a window at rest wakes once a minute at most.
+            let corner = m.freshness();
+            m.now = fx.now();
+            if m.freshness() != corner {
+                fx.changed(PART_UPDATED);
+            }
+            rail::update::<Weather>(m, RailCommand::Refresh, fx)?;
+            arm_age_tick(m, fx);
+        }
         Command::PrefsFromFile(prefs) => {
             m.prefs = prefs.normalised();
             fx.changed(PART_PLACES);
@@ -132,6 +145,13 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Weather>) -> Res
         Command::Rail(command) => rail::update::<Weather>(m, command, fx)?,
     }
     Ok(())
+}
+
+/// The age's next look, for when its words are due to change: one shot, re-armed by the look.
+fn arm_age_tick(m: &Model, fx: &mut Effects<Weather>) {
+    if let Some(wait) = m.until_age_changes() {
+        fx.after(UPDATED_TICK, wait, Command::TickUpdated);
+    }
 }
 
 /// The prefs changed and are kept: saved, the places redrawn, the notice cleared.

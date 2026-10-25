@@ -1,8 +1,9 @@
 //! The only code that writes the window: the model, drawn, for the parts that changed.
 
-use slint::{ComponentHandle as _, ModelRc, VecModel};
+use slint::ComponentHandle as _;
 use yantrik_app::app::Changed;
 use yantrik_app::rail::{self, RailView as _};
+use yantrik_app::rows;
 
 use crate::model::*;
 use crate::{EthernetInterface, FirewallRule, NetworkManagerApp, WifiNetwork};
@@ -22,7 +23,7 @@ pub fn render(ui: &NetworkManagerApp, m: &Model, changed: &Changed) {
     }
     if changed.has(PART_SCAN) {
         ui.set_wifi_scanning(m.scanning);
-        let rows: Vec<WifiNetwork> = m
+        let networks: Vec<WifiNetwork> = m
             .in_range
             .iter()
             .map(|n| WifiNetwork {
@@ -33,7 +34,7 @@ pub fn render(ui: &NetworkManagerApp, m: &Model, changed: &Changed) {
                 is_saved: n.is_saved,
             })
             .collect();
-        ui.set_wifi_networks(ModelRc::new(VecModel::from(rows)));
+        rows::set(ui.get_wifi_networks(), networks, |list| ui.set_wifi_networks(list));
     }
     if changed.has(PART_PROMPT_STATUS) {
         ui.set_wifi_connect_status(m.prompt_status.as_str().into());
@@ -64,7 +65,9 @@ pub fn render(ui: &NetworkManagerApp, m: &Model, changed: &Changed) {
     }
 }
 
-/// Everything the last refresh read, on screen.
+/// Everything the last refresh read, on screen. A reading lands every three seconds and is
+/// usually the one before it: every property is set to its value, which Slint compares, and every
+/// list through `rows::set`, so an unchanged network draws nothing.
 fn reading(ui: &NetworkManagerApp, m: &Model) {
     let r = &m.reading;
     ui.set_wifi_dns(r.resolvers.as_str().into());
@@ -85,7 +88,7 @@ fn reading(ui: &NetworkManagerApp, m: &Model) {
             dns: i.dns.into(),
         })
         .collect();
-    ui.set_ethernet_interfaces(ModelRc::new(VecModel::from(eth)));
+    rows::set(ui.get_ethernet_interfaces(), eth, |list| ui.set_ethernet_interfaces(list));
 
     ui.set_status_state(r.status.state.as_str().into());
     ui.set_status_connection_type(r.status.kind.as_str().into());
@@ -120,7 +123,7 @@ fn reading(ui: &NetworkManagerApp, m: &Model) {
             is_saved: true,
         })
         .collect();
-    ui.set_wifi_saved_networks(ModelRc::new(VecModel::from(saved)));
+    rows::set(ui.get_wifi_saved_networks(), saved, |list| ui.set_wifi_saved_networks(list));
 
     let fw = &r.firewall;
     ui.set_firewall_state(fw.state.as_str().into());
@@ -138,5 +141,5 @@ fn reading(ui: &NetworkManagerApp, m: &Model) {
             action: r.action.as_str().into(),
         })
         .collect();
-    ui.set_firewall_rules(ModelRc::new(VecModel::from(rules)));
+    rows::set(ui.get_firewall_rules(), rules, |list| ui.set_firewall_rules(list));
 }
