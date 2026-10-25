@@ -89,11 +89,26 @@ pub fn on_activated(window: &slint::Window, mut f: impl FnMut() + 'static) {
 /// `false` each time it loses it (winit's `Focused`), as winit reports it: a repeat is passed on
 /// as it came. Slint still handles every event itself. A window that is not on a winit backend
 /// is never told. The window's one winit hook: a later call replaces an earlier one.
-pub fn on_focus_changed(window: &slint::Window, mut f: impl FnMut(bool) + 'static) {
+pub fn on_focus_changed(window: &slint::Window, f: impl FnMut(bool) + 'static) {
+    hear(window, f, || {});
+}
+
+/// The framework's one winit hook on a window it runs: `focused` with each `Focused`, as
+/// [`on_focus_changed`] passes it on, and `drawn` at each `RedrawRequested`, a frame the window
+/// is about to draw. On Wayland that is a frame the compositor let it draw: winit holds a redraw
+/// until the compositor's frame callback, which a minimised or covered window is not sent, so a
+/// window off screen hears none. Slint still handles every event itself.
+pub(crate) fn hear(
+    window: &slint::Window,
+    mut focused: impl FnMut(bool) + 'static,
+    mut drawn: impl FnMut() + 'static,
+) {
     use slint::winit_030::{winit::event::WindowEvent, EventResult};
     window.on_winit_window_event(move |_, event| {
-        if let WindowEvent::Focused(focused) = event {
-            f(*focused);
+        match event {
+            WindowEvent::Focused(now) => focused(*now),
+            WindowEvent::RedrawRequested => drawn(),
+            _ => {}
         }
         EventResult::Propagate
     });

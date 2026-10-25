@@ -61,6 +61,10 @@ impl<C: 'static> Timers<C> for SharedTimers<C> {
     fn armed(&self) -> usize {
         self.0.borrow().armed()
     }
+
+    fn instant(&self) -> std::time::Instant {
+        self.0.borrow().instant()
+    }
 }
 
 /// The manual persistence lane, shared between the core and the test.

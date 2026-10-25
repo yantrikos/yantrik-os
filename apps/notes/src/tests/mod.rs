@@ -33,6 +33,7 @@ mod read_notes;
 mod read_only;
 mod recovery;
 mod resolve;
+mod rest;
 mod saving;
 mod startup;
 mod store;

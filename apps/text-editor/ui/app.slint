@@ -74,7 +74,6 @@ export component TextEditorApp inherits AppWindow {
     callback edited(string);
     callback cursor(int);
     callback search();
-    callback refresh();
     public function focus-editor() { editor.focus(); }
     public function select-range(start: int, end: int) { editor.set-selection-offsets(start,end); }
     public function reset-position() { scroll.viewport-y = 0px; scroll.viewport-x = 0px; editor.set-selection-offsets(0,0); }

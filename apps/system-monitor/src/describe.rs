@@ -2,11 +2,12 @@
 //! values and words the app has always answered, so `yos check system-monitor` reads the same.
 //!
 //! This window holds, in numbers, everything the companion previously had to shell out for:
-//! `top`, `df`, `free`, `uptime`. It refreshes every two seconds anyway, so reading it costs
-//! nothing and is more current than a subprocess would be.
+//! `top`, `df`, `free`, `uptime`. It refreshes every two seconds anyway (every thirty while the
+//! window is off screen), so reading it costs nothing and is about as current as a subprocess.
 //!
-//! The figures are the ones on screen, in the screen's own types: the percentages are rounded
-//! as `f32`, as the window's properties hold them, so a value answered here is the value drawn.
+//! The figures are the reading's, to a tenth, in the window's `f32`. The window draws a
+//! process's share to the same tenth, and a card's percentage to the whole number beside it
+//! (`crate::figures`), so the two never disagree about what is shown.
 
 use serde_json::{json, Value};
 use yantrik_app::control::View;

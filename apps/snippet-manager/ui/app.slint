@@ -7,6 +7,7 @@ export { WindowChrome } from "app_window.slint";
 import { AgentContextItem, AgentSuggestion } from "components/agent_rail.slint";
 import { AgentProposal } from "components/agent_proposal.slint";
 import { AppIdentity } from "app_color.slint";
+import { YButton } from "components/y_button.slint";
 import { SnippetManagerScreen, SnippetData, TagChip, CollectionData, LanguageOption } from "snippet_manager.slint";
 
 export { SnippetData, TagChip, CollectionData, LanguageOption, ThemeMode, AccentPreset }
@@ -89,6 +90,7 @@ export component SnippetManagerApp inherits AppWindow {
     callback snip-copy <=> inner.snip-copy;
     callback snip-tag-filter <=> inner.snip-tag-filter;
     callback snip-toggle-favorite <=> inner.snip-toggle-favorite;
+    callback detail-edited <=> inner.detail-edited;
 
     // Collection callbacks
     callback collection-select <=> inner.collection-select;
@@ -106,6 +108,13 @@ export component SnippetManagerApp inherits AppWindow {
     // AI. The answer lands in the shared proposal card above the panes.
     callback ai-explain-pressed <=> inner.ai-explain-pressed;
 
+    // Unsaved text kept and offered back (the recovery bar): the sentence, empty when none, and
+    // where its snippet is: 1 open in the editor, 2 kept and not open (Show), 3 no longer kept
+    // (Restore as new). The buttons send "show", "restore" and "discard".
+    in property <string> recovery-said;
+    in property <int> recovery;
+    callback recovery-action(string);
+
     inner := SnippetManagerScreen {
         window-bar: true;
         // Fills the window (no explicit size: Slint forbids width/height next to max-*).
@@ -113,5 +122,38 @@ export component SnippetManagerApp inherits AppWindow {
         // the window must still open at its preferred size and grow with the user.
         max-width: 100000px;
         max-height: 100000px;
+    }
+
+    // Over the foot of the window, so the screen's own layout is untouched. Discard throws away
+    // the only copy, so it is offered once the text can be seen, or when its snippet is gone.
+    if root.recovery-said != "" : Rectangle {
+        x: Theme.sp-3;
+        width: parent.width - 2 * Theme.sp-3;
+        y: parent.height - self.height - Theme.sp-3;
+        height: offer.preferred-height;
+        border-radius: Theme.r-md;
+        background: Theme.notice-surface;
+        border-width: 1px;
+        border-color: Theme.notice-line;
+        offer := HorizontalLayout {
+            padding: Theme.sp-2;
+            spacing: Theme.sp-2;
+            Text {
+                text: root.recovery-said;
+                color: Theme.text-primary;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if root.recovery == 2 : YButton { label: "Show"; variant: 1; size: 0; clicked => { root.recovery-action("show"); } }
+            YButton {
+                label: root.recovery == 3 ? "Restore as new" : "Restore";
+                variant: 0;
+                size: 0;
+                clicked => { root.recovery-action("restore"); }
+            }
+            if root.recovery != 2 : YButton { label: "Discard"; variant: 3; size: 0; clicked => { root.recovery-action("discard"); } }
+        }
     }
 }

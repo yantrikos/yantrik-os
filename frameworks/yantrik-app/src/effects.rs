@@ -4,7 +4,7 @@
 //! here and committed by the runtime only when `update` returns `Ok`, so a refused command runs
 //! nothing. In a test, `Effects::recording()` captures them as data.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::app::{App, Changed, WindowId};
 use crate::intents::{Invocation, InvocationId, Origin};
@@ -94,45 +94,70 @@ pub struct Effects<A: App> {
     changed: Changed,
     next_job: u64,
     invocation: Option<Invocation>,
+    now: Instant,
+    /// Frames the app's windows had drawn when this command ran (`Core::frame_drawn`).
+    frames: u64,
 }
 
 impl<A: App> Effects<A> {
     /// For the runtime: job ids continue from `next_job`; `invocation` is what the command runs
     /// under, if it came through the surface. Every part counts as changed until `changed`
-    /// narrows it (§3), so an `update` that forgets to say never leaves the window stale.
-    pub(crate) fn new(next_job: u64, invocation: Option<Invocation>) -> Effects<A> {
+    /// narrows it (§3), so an `update` that forgets to say never leaves the window stale. `now`
+    /// is the time on the app's clock (`Timers::instant`).
+    pub(crate) fn new(next_job: u64, invocation: Option<Invocation>, now: Instant) -> Effects<A> {
         Effects {
             requests: Vec::new(),
             changed: Changed::all(),
             next_job,
             invocation,
+            now,
+            frames: 0,
         }
     }
 
     /// For `App::start`, which reads the model and changes nothing: no redraw unless it says.
-    pub(crate) fn starting(next_job: u64) -> Effects<A> {
+    pub(crate) fn starting(self) -> Effects<A> {
         Effects {
-            requests: Vec::new(),
             changed: Changed::none(),
-            next_job,
-            invocation: None,
+            ..self
         }
     }
 
+    /// The frames the app's windows had drawn when this command ran.
+    pub(crate) fn drawn(self, frames: u64) -> Effects<A> {
+        Effects { frames, ..self }
+    }
+
     /// For a test of `update`: nothing is run, and [`Effects::requests`] says what was asked.
+    /// The time is the machine's.
     pub fn recording() -> Effects<A> {
-        Effects::new(1, None)
+        Effects::new(1, None, Instant::now())
     }
 
     /// The same, as if the command came through the surface from `origin`.
     pub fn recording_from(origin: Origin) -> Effects<A> {
-        Effects::new(
-            1,
-            Some(Invocation {
-                id: InvocationId(1),
-                origin,
-            }),
-        )
+        let invocation = Invocation {
+            id: InvocationId(1),
+            origin,
+        };
+        Effects::new(1, Some(invocation), Instant::now())
+    }
+
+    /// The time this command runs at, on the clock the app's timers keep: the machine's under
+    /// the runner, the test's virtual clock under `TestApp`, which `advance` moves. An age an
+    /// app keeps from it ("updated 3 min ago") moves with the timer that re-says it, in a test
+    /// as on the desktop.
+    pub fn now(&self) -> Instant {
+        self.now
+    }
+
+    /// How many frames the app's windows had drawn when this command ran, every window's, since
+    /// the app started: one each time the compositor let a window draw (winit's
+    /// `RedrawRequested`), or a test drew one (`TestApp::draw`). 0 before the first frame, and
+    /// under [`Effects::recording`]. Two commands that see the same count saw nothing drawn
+    /// between them: what `crate::shown` reads to tell a window on screen from one that is not.
+    pub fn frames(&self) -> u64 {
+        self.frames
     }
 
     /// Where this command came from: a button or a timer here, or the surface.
@@ -151,6 +176,16 @@ impl<A: App> Effects<A> {
         match &mut self.changed {
             Changed::All => self.changed = Changed::Parts(vec![part]),
             parts => parts.add(part),
+        }
+    }
+
+    /// Nothing this command did is on screen: no part redraws, where a command that names no
+    /// part redraws every part. A part named after this still redraws. For a command that looked
+    /// and found nothing new (a refresh, a tick whose words are the same): a redraw it did not
+    /// need is a frame at rest, and a window at rest draws nothing.
+    pub fn unchanged(&mut self) {
+        if let Changed::All = self.changed {
+            self.changed = Changed::none();
         }
     }
 
@@ -220,7 +255,13 @@ impl<A: App> Effects<A> {
         self.requests.push(Request::Cancel(job));
     }
 
+    /// A command every `period` under `id`; arming the same id again restarts it. An id of the
+    /// framework's own (`TimerId::is_framework`) is not the app's to arm: dropped, with a
+    /// warning, as it is for [`Effects::after`] and [`Effects::stop_timer`].
     pub fn every(&mut self, id: TimerId, period: Duration, command: A::Command) {
+        if Self::framework_timer(id, "every") {
+            return;
+        }
         self.requests.push(Request::Every {
             id,
             period,
@@ -229,11 +270,27 @@ impl<A: App> Effects<A> {
     }
 
     pub fn after(&mut self, id: TimerId, delay: Duration, command: A::Command) {
+        if Self::framework_timer(id, "after") {
+            return;
+        }
         self.requests.push(Request::After { id, delay, command });
     }
 
     pub fn stop_timer(&mut self, id: TimerId) {
+        if Self::framework_timer(id, "stop_timer") {
+            return;
+        }
         self.requests.push(Request::StopTimer(id));
+    }
+
+    /// The framework's own timer, asked for by the app: said, and not requested. A linger's
+    /// backstop must always end the process, whatever the app's commands do.
+    fn framework_timer(id: TimerId, what: &str) -> bool {
+        if !id.is_framework() {
+            return false;
+        }
+        tracing::warn!(app = A::ID, timer = id.0, "fx.{what} ignored: the timer is the framework's own");
+        true
     }
 
     pub fn report(&mut self, what: &'static str, error: &dyn std::error::Error) {

@@ -192,6 +192,8 @@ mod telegram;
 mod terminal;
 mod terminal_window;
 mod toplevel_watch;
+// The compositor's window list from the stream `toplevel_watch` follows, for `windows`.
+mod live_windows;
 mod provider_handoff;
 mod private_file;
 mod programs;

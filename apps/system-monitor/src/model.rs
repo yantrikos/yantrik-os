@@ -2,9 +2,11 @@
 //! commands.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use yantrik_app::mind::{AskError, Mind};
 use yantrik_app::rail::{Rail, RailCommand};
+use yantrik_app::shown::Shown;
 use yantrik_ipc_contracts::machine_status::MachineStatus;
 use yantrik_ipc_contracts::system_monitor::ProcessInfo;
 
@@ -58,6 +60,13 @@ pub struct Model {
     /// draw an ever older machine.
     pub sampling: Option<u64>,
     pub next_sample: u64,
+    /// When the last reading was asked for, on the app's clock.
+    pub sampled_at: Option<Instant>,
+    /// Whether the last reading that changed the screen was drawn: a window off screen is read
+    /// every [`crate::OFF_SCREEN_EVERY`], not every [`crate::POLL_EVERY`].
+    pub shown: Shown,
+    /// A poll found the window off screen and let a reading go.
+    pub off_screen: bool,
     /// The process the last successful kill ended, which `kill_process` answers with.
     pub ended: Option<Observed>,
     pub ai: Ai,
@@ -80,6 +89,9 @@ impl Model {
             sorted_by: String::new(),
             sampling: None,
             next_sample: 1,
+            sampled_at: None,
+            shown: Shown::default(),
+            off_screen: false,
             ended: None,
             ai: Ai::default(),
             rail: Rail::new(mind.clone()),
@@ -132,8 +144,11 @@ pub fn filter_processes(procs: &[ProcessInfo], query: &str) -> Vec<ProcessInfo> 
 
 #[derive(Debug, Clone)]
 pub enum Command {
-    /// Take a reading, unless one is being taken (the two-second timer, and once at start).
+    /// Take a reading, unless one is being taken (the two-second timer, and once at start), or
+    /// the window is off screen and was read less than [`crate::OFF_SCREEN_EVERY`] ago.
     Poll,
+    /// The window was brought back to the person (activated, or presented by a second launch).
+    Back,
     /// A reading landed. One whose number is not the reading in flight is stale and dropped.
     Sampled { seq: u64, reading: Reading },
     /// The reading's job ended without one (a panic, the pool's bound): the next poll asks again.

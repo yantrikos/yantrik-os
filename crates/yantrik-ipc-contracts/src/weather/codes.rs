@@ -37,6 +37,39 @@ pub fn icon_kind(code: i32, is_day: bool) -> &'static str {
     }
 }
 
+/// Whether the hour at `index` of an Open-Meteo answer is in daylight, which decides its icon
+/// by day or by night.
+///
+/// The provider's own `hourly.is_day` for that hour when the answer has it (the request asks
+/// for it). Without it, whether the hour falls between the sunrise and the sunset of its date
+/// (`daily.sunrise`, `daily.sunset`): all three are the place's local time in one form,
+/// `2026-10-21T18:32`, so they compare as text. With neither, daylight, as a missing `is_day`
+/// of the current block reads. Never a fixed span of the clock: the sun sets at 16:57 in Tokyo
+/// in October and at 21:30 in London in June.
+pub fn hour_is_day(json: &serde_json::Value, index: usize) -> bool {
+    let hourly = &json["hourly"];
+    if let Some(flag) = hourly["is_day"].get(index).and_then(serde_json::Value::as_i64) {
+        return flag == 1;
+    }
+    let Some(time) = hourly["time"].get(index).and_then(serde_json::Value::as_str) else {
+        return true;
+    };
+    let date = time.split('T').next().unwrap_or_default();
+    let daily = &json["daily"];
+    let of_date = |key: &str| {
+        daily[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .find(|t| !date.is_empty() && t.starts_with(date))
+    };
+    match (of_date("sunrise"), of_date("sunset")) {
+        (Some(rise), Some(set)) => time >= rise && time < set,
+        _ => true,
+    }
+}
+
 /// The words for `code`, as the forecast's `condition` says them.
 pub fn description(code: i32) -> &'static str {
     match code {
@@ -100,5 +133,23 @@ mod tests {
         let clouds: Vec<i32> = DEFINED.iter().copied().filter(|&c| day(c) == "cloud").collect();
         assert_eq!(clouds, vec![3]);
         assert_eq!((icon_kind(4, true), description(4)), ("cloud", "Unknown"));
+    }
+
+    /// Bentonville on 21 Oct: the sun sets at 18:32, so 19:00 is night although it is before
+    /// 20:00, and 06:00 is night before a 07:24 sunrise.
+    #[test]
+    fn an_hour_after_sunset_is_night_whatever_the_clock_says() {
+        let sun = serde_json::json!({ "sunrise": ["2026-10-21T07:24", "2026-10-22T07:25"],
+                                      "sunset": ["2026-10-21T18:32", "2026-10-22T18:31"] });
+        let times = ["2026-10-21T06:00", "2026-10-21T12:00", "2026-10-21T18:00", "2026-10-21T19:00", "2026-10-22T07:00", "2026-10-22T08:00"];
+        let by_sun = serde_json::json!({ "hourly": { "time": times }, "daily": sun });
+        let read: Vec<bool> = (0..times.len()).map(|i| hour_is_day(&by_sun, i)).collect();
+        assert_eq!(read, [false, true, true, false, false, true]);
+        assert_eq!(icon_kind(0, hour_is_day(&by_sun, 3)), "moon", "a clear 19:00 after sunset draws the moon");
+        // The provider's own flag wins over the sun's times when it sent one.
+        let flagged = serde_json::json!({ "hourly": { "time": times, "is_day": [0, 1, 1, 0, 0, 1] }, "daily": sun });
+        assert!(!hour_is_day(&flagged, 3) && hour_is_day(&flagged, 2));
+        // Nothing to go on: daylight, as the current block's missing flag reads.
+        assert!(hour_is_day(&serde_json::json!({}), 0));
     }
 }

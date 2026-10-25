@@ -27,6 +27,8 @@ mod view;
 #[cfg(test)]
 mod app_tests;
 #[cfg(test)]
+mod rest_tests;
+#[cfg(test)]
 mod runtime_tests;
 
 pub use model::{Command, Model};

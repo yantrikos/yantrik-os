@@ -4,15 +4,16 @@
 use yantrik_app::effects::Effects;
 use yantrik_app::jobs::{Concurrency, JobKey, Scope};
 use yantrik_app::mind::AskError;
-use yantrik_app::rail;
+use yantrik_app::rail::{self, RailCommand};
 use yantrik_app::Refused;
 
+use crate::figures::Figures;
 use crate::machine;
 use crate::model::{Command, Model, PART_AI, PART_NOTICE, PART_PROCESSES, PART_READINGS, PART_QUIET, PROCESS_LIMIT};
 use crate::outcome;
 use crate::readout::Readout;
 use crate::report;
-use crate::SystemMonitor;
+use crate::{SystemMonitor, OFF_SCREEN_EVERY};
 
 /// The kill's job ended without an answer (it panicked, or the pool could not start it).
 const KILL_DID_NOT_FINISH: &str = "the attempt to end it did not finish; look at the list before trying again";
@@ -22,13 +23,16 @@ const EXPLAIN_DID_NOT_FINISH: &str = "the question did not finish; try again";
 pub fn update(m: &mut Model, command: Command, fx: &mut Effects<SystemMonitor>) -> Result<(), Refused> {
     match command {
         Command::Poll => {
-            fx.changed(PART_QUIET);
-            if m.sampling.is_some() {
+            if m.sampling.is_some() || !due(m, fx) {
+                // Nothing read: nothing to draw, and nothing new for the rail to look at.
+                fx.unchanged();
                 return Ok(());
             }
+            fx.changed(PART_QUIET);
             let seq = m.next_sample;
             m.next_sample += 1;
             m.sampling = Some(seq);
+            m.sampled_at = Some(fx.now());
             let machine = m.machine.clone();
             let sort = m.sort_key();
             fx.spawn_keyed_or(
@@ -52,14 +56,30 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<SystemMonitor>) 
                 return Ok(());
             }
             m.sampling = None;
+            let drawn = Figures::of(m);
             m.readout = Readout::from_snapshot(&reading.snap);
             m.cpu_window_ms = reading.snap.cpu.window_ms;
             m.status = report::assess(&reading.snap);
             m.procs = reading.procs;
             m.reading = Some(reading.provenance);
+            if Figures::of(m) != drawn {
+                // A frame will draw it, if the window is on screen: the next poll asks.
+                m.shown.owe(fx.frames());
+            }
             fx.changed(PART_READINGS);
             fx.changed(PART_PROCESSES);
             fx.changed(PART_NOTICE);
+            // The rail's rows say the same figures: refreshed in this command, so a reading is
+            // one frame, not a second one when the rail's debounce runs 300 ms later.
+            rail::update::<SystemMonitor>(m, RailCommand::Refresh, fx)?;
+        }
+        Command::Back => {
+            fx.unchanged();
+            m.shown.back();
+            if m.off_screen {
+                // What is on screen may be half a minute old: read the machine now.
+                fx.then(Command::Poll);
+            }
         }
         Command::SampleFailed { seq } => {
             fx.changed(PART_QUIET);
@@ -154,6 +174,18 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<SystemMonitor>) 
         Command::Rail(command) => rail::update::<SystemMonitor>(m, command, fx)?,
     }
     Ok(())
+}
+
+/// Whether a poll takes a reading: always while the window is on screen; off screen (the last
+/// reading that changed the screen was never drawn), once every [`OFF_SCREEN_EVERY`], so the
+/// Mind's `describe` stays that fresh with nobody looking and nothing is drawn meanwhile.
+fn due(m: &mut Model, fx: &Effects<SystemMonitor>) -> bool {
+    if m.shown.on_screen(fx.frames()) {
+        m.off_screen = false;
+        return true;
+    }
+    m.off_screen = true;
+    m.sampled_at.is_none_or(|at| fx.now().saturating_duration_since(at) >= OFF_SCREEN_EVERY)
 }
 
 /// A kill that did not end its process: said on the strip where the person is looking, and

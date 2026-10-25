@@ -6,9 +6,20 @@
 //! An app supplies `impl Source for Model` (what the context is, which suggestions to offer at
 //! this reach, the prompt a suggestion asks, and the proposal an answer becomes), keeps a
 //! [`Rail`] in its model, routes [`RailCommand`] through its own command enum (`App::rail`), and
-//! has it: the rail refreshes when the model changes (debounced) and on a tick, asks the Mind
-//! from a job, shows the answer as a proposal card, and applies a proposal through the app's own
-//! intents **as an agent**, so the authorised intent path (§3.2) and the app's agent rules hold.
+//! has it: the rail refreshes when the model changes (debounced) and when the Mind's reach does,
+//! asks the Mind from a job, shows the answer as a proposal card, and applies a proposal through
+//! the app's own intents **as an agent**, so the authorised intent path (§3.2) and the app's
+//! agent rules hold.
+//!
+//! The rail redraws only when what it draws changed: a refresh that found nothing new names no
+//! part, and its lists are set through [`crate::rows::set`], since a new model is a new frame
+//! even when every row in it is the same. There is no fallback tick: everything the rail says comes from the model,
+//! which only a command changes, and every command that changes it refreshes the rail. An app
+//! whose context says something about time ("updated 3 min ago") runs its own timer for when
+//! those words change, and the refresh follows from it (Weather's `UPDATED_TICK`). The
+//! four-second tick the rail had cost a frame every four seconds in every app with a rail on
+//! screen, with nothing on it changed: on 520's software rasteriser, Weather at rest spent about
+//! half of 42–61 ticks per 30 s drawing it (21 Oct).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,9 +40,6 @@ use crate::timers::TimerId;
 pub const PART: &str = "rail";
 /// The agent token a proposal is applied under: an agent's call, never the person's own.
 pub const AGENT_TOKEN: &str = "rail";
-/// The fallback refresh, so a rail is never more than this behind the app.
-pub const TICK: TimerId = TimerId("rail.tick");
-pub const TICK_EVERY: Duration = Duration::from_secs(4);
 /// The refresh after a model change, debounced so a burst of commands is one refresh.
 pub const DEBOUNCE: TimerId = TimerId("rail.debounce");
 pub const DEBOUNCE_FOR: Duration = Duration::from_millis(300);
@@ -126,7 +134,6 @@ pub trait HasRail {
     fn rail_mut(&mut self) -> &mut Rail;
 }
 
-/// The rail's state, kept in the app's model and changed only by [`update`].
 /// What the rail is busy with: asking the Mind about a suggestion, or applying the card shown.
 /// An enum, not a sentinel string, so a suggestion whose id is `apply` cannot be mistaken for
 /// an apply in flight.
@@ -136,6 +143,7 @@ pub enum Working {
     Applying,
 }
 
+/// The rail's state, kept in the app's model and changed only by [`update`].
 #[derive(Debug, Clone)]
 pub struct Rail {
     mind: Arc<dyn Mind>,
@@ -206,6 +214,27 @@ impl Rail {
     pub fn reach(&self) -> Reach {
         self.reach
     }
+
+    /// Everything [`RailView::render_rail`] reads, to tell whether a command changed any of it.
+    fn drawn(&self) -> Drawn {
+        Drawn {
+            context: self.context.clone(),
+            suggestions: self.suggestions.clone(),
+            unavailable: self.unavailable,
+            proposal: self.proposal.clone(),
+            working: self.working.clone(),
+        }
+    }
+}
+
+/// What the rail draws, as [`Rail::drawn`] copies it.
+#[derive(PartialEq)]
+struct Drawn {
+    context: Vec<ContextItem>,
+    suggestions: Vec<Suggestion>,
+    unavailable: &'static str,
+    proposal: Option<Proposal>,
+    working: Option<Working>,
 }
 
 /// What the rail does, routed through the app's own command enum by `App::rail`.
@@ -232,12 +261,27 @@ pub enum RailCommand {
     Applied(Result<(), String>),
 }
 
-/// The rail's `update`: the app's `update` hands it every `Command::Rail(c)`.
+/// The rail's `update`: the app's `update` hands it every `Command::Rail(c)`. The rail's part
+/// redraws when what it draws changed, and only then (the module's documentation says why).
 pub fn update<A: App>(
     m: &mut A::Model,
     command: RailCommand,
     fx: &mut Effects<A>,
 ) -> Result<(), Refused>
+where
+    A::Model: Source + HasRail,
+{
+    let before = m.rail().drawn();
+    apply::<A>(m, command, fx)?;
+    if m.rail().drawn() == before {
+        fx.unchanged();
+    } else {
+        fx.changed(PART);
+    }
+    Ok(())
+}
+
+fn apply<A: App>(m: &mut A::Model, command: RailCommand, fx: &mut Effects<A>) -> Result<(), Refused>
 where
     A::Model: Source + HasRail,
 {
@@ -376,7 +420,6 @@ where
             }
         }
     }
-    fx.changed(PART);
     Ok(())
 }
 
@@ -421,7 +464,9 @@ macro_rules! rail_window {
     ($ui:ident) => {
         impl $crate::rail::RailView for $ui {
             fn render_rail(&self, rail: &$crate::rail::Rail) {
-                use $crate::slint::{ComponentHandle as _, ModelRc, VecModel};
+                // Lists through `rows::set`: a render of every part (the first, or a command
+                // that names none) leaves rows that did not change alone.
+                use $crate::slint::ComponentHandle as _;
                 let context: Vec<AgentContextItem> = rail
                     .context()
                     .iter()
@@ -432,7 +477,7 @@ macro_rules! rail_window {
                         source: c.source.as_str().into(),
                     })
                     .collect();
-                self.set_agent_context(ModelRc::new(VecModel::from(context)));
+                $crate::rows::set(self.get_agent_context(), context, |list| self.set_agent_context(list));
                 let working = rail.working();
                 let suggestions: Vec<AgentSuggestion> = rail
                     .suggestions()
@@ -446,7 +491,9 @@ macro_rules! rail_window {
                         proposes: s.proposes,
                     })
                     .collect();
-                self.set_agent_suggestions(ModelRc::new(VecModel::from(suggestions)));
+                $crate::rows::set(self.get_agent_suggestions(), suggestions, |list| {
+                    self.set_agent_suggestions(list)
+                });
                 self.set_agent_unavailable(rail.unavailable().into());
                 self.set_proposal(match rail.proposal() {
                     Some(p) => AgentProposal {

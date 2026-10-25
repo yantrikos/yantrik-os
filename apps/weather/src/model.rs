@@ -26,11 +26,21 @@ pub const SAY_AGE_FROM: Duration = Duration::from_secs(15 * 60);
 pub const STALE_FROM: Duration = Duration::from_secs(30 * 60);
 
 /// How old the reading is, as the screen says it (design/weather-redesign-2026-10-21.md §3.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Freshness {
     /// The line under the measurements; empty when there is nothing worth saying.
     pub line: String,
     pub stale: bool,
+}
+
+/// How long from a reading `age` old until its words next change: the next whole minute of the
+/// age under an hour, the next whole hour after (`age_words`). The thresholds of the freshness
+/// line (fifteen and thirty minutes) fall on whole minutes, so they are among these. Never zero:
+/// the age's words are counted in whole seconds, so the next change is always ahead of it.
+pub fn next_age_change(age: Duration) -> Duration {
+    let secs = age.as_secs();
+    let step = if secs < 3600 { 60 } else { 3600 };
+    Duration::from_secs((secs / step + 1) * step) - age
 }
 
 pub struct Model {
@@ -43,7 +53,12 @@ pub struct Model {
     pub degraded: Option<String>,
     /// What could not be done, in one line under the header.
     pub notice: String,
+    /// When the reading landed, on the app's clock (`fx.now()`).
     pub last_fetch: Option<Instant>,
+    /// When the age was last looked at: the reading's landing, or the last `TickUpdated`. Every
+    /// word that says the age (the corner, the rail, `describe`) is counted to this, not to the
+    /// moment it is read, so the words change on the tick and nowhere between.
+    pub now: Instant,
     pub rail: Rail,
     pub weather: Arc<dyn WeatherApi>,
     pub mind: Arc<dyn Mind>,
@@ -59,24 +74,33 @@ impl Model {
         self.prefs.active_location()
     }
 
+    /// How old the reading was at the last look; `None` before the first reading.
+    pub fn age(&self) -> Option<Duration> {
+        self.last_fetch.map(|t| self.now.saturating_duration_since(t))
+    }
+
     /// "Updated 3 min ago", as `describe` has always said it; empty before the first reading.
     pub fn last_updated_text(&self) -> String {
-        let Some(t) = self.last_fetch else {
+        let Some(age) = self.age() else {
             return String::new();
         };
-        match age_words(t.elapsed()) {
+        match age_words(age) {
             None => "Updated just now".to_string(),
             Some(age) => format!("Updated {age} ago"),
         }
     }
 
+    /// How long after the last look the age's words next change; `None` before a reading.
+    pub fn until_age_changes(&self) -> Option<Duration> {
+        self.age().map(next_age_change)
+    }
+
     /// The freshness line, by the policy: nothing under fifteen minutes unless the reading came
     /// by fallback; "Updated N min ago" to thirty; "Last reading N min ago" after, stale.
     pub fn freshness(&self) -> Freshness {
-        let Some(t) = self.last_fetch else {
+        let Some(elapsed) = self.age() else {
             return Freshness { line: String::new(), stale: false };
         };
-        let elapsed = t.elapsed();
         let fallback = self.source == Source::Direct;
         let stale = elapsed >= STALE_FROM;
         let mut line = if stale {
@@ -105,6 +129,7 @@ impl Model {
             degraded: None,
             notice: String::new(),
             last_fetch: None,
+            now: Instant::now(),
             rail: Rail::new(Arc::new(yantrik_app::mind::fake::FakeMind::new())),
             weather: Arc::new(yantrik_services::weather::FakeWeather::new()),
             mind: Arc::new(yantrik_app::mind::fake::FakeMind::new()),
@@ -150,7 +175,7 @@ pub enum Command {
     },
     RemoveLocation(usize),
     SetUnits(bool),
-    /// The "Updated … ago" line, re-said.
+    /// The reading's age, looked at when its words are due to change (`UPDATED_TICK`).
     TickUpdated,
     /// The prefs as the file says now (edited outside this app).
     PrefsFromFile(Prefs),
@@ -171,7 +196,7 @@ mod tests {
     fn freshness_follows_the_policy() {
         fn model(age_min: u64, source: Source) -> Model {
             let mut m = Model::for_tests();
-            m.last_fetch = Some(Instant::now() - Duration::from_secs(age_min * 60));
+            m.last_fetch = Some(m.now - Duration::from_secs(age_min * 60));
             m.source = source;
             m
         }

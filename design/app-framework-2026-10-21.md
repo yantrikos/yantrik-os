@@ -241,7 +241,7 @@ pub enum Concurrency { Parallel, RejectIfRunning, ReplacePrevious }
 
   Its sentences are unchanged.
 - **`yantrik-notifications` (L2)** is today's `notify.rs`. The app's name comes from the manifest, and notification buttons come back as commands.
-- **The agent rail, once.** It is one framework feature with its own model, view adapter and timer. An app supplies `impl rail::Source for Model` with four methods: `context()`, `suggestions(reach)`, `prompt(suggestion)` and `apply(proposal)`. That is about 40 lines, in place of 8 copies of `refresh_agent_rail`, eight 4 s timers and the 45-line ask handlers. Applying a proposal keeps its agent provenance and goes through the authorised intent path (§3.2). Suggestions refresh on a model revision change, debounced, with the 4 s tick kept as a fallback.
+- **The agent rail, once.** It is one framework feature with its own model, view adapter and timer. An app supplies `impl rail::Source for Model` with four methods: `context()`, `suggestions(reach)`, `prompt(suggestion)` and `apply(proposal)`. That is about 40 lines, in place of 8 copies of `refresh_agent_rail`, eight 4 s timers and the 45-line ask handlers. Applying a proposal keeps its agent provenance and goes through the authorised intent path (§3.2). Suggestions refresh on a model change, debounced, and when the Mind's reach changes, and the rail redraws only when what it draws changed. The 4 s fallback tick this first kept was retired on 21 Oct: it set the rail's rows to new models every four seconds, a frame each time with nothing changed, and an app whose context speaks of time arms its own timer for when those words change.
 
 ## 6. Settings, data, drafts, theme
 

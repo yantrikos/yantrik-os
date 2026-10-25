@@ -63,6 +63,8 @@ mod lane_tests;
 mod secret_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod rest_tests;
 
 pub use model::{Command, Model};
 pub use reading::Reading;

@@ -101,6 +101,25 @@ pub fn refuse_while_private(private: fn() -> bool) -> Result<(), ServiceError> {
     Ok(())
 }
 
+/// Private mode for a service an app keeps its content in (#924 follow-up): while the person is
+/// private, `method` answers only `owners` — program names in the install directory, the app the
+/// content belongs to — and the shell, by the kernel's account of the calling process
+/// (`yantrik_ipc_transport::private_owner`, which carries the threat note: against careless
+/// agents, not hostile ones). Everyone else gets the transport's sentence and `-32602`, as every
+/// door refuses in Private mode; why is logged here, not told. `private` is read per call:
+/// [`is_private`], or a test's stand-in.
+pub fn private_content_for(
+    peer: Option<PeerCred>,
+    method: &str,
+    owners: &[&str],
+    private: fn() -> bool,
+) -> Result<(), ServiceError> {
+    yantrik_ipc_transport::private_owner::content_for_owners(peer, method, owners, private()).map_err(|why| {
+        tracing::info!(method, "refused in Private mode: {why}");
+        ServiceError { code: -32602, message: yantrik_ipc_transport::privacy::REFUSAL.into() }
+    })
+}
+
 /// Commonly-needed imports for service authors.
 ///
 /// The surface types are deliberately not in it: a dozen services glob-import this beside their

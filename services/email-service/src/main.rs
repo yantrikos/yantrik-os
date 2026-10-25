@@ -79,7 +79,12 @@ struct EmailHandler {
     writing: Arc<Mutex<()>>,
     /// The Google sign-ins this service is in the middle of.
     flows: oauth::Flows,
+    /// Whether the person is in Private mode, read per call; a stand-in in tests.
+    private: fn() -> bool,
 }
+
+/// Who reads the mail while the person is private: the Email app (and the shell, always).
+const EMAIL_OWNERS: &[&str] = &["yantrik-email"];
 
 impl EmailHandler {
     fn new() -> Self {
@@ -87,6 +92,7 @@ impl EmailHandler {
             config_path: accounts::config_path(),
             writing: Arc::new(Mutex::new(())),
             flows: oauth::Flows::default(),
+            private: yantrik_service_sdk::is_private,
         }
     }
 
@@ -306,7 +312,22 @@ impl ServiceHandler for EmailHandler {
         ) {
             yantrik_service_sdk::desktop_programs_only(peer, method)?;
         }
-        self.handle(method, params)
+        // The mail, the folders and the accounts' addresses, while the person is private: the
+        // Email app's and the shell's only.
+        let gated = matches!(
+            method,
+            method::LIST_FOLDERS | method::LIST_MESSAGES | method::GET_MESSAGE | method::SEARCH | method::ACCOUNTS
+        );
+        if gated {
+            yantrik_service_sdk::private_content_for(peer, method, EMAIL_OWNERS, self.private)?;
+        }
+        let answer = self.handle(method, params)?;
+        // An IMAP round trip can take seconds; Private mode may have come on meanwhile
+        // (#930 review, L1).
+        if gated {
+            yantrik_service_sdk::private_content_for(peer, method, EMAIL_OWNERS, self.private)?;
+        }
+        Ok(answer)
     }
 
     fn handle(
@@ -1459,5 +1480,44 @@ mod tests {
         assert!(!names_a_folder(&serde_json::json!({"folder": 7})));
         assert!(names_a_folder(&serde_json::json!({"folder": "Spam"})));
         assert!(names_a_folder(&serde_json::json!({"folder": "[Gmail]/Sent Mail"})));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod private_mode_tests {
+    /// #924 follow-up: while the person is private the mail and its accounts go to the Email app
+    /// and the shell only; this test binary is neither. Refused before any account is read.
+    #[test]
+    fn in_private_mode_the_mail_goes_only_to_the_email_app() {
+        use yantrik_service_sdk::ServiceHandler as _;
+        let private = super::EmailHandler { private: || true, ..super::EmailHandler::new() };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        for method in [
+            super::method::LIST_FOLDERS,
+            super::method::LIST_MESSAGES,
+            super::method::GET_MESSAGE,
+            super::method::SEARCH,
+            super::method::ACCOUNTS,
+        ] {
+            let err = private.handle_from(method, serde_json::json!({ "query": "x", "id": "1" }), me).unwrap_err();
+            assert_eq!(err.code, -32602, "{method}");
+            assert!(err.message.starts_with("PRIVATE:"), "{method}: {}", err.message);
+        }
+    }
+
+    /// #930 review, L1: Private mode turned on while the mail is read holds for the answer.
+    #[test]
+    fn private_mode_turned_on_while_the_mail_is_read_holds_for_that_answer() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        fn comes_on_during_the_call() -> bool {
+            READS.fetch_add(1, Ordering::SeqCst) >= 1
+        }
+        use yantrik_service_sdk::ServiceHandler as _;
+        let racing = super::EmailHandler { private: comes_on_during_the_call, ..super::EmailHandler::new() };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        let err = racing.handle_from(super::method::ACCOUNTS, serde_json::json!({}), me).unwrap_err();
+        assert!(err.message.starts_with("PRIVATE:"), "{}", err.message);
+        assert_eq!(READS.load(Ordering::SeqCst), 2, "read before and after the work");
     }
 }

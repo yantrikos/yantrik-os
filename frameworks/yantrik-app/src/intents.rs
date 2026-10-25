@@ -409,6 +409,11 @@ fn launch_handler<A: App>(
                 .into());
         }
         let core = core.upgrade().ok_or("the app is closing")?;
+        // An app already ending (a backstop passed, an exit asked for) takes no launch: nothing
+        // is applied to it, and the second copy is told, as `present` would tell it.
+        if core.exit_reason().is_some() {
+            return Err("the app is ending, so it takes no launch; launch it again once it has".into());
+        }
         let mut launch = crate::launch::Launch::from_value(&args["launch"])?;
         let profile = core.paths().profile().to_string();
         if launch.profile != profile {

@@ -11207,12 +11207,12 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
- "ureq 2.12.1",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-testing",
  "yantrik-ui-kit",
 ]
 
@@ -11839,22 +11839,13 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
+ "tracing-subscriber",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
  "yantrik-foundation",
- "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-testing",
  "yantrik-ui-kit",
-]
-
-[[package]]
-name = "yantrik-snippets-core-tests"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "yantrik-foundation",
 ]
 
 [[package]]
@@ -12002,12 +11993,13 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
  "yantrik-file-follow",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-testing",
  "yantrik-ui-kit",
 ]
 

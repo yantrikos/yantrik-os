@@ -200,7 +200,7 @@ pub fn run<A: App>() -> ExitCode {
 fn install<A: App>(core: &Rc<Core<A>>) {
     let for_drain = core.clone();
     DRAIN.with(|cell| *cell.borrow_mut() = Some(Box::new(move || for_drain.drain())));
-    core.hear_activation(WindowId::PRIMARY, core.ui());
+    core.hear_window(WindowId::PRIMARY, core.ui());
     let post = core.post();
     use slint::ComponentHandle as _;
     core.ui().window().on_close_requested(move || {

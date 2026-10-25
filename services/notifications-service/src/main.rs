@@ -123,12 +123,14 @@ struct NotificationsHandler {
     link: Arc<freedesktop::Link>,
     /// `app.describe` and `app.act`, dispatched as an app window's are.
     surface: Surface,
+    /// Whether the person is in Private mode, read per call; a stand-in in tests.
+    private: fn() -> bool,
 }
 
 impl NotificationsHandler {
     fn new(store: Arc<store::Store>, link: Arc<freedesktop::Link>) -> NotificationsHandler {
         let surface = notifications_surface(store.clone(), link.clone());
-        NotificationsHandler { store, link, surface }
+        NotificationsHandler { store, link, surface, private: yantrik_service_sdk::is_private }
     }
 }
 
@@ -174,6 +176,28 @@ impl NotificationsHandler {
         if let Some(answer) = self.surface.answer(method, &params, peer) {
             return answer;
         }
+        // What the notifications say, while the person is private: the shell's alone (#924).
+        // `since` carries the same records `list` does (#930 review, M1).
+        // `action` names the app behind any sequential id and presses its button, so it is the
+        // shell's alone too (#930 review, L3); it changes state, so it is checked before only.
+        let gated = matches!(method, LIST | SINCE);
+        if gated || method == ACTION {
+            yantrik_service_sdk::private_content_for(peer, method, &[], self.private)?;
+        }
+        let answer = self.serve(method, params, peer)?;
+        // Private mode may have come on while the answer was made (#930 review, L1).
+        if gated {
+            yantrik_service_sdk::private_content_for(peer, method, &[], self.private)?;
+        }
+        Ok(answer)
+    }
+
+    fn serve(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        peer: Option<PeerCred>,
+    ) -> Result<serde_json::Value, ServiceError> {
         match method {
             LIST => Ok(serde_json::to_value(self.store.list_for(is_desktop(peer))).unwrap_or_default()),
 
@@ -1558,5 +1582,90 @@ mod tests {
         // Made with no socket, the same call has nobody to attribute it to.
         let direct = handler().act(&notify(None), None, at("sensitive", "ask")).unwrap();
         assert_eq!(direct["result"]["sender"]["verified"], peer_identity::UNIDENTIFIED);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod private_mode_tests {
+    /// #924 follow-up: while the person is private the notifications' text goes to the shell only.
+    #[test]
+    fn in_private_mode_the_notifications_go_only_to_the_shell() {
+        let path = std::env::temp_dir().join(format!("yantrik-notifications-private-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let handler = super::NotificationsHandler {
+            private: || true,
+            ..super::NotificationsHandler::new(
+                std::sync::Arc::new(super::store::Store::open(path.clone())),
+                std::sync::Arc::new(super::freedesktop::Link::new()),
+            )
+        };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        // `since` from revision 0 serves the same records (#930 review, M1).
+        handler.store.add(super::AddRequest {
+            app: "Signal".into(),
+            title: "Results".into(),
+            body: "the results came back SENTINEL-930".into(),
+            ..Default::default()
+        });
+        for (method, params) in [(super::LIST, serde_json::json!({})), (super::SINCE, serde_json::json!({ "revision": 0 }))] {
+            let err = handler.dispatch(method, params, me).unwrap_err();
+            assert_eq!(err.code, -32602, "{method}");
+            assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{method}: {}", err.message);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// #930 review, L3: `action` on a sequential id names the app behind it; while private it is
+    /// the shell's alone.
+    #[test]
+    fn in_private_mode_action_does_not_name_the_app_behind_an_id() {
+        let path = std::env::temp_dir().join(format!("yantrik-notifications-action-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let handler = super::NotificationsHandler {
+            private: || true,
+            ..super::NotificationsHandler::new(
+                std::sync::Arc::new(super::store::Store::open(path.clone())),
+                std::sync::Arc::new(super::freedesktop::Link::new()),
+            )
+        };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        let made = handler.store.add(super::AddRequest {
+            app: "Signal-SENTINEL".into(),
+            title: "t".into(),
+            body: "b".into(),
+            ..Default::default()
+        });
+        for id in [made.id.as_str(), "1", "2"] {
+            let err = handler
+                .dispatch(super::ACTION, serde_json::json!({ "id": id, "action_id": "x" }), me)
+                .unwrap_err();
+            assert_eq!(err.code, -32602, "{id}");
+            assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{}", err.message);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// #930 review, L1: Private mode turned on while the notifications are read holds for the answer.
+    #[test]
+    fn private_mode_turned_on_while_the_notifications_are_read_holds_for_that_answer() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        fn comes_on_during_the_call() -> bool {
+            READS.fetch_add(1, Ordering::SeqCst) >= 1
+        }
+        let path = std::env::temp_dir().join(format!("yantrik-notifications-race-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let racing = super::NotificationsHandler {
+            private: comes_on_during_the_call,
+            ..super::NotificationsHandler::new(
+                std::sync::Arc::new(super::store::Store::open(path.clone())),
+                std::sync::Arc::new(super::freedesktop::Link::new()),
+            )
+        };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        let err = racing.dispatch(super::SINCE, serde_json::json!({ "revision": 0 }), me).unwrap_err();
+        assert!(err.message.starts_with("PRIVATE:"), "{}", err.message);
+        assert_eq!(READS.load(Ordering::SeqCst), 2, "read before and after the work");
+        let _ = std::fs::remove_file(path);
     }
 }

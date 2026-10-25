@@ -1,8 +1,9 @@
 //! The only code that writes the window: the model, drawn, for the parts that changed.
 
-use slint::{ModelRc, SharedString, VecModel};
+use slint::SharedString;
 use yantrik_app::app::Changed;
 use yantrik_app::rail::{self, RailView as _};
+use yantrik_app::rows;
 
 use crate::model::{Model, PART_NOTICE, PART_PLACES, PART_READING, PART_UPDATED};
 use crate::{WeatherAlert, WeatherApp, WeatherCurrent, WeatherDaily, WeatherHourly, WeatherSavedLocation};
@@ -13,7 +14,7 @@ pub fn render(ui: &WeatherApp, m: &Model, changed: &Changed) {
     }
     if changed.has(PART_PLACES) {
         let active = m.prefs.active;
-        let rows: Vec<WeatherSavedLocation> = m
+        let places: Vec<WeatherSavedLocation> = m
             .prefs
             .locations
             .iter()
@@ -25,7 +26,7 @@ pub fn render(ui: &WeatherApp, m: &Model, changed: &Changed) {
                 is_active: i == active,
             })
             .collect();
-        ui.set_weather_saved_locations(ModelRc::new(VecModel::from(rows)));
+        rows::set(ui.get_weather_saved_locations(), places, |list| ui.set_weather_saved_locations(list));
         if ui.get_weather_use_fahrenheit() != m.prefs.fahrenheit {
             ui.set_weather_use_fahrenheit(m.prefs.fahrenheit);
         }
@@ -96,7 +97,7 @@ fn reading(ui: &WeatherApp, m: &Model) {
                 t_max: h.t_max,
             })
             .collect();
-        ui.set_hourly(ModelRc::new(VecModel::from(hourly)));
+        rows::set(ui.get_hourly(), hourly, |list| ui.set_hourly(list));
         let daily: Vec<WeatherDaily> = r
             .daily
             .iter()
@@ -112,7 +113,7 @@ fn reading(ui: &WeatherApp, m: &Model) {
                 temp_range_max: d.temp_range_max,
             })
             .collect();
-        ui.set_daily(ModelRc::new(VecModel::from(daily)));
+        rows::set(ui.get_daily(), daily, |list| ui.set_daily(list));
         let alerts: Vec<WeatherAlert> = r
             .alerts
             .iter()
@@ -123,7 +124,7 @@ fn reading(ui: &WeatherApp, m: &Model) {
                 icon: a.icon.as_str().into(),
             })
             .collect();
-        ui.set_weather_alerts(ModelRc::new(VecModel::from(alerts)));
+        rows::set(ui.get_weather_alerts(), alerts, |list| ui.set_weather_alerts(list));
         ui.set_air_quality(air_quality_line(&r.aqi.value, &r.aqi.label).into());
         ui.set_air_quality_unhealthy(r.aqi.level >= 2);
     }
