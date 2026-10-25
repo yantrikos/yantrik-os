@@ -125,6 +125,28 @@ impl ServiceHandler for CalendarHandler {
         params: serde_json::Value,
         peer: Option<PeerCred>,
     ) -> Result<serde_json::Value, ServiceError> {
+        let answer = self.serve(method_name, params, peer)?;
+        self.still_vouched(method_name, peer)?;
+        Ok(answer)
+    }
+}
+
+impl CalendarHandler {
+    /// Private mode may have come on while the answer was read (#930 review, L1): the events go
+    /// out only if the caller is still an owner now.
+    fn still_vouched(&self, method_name: &str, peer: Option<PeerCred>) -> Result<(), ServiceError> {
+        if matches!(method_name, method::EVENTS | method::GET_EVENT) {
+            yantrik_service_sdk::private_content_for(peer, method_name, CALENDAR_OWNERS, self.private)?;
+        }
+        Ok(())
+    }
+
+    fn serve(
+        &self,
+        method_name: &str,
+        params: serde_json::Value,
+        peer: Option<PeerCred>,
+    ) -> Result<serde_json::Value, ServiceError> {
         // The agent-facing surface: what the calendar holds, and the three moves on it that are
         // this service's to make. The ceiling and the mode are read per call from the files the
         // shell writes, as an app window's dispatch reads them.
@@ -1756,6 +1778,25 @@ mod private_mode_tests {
             assert_eq!(err.code, -32602, "{method}");
             assert!(err.message.starts_with("PRIVATE:"), "{method}: {}", err.message);
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #930 review, L1: Private mode turned on while the events are read holds for the answer.
+    #[test]
+    fn private_mode_turned_on_while_the_events_are_read_holds_for_that_answer() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        fn comes_on_during_the_call() -> bool {
+            READS.fetch_add(1, Ordering::SeqCst) >= 1
+        }
+        let dir = std::env::temp_dir().join(format!("calendar-private-race-{}", std::process::id()));
+        let racing = super::CalendarHandler { private: comes_on_during_the_call, ..super::CalendarHandler::over(dir.clone()) };
+        let me = Some(yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        // Let in while not private, as the Calendar's own process would be; private on the way out.
+        racing.still_vouched("calendar.events", me).unwrap();
+        let err = racing.still_vouched("calendar.events", me).unwrap_err();
+        assert!(err.message.starts_with("PRIVATE:"), "{}", err.message);
+        assert_eq!(READS.load(Ordering::SeqCst), 2);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
