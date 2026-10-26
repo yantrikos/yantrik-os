@@ -77,6 +77,7 @@ class AgentOffice:
         self._checked = (None, 0.0)
         self._process = self._office = self._workspace = self._private = None
         self._pipe = self._work = None
+        self._starting = None
 
     # ── what an agent's call is served by ───────────────────────────────────
 
@@ -175,6 +176,10 @@ class AgentOffice:
         pipe = "yantrik-libreoffice-agent-%d-%s" % (os.getpid(), secrets.token_hex(6))
         canaries = Canaries(private.root)
         deadline = time.monotonic() + self.patience
+        # `run` can time out with the process already started on the spawner's thread, and the
+        # answer is lost with the timeout: this record is what lets the request that waited end
+        # what it asked for instead of leaving it running until `stop` (#964).
+        self._starting = []
         try:
             canaries.open()
             write_profile_settings(private.profile)
@@ -183,16 +188,23 @@ class AgentOffice:
             with open(private.log, "wb") as log:
                 # On the spawner's thread, which outlives the request's: --die-with-parent
                 # follows the thread that started bwrap (spawner.py).
-                self._process = self._spawner.run(lambda: subprocess.Popen(
-                    argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                    env=sandbox.environment(env), start_new_session=True, close_fds=True))
+                def spawn():
+                    process = subprocess.Popen(
+                        argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                        env=sandbox.environment(env), start_new_session=True, close_fds=True)
+                    self._starting.append(process)
+                    return process
+                self._process = self._spawner.run(spawn)
+            self._starting = None
             self._pipe = Pipe(pipe, private.pipes, private.uno, self._process.pid)
             self._await_pipe(private, deadline)
             self._pipe.pin()
         except sandbox.SandboxError as e:
+            self._abandon_starting()
             self._stop_locked()
             raise OfficeError(UNSANDBOXED % e) from None
         except OfficeError:
+            self._abandon_starting()
             self._stop_locked()
             raise
         finally:
@@ -207,17 +219,30 @@ class AgentOffice:
         self._workspace = AgentWorkspace(office, self._work, admit=self.admit,
                                          person=self.person)
 
+    def _abandon_starting(self):
+        """End the process whose answer never came — `Spawner.run` can time out after the Popen
+        already ran on its thread, and `self._process` is set only once the answer arrives, so
+        `_stop_locked` has no way to find it (#964)."""
+        starting, self._starting = self._starting, None
+        for process in starting or ():
+            if process.poll() is None:
+                _kill(process)
+
     def _await_pipe(self, private, deadline):
         """Until the sandboxed LibreOffice has made its pipe, once the launcher proved the
-        sandbox."""
+        sandbox. What was started is ended before any of these refusals is raised, so a timed-out
+        start never leaves a live sandbox behind (#964)."""
         while not self._pipe.made():
             if self._process.poll() is not None:
                 refused = _said(private.log, "refused: ")
                 if refused:
+                    self._stop_locked()
                     raise sandbox.SandboxError(refused)
+                self._stop_locked()
                 raise OfficeError("the agents' LibreOffice would not start inside its sandbox: %s"
                                   % _last_line(private.log))
             if time.monotonic() >= deadline:
+                self._stop_locked()
                 raise OfficeError("the agents' LibreOffice did not answer within %ds; nothing "
                                   "was done" % int(self.patience))
             time.sleep(0.1)
