@@ -929,3 +929,36 @@ mod consent_buttons_are_pointer_only {
         assert!(src[at..at + 60].contains("variant: 3"));
     }
 }
+
+/// A header's buttons are how most of an app is used, and not one of them was on the Tab tour
+/// (#887). Each `YButton` carries its own focus scope and answers Enter and Space, but a scope is
+/// reached by walking the chain around it, and the header — being a component of its own — held
+/// no focus of its own to hand on, so the tour walked the body and never entered the row at all.
+/// The window controls stay as they are: a titlebar button answers a pointer and nothing else.
+#[cfg(test)]
+mod a_header_row_is_on_the_tab_tour {
+    use std::path::{Path, PathBuf};
+
+    fn read(rel: &str) -> String {
+        let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+    }
+
+    /// `forward-focus` names an element, so what it names has to exist no matter what the app
+    /// puts in the row. That is why the scope wraps the viewport instead of sitting next to the
+    /// first button — the first button is inside an `if`, and so is nearly everything else.
+    #[test]
+    fn the_headers_action_buttons_are_in_the_tab_order() {
+        let src = read("crates/yantrik-ui-kit/slint/app_header.slint");
+        assert!(src.contains("forward-focus: row-keys;"), "the header holds no focus to forward into its row");
+        let scope = src.find("row-keys := FocusScope {").expect("the row's focus scope");
+        let viewport = src.find("Flickable {").expect("the row lives in a viewport");
+        assert!(scope < viewport, "the scope wraps the viewport, so the row is inside it");
+        let decl = src[scope..].split('\n').next().unwrap();
+        assert!(!decl.contains("if "), "a scope behind an `if` is not there every day to be forwarded to");
+        // The scope hands focus on; it does not sit on it. Taking focus on a press would mean
+        // every drag of the bar took the keyboard away from whatever was typing.
+        assert!(src[scope..viewport].contains("focus-on-click: false"), "a press in the bar steals the keyboard");
+        assert_eq!(src.matches("pointer-only: true").count(), 0, "a pointer-only header button has no focus scope, so it drops off the tour again");
+    }
+}
