@@ -122,6 +122,25 @@ export global TextScale {
     in-out property <float> factor: 1.0;
 }
 
+// The person's "high contrast" choice. With it on, the surfaces below come back near-black
+// (near-white in light) and the text greys near-white (near-black), every pair at least 7:1 —
+// a community palette is an override too, and this outranks one that would undo it, so a theme
+// can recolour the desktop but never thin it out under someone who asked for the sharpest one.
+// Off by default; the shell sets it from the saved choice and carries it to every window, the
+// way it carries the dark flag.
+export global ContrastPrefs {
+    in-out property <bool> high: false;
+    // The sharpest each token can be, per mode. The greys keep an edge between them (primary,
+    // secondary, dim) without ever dropping under 7:1 on the surface they sit on.
+    in-out property <color> text-primary:   ThemeMode.dark ? #ffffff : #000000;
+    in-out property <color> text-secondary: ThemeMode.dark ? #e6e6e6 : #1a1a1a;
+    in-out property <color> text-dim:       ThemeMode.dark ? #c8c8c8 : #333333;
+    in-out property <color> bg-deep:        ThemeMode.dark ? #000000 : #ffffff;
+    in-out property <color> bg-surface:     ThemeMode.dark ? #05060a : #f7f9fb;
+    in-out property <color> bg-card:        ThemeMode.dark ? #0a0d13 : #ffffff;
+    in-out property <color> bg-elevated:    ThemeMode.dark ? #10141d : #f7f9fb;
+}
+
 // ─── Bright and sharp (design/desk-and-mind-2026-09-23.md, section 1) ─────
 //
 // The desktop read muddy: grey text on grey cards on a grey ground, each step a few percent
@@ -163,13 +182,19 @@ export global Theme {
     // ─── Surface hierarchy (4-tier depth) ─────────────────────────
     // base → default → raised → floating
     // Each tier a clear step in luminance for depth without blur.
-    out property <color> bg-deep:     ThemeOverrides.enabled ? ThemeOverrides.bg-deep-override
+    // High contrast first: a community palette may replace the stock grounds, never the ones a
+    // person asked to be the sharpest they can be (ContrastPrefs).
+    out property <color> bg-deep:     ContrastPrefs.high ? ContrastPrefs.bg-deep
+        : ThemeOverrides.enabled ? ThemeOverrides.bg-deep-override
         : (ThemeMode.dark ? #0b121c : #f4f6f9);
-    out property <color> bg-surface:  ThemeOverrides.enabled ? ThemeOverrides.bg-surface-override
+    out property <color> bg-surface:  ContrastPrefs.high ? ContrastPrefs.bg-surface
+        : ThemeOverrides.enabled ? ThemeOverrides.bg-surface-override
         : (ThemeMode.dark ? #111b28 : #eaeff5);
-    out property <color> bg-card:     ThemeOverrides.enabled ? ThemeOverrides.bg-card-override
+    out property <color> bg-card:     ContrastPrefs.high ? ContrastPrefs.bg-card
+        : ThemeOverrides.enabled ? ThemeOverrides.bg-card-override
         : (ThemeMode.dark ? #172333 : #ffffff);
-    out property <color> bg-elevated: ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
+    out property <color> bg-elevated: ContrastPrefs.high ? ContrastPrefs.bg-elevated
+        : ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
         : (ThemeMode.dark ? #1c293b : #ffffff);
     out property <color> bg-input:    ThemeMode.dark ? #0e1724 : #f8fafc;
     // The accent at 12% over the ground: a selected row (with its 2px leading rule).
@@ -338,11 +363,15 @@ export global Theme {
     // ─── Text hierarchy ───────────────────────────────────────────
     // Primary near-white, secondary a clear light grey, dim for metadata — every one readable
     // on bg-card, which is where text mostly sits (ratios in the note above Theme).
-    out property <color> text-primary:   ThemeOverrides.enabled ? ThemeOverrides.text-primary-override
+    // High contrast outranks a community palette here too, exactly as it does on the surfaces.
+    out property <color> text-primary:   ContrastPrefs.high ? ContrastPrefs.text-primary
+        : ThemeOverrides.enabled ? ThemeOverrides.text-primary-override
         : (ThemeMode.dark ? #edf2f8 : #172437);
-    out property <color> text-secondary: ThemeOverrides.enabled ? ThemeOverrides.text-secondary-override
+    out property <color> text-secondary: ContrastPrefs.high ? ContrastPrefs.text-secondary
+        : ThemeOverrides.enabled ? ThemeOverrides.text-secondary-override
         : (ThemeMode.dark ? #b0bdce : #495b72);
-    out property <color> text-dim:       ThemeOverrides.enabled ? ThemeOverrides.text-dim-override
+    out property <color> text-dim:       ContrastPrefs.high ? ContrastPrefs.text-dim
+        : ThemeOverrides.enabled ? ThemeOverrides.text-dim-override
         : (ThemeMode.dark ? #8d9eb3 : #607189);
 
     // ─── Borders & overlays ───────────────────────────────────────

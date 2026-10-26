@@ -7,7 +7,7 @@
 //   29=spreadsheet, 30=document_editor, 31=presentation.
 // The AI IS the shell — Intent Lens is the primary interaction.
 
-import { Theme, ThemeMode, ThemeOverrides, AccentPreset, TextScale } from "theme.slint";
+import { Theme, ThemeMode, ThemeOverrides, ContrastPrefs, AccentPreset, TextScale } from "theme.slint";
 // A window frame's glyph wears its app's colour from the one table, not the minds' teal.
 import { AppColor } from "components/app_color.slint";
 // The letter on an unknown app's tile, answered from Rust (wire/mod.rs).
@@ -99,7 +99,7 @@ import { YMenuAction, YContextMenu } from "components/y_context_menu.slint";
 import { Icons } from "components/icon.slint";
 import { Tr } from "translations.slint";
 
-export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
+export { HarnessData, HarnessRowData, Tr, ThemeMode, ThemeOverrides, ContrastPrefs, AccentPreset, ContentBlock, MessageData, ToolCallData, UrgeCardData, BondData, OpinionData, SharedRefData, MemoryItem, LensResult, ApprovalRequest, QuestionRequest, MindRule, MindAuditEntry, WhisperCardItem, FileEntry, BreadcrumbSegment, FileDetailData, NotificationData, NotifActionData, ProcessData, ClipboardEntryData, CheatRowData, AppGridItem, ServiceItem, WindowItem, SwitcherCell, DockItem, DockButton, DockWindow, ToastData, ToastActionData, PackageData, PendingAction, UsbDeviceData, PciDeviceData, InputDeviceData, StorageDeviceData, DisplayDeviceData, UserData, GroupData, PermFileData, ComponentVersionData, BriefSection, CommandItem, YSidebarItem, YSidebarSection, YTabItem, YMenuAction, ProblemRow }
 
 export component App inherits Window {
     default-font-family: Theme.font-ui;

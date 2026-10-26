@@ -26,7 +26,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use slint::ComponentHandle;
 
-use crate::{AccentPreset, App, ThemeCardData, ThemeMode, ThemeOverrides};
+use crate::{AccentPreset, App, ContrastPrefs, ThemeCardData, ThemeMode, ThemeOverrides};
 
 /// Give a window of the shell's own (an agent's pop-out, the capture bar) the shell's theme:
 /// dark or light, the accent, any community theme. Every Slint window has its own copy of every
@@ -35,7 +35,7 @@ use crate::{AccentPreset, App, ThemeCardData, ThemeMode, ThemeOverrides};
 /// it on every open costs nothing.
 macro_rules! sync_window_theme {
     ($ui:expr, $window:expr) => {{
-        use crate::{AccentPreset, ThemeMode, ThemeOverrides};
+        use crate::{AccentPreset, ContrastPrefs, ThemeMode, ThemeOverrides};
         macro_rules! copy {
             ($global:ty, $get:ident, $set:ident) => {{
                 let want = $ui.global::<$global>().$get();
@@ -45,6 +45,7 @@ macro_rules! sync_window_theme {
             }};
         }
         copy!(ThemeMode, get_dark, set_dark);
+        copy!(ContrastPrefs, get_high, set_high);
         copy!(AccentPreset, get_index, set_index);
         copy!(ThemeOverrides, get_enabled, set_enabled);
         copy!(ThemeOverrides, get_bg_deep_override, set_bg_deep_override);
@@ -208,6 +209,12 @@ fn apply_palette(ui: &App, t: &Theme) {
 pub fn apply_to_ui(ui: &App, t: &Theme) {
     ui.global::<ThemeMode>().set_dark(t.dark);
     ui.set_settings_dark_mode(t.dark);
+    // High contrast belongs to the person, not to the theme, and no theme file has a key for
+    // it. Re-setting it here costs nothing and means a freshly created window, whose own copy
+    // of the global starts false like all of them, is never left on the stock colours after a
+    // theme switch that happened to be the first thing written to it.
+    let high = crate::wire::settings::high_contrast();
+    ui.global::<ContrastPrefs>().set_high(high);
     ui.set_settings_accent_color(t.accent.clone().into());
     ui.global::<AccentPreset>().set_index(crate::wire::settings::accent_name_to_index(&t.accent));
     ui.set_settings_theme(t.id.clone().into());

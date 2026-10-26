@@ -46,6 +46,10 @@ pub const WALLPAPER_PRESETS: &[&str] = &[
 #[serde(default)]
 pub struct UserSettings {
     pub dark_mode: bool,
+    /// The person's high-contrast choice (#21). No theme owns it: themes change under it, and
+    /// it stays off until a person turns it on.
+    #[serde(default)]
+    pub high_contrast: bool,
     pub accent_color: String,
     pub tool_permission: String,
     pub auto_lock_secs: i32,
@@ -109,6 +113,7 @@ impl Default for UserSettings {
     fn default() -> Self {
         Self {
             dark_mode: true,
+            high_contrast: false,
             accent_color: "cyan".into(),
             tool_permission: "sensitive".into(),
             auto_lock_secs: 300,
@@ -197,6 +202,15 @@ pub fn theme_chosen() -> bool {
     match LIVE.get().and_then(|s| s.lock().ok()) {
         Some(settings) => settings.theme_chosen,
         None => load().theme_chosen,
+    }
+}
+
+/// The person's high-contrast choice (#21). Read at start, and whenever the tokens are set for a
+/// theme — choosing a theme never writes it, so it survives every palette.
+pub fn high_contrast() -> bool {
+    match LIVE.get().and_then(|s| s.lock().ok()) {
+        Some(settings) => settings.high_contrast,
+        None => load().high_contrast,
     }
 }
 
