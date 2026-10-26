@@ -61,6 +61,43 @@ def fold_site(site):
     return s[4:] if s.startswith("www.") else s
 
 
+TARGET_CAP = 100      # characters a link target is allowed to take in a reading
+QUERY_LIMIT = 40      # a query longer than this is a tracking stamp, not where the link goes
+THIS_PAGE = "(this page)"
+
+
+def fold_target(url, base=None):
+    """A link's target as a person reads it, against the page the link is on.
+
+    A page's reading is what a model reads, and the whole absolute URL repeats the page's own host
+    for every link on it: while you are on that host the target is the path. A link to another host
+    keeps its host, `www.` folded off as `fold_site` does, so the reader sees where they leave for.
+    A query is kept only when it is short — a search query is the point of the link, a tracking
+    stamp is noise. Nothing is cut through: a target still over TARGET_CAP characters ends after
+    its last whole path segment, the way a person breaks off rather than mid-word."""
+    s = str(url or "").strip()
+    if not s or s.startswith("#"):
+        return THIS_PAGE                      # `#top` and an empty href are this page, scrolled
+    if not host_of(s):
+        return s                              # mailto:, javascript:, a target already a path
+    got = urllib.parse.urlsplit(s)
+    host, path = fold_site(got.hostname or ""), got.path or ""
+    if base and fold_site(base) == host:
+        if not path or (got.fragment and not path.strip("/")):
+            return THIS_PAGE
+        word = path + ("?" + got.query if got.query else "")
+    else:
+        word = host + path
+        if got.query and len(got.query) < QUERY_LIMIT:
+            word += "?" + got.query
+    if len(word) > TARGET_CAP and got.query:
+        word = word[:word.index("?")] if "?" in word else path
+    if len(word) > TARGET_CAP:
+        keep = word[:TARGET_CAP]
+        word = (keep[:keep.rfind("/")] if "/" in keep else keep) + "…"
+    return word
+
+
 def commitment_of(element):
     """The commitment a control's label carries.
 
@@ -236,14 +273,18 @@ class Driver:
             }
             return self.last_status
 
-    def _marked(self, page):
+    def _marked(self, page, base=None):
         """A reading with every control that reads as a commitment marked: the reader learns
-        before trying that `click` will refuse it and `commit` will ask."""
+        before trying that `click` will refuse it and `commit` will ask. A link's target is folded
+        to what it is from this page — the judgement goes first, and reads the real URL."""
+        base = base or page.get("url")
         for e in page.get("elements") or []:
             if not e.get("context"):
                 word = commitment_of(e)
                 if word:
                     e["commitment"] = word
+            if e.get("href"):
+                e["href"] = fold_target(e["href"], base)
         return page
 
     def read(self, tab=None, all=False):
@@ -266,7 +307,7 @@ class Driver:
         with self.held():
             t = self._tab(tab)
             got = self._run(t, "search", query, 40, True)
-            found = self._marked({"elements": got["found"]})["elements"]
+            found = self._marked({"elements": got["found"]}, base=t.url)["elements"]
             return {"query": query, "found": found, "total": got["total"], "text": got["text"],
                     "loading": got["loading"], "url": t.url, "tab": short(t.id)}
 
