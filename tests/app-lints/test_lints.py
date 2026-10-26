@@ -175,6 +175,53 @@ class FindSetters(unittest.TestCase):
         self.assertEqual([("cell-grid", "in"), ("query", "in-out")], missing)
 
 
+# -- setters a framework macro writes -----------------------------------------
+
+
+class MacroWrittenSetters(unittest.TestCase):
+    """`yantrik_app::rail_window!(T)` writes the rail's properties from outside the app.
+
+    The expansion is not text under `apps/<name>/src`, so `setters_called` cannot find it. The
+    write counts when the app calls the method the macro put the write in -- `render_rail` --
+    because that is the app proving it draws the rail. These run against the framework's own
+    macro, which is the point: the rule and the macro have to stay in step.
+    """
+
+    SLINT = (
+        "export component FixtureApp inherits Window {\n"
+        "    in property <[AgentContextItem]> agent-context;\n"
+        "    in property <bool> proposal-working;\n"
+        "}\n"
+    )
+    RAIL = {"src/lib.rs": "yantrik_app::rail_window!(FixtureApp);\n"}
+    RENDERS = "fn draw(ui: &FixtureApp, rail: &Rail) {\n    ui.render_rail(rail);\n}\n"
+    WIRES = "fn wire(ui: &FixtureApp, cx: &Cx<App>) {\n    ui.wire_rail(cx);\n}\n"
+
+    def names(self, rust):
+        app = _fixture_app(slint=self.SLINT, rust=rust)
+        return [f["name"] for f in unset.check_app(app)]
+
+    def test_the_macro_counts_when_the_app_calls_the_method_it_wrote(self):
+        rust = dict(self.RAIL)
+        rust["src/view.rs"] = self.RENDERS
+        self.assertEqual([], self.names(rust))
+
+    def test_the_macro_does_not_count_when_the_app_never_renders_the_rail(self):
+        """Invoking the macro implements `RailView`; an app that never calls it draws nothing."""
+        self.assertEqual(["agent-context", "proposal-working"], self.names(self.RAIL))
+
+    def test_the_method_alone_is_not_the_macro(self):
+        """`render_rail` on its own is a method on some other type; nothing was written."""
+        rust = {"src/view.rs": self.RENDERS}
+        self.assertEqual(["agent-context", "proposal-working"], self.names(rust))
+
+    def test_a_setter_outside_the_called_method_does_not_count(self):
+        """Only the method the setter sits in counts: `wire_rail` does not cover `render_rail`."""
+        rust = dict(self.RAIL)
+        rust["src/view.rs"] = self.WIRES
+        self.assertEqual(["agent-context", "proposal-working"], self.names(rust))
+
+
 # -- the dead-handler lint ----------------------------------------------------
 
 
