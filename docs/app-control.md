@@ -298,7 +298,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | Surface | Action | Grade | Why |
 | --- | --- | --- | --- |
 | shell | `read_message`, `open_lens`, `close_lens`, `show_desktop` | safe | reads and showings; nothing written. `close_lens` puts the Lens and its chat panel away as Escape does, keeping the conversation and any draft; `describe shell` › `lens.close_with` names it while the Lens is open |
-| shell | `open_app`, `start_service`, `refresh_apps`, `send_message` | standard | launch, start, rescan, say a line to the desktop — undone by closing or stopping, nothing stored |
+| shell | `open_app`, `start_service`, `start_app`, `refresh_apps`, `send_message` | standard | launch, start, rescan, say a line to the desktop — undone by closing or stopping, nothing stored |
 | shell | `show_screen`, `show_app`, `focus_window`, `close_window`, `minimise_window`, `maximise_window` | standard | moving and placing windows; the state they change dies with the session |
 | shell | `pin_app` | sensitive | **regraded (#48)**: writes the START pin list into the shell's settings, and it is still pinned after a restart |
 | shell | `use_harness` | sensitive | **regraded (#48)**: writes the preferred mind into the shell's settings — a choice about who answers from now on, across restarts |
@@ -695,7 +695,8 @@ surface (above) — an adapter is how one gets there. The rest publish through A
 ## Where a mind's windows go (Mind View)
 
 While the setting `minds open apps in Mind View` is on (the default; only the person can change it),
-every window a mind opens is drawn in Mind View and never on the person's desktop:
+every window a mind opens is drawn in Mind View and never on the person's desktop. (No app of the
+framework opens there at all any more; see the last section.)
 
 - Every launch for a mind clears `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `XAUTHORITY`
   and then sets Mind View's own display (`mind_view::Seat::display`; the companion's browser tools
@@ -703,7 +704,7 @@ every window a mind opens is drawn in Mind View and never on the person's deskto
   toolkit settings, so a dead socket fails the app instead of falling back to the person's X display.
 - Mind View down is a refusal that says so (`failed_launches`), never a fall back to the desktop.
   A failed start is tried again after 30 s.
-- `open_app` for an app already open on the person's desktop starts nothing: the answer says it was
+- `open_app` for a program already open on the person's desktop starts nothing: the answer says it was
   not launched again and not raised, and the mind drives the open window through its surface.
 - `open_app` and, for a mind, `files_open` answer after the window is seen: `window: appeared`
   with `where`, or an error that says only what was observed (a refusal; an exit; "no window listed
@@ -734,3 +735,35 @@ every window a mind opens is drawn in Mind View and never on the person's deskto
 - Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
   `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
   drives whichever Terminal window is open, including the person's if that is the one open.
+
+### Yantrik's own apps never open in a mind's view (design #978, step 1)
+
+No app of the framework (`frameworks/yantrik-app`) gives a mind a window, whatever order the
+launches came in and whether or not the person has the app open. The list of those apps is one
+registry in the shell (`yantrik_shell_core::framework`), and each app declares `App::VIEWABLE`
+(false for all of them; a guard test reads every app). Everything below is made from it.
+
+- A mind's `open_app` of one, and a mind's `files_open` that would open a file in one, is refused
+  before anything is applied, with exactly `<Name> cannot open in your view; use its actions and
+  os_describe <surface id> instead.` The browser, `foot` for `agent_run` and the Python apps are
+  unchanged. A copy of an app that a mind started itself (a launch carrying `YANTRIK_FOR_MIND`, or
+  on a display that is not the person's) never becomes the instance and never hands its launch to
+  one: it says the same sentence and ends. A launch handed over from a mind's view applies nothing
+  and shows nothing, with files or without.
+- `describe shell` → `mind_view.apps_the_person_has_open` says so, generated from the registry.
+- **Start on demand.** A `describe` or an `act` on one of these apps that is not running makes the
+  shell start its one instance, `act shell start_app name=<id>` (standard; within the reach of a role
+  that names the app). The instance starts on the person's display, from the person's session,
+  with `--service` and no window: it loads its store and serves intents and `describe`
+  (`App::start_service`), and runs nothing the person sees (`App::start`: recovery, dialogs,
+  notifications, the Email unsent-draft sentence) until their first window opens. The person's
+  launch then presents a native window of the same instance. It ends five minutes after the last
+  time an agent used it with no window open, and the person closing their last window does not end it
+  while agents are using it.
+- An **act waits** for the start, at most 15 s, and then runs exactly once. If the start has not
+  finished by then, or failed, the act is dropped, never queued: the answer is `<Name> is starting;
+  nothing was done — send it again in a moment.`, or `<Name> could not be started (<why>); nothing was
+  done.` A **describe** during the start answers `<Name> is starting; ask again in a moment.`; only a
+  failed start says `<Name> is not running: the desktop could not start it (<why>).`
+- The shell's `windows`, `launcher.running` and `mind_view.apps` come from what the instances report
+  (`<id>.windows` beside the socket), never from launch pids: a windowless instance is not a window.

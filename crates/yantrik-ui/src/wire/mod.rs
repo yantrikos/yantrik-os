@@ -102,6 +102,7 @@ mod window_switcher;
 pub mod show_desktop;
 pub mod entity_bridge;
 pub mod app_framework;
+pub mod app_service;
 pub mod cross_app;
 pub mod universal_actions;
 pub mod command_palette;

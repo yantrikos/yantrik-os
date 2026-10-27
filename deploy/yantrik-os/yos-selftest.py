@@ -348,6 +348,195 @@ def run(fn):
     return out.getvalue(), err.getvalue(), code
 
 
+
+
+class FakeClock:
+    """Time that moves only when `yos` waits, so a 15 s bound costs nothing, and a hook that fires
+    when the clock passes a moment: the app coming up exactly when the test says."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.hooks = []
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        for at, hook in list(self.hooks):
+            if self.now >= at:
+                self.hooks.remove((at, hook))
+                hook()
+
+
+APP_DESKTOP = ("[Desktop Entry]\nType=Application\nName=Notes\nExec=/opt/yantrik/bin/yantrik-notes\n"
+               "X-Yantrik-Surface=notes\nX-Yantrik-Purpose=notes\n")
+
+
+def check_on_demand_apps():
+    """An agent's act or describe on a framework app that is not running (design #978, step 1): the
+    shell is asked to start it with no window, an act WAITS for it (at most 15 s) and then runs
+    exactly once, and one that cannot run in time is dropped and never replayed. The sentences are
+    the shell's (`say`), pinned here word for word as `yantrik_shell_core::framework` pins them."""
+    tmp = tempfile.mkdtemp(prefix="yos-ondemand-")
+    sockets = pathlib.Path(tmp) / "yantrik"
+    sockets.mkdir(parents=True)
+    apps = pathlib.Path(tmp) / "applications"
+    apps.mkdir()
+    (apps / "yantrik-notes.desktop").write_text(APP_DESKTOP)
+    saved_env = os.environ.get("XDG_RUNTIME_DIR")
+    yos = load_yos(tmp)
+    yos.application_dirs = lambda: [str(apps)]
+    services = []
+    asked_to_start = []
+    state = {"answer": "starting"}
+    ACT_STARTING = "Notes is starting; nothing was done — send it again in a moment."
+    ACT_FAILED = "Notes could not be started (it ended with exit status: 1); nothing was done."
+    DESCRIBE_STARTING = "Notes is starting; ask again in a moment."
+    DESCRIBE_FAILED = "Notes is not running: the desktop could not start it (it ended with exit status: 1)."
+    say = {"act_starting": ACT_STARTING, "act_failed": ACT_FAILED,
+           "describe_starting": DESCRIBE_STARTING, "describe_failed": DESCRIBE_FAILED}
+
+    def shell_reply(_svc, asked):
+        params = asked.get("params") or {}
+        if asked["method"] == "app.act" and params.get("action") == "start_app":
+            asked_to_start.append(params)
+            name = (params.get("args") or {}).get("name")
+            if name != "notes":
+                return {"accepted": True, "settled": True, "result": {"state": "not_on_demand"}}
+            return {"accepted": True, "settled": True,
+                    "result": {"app": "notes", "name": "Notes", "state": state["answer"], "say": say}}
+        return {"accepted": True, "settled": True}
+
+    app_calls = []
+
+    def app_reply(_svc, asked):
+        app_calls.append(asked)
+        if asked["method"] == "app.describe":
+            return {"protocol": 1, "app": "notes", "summary": "Notes - 1 note", "state": {"notes": 1},
+                    "revision": fnv("Notes - 1 note", {"notes": 1}), "actions": []}
+        return {"app": "notes", "action_id": "app-notes#1", "accepted": True, "settled": True,
+                "result": {}, "revision": "r", "summary": "done", "state": {}}
+
+    def bring_up():
+        svc = FakeService(sockets / "app-notes.sock", app_reply)
+        svc.start()
+        services.append(svc)
+
+    def take_down():
+        for svc in list(services):
+            if svc.path.endswith("app-notes.sock"):
+                svc.close()
+                services.remove(svc)
+
+    def acts():
+        return [c for c in app_calls if c["method"] == "app.act"]
+
+    shell = FakeService(sockets / "app-shell.sock", shell_reply)
+    shell.start()
+    services.append(shell)
+    try:
+        print("an act on an app that is not running waits for the start, then runs once (#978)")
+        clock = FakeClock()
+        yos.time = clock
+        clock.hooks.append((clock.now + 3.0, bring_up))
+        out, err, code = run(lambda: yos.cmd_act(["notes", "add_note", "title=x", "--agent-token", "tok"]))
+        check("the shell was asked to start Notes, with the token beside the arguments",
+              asked_to_start and asked_to_start[0] == {"action": "start_app", "args": {"name": "notes"},
+                                                       "agent_token": "tok"},
+              json.dumps(asked_to_start))
+        check("the act reached the app exactly once", len(acts()) == 1, "%d acts" % len(acts()))
+        check("and the call did not fail", code is None, "stderr=%r exit=%r" % (err, code))
+        check("having waited for the start and not for the bound", clock.now - 1000.0 < 5.0, clock.now - 1000.0)
+
+        print("a second act, with the app answering, asks nothing")
+        asked_to_start.clear()
+        run(lambda: yos.cmd_act(["notes", "add_note", "title=y", "--agent-token", "tok"]))
+        check("the shell was not asked again", asked_to_start == [], json.dumps(asked_to_start))
+
+        print("a describe on an app that is not running starts it and answers from it")
+        take_down()
+        app_calls.clear()
+        clock = FakeClock()
+        yos.time = clock
+        clock.hooks.append((clock.now + 2.0, bring_up))
+        out, err, code = run(lambda: yos.cmd_describe(["notes"]))
+        check("the describe was answered by the app", "Notes - 1 note" in out and code is None,
+              "out=%r err=%r exit=%r" % (out, err, code))
+
+        print("a start that is not finished by the bound drops the act, and it is never replayed")
+        take_down()
+        app_calls.clear()
+        asked_to_start.clear()
+        clock = FakeClock()
+        yos.time = clock
+        out, err, code = run(lambda: yos.cmd_act(["notes", "add_note", "title=z", "--agent-token", "tok"]))
+        check("it ends with the starting code", code == yos.EX_STARTING, "exit=%r" % (code,))
+        check("and says, word for word, that nothing was done",
+              err == "yos: " + ACT_STARTING + "\n", repr(err))
+        check("at the bound and not before or long after", 14.9 < clock.now - 1000.0 < 16.5, clock.now - 1000.0)
+        bring_up()
+        check("the app that came up afterwards was never sent the act", acts() == [], json.dumps(app_calls))
+        take_down()
+
+        print("an app that becomes ready just after the bound is still not called")
+        app_calls.clear()
+        clock = FakeClock()
+        yos.time = clock
+        clock.hooks.append((clock.now + yos.START_BOUND + 0.05, bring_up))
+        out, err, code = run(lambda: yos.cmd_act(["notes", "add_note", "title=late", "--agent-token", "tok"]))
+        check("the act answered that nothing was done", code == yos.EX_STARTING and ACT_STARTING in err,
+              "exit=%r err=%r" % (code, err))
+        clock.sleep(1.0)
+        check("and it was not sent to the app that came up after", acts() == [], json.dumps(app_calls))
+        take_down()
+
+        print("a describe while the app is starting says so, and never that it is not running")
+        clock = FakeClock()
+        yos.time = clock
+        out, err, code = run(lambda: yos.cmd_describe(["notes"]))
+        check("exactly the sentence", err == "yos: " + DESCRIBE_STARTING + "\n" and code == yos.EX_STARTING,
+              "exit=%r err=%r" % (code, err))
+        check("which has the stable part and not the failure's words",
+              "is starting; ask again" in err and "not running" not in err and "open it" not in err.lower(), err)
+
+        print("a start that failed: the act says nothing was done, the describe says not running")
+        state["answer"] = "failed"
+        clock = FakeClock()
+        yos.time = clock
+        out, err, code = run(lambda: yos.cmd_act(["notes", "add_note", "title=f", "--agent-token", "tok"]))
+        check("the act: its own sentence, with nothing was done",
+              code == yos.EX_NOT_STARTED and err == "yos: " + ACT_FAILED + "\n" and "nothing was done" in err,
+              "exit=%r err=%r" % (code, err))
+        check("without waiting for the bound", clock.now - 1000.0 < 1.0, clock.now - 1000.0)
+        out, err, code = run(lambda: yos.cmd_describe(["notes"]))
+        check("the describe: not running, and why",
+              code == yos.EX_NOT_STARTED and err == "yos: " + DESCRIBE_FAILED + "\n", "exit=%r err=%r" % (code, err))
+        check("and no call reached the app", app_calls == [], json.dumps(app_calls))
+        state["answer"] = "starting"
+
+        print("an app the shell says does not start on demand is carried on as before")
+        (apps / "other.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=Other\nExec=other\nX-Yantrik-Surface=other\n")
+        asked_to_start.clear()
+        clock = FakeClock()
+        yos.time = clock
+        out, err, code = run(lambda: yos.cmd_describe(["other"]))
+        check("the shell was asked, and the old words stand",
+              asked_to_start and "closed" in err and code == 1, "exit=%r err=%r" % (code, err))
+        asked_to_start.clear()
+        run(lambda: yos.cmd_describe(["other"]))
+        check("and is not asked again", asked_to_start == [], json.dumps(asked_to_start))
+    finally:
+        for svc in services:
+            svc.close()
+        if saved_env is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = saved_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     if not hasattr(socket, "AF_UNIX"):
         print("skipped: this test needs unix sockets")
@@ -1450,6 +1639,8 @@ def main():
                 os.environ["HOME"] = saved_home
             if saved_token is not None:
                 os.environ[yos.AGENT_TOKEN_ENV] = saved_token
+
+        check_on_demand_apps()
 
         print("ensure_service, with no desktop to ask")
         out, err, code = run(lambda: yos.ensure_service("notifications"))

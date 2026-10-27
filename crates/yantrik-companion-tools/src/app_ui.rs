@@ -373,6 +373,11 @@ impl Tool for DescribeAppTool {
             return "Error: `app` is required. Call list_apps to see which are open.".to_string();
         }
 
+        // A Yantrik app that is not running is started with no window first (#978 step 1).
+        if let Err(said) = crate::app_start::ensure(app, false) {
+            return said;
+        }
+
         match describe(app) {
             Ok(view) => serde_json::to_string_pretty(&view)
                 .unwrap_or_else(|e| format!("Error: could not format the reply: {e}")),
@@ -454,6 +459,11 @@ impl Tool for AppActionTool {
         // a file, and that must meet the configured cap on its own terms rather than ride in on
         // the tool's. The app's dispatch decides again when the call arrives (see `beyond_cap`);
         // the app's *state* can change in between too, which is what `expect_revision` is for.
+        // A Yantrik app that is not running is started with no window first, and the act waits for
+        // it; one that cannot run in time is dropped, never queued (#978 step 1).
+        if let Err(said) = crate::app_start::ensure(app, true) {
+            return said;
+        }
         let mut purpose = String::new();
         if let Ok(ref view) = describe(app) {
             if let Some(refusal) = beyond_cap(view, app, action, ctx.max_permission) {
@@ -720,6 +730,9 @@ impl Tool for AwaitAppTool {
         // The ordering is the whole point. Acting first and reading afterwards cannot distinguish
         // "the dialog opened" from "the dialog was already open", and a wait installed after a
         // click misses the result that arrived during the round trip.
+        if let Err(said) = crate::app_start::ensure(app, args.get("then_act").is_some_and(|v| v.is_object())) {
+            return said;
+        }
         let baseline = match describe(app) {
             Ok(v) => v,
             Err(e) => return format!("'{app}' did not answer: {}", e),

@@ -766,6 +766,14 @@ pub fn display_now() -> Option<String> {
     })
 }
 
+/// The names of the apps that give a Mind a window, as the person reads them: none yet.
+fn viewable_names() -> Vec<String> {
+    let name = |app: &yantrik_shell_core::framework::FrameworkApp| {
+        crate::windows::app_display_name(&crate::wire::dock::window_id(app.program))
+    };
+    yantrik_shell_core::framework::FRAMEWORK_APPS.iter().filter(|a| a.viewable).map(name).collect()
+}
+
 /// What `describe shell` says about Mind View.
 pub fn for_describe() -> serde_json::Value {
     let on = crate::wire::settings::minds_open_in_mind_view();
@@ -786,6 +794,9 @@ pub fn for_describe() -> serde_json::Value {
             } else {
                 "on the person's desktop, because `minds open apps in Mind View` is off"
             },
+            // Made from the framework apps' own declarations (`App::VIEWABLE`), never a hand-kept
+            // list: under #978 step 1 none gives a Mind a window, and each starts on demand.
+            "apps_the_person_has_open": yantrik_shell_core::framework::apps_the_person_has_open(&viewable_names()),
             "agent_terminal": if on {
                 "commands from agent_run are shown live in a terminal in Mind View"
             } else {

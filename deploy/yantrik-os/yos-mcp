@@ -35,6 +35,11 @@ import sys
 import threading
 import time
 
+# How `yos` ends when it made no call because the app it is for is starting (try again) or could
+# not be started (deploy/yantrik-os/yos: EX_STARTING, EX_NOT_STARTED).
+EX_STARTING = 75
+EX_NOT_STARTED = 69
+
 YOS = os.environ.get("YOS_BIN", "/opt/yantrik/bin/yos")
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -247,8 +252,10 @@ OS_DESCRIBE_HEAD = ("The current state of one app or service on this computer: w
                     "showing and which actions it offers, with each action's exact name, "
                     "arguments and permission grade. Describe an app before acting on it. "
                     "Takes a short name: 'shell' (the desktop — windows, files, opening apps)")
-OS_DESCRIBE_TAIL = (", or a service os_apps lists as answering — a closed app's service answers "
-                    "for it under the app's name. An app with a large family of related actions "
+OS_DESCRIBE_TAIL = (", or a service os_apps lists as answering. A Yantrik app that is not running "
+                    "is started for you, with no window, when you ask it something: if it is still "
+                    "starting you are told to ask again in a moment, and you cannot open it in your "
+                    "view. An app with a large family of related actions "
                     "lists that family as signatures and grades only — enough to see that an "
                     "action exists — and says so; pass that family's prefix as `actions` to get "
                     "what each of them does.")
@@ -380,9 +387,10 @@ TOOLS = [
         # name, so this says how to read it rather than apologising for it.
         "description": "What is on this desktop: the apps that are open right now (each with a "
                        "one-line summary of what it is showing), the services that are "
-                       "answering, and every app that is closed but can be opened — marked "
-                       "(closed), with what it is for and the exact name to open it with, "
-                       "whoever wrote it. Start here. The desktop itself is `shell`: "
+                       "answering, and every app that is closed — either one that can be opened "
+                       "(marked (closed), with the exact name to open it with) or a Yantrik app "
+                       "that answers when asked, with no window — each with what it is for. "
+                       "Start here. The desktop itself is `shell`: "
                        "os_act on shell with open_app opens an app, and os_describe on shell "
                        "shows windows, files and the conversation. Use the names exactly as "
                        "listed — an app is sometimes opened under one name and described "
@@ -445,7 +453,10 @@ TOOLS = [
         "description": "Perform an action an app lists in os_describe, using exactly the app "
                        "name, action name and argument names it lists — never guessed ones; an "
                        "action the app does not list is refused. To open an app: app 'shell', "
-                       "action 'open_app', args {\"name\": \"notes\"}. Returns whether the "
+                       "action 'open_app', args {\"name\": \"notes\"}. Yantrik's own apps cannot be opened in "
+                       "your view: act on them directly, and they start on their own, with no window; "
+                       "an act that finds one still starting does nothing and says so, and you send it "
+                       "again. Returns whether the "
                        "action settled and what the app looks like afterwards, so the effect can "
                        "be checked rather than assumed. What happens to an action above the "
                        "routine grades depends on the mode the PERSON has this desktop in, which "
@@ -1829,6 +1840,16 @@ if not CEILING_SET:
 _LOCAL = threading.local()
 
 
+class StartAnswer(str):
+    """The sentence an act is answered with when the app it is for is starting or could not be
+    started, and whether that is an error. Given to the Mind as it is, not as a refusal."""
+
+    def __new__(cls, text, failed):
+        obj = super().__new__(cls, text)
+        obj.failed = failed
+        return obj
+
+
 def ungraded_because(app, action, why=None):
     """Remember, or recall, why grading one action came back empty — for THIS call."""
     seen = getattr(_LOCAL, "ungraded", None)
@@ -1891,7 +1912,13 @@ def action_detail(app, action):
     would produce cards that named an action and gave no reason for it, for exactly the apps with
     the most actions.
     """
-    p = yos(["describe", app], SHELL_CALL_TIMEOUT)
+    p = yos(["describe", app, "--for-act"], SHELL_CALL_TIMEOUT)
+    if p is not None and p.returncode in (EX_STARTING, EX_NOT_STARTED):
+        # The app is a Yantrik app the desktop is starting, or could not start: the act is dropped
+        # whole, and answered with the act's sentence as it came (see `guard_act`).
+        _LOCAL.started = StartAnswer(re.sub(r"^\s*yos:\s*", "", (p.stderr or "").strip()),
+                                     p.returncode == EX_NOT_STARTED)
+        return None, ""
     if p is None or p.returncode != 0:
         # Why it could not be read is the useful half. The first mind to use this bridge on a
         # real machine asked for `calendar add_event` while Calendar was closed and was told
@@ -2483,8 +2510,11 @@ def guard_act(args):
         return ("os_act needs both an app and an action — see os_describe for what an app "
                 "offers."), None, None, None
 
+    _LOCAL.started = None
     level, purpose = action_detail(app, action)
     if level is None:
+        if getattr(_LOCAL, "started", None) is not None:
+            return _LOCAL.started, None, None, None
         why = ungraded_because(app, action)
         # A `why` with nothing in it past a "yos:" prefix says nothing a mind can act on, and it
         # reached one as "…could not be read: yos:" (yantrik-mind, 2026-09-27).
@@ -2864,6 +2894,8 @@ def run_tool(tool, args, present=None):
         agent_call = agent_call or (str(args.get("app")) in ("shell", "app-shell")
                                     and args.get("action", "").startswith("agent_"))
         refusal, note, audit, grant = guard_act(args)
+        if isinstance(refusal, StartAnswer):
+            return str(refusal), refusal.failed
         if refusal is not None:
             return policy_answer(refusal), False
 
@@ -2932,6 +2964,12 @@ def run_tool(tool, args, present=None):
     out = for_a_mind((p.stdout or "").strip())
     err = (p.stderr or "").strip()
     app = args.get("app")
+    if p.returncode in (EX_STARTING, EX_NOT_STARTED) and tool["name"] in ("os_describe", "os_act"):
+        # The app is a Yantrik app the desktop starts on demand, and it is still starting or could
+        # not start. `yos` made no call to it: an act that cannot run now is dropped, never queued,
+        # so "nothing was done" is the whole truth. The sentence is the shell's, and it is the
+        # answer as it stands (pinned by the Mind), not wrapped in a failure.
+        return re.sub(r"^\s*yos:\s*", "", err.strip()), p.returncode == EX_NOT_STARTED
     if p.returncode != 0 and app and "no socket for" in err and tool["name"] in ("os_describe", "os_act"):
         # The second live drive: told the app was not running ("no socket for 'notes'"), the
         # model described it twice more and gave up. The way forward belongs in the failure
