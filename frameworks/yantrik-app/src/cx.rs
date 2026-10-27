@@ -419,6 +419,13 @@ impl<A: App> Core<A> {
                     problems::record_failure(self.id, refused.kind, &refused.sentence);
                 }
                 *self.last_refusal.borrow_mut() = Some(refused.clone());
+                // The model keeps whatever the command had already changed before refusing, so it
+                // is drawn: a window never shows less than the model says (an app that refuses and
+                // says why on its notice line is seen to do so).
+                if !changed.is_empty() {
+                    self.render_windows(&changed);
+                }
+                self.rail_changed(&changed);
             }
         }
         self.current.set(None);
