@@ -61,6 +61,8 @@ enum Command {
     Presented,
     OpenAnother,
     NotOpened,
+    /// Closes the last window with work in flight, as an app with a write under way does.
+    CloseWithWork,
 }
 
 struct Service;
@@ -100,6 +102,10 @@ impl App for Service {
                 fx.open_window();
             }
             Command::NotOpened => m.not_opened += 1,
+            Command::CloseWithWork => {
+                fx.close(WindowId::PRIMARY);
+                fx.linger(Duration::from_secs(10));
+            }
         }
         Ok(())
     }
@@ -398,4 +404,21 @@ fn an_agents_act_opens_no_window_once_the_persons_last_one_is_closed() {
     app.launch_again().unwrap();
     app.run(Command::OpenAnother);
     assert_eq!(app.windows().len(), 2);
+}
+
+/// L9, during the linger that follows the person closing their last window: an act that asks for a
+/// window gets none, the app still lingers, and the person's own launch is the way back.
+#[test]
+fn an_agents_act_opens_no_window_during_a_linger_either() {
+    let app = TestApp::<Service>::start_service();
+    app.launch_again().unwrap();
+    app.run(Command::CloseWithWork);
+    assert!(app.windows().is_empty());
+    assert!(app.lingering(), "the app lingers with its backstop");
+    app.run(Command::OpenAnother);
+    assert!(app.windows().is_empty(), "no window on the desktop the person just cleared");
+    assert_eq!(app.model(|m| m.not_opened), 1);
+    assert!(app.lingering());
+    app.launch_again().unwrap();
+    assert_eq!(app.windows(), vec![WindowId::PRIMARY], "the person's launch is the way back");
 }

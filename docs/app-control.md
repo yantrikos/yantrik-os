@@ -777,6 +777,8 @@ registry in the shell (`yantrik_shell_core::framework`), and each app declares `
   only a Yantrik app binary or the shell may hand a launch over. A Mind's `agent_run` that rewrites
   both and runs a Yantrik app binary can still pose as the person. Identity a caller cannot claim
   comes from sessions the shell creates (design #978 section 1), which step 2 builds.
+  The display rule has no X11 side either: a process with `DISPLAY=:N` (Mind View's Xwayland) and
+  no `WAYLAND_DISPLAY` is "not on Wayland" and counts as the person's. That is a step-2 item too.
 - **Left in an agent's start, on purpose.** Email's look at the mail service (it can start the
   service and connect the account, which its intents need), Weather's fetch and its refetch timer
   (they run until the instance goes idle, five minutes after the last use), and Download Manager's

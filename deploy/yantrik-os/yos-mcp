@@ -2911,6 +2911,10 @@ def run_tool(tool, args, present=None):
             return str(refusal), refusal.failed
         if refusal is not None:
             return policy_answer(refusal), False
+        if grant:
+            # A person was asked, which can take minutes: the grade read's deadline is stale, and the
+            # approved act gets a fresh bound of its own.
+            _LOCAL.start_deadline = None
 
     refusal = plan_refusal(tool["name"])
     if refusal is not None:

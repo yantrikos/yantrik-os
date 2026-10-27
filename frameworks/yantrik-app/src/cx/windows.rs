@@ -125,7 +125,7 @@ impl<A: App> Core<A> {
         // An app opens a window only beside one of the person's that is open: an instance an agent
         // started, or one kept after the person closed their last window, puts no window on the
         // person's desktop at an act's request (#978 L9). The app hears it as a window not opened.
-        if !self.person_has_started() || (self.windows_open().is_empty() && !self.lingering()) {
+        if !self.person_has_started() || self.windows_open().is_empty() {
             let why = "a window is opened only while the person has one of this app open".to_string();
             tracing::warn!(app = self.id, "{why}");
             self.event(Event::WindowNotOpened { window: id, why });

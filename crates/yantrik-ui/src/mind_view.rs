@@ -344,7 +344,19 @@ pub fn ensure() -> Result<Seat, String> {
         let nested = state.nested.as_mut()?;
         let alive = matches!(nested.child.try_wait(), Ok(None));
         if alive && socket_path(&nested.seat.wayland).exists() {
-            return Some(Ok(nested.seat.clone()));
+            // Its display must stay on record, or the apps cannot tell it from the person's: when the
+            // record is lost and cannot be written again, Mind View stops (#978 L5).
+            match keep_recorded(&nested.seat.wayland) {
+                Ok(()) => return Some(Ok(nested.seat.clone())),
+                Err(why) => {
+                    let _ = nested.child.kill();
+                    let _ = nested.child.wait();
+                    state.nested = None;
+                    state.apps.clear();
+                    state.unavailable = Some((why.clone(), Instant::now()));
+                    return Some(Err(why));
+                }
+            }
         }
         // The person closed Mind View, or it died. A fresh one is started below; the apps that
         // were in it went with its display.
@@ -353,17 +365,24 @@ pub fn ensure() -> Result<Seat, String> {
         let _ = nested.child.wait();
         state.nested = None;
         state.apps.clear();
-        record_mind_displays(&[]);
+        let _ = record_mind_displays(&[]);
         None
     });
     if let Some(answer) = current {
         return answer;
     }
     match start() {
-        Ok(nested) => {
+        Ok(mut nested) => {
             let seat = nested.seat.clone();
             tracing::info!(wayland = %seat.wayland, x11 = ?seat.x11, "Mind View started");
-            record_mind_displays(&[seat.wayland.clone()]);
+            // Mind View does not run unless its display is on record (#978 L5).
+            if let Err(why) = record_mind_displays(&[seat.wayland.clone()]) {
+                let _ = nested.child.kill();
+                let _ = nested.child.wait();
+                tracing::warn!(reason = %why, "Mind View stopped: its display could not be recorded");
+                with_state(|state| state.unavailable = Some((why.clone(), Instant::now())));
+                return Err(why);
+            }
             with_state(|state| state.nested = Some(nested));
             Ok(seat)
         }
@@ -388,15 +407,25 @@ pub fn record_displays() {
         }
         Err(_) => displays::forget_person(&dir),
     }
-    record_mind_displays(&[]);
+    let _ = record_mind_displays(&[]);
 }
 
 /// Records the displays Mind View serves now.
-fn record_mind_displays(seats: &[String]) {
+fn record_mind_displays(seats: &[String]) -> Result<(), String> {
     let dir = yantrik_ipc_transport::server::socket_dir();
-    if let Err(e) = displays::write_minds(&dir, seats) {
+    displays::write_minds(&dir, seats).map_err(|e| {
         tracing::warn!(error = %e, "Mind View's displays were not recorded");
+        format!("Mind View's display could not be recorded ({e}), so apps could not tell it from the person's")
+    })
+}
+
+/// Whether `display` is on record as Mind View's; if the record was lost, it is written again.
+fn keep_recorded(display: &str) -> Result<(), String> {
+    let dir = yantrik_ipc_transport::server::socket_dir();
+    if displays::Known::read(&dir).minds.iter().any(|d| d == display) {
+        return Ok(());
     }
+    record_mind_displays(&[display.to_string()])
 }
 
 /// Stops every Mind View an earlier shell left running. A shell that stops, whether the
@@ -858,6 +887,13 @@ mod tests {
         // Outside a dispatch there is no caller, so no mind to tell apart.
         assert_eq!(mind_id_now(), None);
         assert_eq!(agent_words_now(), None);
+    }
+
+    /// #978 L5: a display that cannot be put on record is not kept: Mind View does not run on it.
+    #[test]
+    fn a_display_that_cannot_be_recorded_is_an_error_so_mind_view_does_not_run() {
+        assert!(record_mind_displays(&["../not-a-display".to_string()]).is_err());
+        assert!(keep_recorded("../not-a-display").is_err());
     }
 
     #[test]

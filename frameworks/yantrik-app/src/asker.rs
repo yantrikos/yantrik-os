@@ -18,7 +18,9 @@
 //! rewrites its own environment (`env -u YANTRIK_FOR_MIND WAYLAND_DISPLAY=<the person's>`) and
 //! runs a Yantrik app binary can still pose as the person. Identity that a caller cannot claim
 //! comes from sessions the shell creates (design section 1, step 2), which closes this. The program check
-//! below ([`exe_is_ours`]) is a cheap guard, not that fix.
+//! below ([`exe_is_ours`]) is a cheap guard, not that fix. The display rule has no X11 side either:
+//! a process with `DISPLAY=:N` (Mind View's Xwayland) and no `WAYLAND_DISPLAY` is 'not on Wayland'
+//! and counts as the person's. Step 2 closes that with the rest.
 
 use serde_json::Value;
 
@@ -115,29 +117,40 @@ pub fn asking(args: &Value) -> Asker {
     }
 }
 
-/// Whether `exe`, the path a process runs, is one of Yantrik's own programs: an app binary or the
-/// shell, by file name (`yantrik-*`). A binary replaced by an update reads as `... (deleted)`.
-pub fn is_our_program(exe: &str) -> bool {
-    let exe = exe.strip_suffix(" (deleted)").unwrap_or(exe);
-    std::path::Path::new(exe)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("yantrik-"))
+/// Whether `exe`, the path a process runs, is one of Yantrik's own programs: a `yantrik-*` file in
+/// the directory `own` (this process's program) is in, which is where the app binaries and the shell
+/// are installed. A binary replaced by an update reads as `... (deleted)`. A file named like one
+/// that sits anywhere else (`cp /usr/bin/python3 ~/yantrik-x`) is not.
+pub fn is_our_program(exe: &str, own: &str) -> bool {
+    let strip = |p: &str| p.strip_suffix(" (deleted)").unwrap_or(p).to_string();
+    let (exe, own) = (strip(exe), strip(own));
+    let (exe, own) = (std::path::Path::new(&exe), std::path::Path::new(&own));
+    exe.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("yantrik-"))
+        && exe.parent().is_some()
+        && exe.parent() == own.parent()
 }
 
-/// Whether the process `pid` runs one of Yantrik's programs. Off Linux there is no way to ask, and
-/// the claim is all there is; on Linux a process whose program cannot be read is not ours.
+/// Whether the caller's program `theirs` may hand a launch over to this process, whose own program
+/// is `own`: the very same program (the app itself, a second copy of it), or another Yantrik
+/// program beside it ([`is_our_program`]). There is no switch for tests: a test that calls across
+/// a socket from its own process is the same program, and one that calls from another binary
+/// injects the allowance at runtime, never through `cfg`.
+pub fn may_hand_over(theirs: &str, own: &str) -> bool {
+    theirs == own || is_our_program(theirs, own)
+}
+
+/// Whether the process `pid` runs a program that may hand a launch over. Off Linux there is no way
+/// to ask, and the claim is all there is; on Linux a process whose program cannot be read, or this
+/// process's own, is not ours.
 fn exe_is_ours(pid: i32) -> bool {
-    // The framework's own tests call across a socket from a test binary, which is nobody's program
-    // but cargo's. Only a build with the `testing` feature (the dev-dependency on yantrik-testing)
-    // skips the check; a shipped app is built without it.
-    if cfg!(feature = "testing") || !cfg!(target_os = "linux") {
+    if !cfg!(target_os = "linux") {
         return true;
     }
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()
-        .and_then(|p| p.to_str().map(is_our_program))
-        .unwrap_or(false)
+    let read = |p: String| std::fs::read_link(p).ok().and_then(|l| l.to_str().map(str::to_string));
+    match (read(format!("/proc/{pid}/exe")), read("/proc/self/exe".to_string())) {
+        (Some(theirs), Some(own)) => may_hand_over(&theirs, &own),
+        _ => false,
+    }
 }
 
 #[cfg(unix)]
@@ -234,11 +247,47 @@ mod tests {
     /// Only Yantrik's own programs hand a launch over (M1): anything else is a Mind's.
     #[test]
     fn only_a_yantrik_program_may_hand_a_launch_over() {
-        for ours in ["/opt/yantrik/bin/yantrik-notes", "/opt/yantrik/bin/yantrik-ui", "/x/target/debug/yantrik-email (deleted)"] {
-            assert!(is_our_program(ours), "{ours}");
+        let own = "/opt/yantrik/bin/yantrik-notes";
+        // The same program, a second copy of the app itself; and Yantrik's own beside it.
+        for ours in [own, "/opt/yantrik/bin/yantrik-ui", "/opt/yantrik/bin/yantrik-notes (deleted)"] {
+            assert!(may_hand_over(ours, own), "{ours}");
         }
-        for other in ["/usr/bin/python3", "/usr/bin/env", "/home/p/yantrik-notes/evil", "/tmp/notes", "/usr/bin/foot", ""] {
-            assert!(!is_our_program(other), "{other}");
+        assert!(may_hand_over("/x/target/debug/yantrik-email (deleted)", "/x/target/debug/yantrik-notes"));
+        for other in [
+            "/usr/bin/python3",
+            "/usr/bin/env",
+            "/home/p/yantrik-notes/evil",
+            "/tmp/notes",
+            "/usr/bin/foot",
+            "",
+            // A copy of anything, named like one of ours, anywhere else.
+            "/home/p/yantrik-x",
+            "/tmp/yantrik-notes",
+        ] {
+            assert!(!may_hand_over(other, own), "{other}");
+        }
+    }
+
+    /// The same program is accepted whatever it is called: a test calling across a socket from its
+    /// own process needs nothing else.
+    #[test]
+    fn the_same_program_is_the_app_itself_whatever_it_is_called() {
+        assert!(may_hand_over("/tmp/target/debug/deps/service-3f2a", "/tmp/target/debug/deps/service-3f2a"));
+        assert!(!may_hand_over("/tmp/target/debug/deps/other-3f2a", "/tmp/target/debug/deps/service-3f2a"));
+        #[cfg(target_os = "linux")]
+        assert!(exe_is_ours(std::process::id() as i32), "this process is the same program as itself");
+    }
+
+    /// Shipped code has no switch: nothing in this module's code, before its tests, reads a feature or
+    /// `cfg(test)`, so a binary built beside the tests (`--all-targets`) checks the program as one
+    /// built alone does.
+    #[test]
+    fn the_program_check_has_no_feature_switch() {
+        let source = include_str!("asker.rs");
+        let shipped = source.split("#[cfg(test)]").next().unwrap();
+        let code: String = shipped.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        for switch in ["feature =", "cfg!(test)", "cfg(test)", "cfg(feature", "testing"] {
+            assert!(!code.contains(switch), "shipped code reads `{switch}`");
         }
     }
 

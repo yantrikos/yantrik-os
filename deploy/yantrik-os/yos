@@ -825,15 +825,24 @@ def app_answers(app_id):
                if os.path.basename(path).lower() == wanted)
 
 
-def ask_to_start(app_id, token, acting=True, timeout=5):
+def ask_to_start(app_id, token, acting=True, timeout=5, previous=None, shown=None):
     """The shell's answer to `start_app`: `{app, name, state, say, reason?}`. None when there is no
     desktop to ask, or it does not know the action (an older build): the caller carries on as it
-    did before. A desktop that was there and did not answer, or said no, ends the call."""
+    did before. A desktop that said no ends the call. One that is there and slow to answer (the
+    shell asks from its UI thread) is busy, not gone: the first ask ends the call with the starting
+    sentence, and a later ask keeps `previous`, what it said before."""
     params = {"action": "start_app", "args": {"name": app_id}}
     if token:
         params["agent_token"] = token
     try:
         reply = request("shell", "app.act", params, timeout=timeout, waited=True)
+    except (OSError, ValueError):
+        # The desktop is there and slow to answer: busy, not gone (a timeout, a connection cut
+        # short). Its UI thread answers this, so it can be busy for a moment. The first ask ends the
+        # call with the starting sentence; a later one keeps what the desktop said before.
+        if previous is not None:
+            return previous
+        refuse_start({"name": shown or app_id}, acting, False)
     except Unreachable as e:
         text = str(e)
         if "unknown action" in text or "no socket for" in text or "is closed" in text:
@@ -893,7 +902,7 @@ def start_framework_app(name, method, token=None, clock=None, pause=None):
     carried = carried_deadline() if acting else None
     if carried is not None:
         deadline = min(deadline, carried)
-    said = ask_to_start(app, token, acting, timeout=5 if acting else 2)
+    said = ask_to_start(app, token, acting, timeout=5 if acting else 2, shown=surface["title"])
     if said is None or said["state"] == "not_on_demand":
         _LEGACY.add(app)
         return
@@ -913,11 +922,11 @@ def start_framework_app(name, method, token=None, clock=None, pause=None):
             return
         if acting and not rechecked and clock() - began >= RECHECK_AFTER:
             rechecked = True
-            said = ask_to_start(app, token, acting, timeout=5) or said
+            said = ask_to_start(app, token, acting, timeout=5, previous=said) or said
     # The bound passed. An act hears the shell once more, so a start that failed in the meantime is
     # told as failed; the call is dropped either way.
     if acting:
-        said = ask_to_start(app, token, acting, timeout=5) or said
+        said = ask_to_start(app, token, acting, timeout=5, previous=said) or said
     refuse_start(said, acting, said["state"] == "failed")
 
 

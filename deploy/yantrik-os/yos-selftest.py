@@ -577,6 +577,60 @@ def check_on_demand_apps():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+
+def check_busy_shell():
+    """A shell that accepts and never answers (its UI thread is busy) is busy, not gone: the
+    contract sentences survive, and no raw timeout escapes (#978 review, L3)."""
+    tmp = tempfile.mkdtemp(prefix="yos-busy-")
+    sockets = pathlib.Path(tmp) / "yantrik"
+    sockets.mkdir(parents=True)
+    apps = pathlib.Path(tmp) / "applications"
+    apps.mkdir()
+    (apps / "yantrik-notes.desktop").write_text(APP_DESKTOP)
+    saved_env = os.environ.get("XDG_RUNTIME_DIR")
+    yos = load_yos(tmp)
+    yos.application_dirs = lambda: [str(apps)]
+    held = []
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(sockets / "app-shell.sock"))
+    listener.listen(8)
+
+    def accept_and_say_nothing():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            held.append(conn)
+
+    threading.Thread(target=accept_and_say_nothing, daemon=True).start()
+    try:
+        print("a shell too busy to answer start_app: the sentences hold (#978 L3)")
+        out, err, code = run(lambda: yos.cmd_describe(["notes"]))
+        check("a describe says the app is starting, exactly",
+              code == yos.EX_STARTING and err == "yos: Notes is starting; ask again in a moment.\n",
+              "exit=%r err=%r" % (code, err))
+        out, err, code = run(lambda: yos.cmd_act(["notes", "add_note", "title=x", "--agent-token", "tok"]))
+        check("an act says nothing was done, exactly, and no timeout escapes",
+              code == yos.EX_STARTING
+              and err == "yos: Notes is starting; nothing was done — send it again in a moment.\n"
+              and "Timeout" not in err and "Traceback" not in err,
+              "exit=%r err=%r" % (code, err))
+        previous = {"app": "notes", "name": "Notes", "state": "starting"}
+        check("a later ask that finds it busy keeps what the shell said before",
+              yos.ask_to_start("notes", "tok", True, timeout=0.2, previous=previous) is previous, None)
+    finally:
+        listener.close()
+        for conn in held:
+            conn.close()
+        if saved_env is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = saved_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     if not hasattr(socket, "AF_UNIX"):
         print("skipped: this test needs unix sockets")
@@ -1681,6 +1735,7 @@ def main():
                 os.environ[yos.AGENT_TOKEN_ENV] = saved_token
 
         check_on_demand_apps()
+        check_busy_shell()
 
         print("ensure_service, with no desktop to ask")
         out, err, code = run(lambda: yos.ensure_service("notifications"))

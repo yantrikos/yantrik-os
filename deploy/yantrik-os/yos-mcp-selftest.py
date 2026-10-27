@@ -419,6 +419,8 @@ if argv[:1] == ["web"]:
 
 if argv[:1] == ["act"]:
     target, action = argv[1], argv[2]
+    state.setdefault("act_deadlines", []).append(os.environ.get("YOS_START_DEADLINE"))
+    save(state)
     if target in (state.get("starting_for") or []):
         sys.stderr.write("yos: Notes is starting; nothing was done — send it again in a moment.\n")
         raise SystemExit(75)
@@ -2907,6 +2909,29 @@ with tempfile.TemporaryDirectory() as d:
     told, failed = module.run_tool(module.BY_NAME["os_act"], {"app": "weather", "action": "refresh", "args": {}})
     check("an act of one that could not start says nothing was done",
           "nothing was done" in told and failed and "failed (exit" not in told, told)
+
+    # 24i. A person asked in between: the deadline of the grade read is stale, and the approved act
+    # gets a fresh bound of its own (#978 L4). Without an approval it is handed on.
+    module, state = case(tmp, "stale-deadline", token=TOKEN)
+    real_guard = module.guard_act
+
+    def guard_that_asked(args):
+        module._LOCAL.start_deadline = time.time() + 15.0
+        return None, "", None, "appr-1"
+
+    def guard_that_did_not(args):
+        module._LOCAL.start_deadline = time.time() + 15.0
+        return None, "", None, None
+
+    module.guard_act = guard_that_asked
+    module.run_tool(module.BY_NAME["os_act"], {"app": "calendar", "action": "add_event", "args": {"title": "t", "date": "2026-10-01"}})
+    asked = read(state).get("act_deadlines") or []
+    check("after a person was asked the act is not handed the grade read's deadline", asked and asked[-1] is None, asked)
+    module.guard_act = guard_that_did_not
+    module.run_tool(module.BY_NAME["os_act"], {"app": "calendar", "action": "add_event", "args": {"title": "t", "date": "2026-10-01"}})
+    asked = read(state).get("act_deadlines") or []
+    check("with nobody asked it is", asked and asked[-1] and 0 < float(asked[-1]) - time.time() <= 15.0, asked)
+    module.guard_act = real_guard
 
     # 25. os_describe names the apps this machine declares, from their .desktop files — anybody's
     # as well as ours — and names none of its own. os_apps says a closed app is listed.
