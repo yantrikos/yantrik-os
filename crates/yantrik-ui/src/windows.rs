@@ -266,8 +266,9 @@ pub(crate) fn same_program(binary: &str, wayland_app_id: &str) -> bool {
 pub fn shell_windows() -> Vec<WindowEntry> {
     let (discovered, front) = compositor_snapshot();
     let in_mind_view = crate::mind_view::app_pids();
-    let mut launched = crate::running::running();
-    launched.retain(|app| !in_mind_view.contains(&app.pid));
+    // Whose windows: an app of the framework says itself (`running::persons`), since one may be
+    // running with no window of the person's at all, started on demand for an agent.
+    let launched = crate::running::persons(&in_mind_view);
     merge_windows(&launched, discovered, front.as_deref())
 }
 

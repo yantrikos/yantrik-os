@@ -4,31 +4,16 @@
 //! that opens a local page shows other local files on screen (a frame of `file:///home/…/.ssh/…`
 //! renders though script cannot read it), and LibreOffice evaluates links and macros with all of
 //! the person's rights. Only Yantrik's own framework apps apply `home_paths` and Private mode
-//! themselves, so they are the only apps an agent may open a file in. Every shell route that opens
-//! a file or starts an app asks here, so no handler is a gap to close one type at a time.
+//! themselves, so they are the only apps an agent may reach at all. Even they give a Mind no
+//! window (#978 step 1): the refusal says to use the app's actions and `os_describe`, which start
+//! the app on demand with no window. Every shell route that opens a file or starts an app asks
+//! here, so no handler is a gap to close one type at a time.
 //!
 //! Anything that cannot be told is refused: a handler that is not installed may be anything.
 
 use crate::apps::{exec_argv, DesktopEntry};
+use crate::framework;
 use crate::office::{is_libreoffice, CLOSED_TO_AGENTS};
-
-/// The framework apps, by desktop entry id and the id each publishes (`YantrikApp::ID`). The test
-/// beside this module reads every framework `App` impl under `apps/`, so an app added there and
-/// missing here fails the build instead of staying shut to agents unnoticed.
-const YANTRIK_APPS: &[(&str, &str)] = &[
-    ("yantrik-calendar", "calendar"),
-    ("yantrik-container-manager", "containers"),
-    ("yantrik-download-manager", "download-manager"),
-    ("yantrik-email", "email"),
-    ("yantrik-image-viewer", "image-viewer"),
-    ("yantrik-music-player", "music"),
-    ("yantrik-network-manager", "network"),
-    ("yantrik-notes", "notes"),
-    ("yantrik-snippet-manager", "snippets"),
-    ("yantrik-system-monitor", "system-monitor"),
-    ("yantrik-text-editor", "editor"),
-    ("yantrik-weather", "weather"),
-];
 
 /// Names that mean LibreOffice to a caller, whether or not an entry is installed under them.
 const OFFICE_NAMES: &[&str] = &["libreoffice", "soffice", "writer", "calc", "impress", "draw", "office"];
@@ -67,7 +52,18 @@ fn shown(entry: &DesktopEntry) -> &str {
 /// Whether `entry` is one of Yantrik's framework apps: listed, and running its own program.
 pub fn is_yantrik_app(entry: &DesktopEntry) -> bool {
     !is_libreoffice(entry)
-        && YANTRIK_APPS.iter().any(|(stem, _)| *stem == entry.app_id && program(entry) == *stem)
+        && framework::FRAMEWORK_APPS.iter().any(|a| a.program == entry.app_id && program(entry) == a.program)
+}
+
+/// The refusal for a Mind asking for a window of the framework app that runs `program`: its name
+/// as the catalogue shows it, and the surface to use instead (#978 step 1).
+fn no_window_for_minds(program: &str, installed: &[DesktopEntry]) -> String {
+    let app = framework::by_program(program).expect("a framework program");
+    let name = installed
+        .iter()
+        .find(|e| e.app_id == app.program && !e.name.is_empty())
+        .map_or_else(|| app.id.to_string(), |e| e.name.clone());
+    framework::refused_for_minds(&name, app.id)
 }
 
 fn not_a_yantrik_app(what: &str) -> String {
@@ -78,7 +74,8 @@ fn not_a_yantrik_app(what: &str) -> String {
 /// catalogue. Call it only for a non-person caller.
 pub fn may_open_file(handler: Handler, installed: &[DesktopEntry]) -> Result<(), String> {
     match handler {
-        Handler::ImageViewer | Handler::TextEditor => Ok(()),
+        Handler::ImageViewer => Err(no_window_for_minds("yantrik-image-viewer", installed)),
+        Handler::TextEditor => Err(no_window_for_minds("yantrik-text-editor", installed)),
         // mpv follows playlists to other local files and draws subtitle files on screen, so a
         // protected text file would be readable through it. There is no framework video app.
         Handler::MediaPlayer => Err(not_a_yantrik_app("the media player")),
@@ -87,7 +84,7 @@ pub fn may_open_file(handler: Handler, installed: &[DesktopEntry]) -> Result<(),
             let stem = id.trim().strip_suffix(".desktop").unwrap_or(id.trim());
             match installed.iter().find(|e| e.app_id.eq_ignore_ascii_case(stem)) {
                 Some(e) if is_libreoffice(e) => Err(CLOSED_TO_AGENTS.to_string()),
-                Some(e) if is_yantrik_app(e) => Ok(()),
+                Some(e) if is_yantrik_app(e) => Err(no_window_for_minds(&e.app_id, installed)),
                 Some(e) => Err(not_a_yantrik_app(shown(e))),
                 None if OFFICE_NAMES.iter().any(|n| canon(stem).contains(n)) => Err(CLOSED_TO_AGENTS.to_string()),
                 None => Err(not_a_yantrik_app(&format!("`{stem}` (not installed, so what it runs cannot be told)"))),
@@ -116,12 +113,19 @@ pub fn may_launch(name: &str, installed: &[DesktopEntry]) -> Result<(), String> 
         if is_libreoffice(e) {
             return Err(CLOSED_TO_AGENTS.to_string());
         }
+        if is_yantrik_app(e) {
+            return Err(no_window_for_minds(&e.app_id, installed));
+        }
         if e.exec != "__builtin__" && !program(e).starts_with("yantrik-") {
             return Err(format!(
                 "Agents can launch only Yantrik's own apps; {} isn't one of them. Nothing was launched.",
                 shown(e)
             ));
         }
+    }
+    // An app of the framework by its surface id or program, with no catalogue entry to say so.
+    if let Some(app) = framework::FRAMEWORK_APPS.iter().find(|a| canon(a.id) == bare || canon(a.program) == want) {
+        return Err(no_window_for_minds(app.program, installed));
     }
     Ok(())
 }

@@ -11840,6 +11840,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "tracing",
+ "yantrik-ipc-contracts",
 ]
 
 [[package]]
@@ -12113,6 +12114,11 @@ dependencies = [
 [[package]]
 name = "yantrik-windows-core-tests"
 version = "0.1.0"
+dependencies = [
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-shell-core",
+]
 
 [[package]]
 name = "yantrikdb"

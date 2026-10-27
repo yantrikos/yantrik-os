@@ -4,7 +4,10 @@
 //! installed applications, built-in apps, and screen ID routing.
 
 pub mod agent_open;
+pub mod app_service;
 pub mod apps;
+pub mod framework;
 pub mod office;
 pub mod screens;
+pub mod seats;
 pub mod service_manager;
