@@ -78,10 +78,29 @@ pub fn run<A: App>() -> ExitCode {
     // One instance per app and profile: a second launch hands what it was asked to open to the
     // running copy, which shows its window, and exits.
     let instance = paths.instance_name();
+    // Started by a Mind's first launch, on the person's display: no window until one is asked for,
+    // and never a second copy (`displays::spawn`).
+    let windowless = std::env::var_os(crate::displays::WINDOWLESS_VAR).is_some();
+    std::env::remove_var(crate::displays::WINDOWLESS_VAR);
+    // A launch on a Mind's display: the Mind's window of the one instance, shown here
+    // (`displays::mind_launch`). Only when there is no person's display does it run the app here.
+    #[cfg(unix)]
+    if boot.for_mind && !windowless {
+        match crate::displays::mind_launch::run(A::ID, &instance, &boot.launch) {
+            crate::displays::mind_launch::Outcome::Done => return ExitCode::SUCCESS,
+            crate::displays::mind_launch::Outcome::Failed(why) => return startup_failed(A::ID, "launch", &why),
+            crate::displays::mind_launch::Outcome::RunHere => {}
+        }
+    }
     // What the running copy did not answer, kept for the end: a copy that is alive and silent
     // twice has lost the launch, and the person hears so rather than nothing.
     let unanswered = std::cell::RefCell::new(None::<String>);
     let claimed = instance::claim_or_hand_over(&instance, |_| {
+        if windowless {
+            // The Mind's launch that started this one found another copy first: it hands over
+            // there, and nothing is asked of that copy from here.
+            return Held::HandedOver;
+        }
         match launch::hand_over(&instance, &boot.launch) {
             Presented::Unanswered(why) => {
                 tracing::warn!(app = A::ID, "the running copy did not answer the hand-over: {why}");
@@ -116,6 +135,8 @@ pub fn run<A: App>() -> ExitCode {
         Ok(model) => model,
         Err(declined) => return model_declined(A::ID, &declined, &problems::dir()),
     };
+    // winit for the person's windows, and a Mind's drawn for its view helper (`displays`).
+    crate::displays::platform::install();
     let ui = match A::Ui::make() {
         Ok(ui) => ui,
         Err(e) => return startup_failed(A::ID, "window", &e.to_string()),
@@ -167,9 +188,19 @@ pub fn run<A: App>() -> ExitCode {
     let registry = crate::control::App::from_registry(registry).serve_as(&instance);
     core.attach_registry(registry);
 
-    // A second launch's `present` goes through the core, which knows which windows are open.
+    // A second launch's `present` goes through the core, which knows which windows are open, and
+    // whose: the person's are brought forward, a Mind's is the Mind's own (`displays`).
     let presenting = Rc::downgrade(&core);
     crate::present::install(move || presenting.upgrade().ok_or("the app is closing")?.present());
+    let for_mind = Rc::downgrade(&core);
+    crate::present::install_for_mind(move |display, args| {
+        let core = for_mind.upgrade().ok_or("the app is closing")?;
+        let view = args["view"].as_str().map(Path::new);
+        core.present_for_mind(display, view, crate::control::caller().map(|c| c.pid))
+    });
+    if windowless {
+        core.start_windowless(crate::displays::WINDOWLESS_WAIT);
+    }
     // A logout or a shutdown (SIGTERM, SIGHUP) asks the app, so it can save, rather than
     // killing it (`quit`). Without the handler the signals keep their default.
     if let Err(e) = crate::quit::listen::<A>(core.post(), crate::quit::SIGNAL_DEADLINE) {

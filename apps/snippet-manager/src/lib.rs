@@ -123,8 +123,8 @@ impl App for SnippetManager {
         update::update(m, command, fx)
     }
 
-    fn render(ui: &SnippetManagerApp, _: WindowId, m: &Model, changed: &Changed) {
-        view::render(ui, m, changed);
+    fn render(ui: &SnippetManagerApp, window: WindowId, m: &Model, changed: &Changed) {
+        view::render(ui, window, m, changed);
     }
 
     fn describe(m: &Model) -> View {

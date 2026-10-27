@@ -41,17 +41,37 @@ const ANSWER_WAIT: Duration = Duration::from_secs(3);
 /// Shows this process's window. Returns whether it did, with the reason when it did not.
 type Presenter = Box<dyn Fn() -> Result<(), String>>;
 
+/// Answers a launch from a Mind's display with that Mind's window: given the display and the
+/// call's arguments (`crate::cx::Core::present_for_mind`).
+type MindPresenter = Box<dyn Fn(Option<String>, &serde_json::Value) -> Result<serde_json::Value, String>>;
+
 thread_local! {
     /// Installed on the thread that owns the window before the loop starts: by
     /// [`crate::run_until_closed`] for an app on the old runtime, and by the framework's runner,
     /// through its core, which knows every window. A process that never runs a window has none,
     /// and says so when asked.
     static WINDOW: RefCell<Option<Presenter>> = const { RefCell::new(None) };
+    /// The framework's runner's, which gives a Mind a window of its own (`crate::displays`). An
+    /// app on the old runtime has one window, and a Mind's call is answered by it as before.
+    static FOR_MIND: RefCell<Option<MindPresenter>> = const { RefCell::new(None) };
 }
 
 /// Install how this process shows its window. Called on the UI thread.
 pub(crate) fn install(presenter: impl Fn() -> Result<(), String> + 'static) {
     WINDOW.with(|cell| *cell.borrow_mut() = Some(Box::new(presenter)));
+}
+
+/// Install how this process answers a Mind's launch with a window of the Mind's.
+pub(crate) fn install_for_mind(
+    presenter: impl Fn(Option<String>, &serde_json::Value) -> Result<serde_json::Value, String> + 'static,
+) {
+    FOR_MIND.with(|cell| *cell.borrow_mut() = Some(Box::new(presenter)));
+}
+
+/// A Mind's call answered with that Mind's window, when this process gives a Mind one; `None`
+/// when it does not (the old runtime), and the call is the person's window's to answer.
+pub(crate) fn for_mind(display: Option<String>, args: &serde_json::Value) -> Option<Result<serde_json::Value, String>> {
+    FOR_MIND.with(|cell| cell.borrow().as_ref().map(|answer| answer(display, args)))
 }
 
 /// The action as every surface publishes it.
@@ -62,6 +82,7 @@ pub(crate) fn action() -> Action {
     )
     .risk("safe")
     .arg(Param::text("display").optional())
+    .arg(Param::flag("for_mind").optional())
 }
 
 /// The handler [`crate::control::App::serve`] registers. Runs on the UI thread.
@@ -72,6 +93,12 @@ pub(crate) fn handle(args: &serde_json::Value) -> Result<serde_json::Value, Stri
                     drives the app through its other actions and does not bring its window forward"
                 .into(),
         );
+    }
+    // Whose window: the asker's own environment decides (`crate::displays::asker`).
+    if let crate::displays::Owner::Mind { display } = crate::displays::asking(args).owner() {
+        if let Some(answered) = for_mind(display, args) {
+            return answered;
+        }
     }
     WINDOW.with(|cell| answer_with(cell.borrow().as_deref(), args))
 }
@@ -117,6 +144,9 @@ fn answer(
 pub enum Presented {
     /// Its window is shown on this display.
     Shown,
+    /// A window of this launch's Mind is shown, drawn for this launch's own view
+    /// (`crate::displays::helper`), which now shows it.
+    Streamed,
     /// Its window is shown, on a display other than this launch's: Mind View, where a mind's apps
     /// are drawn.
     Elsewhere(String),
@@ -133,7 +163,7 @@ impl Presented {
     /// person and there is nothing to add.
     pub fn sentence(&self, app: &str) -> Option<String> {
         match self {
-            Presented::Shown => None,
+            Presented::Shown | Presented::Streamed => None,
             Presented::Elsewhere(display) => Some(format!(
                 "{app} is already open on another display ({display}), where a mind's apps are drawn; \
                  its window was shown there."
@@ -162,6 +192,8 @@ fn read(reply: Result<serde_json::Value, yantrik_ipc_transport::RpcError>) -> Pr
             let result = &reply["result"];
             if result["window"] != true {
                 Presented::NoWindow
+            } else if result["view"] == true {
+                Presented::Streamed
             } else if result["elsewhere"] == true {
                 Presented::Elsewhere(result["display"].as_str().unwrap_or("unknown").to_string())
             } else {
@@ -175,8 +207,15 @@ fn read(reply: Result<serde_json::Value, yantrik_ipc_transport::RpcError>) -> Pr
 ///
 /// Called by a launch that found the single-instance slot held, before it exits.
 pub fn ask(app_id: &str) -> Presented {
+    call(app_id, ACTION, from_here())
+}
+
+/// What a launch says of where it comes from: its display, and whether the shell marked it a
+/// Mind's. A claim the running copy checks against this process's own environment.
+pub(crate) fn from_here() -> serde_json::Value {
     let here = std::env::var("WAYLAND_DISPLAY").ok();
-    call(app_id, ACTION, serde_json::json!({ "display": here }))
+    let for_mind = std::env::var(crate::for_mind::FOR_MIND_VAR).is_ok_and(|m| !m.is_empty());
+    serde_json::json!({ "display": here, "for_mind": for_mind })
 }
 
 /// One `app.act` on the running copy's surface that answers as `present` does: `present`

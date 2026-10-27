@@ -122,6 +122,7 @@ mod mailbox;
 mod markup;
 mod message;
 mod mind_view;
+mod mind_window;
 mod parity;
 mod private_mode;
 mod rest;

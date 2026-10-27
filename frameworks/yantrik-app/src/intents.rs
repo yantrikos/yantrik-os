@@ -442,8 +442,15 @@ fn launch_handler<A: App>(
         } else {
             tracing::info!(app = A::ID, "a launch handed over twice; applied once");
         }
-        // Shown through this core, as the runner's presenter does: the window open brought
-        // forward, or the first opened again during a linger, and `Event::Presented` raised.
+        // Whose window: the asker's own environment decides (`crate::displays::asker`). A Mind's
+        // launch opens or raises that Mind's window; the person's never lands in it.
+        if let crate::displays::Owner::Mind { display } = crate::displays::asking(args).owner() {
+            let view = args["view"].as_str().map(std::path::Path::new);
+            let asker = crate::control::caller().map(|c| c.pid);
+            return core.present_for_mind(display, view, asker);
+        }
+        // Shown through this core, as the runner's presenter does: the person's window brought
+        // forward, or the first opened again, and `Event::Presented` raised.
         crate::present::answer_with(Some(&|| core.present()), args)
     }
 }

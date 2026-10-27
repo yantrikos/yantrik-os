@@ -260,12 +260,23 @@ pub(crate) fn action() -> Action {
     .risk("safe")
     .arg(Param::object("launch"))
     .arg(Param::text("display").optional())
+    .arg(Param::flag("for_mind").optional())
+    .arg(Param::text("view").optional())
 }
 
 /// What the running copy, `instance`, made of `launch`.
 pub fn hand_over(instance: &str, launch: &Launch) -> Presented {
-    let here = std::env::var("WAYLAND_DISPLAY").ok();
-    let args = serde_json::json!({ "launch": launch, "display": here });
+    hand_over_with(instance, launch, None)
+}
+
+/// [`hand_over`], from a Mind's launch that will show the Mind's window: `view` is the socket its
+/// helper listens on (`crate::displays::helper`), for the running copy to draw the window for.
+pub fn hand_over_with(instance: &str, launch: &Launch, view: Option<&std::path::Path>) -> Presented {
+    let mut args = present::from_here();
+    args["launch"] = serde_json::json!(launch);
+    if let Some(view) = view {
+        args["view"] = view.display().to_string().into();
+    }
     match present::call(instance, ACTION, args) {
         // A copy from a build before this action: it can still show its window.
         Presented::Refused(why) if why.starts_with("unknown action `launch`") => {

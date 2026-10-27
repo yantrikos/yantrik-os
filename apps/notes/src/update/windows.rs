@@ -81,6 +81,27 @@ pub fn open(m: &mut Model, fx: &mut Effects<Notes>, note: Option<Note>) -> Resul
     Ok(window)
 }
 
+/// A window the framework opened on its own (`Event::Opened`): a Mind's, for a launch from its
+/// display, or the person's first window again. One without a pane gets one, showing the focused
+/// window's note. The person's window is focused, since the person is back in it; a Mind's is
+/// not, so the calls go on acting in the window they acted in, and answer as they did. One that
+/// kept its pane keeps it.
+pub fn opened(m: &mut Model, fx: &mut Effects<Notes>, window: WindowId) {
+    if m.pane_of(window).is_some() {
+        return;
+    }
+    let here = m.pane.window;
+    let note = m.current().map(|c| c.as_note());
+    m.add_pane(Pane::new(window));
+    if note.is_some() {
+        show_note(m, fx, note);
+    }
+    show(m, fx);
+    if window.for_mind() {
+        m.enter(here);
+    }
+}
+
 /// A window `open` asked for could not be made: its pane goes, with the view it held, and the
 /// notice says so. The note it was to show stays open where it was.
 pub fn not_opened(m: &mut Model, fx: &mut Effects<Notes>, window: WindowId, why: &str) {

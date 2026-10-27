@@ -37,6 +37,47 @@ impl<A: App> TestApp<A> {
         self.act("launch", serde_json::json!({ "launch": launch }))?.settle()
     }
 
+    /// The person's launch from their own display, handed over (`launch` with the person's
+    /// display named): their window brought forward, or opened again, never a Mind's.
+    pub fn launch_from_person(&self) -> Result<Value, String> {
+        let profile = self.paths().profile().to_string();
+        let launch = Launch::empty(&profile);
+        let display = yantrik_app::for_mind::PERSON_DISPLAY;
+        self.act("launch", serde_json::json!({ "launch": launch, "display": display }))?.settle()
+    }
+
+    /// A Mind's launch from Mind View's `display`, handed over as the shell's `open_app` for a
+    /// mind makes one (the marker set): that Mind's window opened, drawn headless with no view
+    /// helper, or the one already open for `display` raised. The person's windows are untouched.
+    pub fn launch_from_mind(&self, display: &str) -> Result<Value, String> {
+        let profile = self.paths().profile().to_string();
+        let launch = Launch::empty(&profile);
+        let args = serde_json::json!({ "launch": launch, "display": display, "for_mind": true });
+        self.act("launch", args)?.settle()
+    }
+
+    /// [`TestApp::launch_from_mind`], answered with the Mind's window it opened or raised.
+    pub fn open_for_mind(&self, display: &str) -> WindowId {
+        let answer = self.launch_from_mind(display).unwrap_or_else(|e| panic!("no Mind's window: {e}"));
+        let id = answer["mind_window"].as_u64().expect("the answer names the Mind's window");
+        WindowId(id as u32)
+    }
+
+    /// The person's windows open now, the first one first.
+    pub fn person_windows(&self) -> Vec<WindowId> {
+        self.with(|u| u.core.person_windows())
+    }
+
+    /// A Mind's windows open now.
+    pub fn mind_windows(&self) -> Vec<WindowId> {
+        self.with(|u| u.core.mind_windows().into_iter().map(|(id, _)| id).collect())
+    }
+
+    /// A Mind's window closed by the framework, as its view helper going away closes it.
+    pub fn close_mind_window(&self, id: WindowId) {
+        self.with(move |u| u.core.close_mind_window(id));
+    }
+
     /// Whether the app runs on with no window (`fx.linger`), and nothing has ended it yet.
     pub fn lingering(&self) -> bool {
         self.with(|u| u.core.lingering())

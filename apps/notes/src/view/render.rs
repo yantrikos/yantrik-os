@@ -4,7 +4,7 @@
 use slint::{ModelRc, VecModel};
 use yantrik_app::app::{Changed, WindowId};
 use yantrik_app::documents::OutsideState;
-use yantrik_app::for_mind::shown_if_any;
+use yantrik_app::for_mind::{self, shown_if_any};
 
 use crate::model::Model;
 use crate::note::NoteText;
@@ -39,6 +39,8 @@ pub const MODEL_ONLY: &str = "model";
 pub fn render(ui: &NotesApp, window: WindowId, m: &Model, changed: &Changed) {
     // A window whose pane is gone is closing; one not yet given a pane draws nothing yet.
     let Some(pane) = m.pane_of(window) else { return };
+    // A window on a Mind's display masks the notes' text; the person's beside it never does.
+    let masked = for_mind::masked(m.for_mind, window);
     let current = m.current_in(pane);
     if changed.has(STATUS) {
         ui.set_busy(m.busy.is_some());
@@ -46,7 +48,7 @@ pub fn render(ui: &NotesApp, window: WindowId, m: &Model, changed: &Changed) {
         // The footer's amber goes with its words: a file found gone is unsaved with nothing typed.
         ui.set_modified(unsaved_in(m, pane));
         // Said with the notice, which every load that finds the library read-only sets.
-        ui.set_read_only(m.vault.read_only().is_some() || m.for_mind);
+        ui.set_read_only(m.vault.read_only().is_some() || masked);
     }
     // The notice gives way to the outside bar, so it is drawn again whenever the bar may be.
     if changed.has(STATUS) || changed.has(OUTSIDE) || changed.has(NOTE) {
@@ -65,12 +67,12 @@ pub fn render(ui: &NotesApp, window: WindowId, m: &Model, changed: &Changed) {
         // An edit turns the deleted bar's Let it go into Discard.
         ui.set_outside_edited(current.as_ref().is_some_and(|c| c.edited_since_gone()));
         // No count of words: a count is a measure of what the mask hides.
-        ui.set_words(if m.for_mind { 0 } else { shown.map_or(0, |c| c.words()) as i32 });
+        ui.set_words(if masked { 0 } else { shown.map_or(0, |c| c.words()) as i32 });
     }
     // Set only where it differs: the window it was typed in already shows it, and its caret stays.
     if changed.has(NOTE) || changed.has(CONTENT) || changed.has(EDIT) {
         let text = m.shown_in(pane).map(|c| c.text.as_str()).unwrap_or_default();
-        let text = shown_if_any(m.for_mind, text);
+        let text = shown_if_any(masked, text);
         if ui.get_content().as_str() != text {
             ui.set_content(text.as_ref().into());
         }
@@ -107,14 +109,14 @@ pub fn render(ui: &NotesApp, window: WindowId, m: &Model, changed: &Changed) {
         ui.set_path(pane.path.clone().into());
     }
     if changed.has(NOTE) || changed.has(OUTSIDE) {
-        outside(ui, m, pane);
+        outside(ui, m, pane, masked);
     }
     if changed.has(LIBRARY) {
-        library(ui, pane, m.for_mind);
+        library(ui, pane, masked);
     }
     if changed.has(PREVIEW) {
         let blocks: Vec<PreviewBlock> =
-            pane.blocks.iter().map(|b| PreviewBlock { text: shown_if_any(m.for_mind, &b.text).as_ref().into(), kind: b.kind }).collect();
+            pane.blocks.iter().map(|b| PreviewBlock { text: shown_if_any(masked, &b.text).as_ref().into(), kind: b.kind }).collect();
         ui.set_blocks(ModelRc::new(VecModel::from(blocks)));
     }
     // Last: a focus or a caret lands on what was just drawn. The keys are moved only in the
@@ -170,7 +172,7 @@ fn bar<'a>(m: &'a Model, pane: &Pane) -> Option<(&'a OutsideState, &'static str)
 
 /// The outside bar and the comparison, and the recovery bar: what this window's note asks of the
 /// person. Two windows on one note show the same bar, and either's answer is the note's.
-fn outside(ui: &NotesApp, m: &Model, pane: &Pane) {
+fn outside(ui: &NotesApp, m: &Model, pane: &Pane, masked: bool) {
     let current = m.current_in(pane);
     // The bar: 1 a conflict, 2 a deleted file.
     let offered = bar(m, pane);
@@ -182,7 +184,7 @@ fn outside(ui: &NotesApp, m: &Model, pane: &Pane) {
     ui.set_outside_said(offered.map(|(_, sentence)| sentence).unwrap_or_default().into());
     ui.set_outside_edited(current.as_ref().is_some_and(|c| c.edited_since_gone()));
     let theirs = pane.theirs.as_ref().map(|t| t.text.as_str()).unwrap_or_default();
-    ui.set_theirs(shown_if_any(m.for_mind, theirs).as_ref().into());
+    ui.set_theirs(shown_if_any(masked, theirs).as_ref().into());
     ui.set_theirs_gone(pane.theirs.is_none());
     ui.set_mine_fields(current.as_ref().map(|c| fields_line(c.content())).unwrap_or_default().into());
     ui.set_theirs_fields(pane.theirs.as_ref().map(fields_line).unwrap_or_default().into());
@@ -193,7 +195,7 @@ fn outside(ui: &NotesApp, m: &Model, pane: &Pane) {
             .map(|(state, o)| match state {
                 Showing::Open => said::offer_open(&o.content.title()),
                 Showing::Listed => said::offer_listed(&o.content.title()),
-                Showing::Gone => said::offer_gone(&o.content.title(), (!m.for_mind).then(|| o.content.text.chars().count())),
+                Showing::Gone => said::offer_gone(&o.content.title(), (!masked).then(|| o.content.text.chars().count())),
             })
             .unwrap_or_default()
             .into(),

@@ -178,6 +178,10 @@ crossbeam-channel = "0.5"
 # software is the fallback for hosts with no usable GL.
 # unstable-winit-030: the window a title bar moves (`yantrik_app_runtime::chrome`, #256).
 slint = { version = "1.17", features = ["renderer-femtovg", "renderer-software", "unstable-winit-030"] }
+# Slint's winit backend, for the framework's platform that draws a Mind's window for its view
+# helper (frameworks/yantrik-app/src/displays/platform.rs). Slint does not re-export it; it is the
+# exact version `slint` uses, and the two move together.
+i-slint-backend-winit = { version = "=1.17.1", default-features = false }
 
 # System
 sysinfo = "0.33"

@@ -14,6 +14,11 @@ pub enum Command {
     Activated,
     /// A window `open_window` gave the id of could not be made: its pane goes.
     WindowNotOpened { window: WindowId, why: String },
+    /// The framework opened a window the app did not ask for (a Mind's, on its display; or the
+    /// person's first again): it gets a pane, showing the focused window's note.
+    WindowOpened(WindowId),
+    /// The framework closed a Mind's window: its pane goes.
+    WindowClosed(WindowId),
     /// Read the library (at start, and `reload`).
     Load,
     /// One of the window's actions, by the id its button or key sends.

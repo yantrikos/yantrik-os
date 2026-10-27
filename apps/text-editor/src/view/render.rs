@@ -7,8 +7,8 @@
 //! there, by a cue, so a command arriving while they type never takes their text away.
 
 use slint::{ModelRc, VecModel};
-use yantrik_app::app::Changed;
-use yantrik_app::for_mind::HIDDEN;
+use yantrik_app::app::{Changed, WindowId};
+use yantrik_app::for_mind::{self, shown_if_any, HIDDEN};
 
 use crate::model::{Cue, Model};
 use crate::prompt;
@@ -25,7 +25,10 @@ pub const CHROME: &str = "chrome";
 /// The caret moved: the footer's line and column.
 pub const CARET: &str = "caret";
 
-pub fn render(ui: &TextEditorApp, m: &Model, changed: &Changed) {
+/// One window's render. Every window draws the one model; a window on a Mind's display masks the
+/// document in it (`crate::mind_view`), and the person's window beside it never does.
+pub fn render(ui: &TextEditorApp, window: WindowId, m: &Model, changed: &Changed) {
+    let masked = for_mind::masked(m.for_mind, window);
     let tab = m.active_tab();
     let text = m.text(tab);
     let view = m.viewport();
@@ -33,25 +36,25 @@ pub fn render(ui: &TextEditorApp, m: &Model, changed: &Changed) {
     if changed.has(TEXT) || reset {
         // Where a Mind looks the field holds the mask, with no gutter and no colours: a gutter
         // is a count of the lines, and the colours are the text again.
-        let shown = if m.for_mind { HIDDEN } else { &text[..view.end] };
+        let shown = if masked { HIDDEN } else { &text[..view.end] };
         if reset || ui.get_content().as_str() != shown {
             ui.set_content(shown.into());
         }
         // The gutter and the colour layers cover the view, not the document: a gutter taller than
         // the clamped viewport would be laid out past the renderer's i16 coordinates again.
-        let lines = if m.for_mind { 1 } else { view.lines };
+        let lines = if masked { 1 } else { view.lines };
         ui.set_numbers((1..=lines).map(|n| n.to_string()).collect::<Vec<_>>().join("\n").into());
-        let layers = if m.for_mind { Default::default() } else { highlight(shown, language(m.path(tab))) };
+        let layers = if masked { Default::default() } else { highlight(shown, language(m.path(tab))) };
         ui.set_has_highlights(!layers.is_empty());
         ui.set_keywords(layers.keywords.into());
         ui.set_strings(layers.strings.into());
         ui.set_comments(layers.comments.into());
     }
     if changed.has(CHROME) || changed.has(TEXT) {
-        chrome(ui, m);
+        chrome(ui, m, masked);
     }
     if changed.has(CARET) {
-        let (line, column) = caret(m);
+        let (line, column) = caret(m, masked);
         ui.set_cursor_line(line);
         ui.set_cursor_column(column);
     }
@@ -59,14 +62,18 @@ pub fn render(ui: &TextEditorApp, m: &Model, changed: &Changed) {
         match *cue {
             Cue::FocusEditor => ui.invoke_focus_editor(),
             Cue::ResetPosition => ui.invoke_reset_position(),
-            Cue::Select(..) if m.for_mind => {}
+            Cue::Select(..) if masked => {}
             Cue::Select(a, z) => ui.invoke_select_range(a as i32, z as i32),
             Cue::ShowFind => {
                 ui.set_show_find(true);
-                ui.set_query(m.find.query.clone().into());
+                // What the person looks for in their document, kept from a Mind's window beside
+                // theirs; a copy on a Mind's display shows what was typed into it.
+                ui.set_query(shown_if_any(window.for_mind(), &m.find.query).as_ref().into());
             }
             Cue::Dialog => ui.set_dialog_path(m.dialog_path.clone().into()),
-            Cue::Replacement => ui.set_replacement(m.find.replacement.clone().into()),
+            Cue::Replacement => {
+                ui.set_replacement(shown_if_any(window.for_mind(), &m.find.replacement).as_ref().into())
+            }
             Cue::ResetContent => {}
         }
     }
@@ -74,11 +81,11 @@ pub fn render(ui: &TextEditorApp, m: &Model, changed: &Changed) {
 
 /// The caret as the footer shows it. Its offset is into the mask, so against the real text it
 /// would say where the lines break; a Mind sees the start.
-fn caret(m: &Model) -> (i32, i32) {
-    if m.for_mind { (1, 1) } else { m.cursor }
+fn caret(m: &Model, masked: bool) -> (i32, i32) {
+    if masked { (1, 1) } else { m.cursor }
 }
 
-fn chrome(ui: &TextEditorApp, m: &Model) {
+fn chrome(ui: &TextEditorApp, m: &Model, masked: bool) {
     let tab = m.active_tab();
     let text = m.text(tab);
     let view = m.viewport();
@@ -100,8 +107,8 @@ fn chrome(ui: &TextEditorApp, m: &Model) {
     );
     ui.set_language(language(m.path(tab)).into());
     // No measure of the text a Mind does not see: its lines, its line ending, or what was cut.
-    let seen = !m.for_mind;
-    ui.set_masked(m.for_mind);
+    let seen = !masked;
+    ui.set_masked(masked);
     ui.set_line_count(if seen { crate::text::lines(text) as i32 } else { 0 });
     ui.set_ending(if seen && text.contains("\r\n") { "CRLF" } else { "LF" }.into());
     ui.set_view_limited(seen && view.limited);
@@ -109,7 +116,7 @@ fn chrome(ui: &TextEditorApp, m: &Model) {
     ui.set_busy(m.busy.is_some());
     ui.set_notice(m.notice.window().into());
     ui.set_recovery_status(m.recovery.clone().into());
-    let (line, column) = caret(m);
+    let (line, column) = caret(m, masked);
     ui.set_cursor_line(line);
     ui.set_cursor_column(column);
     ui.set_match_case(m.find.match_case);

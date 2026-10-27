@@ -11,10 +11,10 @@ use super::{act, note, settle, started};
 use crate::command::{Command, WindowAction};
 use crate::Notes;
 
-const SENTINEL: &str = "SENTINEL-notes-mind-view-8e2b";
+pub(super) const SENTINEL: &str = "SENTINEL-notes-mind-view-8e2b";
 
 /// A library holding one note whose body carries the sentinel, and where it is kept.
-fn kept() -> yantrik_app::Paths {
+pub(super) fn kept() -> yantrik_app::Paths {
     let app = started();
     note(&app, "Plain title", &format!("# Plain title\n\nA body with {SENTINEL} in it.\n"));
     let paths = app.paths();
@@ -30,16 +30,21 @@ fn start_for_mind(paths: yantrik_app::Paths) -> TestApp<Notes> {
 }
 
 /// The first card opened, and the preview turned on so every part of the window is drawn.
-fn open_first(app: &TestApp<Notes>) {
+pub(super) fn open_first(app: &TestApp<Notes>) {
     let id = app.ui(|ui| ui.get_notes().row_data(0).unwrap().id.to_string());
     app.run(Command::Window(WindowAction::Open { id, trash: false }));
     app.run(Command::Window(WindowAction::Preview));
     settle(app);
 }
 
-/// Every string the window holds that a screen reader or OCR could see.
+/// Every string the first window holds that a screen reader or OCR could see.
 fn window_text(app: &TestApp<Notes>) -> String {
-    app.ui(|ui| {
+    window_text_in(app, yantrik_app::WindowId::PRIMARY)
+}
+
+/// [`window_text`], of the open window `window`.
+pub(super) fn window_text_in(app: &TestApp<Notes>, window: yantrik_app::WindowId) -> String {
+    app.window(window, |ui| {
         let mut all = vec![
             ui.get_content().to_string(),
             ui.get_note_title().to_string(),
@@ -60,6 +65,7 @@ fn window_text(app: &TestApp<Notes>) -> String {
         all.extend((0..blocks.row_count()).map(|i| blocks.row_data(i).unwrap().text.to_string()));
         all.join("\n")
     })
+    .expect("the window is open")
 }
 
 #[test]
@@ -112,7 +118,7 @@ fn the_search_box_in_a_mind_view_window_matches_titles_not_text() {
 
 /// What a caller gets from a Notes over `paths`: `describe` and the answers of the calls that
 /// read notes, with the note open.
-fn what_a_caller_gets(app: &TestApp<Notes>) -> serde_json::Value {
+pub(super) fn what_a_caller_gets(app: &TestApp<Notes>) -> serde_json::Value {
     let d = app.describe();
     let search = act(app, "search", json!({ "query": SENTINEL })).unwrap();
     let read = act(app, "read_notes", json!({ "query": SENTINEL })).unwrap();

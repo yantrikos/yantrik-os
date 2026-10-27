@@ -1,8 +1,11 @@
 //! The only code that writes the window, by the part of the model that changed.
+//!
+//! Each window draws the one model, and a window on a Mind's display masks the person's mail in
+//! it (`crate::mind_view`): the person's window beside it never does.
 
 use slint::{Color, ModelRc, SharedString, VecModel};
-use yantrik_app::app::Changed;
-use yantrik_app::for_mind::shown_if_any;
+use yantrik_app::app::{Changed, WindowId};
+use yantrik_app::for_mind::{self, shown_if_any};
 
 use crate::model::{part, Clear, Model, Rgb, OPEN_MESSAGE};
 use crate::state::{self, Counted};
@@ -12,7 +15,8 @@ fn color((r, g, b): Rgb) -> Color {
     Color::from_rgb_u8(r, g, b)
 }
 
-pub fn render(ui: &EmailApp, m: &Model, changed: &Changed) {
+pub fn render(ui: &EmailApp, window: WindowId, m: &Model, changed: &Changed) {
+    let masked = for_mind::masked(m.for_mind, window);
     if changed.has(part::STATE) {
         state(ui, m);
     }
@@ -20,17 +24,17 @@ pub fn render(ui: &EmailApp, m: &Model, changed: &Changed) {
         folders(ui, m);
     }
     if changed.has(part::LIST) || changed.has(part::FOLDERS) {
-        list(ui, m);
+        list(ui, m, masked);
     }
     if changed.has(part::OPEN) {
-        open(ui, m);
+        open(ui, m, masked);
     }
     if changed.has(part::STATUS) {
-        status(ui, m);
+        status(ui, m, masked);
     }
     if changed.has(part::COMPOSE_TEXT) {
         let text = &m.composer.text;
-        let hide = |field: &str| SharedString::from(shown_if_any(m.for_mind, field).as_ref());
+        let hide = |field: &str| SharedString::from(shown_if_any(masked, field).as_ref());
         ui.set_compose_to(hide(&text.to));
         ui.set_compose_cc(hide(&text.cc));
         ui.set_compose_bcc(hide(&text.bcc));
@@ -38,7 +42,10 @@ pub fn render(ui: &EmailApp, m: &Model, changed: &Changed) {
         ui.set_compose_body(hide(&text.body));
     }
     if changed.has(part::SEARCH_TEXT) {
-        ui.set_email_search_query(m.search.query.clone().into());
+        // What the person searched for says what their mail is about, and a Mind's window beside
+        // theirs shows the one search. A copy on a Mind's display itself shows what was typed
+        // into it, which is the Mind's own.
+        ui.set_email_search_query(shown_if_any(window.for_mind(), &m.search.query).as_ref().into());
     }
     if changed.has(part::SETUP) || changed.has(part::STATE) {
         setup(ui, m);
@@ -91,8 +98,8 @@ fn folders(ui: &EmailApp, m: &Model) {
 /// The rows the triage tab keeps, and the open folder's counts on the header. The counts are of
 /// the folder, not of the tab: "3 unread of 128" is about the mailbox, and it would be a strange
 /// thing for pressing Unread to change.
-fn list(ui: &EmailApp, m: &Model) {
-    let hide = |text: &str| SharedString::from(shown_if_any(m.for_mind, text).as_ref());
+fn list(ui: &EmailApp, m: &Model, masked: bool) {
+    let hide = |text: &str| SharedString::from(shown_if_any(masked, text).as_ref());
     let items: Vec<EmailListItem> = m
         .shown()
         .into_iter()
@@ -138,7 +145,7 @@ fn list(ui: &EmailApp, m: &Model) {
 
 /// The reading pane. Its id is `OPEN_MESSAGE` while a message is open, so the toolbar's buttons
 /// act on that message; 0 draws the empty pane.
-fn open(ui: &EmailApp, m: &Model) {
+fn open(ui: &EmailApp, m: &Model, masked: bool) {
     let Some(open) = &m.open else {
         ui.set_email_detail(EmailDetailData::default());
         ui.set_email_attachments(ModelRc::new(VecModel::<EmailAttachmentData>::from(Vec::new())));
@@ -146,7 +153,7 @@ fn open(ui: &EmailApp, m: &Model) {
         return;
     };
     let d = &open.detail;
-    let hide = |text: &str| SharedString::from(shown_if_any(m.for_mind, text).as_ref());
+    let hide = |text: &str| SharedString::from(shown_if_any(masked, text).as_ref());
     ui.set_email_detail(EmailDetailData {
         id: OPEN_MESSAGE,
         from_name: hide(&d.from_name),
@@ -194,15 +201,18 @@ fn open(ui: &EmailApp, m: &Model) {
     ui.set_email_thread_messages(ModelRc::new(VecModel::from(thread)));
 }
 
-fn status(ui: &EmailApp, m: &Model) {
-    ui.set_notice(m.notice.clone().into());
+/// The notice line and the composer's and the companion's words. The person's own window may say
+/// what a message is about ("Summarized …", a draft's subject), so a Mind's window masks them.
+fn status(ui: &EmailApp, m: &Model, masked: bool) {
+    let hide = |text: &str| SharedString::from(shown_if_any(masked, text).as_ref());
+    ui.set_notice(for_mind::shown_notice(masked, &m.notice).as_ref().into());
     ui.set_email_sync_status(m.sync_status.clone().into());
     ui.set_is_loading(m.loading);
     ui.set_ai_is_working(m.ai_working);
-    ui.set_email_ai_intent(m.ai_intent.clone().into());
+    ui.set_email_ai_intent(hide(&m.ai_intent));
     ui.set_is_composing(m.composer.open);
     ui.set_is_sending(m.composer.sending.is_some());
-    ui.set_email_draft_status(m.composer.status.clone().into());
+    ui.set_email_draft_status(hide(&m.composer.status));
     ui.set_email_search_active(m.search.active);
     ui.set_email_search_count(m.search.count);
 }

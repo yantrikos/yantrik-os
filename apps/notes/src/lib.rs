@@ -134,6 +134,8 @@ impl App for Notes {
             Event::CloseRequested(window) => Some(Command::CloseRequested(window)),
             Event::Activated(window) => Some(Command::From { window, command: Box::new(Command::Activated) }),
             Event::WindowNotOpened { window, why } => Some(Command::WindowNotOpened { window, why }),
+            Event::Opened(window) => Some(Command::WindowOpened(window)),
+            Event::Closed(window) => Some(Command::WindowClosed(window)),
             // No one to ask (a signal): drafts, then the end. A person (Ctrl+Q): asked once.
             Event::ExitRequested(ExitReason::Logout) => Some(Command::LoggingOut),
             Event::ExitRequested(_) => Some(Command::Quit),

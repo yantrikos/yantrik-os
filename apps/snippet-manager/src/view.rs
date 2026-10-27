@@ -2,7 +2,8 @@
 //! The only code that writes the window.
 
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
-use yantrik_app::app::Changed;
+use yantrik_app::app::{Changed, WindowId};
+use yantrik_app::for_mind;
 use yantrik_app::cx::Cx;
 use yantrik_app::rail::{self, RailView as _};
 
@@ -73,12 +74,15 @@ fn editor_of(ui: &SnippetManagerApp) -> Editor {
     }
 }
 
-pub fn render(ui: &SnippetManagerApp, m: &Model, changed: &Changed) {
+/// One window's render. Every window draws the one model; a window on a Mind's display masks
+/// the code in it (`crate::mind_view`), and the person's window beside it never does.
+pub fn render(ui: &SnippetManagerApp, window: WindowId, m: &Model, changed: &Changed) {
+    let masked = for_mind::masked(m.for_mind, window);
     if changed.has(PART_LIST) {
-        list(ui, m);
+        list(ui, m, masked, window.for_mind());
     }
     if changed.has(PART_DETAIL) {
-        detail(ui, m);
+        detail(ui, m, masked);
     }
     // Whether the offer's snippet is open is the editor's to say, so the bar follows it too.
     if changed.has(PART_RECOVERY) || changed.has(PART_DETAIL) {
@@ -96,14 +100,21 @@ pub fn render(ui: &SnippetManagerApp, m: &Model, changed: &Changed) {
         ui.window().set_minimized(false);
     }
     if changed.has(rail::PART) {
-        ui.render_rail(&m.rail);
+        // The rail's answers are about the person's code: a Mind's window shows none of them.
+        if window.for_mind() {
+            ui.render_rail(&m.rail.withheld());
+        } else {
+            ui.render_rail(&m.rail);
+        }
     }
 }
 
 /// The list, the chips, the sidebar and the counts. Never the editor: typing in the search box
 /// repaints the list on every keystroke, and a repaint that also rewrote the editor would throw
 /// away whatever was being typed into it.
-fn list(ui: &SnippetManagerApp, m: &Model) {
+/// `query_masked`: the person's search is not shown in a Mind's window beside theirs, since a
+/// search matches code.
+fn list(ui: &SnippetManagerApp, m: &Model, masked: bool, query_masked: bool) {
     let now = text::now();
     let rows: Vec<SnippetData> = m
         .rows()
@@ -112,9 +123,9 @@ fn list(ui: &SnippetManagerApp, m: &Model) {
             id: s.id,
             title: s.title.as_str().into(),
             language: s.language.as_str().into(),
-            code: shown(m.for_mind, &s.code).into(),
+            code: shown(masked, &s.code).into(),
             tags: s.tags.as_str().into(),
-            preview: if m.for_mind { shown(true, &s.code) } else { s.preview() }.into(),
+            preview: if masked { shown(true, &s.code) } else { s.preview() }.into(),
             date_text: text::relative(s.updated, now).into(),
             is_selected: s.id == m.selected,
             is_favorite: s.favorite,
@@ -171,20 +182,21 @@ fn list(ui: &SnippetManagerApp, m: &Model) {
     // matched" — and drawing 0 for both was how the old blank window looked deliberate.
     ui.set_match_count(if m.query.trim().is_empty() && m.tag.is_empty() { -1 } else { matched as i32 });
     // Set only where it differs: the box it was typed in already shows it, and its caret stays.
-    if ui.get_search_query().as_str() != m.query {
-        ui.set_search_query(m.query.as_str().into());
+    let query = for_mind::shown_if_any(query_masked, &m.query);
+    if ui.get_search_query().as_str() != query {
+        ui.set_search_query(query.as_ref().into());
     }
 }
 
 /// The editor pane: its fields from the editor, where they differ from what the window shows (so
 /// the field being typed in keeps its caret), and the rest from what is kept.
-fn detail(ui: &SnippetManagerApp, m: &Model) {
+fn detail(ui: &SnippetManagerApp, m: &Model, masked: bool) {
     let e = &m.editor;
     ui.set_detail_id(e.id);
     set_if_differs(ui.get_detail_title(), &e.title, |v| ui.set_detail_title(v));
     set_if_differs(ui.get_detail_language(), &e.language, |v| ui.set_detail_language(v));
-    set_if_differs(ui.get_detail_code(), &shown(m.for_mind, &e.code), |v| ui.set_detail_code(v));
-    ui.set_detail_read_only(m.for_mind);
+    set_if_differs(ui.get_detail_code(), &shown(masked, &e.code), |v| ui.set_detail_code(v));
+    ui.set_detail_read_only(masked);
     set_if_differs(ui.get_detail_tags(), &e.tags, |v| ui.set_detail_tags(v));
     let open = m.open();
     let now = text::now();

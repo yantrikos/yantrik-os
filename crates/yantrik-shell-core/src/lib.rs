@@ -5,6 +5,7 @@
 
 pub mod agent_open;
 pub mod apps;
+pub mod mind_windows;
 pub mod office;
 pub mod screens;
 pub mod service_manager;

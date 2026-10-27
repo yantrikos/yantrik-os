@@ -22,11 +22,28 @@ use crate::window::Window;
 
 /// One window of the app. `PRIMARY` is the one the runner makes at start; the design allows
 /// more, and nothing here assumes there is only one.
+///
+/// Whose window it is is part of its id, fixed when the framework hands the id out
+/// (`crate::displays`): a window opened for a Mind's launch, drawn on that Mind's display, has
+/// [`WindowId::for_mind`] set, and every other window is the person's. A window never moves
+/// between displays, so the answer never changes for an id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WindowId(pub u32);
 
 impl WindowId {
     pub const PRIMARY: WindowId = WindowId(0);
+
+    /// The bit the framework sets in the id of a window it opens for a Mind. An app never sets
+    /// it: ids come from the framework (`fx.open_window`, a Mind's launch).
+    pub(crate) const MIND: u32 = 1 << 31;
+
+    /// Whether this window is drawn on a Mind's display (Mind View), where `read_mind_view` turns
+    /// every line on it into text for an agent. Such a window masks the person's content and runs
+    /// nothing as the person ([`crate::for_mind`]); the person's own windows never do, even
+    /// while a Mind's window of the same app is open.
+    pub fn for_mind(self) -> bool {
+        self.0 & Self::MIND != 0
+    }
 }
 
 /// Why the process was asked to end. As `Event::ExitRequested`, it says who asked, and so
@@ -128,6 +145,17 @@ pub enum Event<S> {
     /// it, and the app drops what it attached to the id. `None` does nothing more: the failure is
     /// already logged and filed as a problem record.
     WindowNotOpened { window: WindowId, why: String },
+    /// The framework opened a window the app did not ask for (`crate::displays`): a Mind's window,
+    /// for a launch from a Mind's display ([`WindowId::for_mind`]); or the person's first window
+    /// again, for the person's launch while only a Mind's window kept the app running. Raised
+    /// before the window's first whole render, so an app that keeps a view per window (Notes'
+    /// panes) makes one here. `None` does nothing: the window draws from the model as every
+    /// window does.
+    Opened(WindowId),
+    /// The framework closed a Mind's window on its own (its view on the Mind's display went
+    /// away, or the Mind closed it): nothing in it was the person's to save, so the app is not
+    /// asked. The app drops what it attached to the id. `None` does nothing.
+    Closed(WindowId),
 }
 
 /// What the runner knows before any window exists.
@@ -155,8 +183,12 @@ pub struct Boot<S = ()> {
     /// The platform's services, typed: live under the runner, fakes under a test unless the
     /// test gives its own. An app's jobs call them; nothing here does.
     pub services: crate::services::Services,
-    /// This copy is drawn for a Mind (Mind View), where an agent reads the window as text. An app
-    /// with content an agent must not read masks it when this is set; see [`crate::for_mind`].
+    /// This launch is a Mind's (its marker, or a display that is not the person's). A Mind's
+    /// launch normally becomes the view helper of a Mind's window of the one instance
+    /// (`crate::displays`), and the app never sees it. Set here only when there is no person's
+    /// display to run the instance on, so every window this copy draws is on a Mind's display:
+    /// an app masks a window when this or [`WindowId::for_mind`] says so
+    /// ([`crate::for_mind::masked`]).
     pub for_mind: bool,
 }
 

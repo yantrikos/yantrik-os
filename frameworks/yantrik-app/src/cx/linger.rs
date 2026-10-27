@@ -117,6 +117,16 @@ impl<A: App> Core<A> {
         );
     }
 
+    /// An instance started with no window ([`Core::start_windowless`]) runs as if it lingered:
+    /// the first window opened, a Mind's or the person's, ends the wait, and with none in `wait`
+    /// the backstop ends the process.
+    pub(super) fn linger_for_first_window(&self, wait: Duration) {
+        let backstop = wait.min(MAX_LINGER);
+        self.linger.set(Some(Lingering { since: Instant::now(), backstop }));
+        self.timers.borrow_mut().after(LINGER, backstop, Box::new(|| Fired::LingerOver));
+        tracing::info!(app = self.id, ?backstop, "started with no window; waiting for the launch that asked");
+    }
+
     /// A window is open again (a second launch, or one the app opened): the linger is over, and
     /// its backstop with it. Nothing, when the app was not lingering.
     pub(super) fn linger_ended(&self) {

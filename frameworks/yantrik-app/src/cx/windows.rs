@@ -35,17 +35,25 @@ use crate::window::Window as _;
 static NEXT_WINDOW: AtomicU32 = AtomicU32::new(1);
 
 pub(crate) fn next_window_id() -> WindowId {
-    WindowId(NEXT_WINDOW.fetch_add(1, Ordering::Relaxed))
+    WindowId(NEXT_WINDOW.fetch_add(1, Ordering::Relaxed) & !WindowId::MIND)
+}
+
+/// An id for a window of a Mind's: [`WindowId::for_mind`] is set in it, and in no other.
+pub(crate) fn next_mind_window_id() -> WindowId {
+    WindowId(NEXT_WINDOW.fetch_add(1, Ordering::Relaxed) | WindowId::MIND)
 }
 
 /// The windows beyond the first, and what every new one is made with.
 pub(crate) struct Windows<U> {
     /// The first window is open. It is kept, hidden, once closed: the event loop holds it, and a
     /// second launch during a linger opens it again.
-    first_open: bool,
-    more: BTreeMap<WindowId, U>,
+    pub(super) first_open: bool,
+    pub(super) more: BTreeMap<WindowId, U>,
+    /// Which of `more` are a Mind's, with its display and the link to its view helper
+    /// (`cx/displays.rs`).
+    pub(super) minds: BTreeMap<WindowId, super::displays::MindWindow>,
     /// The theme the windows wear now, so a window opened later wears it too.
-    theme: Option<ThemeSettings>,
+    pub(super) theme: Option<ThemeSettings>,
     /// The window the window manager last gave the keyboard to, while it has it.
     active: Option<WindowId>,
     /// Frames drawn by every window since the app started (`cx/drawn.rs`).
@@ -54,7 +62,7 @@ pub(crate) struct Windows<U> {
 
 impl<U> Windows<U> {
     pub(crate) fn new() -> Windows<U> {
-        Windows { first_open: true, more: BTreeMap::new(), theme: None, active: None, frames: 0 }
+        Windows { first_open: true, more: BTreeMap::new(), minds: BTreeMap::new(), theme: None, active: None, frames: 0 }
     }
 
     /// `window` is not the active one any more: it lost the keyboard, or it closed.
@@ -171,7 +179,12 @@ impl<A: App> Core<A> {
             self.windows.borrow_mut().first_open = false;
             return;
         }
-        let removed = self.windows.borrow_mut().more.remove(&window);
+        let (removed, mind) = {
+            let mut windows = self.windows.borrow_mut();
+            (windows.more.remove(&window), windows.minds.remove(&window))
+        };
+        // Its helper is told the window closed once the link goes, after the window itself.
+        drop(mind);
         if let Some(ui) = removed {
             let _ = ui.hide();
             // The close may come from inside this window's own callback: the component is
@@ -247,14 +260,17 @@ impl<A: App> Core<A> {
         }
     }
 
-    /// A second launch asked for this app (`present`): an open window is brought forward, the
-    /// first open one first; during a linger, the first window is opened again, drawn whole, and
-    /// the linger is over. The app hears which window as `Event::Presented`, once it is shown.
+    /// The person's second launch asked for this app (`present`, or a launch handed over): the
+    /// person's open window is brought forward, the first open one first. With none of theirs
+    /// open, the first window is opened again, drawn whole: during a linger, which is then over,
+    /// and while only a Mind's window keeps the app running, which is never handed the person's
+    /// launch. The app hears which window as `Event::Presented`, once it is shown.
     pub fn present(&self) -> Result<(), String> {
-        let open = self.windows_open().into_iter().next();
+        let open = self.person_windows().into_iter().next();
+        let running_on = self.lingering() || (!self.windows_open().is_empty() && self.exit.get().is_none());
         let (window, reopened) = match open {
             Some(window) => (window, false),
-            None if self.lingering() => (self.reopen_first(), true),
+            None if running_on => (self.reopen_first(), true),
             None => return Err("the app's windows are closing".into()),
         };
         let ui = self.window(window).ok_or("the window is closing")?;
@@ -274,10 +290,14 @@ impl<A: App> Core<A> {
     }
 
     /// The first window, counted open again and drawn whole from the model, for `present` to
-    /// show. The event loop kept it, hidden, and it is still wired by `App::wire`. It is the only
-    /// window open, so the whole render is its alone, with a callback it fires queued as ever.
+    /// show. The event loop kept it, hidden, and it is still wired by `App::wire`. Outside a
+    /// linger a Mind's window kept the app running, and the app may have let the first window's
+    /// view go with it, so it hears `Event::Opened` first, to make one.
     fn reopen_first(&self) -> WindowId {
         self.windows.borrow_mut().first_open = true;
+        if !self.lingering() {
+            self.event(Event::Opened(WindowId::PRIMARY));
+        }
         self.render_all();
         WindowId::PRIMARY
     }

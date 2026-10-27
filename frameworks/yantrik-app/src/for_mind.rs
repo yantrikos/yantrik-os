@@ -1,10 +1,15 @@
-//! Whether this copy of the app is drawn for a Mind: its window is in Mind View, where
-//! `read_mind_view` turns every line on it into text for an agent.
+//! Whether a window is drawn for a Mind: it is in Mind View, where `read_mind_view` turns every
+//! line on it into text for an agent.
 //!
-//! An app with content an agent must not read (a snippet's code, a note) masks it when
-//! `Boot::for_mind` is set, and keeps what is safe to show: titles, tags, counts.
+//! An app with content an agent must not read (a snippet's code, a note) masks it in such a
+//! window, and keeps what is safe to show: titles, tags, counts. It is a property of the window,
+//! not of the app (#963): one instance may have the person's window and a Mind's open at once,
+//! and only the Mind's is masked ([`masked`]). A window opened for a Mind's launch says so in its
+//! id ([`crate::WindowId::for_mind`]), decided from the launch's own environment by the rule
+//! below (`crate::displays::asker`); a copy that runs on a Mind's display itself
+//! (`Boot::for_mind`) masks every window it draws.
 //!
-//! It fails closed. Masking is on when either says so:
+//! It fails closed. A launch is a Mind's when either says so:
 //! - the launch carries the marker [`FOR_MIND_VAR`], which the shell sets on every app it starts
 //!   on a mind's display; or
 //! - the window's Wayland display is not the person's own, by the same comparison `present` makes
@@ -35,6 +40,13 @@ pub fn from_env() -> bool {
     let marker = std::env::var(FOR_MIND_VAR).ok();
     let display = std::env::var("WAYLAND_DISPLAY").ok();
     drawn_for_mind(marker.as_deref(), display.as_deref())
+}
+
+/// Whether `window` is masked: it is a Mind's ([`crate::WindowId::for_mind`]), or this whole copy
+/// draws on a Mind's display (`instance`, from `Boot::for_mind`). The one rule every app's `render`
+/// asks, per window, so the person's window is never masked because a Mind's is open.
+pub fn masked(instance: bool, window: crate::WindowId) -> bool {
+    instance || window.for_mind()
 }
 
 /// What a window shows where a Mind may be looking and the person's content would be: the one
@@ -68,6 +80,17 @@ pub fn shown(for_mind: bool, content: &str) -> std::borrow::Cow<'_, str> {
 /// would say there is something to hide.
 pub fn shown_if_any(for_mind: bool, content: &str) -> std::borrow::Cow<'_, str> {
     if content.is_empty() { std::borrow::Cow::Borrowed("") } else { shown(for_mind, content) }
+}
+
+/// A notice line as a window shows it: in a masked window, the framework's own sentences
+/// ([`HIDDEN`], [`READ_ONLY`]) as they are, since they say nothing of the person's content, and any
+/// other notice masked, since one raised by the person's own window may name what they work on.
+pub fn shown_notice(masked: bool, notice: &str) -> std::borrow::Cow<'_, str> {
+    if notice == READ_ONLY || notice == HIDDEN {
+        std::borrow::Cow::Borrowed(notice)
+    } else {
+        shown_if_any(masked, notice)
+    }
 }
 
 /// The read-only rule: a command that edits, duplicates, reads or writes a file, or sends out masked
@@ -107,6 +130,16 @@ mod tests {
     }
 
     #[test]
+    fn only_a_minds_window_is_masked_unless_the_whole_copy_is_on_a_minds_display() {
+        let person = crate::WindowId::PRIMARY;
+        let mind = crate::WindowId(crate::WindowId::MIND | 7);
+        assert!(!masked(false, person), "the person's window, beside a Mind's");
+        assert!(masked(false, mind));
+        assert!(masked(true, person), "a copy drawn on a Mind's display masks all it draws");
+        assert!(mind.for_mind() && !person.for_mind());
+    }
+
+    #[test]
     fn a_window_on_another_display_shows_the_one_sentence_and_refuses_edits() {
         // The display rule alone decided: no marker, a display that is not the person's.
         let for_mind = drawn_for_mind(None, Some("wayland-mind"));
@@ -116,5 +149,8 @@ mod tests {
         assert!(refuse_if(for_mind, false).is_ok());
         assert_eq!(shown(false, "secret"), "secret");
         assert!(refuse_if(false, true).is_ok());
+        assert_eq!(shown_notice(true, READ_ONLY), READ_ONLY, "the refusal is said as it is");
+        assert_eq!(shown_notice(true, "Sent to ana@example.org"), HIDDEN);
+        assert_eq!(shown_notice(false, "Sent to ana@example.org"), "Sent to ana@example.org");
     }
 }

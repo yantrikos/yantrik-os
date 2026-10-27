@@ -11,6 +11,22 @@
 //! notes through them.
 
 use crate::command::{Command, WindowAction};
+use crate::model::Model;
+
+/// Whether `command` runs where a Mind is looking: this whole copy is drawn on a Mind's display
+/// (`Boot::for_mind`), or the command came from a Mind's window beside the person's
+/// (`WindowId::for_mind`). A call through the surface comes from no window and is not.
+pub fn looking(m: &Model, command: &Command) -> bool {
+    m.for_mind || matches!(command, Command::From { window, .. } if window.for_mind())
+}
+
+/// [`refuses`], and in a Mind's window beside the person's, *New window* too: it would open one on
+/// the person's display, at a Mind's press.
+pub fn refuses_in(m: &Model, command: &Command) -> bool {
+    let new_window = matches!(command, Command::From { window, command }
+        if window.for_mind() && matches!(**command, Command::Window(WindowAction::NewWindow)));
+    refuses(command) || (new_window && !m.for_mind)
+}
 
 /// A command a Mind's window cannot run, by the framework's read-only rule. Each is refused before
 /// it touches a note or the model:

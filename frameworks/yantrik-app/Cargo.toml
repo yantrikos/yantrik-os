@@ -14,6 +14,8 @@ testing = []
 # here unchanged. The App trait and the runner (step 2) are built beside them.
 [dependencies]
 slint = { workspace = true }
+# Its winit backend, wrapped so a Mind's window can be drawn for its view helper (displays).
+i-slint-backend-winit = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

@@ -11,10 +11,10 @@ use super::{scratch, settle, typed};
 use crate::command::Command;
 use crate::TextEditor;
 
-const SENTINEL: &str = "SENTINEL-editor-mind-view-3d9c";
+pub(super) const SENTINEL: &str = "SENTINEL-editor-mind-view-3d9c";
 
 /// A Text Editor drawn for a Mind (or not) with a file holding the sentinel open.
-fn with_document(for_mind: bool) -> (TestApp<TextEditor>, std::path::PathBuf) {
+pub(super) fn with_document(for_mind: bool) -> (TestApp<TextEditor>, std::path::PathBuf) {
     // The file reaches the window as a launch argument: a masked window refuses the Open dialog.
     let path = scratch("mind-view").join("plan.rs");
     std::fs::write(&path, format!("fn main() {{
@@ -32,9 +32,14 @@ fn with_document(for_mind: bool) -> (TestApp<TextEditor>, std::path::PathBuf) {
     (app, path)
 }
 
-/// Every string the window holds that a screen reader or OCR could see.
+/// Every string the first window holds that a screen reader or OCR could see.
 fn window_text(app: &TestApp<TextEditor>) -> String {
-    app.ui(|ui| {
+    window_text_in(app, yantrik_app::WindowId::PRIMARY)
+}
+
+/// [`window_text`], of the open window `window`.
+pub(super) fn window_text_in(app: &TestApp<TextEditor>, window: yantrik_app::WindowId) -> String {
+    app.window(window, |ui| {
         let tabs = ui.get_tabs();
         let mut all = vec![
             ui.get_content().to_string(),
@@ -54,6 +59,7 @@ fn window_text(app: &TestApp<TextEditor>) -> String {
         all.extend((0..slint::Model::row_count(&tabs)).map(|i| slint::Model::row_data(&tabs, i).unwrap().title.to_string()));
         all.join("\n")
     })
+    .expect("the window is open")
 }
 
 #[test]

@@ -98,6 +98,32 @@ pub fn claim(app_name: &str) -> Option<InstanceGuard> {
     claim_in(&runtime_dir(), app_name, present_running)
 }
 
+/// Whether a live copy of `app_name` holds its slot now, by its pid file, without taking the slot:
+/// a Mind's launch asks this while the instance it started claims it, and a probe of the lock
+/// could make that instance see the slot held and leave.
+pub fn running(app_name: &str) -> bool {
+    running_in(&runtime_dir(), app_name)
+}
+
+fn running_in(dir: &std::path::Path, app_name: &str) -> bool {
+    holder_in(dir, app_name).is_some()
+}
+
+/// The pid of the live copy holding `app_name`'s slot, by its pid file, when it is not this one.
+pub fn holder(app_name: &str) -> Option<u32> {
+    holder_in(&runtime_dir(), app_name)
+}
+
+fn holder_in(dir: &std::path::Path, app_name: &str) -> Option<u32> {
+    if !private_to_us(dir) {
+        return None;
+    }
+    fs::read_to_string(dir.join(format!("{app_name}.pid")))
+        .ok()
+        .and_then(|pid| pid.trim().parse::<u32>().ok())
+        .filter(|pid| *pid != std::process::id() && pid_alive(*pid))
+}
+
 /// What a launch that found the slot held made of the copy holding it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Held {
@@ -299,6 +325,21 @@ mod tests {
             crate::lock::soon(|| claim_in(&dir, "notes", |_| {}).is_some()),
             "released with the guard"
         );
+    }
+
+    #[test]
+    fn a_copy_is_running_while_its_pid_file_names_a_live_process_other_than_this() {
+        let dir = private_dir("running").join("yantrik");
+        assert!(!running_in(&dir, "notes"), "no pid file");
+        let mut first = holder();
+        fs::write(dir.join("notes.pid"), first.id().to_string()).unwrap();
+        assert!(running_in(&dir, "notes"));
+        fs::write(dir.join("notes.pid"), std::process::id().to_string()).unwrap();
+        assert!(!running_in(&dir, "notes"), "this process is not another copy");
+        let _ = first.kill();
+        let _ = first.wait();
+        fs::write(dir.join("notes.pid"), first.id().to_string()).unwrap();
+        assert!(!running_in(&dir, "notes"), "a dead copy is not running");
     }
 
     #[test]

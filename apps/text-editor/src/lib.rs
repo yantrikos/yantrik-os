@@ -101,8 +101,8 @@ impl App for TextEditor {
         update::update(m, command, fx)
     }
 
-    fn render(ui: &TextEditorApp, _: WindowId, m: &Model, changed: &Changed) {
-        view::render::render(ui, m, changed);
+    fn render(ui: &TextEditorApp, window: WindowId, m: &Model, changed: &Changed) {
+        view::render::render(ui, window, m, changed);
     }
 
     fn describe(m: &Model) -> View {

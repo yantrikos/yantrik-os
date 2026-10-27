@@ -14,6 +14,7 @@ pub mod companion;
 pub mod control;
 pub mod cx;
 pub mod desktop;
+pub mod displays;
 pub mod documents;
 pub mod drafts;
 pub mod effects;

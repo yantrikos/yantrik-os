@@ -41,6 +41,7 @@ use crate::rail::RailCommand;
 use crate::watch::Seen;
 use yantrik_surface::LocalRegistry;
 
+mod displays;
 mod drawn;
 mod events;
 mod handle;

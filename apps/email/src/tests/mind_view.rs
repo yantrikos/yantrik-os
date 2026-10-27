@@ -16,10 +16,10 @@ use crate::command::{Ask, Command, Pick};
 use crate::state::Draft;
 use crate::Email;
 
-const SENTINEL: &str = "SENTINEL-email-mind-view-61fa";
+pub(super) const SENTINEL: &str = "SENTINEL-email-mind-view-61fa";
 
 /// A mailbox whose one message carries the sentinel in every place the window would draw text.
-fn mailbox() -> FakeMail {
+pub(super) fn mailbox() -> FakeMail {
     let s = SENTINEL;
     let listed = json!([{
         "id": "201", "from": format!("{s} Sender <{s}@example.com>"), "to": ["you@example.com"],
@@ -42,7 +42,7 @@ fn mailbox() -> FakeMail {
 }
 
 /// Started over `mail`, for a Mind or not, with the message opened.
-fn with_message(mail: &FakeMail, for_mind: bool) -> TestApp<Email> {
+pub(super) fn with_message(mail: &FakeMail, for_mind: bool) -> TestApp<Email> {
     let app = if for_mind {
         let paths = Paths::temporary(Email::ID);
         fake::install(&paths, mail);
@@ -56,9 +56,14 @@ fn with_message(mail: &FakeMail, for_mind: bool) -> TestApp<Email> {
     app
 }
 
-/// Every string the window holds that a screen reader or OCR could see.
+/// Every string the first window holds that a screen reader or OCR could see.
 fn window_text(app: &TestApp<Email>) -> String {
-    app.ui(|ui| {
+    window_text_in(app, yantrik_app::WindowId::PRIMARY)
+}
+
+/// [`window_text`], of the open window `window`.
+pub(super) fn window_text_in(app: &TestApp<Email>, window: yantrik_app::WindowId) -> String {
+    app.window(window, |ui| {
         let d = ui.get_email_detail();
         let mut all: Vec<String> = [
             d.from_name, d.from_addr, d.from_initial, d.to_addr, d.cc_addr, d.subject, d.date_text, d.body,
@@ -94,6 +99,7 @@ fn window_text(app: &TestApp<Email>) -> String {
         ].map(|s| s.to_string()));
         all.join("\n")
     })
+    .expect("the window is open")
 }
 
 #[test]

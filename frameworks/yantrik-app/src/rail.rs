@@ -175,6 +175,13 @@ impl Rail {
         }
     }
 
+    /// The rail as a window on a Mind's display draws it (`crate::for_mind`): whether the Mind
+    /// can answer, and nothing of the person's own conversation with it: no context, no
+    /// suggestion, no answer or proposal. The person's window beside it draws the rail whole.
+    pub fn withheld(&self) -> Rail {
+        Rail { reach: self.reach, unavailable: self.unavailable, ..Rail::new(self.mind.clone()) }
+    }
+
     pub fn context(&self) -> &[ContextItem] {
         &self.context
     }

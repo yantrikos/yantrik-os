@@ -53,6 +53,9 @@ impl<A: App> Core<A> {
             (None, Event::FileChanged { .. }) => {}
             // Already logged and filed by the window table.
             (None, Event::WindowNotOpened { .. }) => {}
+            // A window the framework opened or closed on its own draws from the model as any
+            // other; an app with nothing per window has nothing to do.
+            (None, Event::Opened(_) | Event::Closed(_)) => {}
         }
     }
 }

@@ -25,6 +25,7 @@ mod follow;
 mod gone;
 mod kept;
 mod mind_view;
+mod mind_window;
 mod leaving;
 mod moved;
 mod outside;

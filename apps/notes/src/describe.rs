@@ -129,13 +129,18 @@ fn windows(m: &Model) -> Vec<Value> {
         .into_iter()
         .map(|p| {
             let note = m.current_in(p);
-            json!({
+            let mut window = json!({
                 "window": p.window.0,
                 "focused": p.window == m.pane.window,
                 "open_note": note.as_ref().map(|n| n.id().to_string()),
                 "title": m.shown_in(p).map(|s| s.title()),
                 "unsaved": note.as_ref().is_some_and(|n| n.unsaved()) || m.offered_in(p).is_some(),
-            })
+            });
+            // A Mind's own window, on its display (Mind View), masked there.
+            if p.window.for_mind() {
+                window["mind_view"] = true.into();
+            }
+            window
         })
         .collect()
 }

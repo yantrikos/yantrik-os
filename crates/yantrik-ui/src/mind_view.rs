@@ -272,9 +272,14 @@ pub fn route_now(app_id: &str) -> Route {
         Requester::Person => return desktop,
         Requester::Mind(who) => who,
     };
+    // An app of the framework is one instance with a window per display (#963): a Mind's launch
+    // opens the Mind's own window in Mind View, beside the person's, and is no second window on
+    // their desk.
+    let own_window = crate::running::binary_of(app_id)
+        .is_some_and(|program| yantrik_shell_core::mind_windows::gives_minds_their_own_window(&program));
     route(
         who,
-        crate::running::is_running(app_id) && !is_mind_view_app(app_id),
+        crate::running::is_running(app_id) && !is_mind_view_app(app_id) && !own_window,
     )
 }
 
@@ -785,6 +790,16 @@ pub fn for_describe() -> serde_json::Value {
                 "inside Mind View (one window on the person's screen), not as windows of their own"
             } else {
                 "on the person's desktop, because `minds open apps in Mind View` is off"
+            },
+            // #963: one instance of a framework app, a window per display.
+            "apps_the_person_has_open": if on {
+                "Yantrik's own apps (Notes, Email, Text Editor, Snippets and the rest) open a window of \
+                 yours in Mind View even while the person has the app open: one app, with the \
+                 person's window on their desktop and yours, masked, in Mind View. Its calls reach the \
+                 person's data either way. Other programs already open on the person's desktop are \
+                 not started again for you."
+            } else {
+                "opened on the person's desktop, as every window of yours is while Mind View is off"
             },
             "agent_terminal": if on {
                 "commands from agent_run are shown live in a terminal in Mind View"

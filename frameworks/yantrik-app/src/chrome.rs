@@ -18,6 +18,10 @@ use slint::winit_030::WinitWindowAccessor;
 /// press to start a move from (Wayland's `xdg_toplevel.move`). A window that is not on a winit
 /// backend has no compositor to ask, and stays where it is.
 pub fn drag(window: &slint::Window) {
+    // A Mind's window is drawn for a helper on the Mind's display, whose compositor moves it.
+    if crate::displays::streamed::drag(window) {
+        return;
+    }
     let moved = window.with_winit_window(|w| w.drag_window());
     match moved {
         Some(Ok(())) => {}

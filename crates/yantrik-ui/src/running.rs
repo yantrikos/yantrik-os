@@ -174,6 +174,12 @@ pub fn running() -> Vec<RunningApp> {
     apps
 }
 
+/// The program the shell has open as this app, while it is open.
+pub fn binary_of(app_id: &str) -> Option<String> {
+    let open = registry().lock().ok()?.get(app_id).cloned()?;
+    pid_alive(open.pid).then_some(open.binary)
+}
+
 /// Whether the shell has this app open.
 pub fn is_running(app_id: &str) -> bool {
     registry()

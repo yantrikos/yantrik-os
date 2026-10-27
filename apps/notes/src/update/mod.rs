@@ -54,8 +54,9 @@ const WORKER_STOPPED: &str = "Storage worker stopped. Keep this window open to p
 
 pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Notes>) -> Result<(), Refused> {
     // The editor shows a mask where a Mind looks, and typing or copying would carry the mask or
-    // the real text through it (`mind_view::refuses`).
-    for_mind::refuse_if(m.for_mind, mind_view::refuses(&command))?;
+    // the real text through it (`mind_view::refuses`). Where: this whole copy on a Mind's
+    // display, or a command from a Mind's window beside the person's (`mind_view::looking`).
+    for_mind::refuse_if(mind_view::looking(m, &command), mind_view::refuses_in(m, &command))?;
     // A cue is for the render of the command that set it, and for no later one.
     m.panes_mut().for_each(|p| p.cues.clear());
     let focused = m.pane.window;
@@ -96,6 +97,8 @@ fn dispatch(m: &mut Model, fx: &mut Effects<Notes>, command: Command) {
         // The focus moved to the window it came from: `describe` says which.
         Command::Activated => fx.changed(MODEL_ONLY),
         Command::WindowNotOpened { window, why } => windows::not_opened(m, fx, window, &why),
+        Command::WindowOpened(window) => windows::opened(m, fx, window),
+        Command::WindowClosed(window) => windows::forget(m, fx, window),
         Command::Load => library::load(m, fx),
         Command::Window(action) => window::act(m, fx, action),
         Command::Edit(text) => editing::edit(m, fx, text),
@@ -103,7 +106,7 @@ fn dispatch(m: &mut Model, fx: &mut Effects<Notes>, command: Command) {
         Command::Filter { folder, query } => {
             m.pane.folder = folder;
             m.pane.query = query;
-            m.pane.text_search = !m.for_mind;
+            m.pane.text_search = !for_mind::masked(m.for_mind, m.pane.window);
             relist(m, fx);
         }
         Command::ViewSynced { focus_mode, dialog } => {

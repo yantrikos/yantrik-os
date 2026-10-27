@@ -11131,6 +11131,7 @@ dependencies = [
 name = "yantrik-app"
 version = "0.1.0"
 dependencies = [
+ "i-slint-backend-winit",
  "libc",
  "serde",
  "serde_json",
