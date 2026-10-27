@@ -57,15 +57,16 @@ fn vault_dir(paths: &Paths) -> PathBuf {
     }
 }
 
-/// Where the old builds' lock is. Under `cargo test`, inside the test's own root: the tests'
-/// apps run side by side in one process, and none may stand in for the person's running Notes.
+/// Where this profile's old builds' lock is. Under `cargo test`, inside the test's own root: the
+/// tests' apps run side by side in one process, and none may stand in for the person's running
+/// Notes.
 fn legacy_lock(paths: &Paths) -> Option<PathBuf> {
     if cfg!(test) {
         let dir = paths.state_dir();
         let _ = std::fs::create_dir_all(dir);
         Some(dir.join(claim::LEGACY_NAME))
     } else {
-        claim::legacy_path()
+        claim::legacy_path(paths.profile())
     }
 }
 
@@ -90,7 +91,9 @@ impl App for Notes {
         let claim = claim::hold(legacy_lock(&boot.paths).as_deref(), vault.dir()).map_err(|claim::Held| {
             // Never from a test: it would ask the person's own Notes to come forward.
             if !cfg!(test) {
-                yantrik_app::instance::present_running(Self::ID);
+                // The instance name, not the bare id: a refused `notes.work` must ask the
+                // `notes.work` copy's socket, or it summons the default profile's window.
+                yantrik_app::instance::present_running(&boot.paths.instance_name());
             }
             Startup::handed_over(claim::ALREADY_RUNNING)
         })?;
