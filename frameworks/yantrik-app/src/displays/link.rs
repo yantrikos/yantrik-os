@@ -8,8 +8,11 @@
 //! the instance just checked was a Mind's.
 //!
 //! Writing is a thread of its own, so the UI thread never waits on a helper. Requests (title,
-//! raise, close) queue in order; a frame waits in a slot of one, and a frame offered while the
-//! slot is taken is refused, which the window answers by sending the whole frame next time.
+//! raise, close) queue in order; a frame waits in a slot of one, and the window renders nothing
+//! while the slot is taken ([`Sink::ready`]), so a helper that is slow costs the person's UI
+//! thread nothing (#972 M3). A write that does not finish in [`WRITE_WAIT`] ends the link, so a
+//! helper that stops reading cannot keep its threads and socket alive (#972 L3). In Private mode
+//! the helper is sent one blank frame and nothing else ([`super::privacy`]).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -26,7 +29,15 @@ pub enum Heard {
     Message(FromHelper),
     /// The helper is gone: its socket closed, or it sent what no helper sends.
     Gone,
+    /// The window is to be drawn whole: Private mode ended while it was blanked.
+    Redraw,
 }
+
+/// How long one write to a helper may take before the link ends.
+pub const WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How often an idle writer looks at whether the person turned Private mode on or off.
+const PRIVACY_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Default)]
 struct Outbox {
@@ -72,6 +83,15 @@ impl Sink for Link {
     fn send(&self, message: ToHelper) -> bool {
         let frame = matches!(message, ToHelper::Frame { .. });
         self.push(message.encode(), frame)
+    }
+
+    fn ready(&self) -> bool {
+        let out = self.outbox.0.lock().unwrap_or_else(|p| p.into_inner());
+        !out.closed && out.frame.is_none()
+    }
+
+    fn send_frame(&self, body: Vec<u8>) -> bool {
+        self.push(body, true)
     }
 }
 
@@ -159,13 +179,14 @@ pub fn connect(path: &Path, asker: Option<i32>) -> Result<Link, String> {
     acceptable(path, &yantrik_ipc_transport::server::socket_dir())?;
     let stream = UnixStream::connect(path).map_err(|e| format!("the view helper did not answer: {e}"))?;
     peer_is(&stream, asker)?;
+    stream.set_write_timeout(Some(WRITE_WAIT)).map_err(|e| format!("the view helper's socket: {e}"))?;
     let reading = stream.try_clone().map_err(|e| format!("the view helper's socket: {e}"))?;
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let outbox: Shared = Arc::new((Mutex::new(Outbox::default()), Condvar::new()));
     let writing = outbox.clone();
     std::thread::Builder::new()
         .name("yantrik-view-out".into())
-        .spawn(move || write_loop(stream, writing))
+        .spawn(move || write_loop(stream, writing, id))
         .map_err(|e| format!("no thread for the view helper: {e}"))?;
     std::thread::Builder::new()
         .name("yantrik-view-in".into())
@@ -221,29 +242,58 @@ fn peer_is(stream: &std::os::unix::net::UnixStream, asker: Option<i32>) -> Resul
     }
 }
 
+/// What the writer takes next from the outbox.
+enum Taken {
+    Control(Vec<u8>),
+    Frame(Vec<u8>),
+    Idle,
+    Closed,
+}
+
 #[cfg(unix)]
-fn write_loop(mut stream: std::os::unix::net::UnixStream, outbox: Shared) {
+fn write_loop(mut stream: std::os::unix::net::UnixStream, outbox: Shared, id: u64) {
+    use super::privacy::{Blanking, Next};
     let (lock, wake) = &*outbox;
+    let mut blanking = Blanking::default();
     loop {
-        let next = {
-            let mut out = lock.lock().unwrap_or_else(|p| p.into_inner());
-            loop {
-                if let Some(control) = out.control.pop_front() {
-                    break Some(control);
+        let taken = {
+            let out = lock.lock().unwrap_or_else(|p| p.into_inner());
+            let mut out = out;
+            if let Some(control) = out.control.pop_front() {
+                Taken::Control(control)
+            } else if let Some(frame) = out.frame.take() {
+                Taken::Frame(frame)
+            } else if out.closed {
+                Taken::Closed
+            } else {
+                let (out, waited) = wake.wait_timeout(out, PRIVACY_LOOK).unwrap_or_else(|p| p.into_inner());
+                drop(out);
+                if waited.timed_out() {
+                    Taken::Idle
+                } else {
+                    continue;
                 }
-                if let Some(frame) = out.frame.take() {
-                    break Some(frame);
-                }
-                if out.closed {
-                    break None;
-                }
-                out = wake.wait(out).unwrap_or_else(|p| p.into_inner());
             }
         };
-        let Some(body) = next else { break };
-        if super::wire::send(&mut stream, &body).is_err() {
-            lock.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
-            break;
+        let next = match taken {
+            Taken::Control(body) => Next::Send(body),
+            Taken::Frame(body) => blanking.frame(body, yantrik_ipc_transport::privacy::is_private()),
+            Taken::Idle => blanking.idle(yantrik_ipc_transport::privacy::is_private()),
+            Taken::Closed => break,
+        };
+        let body = match next {
+            Next::Send(body) => Some(body),
+            Next::Nothing => None,
+            Next::Redraw(body) => {
+                let _ = slint::invoke_from_event_loop(move || route(id, Heard::Redraw));
+                body
+            }
+        };
+        if let Some(body) = body {
+            if super::wire::send(&mut stream, &body).is_err() {
+                lock.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
+                break;
+            }
         }
     }
     let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -252,7 +302,7 @@ fn write_loop(mut stream: std::os::unix::net::UnixStream, outbox: Shared) {
 #[cfg(unix)]
 fn read_loop(mut stream: std::os::unix::net::UnixStream, id: u64) {
     loop {
-        let heard = match super::wire::receive(&mut stream) {
+        let heard = match super::wire::receive(&mut stream, super::wire::MAX_FROM_HELPER) {
             Ok(Some(body)) => match FromHelper::decode(&body) {
                 Ok(message) => Heard::Message(message),
                 Err(e) => {

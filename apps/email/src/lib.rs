@@ -48,6 +48,8 @@ impl App for Email {
     type Command = Command;
     type Settings = ();
     const ID: &'static str = "email";
+    /// A Mind's window hides the person's content (`crate::mind_view`).
+    const MASKS_FOR_MIND: bool = true;
 
     fn model(boot: &Boot) -> Result<Model, Startup> {
         let files = files::Files::for_app(&boot.paths);

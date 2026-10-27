@@ -23,6 +23,7 @@ use crate::displays::link::{self, Heard, Link};
 use crate::displays::streamed::{self, Sink};
 use crate::displays::wire::ToHelper;
 use crate::displays::platform;
+use crate::displays::refused_beside_the_person;
 use crate::problems;
 use crate::theme;
 use crate::window::Window as _;
@@ -61,6 +62,10 @@ impl<A: App> Core<A> {
         if self.exit.get().is_some() {
             return Err("the app is ending, so it opens no window; open it again once it has".into());
         }
+        // H3: a Mind watches the person's live state only through a window that masks it.
+        if !A::MASKS_FOR_MIND && !self.person_windows().is_empty() {
+            return Err(refused_beside_the_person(A::ID));
+        }
         let open = self.mind_windows().into_iter().find(|(_, d)| *d == display).map(|(id, _)| id);
         let (window, streamed) = match open {
             Some(window) => {
@@ -89,6 +94,37 @@ impl<A: App> Core<A> {
             "view": streamed,
             "mind_window": window.0,
         }))
+    }
+
+    /// The person's window is about to be shown: an app that does not mask for a Mind closes every
+    /// Mind's window first, so none of them goes on to draw what the person does (#972 H3).
+    pub(super) fn before_the_persons_window(&self) {
+        if A::MASKS_FOR_MIND {
+            return;
+        }
+        for (window, _) in self.mind_windows() {
+            tracing::info!(app = self.id, window = window.0, "the person's window opens: a Mind's window of an app that does not mask closes");
+            self.close_window(window);
+            self.event(Event::Closed(window));
+        }
+    }
+
+    /// Writes whose windows are open where the shell reads it (`displays::report`), when the runner
+    /// asked for a report.
+    pub(super) fn report_windows(&self) {
+        let windows = self.windows.borrow();
+        let Some(reporter) = &windows.reporter else { return };
+        let person = u32::from(windows.first_open) + windows.more.keys().filter(|w| !w.for_mind()).count() as u32;
+        let mut minds: Vec<String> = windows.minds.values().map(|w| w.display.clone().unwrap_or_else(|| "unnamed".into())).collect();
+        minds.sort();
+        minds.dedup();
+        reporter.write(person, minds);
+    }
+
+    /// The runner's: report this instance's windows to the shell from now on.
+    pub fn report_windows_to(&self, reporter: crate::displays::report::Reporter) {
+        self.windows.borrow_mut().reporter = Some(reporter);
+        self.report_windows();
     }
 
     /// Asks a Mind's window's helper to bring it forward on its display.
@@ -141,6 +177,11 @@ impl<A: App> Core<A> {
                             core.close_mind_window(id);
                         }
                     }
+                    Heard::Redraw => {
+                        if let Some(adapter) = adapter.upgrade() {
+                            adapter.redraw_whole();
+                        }
+                    }
                 }),
             );
         }
@@ -164,6 +205,7 @@ impl<A: App> Core<A> {
         }
         let on = display.as_deref().unwrap_or("unnamed");
         tracing::info!(app = self.id, window = id.0, display = on, "a Mind's window is open, on its own display");
+        self.report_windows();
         Ok(id)
     }
 
@@ -178,11 +220,25 @@ impl<A: App> Core<A> {
         self.exit_if_no_window();
     }
 
+    /// Whether the call being handled now may run as a launch of a Mind's: what it asks to open is
+    /// refused, since the app would apply it to the person's model (#972 M1).
+    pub(crate) fn mind_launch_opens_nothing(launch: &crate::launch::Launch) -> Result<(), String> {
+        if launch.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "A Mind's launch opens no file or link in {}: a Mind opens them through the app's actions. Nothing was opened.",
+                A::ID
+            ))
+        }
+    }
+
     /// The runner's start for an instance a Mind's first launch started ([`crate::displays::spawn`]):
     /// no window is shown, and the process waits up to `wait` for one, as a linger does.
     pub fn start_windowless(&self, wait: Duration) {
         let _ = self.ui.hide();
         self.windows.borrow_mut().first_open = false;
+        self.report_windows();
         self.linger_for_first_window(wait);
     }
 }

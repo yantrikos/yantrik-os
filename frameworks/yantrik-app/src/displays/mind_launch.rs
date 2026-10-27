@@ -66,10 +66,11 @@ pub fn run(app: &str, instance: &str, launch: &Launch) -> Outcome {
                 }
             }
         } else if !started {
-            let Some(display) = spawn::person_display() else {
+            let session = spawn::persons_session();
+            if spawn::person_display(&session).is_none() {
                 return Outcome::RunHere;
-            };
-            if let Err(e) = spawn::start_instance(&display) {
+            }
+            if let Err(e) = spawn::start_instance(&session) {
                 return Outcome::Failed(format!("{app} could not be started on the person's display: {e}"));
             }
             started = true;

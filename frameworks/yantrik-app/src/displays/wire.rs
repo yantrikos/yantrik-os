@@ -12,8 +12,11 @@
 
 use std::io::{self, Read, Write};
 
-/// The largest message either side accepts: one full frame of [`MAX_SIDE`] a side, and room.
+/// The largest message the helper accepts: one full frame of [`MAX_SIDE`] a side, and room.
 pub const MAX_MESSAGE: usize = 3 * (MAX_SIDE as usize) * (MAX_SIDE as usize) + 64;
+/// The largest message the instance accepts from a helper: none is longer than a key's text and
+/// its fields (#972 L2).
+pub const MAX_FROM_HELPER: usize = MAX_TEXT + 64;
 /// The largest window side, in physical pixels.
 pub const MAX_SIDE: u32 = 4096;
 /// The longest title or key text, in bytes.
@@ -70,8 +73,8 @@ pub fn send(to: &mut impl Write, body: &[u8]) -> io::Result<()> {
     to.flush()
 }
 
-/// Reads one message's body, or `None` at a clean end of the stream.
-pub fn receive(from: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
+/// Reads one message's body of at most `max` bytes, or `None` at a clean end of the stream.
+pub fn receive(from: &mut impl Read, max: usize) -> io::Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
     match from.read_exact(&mut len) {
         Ok(()) => {}
@@ -79,7 +82,7 @@ pub fn receive(from: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
         Err(e) => return Err(e),
     }
     let len = u32::from_le_bytes(len) as usize;
-    if len == 0 || len > MAX_MESSAGE {
+    if len == 0 || len > max {
         return Err(bad("a message of a length no side sends"));
     }
     let mut body = vec![0u8; len];
@@ -92,6 +95,17 @@ fn bad(what: &str) -> io::Error {
 }
 
 impl ToHelper {
+    /// The tag a frame's body starts with.
+    pub const FRAME_TAG: u8 = 2;
+
+    /// A frame's body up to its pixels, with room for them: the window appends each row's RGB
+    /// straight into it, with no copy of the patch on the way (#972 M3).
+    pub fn frame_header(width: u32, height: u32, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+        let mut b = Body(Vec::with_capacity(25 + 3 * w as usize * h as usize));
+        b.tag(Self::FRAME_TAG).u32(width).u32(height).u32(x).u32(y).u32(w).u32(h);
+        b.0
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut b = Body::default();
         match self {
@@ -100,7 +114,7 @@ impl ToHelper {
                 b.u8(u8::from(*minimized)).u8(u8::from(*maximized));
             }
             ToHelper::Frame { width, height, x, y, w, h, rgb } => {
-                b.tag(2).u32(*width).u32(*height).u32(*x).u32(*y).u32(*w).u32(*h);
+                b.0 = Self::frame_header(*width, *height, *x, *y, *w, *h);
                 b.0.extend_from_slice(rgb);
             }
             ToHelper::Raise => {
@@ -323,6 +337,9 @@ mod tests {
         assert_eq!(round_to(props.clone()), props);
         let frame = ToHelper::Frame { width: 4, height: 3, x: 1, y: 1, w: 2, h: 2, rgb: (0..12).collect() };
         assert_eq!(round_to(frame.clone()), frame);
+        let mut built = ToHelper::frame_header(4, 3, 1, 1, 2, 2);
+        built.extend(0..12u8);
+        assert_eq!(built, frame.encode(), "a body built in place is the same body");
         for m in [ToHelper::Raise, ToHelper::Drag, ToHelper::Close] {
             assert_eq!(round_to(m.clone()), m);
         }
@@ -378,12 +395,14 @@ mod tests {
         send(&mut stream, &ToHelper::Raise.encode()).unwrap();
         send(&mut stream, &ToHelper::Close.encode()).unwrap();
         let mut read = stream.as_slice();
-        assert_eq!(ToHelper::decode(&receive(&mut read).unwrap().unwrap()).unwrap(), ToHelper::Raise);
-        assert_eq!(ToHelper::decode(&receive(&mut read).unwrap().unwrap()).unwrap(), ToHelper::Close);
-        assert!(receive(&mut read).unwrap().is_none(), "a clean end");
+        assert_eq!(ToHelper::decode(&receive(&mut read, MAX_MESSAGE).unwrap().unwrap()).unwrap(), ToHelper::Raise);
+        assert_eq!(ToHelper::decode(&receive(&mut read, MAX_MESSAGE).unwrap().unwrap()).unwrap(), ToHelper::Close);
+        assert!(receive(&mut read, MAX_MESSAGE).unwrap().is_none(), "a clean end");
         let mut zero: &[u8] = &[0, 0, 0, 0];
-        assert!(receive(&mut zero).is_err(), "an empty message is not one");
+        assert!(receive(&mut zero, MAX_MESSAGE).is_err(), "an empty message is not one");
         let mut too_long: &[u8] = &u32::MAX.to_le_bytes();
-        assert!(receive(&mut too_long).is_err());
+        assert!(receive(&mut too_long, MAX_MESSAGE).is_err());
+        let mut frame_sized: &[u8] = &(MAX_FROM_HELPER as u32 + 1).to_le_bytes();
+        assert!(receive(&mut frame_sized, MAX_FROM_HELPER).is_err(), "a helper sends nothing frame-sized");
     }
 }

@@ -8,9 +8,10 @@
 //!
 //! The claim can only make the asker a Mind's, never the person's, so a launch that lost its
 //! marker on the way is still a Mind's, and nothing a request says turns a Mind's launch into a
-//! window of the person's. A caller of another account is never the person. Where `/proc` cannot
-//! be read (a build that is not Linux, a caller already gone) the claim is all there is, and it
-//! is held to the same rule as the environment: [`crate::for_mind::drawn_for_mind`].
+//! window of the person's. A caller of another account is never the person. On a build that is not
+//! Linux, or with no socket call at all (a test), the claim is all there is, and it
+//! is held to the same rule as the environment: [`crate::for_mind::drawn_for_mind`]. A caller
+//! the kernel names whose environment cannot be read on Linux is a Mind's: it proves nothing.
 
 use serde_json::Value;
 
@@ -89,6 +90,9 @@ pub fn asking(args: &Value) -> Asker {
     }
     match read_environ(caller.pid) {
         Some(block) => Asker::from_environ(&block).or_mind(&claim),
+        // A caller the kernel names whose environment cannot be read (it has gone, its pid was
+        // reused, it is not dumpable) proves nothing: fail closed (#972 L1).
+        None if cfg!(target_os = "linux") => Asker { marker: true, ..claim },
         None => claim,
     }
 }

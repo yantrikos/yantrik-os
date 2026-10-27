@@ -12,24 +12,6 @@
 use crate::apps::{exec_argv, DesktopEntry};
 use crate::office::{is_libreoffice, CLOSED_TO_AGENTS};
 
-/// The framework apps, by desktop entry id and the id each publishes (`YantrikApp::ID`). The test
-/// beside this module reads every framework `App` impl under `apps/`, so an app added there and
-/// missing here fails the build instead of staying shut to agents unnoticed.
-const YANTRIK_APPS: &[(&str, &str)] = &[
-    ("yantrik-calendar", "calendar"),
-    ("yantrik-container-manager", "containers"),
-    ("yantrik-download-manager", "download-manager"),
-    ("yantrik-email", "email"),
-    ("yantrik-image-viewer", "image-viewer"),
-    ("yantrik-music-player", "music"),
-    ("yantrik-network-manager", "network"),
-    ("yantrik-notes", "notes"),
-    ("yantrik-snippet-manager", "snippets"),
-    ("yantrik-system-monitor", "system-monitor"),
-    ("yantrik-text-editor", "editor"),
-    ("yantrik-weather", "weather"),
-];
-
 /// Names that mean LibreOffice to a caller, whether or not an entry is installed under them.
 const OFFICE_NAMES: &[&str] = &["libreoffice", "soffice", "writer", "calc", "impress", "draw", "office"];
 
@@ -67,7 +49,7 @@ fn shown(entry: &DesktopEntry) -> &str {
 /// Whether `entry` is one of Yantrik's framework apps: listed, and running its own program.
 pub fn is_yantrik_app(entry: &DesktopEntry) -> bool {
     !is_libreoffice(entry)
-        && YANTRIK_APPS.iter().any(|(stem, _)| *stem == entry.app_id && program(entry) == *stem)
+        && crate::framework::FRAMEWORK_APPS.iter().any(|a| a.program == entry.app_id && program(entry) == a.program)
 }
 
 fn not_a_yantrik_app(what: &str) -> String {

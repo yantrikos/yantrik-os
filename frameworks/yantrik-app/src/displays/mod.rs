@@ -50,11 +50,21 @@ pub mod link;
 #[cfg(unix)]
 pub mod mind_launch;
 pub mod platform;
+pub mod privacy;
+pub mod report;
 pub mod spawn;
 pub mod streamed;
 pub mod wire;
 
 pub use asker::{asking, Asker};
+
+/// What a Mind's launch is told of an app that does not mask for a Mind while the person has it
+/// open (#972 H3): the next step, by the app's surface id.
+pub fn refused_beside_the_person(id: &str) -> String {
+    format!(
+        "{id} is open on the person's screen and cannot also open in your view; use its actions and os_describe {id} instead."
+    )
+}
 
 /// Whose a window is.
 #[derive(Debug, Clone, PartialEq, Eq)]

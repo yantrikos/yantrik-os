@@ -75,6 +75,8 @@ impl App for Notes {
     type Command = Command;
     type Settings = ();
     const ID: &'static str = "notes";
+    /// A Mind's window hides the person's content (`crate::mind_view`).
+    const MASKS_FOR_MIND: bool = true;
 
     /// The model, once this copy holds the library (`claim`). A copy that does not is the second
     /// one: the first is asked to show its window, as the old build did, and this one stops as a

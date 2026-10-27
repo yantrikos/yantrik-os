@@ -10,7 +10,8 @@ use slint::{ModelRc, VecModel};
 use yantrik_app::app::{Changed, WindowId};
 use yantrik_app::for_mind::{self, shown_if_any, HIDDEN};
 
-use crate::model::{Cue, Model};
+use crate::model::{Cue, Model, HIDDEN_TAB};
+use crate::tab::Tab;
 use crate::prompt;
 use crate::text::language::{highlight, language};
 use crate::text::viewport;
@@ -70,7 +71,8 @@ pub fn render(ui: &TextEditorApp, window: WindowId, m: &Model, changed: &Changed
                 // theirs; a copy on a Mind's display shows what was typed into it.
                 ui.set_query(shown_if_any(window.for_mind(), &m.find.query).as_ref().into());
             }
-            Cue::Dialog => ui.set_dialog_path(m.dialog_path.clone().into()),
+            // The person's typed path, kept from a Mind's window beside theirs.
+            Cue::Dialog => ui.set_dialog_path(shown_if_any(window.for_mind(), &m.dialog_path).as_ref().into()),
             Cue::Replacement => {
                 ui.set_replacement(shown_if_any(window.for_mind(), &m.find.replacement).as_ref().into())
             }
@@ -85,27 +87,37 @@ fn caret(m: &Model, masked: bool) -> (i32, i32) {
     if masked { (1, 1) } else { m.cursor }
 }
 
+/// A tab's title as a window shows it: in a masked window, a tab whose file no agent is shown is
+/// `(hidden)`, as `describe` names it to an agent (#972 M2).
+fn title_in(m: &Model, tab: &Tab, masked: bool) -> String {
+    if masked && tab.hidden { HIDDEN_TAB.into() } else { m.title(tab) }
+}
+
 fn chrome(ui: &TextEditorApp, m: &Model, masked: bool) {
     let tab = m.active_tab();
     let text = m.text(tab);
     let view = m.viewport();
+    // What `describe` withholds from an agent, a Mind's window withholds too.
+    let withheld = masked && tab.hidden;
     ui.set_tabs(ModelRc::new(VecModel::from(
         m.tabs
             .iter()
             .enumerate()
-            .map(|(i, t)| DocumentTab { title: m.title(t).into(), active: i == m.active, modified: m.modified(t) })
+            .map(|(i, t)| DocumentTab { title: title_in(m, t, masked).into(), active: i == m.active, modified: m.modified(t) })
             .collect::<Vec<_>>(),
     )));
     ui.set_active_tab(m.active as i32);
-    ui.set_document_title(m.title(tab).into());
+    ui.set_document_title(title_in(m, tab, masked).into());
     ui.set_modified(m.modified(tab));
-    ui.set_path_label(
+    ui.set_path_label(if withheld {
+        HIDDEN_TAB.into()
+    } else {
         m.path(tab)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "Untitled · choose a home with Save As".into())
-            .into(),
-    );
-    ui.set_language(language(m.path(tab)).into());
+            .into()
+    });
+    ui.set_language(if withheld { String::new() } else { language(m.path(tab)).to_string() }.into());
     // No measure of the text a Mind does not see: its lines, its line ending, or what was cut.
     let seen = !masked;
     ui.set_masked(masked);
@@ -114,7 +126,9 @@ fn chrome(ui: &TextEditorApp, m: &Model, masked: bool) {
     ui.set_view_limited(seen && view.limited);
     ui.set_view_status(if seen { viewport::status(view, text) } else { String::new() }.into());
     ui.set_busy(m.busy.is_some());
-    ui.set_notice(m.notice.window().into());
+    // The person's form of the notice may name a file no agent is shown; a masked window shows
+    // the agent's form.
+    ui.set_notice(m.notice.read(masked).into());
     ui.set_recovery_status(m.recovery.clone().into());
     let (line, column) = caret(m, masked);
     ui.set_cursor_line(line);
@@ -126,5 +140,5 @@ fn chrome(ui: &TextEditorApp, m: &Model, masked: bool) {
     ui.set_match_index(if seen { find::at_match(m) as i32 } else { 0 });
     ui.set_dialog(prompt::dialog(m));
     ui.set_dialog_error(m.dialog_error.clone().into());
-    ui.set_close_label(prompt::label(m, false).into());
+    ui.set_close_label(prompt::label(m, masked).into());
 }

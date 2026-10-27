@@ -75,6 +75,8 @@ impl App for SnippetManager {
     /// `snippets`, not `snippet-manager`: the id the launcher's route carries, so `yos act
     /// snippets …` and the dock reach the same process.
     const ID: &'static str = "snippets";
+    /// A Mind's window hides the person's content (`crate::mind_view`).
+    const MASKS_FOR_MIND: bool = true;
 
     fn model(boot: &Boot<()>) -> Result<Model, Startup> {
         let dir = store_dir(&boot.paths);

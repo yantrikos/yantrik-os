@@ -422,6 +422,15 @@ fn launch_handler<A: App>(
                 launch.profile
             ));
         }
+        // Whose window: the asker's own environment decides (`crate::displays::asker`). A Mind's
+        // launch opens or raises that Mind's window, and the person's never lands in it. It opens
+        // nothing in the app either: the app would open it in the person's model (#972 M1).
+        if let crate::displays::Owner::Mind { display } = crate::displays::asking(args).owner() {
+            Core::<A>::mind_launch_opens_nothing(&launch)?;
+            let view = args["view"].as_str().map(std::path::Path::new);
+            let asker = crate::control::caller().map(|c| c.pid);
+            return core.present_for_mind(display, view, asker);
+        }
         if let Some(intent) = launch.intent.take() {
             launch.intent = Some(admit(&specs, intent, true)?);
         }
@@ -441,13 +450,6 @@ fn launch_handler<A: App>(
             core.event(crate::app::Event::Launch(launch));
         } else {
             tracing::info!(app = A::ID, "a launch handed over twice; applied once");
-        }
-        // Whose window: the asker's own environment decides (`crate::displays::asker`). A Mind's
-        // launch opens or raises that Mind's window; the person's never lands in it.
-        if let crate::displays::Owner::Mind { display } = crate::displays::asking(args).owner() {
-            let view = args["view"].as_str().map(std::path::Path::new);
-            let asker = crate::control::caller().map(|c| c.pid);
-            return core.present_for_mind(display, view, asker);
         }
         // Shown through this core, as the runner's presenter does: the person's window brought
         // forward, or the first opened again, and `Event::Presented` raised.

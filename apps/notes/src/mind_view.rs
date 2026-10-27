@@ -20,12 +20,34 @@ pub fn looking(m: &Model, command: &Command) -> bool {
     m.for_mind || matches!(command, Command::From { window, .. } if window.for_mind())
 }
 
-/// [`refuses`], and in a Mind's window beside the person's, *New window* too: it would open one on
-/// the person's display, at a Mind's press.
+/// What is refused where a Mind is looking ([`looking`]). In a Mind's window beside the person's,
+/// everything but looking (#972 H2): that window shares the person's notes, their unsaved text,
+/// their prompts and their quit, so a close, a quit, a new note, a prompt's answer or a dialog
+/// settled from it would act on the person's Notes at a Mind's press. Only what moves that
+/// window's own view runs ([`looks`]). A copy drawn on a Mind's display itself (`Boot::for_mind`)
+/// keeps #959's rule, [`refuses`].
 pub fn refuses_in(m: &Model, command: &Command) -> bool {
-    let new_window = matches!(command, Command::From { window, command }
-        if window.for_mind() && matches!(**command, Command::Window(WindowAction::NewWindow)));
-    refuses(command) || (new_window && !m.for_mind)
+    match command {
+        Command::From { window, command } if window.for_mind() && !m.for_mind => !looks(command),
+        _ => refuses(command),
+    }
+}
+
+/// What a Mind's window beside the person's may do: open a note to look at, filter the list, turn
+/// the preview or focus mode on, compare a changed file, show an offered draft.
+pub fn looks(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Filter { .. }
+            | Command::Activated
+            | Command::Window(
+                WindowAction::Open { .. }
+                    | WindowAction::Focus
+                    | WindowAction::Preview
+                    | WindowAction::Compare
+                    | WindowAction::ShowDraft
+            )
+    )
 }
 
 /// A command a Mind's window cannot run, by the framework's read-only rule. Each is refused before

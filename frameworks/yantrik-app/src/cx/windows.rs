@@ -52,6 +52,8 @@ pub(crate) struct Windows<U> {
     /// Which of `more` are a Mind's, with its display and the link to its view helper
     /// (`cx/displays.rs`).
     pub(super) minds: BTreeMap<WindowId, super::displays::MindWindow>,
+    /// Where whose windows are open is reported to the shell, under the runner.
+    pub(super) reporter: Option<crate::displays::report::Reporter>,
     /// The theme the windows wear now, so a window opened later wears it too.
     pub(super) theme: Option<ThemeSettings>,
     /// The window the window manager last gave the keyboard to, while it has it.
@@ -62,7 +64,7 @@ pub(crate) struct Windows<U> {
 
 impl<U> Windows<U> {
     pub(crate) fn new() -> Windows<U> {
-        Windows { first_open: true, more: BTreeMap::new(), minds: BTreeMap::new(), theme: None, active: None, frames: 0 }
+        Windows { first_open: true, more: BTreeMap::new(), minds: BTreeMap::new(), reporter: None, theme: None, active: None, frames: 0 }
     }
 
     /// `window` is not the active one any more: it lost the keyboard, or it closed.
@@ -168,6 +170,7 @@ impl<A: App> Core<A> {
         }
         // A window on screen again: a linger the app was in is over.
         self.linger_ended();
+        self.report_windows();
     }
 
     /// A window closed: only it. Whether that was the last is judged by
@@ -177,6 +180,7 @@ impl<A: App> Core<A> {
         if window == WindowId::PRIMARY {
             let _ = self.ui.hide();
             self.windows.borrow_mut().first_open = false;
+            self.report_windows();
             return;
         }
         let (removed, mind) = {
@@ -191,6 +195,7 @@ impl<A: App> Core<A> {
             // dropped from the event loop, after that callback has returned.
             slint::Timer::single_shot(Duration::ZERO, move || drop(ui));
         }
+        self.report_windows();
     }
 
     /// `ui`, as `window`, tells the core when the window manager gives it the keyboard or takes
@@ -266,8 +271,9 @@ impl<A: App> Core<A> {
     /// and while only a Mind's window keeps the app running, which is never handed the person's
     /// launch. The app hears which window as `Event::Presented`, once it is shown.
     pub fn present(&self) -> Result<(), String> {
-        let open = self.person_windows().into_iter().next();
         let running_on = self.lingering() || (!self.windows_open().is_empty() && self.exit.get().is_none());
+        self.before_the_persons_window();
+        let open = self.person_windows().into_iter().next();
         let (window, reopened) = match open {
             Some(window) => (window, false),
             None if running_on => (self.reopen_first(), true),
@@ -285,6 +291,7 @@ impl<A: App> Core<A> {
             self.linger_ended();
         }
         crate::chrome::bring_back(ui.window());
+        self.report_windows();
         self.event(Event::Presented(window));
         Ok(())
     }

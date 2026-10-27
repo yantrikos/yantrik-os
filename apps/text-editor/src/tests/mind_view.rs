@@ -63,11 +63,12 @@ pub(super) fn window_text_in(app: &TestApp<TextEditor>, window: yantrik_app::Win
 }
 
 #[test]
-fn a_mind_view_window_holds_no_document_text_but_keeps_the_file_name() {
+fn a_mind_view_window_holds_no_document_text_and_names_a_file_agents_are_not_shown_hidden() {
     let (app, _) = with_document(true);
     let text = window_text(&app);
     assert!(!text.contains(SENTINEL), "{text}");
-    assert!(text.contains("plan.rs"), "the name stays: {text}");
+    // The scratch file is outside the home, so no agent is shown it: not its name either (#972 M2).
+    assert!(!text.contains("plan.rs") && text.contains(crate::model::HIDDEN_TAB), "{text}");
     assert_eq!(app.ui(|ui| ui.get_content().to_string()), HIDDEN);
     assert!(app.ui(|ui| ui.get_masked()), "the field takes no keys");
     assert!(!app.ui(|ui| ui.get_has_highlights()), "and no colours spell the text");

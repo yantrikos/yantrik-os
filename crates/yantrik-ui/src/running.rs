@@ -16,21 +16,16 @@
 //! entries (files, settings, memory…) are *screens of the shell itself*, not windows, and are
 //! already reported by the shell's `screen` field.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// One app the shell launched and has not yet reaped.
-#[derive(Clone, Debug)]
-pub struct RunningApp {
-    /// The logical id the shell launched it under — the same id `open_app` accepts, e.g. `notes`.
-    pub app_id: String,
-    pub pid: u32,
-    /// The binary that was spawned, e.g. `yantrik-notes` or `chromium`.
-    pub binary: String,
-    /// Unix seconds when it was launched, so a caller can tell a fresh window from an old one.
-    pub since_unix: u64,
-}
+use yantrik_ipc_contracts::mind_view::window_owners::Report;
+pub use yantrik_shell_core::seats::Seat;
+use yantrik_shell_core::seats::Seats;
+
+/// One app the shell launched and has not yet reaped: its id, pid, binary and when.
+pub use yantrik_shell_core::seats::Record as RunningApp;
 
 /// A launch that started and then died before it could show a window.
 #[derive(Clone, Debug)]
@@ -93,9 +88,18 @@ pub fn launch_failures() -> Vec<LaunchFailure> {
     out
 }
 
-fn registry() -> &'static Mutex<HashMap<String, RunningApp>> {
-    static RUNNING: OnceLock<Mutex<HashMap<String, RunningApp>>> = OnceLock::new();
-    RUNNING.get_or_init(|| Mutex::new(HashMap::new()))
+/// The account of what the shell launched, and whose windows they show (`yantrik_shell_core::seats`,
+/// #972 S1): one instance of an app of the framework holds the person's windows and a Mind's
+/// together, so its own report says whose are open, not the pid the shell launched.
+fn registry() -> &'static Mutex<Seats> {
+    static RUNNING: OnceLock<Mutex<Seats>> = OnceLock::new();
+    RUNNING.get_or_init(|| Mutex::new(Seats::default()))
+}
+
+/// An app of the framework's own report of its windows, by its program.
+fn report_for(binary: &str) -> Option<Report> {
+    let app = yantrik_shell_core::framework::by_program(binary)?;
+    yantrik_shell_core::seats::read_report(&yantrik_ipc_transport::server::socket_dir(), app, pid_alive)
 }
 
 fn now_unix() -> u64 {
@@ -115,24 +119,14 @@ fn now_unix() -> u64 {
 /// So a live record is left alone, and the caller is told, because a second copy exiting at once
 /// is a handover rather than the failed launch it looks like.
 pub fn mark_launched(app_id: &str, pid: u32, binary: &str) -> bool {
-    if let Ok(mut map) = registry().lock() {
-        if let Some(open) = map.get(app_id) {
-            if open.pid != pid && pid_alive(open.pid) {
-                return false;
-            }
-        }
-        map.insert(
-            app_id.to_string(),
-            RunningApp {
-                app_id: app_id.to_string(),
-                pid,
-                binary: binary.to_string(),
-                since_unix: now_unix(),
-            },
-        );
-        return true;
-    }
-    false
+    mark_launched_on(app_id, pid, binary, Seat::Person)
+}
+
+/// [`mark_launched`], for a launch drawn on `seat`. A Mind's launch of an app of the framework is
+/// that app's Mind window, and never writes the person's record.
+pub fn mark_launched_on(app_id: &str, pid: u32, binary: &str, seat: Seat) -> bool {
+    let record = RunningApp { app_id: app_id.to_string(), pid, binary: binary.to_string(), since_unix: now_unix() };
+    registry().lock().map(|mut seats| seats.launched(record, seat, pid_alive)).unwrap_or(false)
 }
 
 /// Record that pid `pid`, launched as `app_id`, has exited.
@@ -140,10 +134,8 @@ pub fn mark_launched(app_id: &str, pid: u32, binary: &str) -> bool {
 /// Removes the entry only if the pid still matches. If the app was relaunched, the record now
 /// holds a newer pid, and the old reaper firing must not evict the live window.
 pub fn mark_exited(app_id: &str, pid: u32) {
-    if let Ok(mut map) = registry().lock() {
-        if map.get(app_id).map(|a| a.pid) == Some(pid) {
-            map.remove(app_id);
-        }
+    if let Ok(mut seats) = registry().lock() {
+        seats.exited(app_id, pid, report_for, pid_alive);
     }
 }
 
@@ -165,29 +157,23 @@ fn pid_alive(_pid: u32) -> bool {
 
 /// Every app the shell has open right now, sorted by id for a stable read.
 pub fn running() -> Vec<RunningApp> {
-    let mut apps: Vec<RunningApp> = match registry().lock() {
-        Ok(map) => map.values().cloned().collect(),
-        Err(_) => Vec::new(),
-    };
-    apps.retain(|a| pid_alive(a.pid));
-    apps.sort_by(|a, b| a.app_id.cmp(&b.app_id));
-    apps
+    registry().lock().map(|seats| seats.records(pid_alive)).unwrap_or_default()
+}
+
+/// The apps with a window on the person's desktop: an app of the framework by its own report of
+/// whose windows it has, every other one unless it is drawing in Mind View (`in_mind_view`).
+pub fn persons(in_mind_view: &HashSet<u32>) -> Vec<RunningApp> {
+    registry().lock().map(|seats| seats.persons(in_mind_view, pid_alive, report_for)).unwrap_or_default()
 }
 
 /// The program the shell has open as this app, while it is open.
 pub fn binary_of(app_id: &str) -> Option<String> {
-    let open = registry().lock().ok()?.get(app_id).cloned()?;
-    pid_alive(open.pid).then_some(open.binary)
+    running().into_iter().find(|a| a.app_id == app_id).map(|a| a.binary)
 }
 
 /// Whether the shell has this app open.
 pub fn is_running(app_id: &str) -> bool {
-    registry()
-        .lock()
-        .ok()
-        .and_then(|map| map.get(app_id).map(|a| a.pid))
-        .map(pid_alive)
-        .unwrap_or(false)
+    running().iter().any(|a| a.app_id == app_id)
 }
 
 #[cfg(test)]

@@ -66,6 +66,8 @@ impl App for TextEditor {
     type Command = Command;
     type Settings = ();
     const ID: &'static str = "editor";
+    /// A Mind's window hides the person's content (`crate::mind_view`).
+    const MASKS_FOR_MIND: bool = true;
 
     /// The model, once this copy holds the old builds' lock (claim.rs), with every draft the last
     /// run left opened again, and the old build's recovery file read once.

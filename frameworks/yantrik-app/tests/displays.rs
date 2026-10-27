@@ -58,6 +58,7 @@ impl App for Sight {
     type Command = Command;
     type Settings = ();
     const ID: &'static str = "sight-test";
+    const MASKS_FOR_MIND: bool = true;
 
     fn model(boot: &Boot) -> Result<Model, Startup> {
         Ok(Model { for_mind: boot.for_mind, body: SECRET.into(), ..Model::default() })
@@ -222,4 +223,81 @@ fn a_copy_on_a_minds_display_masks_all_it_draws() {
         std::sync::Arc::new(yantrik_app::mind::fake::FakeMind::new()),
     );
     assert_eq!(app.ui(|ui| ui.get_body().to_string()), for_mind::HIDDEN);
+}
+
+/// An app that does not mask for a Mind (#972 H3): the same window and model as Sight, and no
+/// declaration, so its render would show a Mind the person's state.
+struct Plain;
+
+impl App for Plain {
+    type Ui = SightWin;
+    type Model = Model;
+    type Command = Command;
+    type Settings = ();
+    const ID: &'static str = "plain-test";
+
+    fn model(boot: &Boot) -> Result<Model, Startup> {
+        Sight::model(boot)
+    }
+
+    fn wire(cx: &Cx<Self>) {
+        cx.ui().on_edit(cx.cmd(|| Command::Edit(WindowId::PRIMARY)));
+    }
+
+    fn update(m: &mut Model, command: Command, fx: &mut Effects<Self>) -> Result<(), Refused> {
+        match command {
+            Command::Opened(window) => m.opened.push(window),
+            Command::Closed(window) => m.closed.push(window),
+            Command::Presented(window) => m.presented.push(window),
+            _ => {}
+        }
+        let _ = fx;
+        Ok(())
+    }
+
+    fn event(event: Event<()>, m: &Model) -> Option<Command> {
+        Sight::event(event, m)
+    }
+
+    fn render(ui: &SightWin, _: WindowId, m: &Model, _: &Changed) {
+        ui.set_body(m.body.as_str().into());
+    }
+}
+
+const REFUSED_BESIDE: &str = "plain-test is open on the person's screen and cannot also open in your view; use its actions and os_describe plain-test instead.";
+
+#[test]
+fn an_app_that_does_not_mask_gives_a_mind_no_window_beside_the_persons() {
+    let app = TestApp::<Plain>::start();
+    assert_eq!(app.launch_from_mind("wayland-1").unwrap_err(), REFUSED_BESIDE);
+    assert!(app.mind_windows().is_empty());
+    assert_eq!(app.person_windows(), vec![WindowId::PRIMARY]);
+}
+
+/// With no window of the person's open, a Mind may open it and see only what it opens itself; the
+/// person's launch then closes the Mind's window before theirs is shown.
+#[test]
+fn the_persons_launch_closes_a_minds_window_of_an_app_that_does_not_mask() {
+    let app = TestApp::<Plain>::start();
+    app.as_if_started_windowless();
+    let mind = app.open_for_mind("wayland-1");
+    assert_eq!(app.windows(), vec![mind]);
+    app.launch_from_person().unwrap();
+    assert_eq!(app.windows(), vec![WindowId::PRIMARY], "the Mind's window closed before the person's opened");
+    assert_eq!(app.model(|m| m.closed.clone()), vec![mind]);
+    assert!(app.exit_reason().is_none());
+}
+
+/// M1: a Mind's launch opens nothing in the app, which would open it in the person's model.
+#[test]
+fn a_minds_launch_opens_no_file_or_link() {
+    let app = TestApp::<Sight>::start();
+    let launch = yantrik_app::Launch::of_files("default", std::path::Path::new("/"), [std::path::PathBuf::from("/home/p/plan.txt")]);
+    let refused = app.launch_from_mind_with("wayland-1", &launch).unwrap_err();
+    assert!(refused.contains("opens no file or link in sight-test"), "{refused}");
+    assert!(app.mind_windows().is_empty(), "and no window either");
+    // The same launch from the person is applied as ever.
+    let person = yantrik_app::Launch::of_files("default", std::path::Path::new("/"), [std::path::PathBuf::from("/home/p/plan.txt")]);
+    let args = serde_json::json!({ "launch": person, "display": yantrik_app::for_mind::PERSON_DISPLAY });
+    assert!(app.act("launch", args).unwrap().settle().is_ok());
 }

@@ -204,7 +204,7 @@ fn read_loop(mut stream: UnixStream, ui: slint::Weak<ViewWindow>) {
     let mut frame: Option<SharedPixelBuffer<Rgb8Pixel>> = None;
     let mut first_props = true;
     loop {
-        let message = match wire::receive(&mut stream) {
+        let message = match wire::receive(&mut stream, wire::MAX_MESSAGE) {
             Ok(Some(body)) => ToHelper::decode(&body),
             Ok(None) => Ok(ToHelper::Close),
             Err(e) => Err(e),

@@ -187,6 +187,8 @@ pub fn run<A: App>() -> ExitCode {
     let registry = intents::registry(&core, table);
     let registry = crate::control::App::from_registry(registry).serve_as(&instance);
     core.attach_registry(registry);
+    // Whose windows are open, for the shell's `windows` (`displays::report`).
+    core.report_windows_to(crate::displays::report::Reporter::for_instance(&instance));
 
     // A second launch's `present` goes through the core, which knows which windows are open, and
     // whose: the person's are brought forward, a Mind's is the Mind's own (`displays`).

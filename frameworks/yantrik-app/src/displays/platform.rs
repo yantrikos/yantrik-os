@@ -59,15 +59,22 @@ pub fn install() {
             return;
         }
     };
-    match slint::platform::set_platform(Box::new(Displays { winit: Box::new(winit) })) {
+    match slint::platform::set_platform(Box::new(Displays::over(Box::new(winit)))) {
         Ok(()) => INSTALLED.store(true, Ordering::Relaxed),
         Err(e) => tracing::warn!(error = %e, "a platform was already set; a Mind's window cannot be drawn"),
     }
 }
 
 /// winit's backend, and the streamed window for a window made for a Mind.
-struct Displays {
+pub(crate) struct Displays {
     winit: Box<dyn Platform>,
+}
+
+impl Displays {
+    /// Over `winit`, any platform: winit's under the runner, a recording one under a test.
+    pub(crate) fn over(winit: Box<dyn Platform>) -> Displays {
+        Displays { winit }
+    }
 }
 
 impl Platform for Displays {
@@ -98,11 +105,21 @@ impl Platform for Displays {
         self.winit.cursor_flash_cycle()
     }
 
+    /// The person's clipboard and primary selection: never written from a Mind's window (#972 H1).
     fn set_clipboard_text(&self, text: &str, clipboard: Clipboard) {
+        if super::streamed::in_a_minds_window() {
+            tracing::debug!("a Mind's window asked to copy; the person's clipboard is not touched");
+            return;
+        }
         self.winit.set_clipboard_text(text, clipboard)
     }
 
+    /// ... and never read into one.
     fn clipboard_text(&self, clipboard: Clipboard) -> Option<String> {
+        if super::streamed::in_a_minds_window() {
+            tracing::debug!("a Mind's window asked to paste; the person's clipboard is not read");
+            return None;
+        }
         self.winit.clipboard_text(clipboard)
     }
 
@@ -114,6 +131,10 @@ impl Platform for Displays {
         self.winit.open_url(url)
     }
 }
+
+#[cfg(test)]
+#[path = "clipboard_tests.rs"]
+mod clipboard_tests;
 
 #[cfg(test)]
 mod tests {

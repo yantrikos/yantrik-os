@@ -15,7 +15,10 @@ fn only_the_minds_window_is_masked_and_the_persons_beside_it_is_not() {
     settle(&app);
     let theirs = window_text_in(&app, mind);
     assert!(!theirs.contains(SENTINEL), "{theirs}");
-    assert!(theirs.contains("plan.rs"), "the name stays: {theirs}");
+    // A file outside the home is one no agent is shown, so its name and path are withheld from
+    // the Mind's window as `describe` withholds them (#972 M2); the person's window names it.
+    assert!(!theirs.contains("plan.rs") && theirs.contains(crate::model::HIDDEN_TAB), "{theirs}");
+    assert!(window_text_in(&app, WindowId::PRIMARY).contains("plan.rs"));
     assert_eq!(app.window(mind, |ui| ui.get_content().to_string()), Some(HIDDEN.to_string()));
     assert_eq!(app.window(mind, |ui| ui.get_masked()), Some(true), "the Mind's field takes no keys");
     assert!(window_text_in(&app, WindowId::PRIMARY).contains(SENTINEL), "the person's window is not masked");

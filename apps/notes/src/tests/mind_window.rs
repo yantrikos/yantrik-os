@@ -107,3 +107,44 @@ fn the_calls_answer_the_same_with_a_minds_window_open() {
     assert!(expected.to_string().contains(SENTINEL), "the calls read the person's notes");
     assert_eq!(got, expected);
 }
+
+/// H2 (#972 review): a Mind's window never closes or quits the person's Notes, never asks the
+/// person's close prompt, and never lets their unsaved text go. Every window command but a view
+/// is refused there.
+#[test]
+fn closing_or_quitting_from_a_minds_window_never_ends_the_persons_notes() {
+    use yantrik_app::documents::Choice;
+    let app = persons();
+    let mind = app.open_for_mind("wayland-1");
+    settle(&app);
+    app.run(from(mind, Command::Window(WindowAction::Quit)));
+    settle(&app);
+    assert_eq!(app.exit_reason(), None, "Ctrl+Q in the Mind's window quit the person's Notes");
+
+    app.run(from(WindowId::PRIMARY, Command::Edit(format!("# Plain title\n\nUnsaved {SENTINEL}.\n"))));
+    for action in [
+        WindowAction::Quit,
+        WindowAction::Close(Choice::DontSave),
+        WindowAction::Close(Choice::Save),
+        WindowAction::LetGo,
+        WindowAction::NotNow,
+        WindowAction::New(None),
+        WindowAction::Reload,
+    ] {
+        app.run(from(mind, Command::Window(action.clone())));
+        assert_eq!(app.last_refusal().map(|r| r.sentence), Some(READ_ONLY.to_string()), "{action:?}");
+        settle(&app);
+        assert_eq!(app.exit_reason(), None, "{action:?} from the Mind's window ended Notes");
+    }
+    app.run(from(mind, Command::ViewSynced { focus_mode: false, dialog: 0 }));
+    assert_eq!(app.last_refusal().map(|r| r.sentence), Some(READ_ONLY.to_string()), "the Mind's window settles no dialog");
+    assert_eq!(app.window(mind, |ui| ui.get_dialog()), Some(0), "no prompt is asked in the Mind's window");
+    assert_eq!(app.ui(|ui| ui.get_dialog()), 0);
+    assert!(app.model(|m| m.unsaved()), "the person's unsaved text is still theirs");
+    assert!(window_text_in(&app, WindowId::PRIMARY).contains("Unsaved"));
+    // Looking is allowed: a view in the Mind's window moves only that window, and the calls go on
+    // acting where they did.
+    app.run(from(mind, Command::Window(WindowAction::Preview)));
+    assert!(app.last_refusal().is_none());
+    assert_eq!(app.model(|m| m.pane.window), WindowId::PRIMARY, "the focus went back to the person's window");
+}

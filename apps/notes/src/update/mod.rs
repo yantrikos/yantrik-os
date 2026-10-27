@@ -60,6 +60,9 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Notes>) -> Resul
     // A cue is for the render of the command that set it, and for no later one.
     m.panes_mut().for_each(|p| p.cues.clear());
     let focused = m.pane.window;
+    // A look from a Mind's window moves that window's view, and the focus goes back after: the
+    // calls go on acting in the window they acted in (#972 H2).
+    let from_a_minds = matches!(&command, Command::From { window, .. } if window.for_mind());
     // A command from a window acts there; one from a window already closed does nothing.
     let Some(command) = windows::arrive(m, command) else { return Ok(()) };
     // A job's outcome, a file seen changed, or a close is applied in the window it is about, and
@@ -79,6 +82,9 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Notes>) -> Resul
     }
     if let Some(here) = back {
         m.focus(here);
+    }
+    if from_a_minds && m.pane.window != focused {
+        m.focus(focused);
     }
     // An offer whose note no window shows is on the focused window's bar: it moves with the person.
     if m.pane.window != focused && !m.recovery.offers.is_empty() {

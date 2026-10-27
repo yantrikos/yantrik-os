@@ -1198,9 +1198,16 @@ pub fn publish(
                 crate::running::clear_launch_failure(&window_id);
                 // The launcher's own path: it resolves the binary, enforces one window per app,
                 // and focuses the running one instead of starting a second.
-                // Asked here too, where the caller is in scope, so the answer can say when the
-                // dock will not start a second copy for a mind (`mind_view::route`, B2).
-                let already_open_for_mind = !crate::mind_view::route_now(&window_id).spawn;
+                // Asked here too, where the caller is in scope: an app the person has open that
+                // cannot also open in a Mind's view (`mind_view::route`, B2; #972 H3) is refused
+                // with the next step, so a Mind does not loop on the launch.
+                if !crate::mind_view::route_now(&window_id).spawn {
+                    let surface = crate::wire::dock::surface_for(&name, &catalogue).unwrap_or_else(|| window_id.clone());
+                    return Err(yantrik_shell_core::framework::refused_beside_the_person(
+                        &crate::windows::app_display_name(&window_id),
+                        &surface,
+                    ));
+                }
                 ui.invoke_launch_app(name.clone().into());
                 // Which of the two that did. A program opens a window; a name that is part of the
                 // desktop switches one of its screens, and no window exists or ever will. The
@@ -1219,11 +1226,6 @@ pub fn publish(
                 // was opened by (`sysmonitor` opens what answers as `system-monitor`).
                 if let Some(surface) = crate::wire::dock::surface_for(&name, &catalogue) {
                     answer["describe_as"] = surface.into();
-                }
-                if already_open_for_mind {
-                    answer["note"] = "already open on the person's desktop: not launched again, and not \
-                                      raised over their work. Drive it through its surface."
-                        .into();
                 }
                 // A program is not a window until one is seen. The dock spawns it on a worker and
                 // `launching` told a mind "done" for a terminal that never drew anywhere (2 Oct

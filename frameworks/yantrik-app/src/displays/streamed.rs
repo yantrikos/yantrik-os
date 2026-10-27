@@ -6,10 +6,16 @@
 //! (its size, the pointer, keys, a close) is dispatched to the window here, on the UI thread, as
 //! winit would dispatch its own events.
 //!
-//! Drawing is pulled, not pushed: one timer on the UI thread draws every visible streamed window
-//! that asked for a redraw, at most [`FRAME`] apart, and only the region the renderer reports as
-//! changed is sent. A patch the link could not take yet is not queued behind another: the next
-//! draw sends the whole frame instead, so the helper never shows a mix of two states.
+//! Drawing is pulled, not pushed, and costs the person's UI thread nothing it need not (#972 M3):
+//! - one timer draws every visible streamed window that asked for a redraw, at most [`FRAME`]
+//!   apart, and stops itself once none asks;
+//! - nothing is rendered or copied while the link still holds the last frame ([`Sink::ready`]):
+//!   the window stays marked to be drawn, and one frame is in flight at most;
+//! - only the region the renderer reports as changed is sent, written straight into the message.
+//!
+//! What the helper sends back reaches the window inside [`delivering`], and nothing done there
+//! reaches the person's clipboard or primary selection ([`super::platform`], #972 H1). The middle
+//! button, which pastes the selection, is not passed on at all.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -26,8 +32,12 @@ pub const FRAME: Duration = Duration::from_millis(33);
 
 /// Where a streamed window's messages go: its view helper's link, or nothing yet.
 pub trait Sink {
-    /// Sends `message`. `false` when it could not be taken now; a frame is then sent whole later.
+    /// Sends a request (title, raise, move, close). `false` when the link has ended.
     fn send(&self, message: ToHelper) -> bool;
+    /// Whether a frame would be taken now: the last one has gone and the link is up.
+    fn ready(&self) -> bool;
+    /// Sends one frame's encoded body. `false` when it was not taken.
+    fn send_frame(&self, body: Vec<u8>) -> bool;
 }
 
 /// One streamed window.
@@ -54,6 +64,23 @@ thread_local! {
     /// Every streamed window alive, for the draw timer and for a title bar's requests.
     static LIVE: RefCell<Vec<Weak<StreamedWindow>>> = const { RefCell::new(Vec::new()) };
     static PUMP: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    /// Set while what a helper said is dispatched into a streamed window.
+    static DELIVERING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `f` as input from a Mind's window: whatever Slint does inside it on that input is a Mind's
+/// window's doing ([`in_a_minds_window`]).
+pub fn delivering<R>(f: impl FnOnce() -> R) -> R {
+    let was = DELIVERING.with(|d| d.replace(true));
+    let out = f();
+    DELIVERING.with(|d| d.set(was));
+    out
+}
+
+/// Whether input from a Mind's window is being dispatched now: the platform then keeps the
+/// person's clipboard and primary selection out of reach, both ways.
+pub fn in_a_minds_window() -> bool {
+    DELIVERING.with(|d| d.get())
 }
 
 /// Makes a window with `make`, as a streamed window when the platform is this crate's
@@ -116,8 +143,16 @@ impl StreamedWindow {
         sink.is_some_and(|s| s.send(message))
     }
 
-    /// What the helper said, applied to the window as its window system would.
+    /// What the helper said, applied to the window as its window system would, inside
+    /// [`delivering`]. The middle button is dropped: in a text field it pastes the selection.
     pub fn deliver(&self, heard: FromHelper) {
+        delivering(|| self.dispatch(heard));
+    }
+
+    fn dispatch(&self, heard: FromHelper) {
+        if matches!(heard, FromHelper::Pointer { button: 2, kind: PointerKind::Pressed | PointerKind::Released, .. }) {
+            return;
+        }
         let w = &self.window;
         let at = |x: f32, y: f32| LogicalPosition::new(x, y);
         let button = |b: u8| match b {
@@ -146,6 +181,12 @@ impl StreamedWindow {
         };
     }
 
+    /// Draws the window whole next: Private mode ended while it was blanked.
+    pub fn redraw_whole(&self) {
+        self.whole_next.set(true);
+        self.request_redraw();
+    }
+
     fn resize(&self, size: PhysicalSize, scale: f32) {
         if (self.window.scale_factor() - scale).abs() > f32::EPSILON {
             let _ = self.window.try_dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: scale });
@@ -155,18 +196,26 @@ impl StreamedWindow {
             let _ = self.window.try_dispatch_event(WindowEvent::Resized { size: size.to_logical(scale) });
             self.whole_next.set(true);
         }
-        self.needs_redraw.set(true);
+        self.request_redraw();
     }
 
-    /// Draws the window if it changed and sends what changed. Called by the draw timer.
+    /// Whether the draw timer has anything to do for this window.
+    fn wants_drawing(&self) -> bool {
+        self.visible.get() && self.needs_redraw.get()
+    }
+
+    /// Draws the window if it changed and sends what changed. Called by the draw timer. Nothing is
+    /// rendered or copied while the link still holds the last frame: the window stays marked.
     fn draw_and_send(&self) {
         let size = self.size.get();
-        if !self.visible.get() || self.sink.borrow().is_none() || size.width == 0 || size.height == 0 {
+        if !self.visible.get() || size.width == 0 || size.height == 0 || !self.needs_redraw.get() {
             return;
         }
-        if !self.needs_redraw.replace(false) {
+        let Some(sink) = self.sink.borrow().clone() else { return };
+        if !sink.ready() {
             return;
         }
+        self.needs_redraw.set(false);
         let (width, height) = (size.width as usize, size.height as usize);
         let mut frame = self.frame.borrow_mut();
         if frame.len() != width * height {
@@ -191,27 +240,17 @@ impl StreamedWindow {
         if w == 0 || h == 0 {
             return;
         }
-        let mut rgb = Vec::with_capacity(3 * w * h);
+        let mut body = ToHelper::frame_header(width as u32, height as u32, x as u32, y as u32, w as u32, h as u32);
         for row in y..y + h {
             for p in &frame[row * width + x..row * width + x + w] {
-                rgb.extend_from_slice(&[p.r, p.g, p.b]);
+                body.extend_from_slice(&[p.r, p.g, p.b]);
             }
         }
         drop(frame);
-        let patch = ToHelper::Frame {
-            width: width as u32,
-            height: height as u32,
-            x: x as u32,
-            y: y as u32,
-            w: w as u32,
-            h: h as u32,
-            rgb,
-        };
-        let taken = self.send(patch);
+        let taken = sink.send_frame(body);
+        // Ready a moment ago, and the UI thread is the only one that offers frames: taken, unless
+        // the link ended, and then nothing more is drawn for it.
         self.whole_next.set(!taken);
-        if !taken {
-            self.needs_redraw.set(true);
-        }
     }
 
     /// The window's title and sizes, as Slint gives them, sent when they changed; kept for a
@@ -260,14 +299,16 @@ impl WindowAdapter for StreamedWindow {
     fn set_visible(&self, visible: bool) -> Result<(), slint::PlatformError> {
         self.visible.set(visible);
         if visible {
-            self.needs_redraw.set(true);
-            run_pump();
+            self.request_redraw();
         }
         Ok(())
     }
 
     fn request_redraw(&self) {
         self.needs_redraw.set(true);
+        if self.visible.get() {
+            run_pump();
+        }
     }
 
     fn update_window_properties(&self, properties: WindowProperties<'_>) {
@@ -288,7 +329,8 @@ pub fn drag(window: &slint::Window) -> bool {
     of(window).is_some_and(|w| w.send(ToHelper::Drag))
 }
 
-/// The draw timer, started with the first streamed window shown and stopped when none is left.
+/// The draw timer: started by a redraw a visible streamed window asks for, and stopped once none
+/// asks, so an idle or hidden Mind's window costs no wakeups.
 fn run_pump() {
     PUMP.with(|pump| {
         let mut pump = pump.borrow_mut();
@@ -299,16 +341,15 @@ fn run_pump() {
         timer.start(slint::TimerMode::Repeated, FRAME, || {
             let windows: Vec<Rc<StreamedWindow>> =
                 LIVE.with(|live| live.borrow().iter().filter_map(Weak::upgrade).collect());
-            if windows.iter().all(|w| !w.visible.get()) {
+            for window in &windows {
+                window.draw_and_send();
+            }
+            if !windows.iter().any(|w| w.wants_drawing()) {
                 PUMP.with(|p| {
                     if let Some(t) = p.borrow().as_ref() {
                         t.stop();
                     }
                 });
-                return;
-            }
-            for window in windows {
-                window.draw_and_send();
             }
         });
     });

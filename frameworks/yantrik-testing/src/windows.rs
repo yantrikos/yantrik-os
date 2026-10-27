@@ -63,6 +63,18 @@ impl<A: App> TestApp<A> {
         WindowId(id as u32)
     }
 
+    /// As an instance a Mind's first launch started is (`displays::spawn`): the first window not
+    /// shown, and the app waiting for a launch to ask for one.
+    pub fn as_if_started_windowless(&self) {
+        self.with(|u| u.core.start_windowless(yantrik_app::displays::WINDOWLESS_WAIT));
+    }
+
+    /// A Mind's launch handed over with `launch` (what it asks to open), from Mind View's `display`.
+    pub fn launch_from_mind_with(&self, display: &str, launch: &Launch) -> Result<Value, String> {
+        let args = serde_json::json!({ "launch": launch, "display": display, "for_mind": true });
+        self.act("launch", args)?.settle()
+    }
+
     /// The person's windows open now, the first one first.
     pub fn person_windows(&self) -> Vec<WindowId> {
         self.with(|u| u.core.person_windows())

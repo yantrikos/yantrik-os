@@ -77,31 +77,6 @@ fn launching_an_external_app_is_refused_and_ours_opens() {
     assert!(may_launch("files", &installed()).is_ok(), "a screen of the shell has no entry");
 }
 
-/// Every app under `apps/` that implements the framework `App` is in the allowlist.
-#[test]
-fn every_framework_app_is_listed() {
-    let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");
-    let mut found = Vec::new();
-    for dir in std::fs::read_dir(&apps).expect("apps/").flatten() {
-        let Ok(files) = std::fs::read_dir(dir.path().join("src")) else { continue };
-        for file in files.flatten().filter(|f| f.path().extension().is_some_and(|e| e == "rs")) {
-            let text = std::fs::read_to_string(file.path()).unwrap_or_default();
-            if !text.contains("impl App for") {
-                continue;
-            }
-            for line in text.lines().filter(|l| l.contains("const ID: &'static str")) {
-                if let Some(id) = line.split('"').nth(1) {
-                    found.push(id.to_string());
-                }
-            }
-        }
-    }
-    assert!(found.len() >= 10, "the scan found {found:?}");
-    for id in found {
-        assert!(YANTRIK_APPS.iter().any(|(_, i)| *i == id), "framework app `{id}` is not in YANTRIK_APPS");
-    }
-}
-
 #[test]
 fn the_media_player_is_refused_for_playlists_video_and_subtitles() {
     // mpv follows an m3u to local files and draws an srt or ass on screen.
@@ -113,7 +88,6 @@ fn the_media_player_is_refused_for_playlists_video_and_subtitles() {
 
 #[test]
 fn no_listed_app_is_mpv_or_a_wrapper_of_an_external_binary() {
-    assert!(YANTRIK_APPS.iter().all(|(stem, _)| stem.starts_with("yantrik-") && !stem.contains("mpv")));
     // Our name over someone else's program does not pass.
     for exec in ["mpv --player-operation-mode=pseudo-gui %f", "/usr/bin/env mpv %f", "sh -c mpv"] {
         let wrapped = vec![entry("yantrik-music-player", exec)];

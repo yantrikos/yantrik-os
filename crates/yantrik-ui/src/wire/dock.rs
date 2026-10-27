@@ -1290,7 +1290,10 @@ fn launch(
             // The shell now knows this window is open without asking the compositor. Recorded
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.
-            let owns_window = crate::running::mark_launched(app_id, pid, bin);
+            // A Mind's launch of an app of the framework is its Mind window, not the person's
+            // (#972 S1): it is listed in Mind View only.
+            let on = if seat.is_some() { crate::running::Seat::Mind } else { crate::running::Seat::Person };
+            let owns_window = crate::running::mark_launched_on(app_id, pid, bin, on);
             if seat.is_some() {
                 crate::mind_view::mark_launched(app_id, pid);
             }

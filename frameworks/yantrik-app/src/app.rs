@@ -328,6 +328,14 @@ pub trait App: Sized + 'static {
     /// (step 4) supplies it from `yantrik.toml`.
     const ID: &'static str;
 
+    /// The app masks the person's content in a Mind's window (`render` asks
+    /// [`crate::for_mind::masked`] per window). Only such an app opens a Mind's window while a
+    /// window of the person's is open, and the person's launch closes a Mind's window of an app
+    /// that does not, so a Mind never watches the person's live state unmasked
+    /// (`Core::present_for_mind`, #972 H3). The shell's list of the framework's apps carries the
+    /// same declaration (`yantrik-shell-core`'s `framework`), held to this by a test.
+    const MASKS_FOR_MIND: bool = false;
+
     /// Build the model before any window exists. No UI. `boot.settings` is what was saved.
     /// `Err(Startup::new(..))` when the app cannot start; `Err(Startup::handed_over(..))` when
     /// another copy has taken this launch, which ends the process quietly.
