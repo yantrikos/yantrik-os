@@ -38,6 +38,12 @@ Astra listed further open channels: drag-and-drop, file dialogs, IME, accessibil
 - **Person's launch.** The person's launch then presents a native window as today.
 - **No smuggling.** A Mind's launch never carries files, URLs or startup actions into the person's model (review M1).
 - **Concurrent starts** are arbitrated by the existing instance lock. A test drives simultaneous launches, a Mind-only start followed by the person's, closing the last window, and recovery after a crash.
+- **Start effects an agent's call still needs** (recorded after #980's review):
+  - Email connects the account, because its intents need it. The first look only lists folders and rows: it marks nothing read, sends nothing, and sends no receipts.
+  - Weather fetches, and keeps refetching while an agent keeps the instance alive, for up to 5 minutes after the agent's last call. That sends the person's location to the provider, as any weather lookup does.
+  - Download Manager notifies about an agent's own downloads.
+  - Music's rescan, Network's refresh, System Monitor's polling and Calendar's timers are local and not visible to the person.
+- **What step 1 does not close.** Step 1 tells the person and a Mind apart by the caller's environment and display. A Mind's `agent_run`, which runs as the same uid, can rewrite both. Step 2's shell-created sessions close that (#987).
 
 ### 2. A Mind's window is a generic viewer, per Mind and app
 A Mind's `open_app` for a viewable app starts **one generic viewer process** for that Mind and that app on Mind View (B). It is one small binary that renders a few framework view kinds: a list, a document and a detail page. It has its own minimal startup: no app hooks and no platform integrations **[A2.8]**.
