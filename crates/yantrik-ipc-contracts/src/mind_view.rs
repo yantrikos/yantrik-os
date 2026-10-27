@@ -4,9 +4,6 @@
 /// (`MindDisplay::mind_view`). An app reads it at start; it can only turn masking on.
 pub const FOR_MIND_VAR: &str = "YANTRIK_FOR_MIND";
 
-/// The person's own Wayland display. A window on any other is Mind View's, whatever the marker
-/// says.
-pub const PERSON_DISPLAY: &str = "wayland-0";
 
 /// Whose windows an app of the framework has open, as the app's one instance reports them (#978
 /// step 1). The instance writes it beside its socket on every change to its windows and removes

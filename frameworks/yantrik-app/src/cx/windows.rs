@@ -122,10 +122,11 @@ impl<A: App> Core<A> {
             tracing::debug!(app = self.id, "a window asked for while ending; not made");
             return;
         }
-        // Started for an agent, the app opens no window until the person's launch has: an act
-        // that asks for one does not put a window on the person's desktop.
-        if !self.person_has_started() {
-            let why = "a window is opened only once the person has opened the app".to_string();
+        // An app opens a window only beside one of the person's that is open: an instance an agent
+        // started, or one kept after the person closed their last window, puts no window on the
+        // person's desktop at an act's request (#978 L9). The app hears it as a window not opened.
+        if !self.person_has_started() || (self.windows_open().is_empty() && !self.lingering()) {
+            let why = "a window is opened only while the person has one of this app open".to_string();
             tracing::warn!(app = self.id, "{why}");
             self.event(Event::WindowNotOpened { window: id, why });
             return;

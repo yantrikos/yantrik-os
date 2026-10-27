@@ -66,7 +66,7 @@ impl Shell {
 
     fn report(&self) -> Option<Report> {
         let i = self.instance.as_ref()?;
-        self.alive.borrow().contains(&i.pid).then(|| Report { pid: i.pid, person: i.person })
+        self.alive.borrow().contains(&i.pid).then_some(Report { pid: i.pid, person: i.person })
     }
 
     /// An agent's act or describe: the shell starts the instance with no window and leaves no
@@ -159,7 +159,10 @@ impl Shell {
     }
 }
 
-fn run(steps: &[(&str, fn(&mut Shell))]) {
+/// A step of a played order: what it is called, and what the shell does.
+type Step<'a> = (&'a str, fn(&mut Shell));
+
+fn run(steps: &[Step]) {
     let mut shell = Shell::new();
     for (what, act) in steps {
         shell.step(what, *act);
@@ -261,14 +264,42 @@ fn a_report_is_read_only_from_a_small_file_of_this_account_naming_a_live_process
     std::fs::create_dir_all(&dir).unwrap();
     let notes = crate::framework::by_id("notes").unwrap();
     let me = std::process::id();
-    assert_eq!(read_report(&dir, notes, |_| true), None, "no file");
+    assert_eq!(read_report_with(&dir, notes, |_| true, notes_exe), None, "no file");
     let report = Report { pid: me, person: 1 };
     std::fs::write(dir.join("notes.windows"), report.encode()).unwrap();
-    assert_eq!(read_report(&dir, notes, |p| p == me), Some(report));
-    assert_eq!(read_report(&dir, notes, |_| false), None, "its process is gone");
+    assert_eq!(read_report_with(&dir, notes, |p| p == me, notes_exe), Some(report));
+    assert_eq!(read_report_with(&dir, notes, |_| false, notes_exe), None, "its process is gone");
     std::fs::write(dir.join("notes.windows"), "not a report").unwrap();
-    assert_eq!(read_report(&dir, notes, |_| true), None);
+    assert_eq!(read_report_with(&dir, notes, |_| true, notes_exe), None);
     std::fs::write(dir.join("notes.windows"), "x".repeat(5000)).unwrap();
-    assert_eq!(read_report(&dir, notes, |_| true), None, "too long to be one");
+    assert_eq!(read_report_with(&dir, notes, |_| true, notes_exe), None, "too long to be one");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn notes_exe(_pid: u32) -> Option<String> {
+    Some("/opt/yantrik/bin/yantrik-notes".to_string())
+}
+
+/// L3: a report counts only when the process it names runs the app's own program. A pid the system
+/// reused after a kill, or a file written by some other process of this account, is no report.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_report_naming_a_process_that_is_not_the_apps_is_no_report() {
+    let dir = std::env::temp_dir().join(format!("yantrik-seats-exe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let notes = crate::framework::by_id("notes").unwrap();
+    std::fs::write(dir.join("notes.windows"), Report { pid: 4242, person: 1 }.encode()).unwrap();
+    let report = Report { pid: 4242, person: 1 };
+    assert_eq!(read_report_with(&dir, notes, |_| true, notes_exe), Some(report));
+    assert_eq!(
+        read_report_with(&dir, notes, |_| true, |_| Some("/opt/yantrik/bin/yantrik-notes (deleted)".into())),
+        Some(Report { pid: 4242, person: 1 }),
+        "an app replaced by an update still runs"
+    );
+    for other in ["/usr/bin/python3", "/opt/yantrik/bin/yantrik-calendar", "/tmp/yantrik-notes/evil"] {
+        assert_eq!(read_report_with(&dir, notes, |_| true, |_| Some(other.into())), None, "{other}");
+    }
+    assert_eq!(read_report_with(&dir, notes, |_| true, |_| None), None, "a process whose program cannot be read");
     let _ = std::fs::remove_dir_all(&dir);
 }

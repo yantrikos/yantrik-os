@@ -395,3 +395,31 @@ fn an_agents_start_leaves_the_recovery_for_the_persons_first_window() {
     assert_eq!(offered(&service), vec!["Waits".to_string()], "offered when the person is here");
     assert!(service.model(|m| m.recovery.found.is_none()), "weighed once");
 }
+
+/// M2: an agent's reload before the person's first window must not lose the interrupted save the
+/// first read replayed: the draft is older than it, and offering it would write older text over it.
+#[test]
+fn a_reload_before_the_persons_first_window_keeps_the_interrupted_save_to_weigh() {
+    let (app, _path) = with_note("Race");
+    app.run(Command::Edit("# Race\n\nfirst".into()));
+    app.run_writes();
+    let disk = failing(&app);
+    disk.fail(Step::Write, ".md", None);
+    app.run(Command::Edit("# Race\n\nfirst, second".into()));
+    autosave(&app);
+    let paths = app.paths();
+    drop(app);
+
+    let service = TestApp::<Notes>::start_service_at(paths);
+    settle(&service);
+    assert!(service.model(|m| m.interrupted_held.is_some()), "the first read replayed the journal");
+    service.act("reload", json!({})).expect("the agent's reload").settle().ok();
+    settle(&service);
+    assert!(service.model(|m| m.interrupted_held.is_some()), "a second read does not drop it");
+
+    service.launch_again().expect("the person's launch");
+    settle(&service);
+    assert!(offered(&service).is_empty(), "the older draft is not offered over the newer save");
+    let journal = service.model(|m| m.library.iter().find(|n| n.id.starts_with("recovered-")).map(|n| n.content.text.clone()));
+    assert_eq!(journal.as_deref(), Some("# Race\n\nfirst, second"));
+}

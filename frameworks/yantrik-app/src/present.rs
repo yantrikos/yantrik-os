@@ -268,6 +268,18 @@ mod tests {
         assert_eq!(action().permission, "safe");
     }
 
+    /// L5: a present from a Mind's view is refused in the name the person knows the app by, and
+    /// shows nothing.
+    #[test]
+    fn a_present_from_a_minds_view_is_refused_by_name() {
+        let from_a_mind = serde_json::json!({ "display": "wayland-1", "for_mind": true });
+        let said = std::thread::spawn(move || handle("notes", &from_a_mind)).join().unwrap().unwrap_err();
+        assert_eq!(said, "Notes cannot open in your view; use its actions and os_describe notes instead.");
+        let from_a_mind = serde_json::json!({ "display": "wayland-1", "for_mind": true });
+        let said = std::thread::spawn(move || handle("image-viewer", &from_a_mind)).join().unwrap().unwrap_err();
+        assert_eq!(said, "Images cannot open in your view; use its actions and os_describe image-viewer instead.");
+    }
+
     #[test]
     fn a_copy_with_a_window_shows_it_and_the_launch_has_nothing_to_add() {
         let shown = Cell::new(0);

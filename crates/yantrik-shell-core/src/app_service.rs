@@ -85,6 +85,45 @@ impl Starts {
     }
 }
 
+/// Whether a process listens at the socket `path`: a connection is tried without blocking, and
+/// closed at once. A listener whose backlog is full is alive (and wedged), which is an answer here;
+/// the shell's UI thread must never wait on it (#978 L8). A socket file nobody listens at, a stale
+/// one left by a kill, is not.
+#[cfg(unix)]
+pub fn answers(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: a zeroed sockaddr_un is valid; the path is copied within its bounds with the final NUL
+    // kept; the descriptor made here is closed here on every path.
+    unsafe {
+        let mut addr: libc::sockaddr_un = std::mem::zeroed();
+        if bytes.is_empty() || bytes.len() >= addr.sun_path.len() {
+            return false;
+        }
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (to, from) in addr.sun_path.iter_mut().zip(bytes) {
+            *to = *from as libc::c_char;
+        }
+        let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return false;
+        }
+        let rc = libc::connect(
+            fd,
+            &addr as *const libc::sockaddr_un as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+        );
+        let errno = if rc == 0 { 0 } else { std::io::Error::last_os_error().raw_os_error().unwrap_or(0) };
+        libc::close(fd);
+        rc == 0 || errno == libc::EAGAIN || errno == libc::EINPROGRESS
+    }
+}
+
+#[cfg(not(unix))]
+pub fn answers(_path: &std::path::Path) -> bool {
+    false
+}
+
 /// The command that starts the instance of the app that runs `program`, with no window. It is
 /// the shell's own to run, in the person's session: the caller that asked is not in it. Nothing
 /// that marks a launch as a Mind's is set (an instance is the person's, on their display), a
@@ -167,5 +206,22 @@ mod tests {
         let envs: Vec<_> = command.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.is_none())).collect();
         assert!(envs.contains(&("YANTRIK_FOR_MIND".to_string(), true)), "{envs:?}");
         assert!(envs.contains(&("SLINT_FULLSCREEN".to_string(), true)), "{envs:?}");
+    }
+
+    /// L8: whether a socket is listened at is asked without blocking.
+    #[cfg(unix)]
+    #[test]
+    fn a_listener_answers_and_a_stale_or_missing_socket_does_not() {
+        let dir = std::env::temp_dir().join(format!("yantrik-answers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app-notes.sock");
+        assert!(!answers(&path), "no file");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(answers(&path), "a listener");
+        drop(listener);
+        assert!(path.exists() && !answers(&path), "a socket file a killed process left behind");
+        assert!(!answers(&dir.join("x".repeat(200))), "a path too long to be a socket");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

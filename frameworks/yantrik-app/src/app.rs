@@ -186,6 +186,13 @@ impl<S: Settings> Boot<S> {
         for_mind: bool,
     ) -> Result<(Boot<S>, Store<S>), Startup> {
         let (service, args) = crate::service::split_flag(args);
+        // A service start is the shell's, on the person's display and without the Mind marker. One
+        // drawn for a Mind is somebody else's, and never claims the instance (#978 H1).
+        if service {
+            if let Some(said) = crate::service::start_refusal(paths.id(), for_mind) {
+                return Err(Startup::new(said));
+            }
+        }
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let launch = Launch::parse(paths.id(), paths.profile(), &cwd, &args)?;
         if service && !launch.is_empty() {

@@ -7,50 +7,8 @@
 //! below holds the two together. Under step 1 of design #978 no app is viewable, so every
 //! sentence a Mind reads about windows is made from this list and says so for all of them.
 
-use std::path::Path;
+pub use yantrik_ipc_contracts::framework_apps::{by_id, by_program, name_of, FrameworkApp, FRAMEWORK_APPS};
 
-/// One app of the framework.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameworkApp {
-    /// Its program and desktop entry id, as installed in `/opt/yantrik/bin`.
-    pub program: &'static str,
-    /// The id it publishes (`App::ID`): its surface and its instance's name.
-    pub id: &'static str,
-    /// A Mind may be given a window of it (`App::VIEWABLE`).
-    pub viewable: bool,
-}
-
-const fn app(program: &'static str, id: &'static str, viewable: bool) -> FrameworkApp {
-    FrameworkApp { program, id, viewable }
-}
-
-/// Every app of the framework.
-pub const FRAMEWORK_APPS: &[FrameworkApp] = &[
-    app("yantrik-calendar", "calendar", false),
-    app("yantrik-container-manager", "containers", false),
-    app("yantrik-document-editor", "documents", false),
-    app("yantrik-download-manager", "download-manager", false),
-    app("yantrik-email", "email", false),
-    app("yantrik-image-viewer", "image-viewer", false),
-    app("yantrik-music-player", "music", false),
-    app("yantrik-network-manager", "network", false),
-    app("yantrik-notes", "notes", false),
-    app("yantrik-snippet-manager", "snippets", false),
-    app("yantrik-system-monitor", "system-monitor", false),
-    app("yantrik-text-editor", "editor", false),
-    app("yantrik-weather", "weather", false),
-];
-
-/// The app of the framework that `program` (a name, or a path to it) is.
-pub fn by_program(program: &str) -> Option<&'static FrameworkApp> {
-    let name = Path::new(program.trim()).file_name().and_then(|n| n.to_str())?;
-    FRAMEWORK_APPS.iter().find(|a| a.program == name)
-}
-
-/// The app of the framework whose id is `id`, as its surface and its socket name it.
-pub fn by_id(id: &str) -> Option<&'static FrameworkApp> {
-    FRAMEWORK_APPS.iter().find(|a| a.id == id)
-}
 
 /// Whether a Mind may be given a window of the app that runs `program`.
 pub fn gives_minds_a_window(program: &str) -> bool {
@@ -113,6 +71,7 @@ pub fn apps_the_person_has_open(names_of_viewable: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// What each app under `apps/` built on the framework declares in its `impl App`: its program
     /// (its manifest's name), its id, and whether it is viewable.
@@ -171,7 +130,7 @@ mod tests {
             let text = std::fs::read_to_string(dir.join(format!("{}.desktop", a.program))).expect(a.program);
             let key = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)).unwrap_or_default().to_string();
             assert_eq!(key("X-Yantrik-Surface="), a.id, "{}", a.program);
-            assert!(!key("Name=").is_empty());
+            assert_eq!(key("Name="), a.name, "{}", a.program);
         }
     }
 

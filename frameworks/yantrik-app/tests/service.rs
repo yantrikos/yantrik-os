@@ -49,6 +49,7 @@ struct Model {
     person_starts: u32,
     launches: u32,
     presented: u32,
+    not_opened: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +59,8 @@ enum Command {
     PersonStart,
     Launched,
     Presented,
+    OpenAnother,
+    NotOpened,
 }
 
 struct Service;
@@ -83,7 +86,7 @@ impl App for Service {
         fx.then(Command::PersonStart);
     }
 
-    fn update(m: &mut Model, command: Command, _: &mut Effects<Self>) -> Result<(), Refused> {
+    fn update(m: &mut Model, command: Command, fx: &mut Effects<Self>) -> Result<(), Refused> {
         match command {
             Command::Load => {
                 m.served_starts += 1;
@@ -93,6 +96,10 @@ impl App for Service {
             Command::PersonStart => m.person_starts += 1,
             Command::Launched => m.launches += 1,
             Command::Presented => m.presented += 1,
+            Command::OpenAnother => {
+                fx.open_window();
+            }
+            Command::NotOpened => m.not_opened += 1,
         }
         Ok(())
     }
@@ -101,6 +108,7 @@ impl App for Service {
         match event {
             Event::Launch(_) => Some(Command::Launched),
             Event::Presented(_) => Some(Command::Presented),
+            Event::WindowNotOpened { .. } => Some(Command::NotOpened),
             _ => None,
         }
     }
@@ -317,4 +325,77 @@ fn a_service_start_takes_nothing_to_open() {
         false,
     );
     assert!(opened.is_err(), "a service start with a file is refused");
+}
+
+fn open_service(for_mind: bool) -> Result<yantrik_app::Boot<()>, yantrik_app::Startup> {
+    yantrik_app::Boot::<()>::open_as(
+        yantrik_app::Paths::temporary("notes"),
+        vec![std::ffi::OsString::from("--service")],
+        std::sync::Arc::new(yantrik_mind::fake::FakeMind::new()),
+        yantrik_app::services::Services::fakes(),
+        for_mind,
+    )
+    .map(|(boot, _)| boot)
+}
+
+/// H1: a `--service` start is the shell's, on the person's display. One that carries the marker, or
+/// is on a display that is a Mind's, claims nothing and says the one sentence.
+#[test]
+fn a_service_start_drawn_for_a_mind_exits_without_claiming() {
+    use yantrik_app::for_mind::drawn_for_mind_in;
+    use yantrik_ipc_contracts::mind_view_displays::Known;
+    let known = Known { person: Some("wayland-1".into()), minds: vec!["wayland-2".into()] };
+    let said = "Notes cannot open in your view; use its actions and os_describe notes instead.";
+
+    // The marker.
+    let marked = drawn_for_mind_in(Some("1"), Some("wayland-1"), &known);
+    assert_eq!(open_service(marked).unwrap_err().sentence, said);
+    // A display that is Mind View's seat, with no marker.
+    let on_the_seat = drawn_for_mind_in(None, Some("wayland-2"), &known);
+    assert_eq!(open_service(on_the_seat).unwrap_err().sentence, said);
+    // A display that is neither the person's nor listed.
+    let elsewhere = drawn_for_mind_in(None, Some("wayland-5"), &known);
+    assert_eq!(open_service(elsewhere).unwrap_err().sentence, said);
+    // The shell's own start: the person's display, no marker.
+    let shells = drawn_for_mind_in(None, Some("wayland-1"), &known);
+    assert!(open_service(shells).unwrap().service);
+}
+
+/// H2: a person on `wayland-1` opens every framework app normally; a Mind on its seat is refused
+/// in the name the person knows the app by.
+#[test]
+fn a_person_on_another_display_opens_every_framework_app_and_a_mind_on_its_seat_is_refused() {
+    use yantrik_app::for_mind::drawn_for_mind_in;
+    use yantrik_app::service::start_refusal;
+    use yantrik_ipc_contracts::framework_apps::FRAMEWORK_APPS;
+    use yantrik_ipc_contracts::mind_view_displays::Known;
+    let known = Known { person: Some("wayland-1".into()), minds: vec!["wayland-2".into()] };
+    for app in FRAMEWORK_APPS {
+        let person = drawn_for_mind_in(None, Some("wayland-1"), &known);
+        assert_eq!(start_refusal(app.id, person), None, "{}", app.id);
+        let mind = drawn_for_mind_in(None, Some("wayland-2"), &known);
+        assert_eq!(
+            start_refusal(app.id, mind).as_deref(),
+            Some(format!("{} cannot open in your view; use its actions and os_describe {} instead.", app.name, app.id).as_str()),
+            "{}",
+            app.id
+        );
+    }
+}
+
+/// L9: an act that asks for a window gets none unless the person has one of the app open.
+#[test]
+fn an_agents_act_opens_no_window_once_the_persons_last_one_is_closed() {
+    let app = TestApp::<Service>::start_service();
+    app.launch_again().unwrap();
+    app.describe_as_agent("agent-1");
+    app.close_requested(WindowId::PRIMARY);
+    assert!(app.windows().is_empty());
+    app.run(Command::OpenAnother);
+    assert!(app.windows().is_empty(), "no window on the person's desktop for an act");
+    assert_eq!(app.model(|m| m.not_opened), 1, "the app heard it was not opened");
+    // With the person's window open it is theirs to have a second one.
+    app.launch_again().unwrap();
+    app.run(Command::OpenAnother);
+    assert_eq!(app.windows().len(), 2);
 }

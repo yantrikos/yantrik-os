@@ -85,7 +85,11 @@ pub fn loaded(m: &mut Model, fx: &mut Effects<Notes>, result: Result<Loaded, Str
             let offered = if m.person_here {
                 recovery::weigh(m, fx, loaded.interrupted.as_deref())
             } else {
-                m.interrupted_held = loaded.interrupted;
+                // Kept from the first read only: the journal was replayed then, and a later read
+                // (an agent's reload) finds none, which would offer the older draft over newer text.
+                if m.interrupted_held.is_none() {
+                    m.interrupted_held = loaded.interrupted;
+                }
                 None
             };
             m.notice = sentences([

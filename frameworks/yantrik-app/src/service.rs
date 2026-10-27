@@ -38,9 +38,22 @@ pub fn split_flag(mut args: Vec<OsString>) -> (bool, Vec<OsString>) {
 }
 
 /// What a launch drawn for a Mind is told, by an app that will not become its window or its
-/// instance: the one next step, as the shell's own refusal says it.
+/// instance: the one next step, as the shell's own refusal says it, with the name the person
+/// calls the app by ('Notes', 'Images'), from the one list of the framework's apps.
 pub fn refuse_minds_launch(app_id: &str) -> String {
-    yantrik_ipc_contracts::mind_view::refused_for_minds(app_id, app_id)
+    yantrik_ipc_contracts::mind_view::refused_for_minds(
+        yantrik_ipc_contracts::framework_apps::name_of(app_id),
+        app_id,
+    )
+}
+
+/// The refusal a copy of the app `app_id` gives when it is drawn for a Mind ('for_mind': the
+/// launch marker, or a display that is a Mind's), service start or not. A copy never becomes the
+/// instance on a Mind's display: the instance is always on the person's, started by the shell
+/// from the person's session, which carries no marker and runs on the person's display. So a
+/// `--service` copy that is drawn for a Mind is not the shell's, and is refused like any other.
+pub fn start_refusal(app_id: &str, for_mind: bool) -> Option<String> {
+    for_mind.then(|| refuse_minds_launch(app_id))
 }
 
 #[cfg(test)]
@@ -60,10 +73,30 @@ mod tests {
     }
 
     #[test]
-    fn a_minds_launch_is_told_the_next_step() {
+    fn a_minds_launch_is_told_the_next_step_in_the_name_the_person_knows() {
         assert_eq!(
             refuse_minds_launch("notes"),
-            "notes cannot open in your view; use its actions and os_describe notes instead."
+            "Notes cannot open in your view; use its actions and os_describe notes instead."
         );
+        assert_eq!(
+            refuse_minds_launch("image-viewer"),
+            "Images cannot open in your view; use its actions and os_describe image-viewer instead."
+        );
+        assert_eq!(
+            refuse_minds_launch("calendar"),
+            "Calendar cannot open in your view; use its actions and os_describe calendar instead."
+        );
+        // An app that is not in the list is called by its id.
+        assert_eq!(
+            refuse_minds_launch("unlisted"),
+            "unlisted cannot open in your view; use its actions and os_describe unlisted instead."
+        );
+    }
+
+    /// H1: a copy drawn for a Mind is refused whether or not it is a service start.
+    #[test]
+    fn a_copy_drawn_for_a_mind_is_refused_and_one_that_is_not_is_not() {
+        assert!(start_refusal("notes", true).unwrap().starts_with("Notes cannot open in your view"));
+        assert_eq!(start_refusal("notes", false), None);
     }
 }

@@ -146,10 +146,10 @@ mod tests {
 
     #[test]
     fn a_start_that_is_not_done_by_the_bound_drops_the_act_and_says_so_word_for_word() {
-        let err = ensure_with("notes", true, Duration::from_millis(30), || false, || Some(starting()), |d| std::thread::sleep(d))
+        let err = ensure_with("notes", true, Duration::from_millis(30), || false, || Some(starting()), std::thread::sleep)
             .unwrap_err();
         assert_eq!(err, "Notes is starting; nothing was done \u{2014} send it again in a moment.");
-        let err = ensure_with("notes", false, Duration::from_millis(30), || false, || Some(starting()), |d| std::thread::sleep(d))
+        let err = ensure_with("notes", false, Duration::from_millis(30), || false, || Some(starting()), std::thread::sleep)
             .unwrap_err();
         assert_eq!(err, "Notes is starting; ask again in a moment.");
         assert!(!err.contains("not running"));
@@ -161,7 +161,7 @@ mod tests {
         let began = Instant::now();
         let bound = Duration::from_millis(40);
         let up = || began.elapsed() > bound + Duration::from_millis(5);
-        let err = ensure_with("notes", true, bound, up, || Some(starting()), |d| std::thread::sleep(d)).unwrap_err();
+        let err = ensure_with("notes", true, bound, up, || Some(starting()), std::thread::sleep).unwrap_err();
         assert!(err.contains("nothing was done"), "{err}");
     }
 

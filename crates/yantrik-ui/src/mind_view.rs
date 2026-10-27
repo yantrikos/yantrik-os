@@ -31,6 +31,7 @@
 use std::collections::HashSet;
 
 use yantrik_companion::tools::browser::MindDisplay;
+use yantrik_ipc_contracts::mind_view_displays as displays;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -352,6 +353,7 @@ pub fn ensure() -> Result<Seat, String> {
         let _ = nested.child.wait();
         state.nested = None;
         state.apps.clear();
+        record_mind_displays(&[]);
         None
     });
     if let Some(answer) = current {
@@ -361,6 +363,7 @@ pub fn ensure() -> Result<Seat, String> {
         Ok(nested) => {
             let seat = nested.seat.clone();
             tracing::info!(wayland = %seat.wayland, x11 = ?seat.x11, "Mind View started");
+            record_mind_displays(&[seat.wayland.clone()]);
             with_state(|state| state.nested = Some(nested));
             Ok(seat)
         }
@@ -369,6 +372,30 @@ pub fn ensure() -> Result<Seat, String> {
             with_state(|state| state.unavailable = Some((why.clone(), Instant::now())));
             Err(why)
         }
+    }
+}
+
+/// Records which display is the person's (this shell's own) and which are Mind View's, where the
+/// apps read them (`yantrik_ipc_contracts::mind_view_displays`). There is no literal display name:
+/// a person on `wayland-1` is the person. Called as the shell starts, before any app can ask.
+pub fn record_displays() {
+    let dir = yantrik_ipc_transport::server::socket_dir();
+    match std::env::var("WAYLAND_DISPLAY") {
+        Ok(display) => {
+            if let Err(e) = displays::write_person(&dir, &display) {
+                tracing::warn!(error = %e, "the person's display was not recorded");
+            }
+        }
+        Err(_) => displays::forget_person(&dir),
+    }
+    record_mind_displays(&[]);
+}
+
+/// Records the displays Mind View serves now.
+fn record_mind_displays(seats: &[String]) {
+    let dir = yantrik_ipc_transport::server::socket_dir();
+    if let Err(e) = displays::write_minds(&dir, seats) {
+        tracing::warn!(error = %e, "Mind View's displays were not recorded");
     }
 }
 

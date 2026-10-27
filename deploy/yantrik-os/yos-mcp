@@ -39,6 +39,12 @@ import time
 # not be started (deploy/yantrik-os/yos: EX_STARTING, EX_NOT_STARTED).
 EX_STARTING = 75
 EX_NOT_STARTED = 69
+# How long an act waits for an app to start, in all (`yos`: START_BOUND). The grade read that comes
+# before the act and the act itself share it: the deadline is handed on in YOS_START_DEADLINE.
+START_BOUND = 15.0
+# The subprocess that reads the grade of an act of an app that must start: the bound and a margin,
+# so the contract sentence always survives and is never replaced by a timeout.
+FOR_ACT_TIMEOUT = START_BOUND + 10.0
 
 YOS = os.environ.get("YOS_BIN", "/opt/yantrik/bin/yos")
 PROTOCOL_VERSION = "2024-11-05"
@@ -157,6 +163,11 @@ def yos_env():
     if not env.get("YANTRIK_MIND_RUN", "").strip():
         env.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
         env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+    deadline = getattr(_LOCAL, "start_deadline", None)
+    if deadline:
+        env["YOS_START_DEADLINE"] = repr(deadline)
+    else:
+        env.pop("YOS_START_DEADLINE", None)
     if AGENT_TOKEN:
         env[AGENT_TOKEN_ENV] = AGENT_TOKEN
     else:
@@ -1912,7 +1923,8 @@ def action_detail(app, action):
     would produce cards that named an action and gave no reason for it, for exactly the apps with
     the most actions.
     """
-    p = yos(["describe", app, "--for-act"], SHELL_CALL_TIMEOUT)
+    _LOCAL.start_deadline = time.time() + START_BOUND
+    p = yos(["describe", app, "--for-act"], FOR_ACT_TIMEOUT)
     if p is not None and p.returncode in (EX_STARTING, EX_NOT_STARTED):
         # The app is a Yantrik app the desktop is starting, or could not start: the act is dropped
         # whole, and answered with the act's sentence as it came (see `guard_act`).
@@ -2847,6 +2859,7 @@ def run_tool(tool, args, present=None):
     policy answer, so a model that trips over a closed app three times does not take this
     server away from itself.
     """
+    _LOCAL.start_deadline = None
     if "browser_action" in tool:
         # Every web tool is an act on the browser's surface (#477): made there, through os_act.
         return run_browser_tool(tool, args)

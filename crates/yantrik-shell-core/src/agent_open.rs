@@ -62,7 +62,7 @@ fn no_window_for_minds(program: &str, installed: &[DesktopEntry]) -> String {
     let name = installed
         .iter()
         .find(|e| e.app_id == app.program && !e.name.is_empty())
-        .map_or_else(|| app.id.to_string(), |e| e.name.clone());
+        .map_or_else(|| app.name.to_string(), |e| e.name.clone());
     framework::refused_for_minds(&name, app.id)
 }
 

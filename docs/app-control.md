@@ -298,7 +298,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | Surface | Action | Grade | Why |
 | --- | --- | --- | --- |
 | shell | `read_message`, `open_lens`, `close_lens`, `show_desktop` | safe | reads and showings; nothing written. `close_lens` puts the Lens and its chat panel away as Escape does, keeping the conversation and any draft; `describe shell` › `lens.close_with` names it while the Lens is open |
-| shell | `open_app`, `start_service`, `start_app`, `refresh_apps`, `send_message` | standard | launch, start, rescan, say a line to the desktop — undone by closing or stopping, nothing stored |
+| shell | `open_app`, `start_service`, `refresh_apps`, `send_message` | standard | launch, start, rescan, say a line to the desktop — undone by closing or stopping, nothing stored |
 | shell | `show_screen`, `show_app`, `focus_window`, `close_window`, `minimise_window`, `maximise_window` | standard | moving and placing windows; the state they change dies with the session |
 | shell | `pin_app` | sensitive | **regraded (#48)**: writes the START pin list into the shell's settings, and it is still pinned after a restart |
 | shell | `use_harness` | sensitive | **regraded (#48)**: writes the preferred mind into the shell's settings — a choice about who answers from now on, across restarts |
@@ -310,6 +310,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `install_harness`, `start_harness` | sensitive | fetches software onto the machine; decides what it runs on every login |
 | shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |
 | shell | `lock` | safe | only takes access away — Super+L must lock, not ask about locking (#215) |
+| shell | `start_app` | safe | starts an app of the framework's instance with no window so a describe or an act on it answers; it opens nothing the person sees and takes only an id (#978 step 1) |
 | shell | `capture_open`, `capture_region`, `capture_screen_to_clipboard`, `capture_record_toggle` | safe | the person's capture keys (Print, Shift+Print, Super+Shift+S, Ctrl+Print, Super+Shift+R): a key must not raise a card, so each refuses any caller the shell takes for a mind instead (design/capture-2026-10-15.md) |
 | shell | `screenshot_mind_view` | safe | a mind photographing its own display; saved to ~/Pictures/Screenshots and the person told which mind took it; one every 2 s from minds, and none with under 1 GB free |
 | shell | `screenshot_screen` | sensitive | a picture of the person's desktop; its purpose says it cannot be undone, word for word as `read_screen`'s, so it asks every time and no session rule covers it; the person is told which mind took it |
@@ -726,10 +727,14 @@ framework opens there at all any more; see the last section.)
   read masks it when `Boot::for_mind` is set (`yantrik_app::for_mind`). It is set when the launch
   carries `YANTRIK_FOR_MIND` (set on every app started on a mind's display,
   `MindDisplay::mind_view`) or when the window's `WAYLAND_DISPLAY` is not the person's
-  (`present::elsewhere`, the comparison `present` already makes), so a launch that lost the marker is
-  still masked. The marker only turns masking on. `TestApp::start_for_mind` starts a test that way.
-  The display rule assumes the person's session is on `wayland-0` (`PERSON_DISPLAY`); on any other
-  display every window is masked, which fails closed. Snippets shows "Code is hidden in this
+  (a Mind's display, below), so a launch that lost the marker is still masked. The marker only turns
+  masking on. `TestApp::start_for_mind` starts a test that way. There is no literal display name:
+  the shell records its own `WAYLAND_DISPLAY` as the person's (`person-display`) and the displays
+  Mind View serves (`mind-displays`) in the session's socket directory
+  (`yantrik_ipc_contracts::mind_view_displays`). A display Mind View lists is always a Mind's; any
+  display but the recorded person's is a Mind's; and if the person's record is lost, a display is a
+  Mind's only if Mind View lists it (or the marker says so). A person on `wayland-1` is the person.
+  Snippets shows "Code is hidden in this
   window." for its code, searches only titles, tags and language, offers no rail question, and
   refuses editing, Copy, AI Explain and the rail's "What does this do?".
 - Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
@@ -752,7 +757,7 @@ registry in the shell (`yantrik_shell_core::framework`), and each app declares `
   and shows nothing, with files or without.
 - `describe shell` → `mind_view.apps_the_person_has_open` says so, generated from the registry.
 - **Start on demand.** A `describe` or an `act` on one of these apps that is not running makes the
-  shell start its one instance, `act shell start_app name=<id>` (standard; within the reach of a role
+  shell start its one instance, `act shell start_app name=<id>` (safe; within the reach of a role
   that names the app). The instance starts on the person's display, from the person's session,
   with `--service` and no window: it loads its store and serves intents and `describe`
   (`App::start_service`), and runs nothing the person sees (`App::start`: recovery, dialogs,
@@ -767,3 +772,12 @@ registry in the shell (`yantrik_shell_core::framework`), and each app declares `
   failed start says `<Name> is not running: the desktop could not start it (<why>).`
 - The shell's `windows`, `launcher.running` and `mind_view.apps` come from what the instances report
   (`<id>.windows` beside the socket), never from launch pids: a windowless instance is not a window.
+- **What step 1 does not close.** It decides person against Mind from the asking process's
+  environment and display, and (for a launch handed to a running copy) from which program it is:
+  only a Yantrik app binary or the shell may hand a launch over. A Mind's `agent_run` that rewrites
+  both and runs a Yantrik app binary can still pose as the person. Identity a caller cannot claim
+  comes from sessions the shell creates (design #978 section 1), which step 2 builds.
+- **Left in an agent's start, on purpose.** Email's look at the mail service (it can start the
+  service and connect the account, which its intents need), Weather's fetch and its refetch timer
+  (they run until the instance goes idle, five minutes after the last use), and Download Manager's
+  notifications for a download an agent started.

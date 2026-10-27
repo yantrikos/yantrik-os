@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use serde_json::{json, Value};
-use yantrik_shell_core::app_service::{service_command, Plan, Starts};
+use yantrik_shell_core::app_service::{answers, service_command, Plan, Starts};
 use yantrik_shell_core::framework::{self, FrameworkApp};
 
 use crate::apps::{Catalogue, DesktopEntry};
@@ -37,6 +37,7 @@ pub fn action(installed: Catalogue) -> (Action, impl Fn(&Value) -> Result<Value,
          running; the answer says whether it is running, starting or could not start. For an app \
          that does not start on demand it says so. Opens nothing for the person.",
     )
+    .risk("safe")
     .arg(Param::text("name").describe("App id, e.g. notes, calendar, image-viewer"));
     let handler = move |args: &Value| {
         let name = args["name"].as_str().unwrap_or_default().trim().to_string();
@@ -65,18 +66,10 @@ fn display_name(app: &FrameworkApp, entry: Option<&DesktopEntry>) -> String {
     crate::windows::app_display_name(&id)
 }
 
-/// Whether the app's surface answers: a connection is made, which is all the check there is.
+/// Whether the app's surface answers: asked without blocking (`yantrik_shell_core::app_service::
+/// answers`), because this runs on the UI thread, outside the lock on the starts.
 fn answering(id: &str) -> bool {
-    #[cfg(unix)]
-    {
-        let path = yantrik_ipc_transport::server::RpcServer::default_address(&service_id_for(id));
-        std::os::unix::net::UnixStream::connect(path).is_ok()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = id;
-        false
-    }
+    answers(std::path::Path::new(&yantrik_ipc_transport::server::RpcServer::default_address(&service_id_for(id))))
 }
 
 /// Start the app `name` means if it is not running, and say where it stands.
@@ -86,7 +79,8 @@ pub fn start(name: &str, installed: &[DesktopEntry]) -> Value {
     };
     let shown = display_name(app, entry);
     let said = |state: &str, reason: Option<String>| answer(app, &shown, state, reason);
-    match with_starts(|starts| starts.plan(app.id, answering(app.id), Instant::now())) {
+    let up = answering(app.id);
+    match with_starts(|starts| starts.plan(app.id, up, Instant::now())) {
         Plan::Running => said("running", None),
         Plan::Starting => said("starting", None),
         Plan::Failed(why) => said("failed", Some(why)),

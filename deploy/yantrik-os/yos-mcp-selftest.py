@@ -327,6 +327,7 @@ if argv[:1] == ["describe"]:
     # form (`--fold`, for a mind paying by the token) from the one the bridge parses for itself
     # (plain, because a folded family has no purpose lines and the card needs one).
     state.setdefault("describes", []).append(argv)
+    state.setdefault("deadlines", []).append(os.environ.get("YOS_START_DEADLINE"))
     save(state)
     if target == "shell":
         if state.get("shell_down"):
@@ -2897,6 +2898,9 @@ with tempfile.TemporaryDirectory() as d:
     told, failed = module.run_tool(module.BY_NAME["os_act"], {"app": "notes", "action": "add_note", "args": {}})
     check("an act dropped during the start says nothing was done, exactly",
           told == "Notes is starting; nothing was done — send it again in a moment." and not failed, told)
+    handed = [d for d in (read(state).get("deadlines") or []) if d]
+    check("the grade read hands the act's deadline on, fifteen seconds from its start (#978 L1)",
+          handed and 0 < float(handed[-1]) - time.time() <= 15.0, handed)
     told, failed = module.run_tool(module.BY_NAME["os_describe"], {"app": "weather"})
     check("a describe of an app that could not start says it is not running, as an error",
           told.startswith("Notes is not running: the desktop could not start it") and failed, told)

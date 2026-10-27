@@ -97,6 +97,26 @@ impl Seats {
 /// session's socket directory: a file of this account's, small, and naming a live process. Anything
 /// else is no report, and the shell falls back to the launch pids.
 pub fn read_report(dir: &std::path::Path, app: &framework::FrameworkApp, alive: impl Fn(u32) -> bool) -> Option<Report> {
+    read_report_with(dir, app, alive, exe_of)
+}
+
+/// The program process `pid` runs, by the path `/proc/<pid>/exe` links to.
+pub fn exe_of(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok().and_then(|p| p.to_str().map(str::to_string))
+}
+
+/// [`read_report`] with the way to ask which program a pid runs given.
+///
+/// A report counts only when the process it names runs the app's own program: any process of this
+/// account can write a file, and a pid outlives its process when the system reuses it, so a stale or
+/// forged report would add the app to the person's windows or hide it. Where there is no way to ask
+/// (off Linux) the report stands as written.
+pub fn read_report_with(
+    dir: &std::path::Path,
+    app: &framework::FrameworkApp,
+    alive: impl Fn(u32) -> bool,
+    exe_of: impl Fn(u32) -> Option<String>,
+) -> Option<Report> {
     use yantrik_ipc_contracts::mind_view::window_owners::{file_name, MAX_BYTES};
     let path = dir.join(file_name(app.id));
     let meta = std::fs::symlink_metadata(&path).ok()?;
@@ -104,7 +124,17 @@ pub fn read_report(dir: &std::path::Path, app: &framework::FrameworkApp, alive: 
         return None;
     }
     let report = Report::parse(&std::fs::read_to_string(&path).ok()?)?;
-    alive(report.pid).then_some(report)
+    if !alive(report.pid) {
+        return None;
+    }
+    if cfg!(target_os = "linux") {
+        let exe = exe_of(report.pid)?;
+        let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
+        if std::path::Path::new(exe).file_name().and_then(|n| n.to_str()) != Some(app.program) {
+            return None;
+        }
+    }
+    Some(report)
 }
 
 #[cfg(unix)]

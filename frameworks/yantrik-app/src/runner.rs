@@ -78,8 +78,7 @@ pub fn run<A: App>() -> ExitCode {
     // A launch drawn for a Mind never becomes the instance or a window: the instance is always on
     // the person's display (#978). An agent reaches the app through the service start instead.
     let service = boot.service;
-    if boot.for_mind && !service {
-        let said = crate::service::refuse_minds_launch(A::ID);
+    if let Some(said) = crate::service::start_refusal(A::ID, boot.for_mind) {
         tracing::warn!(app = A::ID, "{said}");
         eprintln!("{said}");
         return ExitCode::from(1);

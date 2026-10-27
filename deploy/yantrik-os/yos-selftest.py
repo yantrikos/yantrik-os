@@ -459,7 +459,7 @@ def check_on_demand_apps():
         app_calls.clear()
         clock = FakeClock()
         yos.time = clock
-        clock.hooks.append((clock.now + 2.0, bring_up))
+        clock.hooks.append((clock.now + 1.0, bring_up))
         out, err, code = run(lambda: yos.cmd_describe(["notes"]))
         check("the describe was answered by the app", "Notes - 1 note" in out and code is None,
               "out=%r err=%r exit=%r" % (out, err, code))
@@ -515,6 +515,43 @@ def check_on_demand_apps():
         check("and no call reached the app", app_calls == [], json.dumps(app_calls))
         state["answer"] = "starting"
 
+
+        print("a describe does not wait out a start: it answers within a second or two (#978 M3)")
+        take_down()
+        app_calls.clear()
+        clock = FakeClock()
+        yos.time = clock
+        out, err, code = run(lambda: yos.cmd_describe(["notes"]))
+        check("the contract phrase, unchanged", err == "yos: " + DESCRIBE_STARTING + "\n", repr(err))
+        check("after about a second and a half, not the act's fifteen",
+              1.0 < clock.now - 1000.0 < 2.5, clock.now - 1000.0)
+
+        print("an act that has waited already is not given another fifteen seconds (#978 L1)")
+        clock = FakeClock()
+        yos.time = clock
+        os.environ["YOS_START_DEADLINE"] = repr(clock.now + 4.0)
+        try:
+            out, err, code = run(lambda: yos.cmd_act(["notes", "add_note", "title=d", "--agent-token", "tok"]))
+        finally:
+            del os.environ["YOS_START_DEADLINE"]
+        check("it ends at the deadline it was handed, with the act's sentence",
+              code == yos.EX_STARTING and err == "yos: " + ACT_STARTING + "\n" and clock.now - 1000.0 < 6.0,
+              "exit=%r err=%r after %.1f" % (code, err, clock.now - 1000.0))
+
+        print("the shell is not asked again and again while an act waits (#978 L2)")
+        asked_to_start.clear()
+        clock = FakeClock()
+        yos.time = clock
+        run(lambda: yos.cmd_act(["notes", "add_note", "title=e", "--agent-token", "tok"]))
+        check("once to begin, once after two seconds, once at the bound", len(asked_to_start) == 3,
+              "asked %d times" % len(asked_to_start))
+
+        print("an app that does not start on demand keeps the words that say to open it; a Yantrik app never does (#978 L6)")
+        check("the shell said Notes starts on demand, so it is not one of the legacy apps", "notes" not in yos._LEGACY,
+              sorted(yos._LEGACY))
+        text = yos.closed_text("notes", {"id": "notes", "purpose": ""})
+        check("a Yantrik app is not, and is not sent to open_app", "open_app" not in text and "Open it first" not in text, text)
+
         print("an app the shell says does not start on demand is carried on as before")
         (apps / "other.desktop").write_text(
             "[Desktop Entry]\nType=Application\nName=Other\nExec=other\nX-Yantrik-Surface=other\n")
@@ -527,6 +564,9 @@ def check_on_demand_apps():
         asked_to_start.clear()
         run(lambda: yos.cmd_describe(["other"]))
         check("and is not asked again", asked_to_start == [], json.dumps(asked_to_start))
+        out, err, code = run(lambda: yos.cmd_describe(["other"]))
+        check("a legacy app, which the shell said does not start on demand, is told to open it",
+              "Open it first" in err, err)
     finally:
         for svc in services:
             svc.close()
