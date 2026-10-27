@@ -236,12 +236,15 @@ pub fn follow_rename(current: &Path, from: &Path, to: &Path) -> Option<PathBuf> 
 }
 
 #[cfg(test)]
+mod decisions;
+
+#[cfg(test)]
 mod tests {
     //! Real inotify, real renames, a real temporary directory.
     //!
     //! What an editor does about a move is decided by its own save path, on top of
     //! `follow_rename` and `moved_to` here; the decisions themselves are tested without a
-    //! filesystem event in sight in `tests/document-core` and the Text Editor's own tests. What
+    //! filesystem event in sight in `decisions.rs` and the Text Editor's own tests. What
     //! is left over is the wire, and the wire is the part that cannot be reasoned about: that
     //! the watch is pointed at the right folder, that the kernel's event reaches the channel,
     //! and that somebody else's file moving in the same folder wakes nobody.

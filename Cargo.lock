@@ -11141,6 +11141,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "yantrik-file-follow",
  "yantrik-foundation",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
@@ -11369,34 +11370,23 @@ name = "yantrik-design-tokens"
 version = "0.1.0"
 
 [[package]]
-name = "yantrik-document-core-tests"
-version = "0.1.0"
-dependencies = [
- "libc",
- "pulldown-cmark",
- "regex",
- "serde",
- "serde_json",
- "yantrik-file-follow",
-]
-
-[[package]]
 name = "yantrik-document-editor"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "png",
  "pulldown-cmark",
  "regex",
  "serde",
  "serde_json",
  "slint",
  "tracing",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
- "yantrik-file-follow",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-testing",
  "yantrik-ui-kit",
 ]
 
@@ -12013,7 +12003,6 @@ dependencies = [
  "yantrik-app",
  "yantrik-app-build",
  "yantrik-design-tokens",
- "yantrik-file-follow",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-testing",

@@ -36,6 +36,8 @@ yantrik-ipc-transport = { workspace = true }
 yantrik-surface = { workspace = true }
 # A document's key from its path, resistant to a chosen collision (documents/mod.rs).
 sha2 = { workspace = true }
+# Where a file moved while it was open went (#86), for every document app (documents/files/locate.rs).
+yantrik-file-follow = { workspace = true }
 
 # geteuid, for checking the pid-file directory is really ours before trusting it (instance.rs).
 [target.'cfg(unix)'.dependencies]

@@ -40,6 +40,7 @@ use crate::timers::TimerId;
 pub const PART: &str = "rail";
 /// The agent token a proposal is applied under: an agent's call, never the person's own.
 pub const AGENT_TOKEN: &str = "rail";
+pub use crate::cx::is_person_applying;
 /// The refresh after a model change, debounced so a burst of commands is one refresh.
 pub const DEBOUNCE: TimerId = TimerId("rail.debounce");
 pub const DEBOUNCE_FOR: Duration = Duration::from_millis(300);

@@ -23,6 +23,11 @@ calendar = [
   { name = "agent-suggestions", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the suggestions; tests/window.rs reads them back." },
   { name = "agent-unavailable", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the sentence shown when the Mind cannot answer." },
 ]
+document-editor = [
+  { name = "agent-context", reason = "Written by the framework's rail: `yantrik_app::rail_window!(DocumentEditorApp)` in apps/document-editor/src/lib.rs implements RailView, and view/render.rs calls its render_rail on every render. The macro's expansion is not text under apps/document-editor/src, so the lint cannot see the setter; tests/rail.rs reads the rows back off the window." },
+  { name = "agent-suggestions", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the suggestions; tests/rail.rs reads them back." },
+  { name = "agent-unavailable", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the sentence shown when the Mind cannot answer." },
+]
 snippet-manager = [
   { name = "agent-context", reason = "Written by the framework's rail: `yantrik_app::rail_window!(SnippetManagerApp)` in apps/snippet-manager/src/lib.rs implements RailView, and view.rs calls its render_rail whenever the rail part changes. The macro's expansion is not text under apps/snippet-manager/src, so the lint cannot see the setter; tests/rail.rs reads the rows back." },
   { name = "agent-suggestions", reason = "As agent-context: render_rail, from `yantrik_app::rail_window!`, sets the suggestions; tests/rail.rs reads them back." },

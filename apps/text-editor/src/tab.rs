@@ -9,13 +9,7 @@ use crate::text::history::History;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TabId(pub u64);
 
-/// Where a file is, as the disk names it (device and inode): how a file moved while it was open
-/// is told from another file with the same bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Inode {
-    pub dev: u64,
-    pub ino: u64,
-}
+pub use yantrik_app::documents::files::read::Inode;
 
 #[derive(Debug, Clone)]
 pub struct Tab {

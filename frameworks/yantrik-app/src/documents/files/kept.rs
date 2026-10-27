@@ -1,7 +1,7 @@
 //! Another program's version a save replaced, kept beside the file instead of lost.
 //!
 //! A save replaces the file by an atomic exchange (`Disk::exchange`), so the bytes it took the
-//! place of come back at the same instant ours went in. When they are not what the tab knew was
+//! place of come back at the same instant ours went in. When they are not what the document knew was
 //! there, another program wrote the file between the save's check and its replace, and those bytes
 //! are kept: as a file of their own beside the original, never over anything (`create_new`), and
 //! private (mode 0600) since they may be.
@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use yantrik_app::documents::disk::{Disk, Step};
+use crate::documents::disk::{Disk, Step};
 
 /// Where another program's version is now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +24,7 @@ pub enum Kept {
     /// Kept as this file, beside the original.
     Beside(PathBuf),
     /// No name beside the original could be made (the folder refused it): kept as this file in
-    /// the editor's own state folder instead.
+    /// the app's own state folder instead.
     Elsewhere(PathBuf),
     /// Too large to read back, or unreadable: kept where the exchange left it, at this path.
     Unread(PathBuf),
@@ -46,7 +46,7 @@ fn names(original: &Path) -> impl Iterator<Item = PathBuf> + '_ {
 
 /// Another program's `bytes`, which a save of `original` replaced, kept: beside it, created new so
 /// nothing is ever replaced (a name taken by anything, a link that leads nowhere included, is
-/// passed by), and failing that in `elsewhere`, the editor's own folder. Never dropped while any
+/// passed by), and failing that in `elsewhere`, the app's own folder. Never dropped while any
 /// of those can be written.
 pub fn keep_bytes(disk: &dyn Disk, original: &Path, bytes: &[u8], elsewhere: &Path) -> Kept {
     for path in names(original) {
@@ -61,7 +61,7 @@ pub fn keep_bytes(disk: &dyn Disk, original: &Path, bytes: &[u8], elsewhere: &Pa
     let _ = std::fs::create_dir_all(elsewhere);
     let mut last = String::new();
     for n in 1..=NAMES {
-        let path = elsewhere.join(format!("outside-version-{}-{n}", crate::files::drafts::now_ms()));
+        let path = elsewhere.join(format!("outside-version-{}-{n}", super::now_ms()));
         match disk.create_new(&path, bytes) {
             Ok(()) => return Kept::Elsewhere(path),
             Err(e) if e.step == Step::SyncDir => return Kept::Elsewhere(path),
@@ -110,7 +110,7 @@ pub fn said(kept: &Kept, file: &Path) -> String {
     }
 }
 
-/// The same, as an agent reads it about a tab it is not shown: no name, no path.
+/// The same, as an agent reads it about a document it is not shown: no name, no path.
 pub fn said_hidden(kept: &Kept) -> String {
     match kept {
         Kept::Beside(_) | Kept::Elsewhere(_) | Kept::Unread(_) => {

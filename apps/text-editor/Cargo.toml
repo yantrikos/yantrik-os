@@ -24,9 +24,6 @@ slint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-# Where a file moved while it was open went (#86), shared with yDoc: the same name and the same
-# bytes, looked for near where it was. The watch itself is the framework's (`fx.watch`).
-yantrik-file-follow = { workspace = true }
 libc = "0.2"
 regex = "1"
 

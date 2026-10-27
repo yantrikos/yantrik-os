@@ -759,7 +759,7 @@ mod a_test_crate_runs_when_ci_runs {
     ///
     /// CI's only cargo test step is `cargo test --workspace --locked`. The crates under `tests/`
     /// carried a `[workspace]` table of their own, which makes each one a workspace root that
-    /// `--workspace` never reaches: tests/document-core alone hid 66 tests behind it, sixteen
+    /// `--workspace` never reaches: yDoc's core crate alone hid 66 tests behind it, sixteen
     /// written after #84 found the gap and nobody ran them. #85's own lesson is that the defect
     /// recreates itself — a new core crate written the same way would vanish the same way, and
     /// the absence of a check was the only reason it took an issue to notice.
@@ -795,7 +795,7 @@ mod a_test_crate_runs_when_ci_runs {
                 ));
             }
         }
-        assert!(seen >= 10, "read only {seen} core test crates from tests/; the path is wrong");
+        assert!(seen >= 9, "read only {seen} core test crates from tests/; the path is wrong");
         assert!(
             unseen.is_empty(),
             "these test crates never run in CI:\n  {}\n\n\

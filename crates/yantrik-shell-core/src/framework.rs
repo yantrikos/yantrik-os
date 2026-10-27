@@ -28,6 +28,7 @@ const fn app(program: &'static str, id: &'static str, viewable: bool) -> Framewo
 pub const FRAMEWORK_APPS: &[FrameworkApp] = &[
     app("yantrik-calendar", "calendar", false),
     app("yantrik-container-manager", "containers", false),
+    app("yantrik-document-editor", "documents", false),
     app("yantrik-download-manager", "download-manager", false),
     app("yantrik-email", "email", false),
     app("yantrik-image-viewer", "image-viewer", false),

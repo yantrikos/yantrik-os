@@ -4,12 +4,18 @@ version = "0.1.0"
 edition = "2021"
 description = "Yantrik Document Editor — a Markdown document editor a person and a mind can both write in"
 
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, its saves through the framework's
+# fault-injecting disk.
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "yantrik-document-editor"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
@@ -26,9 +32,13 @@ regex = { workspace = true }
 # Markdown -> HTML for the export, reusing the renderer Notes already depends on rather than
 # writing a second Markdown implementation to keep in step with the first.
 pulldown-cmark = { version = "0.13.1", default-features = false, features = ["html"] }
-# The folder watch and the move decisions, shared with the Text Editor so a file moved in
-# Files does not strand either editor (#86). Carries the notify dependency with it.
-yantrik-file-follow = { workspace = true }
+
+[dev-dependencies]
+# TestApp, with the window manager's word on activation.
+yantrik-testing = { workspace = true, features = ["testing"] }
+# FaultyDisk, to make any step of a save fail.
+yantrik-app = { workspace = true, features = ["testing"] }
+png = "0.18"
 
 [build-dependencies]
 yantrik-app-build = { workspace = true }

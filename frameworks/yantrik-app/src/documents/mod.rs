@@ -15,6 +15,7 @@
 pub mod close;
 pub mod disk;
 pub mod draft;
+pub mod files;
 pub(crate) mod exchange;
 pub mod outside;
 pub mod save;
