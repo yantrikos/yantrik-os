@@ -63,3 +63,27 @@ impl<A: App> TestApp<A> {
         self.with(move |u| u.core.focus_for_test(id, false));
     }
 }
+
+impl<A: App> TestApp<A> {
+    /// The count of the person's windows is reported to the shell in `dir`, as the runner does
+    /// under the socket directory (`yantrik_app::report`).
+    pub fn report_to(&self, dir: &std::path::Path) {
+        let dir = dir.to_path_buf();
+        self.with(move |u| u.core.report_windows_to(yantrik_app::report::Reporter::at(&dir, A::ID)));
+    }
+
+    /// Whether the person's start (`App::start`) has run: at once for the person's own start,
+    /// when their first window opens for a service start.
+    pub fn person_has_started(&self) -> bool {
+        self.with(|u| u.core.person_has_started())
+    }
+
+    /// A second launch from a Mind's view (`WAYLAND_DISPLAY` not the person's, or the shell's
+    /// marker), handed over as its copy does through the `launch` action, with `launch`: the
+    /// answer the second copy reads. With a caller the test cannot make, the claim is all there
+    /// is, and it is held to the same rule as an environment.
+    pub fn launch_from_a_mind(&self, launch: Launch) -> Result<Value, String> {
+        let args = serde_json::json!({ "launch": launch, "display": "wayland-1", "for_mind": true });
+        self.act("launch", args)?.settle()
+    }
+}

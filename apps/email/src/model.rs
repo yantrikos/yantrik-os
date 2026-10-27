@@ -293,6 +293,11 @@ pub struct Model {
     pub state: MailState,
     /// The first look at the service has landed.
     pub looked: bool,
+    /// The first look has landed or failed, and the sentence about unsent text may be said once
+    /// the person is here.
+    pub start_look_over: bool,
+    /// The person has a window (their start has run); a service start for an agent has none.
+    pub person_here: bool,
     pub account_name: String,
     /// The folder on screen.
     pub folder: String,
@@ -330,6 +335,8 @@ impl Model {
             files,
             state: MailState::Unreachable { reason: "the mail service has not been asked yet".to_string() },
             looked: false,
+            start_look_over: false,
+            person_here: false,
             account_name: String::new(),
             folder: "INBOX".to_string(),
             folders: Vec::new(),

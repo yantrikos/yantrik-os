@@ -42,7 +42,7 @@ pub(crate) fn next_window_id() -> WindowId {
 pub(crate) struct Windows<U> {
     /// The first window is open. It is kept, hidden, once closed: the event loop holds it, and a
     /// second launch during a linger opens it again.
-    first_open: bool,
+    pub(super) first_open: bool,
     more: BTreeMap<WindowId, U>,
     /// The theme the windows wear now, so a window opened later wears it too.
     theme: Option<ThemeSettings>,
@@ -122,6 +122,14 @@ impl<A: App> Core<A> {
             tracing::debug!(app = self.id, "a window asked for while ending; not made");
             return;
         }
+        // Started for an agent, the app opens no window until the person's launch has: an act
+        // that asks for one does not put a window on the person's desktop.
+        if !self.person_has_started() {
+            let why = "a window is opened only once the person has opened the app".to_string();
+            tracing::warn!(app = self.id, "{why}");
+            self.event(Event::WindowNotOpened { window: id, why });
+            return;
+        }
         let ui = match A::Ui::make() {
             Ok(ui) => ui,
             Err(e) => {
@@ -160,6 +168,8 @@ impl<A: App> Core<A> {
         }
         // A window on screen again: a linger the app was in is over.
         self.linger_ended();
+        self.stop_idle();
+        self.report_windows();
     }
 
     /// A window closed: only it. Whether that was the last is judged by
@@ -169,6 +179,7 @@ impl<A: App> Core<A> {
         if window == WindowId::PRIMARY {
             let _ = self.ui.hide();
             self.windows.borrow_mut().first_open = false;
+            self.report_windows();
             return;
         }
         let removed = self.windows.borrow_mut().more.remove(&window);
@@ -178,6 +189,7 @@ impl<A: App> Core<A> {
             // dropped from the event loop, after that callback has returned.
             slint::Timer::single_shot(Duration::ZERO, move || drop(ui));
         }
+        self.report_windows();
     }
 
     /// `ui`, as `window`, tells the core when the window manager gives it the keyboard or takes
@@ -242,7 +254,13 @@ impl<A: App> Core<A> {
     /// The process ends when no window is open, unless it lingers (`fx.linger`): the linger
     /// then decides the end.
     pub(super) fn exit_if_no_window(&self) {
-        if self.windows_open().is_empty() && !self.lingering() {
+        if !self.windows_open().is_empty() || self.lingering() {
+            return;
+        }
+        // An app agents use stays up with no window; the idle wait ends it (`cx/serve.rs`).
+        if self.keeps_serving() {
+            self.serve_windowless();
+        } else {
             self.request_exit(ExitReason::LastWindowClosed);
         }
     }
@@ -254,7 +272,11 @@ impl<A: App> Core<A> {
         let open = self.windows_open().into_iter().next();
         let (window, reopened) = match open {
             Some(window) => (window, false),
-            None if self.lingering() => (self.reopen_first(), true),
+            None if self.lingering() || self.keeps_serving() => {
+                // The person is here: what waited for them runs before the window is drawn.
+                self.person_arrives();
+                (self.reopen_first(), true)
+            }
             None => return Err("the app's windows are closing".into()),
         };
         let ui = self.window(window).ok_or("the window is closing")?;
@@ -267,8 +289,10 @@ impl<A: App> Core<A> {
         }
         if reopened {
             self.linger_ended();
+            self.stop_idle();
         }
         crate::chrome::bring_back(ui.window());
+        self.report_windows();
         self.event(Event::Presented(window));
         Ok(())
     }

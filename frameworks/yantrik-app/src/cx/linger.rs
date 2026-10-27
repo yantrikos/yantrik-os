@@ -64,6 +64,7 @@ impl<A: App> Core<A> {
         match fired {
             Fired::Command(command) => self.run(command),
             Fired::LingerOver => self.linger_over(),
+            Fired::IdleOver => self.idle_over(),
         }
     }
 

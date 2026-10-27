@@ -196,6 +196,9 @@ pub enum Command {
     SaveDraft(Draft),
     /// At start, before any press: text the lanes held at the last close becomes the draft file.
     OfferUnsent,
+    /// The person's first window is coming: the sentence about unsent text waits for them (a
+    /// service start for an agent has no one to tell).
+    PersonHere,
     /// The app is ending: by the session, by a person's quit, or by its window closing. The
     /// composer's text is kept, and the app ends.
     Ending(Ending),

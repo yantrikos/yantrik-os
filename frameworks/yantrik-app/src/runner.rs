@@ -75,6 +75,15 @@ pub fn run<A: App>() -> ExitCode {
         }
     }
 
+    // A launch drawn for a Mind never becomes the instance or a window: the instance is always on
+    // the person's display (#978). An agent reaches the app through the service start instead.
+    let service = boot.service;
+    if boot.for_mind && !service {
+        let said = crate::service::refuse_minds_launch(A::ID);
+        tracing::warn!(app = A::ID, "{said}");
+        eprintln!("{said}");
+        return ExitCode::from(1);
+    }
     // One instance per app and profile: a second launch hands what it was asked to open to the
     // running copy, which shows its window, and exits.
     let instance = paths.instance_name();
@@ -82,6 +91,12 @@ pub fn run<A: App>() -> ExitCode {
     // twice has lost the launch, and the person hears so rather than nothing.
     let unanswered = std::cell::RefCell::new(None::<String>);
     let claimed = instance::claim_or_hand_over(&instance, |_| {
+        if service {
+            // The shell started this copy on demand and another copy is running already: it is
+            // the instance, and nothing is asked of it from here (no window is raised).
+            tracing::info!(app = A::ID, "a service start found the app running; nothing to start");
+            return Held::HandedOver;
+        }
         match launch::hand_over(&instance, &boot.launch) {
             Presented::Unanswered(why) => {
                 tracing::warn!(app = A::ID, "the running copy did not answer the hand-over: {why}");
@@ -140,6 +155,8 @@ pub fn run<A: App>() -> ExitCode {
         },
     );
     install(&core);
+    // How many windows of the person's are open, for the shell's lists (`report`).
+    core.report_windows_to(crate::report::Reporter::for_instance(&instance));
     core.set_theme(theme_now);
     // A file of an older schema is rewritten at this one, once.
     core.flush_settings();
@@ -156,9 +173,14 @@ pub fn run<A: App>() -> ExitCode {
     let cx = Cx::new(core.clone());
     A::wire(&cx);
     core.render_all();
-    core.start();
-    // The launch is applied once, here (§2.2 step 11): the files to open, or the deep link.
-    core.event(Event::Launch(boot.launch.clone()));
+    if service {
+        // No window, and nothing for the person: their launch brings both (`cx/serve.rs`).
+        core.start_service();
+    } else {
+        core.start();
+        // The launch is applied once, here (§2.2 step 11): the files to open, or the deep link.
+        core.event(Event::Launch(boot.launch.clone()));
+    }
 
     // The surface: the app's intents, `present` for the desktop's own handover, and `launch`
     // for a second copy's. Served only now that commands can be applied, on the instance's own

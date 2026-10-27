@@ -49,6 +49,7 @@ mod linger;
 mod persisted;
 mod quitting;
 mod rail_hooks;
+mod serve;
 mod settlement;
 mod windows;
 pub use handle::{Cx, UiRef};
@@ -129,6 +130,8 @@ pub struct Core<A: App> {
     logout: Cell<Option<crate::quit::LoggedOut>>,
     /// Running on with no window since the last one closed, by `fx.linger` (`cx/linger.rs`).
     linger: Cell<Option<linger::Lingering>>,
+    /// How the instance started, and whether agents use it (`cx/serve.rs`).
+    serve: serve::Serve,
     /// The windows beyond the first, and whether the first is open (`cx/windows.rs`).
     windows: RefCell<windows::Windows<A::Ui>>,
     /// This core, weakly: a window opened later is wired through a `Cx` made from it.
@@ -210,6 +213,7 @@ impl<A: App> Core<A> {
                 exit: Cell::new(None),
                 logout: Cell::new(None),
                 linger: Cell::new(None),
+                serve: serve::Serve::default(),
                 windows: RefCell::new(windows::Windows::new()),
                 me: weak.clone(),
                 registry: RefCell::new(None),
@@ -257,29 +261,6 @@ impl<A: App> Core<A> {
         self.fresh_wake();
         self.applying.set(true);
         self.render_windows(&Changed::all());
-        self.applying.set(false);
-        self.drain_pending();
-    }
-
-    /// `App::start`, and its effects. `start` cannot change the model (it reads it), so nothing
-    /// is redrawn unless it says so; the first render has just happened.
-    pub fn start(&self) {
-        self.fresh_wake();
-        let mut fx = self.effects(None).starting();
-        A::start(&self.model.borrow(), &mut fx);
-        let (requests, changed, next) = fx.into_parts();
-        self.next_job.set(next);
-        self.applying.set(true);
-        self.current.set(None);
-        self.commit(requests);
-        if !changed.is_empty() {
-            self.render_windows(&changed);
-        }
-        // An app with a rail: the first refresh now. Later ones follow the model's changes and
-        // the Mind's reach; there is no tick (see `rail`).
-        if let Some(refresh) = A::rail(RailCommand::Refresh) {
-            self.queue(None, refresh);
-        }
         self.applying.set(false);
         self.drain_pending();
     }

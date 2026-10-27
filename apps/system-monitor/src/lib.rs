@@ -89,7 +89,7 @@ impl App for SystemMonitor {
         yantrik_app::rail::wire(cx);
     }
 
-    fn start(_: &Model, fx: &mut Effects<Self>) {
+    fn start_service(_: &Model, fx: &mut Effects<Self>) {
         fx.every(POLL, POLL_EVERY, Command::Poll);
         fx.then(Command::Poll);
     }

@@ -63,6 +63,7 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
         Command::CancelCompose(draft) => compose::cancel(m, draft, fx),
         Command::SaveDraft(draft) => compose::save_draft(m, draft, fx),
         Command::OfferUnsent => drafts::write_unsent(m, fx),
+        Command::PersonHere => drafts::person_here(m, fx),
         Command::Ending(how) => drafts::ending(m, how, fx),
         Command::DraftDone { op, outcome } => drafts::done(m, op, outcome, fx),
         Command::Ask(ask) => ai::ask(m, ask, fx),

@@ -78,6 +78,11 @@ impl App for Downloads {
         view::wire(cx);
     }
 
+    fn start_service(_: &Model, _: &mut Effects<Self>) {
+        // Nothing: the first look raises what the engine has to say as notifications, which are
+        // the person's. The list is the engine's, read when `describe` asks.
+    }
+
     fn start(_: &Model, fx: &mut Effects<Self>) {
         // The first look draws the empty list's counters and raises what the engine has to say.
         fx.then(Command::Tick);

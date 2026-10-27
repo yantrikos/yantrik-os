@@ -372,3 +372,26 @@ fn describe_agrees_with_the_window_while_an_offer_is_shown() {
     assert_eq!((described["unsaved"].clone(), described["draft"].clone()), (json!(false), json!("none")));
     assert_eq!(described["content"], "# Shown\n\n", "and the file's text once the offer is gone");
 }
+
+/// #978 step 1: an agent's start reads the library and serves it, and leaves what the last run kept
+/// for the person's first window. Offering it to no one would spend it: the drafts are weighed once.
+#[test]
+fn an_agents_start_leaves_the_recovery_for_the_persons_first_window() {
+    let (app, _path) = with_note("Waits");
+    app.run(Command::Edit("# Waits\n\nunsaved".into()));
+    app.run_writes();
+    let paths = app.paths();
+    drop(app);
+
+    let service = TestApp::<Notes>::start_service_at(paths);
+    settle(&service);
+    assert!(service.windows().is_empty(), "no window for an agent");
+    assert!(offered(&service).is_empty(), "nothing is offered to no one");
+    assert!(service.model(|m| m.ready), "the library is read, so intents and describe answer");
+    assert!(service.model(|m| m.recovery.found.is_some()), "and the drafts are still to be weighed");
+
+    service.launch_again().expect("the person's launch");
+    settle(&service);
+    assert_eq!(offered(&service), vec!["Waits".to_string()], "offered when the person is here");
+    assert!(service.model(|m| m.recovery.found.is_none()), "weighed once");
+}

@@ -230,6 +230,24 @@ impl<A: App> TestApp<A> {
         TestApp::start_as(paths, args, mind, services, false)
     }
 
+    /// The app started for an agent with no window, as the shell starts it on demand (`--service`,
+    /// `yantrik_app::service`): the store is loaded and the intents answer, and nothing waits on
+    /// the person but their start, which their first window runs.
+    pub fn start_service_at(paths: Paths) -> TestApp<A> {
+        TestApp::start_as(
+            paths,
+            vec![std::ffi::OsString::from(yantrik_app::service::FLAG)],
+            Arc::new(yantrik_mind::fake::FakeMind::new()),
+            yantrik_app::services::Services::fakes(),
+            false,
+        )
+    }
+
+    /// [`TestApp::start_service_at`] with files of its own under the temporary directory.
+    pub fn start_service() -> TestApp<A> {
+        TestApp::start_service_at(Paths::temporary(A::ID))
+    }
+
     /// [`TestApp::start_at`] as an app drawn for a Mind (Mind View): `Boot::for_mind` is set, so
     /// the app masks what an agent must not read. The other starts are never for a mind, whatever
     /// this process's environment says.
@@ -291,9 +309,13 @@ impl<A: App> TestApp<A> {
             core.flush_settings();
             A::wire(&Cx::new(core.clone()));
             core.render_all();
-            core.start();
-            // As the runner does: the launch, once, after `start`.
-            core.event(Event::Launch(boot.launch.clone()));
+            if boot.service {
+                core.start_service();
+            } else {
+                core.start();
+                // As the runner does: the launch, once, after `start`.
+                core.event(Event::Launch(boot.launch.clone()));
+            }
             let mut table = Intents::new();
             A::intents(&mut table);
             let registry = Rc::new(intents::registry(&core, table));
@@ -489,6 +511,16 @@ impl<A: App> TestApp<A> {
     /// What the Mind reads: the real `describe`, through the registry.
     pub fn describe(&self) -> Value {
         self.with(|u| u.registry.describe())
+    }
+
+    /// [`TestApp::describe`] as an agent reads it, with this token: the instance learns an agent
+    /// uses it.
+    pub fn describe_as_agent(&self, token: &str) -> Value {
+        let token = token.to_string();
+        self.with(move |u| {
+            let _agent = AgentTokenScope::enter(Some(token));
+            u.registry.describe()
+        })
     }
 
     /// The app's current revision, as `describe` reports it.
