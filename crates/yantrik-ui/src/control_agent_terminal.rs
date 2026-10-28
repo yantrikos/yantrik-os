@@ -425,8 +425,8 @@ pub(crate) fn specs() -> [Action; 4] {
                 "Run one command line in a fresh terminal of your own, in your pane — not the \
                  person's Terminal. Its output is also shown live in a terminal in Mind View, \
                  your desk; `shown_in` in the answer says whether it was. Answers when it exits, with `exit_code` (or `signal`), \
-                 `cwd_after` and the `tail` of its output; if it is still going after `wait` it \
-                 answers `running: true` with a `job` id. The directory carries to your next \
+                 `cwd_after` and the `tail` of its output; if it is still going after `wait` seconds \
+                 it answers `running: true` with a `job` id. The directory carries to your next \
                  command; exported variables and other shell state do not. The environment is \
                  HOME, USER, PATH, LANG and TERM only.{WHO}"
             ),
@@ -446,13 +446,17 @@ pub(crate) fn specs() -> [Action; 4] {
         .arg(
             Param::number("wait")
                 .optional()
-                .describe("Seconds to wait for it to finish before answering `running: true`. Default 120, at most 600"),
+                .describe(
+                    "A number of seconds, e.g. 30, not true or false. How long to wait for it to finish \
+                     before answering `running: true`. Default 120, at most 600",
+                ),
         ),
         Action::new(
             "agent_job",
             &format!(
                 "Wait for one of your commands that answered `running: true`, and say where it \
-                 stands: the same answer `agent_run` gives. `wait: 0` only looks. Answers early \
+                 stands: the same answer `agent_run` gives. `wait` is a number of \
+                 seconds, and `wait: 0` only looks. Answers early \
                  if the command starts waiting for input.{WHO}"
             ),
         )
@@ -460,7 +464,10 @@ pub(crate) fn specs() -> [Action; 4] {
         .arg(
             Param::number("wait")
                 .optional()
-                .describe("Seconds to wait for it to finish. Default 120, at most 600"),
+                .describe(
+                    "A number of seconds, e.g. 30, not true or false. How long to wait for it to finish. \
+                     Default 120, at most 600",
+                ),
         ),
         // Sensitive for the Terminal `send_input`'s reason: a program at a prompt cannot tell
         // these bytes from typing, and the prompt may be `sudo`'s. Open-ended for the same
@@ -734,6 +741,25 @@ mod tests {
                 spec.name
             );
         }
+    }
+
+    /// A mind sent `wait: true` again in the #980 gate, so the parameter says what it is, first.
+    #[test]
+    fn wait_says_it_is_a_number_of_seconds_in_both_actions() {
+        for spec in specs().into_iter().filter(|a| a.name == "agent_run" || a.name == "agent_job") {
+            let wait = spec.params.iter().find(|p| p.name == "wait").expect("wait");
+            assert_eq!(wait.kind, "number", "{}", spec.name);
+            assert!(
+                wait.description.starts_with("A number of seconds, e.g. 30, not true or false."),
+                "{}: {}",
+                spec.name,
+                wait.description
+            );
+        }
+        let run = specs().into_iter().find(|a| a.name == "agent_run").unwrap();
+        assert!(run.description.contains("still going after `wait` seconds it answers `running: true`"));
+        let job = specs().into_iter().find(|a| a.name == "agent_job").unwrap();
+        assert!(job.description.contains("`wait` is a number of seconds"), "{}", job.description);
     }
 
     /// The four actions end to end, minus only the socket: with no dispatch in progress the work

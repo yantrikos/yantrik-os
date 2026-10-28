@@ -874,6 +874,12 @@ fn published_detail_full_in(
     // socket and ran unasked here in auto. The shell's actions take paths, prompts and names, no
     // opaque handle that needs a naming index.
     if surface == "shell" {
+        // The same check `app.act` runs before it spends a grant: a call it would refuse is not
+        // one worth a card, so it is refused here with its own sentence, once the action is known
+        // to exist (the sentence below is the better answer for one that does not).
+        if yantrik_app_runtime::control::published_grade(action).is_some() {
+            yantrik_app_runtime::control::check_call(action, args).map_err(not_asked)?;
+        }
         return yantrik_app_runtime::control::published_grade(action)
             .map(|grade| {
                 let purpose =
@@ -919,6 +925,12 @@ fn published_detail_full_in(
     let params: Option<Vec<String>> = entry
         .and_then(|a| a["parameters"]["properties"].as_object())
         .map(|props| props.keys().cloned().collect());
+    // The same check `app.act` runs before it spends a grant, on the declaration this describe
+    // published (not a new call to the app): an action that would refuse these arguments gets no
+    // card. After the lookup above has found the action, so a missing one keeps its own sentence.
+    if let Some(entry) = entry {
+        yantrik_app_runtime::control::check_published(entry, args).map_err(not_asked)?;
+    }
     let published = entry
         .and_then(|a| {
             a["permission"].as_str().map(|grade| {
@@ -941,6 +953,12 @@ fn published_detail_full_in(
     // pays for a question its app cannot answer.
     let explained = if published.2 { explained_or_unsaid(explained_in(&address, action, args)) } else { String::new() };
     Ok(((published.0, published.1, naming_in(&reply), explained), params))
+}
+
+/// A call the action itself would refuse, answered with the action's own sentence and the fact
+/// that nothing was put in front of the person.
+fn not_asked(why: String) -> String {
+    format!("{why}. Nothing was put in front of the person; send the call again with that corrected.")
 }
 
 /// For an action that said it explains each call: its sentence, or — when the sentence did not
@@ -3343,6 +3361,40 @@ mod service_surface_approval_tests {
     /// What the app says its own ids stand for rides the same `describe` as its grade (#54) —
     /// one round trip, so the sentence beside a handle cannot come from a different revision
     /// of the app than the grade the card was graded by.
+    /// An app's `describe`, carrying the shell's real `agent_run` declaration under its own
+    /// name: the entry a card for `agent_run` would be checked against.
+    fn describing_agent_run() -> serde_json::Value {
+        let spec = crate::control_agent_terminal::specs().into_iter().find(|a| a.name == "agent_run").unwrap();
+        serde_json::json!({ "app": "system-monitor", "summary": "", "state": {}, "actions": [spec.schema()] })
+    }
+
+    /// A call the action would refuse is never put in front of a person: `request_approval`
+    /// reads the grade and the purpose through this function first, and an `Err` from it is
+    /// returned to the caller before a card is built or stored.
+    #[test]
+    fn a_call_the_action_would_refuse_is_refused_before_any_card() {
+        let dir = scratch("refuse");
+        let installed = crate::surfaces::shipped_catalogue();
+        serve(&dir.join("system-monitor.sock"), describing_agent_run(), None);
+        let ask = |action: &str, args: serde_json::Value| {
+            super::published_detail_full_in(&dir, &installed, "system-monitor", action, &args).map(|(d, _)| d.0)
+        };
+
+        let err = ask("agent_run", serde_json::json!({"command": "make", "wait": true})).unwrap_err();
+        assert!(err.contains("`wait` must be a number") && err.contains("boolean"), "{err}");
+        assert!(err.contains("Nothing was put in front of the person"), "{err}");
+        // The same call with seconds still gets its card.
+        assert_eq!(ask("agent_run", serde_json::json!({"command": "make", "wait": 30})).unwrap(), "sensitive");
+        assert_eq!(ask("agent_run", serde_json::json!({"command": "make"})).unwrap(), "sensitive");
+
+        let unknown_arg = ask("agent_run", serde_json::json!({"command": "make", "colour": 1})).unwrap_err();
+        assert!(unknown_arg.contains("no argument `colour`"), "{unknown_arg}");
+        let missing = ask("agent_run", serde_json::json!({"wait": 30})).unwrap_err();
+        assert!(missing.contains("needs argument `command`"), "{missing}");
+        let unknown_action = ask("no_such", serde_json::json!({})).unwrap_err();
+        assert!(unknown_action.contains("publishes no action called `no_such`"), "{unknown_action}");
+    }
+
     #[test]
     fn an_app_that_names_its_ids_has_them_read_off_the_same_describe() {
         let dir = scratch("naming");

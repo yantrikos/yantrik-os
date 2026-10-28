@@ -380,6 +380,45 @@ impl Action {
         self
     }
 
+    /// The action's name and parameters, read back out of what [`Action::schema`] published
+    /// (one entry of a `describe`'s `actions`): the declaration a caller sees, so a call can be
+    /// checked against it by the same code the dispatch uses (`yantrik_surface::check_arguments`)
+    /// without the app being asked anything more.
+    ///
+    /// `None` when the entry carries no `parameters` object, or no name: nothing is declared, so
+    /// nothing can be checked. A type this dispatch does not know is kept as it is not one of
+    /// [`PARAM_TYPES`], which that check refuses closed, the way the dispatch does.
+    pub fn from_schema(entry: &serde_json::Value) -> Option<Action> {
+        let name = entry.get("name")?.as_str()?;
+        let properties = entry.get("parameters")?.get("properties")?.as_object()?;
+        let required: Vec<&str> = entry["parameters"]["required"]
+            .as_array()
+            .map(|names| names.iter().filter_map(|n| n.as_str()).collect())
+            .unwrap_or_default();
+        let known = |kind: Option<&str>| -> &'static str {
+            PARAM_TYPES.iter().copied().find(|t| Some(*t) == kind).unwrap_or("undeclared")
+        };
+        let mut action = Action::new(name, "");
+        for (key, property) in properties {
+            let kind = known(property["type"].as_str());
+            let values: Vec<String> = property["enum"]
+                .as_array()
+                .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            action.params.push(Param {
+                name: key.clone(),
+                kind,
+                required: required.contains(&key.as_str()),
+                description: String::new(),
+                enumerated: property.get("enum").is_some(),
+                values,
+                items: property.get("items").map(|item| known(item["type"].as_str())),
+                default: property.get("default").cloned(),
+            });
+        }
+        Some(action)
+    }
+
     /// The action as JSON Schema, so a caller can hand it to a model unmodified.
     pub fn schema(&self) -> serde_json::Value {
         let mut properties = serde_json::Map::new();
