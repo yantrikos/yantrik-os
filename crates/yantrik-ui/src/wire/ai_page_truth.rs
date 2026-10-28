@@ -40,7 +40,7 @@ fn literals(src: &str) -> Vec<String> {
             for (i, c) in after.char_indices() {
                 if escaped {
                     escaped = false;
-                } else if c == '\' {
+                } else if c == '\\' {
                     escaped = true;
                 } else if c == '"' {
                     end = Some(i);
