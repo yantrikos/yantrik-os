@@ -14,6 +14,10 @@ fn installed() -> Vec<DesktopEntry> {
         entry("yantrik-text-editor", "yantrik-text-editor %f"),
         entry("gimp", "gimp %U"),
         entry("yantrik-terminal", "/opt/yantrik/bin/yantrik-terminal"),
+        entry("yantrik-spreadsheet", "/opt/yantrik/bin/yantrik-spreadsheet"),
+        entry("yantrik-studio", "/opt/yantrik/bin/yantrik-studio"),
+        entry("yantrik-arcade", "/opt/yantrik/bin/yantrik-arcade"),
+        entry("yantrik-presentation", "/opt/yantrik/bin/yantrik-presentation"),
         entry("yantrik-blender", "blender --python /x"),
         lo,
     ]
