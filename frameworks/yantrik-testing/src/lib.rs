@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use yantrik_app::app::{App, Boot, Event, ExitReason};
-use yantrik_app::cx::{Core, Cx, Inbound, Parts};
+use yantrik_app::cx::{Core, Inbound, Parts};
 use yantrik_app::intents::{self, Intents};
 use yantrik_app::jobs::Manual;
 use yantrik_app::paths::Paths;
@@ -35,7 +35,6 @@ use yantrik_app::queue::Post;
 use yantrik_app::refused::Refused;
 use yantrik_app::timers::{Fired, ManualTimers, Sink};
 use yantrik_app::watch::Seen;
-use yantrik_app::window::Window;
 use yantrik_ipc_transport::gate::{Authority, Mode};
 use yantrik_surface::{AgentTokenScope, CallerScope, Later, LaterScope, LocalRegistry};
 
@@ -272,10 +271,10 @@ impl<A: App> TestApp<A> {
                 .unwrap_or_else(|e| panic!("{}: the launch was refused: {e}", A::ID));
             let model = A::model(&boot)
                 .unwrap_or_else(|e| panic!("{}: the model did not start: {e}", A::ID));
-            // As the runner does: a service start has no window until the person arrives, so the harness
-            // makes none either. A headless window that always exists would show a window the real
-            // windowing system has not created (#978, the 520 gate).
-            let ui = (!boot.service).then(|| A::Ui::make().unwrap_or_else(|e| panic!("{}: no headless window: {e}", A::ID)));
+            // The runner's own function: a service start has no window until the person arrives
+            // (#978, the 520 gate), and there is one place that decides it.
+            let ui = yantrik_app::runner::first_window::<A>(&boot, &yantrik_app::theme::ThemeSettings::default())
+                .unwrap_or_else(|e| panic!("{}: no headless window: {e}", A::ID));
             let jobs = SharedJobs(Arc::new(Mutex::new(Manual::new())));
             let made: Rc<RefCell<Option<AppClock<A::Command>>>> = Rc::new(RefCell::new(None));
             let made_out = made.clone();
@@ -310,9 +309,7 @@ impl<A: App> TestApp<A> {
             // Hermetic: a window opened in a test wears the default theme, not this machine's.
             core.set_theme(yantrik_app::theme::ThemeSettings::default());
             core.flush_settings();
-            if core.primary().is_some() {
-                A::wire(&Cx::new(core.clone()));
-            }
+            yantrik_app::runner::wire_first_window(&core);
             core.render_all();
             if boot.service {
                 core.start_service();

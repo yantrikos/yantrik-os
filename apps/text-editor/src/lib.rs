@@ -84,7 +84,9 @@ impl App for TextEditor {
         // Recovery is the person's: an agent's start opens none of their unsaved tabs, reports none, and
         // leaves the drafts where they are until their first window (`drafts::started`).
         let notice = if boot.service {
-            m.recovery_owed = Some(boot.drafts.clone());
+            // Owed only when there is something: the drafts, or the old build's file.
+            let owed = !boot.drafts.is_empty() || !matches!(files::legacy::read(&state, None), files::legacy::Legacy::Absent);
+            m.recovery_owed = owed.then(|| boot.drafts.clone());
             String::new()
         } else {
             recovery::restore(&mut m, &boot.drafts, files::legacy::read(&state, None))

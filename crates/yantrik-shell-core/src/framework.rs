@@ -32,10 +32,7 @@ pub fn act_start_failed(name: &str, why: &str) -> String {
     format!("{name} could not be started ({why}); nothing was done.")
 }
 
-/// What a Mind's describe is told while the app is starting.
-pub fn describe_while_starting(name: &str) -> String {
-    format!("{name} is starting; ask again in a moment.")
-}
+pub use yantrik_ipc_contracts::framework_apps::describe_while_starting;
 
 /// What a Mind's describe is told when the app could not be started. The only place that says
 /// "not running".

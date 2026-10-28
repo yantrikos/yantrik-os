@@ -143,3 +143,16 @@ fn an_agents_start_leaves_the_drafts_for_the_persons_first_window() {
     assert!(tabs(&service) >= 2, "the recovered tab is there beside the blank one");
     assert!(modified(&service) || service.model(|m| m.tabs.iter().any(|t| t.recovered)));
 }
+
+/// The review of efafef94 (F3): an editor an agent started, with nothing to recover, must not say
+/// "Recovered unsaved drafts" when the person arrives; the blank tab it holds is not a recovery.
+#[test]
+fn the_persons_arrival_at_an_agents_editor_with_no_drafts_recovers_nothing() {
+    let service = TestApp::<TextEditor>::start_service();
+    settle(&service);
+    assert!(service.model(|m| m.recovery_owed.is_none()), "nothing is owed when nothing was left");
+    service.launch_again().expect("the person's launch");
+    settle(&service);
+    assert_ne!(notice(&service), RECOVERED, "there was nothing to recover");
+    assert_eq!(tabs(&service), 1, "the blank tab only");
+}

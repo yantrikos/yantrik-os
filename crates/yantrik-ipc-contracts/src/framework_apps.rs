@@ -48,6 +48,12 @@ pub fn by_id(id: &str) -> Option<&'static FrameworkApp> {
     FRAMEWORK_APPS.iter().find(|a| a.id == id)
 }
 
+/// What a Mind's describe is told while the app is starting. Word for word; the apps that say it
+/// themselves (Email's first describe) build it from here.
+pub fn describe_while_starting(name: &str) -> String {
+    format!("{name} is starting; ask again in a moment.")
+}
+
 /// What the person calls the app with surface id `id`; the id itself for one not in the list.
 pub fn name_of(id: &str) -> &str {
     by_id(id).map_or(id, |a| a.name)

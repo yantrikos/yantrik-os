@@ -155,6 +155,25 @@ fn visible(app: &TestApp<Service>) -> bool {
     })
 }
 
+/// The runner and the harness decide the first window with this one function, reading the service
+/// fact from the boot, so a mutation of the decision fails here and in every harness test (the
+/// review of efafef94, F1).
+#[test]
+fn a_service_boot_makes_no_first_window() {
+    let (service, _store) = Boot::<()>::open_as(
+        yantrik_app::Paths::temporary("first-window"),
+        vec!["--service".into()],
+        std::sync::Arc::new(yantrik_mind::fake::FakeMind::new()),
+        yantrik_app::services::Services::fakes(),
+        false,
+    )
+    .unwrap_or_else(|e| panic!("a boot: {e}"));
+    assert!(service.service, "an agent's start is a service boot");
+    let theme = yantrik_app::theme::ThemeSettings::default();
+    let made = yantrik_app::runner::first_window::<Service>(&service, &theme).expect("no window to fail");
+    assert!(made.is_none(), "a service start makes no window; the person's arrival makes it");
+}
+
 #[test]
 fn a_service_start_loads_the_store_and_shows_nothing() {
     let app = TestApp::<Service>::start_service();

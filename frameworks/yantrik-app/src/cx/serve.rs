@@ -18,7 +18,6 @@ use slint::ComponentHandle as _;
 
 use super::{Core, Cx, Inbound};
 use crate::app::{App, Event, ExitReason, WindowId};
-use crate::window::Window as _;
 use crate::rail::RailCommand;
 use crate::report::Reporter;
 use crate::timers::{Fired, IDLE};
@@ -72,10 +71,8 @@ impl<A: App> Core<A> {
         if self.primary().is_some() {
             return Ok(false);
         }
-        let ui = A::Ui::make().map_err(|e| format!("the window could not be made: {e}"))?;
         let theme = self.windows.borrow().theme.unwrap_or_else(crate::theme::load);
-        ui.apply_theme(&theme);
-        ui.connect_chrome();
+        let ui = crate::runner::made_window::<A>(&theme).map_err(|e| format!("the window could not be made: {e}"))?;
         self.hear_window(WindowId::PRIMARY, &ui);
         let post = self.post();
         ui.window().on_close_requested(move || {

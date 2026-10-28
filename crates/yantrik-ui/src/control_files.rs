@@ -105,6 +105,45 @@ fn make_here(
         .or_else(|work| work())
 }
 
+/// What `files_open` needs of the Files browser, so the order of its checks and the screen switch
+/// can be tested without a window.
+pub(crate) trait Browser {
+    fn label(&self) -> String;
+    fn has_entry(&self, name: &str) -> bool;
+    fn show_files(&self);
+}
+
+struct UiBrowser<'a>(&'a App);
+
+impl Browser for UiBrowser<'_> {
+    fn label(&self) -> String {
+        self.0.get_file_browser_path().to_string()
+    }
+    fn has_entry(&self, name: &str) -> bool {
+        has_entry(self.0, name)
+    }
+    fn show_files(&self) {
+        ensure_files_screen(self.0);
+    }
+}
+
+/// The checks before `files_open` goes to Files: the refusals, then that the entry is in the
+/// listing. Only when all pass is the person's screen switched; on any `Err` it is where it was.
+pub(crate) fn begin_open<B: Browser>(
+    browser: &B,
+    name: &str,
+    refusals: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let label = browser.label();
+    refusals(&label)?;
+    if !browser.has_entry(name) {
+        return Err(format!("nothing called `{name}` in {label}"));
+    }
+    browser.show_files();
+    Ok(())
+}
+
+
 /// Whether the current listing has an entry by this name, so an action can refuse a name that is
 /// not there and say so, rather than invoke a callback that quietly does nothing.
 fn has_entry(ui: &App, name: &str) -> bool {
@@ -217,25 +256,24 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // screen where it was.
                 crate::card_watch::hold_windows("files_open")?;
                 let name = args["name"].as_str().unwrap_or_default().to_string();
-                // Every refusal comes before the person's screen is touched: a refused action of a
-                // Mind's must not take the person to Files (the 520 gate). None of them needs the
-                // listing; only finding the file does.
-                mind::here(&ui.get_file_browser_path())?;
                 // The answer names the app the one rule picked for this file, so a caller
                 // learns where it went and not only that it went. `invoke_file_open` runs the
                 // same `classify` on the callback side; asking it here too is the cheap way to
                 // keep the answer and the launch on one rule (#233).
                 let action = crate::mime_dispatch::classify(&name);
                 let app = crate::mime_dispatch::app_name(&action);
-                // Before anything opens: the person's LibreOffice is closed to a mind (#953).
-                mind::may_open_in_default_app(&action, &crate::apps::Catalogue::shared().get())?;
-                // The entry too, links followed: opening puts its contents in a window the mind
-                // can read back, and a link in the home may lead anywhere.
-                mind::may_open_entry(&ui.get_file_browser_path(), &name)?;
-                ensure_files_screen(&ui);
-                if !has_entry(&ui, &name) {
-                    return Err(format!("nothing called `{name}` in {}", ui.get_file_browser_path()));
-                }
+                // Every refusal, and the check that the entry is there, come before the person's
+                // screen is touched: a refused or failed action of a Mind's must not take the
+                // person to Files (the 520 gate, and the review of efafef94, F4). A refusal added
+                // later belongs in the closure.
+                begin_open(&UiBrowser(&ui), &name, |label| {
+                    mind::here(label)?;
+                    // Before anything opens: the person's LibreOffice is closed to a mind (#953).
+                    mind::may_open_in_default_app(&action, &crate::apps::Catalogue::shared().get())?;
+                    // The entry too, links followed: opening puts its contents in a window the
+                    // mind can read back, and a link in the home may lead anywhere.
+                    mind::may_open_entry(label, &name)
+                })?;
                 // Asked on this thread, where the caller is in scope: a mind's app opens in Mind
                 // View on a worker, which can be refused, and the person's desktop is not the
                 // fallback. The answer then waits for the window like `open_app`'s, instead of
@@ -527,18 +565,51 @@ fn ready(ui: &App) -> Result<(), String> {
 
 #[cfg(test)]
 mod order_tests {
-    /// A Mind's `files_open` that is refused must not have taken the person to Files first (the 520
-    /// gate): every refusal is made before `ensure_files_screen`. Pinned as the order of the source,
-    /// since the refusals and the screen switch are one handler.
-    #[test]
-    fn a_refused_files_open_has_not_switched_the_screen() {
-        let src = include_str!("control_files.rs");
-        let open = &src[src.find("\"files_open\"").unwrap()..];
-        let open = &open[..open.find("\"files_up\"").unwrap()];
-        let switch = open.find("ensure_files_screen(&ui)").expect("the handler switches to Files");
-        for refusal in ["mind::here(", "mind::may_open_in_default_app(", "mind::may_open_entry("] {
-            let at = open.find(refusal).unwrap_or_else(|| panic!("{refusal} is in the handler"));
-            assert!(at < switch, "{refusal} must come before the screen is switched");
+    use super::{begin_open, Browser};
+    use std::cell::Cell;
+
+    /// A Files browser that only records whether the person's screen was taken to Files.
+    struct Fake {
+        entries: &'static [&'static str],
+        switched: Cell<bool>,
+    }
+
+    impl Browser for Fake {
+        fn label(&self) -> String {
+            "~".into()
         }
+        fn has_entry(&self, name: &str) -> bool {
+            self.entries.contains(&name)
+        }
+        fn show_files(&self) {
+            self.switched.set(true);
+        }
+    }
+
+    fn fake() -> Fake {
+        Fake { entries: &["notes.txt"], switched: Cell::new(false) }
+    }
+
+    /// The person's screen is unchanged after every refused or failed `files_open`, whatever the
+    /// refusal, and moves only when the open goes ahead.
+    #[test]
+    fn the_screen_is_unchanged_after_every_refused_or_failed_files_open() {
+        let refused = [
+            Err("outside the folders a mind may see".to_string()),
+            Err("closed to a mind".to_string()),
+            Err("a protected entry".to_string()),
+        ];
+        for refusal in refused {
+            let b = fake();
+            assert!(begin_open(&b, "notes.txt", |_| refusal).is_err());
+            assert!(!b.switched.get(), "a refusal left the person's screen alone");
+        }
+        let b = fake();
+        let said = begin_open(&b, "gone.txt", |_| Ok(())).unwrap_err();
+        assert!(said.starts_with("nothing called `gone.txt`"), "{said}");
+        assert!(!b.switched.get(), "a name that is not there left the person's screen alone");
+        let b = fake();
+        begin_open(&b, "notes.txt", |_| Ok(())).expect("an open that is allowed");
+        assert!(b.switched.get(), "and an allowed open goes to Files");
     }
 }

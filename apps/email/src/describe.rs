@@ -21,8 +21,11 @@ pub fn counts_json(counts: &Counted) -> Value {
     }
 }
 
-/// What `describe` says until the first look at the mail service has landed.
-pub const STARTING: &str = "Email is starting; ask again in a moment.";
+/// What `describe` says until the first look at the mail service has landed: the shell's own
+/// sentence for an app that is starting, so the two cannot drift apart.
+pub fn starting() -> String {
+    yantrik_ipc_contracts::framework_apps::describe_while_starting(yantrik_ipc_contracts::framework_apps::name_of("email"))
+}
 
 pub fn view(m: &Model) -> View {
     let mail_state = &m.state;
@@ -31,7 +34,7 @@ pub fn view(m: &Model) -> View {
     // not an answer. Said as what it is (the contract phrase), not as a service that cannot be
     // reached; a look that failed has landed, and says why (the 520 gate of #980).
     if !m.looked && matches!(mail_state, MailState::Unreachable { .. }) {
-        return View::new(STARTING)
+        return View::new(starting())
             .with("service", "starting")
             .with("notice", m.notice.clone())
             .with("account_store", String::new())
