@@ -13,7 +13,7 @@
 //! `{ app, name, state: running | starting | failed | not_on_demand, reason? }`.
 
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use yantrik_shell_core::app_service::{answers, service_command, Plan, Starts};
@@ -125,7 +125,19 @@ fn spawn(app: &'static FrameworkApp, generation: u64) -> Result<(), String> {
     let mut child = command.spawn().map_err(|e| format!("{} could not be run: {e}", path.display()))?;
     tracing::info!(app = app.id, pid = child.id(), "started on demand, with no window");
     std::thread::spawn(move || {
-        let status = child.wait();
+        // Watched while it starts: the moment its surface answers, that start is done, so a later
+        // death of the process is a program that is not running and not a start that failed.
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) if answering(app.id) => {
+                    with_starts(|starts| starts.answered(app.id, generation));
+                    break child.wait();
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(e) => break Err(e),
+            }
+        };
         let (success, how) = match &status {
             Ok(status) => (status.success(), format!("it ended with {status}")),
             Err(e) => (false, format!("it could not be waited for: {e}")),

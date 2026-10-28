@@ -87,6 +87,16 @@ impl Starts {
         }
     }
 
+    /// The surface of the start `generation` answered: that start is done, and it worked. What
+    /// happens to the process afterwards, any signal or any code, is a program that is not
+    /// running, never a start that failed, so the next ask starts it again and says it is starting
+    /// (the 520 gate: a `kill -9` of an instance that had answered was told as "could not start").
+    pub fn answered(&mut self, id: &str, generation: u64) {
+        if matches!(self.by_id.get(id), Some(State::Starting { generation: g, .. }) if *g == generation) {
+            self.by_id.remove(id);
+        }
+    }
+
     /// The process could not be started at all.
     pub fn not_spawned(&mut self, id: &str, why: &str, now: Instant) {
         self.by_id.insert(id.to_string(), State::Failed { why: why.to_string(), at: now });
@@ -214,6 +224,35 @@ mod tests {
         // The second start itself failing is a failed start.
         starts.exited("notes", second, false, false, "it exited with status 1", at(12, base));
         assert_eq!(starts.plan("notes", false, at(13, base)), Plan::Failed("it exited with status 1".into()));
+    }
+
+    /// The 520 gate: an instance whose surface answered and was killed later is not a start that
+    /// failed. The next ask starts it again and says it is starting.
+    #[test]
+    fn an_instance_that_answered_and_died_later_is_started_again_not_reported_as_a_failed_start() {
+        let base = Instant::now();
+        let mut starts = Starts::default();
+        let Plan::Spawn(first) = starts.plan("notes", false, base) else { panic!("a start") };
+        starts.answered("notes", first);
+        // kill -9, with no ask in between: the reaper reports the end of a start that had worked.
+        starts.exited("notes", first, false, false, "it ended with signal: 9 (SIGKILL)", at(60, base));
+        assert!(matches!(starts.plan("notes", false, at(61, base)), Plan::Spawn(_)), "started again");
+        assert_eq!(starts.plan("notes", false, at(62, base)), Plan::Starting, "and told it is starting");
+    }
+
+    /// And a process that ended before its surface ever answered is still a failed start.
+    #[test]
+    fn a_process_that_ended_before_its_surface_answered_is_a_failed_start() {
+        let base = Instant::now();
+        let mut starts = Starts::default();
+        let Plan::Spawn(first) = starts.plan("notes", false, base) else { panic!("a start") };
+        starts.exited("notes", first, false, false, "it ended with signal: 9 (SIGKILL)", at(1, base));
+        assert_eq!(starts.plan("notes", false, at(2, base)), Plan::Failed("it ended with signal: 9 (SIGKILL)".into()));
+        // An answer of an earlier start never clears a later one.
+        let Plan::Spawn(second) = starts.plan("notes", false, at(20, base)) else { panic!("a second start") };
+        starts.answered("notes", first);
+        assert_eq!(starts.plan("notes", false, at(21, base)), Plan::Starting, "the answer was the first start's");
+        starts.answered("notes", second);
     }
 
     #[test]
