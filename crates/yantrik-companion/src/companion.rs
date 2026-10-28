@@ -1343,7 +1343,9 @@ impl CompanionService {
         let path = "/opt/yantrik/config.yaml";
         match serde_yaml::to_string(&self.config) {
             Ok(yaml) => {
-                if let Err(e) = std::fs::write(path, yaml) {
+                // Through the shared config lock and an atomic rename, so a full save
+                // never lands inside a token refresh's edit and drops the fresh token.
+                if let Err(e) = crate::config_store::write_locked(path, &yaml) {
                     tracing::error!(path, error = %e, "Failed to save config");
                 } else {
                     tracing::info!(path, "Config saved");

@@ -84,40 +84,40 @@ pub fn ensure_fresh_token(account: &mut EmailAccountConfig, config_path: Option<
 }
 
 /// Update the OAuth token in config.yaml for a specific email account.
-fn update_config_token(config_path: &str, email: &str, new_token: &str, new_expiry: f64) -> Result<(), String> {
-    let content = std::fs::read_to_string(config_path)
-        .map_err(|e| format!("Read config: {}", e))?;
+///
+/// The read-edit-write runs under the shared config lock so two token refreshes
+/// (or one racing a save_config) cannot each read the same original and lose a write.
+pub(crate) fn update_config_token(config_path: &str, email: &str, new_token: &str, new_expiry: f64) -> Result<(), String> {
+    crate::config_store::edit_locked(config_path, |content| {
+        let mut in_target_account = false;
+        let mut result = Vec::new();
 
-    let mut in_target_account = false;
-    let mut result = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
 
-    for line in content.lines() {
-        let trimmed = line.trim();
+            // Detect target account by email field
+            if trimmed.contains(email) && (trimmed.starts_with("email:") || trimmed.starts_with("- email:")) {
+                in_target_account = true;
+            } else if in_target_account && !trimmed.is_empty() && !trimmed.starts_with('#')
+                && !trimmed.starts_with('-') && !line.starts_with(' ') && !line.starts_with('\t')
+            {
+                // Left the indented account block
+                in_target_account = false;
+            }
 
-        // Detect target account by email field
-        if trimmed.contains(email) && (trimmed.starts_with("email:") || trimmed.starts_with("- email:")) {
-            in_target_account = true;
-        } else if in_target_account && !trimmed.is_empty() && !trimmed.starts_with('#')
-            && !trimmed.starts_with('-') && !line.starts_with(' ') && !line.starts_with('\t')
-        {
-            // Left the indented account block
-            in_target_account = false;
+            if in_target_account && trimmed.starts_with("oauth_access_token:") {
+                let indent = &line[..line.len() - line.trim_start().len()];
+                result.push(format!("{}oauth_access_token: \"{}\"", indent, new_token));
+            } else if in_target_account && trimmed.starts_with("oauth_token_expiry:") {
+                let indent = &line[..line.len() - line.trim_start().len()];
+                result.push(format!("{}oauth_token_expiry: {}", indent, new_expiry));
+            } else {
+                result.push(line.to_string());
+            }
         }
 
-        if in_target_account && trimmed.starts_with("oauth_access_token:") {
-            let indent = &line[..line.len() - line.trim_start().len()];
-            result.push(format!("{}oauth_access_token: \"{}\"", indent, new_token));
-        } else if in_target_account && trimmed.starts_with("oauth_token_expiry:") {
-            let indent = &line[..line.len() - line.trim_start().len()];
-            result.push(format!("{}oauth_token_expiry: {}", indent, new_expiry));
-        } else {
-            result.push(line.to_string());
-        }
-    }
-
-    std::fs::write(config_path, result.join("\n"))
-        .map_err(|e| format!("Write config: {}", e))?;
-    Ok(())
+        Some(result.join("\n"))
+    })
 }
 
 fn urlencoding(s: &str) -> String {
