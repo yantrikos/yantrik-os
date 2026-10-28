@@ -126,15 +126,20 @@ fn the_real_privacy_controls_are_kept() {
 #[test]
 fn the_sentences_say_what_the_code_does() {
     // Every gateway call is treated as private, so a shared-nothing choice has no "everything else".
-    assert!(ACCOUNTS_RS.contains("Your Minds' requests to {} go to your private model on this computer instead."));
+    // The choice binds the gateway, so the lines are about Minds that use Yantrik models; the
+    // built-in companion on a saved primary talks to its provider directly and the row says so.
+    assert!(ACCOUNTS_RS.contains("Requests from your Minds that use Yantrik models to {} go to your private model {} instead."));
+    assert!(ACCOUNTS_RS.contains("The built-in companion talks to {} directly; this choice applies to your other Minds."));
+    assert!(!ACCOUNTS_RS.contains("Your Minds' requests"));
     assert!(!ACCOUNTS_RS.contains("everything else goes to"));
+    assert!(!ACCOUNTS_RS.contains("kept on this computer by"), "the lane's place comes from its address");
     assert!(ACCOUNTS_RS.contains("\"On this computer or your network.\""));
     assert!(!ACCOUNTS_RS.contains("never leaves it"));
     // The vault holds the free tiers' keys and nothing else.
     assert!(ACCOUNTS_CARD.contains("Free-tier keys are kept in the vault."));
     assert!(!ACCOUNTS_CARD.contains("a mind is never given one"));
     // The pool never gets a gateway turn, because every turn is private.
-    assert!(FREE_CARD.contains("Your Minds' requests don't go to these providers: Yantrik treats every request as private."));
+    assert!(FREE_CARD.contains("Requests from your Minds that use Yantrik models don't go to these providers: Yantrik treats every such request as private."));
     assert!(!FREE_CARD.contains("nothing private in them"));
     // The sign-up page is a separate profile, not a sealed one.
     assert!(FREE_ROWS_RS.contains("in a separate browser profile, apart from your other browsing."));
@@ -167,8 +172,14 @@ fn no_sentence_on_the_page_carries_a_run_of_spaces() {
 fn no_saved_provider_row_shows_a_fallback_badge() {
     // Nothing builds a backend from a provider's stored `is_fallback`; the flag stays in the file
     // and the row neither says it nor colours its border for it. config.yaml's `llm.fallback` is
-    // the real one, and the map of what runs on what shows that.
+    // the real one, and the map of what runs on what names only that one.
     let page = ai_page();
     assert!(!page.contains("provider.is-fallback"), "a provider row reads the stored fallback flag");
     assert!(!literals(page).iter().any(|s| s.contains("Fallback")), "the AI page shows a Fallback label");
+}
+
+#[test]
+fn nothing_declares_a_privacy_mode_chip_that_nothing_draws() {
+    // `ai-privacy-mode` was set from "any saved account" and read by no element; it is gone.
+    assert!(!APP.contains("ai-privacy-mode") && !SETTINGS.contains("ai-privacy-mode"));
 }

@@ -1205,10 +1205,6 @@ impl ProviderStore {
     pub fn primary(&self) -> Option<&ProviderStoreEntry> {
         self.entries.iter().find(|e| e.is_primary)
     }
-
-    pub fn fallback(&self) -> Option<&ProviderStoreEntry> {
-        self.entries.iter().find(|e| e.is_fallback)
-    }
 }
 
 /// Generate a short unique ID.

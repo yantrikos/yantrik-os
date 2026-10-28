@@ -1436,7 +1436,6 @@ export component App inherits Window {
     in property <[ProviderPresetData]> onboard-ai-cloud-presets: [];
 
     // V61 — Runtime provider state (status bar + quick switcher)
-    in property <string> ai-privacy-mode: "local";   // "local", "cloud", "hybrid"
     in property <string> ai-active-provider-label: "";
     in property <string> ai-fallback-banner: "";      // non-empty when fallback active
     in-out property <bool> ai-quick-switcher-open: false;
@@ -1747,7 +1746,6 @@ export component App inherits Window {
             wallpaper-path: root.wallpaper-path;
             wallpaper-image: root.wallpaper-image;
             // V61 — AI privacy mode
-            ai-privacy-mode: root.ai-privacy-mode;
             ai-fallback-banner: root.ai-fallback-banner;
             ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
             active-harness-id: root.active-harness-id;
