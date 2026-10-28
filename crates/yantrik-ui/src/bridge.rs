@@ -944,8 +944,9 @@ impl CompanionBridge {
         self.judge.lock().map(|j| j.clone()).unwrap_or_default()
     }
 
-    /// Switch the decision model, from Settings: the companion rebuilds its judge and saves the
-    /// choice to its config, so it is the one used after a restart too.
+    /// Switch the decision model, from Settings: the companion rebuilds its judge. Saving the
+    /// choice to the config file is the caller's (`wire::decision_model`), so a failure reaches
+    /// the person.
     pub fn set_judge(&self, config: yantrik_companion::config::JudgeConfig) {
         if let Ok(mut j) = self.judge.lock() {
             *j = config.clone();
@@ -1773,7 +1774,6 @@ fn worker_loop(
             }
             Ok(CompanionCommand::SetJudge { config }) => {
                 companion.set_judge_config(config);
-                companion.save_judge_config();
             }
             Ok(CompanionCommand::ScoreConversationTurn { text }) => {
                 companion.score_conversation_turn(&text);

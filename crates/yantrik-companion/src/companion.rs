@@ -1338,17 +1338,6 @@ impl CompanionService {
         self.decisions.publish(self.judge.clone(), &self.config.judge, self.incognito, crate::judge_route::chat_locality(&self.config.llm));
     }
 
-    /// Persist the decision model to `config.yaml`: that section alone, read-modify-write on the
-    /// file as it is on disk. The in-memory configuration is never written, because it holds
-    /// whatever provider (and key) the person last chose for the companion.
-    pub fn save_judge_config(&self) {
-        let path = std::path::Path::new("/opt/yantrik/config.yaml");
-        match crate::config_file::write_judge_section(path, &self.config.judge) {
-            Ok(()) => tracing::info!(path = %path.display(), "Decision model saved"),
-            Err(e) => tracing::error!(path = %path.display(), error = %e, "Failed to save the decision model"),
-        }
-    }
-
     /// Buffer a system event for automation matching during think cycles.
     pub fn push_event(&mut self, event_type: &str, event_data: serde_json::Value) {
         // Keep buffer bounded (last 50 events)

@@ -2,7 +2,7 @@
 //! judgements, or none.
 //!
 //! The choice is the companion's `judge:` configuration, switched at runtime through the bridge
-//! and saved to its config, so there is one place it lives. Every model answers in the same
+//! and saved to its config (that section alone), so there is one place it lives. Every model answers in the same
 //! verdict (`yantrik_ml::judge::Verdict`), which is why switching here changes nothing else.
 //!
 //! What this screen never takes is a key: only the name of the environment variable that holds
@@ -80,6 +80,15 @@ fn push(ui: &App, config: &JudgeConfig, chat_at: Locality) {
     ui.set_settings_decision_leaves_machine(leaves);
 }
 
+/// Save the choice to the machine's config file, and say what happened in the person's words.
+fn save(config_path: &Option<std::path::PathBuf>, config: &JudgeConfig) -> Result<(), String> {
+    let path = yantrik_companion::config_file::machine_config_path(config_path.as_deref());
+    yantrik_companion::config_file::write_judge_section(&path, config).map_err(|e| {
+        tracing::error!(path = %path.display(), error = %e, "Failed to save the decision model");
+        format!("It is in use now, but it could not be saved ({e}), so after a restart the old choice returns.")
+    })
+}
+
 fn status(ui: &App, text: &str, good: bool) {
     ui.set_settings_decision_status(text.into());
     ui.set_settings_decision_status_good(good);
@@ -90,17 +99,20 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     let bridge = ctx.bridge.clone();
     let weak = ui.as_weak();
+    let path = ctx.config_path.clone();
     ui.on_decision_choose(move |id| {
         let config = bridge.judge_config().with_preset(id.as_str());
         bridge.set_judge(config.clone());
+        let saved = save(&path, &config);
         if let Some(ui) = weak.upgrade() {
             push(&ui, &config, bridge.decisions().chat_locality());
-            status(&ui, "", false);
+            status(&ui, saved.as_ref().err().map_or("", String::as_str), false);
         }
     });
 
     let bridge = ctx.bridge.clone();
     let weak = ui.as_weak();
+    let path = ctx.config_path.clone();
     ui.on_decision_save(move |endpoint, model, key_env| {
         let Some(ui) = weak.upgrade() else { return };
         if !is_variable_name(&key_env) {
@@ -113,7 +125,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         config.api_key_env = key_env.trim().to_string();
         bridge.set_judge(config.clone());
         push(&ui, &config, bridge.decisions().chat_locality());
-        status(&ui, "Saved.", true);
+        match save(&path, &config) {
+            Ok(()) => status(&ui, "Saved.", true),
+            Err(why) => status(&ui, &why, false),
+        }
     });
 
     let bridge = ctx.bridge.clone();
@@ -147,6 +162,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
     let bridge = ctx.bridge.clone();
     let weak = ui.as_weak();
+    let path = ctx.config_path.clone();
     ui.on_decision_toggle_use(move |id| {
         let mut config = bridge.judge_config();
         let chat_at = bridge.decisions().chat_locality();
@@ -154,8 +170,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let on = config.use_on_where(&id, locality_of(&config, chat_at) == Locality::Cloud);
         config.set_use(&id, !on);
         bridge.set_judge(config.clone());
+        let saved = save(&path, &config);
         if let Some(ui) = weak.upgrade() {
             push(&ui, &config, chat_at);
+            if let Err(why) = saved {
+                status(&ui, &why, false);
+            }
         }
     });
 }
