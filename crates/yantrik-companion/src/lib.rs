@@ -25,6 +25,8 @@ pub mod chat_bridge;
 pub mod bond;
 pub mod companion;
 pub mod config;
+/// The one locked, atomic writer for config.yaml, shared by every place that saves it.
+pub mod config_store;
 pub mod mcp_client;
 pub mod mcp_security;
 pub mod sub_agent;
