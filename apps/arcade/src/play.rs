@@ -83,17 +83,23 @@ pub fn open_tab(base: &str, url: &str) -> Result<Tab, String> {
     Ok(Tab { id: id.to_string(), ws_url })
 }
 
+/// The one request `play` makes of the shell: the service it is sent to, the method, and the
+/// arguments. Pinned by a test, because it is the only thing in Play that touches the person's
+/// desktop, and it must be exactly what it was before the app moved to the framework.
+pub(crate) fn shell_request() -> (String, &'static str, Value) {
+    (
+        yantrik_app::control::service_id_for("shell"),
+        "app.act",
+        serde_json::json!({ "action": "open_app", "args": { "name": "browser" } }),
+    )
+}
+
 /// Ask the shell to launch (or focus) the Browser app through its own route.
 fn ask_shell_for_browser() -> Result<(), String> {
-    let client = yantrik_ipc_transport::SyncRpcClient::for_service(
-        &yantrik_app_runtime::control::service_id_for("shell"),
-    )
-    .with_timeout(Duration::from_secs(3));
+    let (service, method, params) = shell_request();
+    let client = yantrik_ipc_transport::SyncRpcClient::for_service(&service).with_timeout(Duration::from_secs(3));
     let result = client
-        .call(
-            "app.act",
-            serde_json::json!({ "action": "open_app", "args": { "name": "browser" } }),
-        )
+        .call(method, params)
         .map_err(|e| {
             format!(
                 "the desktop shell did not answer its control surface ({}); is the shell running?",
@@ -415,5 +421,16 @@ mod tests {
             Seen::Silent { last } => assert!(last.contains("booting"), "{last}"),
             other => panic!("expected Silent, got {other:?}"),
         }
+    }
+
+    /// Play's request to the shell is the old app's, byte for byte: `app.act` on `app-shell` with
+    /// `open_app` of `browser`. The old code built the same service name through
+    /// `yantrik_app_runtime::control::service_id_for`, which is `yantrik_surface::service_id_for`.
+    #[test]
+    fn the_request_to_the_shell_is_the_one_the_old_app_made() {
+        let (service, method, params) = shell_request();
+        assert_eq!(service, "app-shell");
+        assert_eq!(method, "app.act");
+        assert_eq!(params.to_string(), r#"{"action":"open_app","args":{"name":"browser"}}"#);
     }
 }

@@ -34,7 +34,9 @@ export component TerminalApp inherits AppWindow {
     in property <string> explanation <=> workbench.explanation;
     in property <bool> explaining <=> workbench.explaining;
     in property <bool> confirm-close <=> workbench.confirm-close;
-    in-out property <int> explanation-generation: 0;
+    in property <string> close-heading <=> workbench.close-heading;
+    in property <string> close-said <=> workbench.close-said;
+    in property <string> close-label <=> workbench.close-label;
     callback input <=> workbench.input;
     callback shortcut <=> workbench.shortcut;
     callback action <=> workbench.action;
@@ -44,7 +46,6 @@ export component TerminalApp inherits AppWindow {
     callback scroll <=> workbench.scroll;
     callback search <=> workbench.search;
     callback paste-text <=> workbench.paste-text;
-    callback refresh();
     public function focus-terminal() { workbench.focus-terminal(); }
     public function copy-screen() { workbench.copy-screen(); }
     public function paste-clipboard() { workbench.paste-clipboard(); }

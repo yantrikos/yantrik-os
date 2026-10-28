@@ -361,7 +361,13 @@ for pinned in   "text-detection.rten f15cfb56bd02c4bf478a20343986504a1f01e1665c2
   read -r model want <<< "$pinned"
   if ! printf '%s  %s
 ' "$want" "$OCR_CACHE/$model" | sha256sum -c --quiet >/dev/null 2>&1; then
-    curl -fsSL --retry 3 -o "$OCR_CACHE/$model.part" "https://ocrs-models.s3-accelerate.amazonaws.com/$model"       || fail "could not fetch the OCR model $model"
+    # Our mirror first: upstream's bucket has answered 403 to everything since 27 Oct 2026, and
+    # its files are byte-identical to the mirror's. The pin below decides, whichever answered.
+    fetched=""
+    for source in "https://github.com/yantrikos/yantrik-os/releases/download/ocr-models-1"                   "https://ocrs-models.s3-accelerate.amazonaws.com"; do
+      if curl -fsSL --retry 3 -o "$OCR_CACHE/$model.part" "$source/$model"; then fetched=$source; break; fi
+    done
+    [ -n "$fetched" ] || fail "could not fetch the OCR model $model from the mirror or upstream"
     printf '%s  %s
 ' "$want" "$OCR_CACHE/$model.part" | sha256sum -c --quiet >/dev/null 2>&1       || fail "the OCR model $model does not match its pinned sha256; not shipping it"
     mv "$OCR_CACHE/$model.part" "$OCR_CACHE/$model"

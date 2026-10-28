@@ -5,7 +5,8 @@ import { AppIdentity } from "app_color.slint";
 import { AppHeader } from "app_header.slint";
 import { YButton } from "y_button.slint";
 import { Icons } from "icon.slint";
-import { ScrollView, TextEdit, LineEdit } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { YInput } from "y_input.slint";
 export { ThemeMode, AccentPreset }
 
 export struct GameRow { slug:string, title:string, detail:string, selected:bool }
@@ -30,12 +31,18 @@ export component ArcadeApp inherits AppWindow {
     in property <string> status: "Reading the library…";
     in property <string> notice;
     in property <bool> busy;
+    // How far the editor is scrolled, for the test that keeps the caret in view.
+    out property <length> spec-scroll-y: spec-scroll.viewport-y;
+    out property <bool> spec-focused: spec-input.has-focus;
 
     // One callback for every command, from the header or the buttons below:
     // the window and the control surface both arrive here and nowhere else.
     callback action(string);
     callback pick-game(string);
     callback pick-character(string);
+    // The two fields the person types in: the app keeps what they hold (and drafts the spec).
+    callback spec-edited(string);
+    callback game-edited(string);
 
     VerticalLayout {
         spacing: 0px;
@@ -131,12 +138,54 @@ export component ArcadeApp inherits AppWindow {
                         text: "SPEC — a character or a game, as JSON";
                         color: Theme.text-dim; font-size: Theme.fs-caption; font-weight: 600; letter-spacing: 1.6px; height: 16px;
                     }
-                    TextEdit {
-                        text <=> root.spec-text;
+                    // The editor is a TextInput in the theme's own colours: the stock TextEdit takes its
+                    // text colour from the style's palette, which does not follow the theme, and was
+                    // near-invisible in the light theme once it lost focus.
+                    Rectangle {
                         vertical-stretch: 1;
-                        wrap: no-wrap;
-                        font-family: Theme.font-mono;
-                        font-size: 12px;
+                        background: Theme.bg-input;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: spec-input.has-focus ? Theme.focus-ring : Theme.border-default;
+                        clip: true;
+                        spec-scroll := ScrollView {
+                            // As Notes sizes its editor: the viewport is the text's size or the pane's,
+                            // whichever is larger, and the input fills it.
+                            viewport-width: max(self.visible-width, spec-input.preferred-width);
+                            viewport-height: max(self.visible-height, spec-input.preferred-height);
+                            spec-input := TextInput {
+                                x: 0px;
+                                y: 0px;
+                                width: spec-scroll.viewport-width;
+                                height: spec-scroll.viewport-height;
+                                text <=> root.spec-text;
+                                edited => { root.spec-edited(self.text); }
+                                color: Theme.text-primary;
+                                wrap: no-wrap;
+                                single-line: false;
+                                font-family: Theme.font-mono;
+                                font-size: 12px;
+                                selection-background-color: Theme.accent;
+                                selection-foreground-color: Theme.bg-deep;
+                                accessible-role: text-input;
+                                accessible-label: "Spec, a character or a game as JSON";
+                                // The caret stays in view, as the stock TextEdit kept it.
+                                cursor-position-changed(pos) => {
+                                    if (pos.y + 24px > -spec-scroll.viewport-y + spec-scroll.visible-height) {
+                                        spec-scroll.viewport-y = min(0px, spec-scroll.visible-height - pos.y - 24px);
+                                    }
+                                    if (pos.y < -spec-scroll.viewport-y) {
+                                        spec-scroll.viewport-y = -pos.y;
+                                    }
+                                    if (pos.x + 24px > -spec-scroll.viewport-x + spec-scroll.visible-width) {
+                                        spec-scroll.viewport-x = min(0px, spec-scroll.visible-width - pos.x - 24px);
+                                    }
+                                    if (pos.x < -spec-scroll.viewport-x) {
+                                        spec-scroll.viewport-x = -pos.x;
+                                    }
+                                }
+                            }
+                        }
                     }
                     HorizontalLayout {
                         spacing: 8px;
@@ -150,10 +199,12 @@ export component ArcadeApp inherits AppWindow {
                         Text {
                             text: "Selected game:"; color: Theme.text-dim; font-size: 12px; vertical-alignment: center;
                         }
-                        LineEdit {
-                            text <=> root.game-name;
-                            placeholder-text: "The game's title";
+                        YInput {
                             width: 220px;
+                            value <=> root.game-name;
+                            placeholder: "The game's title";
+                            edited(text) => { root.game-edited(text); }
+                            cleared => { root.game-edited(""); }
                         }
                         Rectangle { horizontal-stretch: 1; }
                     }

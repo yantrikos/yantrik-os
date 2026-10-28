@@ -17,10 +17,13 @@ pub mod disk;
 pub mod draft;
 pub mod files;
 pub(crate) mod exchange;
+pub mod notice;
 pub mod outside;
 pub mod save;
 #[cfg(test)]
 mod disk_tests;
+#[cfg(test)]
+mod sentences_tests;
 #[cfg(test)]
 mod tests;
 pub mod watched;

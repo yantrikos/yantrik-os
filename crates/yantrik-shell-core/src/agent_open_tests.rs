@@ -46,11 +46,17 @@ fn an_unknown_or_missing_handler_is_refused() {
 #[test]
 fn an_external_app_is_refused_and_a_yantrik_app_is_not() {
     assert!(may_open_file(Handler::Desktop("gimp.desktop"), &installed()).is_err());
-    assert!(may_open_file(Handler::Desktop("yantrik-terminal.desktop"), &installed()).is_err());
+    assert!(may_open_file(Handler::Desktop("yantrik-blender.desktop"), &installed()).is_err());
     // Ours are not refused as foreign: they are refused a window of a Mind's (#978 step 1).
     for err in [
         may_open_file(Handler::Desktop("yantrik-notes.desktop"), &installed()).unwrap_err(),
         may_open_file(Handler::Desktop("yantrik-text-editor"), &installed()).unwrap_err(),
+        may_open_file(Handler::Desktop("yantrik-spreadsheet.desktop"), &installed()).unwrap_err(),
+        may_open_file(Handler::Desktop("yantrik-studio.desktop"), &installed()).unwrap_err(),
+        may_open_file(Handler::Desktop("yantrik-arcade.desktop"), &installed()).unwrap_err(),
+        may_open_file(Handler::Desktop("yantrik-presentation.desktop"), &installed()).unwrap_err(),
+        // Terminal is a framework app: a file named to it is never typed into a shell.
+        may_open_file(Handler::Desktop("yantrik-terminal.desktop"), &installed()).unwrap_err(),
         may_open_file(Handler::TextEditor, &[]).unwrap_err(),
         may_open_file(Handler::ImageViewer, &[]).unwrap_err(),
     ] {
@@ -78,7 +84,8 @@ fn launching_an_external_app_is_refused_and_ours_opens() {
     assert!(may_launch("gimp", &installed()).unwrap_err().contains("Nothing was launched"));
     assert!(may_launch("yantrik-blender", &installed()).is_err());
     assert!(may_launch("notes", &installed()).unwrap_err().contains("cannot open in your view"));
-    assert!(may_launch("terminal", &installed()).is_ok());
+    assert!(may_launch("terminal", &installed()).unwrap_err().contains("cannot open in your view"));
+    assert!(may_launch("browser", &installed()).is_ok());
     assert!(may_launch("files", &installed()).is_ok(), "a screen of the shell has no entry");
 }
 
@@ -165,7 +172,6 @@ fn every_framework_app_is_refused_to_a_mind() {
         }
     }
     // What is not a framework app is as it was.
-    assert!(may_launch("terminal", &[]).is_ok());
     assert!(may_launch("browser", &[]).is_ok());
     assert!(may_launch("files", &[]).is_ok());
 }

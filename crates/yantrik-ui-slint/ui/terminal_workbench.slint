@@ -31,6 +31,10 @@ export component TerminalWorkbench inherits Rectangle {
     in property <string> explanation;
     in property <bool> explaining: false;
     in property <bool> confirm-close: false;
+    // The prompt's words. The defaults are the tab prompt's, which is all the shell's copy asks.
+    in property <string> close-heading: "Close this session?";
+    in property <string> close-said: "A process is still running in this tab. Closing it will end that session.";
+    in property <string> close-label: "Close session";
     callback input(KeyEvent) -> EventResult;
     callback shortcut(KeyEvent) -> EventResult;
     callback action(string);
@@ -198,11 +202,11 @@ export component TerminalWorkbench inherits Rectangle {
             background: Theme.bg-elevated; border-radius: 12px;
             border-width: 1px; border-color: Theme.border-strong;
             VerticalLayout { padding: 20px; spacing: 12px;
-                Text { text: "Close this session?"; color: Theme.text-primary; font-size: 18px; font-weight: 600; }
-                Text { text: "A process is still running in this tab. Closing it will end that session."; color: Theme.text-secondary; font-size: 13px; wrap: word-wrap; }
+                Text { text: root.close-heading; color: Theme.text-primary; font-size: 18px; font-weight: 600; }
+                Text { text: root.close-said; color: Theme.text-secondary; font-size: 13px; wrap: word-wrap; }
                 HorizontalLayout { alignment: end; spacing: 8px;
                     YButton { init => { self.focus(); } label: "Keep open"; variant: 1; clicked => { root.action("cancel-close"); root.focus-terminal(); } }
-                    YButton { label: "Close session"; variant: 3; clicked => { root.action("confirm-close"); root.focus-terminal(); } }
+                    YButton { label: root.close-label; variant: 3; clicked => { root.action("confirm-close"); root.focus-terminal(); } }
                 }
             }
         }

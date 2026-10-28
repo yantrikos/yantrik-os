@@ -1,11 +1,11 @@
 //! What the app is. The downloads themselves are the engine's (`engine/`): a handle onto shared
 //! state that its worker threads write as they go. The model holds that handle, the line of
-//! commands to it (`desk.rs`), and what the window is set to show.
+//! commands to it (a `Lane`), and what the window is set to show.
 
 use serde_json::Value;
 use yantrik_app::rail::Rail;
 
-use crate::desk::Desk;
+use yantrik_app::lane::Lane;
 use crate::engine::{Download, Engine, Status};
 
 /// The parts of the window `render` draws separately.
@@ -16,7 +16,7 @@ pub const PART_AI: &str = "ai";
 
 pub struct Model {
     pub engine: Engine,
-    pub desk: Desk,
+    pub desk: Lane<Engine>,
     /// Commands to the desk (and the exit's settling) that have not landed yet.
     pub work: usize,
     /// The engine's revision as last read: the list is drawn when it moves.
@@ -48,7 +48,7 @@ pub struct Model {
 impl Model {
     pub fn new(engine: Engine, rail: Rail) -> Model {
         let mut m = Model {
-            desk: Desk::start(engine.clone()),
+            desk: Lane::start("download-desk", engine.clone()),
             engine,
             work: 0,
             // Not the engine's own: the first look must draw the empty list's counters.

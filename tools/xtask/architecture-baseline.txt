@@ -22,9 +22,6 @@ layer yantrik-ui->yantrik-companion
 layer yantrik-ui->yantrik-ml
 size apps/arcade/src/verify.rs 1584
 size apps/network-manager/ui/network_manager.slint 1463
-size apps/presentation/src/main.rs 1610
-size apps/studio/src/engine.rs 1712
-size apps/studio/src/tests.rs 1986
 size apps/system-monitor/ui/system_monitor.slint 1392
 size crates/yantrik-companion-core/src/config.rs 1839
 size crates/yantrik-companion-tools/src/browser.rs 2860

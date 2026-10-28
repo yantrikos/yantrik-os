@@ -38,7 +38,7 @@
 //! gate sequence against a fake CDP server — no browser, no display, no luck.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -47,6 +47,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tungstenite::protocol::Message;
 use tungstenite::WebSocket;
+
+use crate::browser::Headless;
 
 /// Average frame-time ceiling in milliseconds, measured by the engine over its
 /// last 90 frames. Clearing this under software rendering is a real pass — any
@@ -189,7 +191,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn new(browser: String) -> Report {
+    pub(crate) fn new(browser: String) -> Report {
         Report {
             passed: false,
             correctness: Verdict::Inconclusive,
@@ -220,7 +222,7 @@ impl Report {
         }
     }
 
-    fn finish(mut self) -> Report {
+    pub(crate) fn finish(mut self) -> Report {
         self.correctness = Verdict::fold(self.gates.iter().filter(|g| g.kind == Kind::Correctness).map(|g| &g.verdict));
         self.performance = Verdict::fold(self.gates.iter().filter(|g| g.kind == Kind::Performance).map(|g| &g.verdict));
         self.passed = self.gates.iter().all(|g| g.verdict == Verdict::Passed);
@@ -298,21 +300,6 @@ pub fn chrome_binary() -> Option<PathBuf> {
 
 // ── Headless launch ────────────────────────────────────────────────
 
-pub struct Headless {
-    child: Child,
-    pub ws_url: String,
-    pub browser: String,
-    profile: PathBuf,
-}
-
-impl Drop for Headless {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.profile);
-    }
-}
-
 /// Launch a headless Chromium showing the given file, and find its page target.
 pub fn launch_headless(html: &Path) -> Result<Headless, String> {
     let binary = chrome_binary().ok_or_else(|| {
@@ -322,39 +309,16 @@ pub fn launch_headless(html: &Path) -> Result<Headless, String> {
         .map_err(|e| format!("cannot read {}: {e}", html.display()))?;
     let url = format!("file://{}", abs.display());
 
-    let profile = std::env::temp_dir().join(format!("arcade-verify-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&profile);
-    std::fs::create_dir_all(&profile).map_err(|e| format!("cannot create a profile directory: {e}"))?;
+    let profile = crate::browser::new_profile()?;
 
-    let child = Command::new(&binary)
-        // Software rendering: WSL here has no GPU path for headless Chromium.
-        .args([
-            "--headless=new",
-            "--use-gl=angle",
-            "--use-angle=swiftshader",
-            "--enable-unsafe-swiftshader",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--mute-audio",
-            "--hide-scrollbars",
-            "--window-size=1280,720",
-            "--remote-debugging-port=0",
-        ])
-        .arg(format!("--user-data-dir={}", profile.display()))
-        .arg(&url)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", binary.display()))?;
-
-    let mut headless = Headless { child, ws_url: String::new(), browser: binary.display().to_string(), profile: profile.clone() };
+    let mut headless = Headless::start(&binary, &url, &profile)?;
 
     // The port lands in DevToolsActivePort once the debugger is up.
     let port_file = profile.join("DevToolsActivePort");
     let deadline = Instant::now() + Duration::from_secs(30);
     let port = loop {
-        if Instant::now() > deadline {
-            return Err("the browser did not open its debugging port within 30 s".into());
+        if Instant::now() > deadline || crate::browser::cancelled() {
+            return Err(if crate::browser::cancelled() { crate::browser::STOPPED.into() } else { "the browser did not open its debugging port within 30 s".into() });
         }
         if let Ok(text) = std::fs::read_to_string(&port_file) {
             if let Some(first) = text.lines().next() {
@@ -363,7 +327,7 @@ pub fn launch_headless(html: &Path) -> Result<Headless, String> {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(200));
+        crate::browser::nap(Duration::from_millis(200));
     };
 
     let base = format!("http://127.0.0.1:{port}");
@@ -376,7 +340,7 @@ pub fn launch_headless(html: &Path) -> Result<Headless, String> {
 pub fn page_ws_url(http_base: &str) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut last = "no targets yet".to_string();
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !crate::browser::cancelled() {
         match ureq::get(&format!("{http_base}/json/list")).call() {
             Ok(resp) => match resp.into_json::<Value>() {
                 Ok(list) => {
@@ -395,7 +359,7 @@ pub fn page_ws_url(http_base: &str) -> Result<String, String> {
             },
             Err(e) => last = format!("/json/list: {e}"),
         }
-        std::thread::sleep(Duration::from_millis(250));
+        crate::browser::nap(Duration::from_millis(250));
     }
     Err(format!("no page target from the browser ({last})"))
 }
@@ -430,8 +394,8 @@ impl Session {
             .map_err(|e| format!("the browser websocket refused a {method} command: {e}"))?;
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if Instant::now() > deadline {
-                return Err(format!("{method} did not answer within 30 s"));
+            if Instant::now() > deadline || crate::browser::cancelled() {
+                return Err(if crate::browser::cancelled() { crate::browser::STOPPED.into() } else { format!("{method} did not answer within 30 s") });
             }
             match self.conn.read() {
                 Ok(Message::Text(text)) => {
@@ -453,10 +417,10 @@ impl Session {
                 Ok(Message::Close(_)) => return Err("the browser closed the websocket".into()),
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(20));
+                    crate::browser::nap(Duration::from_millis(20));
                 }
                 Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {
-                    std::thread::sleep(Duration::from_millis(20));
+                    crate::browser::nap(Duration::from_millis(20));
                 }
                 Err(e) => return Err(format!("the browser websocket failed: {e}")),
             }
@@ -608,10 +572,7 @@ pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>
         Err(e) => (false, format!("no screenshot from the browser: {e}"), None),
     };
     if let (Some(bytes), Some(out)) = (&png_bytes, screenshot_out) {
-        if let Some(parent) = out.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::write(out, bytes).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+        crate::library::write_in_place(out, bytes)?;
         report.screenshot = out.file_name().and_then(|n| n.to_str()).map(String::from);
     }
 
@@ -628,7 +589,7 @@ pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>
     let before = poll_state(&mut session);
     let key_result = dispatch_key(&mut session, "KeyW", "w", 87);
     let hold_started = Instant::now();
-    std::thread::sleep(Duration::from_millis(1400));
+    crate::browser::nap(Duration::from_millis(1400));
     let after = key_result.ok().and_then(|()| poll_state(&mut session));
     let (input_verdict, input_detail) = judge_input(before.as_ref(), after.as_ref(), hold_started.elapsed());
 
@@ -654,7 +615,7 @@ pub fn verify_session(ws_url: &str, browser: &str, screenshot_out: Option<&Path>
     session
         .evaluate("window.__arcade.setBot(null); window.__arcade.setPaced && window.__arcade.setPaced(false); window.__arcade.reset(); 0")
         .ok();
-    std::thread::sleep(Duration::from_millis(2500));
+    crate::browser::nap(Duration::from_millis(2500));
     let final_state = session.evaluate("JSON.stringify(window.__arcade.state())").unwrap_or(Value::Null);
     let (budget_verdict, budget_detail) = judge_frame_budget(state_num(&final_state, "frameMs"));
 
@@ -735,14 +696,14 @@ fn run_bot(session: &mut Session, sim_secs: f64, limits: &Limits, pred: &dyn Fn(
             last = Some(state);
         }
         let wall = start.elapsed();
-        if wall >= ceiling {
+        if wall >= ceiling || crate::browser::cancelled() {
             return match last {
                 None => BotRun::Silent,
                 Some(last) if has_clock => BotRun::TooSlow { last, wall },
                 Some(last) => BotRun::NoClock { last },
             };
         }
-        std::thread::sleep(limits.poll);
+        crate::browser::nap(limits.poll);
     }
 }
 
@@ -901,7 +862,7 @@ fn engine_error_list(session: &mut Session) -> Vec<String> {
 /// asking for its JSON keeps the websocket traffic to plain strings.
 fn wait_for_state(session: &mut Session, budget: Duration, pred: &dyn Fn(&Value) -> bool) -> Option<Value> {
     let deadline = Instant::now() + budget;
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !crate::browser::cancelled() {
         if let Ok(v) = session.evaluate("window.__arcade ? JSON.stringify(window.__arcade.state()) : 'null'") {
             if let Some(text) = v.as_str() {
                 if let Ok(state) = serde_json::from_str::<Value>(text) {
@@ -911,7 +872,7 @@ fn wait_for_state(session: &mut Session, budget: Duration, pred: &dyn Fn(&Value)
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(300));
+        crate::browser::nap(Duration::from_millis(300));
     }
     None
 }
@@ -935,7 +896,7 @@ fn dispatch_key(session: &mut Session, code: &str, key: &str, vk: u32) -> Result
         "Input.dispatchKeyEvent",
         json!({ "type": "keyDown", "code": code, "key": key, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk }),
     )?;
-    std::thread::sleep(Duration::from_millis(120));
+    crate::browser::nap(Duration::from_millis(120));
     session.call(
         "Input.dispatchKeyEvent",
         json!({ "type": "keyUp", "code": code, "key": key, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk }),
@@ -943,7 +904,7 @@ fn dispatch_key(session: &mut Session, code: &str, key: &str, vk: u32) -> Result
     // The engine listens on window, and a held key repeats: hold it by re-sending
     // keyDown a few times so one dispatch is not one 16 ms nudge.
     for _ in 0..8 {
-        std::thread::sleep(Duration::from_millis(120));
+        crate::browser::nap(Duration::from_millis(120));
         session.call(
             "Input.dispatchKeyEvent",
             json!({ "type": "keyDown", "code": code, "key": key, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk }),
@@ -1019,10 +980,7 @@ pub fn screenshot_game(html: &Path, png_out: &Path) -> Result<(), String> {
         s.get("frames").and_then(|v| v.as_f64()).unwrap_or(0.0) > 5.0
     });
     let bytes = capture_screenshot(&mut session)?;
-    if let Some(parent) = png_out.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    }
-    std::fs::write(png_out, &bytes).map_err(|e| format!("cannot write {}: {e}", png_out.display()))
+    crate::library::write_in_place(png_out, &bytes)
 }
 
 #[cfg(test)]
@@ -1403,6 +1361,7 @@ mod tests {
     fn a_clean_session_passes_every_gate() {
         let fake = Fake::start(Script::Clean);
         let shot_dir = std::env::temp_dir().join(format!("arcade-fake-shot-clean-{}", std::process::id()));
+        std::fs::create_dir_all(&shot_dir).unwrap();
         let shot = shot_dir.join("screenshot.png");
         let report = verify_session(&fake.ws_url(), "fake-chrome", Some(&shot), &quick_limits()).unwrap();
 
@@ -1580,5 +1539,39 @@ mod tests {
         let line = report.summary_line();
         assert!(line.starts_with("inconclusive at frame_budget"), "{line}");
         assert!(line.contains(MACHINE_NOT_GAME), "{line}");
+    }
+
+    /// A browser that never answers: a job's call returns within a poll of the job being
+    /// cancelled, not after its 30 s timeout (the app waits that out when it ends).
+    #[test]
+    fn a_call_to_a_silent_browser_returns_when_the_job_is_cancelled() {
+        use std::sync::atomic::AtomicBool;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_millis(300))).ok();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            // Reads and says nothing, until the client goes.
+            loop {
+                match ws.read() {
+                    Err(tungstenite::Error::Io(ref e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+                    Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        });
+        let flag = Arc::new(AtomicBool::new(false));
+        let job_flag = flag.clone();
+        let (done, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            crate::browser::set_current(Some(job_flag));
+            let mut session = Session::connect(&format!("ws://127.0.0.1:{port}/")).unwrap();
+            let _ = done.send(session.call("Runtime.enable", json!({})));
+        });
+        crate::browser::nap(Duration::from_millis(200));
+        flag.store(true, Ordering::SeqCst);
+        let answer = heard.recv_timeout(Duration::from_millis(300)).expect("the call did not return within 300 ms of the cancel");
+        assert!(answer.is_err());
     }
 }

@@ -58,7 +58,13 @@ export component StudioApp inherits AppWindow {
     // Which app this window is, and so which colour it draws itself in. On the window, not on
     // AppHeader, for the reason written in app_color.slint: the header covers the screens that
     // have one.
-    init => { AppIdentity.id = "studio"; }
+    init => {
+        AppIdentity.id = "studio";
+        root.resized(Math.round(root.width / 1px));
+    }
+    // The width is reported as a plain number and decided on in Rust (`WIDE_WINDOW`): a condition
+    // in this layout that read the window's own width would be a binding loop on `layoutinfo-h`.
+    changed width => { root.resized(Math.round(root.width / 1px)); }
 
     // ── What the app is pointed at ──
     in property <string> backend-line: "Reading your configuration…";
@@ -74,8 +80,10 @@ export component StudioApp inherits AppWindow {
     // Whether the window is wide enough for the record pane on the right. Handed in from Rust
     // rather than read here, because `if root.width > …` inside this layout is a binding loop on
     // `layoutinfo-h`: the window's own width is derived from the layout's preferred size, so a
-    // condition that reads the width decides the size it was derived from. See `wide` in main.rs.
+    // condition that reads the width decides the size it was derived from. See `WIDE_WINDOW`.
     in property <bool> wide;
+    // Drawn for a Mind (Mind View): the fields take no typing.
+    in property <bool> read-only;
 
     // ── The gallery and the queue ──
     in property <[ShotRow]> shots;
@@ -84,9 +92,9 @@ export component StudioApp inherits AppWindow {
 
     // ── What the person is about to ask for ──
     //
-    // `in-out`, because these belong to whoever is typing. Rust writes them when it has a reason
-    // to — the defaults at startup, and the prompt and seed a `variations` click takes from the
-    // sidecar of the picture that was chosen — and never on a redraw.
+    // `in-out`, because these belong to whoever is typing. Rust holds them too (`field-edited`),
+    // and writes them only where they differ: the defaults at startup, and the prompt a
+    // `variations` click takes from the sidecar of the picture that was chosen.
     in-out property <string> prompt;
     in-out property <string> negative;
     in-out property <string> want-width: "1024";
@@ -96,6 +104,15 @@ export component StudioApp inherits AppWindow {
 
     callback action(string);
     callback choose(int);
+    // A field was typed into: its name, and what it holds now.
+    callback field-edited(string, string);
+    // The window's width in logical pixels.
+    callback resized(int);
+
+    // How tall the notice needs to be to show all of its sentence, and how tall it is. Read by the
+    // tests: a banner shorter than its text clips the second line.
+    out property <length> notice-need: notice-text.preferred-height + 20px;
+    out property <length> notice-room: notice-box.height;
 
     public function focus-prompt() { prompt-field.focus(); }
 
@@ -117,8 +134,17 @@ export component StudioApp inherits AppWindow {
             action(id) => { root.action(id); }
         }
 
-        if root.notice != "" : Rectangle {
+        // Always there and collapsed when it has nothing to say, so the window can read how tall
+        // the sentence needs it to be and how tall it is (`notice-need`, `notice-room`).
+        notice-box := Rectangle {
             background: Theme.bg-elevated;
+            visible: root.notice != "";
+            max-height: root.notice == "" ? 0px : 100000px;
+            // Never shorter than its sentence at the width it is drawn in: when the window is short
+            // the layout shrinks its rows to their smallest, and a wrapped sentence's smallest is
+            // one line, which cut the second line off. `preferred-height` here is the Text's, at
+            // the width its layout cell has; nothing in it reads this height back.
+            min-height: root.notice == "" ? 0px : notice-text.preferred-height + 20px;
             // Sized by a layout rather than by `height: text.preferred-height + 20px` with
             // `width: parent.width - 40px` on the text. Those two read the size of the thing they
             // sit inside, and the window's own width is derived from this layout's preferred size,
@@ -128,7 +154,7 @@ export component StudioApp inherits AppWindow {
                 padding: 10px;
                 padding-left: 20px;
                 padding-right: 20px;
-                Text {
+                notice-text := Text {
                     text: root.notice;
                     color: Theme.amber;
                     font-size: 13px;
@@ -159,6 +185,9 @@ export component StudioApp inherits AppWindow {
                             mode: 1;
                             leading-icon-path: Icons.spark;
                             placeholder: "Describe the picture you want…";
+                            disabled: root.read-only;
+                            edited(text) => { root.field-edited("prompt", text); }
+                            cleared => { root.field-edited("prompt", ""); }
                             accepted(_) => { root.action("generate"); }
                         }
 
@@ -175,6 +204,9 @@ export component StudioApp inherits AppWindow {
                                 value <=> root.negative;
                                 horizontal-stretch: 1;
                                 placeholder: "blurry, watermark, text";
+                                disabled: root.read-only;
+                                edited(text) => { root.field-edited("negative", text); }
+                                cleared => { root.field-edited("negative", ""); }
                             }
                         }
 
@@ -182,13 +214,13 @@ export component StudioApp inherits AppWindow {
                             spacing: 6px;
                             height: 30px;
                             Text { text: "Width"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
-                            YInput { value <=> root.want-width; min-width: 72px; }
+                            YInput { value <=> root.want-width; min-width: 72px; disabled: root.read-only; edited(text) => { root.field-edited("width", text); } cleared => { root.field-edited("width", ""); } }
                             Text { text: "Height"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
-                            YInput { value <=> root.want-height; min-width: 72px; }
+                            YInput { value <=> root.want-height; min-width: 72px; disabled: root.read-only; edited(text) => { root.field-edited("height", text); } cleared => { root.field-edited("height", ""); } }
                             Text { text: "Steps"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
-                            YInput { value <=> root.want-steps; min-width: 60px; }
+                            YInput { value <=> root.want-steps; min-width: 60px; disabled: root.read-only; edited(text) => { root.field-edited("steps", text); } cleared => { root.field-edited("steps", ""); } }
                             Text { text: "How many"; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
-                            YInput { value <=> root.want-count; min-width: 52px; }
+                            YInput { value <=> root.want-count; min-width: 52px; disabled: root.read-only; edited(text) => { root.field-edited("count", text); } cleared => { root.field-edited("count", ""); } }
                             Rectangle { horizontal-stretch: 1; }
                             if root.jobs.length > 0 : YButton {
                                 label: "Cancel";

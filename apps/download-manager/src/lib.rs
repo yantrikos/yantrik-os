@@ -10,7 +10,7 @@
 //! - `engine/`: the downloads. One handle onto shared state, which its worker threads write as
 //!   they go (one thread a transfer, writing straight to the file). The list is kept in
 //!   `~/.local/share/yantrik/downloads/state.json` and reconciled against the disk on every start.
-//! - `desk.rs`: the line of commands to the engine, in the order they were asked for.
+//! - the desk: the line of commands to the engine, in the order they were asked for (`yantrik_app::lane`).
 //! - `model.rs` and `command.rs`: what the app is, and every change to it. `update/`: the only code
 //!   that changes the model. `view.rs`: the window. `describe.rs`: what the Mind reads.
 //! - `intents.rs`: the ten actions, as they were published. `answers.rs`: what each is told.
@@ -31,7 +31,6 @@ use yantrik_app::Refused;
 mod agent_rule;
 mod answers;
 mod command;
-mod desk;
 mod describe;
 pub mod engine;
 mod intents;

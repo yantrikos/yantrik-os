@@ -30,19 +30,19 @@ apps/music-player/src/intents.rs play_file path apps/music-player/src/seen.rs
 apps/notes/src/intents/files.rs import path apps/notes/src/update/library.rs
 apps/notes/src/intents/files.rs export path apps/notes/src/update/library.rs
 apps/notes/src/intents/library.rs set_folder folder - a section of the Notes library list, not a path on disk
-apps/presentation/src/main.rs open path apps/presentation/src/agent_rule.rs
-apps/presentation/src/main.rs save_as path apps/presentation/src/agent_rule.rs
-apps/presentation/src/main.rs export_markdown path apps/presentation/src/agent_rule.rs
+apps/presentation/src/intents.rs open path frameworks/yantrik-app/src/documents/files/agent.rs
+apps/presentation/src/intents.rs save_as path frameworks/yantrik-app/src/documents/files/agent.rs
+apps/presentation/src/intents.rs export_markdown path frameworks/yantrik-app/src/documents/files/agent.rs
 apps/snippet-manager/src/intents.rs import path - held by #940's agent import (`update/files.rs`, `home_paths::may_read_file`); this line names that file once #940 lands
-apps/spreadsheet/src/surface.rs open path apps/spreadsheet/src/agent_rule.rs
-apps/spreadsheet/src/surface.rs save path apps/spreadsheet/src/agent_rule.rs
-apps/spreadsheet/src/surface.rs save_over path apps/spreadsheet/src/agent_rule.rs
-apps/studio/src/main.rs upscale path apps/studio/src/agent_rule.rs
-apps/studio/src/main.rs open path apps/studio/src/agent_rule.rs
-apps/studio/src/main.rs variations of apps/studio/src/agent_rule.rs
-apps/studio/src/main.rs set_backend workflow apps/studio/src/agent_rule.rs
-apps/studio/src/main.rs delete path - moves only Studio's own pictures, inside its gallery (`Engine::resolve(_, true)`), whoever asks
-apps/terminal/src/main.rs open_directory directory - a shell's working directory, graded sensitive: the shell it starts reaches any file the person can, as `run` does
+apps/spreadsheet/src/intents.rs open path frameworks/yantrik-app/src/documents/files/agent.rs
+apps/spreadsheet/src/intents.rs save path frameworks/yantrik-app/src/documents/files/agent.rs
+apps/spreadsheet/src/intents.rs save_over path frameworks/yantrik-app/src/documents/files/agent.rs
+apps/studio/src/intents.rs upscale path apps/studio/src/agent_rule.rs
+apps/studio/src/intents.rs open path apps/studio/src/agent_rule.rs
+apps/studio/src/intents.rs variations of apps/studio/src/agent_rule.rs
+apps/studio/src/intents.rs set_backend workflow - refused outright to every agent, by `Agents::Refused` in this file
+apps/studio/src/intents.rs delete path - moves only Studio's own pictures, inside its gallery (`jobs::resolve` with `inside`), whoever asks
+apps/terminal/src/intents.rs open_directory directory - a shell's working directory, graded sensitive: the shell it starts reaches any file the person can, as `run` does
 apps/text-editor/src/intents/documents.rs open path frameworks/yantrik-app/src/documents/files/agent.rs
 apps/text-editor/src/intents/documents.rs save_as path frameworks/yantrik-app/src/documents/files/agent.rs
 crates/yantrik-ui/src/control.rs report_problem record - names one of the shell's own problem records (`wire/problem_report.rs`), never a path

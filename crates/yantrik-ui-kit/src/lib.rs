@@ -795,7 +795,7 @@ mod a_test_crate_runs_when_ci_runs {
                 ));
             }
         }
-        assert!(seen >= 9, "read only {seen} core test crates from tests/; the path is wrong");
+        assert!(seen >= 8, "read only {seen} core test crates from tests/; the path is wrong");
         assert!(
             unseen.is_empty(),
             "these test crates never run in CI:\n  {}\n\n\

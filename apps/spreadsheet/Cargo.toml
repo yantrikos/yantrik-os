@@ -4,12 +4,18 @@ version = "0.1.0"
 edition = "2021"
 description = "ySheets — one sheet of formulas, opened from and saved to CSV, with undo and a control surface"
 
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, its saves through the framework's
+# fault-injecting disk.
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "yantrik-spreadsheet"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
@@ -18,12 +24,17 @@ slint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-# O_NONBLOCK, so opening a FIFO cannot hang the window (src/document.rs).
-libc = { workspace = true }
-# The desktop's file picker, over the FileChooser portal (src/picker.rs).
+# The desktop's file picker, over the FileChooser portal (src/files/picker.rs).
 zbus = { workspace = true }
 
 [dev-dependencies]
+# TestApp, with the window manager's word on activation.
+yantrik-testing = { workspace = true, features = ["testing"] }
+# FaultyDisk, to make any step of a save fail.
+yantrik-app = { workspace = true, features = ["testing"] }
+# O_NONBLOCK special files and mkfifo, in the tests that open a FIFO.
+libc = { workspace = true }
+# The window drawn without a display, written as a screenshot.
 png = "0.18"
 
 [build-dependencies]

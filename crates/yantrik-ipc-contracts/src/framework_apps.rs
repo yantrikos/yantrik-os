@@ -22,6 +22,7 @@ const fn app(program: &'static str, id: &'static str, name: &'static str) -> Fra
 
 /// Every app of the framework. None is viewable under step 1 of design #978.
 pub const FRAMEWORK_APPS: &[FrameworkApp] = &[
+    app("yantrik-arcade", "arcade", "Arcade"),
     app("yantrik-calendar", "calendar", "Calendar"),
     app("yantrik-container-manager", "containers", "Containers"),
     app("yantrik-document-editor", "documents", "yDoc"),
@@ -31,8 +32,12 @@ pub const FRAMEWORK_APPS: &[FrameworkApp] = &[
     app("yantrik-music-player", "music", "Music"),
     app("yantrik-network-manager", "network", "Network"),
     app("yantrik-notes", "notes", "Notes"),
+    app("yantrik-presentation", "presentation", "yPresent"),
     app("yantrik-snippet-manager", "snippets", "Snippets"),
+    app("yantrik-spreadsheet", "spreadsheet", "ySheets"),
+    app("yantrik-studio", "studio", "Studio"),
     app("yantrik-system-monitor", "system-monitor", "System Monitor"),
+    app("yantrik-terminal", "terminal", "Terminal"),
     app("yantrik-text-editor", "editor", "Editor"),
     app("yantrik-weather", "weather", "Weather"),
 ];

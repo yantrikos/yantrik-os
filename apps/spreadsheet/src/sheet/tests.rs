@@ -13,7 +13,8 @@ fn a_new_sheet_is_filled_rows_by_cols() {
     // The disease the shelf was about: a grid drawn with no cells under it.
     let s = Sheet::default();
     assert_eq!((s.rows(), s.cols()), (DEFAULT_ROWS, DEFAULT_COLS));
-    assert_eq!(s.raw.len(), DEFAULT_ROWS * DEFAULT_COLS);
+    assert_eq!(s.snap.raw.len(), DEFAULT_ROWS);
+    assert!(s.snap.raw.iter().all(|row| row.len() == DEFAULT_COLS));
     assert_eq!(s.values.len(), DEFAULT_ROWS * DEFAULT_COLS);
     assert_eq!(s.value(c("Z50")), Value::Empty);
 }
@@ -23,7 +24,8 @@ fn a_short_file_still_fills_the_grid_and_a_long_one_grows_it() {
     // The review's finding 4: a three-row import left the grid smaller than rows × cols.
     let short = Sheet::from_rows(&[vec!["1".into(), "2".into()], vec!["3".into()]]).unwrap();
     assert_eq!((short.rows(), short.cols()), (DEFAULT_ROWS, DEFAULT_COLS));
-    assert_eq!(short.raw.len(), DEFAULT_ROWS * DEFAULT_COLS);
+    assert_eq!(short.snap.raw.len(), DEFAULT_ROWS);
+    assert!(short.snap.raw.iter().all(|row| row.len() == DEFAULT_COLS));
     assert_eq!(short.raw(c("B2")), "", "a ragged row is padded");
 
     let long: Vec<Vec<String>> = (0..120).map(|r| (0..30).map(|k| format!("{}", r * 30 + k)).collect()).collect();
@@ -37,7 +39,9 @@ fn editing_a_cell_past_the_edge_grows_the_sheet() {
     let mut s = Sheet::default();
     s.set(c("AB60"), "7").unwrap();
     assert_eq!((s.rows(), s.cols()), (60, 28));
-    assert_eq!(s.raw.len(), 60 * 28);
+    assert_eq!(s.snap.raw.len(), 60);
+    assert!(s.snap.raw.iter().all(|row| row.len() == 28));
+    assert_eq!(s.values.len(), 60 * 28);
     assert_eq!(s.value(c("AB60")).display(), "7");
 }
 
@@ -112,4 +116,65 @@ fn a_sheet_too_large_to_draw_is_refused_with_its_size() {
     let mut s = Sheet::default();
     assert!(s.set(Cell::new(MAX_CELLS, 0), "x").is_err());
     assert_eq!(s.rows(), DEFAULT_ROWS, "a refused edit leaves the size alone");
+}
+
+#[test]
+fn a_cell_typed_shows_a_stand_in_until_the_sheet_is_worked_out_and_a_formula_keeps_what_it_showed() {
+    let mut s = Sheet::default();
+    s.set(c("A1"), "2").unwrap();
+    s.set(c("B1"), "=A1*3").unwrap();
+    assert_eq!(s.value(c("B1")).display(), "6");
+    s.put(c("A1"), "5").unwrap();
+    assert!(!s.is_solved());
+    assert_eq!(s.value(c("A1")).display(), "5", "text that is not a formula shows as itself");
+    assert_eq!(s.value(c("B1")).display(), "6", "a formula shows what it showed until it is worked out");
+    let solved = s.snapshot().solve();
+    assert!(s.install(&solved));
+    assert!(s.is_solved());
+    assert_eq!(s.value(c("B1")).display(), "15");
+}
+
+#[test]
+fn a_result_is_taken_only_while_the_sheet_is_at_the_revision_it_was_made_for() {
+    let mut s = Sheet::default();
+    s.put(c("A1"), "=1+1").unwrap();
+    let old = s.snapshot().solve();
+    s.put(c("A2"), "=A1+1").unwrap();
+    assert!(!s.install(&old), "typed into since");
+    assert!(!s.is_solved());
+    let new = s.snapshot().solve();
+    assert!(s.install(&new));
+    assert_eq!(s.value(c("A2")).display(), "3");
+    // A size change is a revision too.
+    let before = s.snapshot().solve();
+    s.resize(60, 26).unwrap();
+    assert!(!s.install(&before));
+}
+
+#[test]
+fn a_snapshot_shares_the_rows_and_an_edit_copies_only_the_row_it_touches() {
+    let mut s = Sheet::default();
+    let snap = s.snapshot();
+    s.put(c("C3"), "x").unwrap();
+    let after = s.snapshot();
+    let same = snap.raw.iter().zip(&after.raw).filter(|(a, b)| std::sync::Arc::ptr_eq(a, b)).count();
+    assert_eq!(same, DEFAULT_ROWS - 1, "every row but the one typed into is still shared");
+    assert_eq!(snap.raw(c("C3")), "", "and the snapshot did not change under the edit");
+}
+
+#[test]
+fn resizing_keeps_the_text_and_the_values_of_the_cells_that_stay() {
+    let mut s = Sheet::default();
+    s.set(c("B2"), "7").unwrap();
+    s.set(c("C3"), "=B2*2").unwrap();
+    s.resize(60, 30).unwrap();
+    assert_eq!((s.rows(), s.cols()), (60, 30));
+    assert_eq!((s.raw(c("B2")), s.raw(c("C3"))), ("7", "=B2*2"));
+    assert_eq!(s.value(c("C3")).display(), "14", "kept until the next result is installed");
+    assert_eq!(s.values().len(), 60 * 30);
+    s.resize(10, 5).unwrap();
+    assert_eq!(s.values().len(), 50);
+    assert_eq!(s.raw(c("C3")), "=B2*2");
+    s.settle();
+    assert_eq!(s.value(c("C3")).display(), "14");
 }

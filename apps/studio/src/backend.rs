@@ -18,12 +18,36 @@ use serde_json::json;
 use crate::config::{Backend as BackendConfig, Config, Kind};
 
 /// A flag a caller sets to say "stop". Checked between the steps that can be interrupted, which
-/// for ComfyUI means between polls — the server is also told, because a render nobody is waiting
+/// for ComfyUI means between polls; the server is also told, because a render nobody is waiting
 /// for is still burning a GPU somebody owns.
-pub type Cancel = Arc<AtomicBool>;
+///
+/// Two things can set it. The person or a Mind cancelling a job sets the flag the job's pictures
+/// share; and the framework sets its own flag on a job when the app is ending, which a picture
+/// carries as `host`, so a close or a logout stops a render in flight rather than leaving it to
+/// run into a process that is gone.
+#[derive(Clone, Default)]
+pub struct Stop {
+    asked: Arc<AtomicBool>,
+    host: Option<yantrik_app::Cancel>,
+}
 
-pub fn new_cancel() -> Cancel {
-    Arc::new(AtomicBool::new(false))
+impl Stop {
+    pub fn new() -> Stop {
+        Stop::default()
+    }
+
+    /// This flag, also set when the framework cancels the job it runs on.
+    pub fn linked(&self, host: &yantrik_app::Cancel) -> Stop {
+        Stop { asked: self.asked.clone(), host: Some(host.clone()) }
+    }
+
+    pub fn set(&self) {
+        self.asked.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.asked.load(Ordering::SeqCst) || self.host.as_ref().is_some_and(|host| host.is_set())
+    }
 }
 
 /// One picture, asked for. Everything here is filled in by the app before it reaches a backend:
@@ -71,7 +95,7 @@ pub trait Backend: Send + Sync {
 
     /// Make one picture, or say why not. The `Err` text is shown to a person and read by a mind,
     /// so it names the thing that failed and what would fix it.
-    fn generate(&self, request: &Request, cancel: &Cancel) -> Result<Shot, String>;
+    fn generate(&self, request: &Request, cancel: &Stop) -> Result<Shot, String>;
 }
 
 /// Build the backend a configuration asks for. One place, so the app and `set_backend` cannot
@@ -137,11 +161,11 @@ impl ComfyUi {
     }
 
     /// Poll `/history/<id>` until the entry appears with an output, or the budget runs out.
-    fn wait(&self, id: &str, cancel: &Cancel) -> Result<Found, String> {
+    fn wait(&self, id: &str, cancel: &Stop) -> Result<Found, String> {
         let started = Instant::now();
         let path = format!("/history/{id}");
         loop {
-            if cancel.load(Ordering::SeqCst) {
+            if cancel.is_set() {
                 self.interrupt();
                 return Err("cancelled".to_string());
             }
@@ -183,13 +207,9 @@ impl ComfyUi {
         }
         match Self::agent().get(&self.url(&path)).call() {
             Ok(response) => {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes)
-                    .map_err(|e| format!("the picture could not be read from the server ({e})"))?;
-                if bytes.is_empty() {
-                    return Err(format!("the server sent an empty file for {}", found.filename));
-                }
-                Ok(bytes)
+                let bytes = crate::fetch::read_capped(response.into_reader(), crate::fetch::MOST_BYTES)
+                    .map_err(|e| format!("the picture from the server: {e}"))?;
+                crate::fetch::picture(bytes, &format!("the server (for {})", found.filename))
             }
             Err(ureq::Error::Status(code, response)) => Err(format!(
                 "the server would not hand over {} (HTTP {code}): {}",
@@ -212,7 +232,7 @@ impl Backend for ComfyUi {
         "comfyui"
     }
 
-    fn generate(&self, request: &Request, cancel: &Cancel) -> Result<Shot, String> {
+    fn generate(&self, request: &Request, cancel: &Stop) -> Result<Shot, String> {
         // The server's own copy is filed under the same date as Studio's, so the two can be
         // matched up by a person looking in both places.
         let prefix = format!("Studio/{}", chrono::Local::now().format("%Y-%m-%d"));
@@ -410,8 +430,8 @@ impl Backend for OpenAiImages {
         "openai-images"
     }
 
-    fn generate(&self, request: &Request, cancel: &Cancel) -> Result<Shot, String> {
-        if cancel.load(Ordering::SeqCst) {
+    fn generate(&self, request: &Request, cancel: &Stop) -> Result<Shot, String> {
+        if cancel.is_set() {
             return Err("cancelled".to_string());
         }
         let key = self.settings.api_key()?;
@@ -443,9 +463,13 @@ impl Backend for OpenAiImages {
             })?;
         drop(key);
 
-        let value: serde_json::Value = response
-            .into_json()
-            .map_err(|e| format!("the reply from {} was not readable JSON ({e})", crate::config::shown_address(&self.settings.base_url)))?;
+        // A reply that carries a picture inline is at most as long as the picture's base64, and
+        // is read through that cap (`fetch.rs`).
+        let said = crate::config::shown_address(&self.settings.base_url);
+        let reply = crate::fetch::read_capped(response.into_reader(), crate::fetch::MOST_BYTES / 3 * 4 + 4096)
+            .map_err(|e| format!("the reply from {said}: {e}"))?;
+        let value: serde_json::Value = serde_json::from_slice(&reply)
+            .map_err(|e| format!("the reply from {said} was not readable JSON ({e})"))?;
         let first = value
             .get("data")
             .and_then(|d| d.as_array())
@@ -454,20 +478,19 @@ impl Backend for OpenAiImages {
 
         let bytes = if let Some(encoded) = first.get("b64_json").and_then(|b| b.as_str()) {
             use base64::Engine;
-            base64::engine::general_purpose::STANDARD
+            let bytes = base64::engine::general_purpose::STANDARD
                 .decode(encoded.trim())
-                .map_err(|e| format!("the image came back base64-encoded but could not be decoded ({e})"))?
+                .map_err(|e| format!("the image came back base64-encoded but could not be decoded ({e})"))?;
+            if bytes.len() as u64 > crate::fetch::MOST_BYTES {
+                return Err(format!("the image from {said} is larger than Studio will take"));
+            }
+            crate::fetch::picture(bytes, &said)?
         } else if let Some(location) = first.get("url").and_then(|u| u.as_str()) {
             // The URL is the service's own, fetched immediately: it is usually signed and short
             // lived, and a sidecar pointing at an expired link is a picture that cannot be shown.
-            let response = agent
-                .get(location)
-                .call()
-                .map_err(|e| format!("the image was offered at a URL that could not be fetched ({e})"))?;
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes)
-                .map_err(|e| format!("the image could not be read from its URL ({e})"))?;
-            bytes
+            // It is a server's choice of where to send this machine, so it is fetched only when it
+            // is https and the internet (`fetch.rs`).
+            crate::fetch::fetch_offered(location)?
         } else {
             return Err(format!(
                 "the reply from {} held neither image bytes nor a URL: {}",
@@ -488,296 +511,8 @@ impl Backend for OpenAiImages {
     }
 }
 
-// ── Fake ────────────────────────────────────────────────────────────────
-
-/// Draws a deterministic placeholder from the prompt's hash: same prompt and seed, same picture.
-///
-/// This is not only a test double. It is what a machine with no GPU and no API key gets, so that
-/// Studio opens, the gallery works, the sidecars are written, and a mind can drive the whole
-/// surface end to end — with `describe` saying plainly that the pictures are placeholders. A
-/// deterministic drawing is what makes it useful in tests too: the bytes can be compared.
-pub struct Fake {
-    settings: BackendConfig,
-    /// The long edge this backend will draw. A placeholder has no reason to be 4096 pixels wide,
-    /// and a test that asked for one would spend its time on pixels nobody looks at.
-    cap: u32,
-}
-
-impl Fake {
-    pub fn new(settings: BackendConfig) -> Fake {
-        Fake { settings, cap: 1024 }
-    }
-
-    /// The tests' knob: a placeholder nobody will look at has no reason to be 1024 pixels across,
-    /// and a test that drew one would spend its time on pixels. Compiled only under `cfg(test)`, so
-    /// the app itself has exactly one way to build this backend — `new`, with the person's settings.
-    #[cfg(test)]
-    pub fn capped_at(cap: u32) -> Fake {
-        Fake { settings: BackendConfig::defaults_for(Kind::Fake), cap }
-    }
-}
-
-impl Backend for Fake {
-    fn kind(&self) -> &'static str {
-        "fake"
-    }
-
-    fn generate(&self, request: &Request, cancel: &Cancel) -> Result<Shot, String> {
-        if cancel.load(Ordering::SeqCst) {
-            return Err("cancelled".to_string());
-        }
-        let (width, height) = shrink(request.width.max(1), request.height.max(1), self.cap);
-        let bytes = draw(&request.prompt, request.seed, width, height);
-        Ok(Shot {
-            bytes,
-            width,
-            height,
-            model: if self.settings.model.is_empty() {
-                "fake".to_string()
-            } else {
-                self.settings.model.clone()
-            },
-            sent: format!("{width}x{height}"),
-        })
-    }
-}
-
-fn shrink(width: u32, height: u32, cap: u32) -> (u32, u32) {
-    let longest = width.max(height);
-    if longest <= cap {
-        return (width, height);
-    }
-    let scale = cap as f64 / longest as f64;
-    (
-        ((width as f64) * scale).round().max(1.0) as u32,
-        ((height as f64) * scale).round().max(1.0) as u32,
-    )
-}
-
-/// The drawing itself: a field of blocks whose colours come from a stream seeded by the prompt
-/// and the seed, over a gradient, with a border so it is unmistakably a placeholder at a glance.
-/// Pure — no clock, no randomness, no I/O — which is the whole reason it can be asserted on.
-pub fn draw(prompt: &str, seed: u64, width: u32, height: u32) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(prompt.as_bytes());
-    hasher.update(b"|");
-    hasher.update(seed.to_le_bytes());
-    let digest = hasher.finalize();
-
-    // A 64-bit xorshift stream from the digest, so the drawing can be as detailed as it likes
-    // without the digest running out.
-    let mut state = u64::from_le_bytes(digest[..8].try_into().unwrap()) | 1;
-    let mut next = move || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        state
-    };
-
-    let base = [digest[8], digest[9], digest[10]];
-    let accent = [digest[11], digest[12], digest[13]];
-    let blocks = 6 + (next() % 5) as u32;
-
-    let mut image = image::RgbImage::new(width, height);
-    for y in 0..height {
-        for x in 0..width {
-            let along = if width > 1 { x as f64 / (width - 1) as f64 } else { 0.0 };
-            let down = if height > 1 { y as f64 / (height - 1) as f64 } else { 0.0 };
-            let mix = (along + down) / 2.0;
-            let mut pixel = [
-                (base[0] as f64 * (1.0 - mix) + accent[0] as f64 * mix) as u8,
-                (base[1] as f64 * (1.0 - mix) + accent[1] as f64 * mix) as u8,
-                (base[2] as f64 * (1.0 - mix) + accent[2] as f64 * mix) as u8,
-            ];
-            let block_x = (along * blocks as f64) as u32;
-            let block_y = (down * blocks as f64) as u32;
-            if (block_x + block_y) % 2 == 0 {
-                pixel = [
-                    pixel[0].saturating_add(24),
-                    pixel[1].saturating_sub(12),
-                    pixel[2].saturating_add(40),
-                ];
-            }
-            // The border, so nobody mistakes this for a real render in a thumbnail.
-            let edge = (width.min(height) / 24).max(2);
-            if x < edge || y < edge || x + edge >= width || y + edge >= height {
-                pixel = [28, 28, 32];
-            }
-            image.put_pixel(x, y, image::Rgb(pixel));
-        }
-    }
-
-    let mut bytes = Vec::new();
-    image
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
-        // An in-memory PNG encode of a picture this size does not fail; if it ever does, the
-        // caller gets the reason rather than a panic in a worker thread nobody is watching.
-        .expect("the placeholder picture could not be encoded as a PNG");
-    bytes
-}
+pub use crate::fake::{draw, Fake};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_same_prompt_and_seed_draw_the_same_picture() {
-        let one = draw("a lighthouse in fog", 7, 64, 48);
-        let two = draw("a lighthouse in fog", 7, 64, 48);
-        assert_eq!(one, two);
-    }
-
-    #[test]
-    fn a_different_word_or_a_different_seed_draws_a_different_picture() {
-        let base = draw("a lighthouse in fog", 7, 64, 48);
-        assert_ne!(base, draw("a lighthouse in rain", 7, 64, 48));
-        assert_ne!(base, draw("a lighthouse in fog", 8, 64, 48));
-    }
-
-    #[test]
-    fn the_placeholder_is_a_readable_png_of_the_size_asked_for() {
-        let bytes = draw("a lighthouse", 1, 120, 80);
-        assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']), "not a PNG");
-        let (width, height) = crate::gallery::png_size(&bytes);
-        assert_eq!((width, height), (Some(120), Some(80)));
-    }
-
-    #[test]
-    fn the_fake_backend_caps_a_placeholder_rather_than_drawing_thousands_of_pixels_nobody_will_see() {
-        let fake = Fake::capped_at(256);
-        let shot = fake
-            .generate(
-                &Request {
-                    prompt: "a very large request".into(),
-                    negative: String::new(),
-                    width: 4096,
-                    height: 2048,
-                    steps: 30,
-                    seed: 3,
-                    cfg: 7.0,
-                },
-                &new_cancel(),
-            )
-            .unwrap();
-        assert_eq!((shot.width, shot.height), (256, 128));
-        // And it says so, rather than letting the sidecar claim 4096x2048.
-        assert_eq!(shot.sent, "256x128");
-    }
-
-    #[test]
-    fn a_cancelled_request_never_reaches_a_backend() {
-        let cancel = new_cancel();
-        cancel.store(true, Ordering::SeqCst);
-        let request = Request {
-            prompt: "anything".into(),
-            negative: String::new(),
-            width: 64,
-            height: 64,
-            steps: 4,
-            seed: 1,
-            cfg: 7.0,
-        };
-        assert_eq!(
-            Fake::capped_at(64).generate(&request, &cancel).unwrap_err(),
-            "cancelled"
-        );
-        // The network backends check before they open a socket, so a cancelled generation costs
-        // nothing and, for the hosted one, sends no prompt anywhere.
-        let hosted = OpenAiImages::new(BackendConfig {
-            api_key_env: "STUDIO_TEST_NO_SUCH_VARIABLE".into(),
-            model: "gpt-image-1".into(),
-            ..BackendConfig::defaults_for(Kind::OpenAiImages)
-        });
-        assert_eq!(hosted.generate(&request, &cancel).unwrap_err(), "cancelled");
-    }
-
-    #[test]
-    fn a_hosted_backend_with_no_key_exported_says_what_to_export() {
-        std::env::remove_var("STUDIO_TEST_MISSING_KEY");
-        let hosted = OpenAiImages::new(BackendConfig {
-            api_key_env: "STUDIO_TEST_MISSING_KEY".into(),
-            model: "gpt-image-1".into(),
-            ..BackendConfig::defaults_for(Kind::OpenAiImages)
-        });
-        let problem = hosted
-            .generate(
-                &Request {
-                    prompt: "anything".into(),
-                    negative: String::new(),
-                    width: 64,
-                    height: 64,
-                    steps: 4,
-                    seed: 1,
-                    cfg: 7.0,
-                },
-                &new_cancel(),
-            )
-            .unwrap_err();
-        assert!(problem.contains("STUDIO_TEST_MISSING_KEY"), "{problem}");
-    }
-
-    #[test]
-    fn a_size_the_service_does_not_accept_is_snapped_and_both_numbers_are_kept() {
-        assert_eq!(snap_to_a_supported_size(1024, 1024), "1024x1024");
-        assert_eq!(snap_to_a_supported_size(512, 512), "1024x1024");
-        assert_eq!(snap_to_a_supported_size(1920, 1080), "1536x1024");
-        assert_eq!(snap_to_a_supported_size(1080, 1920), "1024x1536");
-        assert_eq!(snap_to_a_supported_size(2000, 700), "1536x1024");
-        assert_eq!(snap_to_a_supported_size(0, 0), "1024x1024");
-    }
-
-    #[test]
-    fn a_filename_from_a_server_cannot_change_what_the_next_request_asks_for() {
-        assert_eq!(url_part("Studio_00001_.png"), "Studio_00001_.png");
-        assert_eq!(url_part("a&b=c d.png"), "a%26b%3Dc%20d.png");
-        assert_eq!(url_part("sub/folder"), "sub%2Ffolder");
-    }
-
-    #[test]
-    fn the_file_a_history_entry_points_at_is_found_whichever_node_wrote_it() {
-        let history = json!({
-            "abc": {
-                "outputs": {
-                    "9": { "images": [{ "filename": "Studio_00001_.png", "subfolder": "", "type": "output" }] }
-                }
-            }
-        });
-        let found = Found::read(&history, "abc").unwrap();
-        assert_eq!(found.filename, "Studio_00001_.png");
-        assert_eq!(found.kind, "output");
-
-        // Queued but not finished: the entry is there, its outputs are not. That is "still
-        // working", and treating it as a failure would end every render early.
-        assert!(Found::read(&json!({ "abc": { "outputs": {} } }), "abc").is_none());
-        assert!(Found::read(&json!({}), "abc").is_none());
-
-        // A preview rather than an output is still a picture, and is taken if it is all there is.
-        let preview = json!({
-            "abc": { "outputs": { "3": { "images": [{ "filename": "p.png", "type": "temp" }] } } }
-        });
-        assert_eq!(Found::read(&preview, "abc").unwrap().kind, "temp");
-
-        // And an entry naming an empty filename is not one.
-        let empty = json!({
-            "abc": { "outputs": { "9": { "images": [{ "filename": "", "type": "output" }] } } }
-        });
-        assert!(Found::read(&empty, "abc").is_none());
-    }
-
-    #[test]
-    fn a_server_error_message_is_passed_through_rather_than_summarised_away() {
-        // ComfyUI's own words for a graph it cannot run are the useful part of the failure.
-        let body = r#"{"error":{"message":"Value not in list","type":"invalid_prompt"},"node_errors":{}}"#;
-        let said = |body: &str| explain(ureq::Response::new(400, "Bad Request", body).unwrap());
-        assert_eq!(said(body), "Value not in list");
-        assert_eq!(said(r#"{"error":"not authenticated"}"#), "not authenticated");
-        assert_eq!(said(""), "no explanation was sent");
-        // A body that is not JSON at all is still the server's own words, trimmed to a length a
-        // summary line can carry.
-        assert_eq!(said("  upstream is down  "), "upstream is down");
-        let shortened = said(&"x".repeat(900));
-        assert!(shortened.chars().count() <= 301, "{}", shortened.chars().count());
-        assert!(shortened.ends_with('…'));
-    }
-}
+#[path = "backend_tests.rs"]
+mod tests;

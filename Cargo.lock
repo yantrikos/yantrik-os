@@ -11189,11 +11189,13 @@ dependencies = [
  "tracing",
  "tungstenite",
  "ureq 2.12.1",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-testing",
  "yantrik-ui-kit",
 ]
 
@@ -11772,24 +11774,19 @@ dependencies = [
 name = "yantrik-presentation"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "png",
  "serde",
  "serde_json",
  "slint",
  "tracing",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-testing",
  "yantrik-ui-kit",
-]
-
-[[package]]
-name = "yantrik-presentation-core-tests"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -11866,11 +11863,12 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-testing",
  "yantrik-ui-kit",
  "zbus",
 ]
@@ -11889,14 +11887,17 @@ dependencies = [
  "sha2",
  "slint",
  "tracing",
+ "tracing-subscriber",
  "ureq 2.12.1",
  "url",
+ "yantrik-address-place",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
  "yantrik-image-core",
  "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-mind",
+ "yantrik-testing",
  "yantrik-ui-kit",
 ]
 
@@ -11963,18 +11964,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "libc",
- "png",
- "pty-process",
- "serde",
  "serde_json",
  "slint",
  "tracing",
  "vt100",
+ "yantrik-app",
  "yantrik-app-build",
- "yantrik-app-runtime",
  "yantrik-design-tokens",
- "yantrik-ipc-contracts",
- "yantrik-ipc-transport",
+ "yantrik-mind",
+ "yantrik-testing",
  "yantrik-ui-kit",
 ]
 

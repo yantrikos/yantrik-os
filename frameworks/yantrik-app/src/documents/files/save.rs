@@ -254,21 +254,21 @@ fn its_own_moved_file(rules: &dyn FileRules, job: &SaveJob, path: &Path) -> bool
 /// Why a save cannot write to the file this document came from, when that file is not there, and
 /// where it went if that can be found: a refusal with no next step in it is the same as losing
 /// the work.
-fn stranded(rules: &dyn FileRules, job: &SaveJob, path: &Path) -> String {
+pub(crate) fn stranded(rules: &dyn FileRules, job: &SaveJob, path: &Path) -> String {
     let found = job.on_disk.as_deref().and_then(|on_disk| locate(path, on_disk, job.inode, rules.reader()));
     match found {
         Some(now) => format!(
             "{} is not there any more — the same file looks to be at {} now. Nothing was written and \
-             your draft is intact: Save As to {} to write your changes into it.",
+             your draft is intact: {}",
             path.display(),
             now.display(),
-            now.display()
+            rules.write_into_moved(&now)
         ),
         None => format!(
             "{} was moved or deleted, so there is nothing there to write into. Nothing was written and \
-             your draft is intact: Save As with overwrite=true to write it here, or Save As to wherever \
-             it went.",
-            path.display()
+             your draft is intact: {}",
+            path.display(),
+            rules.write_here_or_elsewhere()
         ),
     }
 }

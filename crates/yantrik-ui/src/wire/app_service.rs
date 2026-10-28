@@ -170,9 +170,9 @@ mod tests {
             let (found, _) = resolve(app.id, &[]).expect(app.id);
             assert_eq!(found.id, app.id);
         }
-        assert!(resolve("terminal", &[]).is_none());
+        assert!(resolve("browser", &[]).is_none());
         assert!(resolve("files", &[]).is_none());
-        let said = start("terminal", &[]);
+        let said = start("browser", &[]);
         assert_eq!(said["state"], "not_on_demand");
     }
 

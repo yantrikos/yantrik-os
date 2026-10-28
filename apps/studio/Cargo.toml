@@ -2,22 +2,29 @@
 name = "yantrik-studio"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik Studio - image generation on your own GPU or a hosted service, with a control surface"
+description = "Yantrik Studio - image generation on your own GPU or a hosted service, on YantrikApp, with a control surface"
+
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, against fake backends in this process.
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "yantrik-studio"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
-yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 # `is_image` decides what `open`, `upscale` and `delete` will accept. It is the same answer the
 # file browser and the image viewer give, because a viewer that disagrees with the browser about
 # what it can open is worse than one that opens nothing.
 yantrik-image-core = { workspace = true }
+# Where an address leads, for the one URL a hosted service may offer a picture at: the same answer the
+# download manager gives an agent's fetch.
+yantrik-address-place = { path = "../../crates/yantrik-address-place" }
 slint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -41,6 +48,12 @@ url = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]
+# `activate`, `display_gone` and `lingering`: the window manager and the compositor, as the runner
+# hears them.
+yantrik-mind = { workspace = true }
+yantrik-testing = { workspace = true, features = ["testing"] }
+# Capturing what the app logs, to prove a secret is not in it.
+tracing-subscriber = { workspace = true }
 # The headless test writes what it drew, so a person can look at it instead of trusting the
 # assertions about it.
 png = "0.18"

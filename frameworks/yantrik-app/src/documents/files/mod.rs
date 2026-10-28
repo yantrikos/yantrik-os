@@ -55,6 +55,18 @@ pub trait FileRules {
     fn read_only(&self, path: &Path) -> String;
     /// A step of a save failed.
     fn save_failed(&self, error: &dyn std::fmt::Display) -> String;
+
+    /// The end of the sentence for a save onto the document's own file when that file is gone and
+    /// has been found at `now`: how to write the changes into it. An app that has no "Save As
+    /// with overwrite" says what it does have, so no sentence names an action the app lacks.
+    fn write_into_moved(&self, now: &Path) -> String {
+        format!("Save As to {} to write your changes into it.", now.display())
+    }
+
+    /// The same, when the file was not found anywhere.
+    fn write_here_or_elsewhere(&self) -> String {
+        "Save As with overwrite=true to write it here, or Save As to wherever it went.".into()
+    }
 }
 
 /// Milliseconds since the epoch.

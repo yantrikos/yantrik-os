@@ -2,32 +2,33 @@
 name = "yantrik-terminal"
 version = "0.1.0"
 edition = "2021"
-description = "Yantrik Terminal — AI-native terminal emulator with PTY support"
+description = "Yantrik Terminal - persistent PTY shells in tabs, on YantrikApp"
+
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, against real shells.
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "yantrik-terminal"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
-yantrik-ipc-contracts = { workspace = true }
-yantrik-ipc-transport = { workspace = true }
+yantrik-app = { workspace = true }
 yantrik-design-tokens = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 slint = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-pty-process = "0.5"
 vt100 = "0.16"
 libc = "0.2"
 anyhow = "1"
 
-[lib]
-path = "src/session.rs"
+[dev-dependencies]
+# `activate`, `display_gone` and `lingering`: the window manager and the compositor, as the runner
+# hears them.
+yantrik-mind = { workspace = true }
+yantrik-testing = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
 yantrik-app-build = { workspace = true }
-
-[dev-dependencies]
-png = "0.18"

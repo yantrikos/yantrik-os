@@ -4,12 +4,18 @@ version = "0.1.0"
 edition = "2021"
 description = "Yantrik Presentation — slide deck editor with themes, presenter mode, AI assist"
 
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary.
+# Its behaviour is tested headless through yantrik-testing, its saves through the framework's
+# fault-injecting disk.
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "yantrik-presentation"
 path = "src/main.rs"
 
 [dependencies]
-yantrik-app-runtime = { path = "../../crates/yantrik-app-runtime" }
+yantrik-app = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
 yantrik-design-tokens = { workspace = true }
@@ -18,6 +24,16 @@ slint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# O_NOFOLLOW on the read side, for the old build's recovery file; the same guard the editors use.
+libc = { workspace = true }
+
+[dev-dependencies]
+# TestApp, with the window manager's word on activation.
+yantrik-testing = { workspace = true, features = ["testing"] }
+# FaultyDisk, to make any step of a save fail.
+yantrik-app = { workspace = true, features = ["testing"] }
+# The window drawn without a display, written as a screenshot.
+png = "0.18"
 
 [build-dependencies]
 yantrik-app-build = { workspace = true }
