@@ -1773,7 +1773,7 @@ fn worker_loop(
             }
             Ok(CompanionCommand::SetJudge { config }) => {
                 companion.set_judge_config(config);
-                companion.save_config();
+                companion.save_judge_config();
             }
             Ok(CompanionCommand::ScoreConversationTurn { text }) => {
                 companion.score_conversation_turn(&text);

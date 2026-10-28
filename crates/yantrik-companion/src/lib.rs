@@ -25,6 +25,7 @@ pub mod chat_bridge;
 pub mod bond;
 pub mod companion;
 pub mod config;
+pub mod config_file;
 pub mod mcp_client;
 pub mod mcp_security;
 pub mod sub_agent;
