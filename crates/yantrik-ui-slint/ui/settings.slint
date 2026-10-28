@@ -1281,7 +1281,6 @@ export component SettingsScreen inherits Rectangle {
                                                     : root.ai-status.status == "refused" ? "Key refused"
                                                     : root.ai-status.status == "unreachable" ? "Can't reach it"
                                                     : root.ai-status.status == "unset" ? "Not set up"
-                                                    : root.ai-status.status == "fallback" ? "Fallback"
                                                     : "Unverified";
                                                 color: root.ai-status.status == "connected" ? Theme.color-success
                                                      : root.ai-status.status == "fallback" || root.ai-status.status == "checking" ? Theme.amber
@@ -1569,7 +1568,6 @@ export component SettingsScreen inherits Rectangle {
                                 border-radius: Theme.r-lg;
                                 border-width: 1px;
                                 border-color: provider.is-primary ? Theme.accent-dim
-                                            : provider.is-fallback ? Theme.amber-dim
                                             : Theme.border-subtle;
                                 height: prov-row-layout.preferred-height;
 
@@ -1624,7 +1622,7 @@ export component SettingsScreen inherits Rectangle {
                                                 vertical-alignment: center;
                                             }
                                         }
-                                        // Primary/Fallback badges
+                                        // Primary badge
                                         if provider.is-primary : Rectangle {
                                             width: pri-txt.preferred-width + 12px;
                                             height: 20px;
@@ -1633,20 +1631,6 @@ export component SettingsScreen inherits Rectangle {
                                             pri-txt := Text {
                                                 text: "Companion uses this";
                                                 color: Theme.accent;
-                                                font-size: Theme.fs-micro;
-                                                font-weight: 600;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                        if provider.is-fallback : Rectangle {
-                                            width: fb-txt.preferred-width + 12px;
-                                            height: 20px;
-                                            border-radius: 10px;
-                                            background: Theme.tint-amber;
-                                            fb-txt := Text {
-                                                text: "Fallback";
-                                                color: Theme.amber;
                                                 font-size: Theme.fs-micro;
                                                 font-weight: 600;
                                                 horizontal-alignment: center;

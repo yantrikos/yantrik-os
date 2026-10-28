@@ -162,3 +162,13 @@ fn no_sentence_on_the_page_carries_a_run_of_spaces() {
         }
     }
 }
+
+#[test]
+fn no_saved_provider_row_shows_a_fallback_badge() {
+    // Nothing builds a backend from a provider's stored `is_fallback`; the flag stays in the file
+    // and the row neither says it nor colours its border for it. config.yaml's `llm.fallback` is
+    // the real one, and the map of what runs on what shows that.
+    let page = ai_page();
+    assert!(!page.contains("provider.is-fallback"), "a provider row reads the stored fallback flag");
+    assert!(!literals(page).iter().any(|s| s.contains("Fallback")), "the AI page shows a Fallback label");
+}
