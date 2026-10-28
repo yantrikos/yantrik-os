@@ -84,7 +84,7 @@ pub fn start(name: &str, installed: &[DesktopEntry]) -> Value {
         Plan::Running => said("running", None),
         Plan::Starting => said("starting", None),
         Plan::Failed(why) => said("failed", Some(why)),
-        Plan::Spawn => match spawn(app) {
+        Plan::Spawn(generation) => match spawn(app, generation) {
             Ok(()) => said("starting", None),
             Err(why) => {
                 with_starts(|starts| starts.not_spawned(app.id, &why, Instant::now()));
@@ -116,7 +116,7 @@ fn answer(app: &FrameworkApp, shown: &str, state: &str, reason: Option<String>) 
 }
 
 /// Run the instance and watch it, so a start that ends is told to the next ask.
-fn spawn(app: &'static FrameworkApp) -> Result<(), String> {
+fn spawn(app: &'static FrameworkApp, generation: u64) -> Result<(), String> {
     let path = super::dock::resolve_app_binary(app.program);
     let mut command = service_command(&path);
     for (key, value) in super::dock::session_env() {
@@ -131,7 +131,7 @@ fn spawn(app: &'static FrameworkApp) -> Result<(), String> {
             Err(e) => (false, format!("it could not be waited for: {e}")),
         };
         let up = answering(app.id);
-        with_starts(|starts| starts.exited(app.id, success, up, &how, Instant::now()));
+        with_starts(|starts| starts.exited(app.id, generation, success, up, &how, Instant::now()));
         tracing::info!(app = app.id, success, up, "an on-demand start ended: {how}");
     });
     Ok(())

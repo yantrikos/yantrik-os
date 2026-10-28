@@ -228,7 +228,7 @@ fn a_mailbox_is_described_with_the_same_keys_and_values() {
 #[test]
 fn the_summary_says_what_it_always_said() {
     let (app, _) = start_with(&with_inbox(), yantrik_app::mind::fake::FakeMind::new());
-    assert_eq!(summary(&app), "Email — the mail service could not be reached: the mail service has not been asked yet");
+    assert_eq!(summary(&app), "Email is starting; ask again in a moment.");
     assert_eq!(state(&app)["has_account"], Value::Null, "nothing has answered yet");
     super::quiet(&app);
     act(&app, "select_folder", json!({ "folder": "Receipts" })).unwrap();

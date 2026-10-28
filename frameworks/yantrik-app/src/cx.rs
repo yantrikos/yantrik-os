@@ -95,7 +95,10 @@ struct Waiting<C> {
 pub struct Core<A: App> {
     id: &'static str,
     model: RefCell<A::Model>,
-    ui: A::Ui,
+    /// The primary window. An instance an agent started has none until the person arrives
+    /// (`cx/serve.rs`): a window made before the event loop is not the same thing to a windowing
+    /// system as one made in it, and a service start makes none it will not show.
+    ui: RefCell<Option<Rc<A::Ui>>>,
     timers: RefCell<Box<dyn Timers<Fired<A::Command>>>>,
     executor: RefCell<Box<dyn Executor<A::Command>>>,
     settings: RefCell<Store<A::Settings>>,
@@ -175,7 +178,7 @@ pub struct Parts<A: App> {
 
 impl<A: App> Core<A> {
     /// A core over `model` and `ui`, with the parts it is given.
-    pub fn new(model: A::Model, ui: A::Ui, parts: Parts<A>) -> Rc<Core<A>> {
+    pub fn new(model: A::Model, ui: Option<A::Ui>, parts: Parts<A>) -> Rc<Core<A>> {
         let (post, inbox) = queue::bounded(queue::CAPACITY, parts.wake);
         let report: Arc<dyn Report> = Arc::new(persisted::PostWritten(post.clone()));
         Rc::new_cyclic(|weak: &Weak<Core<A>>| {
@@ -188,7 +191,7 @@ impl<A: App> Core<A> {
             Core {
                 id: A::ID,
                 model: RefCell::new(model),
-                ui,
+                ui: RefCell::new(ui.map(Rc::new)),
                 timers: RefCell::new((parts.timers)(sink)),
                 executor: RefCell::new(parts.executor),
                 settings: RefCell::new(parts.settings),
@@ -232,8 +235,15 @@ impl<A: App> Core<A> {
         self.id
     }
 
-    pub fn ui(&self) -> &A::Ui {
-        &self.ui
+    /// The primary window. Panics before it exists, which only a service start can be before the
+    /// person arrives: nothing that wires, renders or shows it runs then.
+    pub fn ui(&self) -> Rc<A::Ui> {
+        self.primary().expect("the primary window exists (a service start makes it when the person arrives)")
+    }
+
+    /// The primary window, if it exists.
+    pub fn primary(&self) -> Option<Rc<A::Ui>> {
+        self.ui.borrow().clone()
     }
 
     /// Where the app's files are.

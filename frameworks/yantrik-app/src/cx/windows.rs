@@ -45,7 +45,7 @@ pub(crate) struct Windows<U> {
     pub(super) first_open: bool,
     more: BTreeMap<WindowId, U>,
     /// The theme the windows wear now, so a window opened later wears it too.
-    theme: Option<ThemeSettings>,
+    pub(super) theme: Option<ThemeSettings>,
     /// The window the window manager last gave the keyboard to, while it has it.
     active: Option<WindowId>,
     /// Frames drawn by every window since the app started (`cx/drawn.rs`).
@@ -77,7 +77,7 @@ impl<A: App> Core<A> {
     pub fn window(&self, id: WindowId) -> Option<A::Ui> {
         let windows = self.windows.borrow();
         if id == WindowId::PRIMARY {
-            return windows.first_open.then(|| self.ui.clone_strong());
+            return windows.first_open.then(|| self.primary()).flatten().map(|ui| ui.as_ref().clone_strong());
         }
         windows.more.get(&id).map(|ui| ui.clone_strong())
     }
@@ -96,8 +96,8 @@ impl<A: App> Core<A> {
             (windows.first_open, more)
         };
         let model = self.model.borrow();
-        if first_open {
-            A::render(&self.ui, WindowId::PRIMARY, &model, changed);
+        if let Some(ui) = self.primary().filter(|_| first_open) {
+            A::render(&ui, WindowId::PRIMARY, &model, changed);
         }
         for (id, ui) in more {
             A::render(&ui, id, &model, changed);
@@ -107,7 +107,9 @@ impl<A: App> Core<A> {
     /// The new theme, on every window.
     pub(super) fn apply_theme(&self, theme: &ThemeSettings) {
         self.windows.borrow_mut().theme = Some(*theme);
-        self.ui.apply_theme(theme);
+        if let Some(ui) = self.primary() {
+            ui.apply_theme(theme);
+        }
         let more: Vec<A::Ui> = self.windows.borrow().more.values().map(|ui| ui.clone_strong()).collect();
         for ui in more {
             ui.apply_theme(theme);
@@ -178,7 +180,9 @@ impl<A: App> Core<A> {
     pub(super) fn close_window(&self, window: WindowId) {
         self.windows.borrow_mut().not_active(window);
         if window == WindowId::PRIMARY {
-            let _ = self.ui.hide();
+            if let Some(ui) = self.primary() {
+                let _ = ui.hide();
+            }
             self.windows.borrow_mut().first_open = false;
             self.report_windows();
             return;
@@ -276,7 +280,7 @@ impl<A: App> Core<A> {
             None if self.lingering() || self.keeps_serving() => {
                 // The person is here: what waited for them runs before the window is drawn.
                 self.person_arrives();
-                (self.reopen_first(), true)
+                (self.reopen_first()?, true)
             }
             None => return Err("the app's windows are closing".into()),
         };
@@ -301,9 +305,15 @@ impl<A: App> Core<A> {
     /// The first window, counted open again and drawn whole from the model, for `present` to
     /// show. The event loop kept it, hidden, and it is still wired by `App::wire`. It is the only
     /// window open, so the whole render is its alone, with a callback it fires queued as ever.
-    fn reopen_first(&self) -> WindowId {
+    fn reopen_first(&self) -> Result<WindowId, String> {
+        // An instance an agent started has no primary window yet: the person's arrival makes it,
+        // in the running event loop, wired and drawn, as every window made later is.
+        let made = self.make_primary_if_none()?;
         self.windows.borrow_mut().first_open = true;
+        if made {
+            self.event(Event::Opened(WindowId::PRIMARY));
+        }
         self.render_all();
-        WindowId::PRIMARY
+        Ok(WindowId::PRIMARY)
     }
 }

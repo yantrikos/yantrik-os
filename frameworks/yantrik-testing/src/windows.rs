@@ -87,3 +87,11 @@ impl<A: App> TestApp<A> {
         self.act("launch", args)?.settle()
     }
 }
+
+impl<A: App> TestApp<A> {
+    /// Whether the primary window has been made. A service start makes none, as the runner does:
+    /// the person's arrival makes it in the running event loop (`Core::make_primary_if_none`).
+    pub fn has_primary_window(&self) -> bool {
+        self.with(|u| u.core.primary().is_some())
+    }
+}

@@ -50,6 +50,7 @@ struct Model {
     launches: u32,
     presented: u32,
     not_opened: u32,
+    opened: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,7 @@ enum Command {
     Presented,
     OpenAnother,
     NotOpened,
+    Opened,
     /// Closes the last window with work in flight, as an app with a write under way does.
     CloseWithWork,
 }
@@ -102,6 +104,7 @@ impl App for Service {
                 fx.open_window();
             }
             Command::NotOpened => m.not_opened += 1,
+            Command::Opened => m.opened += 1,
             Command::CloseWithWork => {
                 fx.close(WindowId::PRIMARY);
                 fx.linger(Duration::from_secs(10));
@@ -115,6 +118,7 @@ impl App for Service {
             Event::Launch(_) => Some(Command::Launched),
             Event::Presented(_) => Some(Command::Presented),
             Event::WindowNotOpened { .. } => Some(Command::NotOpened),
+            Event::Opened(_) => Some(Command::Opened),
             _ => None,
         }
     }
@@ -156,7 +160,7 @@ fn a_service_start_loads_the_store_and_shows_nothing() {
     let app = TestApp::<Service>::start_service();
     app.run_jobs();
     assert!(app.windows().is_empty(), "no window is counted open");
-    assert!(!visible(&app), "and none is shown");
+    assert!(!app.has_primary_window(), "and none is made: the person's arrival makes it, in the loop");
     assert_eq!(app.model(|m| m.served_starts), 1, "the store is loaded");
     assert_eq!(app.model(|m| m.person_starts), 0, "the person's start waits for their window");
     assert_eq!(app.model(|m| m.launches), 0, "no launch is applied to a service start");
@@ -189,10 +193,17 @@ fn two_agents_at_once_are_served_by_the_one_instance() {
 fn the_persons_launch_after_a_service_start_presents_a_native_window() {
     let app = TestApp::<Service>::start_service();
     app.describe_as_agent("agent-1");
+    // The 520 gate: the person's launch into a service instance showed no window, because a window
+    // made before the event loop is created by the windowing system only when the loop next idles.
+    // The instance makes none until the person arrives, as the real runner does, so the arrival
+    // here goes the real road: made, wired, drawn and shown.
+    assert!(!app.has_primary_window(), "none before the person arrives");
     let answer = app.launch_again().expect("handed over");
     assert_eq!(answer["window"], true, "{answer}");
+    assert!(app.has_primary_window(), "made at the arrival");
     assert_eq!(app.windows(), vec![WindowId::PRIMARY]);
     assert!(visible(&app));
+    assert_eq!(app.model(|m| m.opened), 1, "the app heard Event::Opened");
     assert_eq!(app.ui(|ui| ui.get_notes()), 1, "drawn whole from the instance's model");
     assert_eq!(app.model(|m| m.person_starts), 1, "their start ran, once");
     assert_eq!(app.model(|m| m.launches), 1, "their launch was applied");

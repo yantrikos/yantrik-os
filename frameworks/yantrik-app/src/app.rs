@@ -128,6 +128,10 @@ pub enum Event<S> {
     /// it, and the app drops what it attached to the id. `None` does nothing more: the failure is
     /// already logged and filed as a problem record.
     WindowNotOpened { window: WindowId, why: String },
+    /// The framework made the primary window at the person's first arrival at an instance an agent
+    /// started (`crate::service`): it is wired, and about to be drawn whole from the model and shown.
+    /// An app that keeps something per window makes it here. `None` does nothing.
+    Opened(WindowId),
 }
 
 /// What the runner knows before any window exists.

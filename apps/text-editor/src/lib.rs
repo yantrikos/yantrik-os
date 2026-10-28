@@ -81,7 +81,14 @@ impl App for TextEditor {
         let state = boot.paths.state_dir().to_path_buf();
         let mut m = Model::new(claim, state.clone());
         m.for_mind = boot.for_mind;
-        let notice = recovery::restore(&mut m, &boot.drafts, files::legacy::read(&state, None));
+        // Recovery is the person's: an agent's start opens none of their unsaved tabs, reports none, and
+        // leaves the drafts where they are until their first window (`drafts::started`).
+        let notice = if boot.service {
+            m.recovery_owed = Some(boot.drafts.clone());
+            String::new()
+        } else {
+            recovery::restore(&mut m, &boot.drafts, files::legacy::read(&state, None))
+        };
         if m.tabs.is_empty() {
             update::tabs::blank(&mut m, owner::Opener::Person);
         }

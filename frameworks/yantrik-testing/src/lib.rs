@@ -272,7 +272,10 @@ impl<A: App> TestApp<A> {
                 .unwrap_or_else(|e| panic!("{}: the launch was refused: {e}", A::ID));
             let model = A::model(&boot)
                 .unwrap_or_else(|e| panic!("{}: the model did not start: {e}", A::ID));
-            let ui = A::Ui::make().unwrap_or_else(|e| panic!("{}: no headless window: {e}", A::ID));
+            // As the runner does: a service start has no window until the person arrives, so the harness
+            // makes none either. A headless window that always exists would show a window the real
+            // windowing system has not created (#978, the 520 gate).
+            let ui = (!boot.service).then(|| A::Ui::make().unwrap_or_else(|e| panic!("{}: no headless window: {e}", A::ID)));
             let jobs = SharedJobs(Arc::new(Mutex::new(Manual::new())));
             let made: Rc<RefCell<Option<AppClock<A::Command>>>> = Rc::new(RefCell::new(None));
             let made_out = made.clone();
@@ -307,7 +310,9 @@ impl<A: App> TestApp<A> {
             // Hermetic: a window opened in a test wears the default theme, not this machine's.
             core.set_theme(yantrik_app::theme::ThemeSettings::default());
             core.flush_settings();
-            A::wire(&Cx::new(core.clone()));
+            if core.primary().is_some() {
+                A::wire(&Cx::new(core.clone()));
+            }
             core.render_all();
             if boot.service {
                 core.start_service();
@@ -480,7 +485,7 @@ impl<A: App> TestApp<A> {
     }
 
     pub fn ui<R: Send + 'static>(&self, f: impl FnOnce(&A::Ui) -> R + Send + 'static) -> R {
-        self.with(move |u| f(u.core.ui()))
+        self.with(move |u| f(&u.core.ui()))
     }
 
     pub fn last_refusal(&self) -> Option<Refused> {

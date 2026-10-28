@@ -30,13 +30,14 @@ pub enum Plan {
     Starting,
     /// The last start failed, and why.
     Failed(String),
-    /// Start the instance now.
-    Spawn,
+    /// Start the instance now. The number names this start, so the end of an earlier process is
+    /// never taken for the end of this one.
+    Spawn(u64),
 }
 
 #[derive(Debug, Clone)]
 enum State {
-    Starting { since: Instant },
+    Starting { since: Instant, generation: u64 },
     Failed { why: String, at: Instant },
 }
 
@@ -44,6 +45,8 @@ enum State {
 #[derive(Debug, Default)]
 pub struct Starts {
     by_id: HashMap<String, State>,
+    /// The last start made, for naming the next.
+    started: u64,
 }
 
 impl Starts {
@@ -56,14 +59,15 @@ impl Starts {
             return Plan::Running;
         }
         match self.by_id.get(id) {
-            Some(State::Starting { since }) if now.duration_since(*since) < STARTING_FOR => return Plan::Starting,
+            Some(State::Starting { since, .. }) if now.duration_since(*since) < STARTING_FOR => return Plan::Starting,
             Some(State::Failed { why, at }) if now.duration_since(*at) < FAILED_FOR => {
                 return Plan::Failed(why.clone());
             }
             _ => {}
         }
-        self.by_id.insert(id.to_string(), State::Starting { since: now });
-        Plan::Spawn
+        self.started += 1;
+        self.by_id.insert(id.to_string(), State::Starting { since: now, generation: self.started });
+        Plan::Spawn(self.started)
     }
 
     /// The process the shell started for `id` ended. `answering` is whether the surface answers
@@ -71,10 +75,14 @@ impl Starts {
     /// that worked, whoever holds it. One that ended cleanly without answering has most likely
     /// found another copy starting, and is still believed for [`STARTING_FOR`]; one that ended in
     /// failure is a failed start.
-    pub fn exited(&mut self, id: &str, success: bool, answering: bool, how: &str, now: Instant) {
+    pub fn exited(&mut self, id: &str, generation: u64, success: bool, answering: bool, how: &str, now: Instant) {
         if answering {
-            self.by_id.remove(id);
-        } else if !success {
+            // Whoever holds the surface, the start worked. (A process of an earlier start that ends
+            // after serving also finds the state gone, or another start's, and leaves it alone.)
+            if matches!(self.by_id.get(id), Some(State::Starting { .. })) {
+                self.by_id.remove(id);
+            }
+        } else if !success && matches!(self.by_id.get(id), Some(State::Starting { generation: g, .. }) if *g == generation) {
             self.by_id.insert(id.to_string(), State::Failed { why: how.to_string(), at: now });
         }
     }
@@ -151,41 +159,61 @@ mod tests {
     fn an_ask_starts_the_instance_once_and_a_second_ask_waits_for_it() {
         let base = Instant::now();
         let mut starts = Starts::default();
-        assert_eq!(starts.plan("notes", false, base), Plan::Spawn);
+        assert!(matches!(starts.plan("notes", false, base), Plan::Spawn(_)));
         assert_eq!(starts.plan("notes", false, at(1, base)), Plan::Starting, "two agents at once");
-        assert_eq!(starts.plan("calendar", false, at(1, base)), Plan::Spawn, "another app is its own");
+        assert!(matches!(starts.plan("calendar", false, at(1, base)), Plan::Spawn(_)), "another app is its own");
         assert_eq!(starts.plan("notes", true, at(2, base)), Plan::Running);
-        assert_eq!(starts.plan("notes", false, at(3, base)), Plan::Spawn, "it was killed: start again");
+        assert!(matches!(starts.plan("notes", false, at(3, base)), Plan::Spawn(_)), "it was killed: start again");
     }
 
     #[test]
     fn a_start_that_never_answers_is_believed_for_a_while_and_then_tried_again() {
         let base = Instant::now();
         let mut starts = Starts::default();
-        assert_eq!(starts.plan("notes", false, base), Plan::Spawn);
+        assert!(matches!(starts.plan("notes", false, base), Plan::Spawn(_)));
         assert_eq!(starts.plan("notes", false, at(29, base)), Plan::Starting);
-        assert_eq!(starts.plan("notes", false, at(31, base)), Plan::Spawn);
+        assert!(matches!(starts.plan("notes", false, at(31, base)), Plan::Spawn(_)));
     }
 
     #[test]
     fn a_failed_start_is_told_to_the_next_ask_and_then_tried_again() {
         let base = Instant::now();
         let mut starts = Starts::default();
-        assert_eq!(starts.plan("notes", false, base), Plan::Spawn);
-        starts.exited("notes", false, false, "it exited with status 1", at(2, base));
+        assert!(matches!(starts.plan("notes", false, base), Plan::Spawn(_)));
+        starts.exited("notes", 1, false, false, "it exited with status 1", at(2, base));
         assert_eq!(starts.plan("notes", false, at(3, base)), Plan::Failed("it exited with status 1".into()));
-        assert_eq!(starts.plan("notes", false, at(13, base)), Plan::Spawn, "after the wait");
+        assert!(matches!(starts.plan("notes", false, at(13, base)), Plan::Spawn(_)), "after the wait");
     }
 
     #[test]
     fn a_clean_exit_that_does_not_answer_is_another_copy_starting_not_a_failure() {
         let base = Instant::now();
         let mut starts = Starts::default();
-        assert_eq!(starts.plan("notes", false, base), Plan::Spawn);
-        starts.exited("notes", true, false, "it ended", at(1, base));
+        assert!(matches!(starts.plan("notes", false, base), Plan::Spawn(_)));
+        starts.exited("notes", 1, true, false, "it ended", at(1, base));
         assert_eq!(starts.plan("notes", false, at(2, base)), Plan::Starting);
-        starts.exited("notes", false, true, "it exited", at(3, base));
-        assert_eq!(starts.plan("notes", false, at(4, base)), Plan::Spawn, "answering cleared it");
+        starts.exited("notes", 1, false, true, "it exited", at(3, base));
+        assert!(matches!(starts.plan("notes", false, at(4, base)), Plan::Spawn(_)), "answering cleared it");
+    }
+
+
+    /// The 520 gate: the old instance, killed, is reaped after the next start was made. Its death is
+    /// not that start's failure: the next describe says the app is starting, not that it could not
+    /// start.
+    #[test]
+    fn the_end_of_an_earlier_process_is_not_the_failure_of_this_start() {
+        let base = Instant::now();
+        let mut starts = Starts::default();
+        let Plan::Spawn(first) = starts.plan("notes", false, base) else { panic!("a start") };
+        assert_eq!(starts.plan("notes", true, at(2, base)), Plan::Running, "it came up and served");
+        // kill -9: the surface is gone, an ask starts again, and only then is the first process reaped.
+        let Plan::Spawn(second) = starts.plan("notes", false, at(10, base)) else { panic!("a second start") };
+        assert_ne!(first, second);
+        starts.exited("notes", first, false, false, "it ended with signal: 9 (SIGKILL)", at(10, base));
+        assert_eq!(starts.plan("notes", false, at(11, base)), Plan::Starting, "the sentence while it starts");
+        // The second start itself failing is a failed start.
+        starts.exited("notes", second, false, false, "it exited with status 1", at(12, base));
+        assert_eq!(starts.plan("notes", false, at(13, base)), Plan::Failed("it exited with status 1".into()));
     }
 
     #[test]

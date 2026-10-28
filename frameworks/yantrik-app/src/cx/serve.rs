@@ -14,8 +14,11 @@
 
 use std::cell::{Cell, RefCell};
 
-use super::Core;
-use crate::app::{App, ExitReason};
+use slint::ComponentHandle as _;
+
+use super::{Core, Cx, Inbound};
+use crate::app::{App, Event, ExitReason, WindowId};
+use crate::window::Window as _;
 use crate::rail::RailCommand;
 use crate::report::Reporter;
 use crate::timers::{Fired, IDLE};
@@ -45,7 +48,6 @@ impl<A: App> Core<A> {
     /// instance ends [`crate::service::IDLE`] after this unless an agent uses it.
     pub fn start_service(&self) {
         self.serve.windowless.set(true);
-        // The first window exists but is not shown, and the core does not count it open.
         self.windows.borrow_mut().first_open = false;
         self.run_start(A::start_service, false);
         self.arm_idle();
@@ -58,6 +60,35 @@ impl<A: App> Core<A> {
         if !self.serve.person_started.replace(true) {
             self.run_start(A::start, true);
         }
+    }
+
+    /// The primary window, made now if the instance has none: an instance an agent started has made
+    /// none, because a window made before the event loop runs is registered with the windowing system
+    /// only when the loop next idles, and one made in it is created at once, as every window opened
+    /// later is. It is themed, given its chrome, heard for focus and for a close, and bound by
+    /// `App::wire`, exactly as the runner binds the first window of a person's start. Says whether it
+    /// was made.
+    pub(super) fn make_primary_if_none(&self) -> Result<bool, String> {
+        if self.primary().is_some() {
+            return Ok(false);
+        }
+        let ui = A::Ui::make().map_err(|e| format!("the window could not be made: {e}"))?;
+        let theme = self.windows.borrow().theme.unwrap_or_else(crate::theme::load);
+        ui.apply_theme(&theme);
+        ui.connect_chrome();
+        self.hear_window(WindowId::PRIMARY, &ui);
+        let post = self.post();
+        ui.window().on_close_requested(move || {
+            // The app decides (`App::event`): a close now, or a flow that ends in `fx.close`.
+            let _ = post.post(Inbound::Event(Event::CloseRequested(WindowId::PRIMARY)));
+            crate::runner::drain_on_ui_thread();
+            slint::CloseRequestResponse::KeepWindowShown
+        });
+        *self.ui.borrow_mut() = Some(std::rc::Rc::new(ui));
+        if let Some(core) = self.me.upgrade() {
+            A::wire(&Cx::new(core));
+        }
+        Ok(true)
     }
 
     /// Whether the person's start has run.

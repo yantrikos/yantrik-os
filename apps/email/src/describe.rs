@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use yantrik_app::control::View;
 
 use crate::model::Model;
-use crate::state::{self, Counted};
+use crate::state::{self, Counted, MailState};
 
 /// A folder's counts as `describe` prints them: the two numbers, or `null` — never `0/0` for a
 /// folder that was not counted, because that is what an empty folder prints.
@@ -21,8 +21,22 @@ pub fn counts_json(counts: &Counted) -> Value {
     }
 }
 
+/// What `describe` says until the first look at the mail service has landed.
+pub const STARTING: &str = "Email is starting; ask again in a moment.";
+
 pub fn view(m: &Model) -> View {
     let mail_state = &m.state;
+
+    // The first look at the mail service has not landed: the state is the one the app starts with,
+    // not an answer. Said as what it is (the contract phrase), not as a service that cannot be
+    // reached; a look that failed has landed, and says why (the 520 gate of #980).
+    if !m.looked && matches!(mail_state, MailState::Unreachable { .. }) {
+        return View::new(STARTING)
+            .with("service", "starting")
+            .with("notice", m.notice.clone())
+            .with("account_store", String::new())
+            .with("has_account", Value::Null);
+    }
 
     // The state the surface always carries, whichever of the three this is. `service` and
     // `notice` are the two that were missing: a caller could not tell a machine with no account

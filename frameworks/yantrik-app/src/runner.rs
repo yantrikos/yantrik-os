@@ -130,13 +130,22 @@ pub fn run<A: App>() -> ExitCode {
         Ok(model) => model,
         Err(declined) => return model_declined(A::ID, &declined, &problems::dir()),
     };
-    let ui = match A::Ui::make() {
-        Ok(ui) => ui,
-        Err(e) => return startup_failed(A::ID, "window", &e.to_string()),
+    // A service start makes no window: one made before the event loop runs is not created by the
+    // windowing system until the loop next idles. The person's arrival makes it, in the loop
+    // (`Core::make_primary_if_none`).
+    let ui = if service {
+        None
+    } else {
+        match A::Ui::make() {
+            Ok(ui) => Some(ui),
+            Err(e) => return startup_failed(A::ID, "window", &e.to_string()),
+        }
     };
     let theme_now = theme::load();
-    ui.apply_theme(&theme_now);
-    ui.connect_chrome();
+    if let Some(ui) = &ui {
+        ui.apply_theme(&theme_now);
+        ui.connect_chrome();
+    }
 
     let wake: crate::queue::Wake = Arc::new(|| {
         let _ = slint::invoke_from_event_loop(drain_on_ui_thread);
@@ -170,7 +179,9 @@ pub fn run<A: App>() -> ExitCode {
     );
 
     let cx = Cx::new(core.clone());
-    A::wire(&cx);
+    if core.primary().is_some() {
+        A::wire(&cx);
+    }
     core.render_all();
     if service {
         // No window, and nothing for the person: their launch brings both (`cx/serve.rs`).
@@ -202,7 +213,7 @@ pub fn run<A: App>() -> ExitCode {
     let ending = match crate::event_loop::before_loop(core.exit_reason().is_some(), first_open) {
         crate::event_loop::BeforeLoop::Skip => crate::event_loop::Ending::Closed,
         crate::event_loop::BeforeLoop::Run { show_first } => {
-            crate::event_loop::run_loop(core.ui(), A::ID, show_first)
+            crate::event_loop::run_loop(core.primary().as_deref(), A::ID, show_first)
         }
     };
     // The compositor went (a logout, or a shutdown that signals the whole session at once): no
@@ -224,10 +235,12 @@ pub fn run<A: App>() -> ExitCode {
 fn install<A: App>(core: &Rc<Core<A>>) {
     let for_drain = core.clone();
     DRAIN.with(|cell| *cell.borrow_mut() = Some(Box::new(move || for_drain.drain())));
-    core.hear_window(WindowId::PRIMARY, core.ui());
+    // A service start has no window yet; the person's arrival makes and binds it.
+    let Some(ui) = core.primary() else { return };
+    core.hear_window(WindowId::PRIMARY, &ui);
     let post = core.post();
     use slint::ComponentHandle as _;
-    core.ui().window().on_close_requested(move || {
+    ui.window().on_close_requested(move || {
         // The app decides (`App::event`): a close now, or a flow that ends in `fx.close`.
         let _ = post.post(Inbound::Event(Event::CloseRequested(WindowId::PRIMARY)));
         drain_on_ui_thread();

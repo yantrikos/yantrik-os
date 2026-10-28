@@ -217,11 +217,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // screen where it was.
                 crate::card_watch::hold_windows("files_open")?;
                 let name = args["name"].as_str().unwrap_or_default().to_string();
-                ensure_files_screen(&ui);
+                // Every refusal comes before the person's screen is touched: a refused action of a
+                // Mind's must not take the person to Files (the 520 gate). None of them needs the
+                // listing; only finding the file does.
                 mind::here(&ui.get_file_browser_path())?;
-                if !has_entry(&ui, &name) {
-                    return Err(format!("nothing called `{name}` in {}", ui.get_file_browser_path()));
-                }
                 // The answer names the app the one rule picked for this file, so a caller
                 // learns where it went and not only that it went. `invoke_file_open` runs the
                 // same `classify` on the callback side; asking it here too is the cheap way to
@@ -233,6 +232,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // The entry too, links followed: opening puts its contents in a window the mind
                 // can read back, and a link in the home may lead anywhere.
                 mind::may_open_entry(&ui.get_file_browser_path(), &name)?;
+                ensure_files_screen(&ui);
+                if !has_entry(&ui, &name) {
+                    return Err(format!("nothing called `{name}` in {}", ui.get_file_browser_path()));
+                }
                 // Asked on this thread, where the caller is in scope: a mind's app opens in Mind
                 // View on a worker, which can be refused, and the person's desktop is not the
                 // fallback. The answer then waits for the window like `open_app`'s, instead of
@@ -520,4 +523,22 @@ fn ready(ui: &App) -> Result<(), String> {
         return Err("A file operation is running".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod order_tests {
+    /// A Mind's `files_open` that is refused must not have taken the person to Files first (the 520
+    /// gate): every refusal is made before `ensure_files_screen`. Pinned as the order of the source,
+    /// since the refusals and the screen switch are one handler.
+    #[test]
+    fn a_refused_files_open_has_not_switched_the_screen() {
+        let src = include_str!("control_files.rs");
+        let open = &src[src.find("\"files_open\"").unwrap()..];
+        let open = &open[..open.find("\"files_up\"").unwrap()];
+        let switch = open.find("ensure_files_screen(&ui)").expect("the handler switches to Files");
+        for refusal in ["mind::here(", "mind::may_open_in_default_app(", "mind::may_open_entry("] {
+            let at = open.find(refusal).unwrap_or_else(|| panic!("{refusal} is in the handler"));
+            assert!(at < switch, "{refusal} must come before the screen is switched");
+        }
+    }
 }
