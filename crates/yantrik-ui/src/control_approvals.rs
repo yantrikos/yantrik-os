@@ -3309,7 +3309,11 @@ mod service_surface_approval_tests {
                 "name": "kill_process",
                 "description": description,
                 "permission": grade,
-                "parameters": { "type": "object", "properties": {}, "required": [] },
+                "parameters": {
+                    "type": "object",
+                    "properties": { "pid": { "type": "integer" }, "id": { "type": "string" } },
+                    "required": [],
+                },
             }],
         })
     }
@@ -3358,9 +3362,6 @@ mod service_surface_approval_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// What the app says its own ids stand for rides the same `describe` as its grade (#54) —
-    /// one round trip, so the sentence beside a handle cannot come from a different revision
-    /// of the app than the grade the card was graded by.
     /// An app's `describe`, carrying the shell's real `agent_run` declaration under its own
     /// name: the entry a card for `agent_run` would be checked against.
     fn describing_agent_run() -> serde_json::Value {
@@ -3395,6 +3396,9 @@ mod service_surface_approval_tests {
         assert!(unknown_action.contains("publishes no action called `no_such`"), "{unknown_action}");
     }
 
+    /// What the app says its own ids stand for rides the same `describe` as its grade (#54) —
+    /// one round trip, so the sentence beside a handle cannot come from a different revision
+    /// of the app than the grade the card was graded by.
     #[test]
     fn an_app_that_names_its_ids_has_them_read_off_the_same_describe() {
         let dir = scratch("naming");
