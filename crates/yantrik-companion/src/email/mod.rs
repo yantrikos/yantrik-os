@@ -115,7 +115,7 @@ fn update_config_token(config_path: &str, email: &str, new_token: &str, new_expi
         }
     }
 
-    std::fs::write(config_path, result.join("\n"))
+    crate::config_file::save_atomic(std::path::Path::new(config_path), &result.join("\n"))
         .map_err(|e| format!("Write config: {}", e))?;
     Ok(())
 }

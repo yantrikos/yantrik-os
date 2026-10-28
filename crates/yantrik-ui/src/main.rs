@@ -464,7 +464,12 @@ fn load_config(path: Option<PathBuf>) -> CompanionConfig {
     match path {
         Some(p) => {
             tracing::info!(path = %p.display(), "Loading config");
-            CompanionConfig::from_yaml(&p).expect("failed to load config")
+            // Read through recovery: a config.yaml truncated by a crash or power
+            // loss mid-save boots from the .last-good copy with a warning
+            // instead of failing to start (#1008).
+            let content = yantrik_companion::config_file::load_with_recovery(&p)
+                .expect("failed to load config");
+            serde_yaml::from_str(&content).expect("failed to parse config")
         }
         None => {
             tracing::info!("Using default config");
