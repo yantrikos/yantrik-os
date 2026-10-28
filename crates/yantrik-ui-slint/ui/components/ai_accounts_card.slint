@@ -56,7 +56,6 @@ component Choice inherits Rectangle {
 export global AiAccountsState {
     in-out property <[AiAccountRow]> rows;
     in-out property <string> summary;      // "4 accounts · 63 models"
-    in-out property <string> gateway;      // "Gateway: 127.0.0.1:7460 · 3 minds use it"
     in-out property <bool> refreshing;
     in-out property <string> lane;         // where personal things are kept on this computer
     callback refresh();
@@ -177,15 +176,10 @@ export component AiAccountsCard inherits Rectangle {
             // How a mind reaches these accounts without a key (a token for the desktop's gateway on
             // 127.0.0.1:7460) was this sentence, and read as jargon in the sweep of 17 October; the
             // address is in each mind's Details under What runs on what.
-            text: "Add an account once and every mind can use its models, through the picker in the ask bar. Keys are kept in this computer\u{2019}s vault; a mind is never given one.";
+            text: "Add an account once and every mind can use its models, through the picker in the ask bar. Free-tier keys are kept in the vault.";
             color: Theme.text-dim;
             font-size: Theme.fs-caption;
             wrap: word-wrap;
-        }
-        if AiAccountsState.gateway != "" : Text {
-            text: AiAccountsState.gateway;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-caption;
         }
         if AiAccountsState.lane != "" : Text {
             text: AiAccountsState.lane;

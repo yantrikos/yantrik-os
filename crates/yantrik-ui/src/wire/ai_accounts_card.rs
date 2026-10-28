@@ -76,13 +76,13 @@ pub fn rows(catalogue: &Catalogue, accounts: &[Account], consent: &Consent) -> (
         let sharing = crate::gateway::sharing(a, consent);
         let lane = consent::lane(consent, accounts);
         let private_words = if a.local {
-            "On this computer or your network: what your minds know about you never leaves it.".to_string()
+            "On this computer or your network.".to_string()
         } else {
             match sharing {
                 Sharing::Share => format!("Your minds share what they know about you with {}.", a.name),
-                Sharing::Lane if lane.is_some() => format!("Personal things stay on this computer; everything else goes to {}.", a.name),
-                Sharing::Lane => "Personal things stay on this computer, but no model here is set up for them yet, so those questions are not answered.".to_string(),
-                Sharing::Off => format!("Questions with personal things are not sent to {}.", a.name),
+                Sharing::Lane if lane.is_some() => format!("Your Minds' requests to {} go to your private model on this computer instead.", a.name),
+                Sharing::Lane => format!("Your Minds' requests to {} are refused: no private model on this computer is set up yet.", a.name),
+                Sharing::Off => format!("Your Minds' requests to {} are not sent.", a.name),
             }
         };
         let lane_model = if a.local {
@@ -261,20 +261,20 @@ mod tests {
         assert_eq!(drawn[0].summary, "2 models · 1 thinks · 1 sees images");
         assert_eq!(drawn[0].state, "ready");
         assert_eq!(drawn[0].sharing, "off", "nothing is shared until the person says so");
-        assert_eq!(drawn[0].private_words, "Questions with personal things are not sent to openai.");
+        assert_eq!(drawn[0].private_words, "Your Minds' requests to openai are not sent.");
         assert_eq!(drawn[0].share_words, "Share what your minds know about you with openai");
         assert_eq!(drawn[1].state, "failed");
         assert!(drawn[1].detail.contains("refused"));
         assert!(!drawn[1].offers_share && drawn[1].switchable, "a free tier that may train: keep on this computer, or don't share");
         assert!(drawn[0].offers_share && !drawn[2].switchable);
         assert_eq!(drawn[2].sharing, "share");
-        assert!(drawn[2].local && drawn[2].private_words.contains("never leaves"), "a local account keeps private context on the network");
+        assert!(drawn[2].local && drawn[2].private_words == "On this computer or your network.", "a local account says where it is, and nothing more");
         let consent = Consent { sharing: [("openai".to_string(), Sharing::Share)].into_iter().collect(), ..Consent::default() };
         let (_, shared) = rows(&catalogue, &[account("openai", false, false)], &consent);
         assert_eq!((shared[0].sharing, shared[0].private_words.as_str()), ("share", "Your minds share what they know about you with openai."));
         let consent = Consent { sharing: [("openai".to_string(), Sharing::Lane)].into_iter().collect(), ..Consent::default() };
         let (_, laned) = rows(&catalogue, &[account("openai", false, false)], &consent);
-        assert!(laned[0].private_words.contains("no model here is set up"), "a lane chosen with none set up says so");
+        assert!(laned[0].private_words.contains("no private model on this computer is set up"), "a lane chosen with none set up says so");
     }
 
     #[test]
