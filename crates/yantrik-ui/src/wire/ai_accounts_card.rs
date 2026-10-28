@@ -68,7 +68,7 @@ pub fn lane_words(catalogue: &Catalogue, accounts: &[Account], consent: &Consent
             let model = catalogue.find(&id).map(|m| m.name.clone()).unwrap_or_else(|| id.split_once('/').map(|(_, m)| m.to_string()).unwrap_or_default());
             format!("Personal things are kept {} by {account} · {model}.", lane_place(accounts, &id))
         }
-        None => "Keeping personal things on this computer needs a model here: add Ollama or another local one, then choose it below.".into(),
+        None => "Using your private model needs one set up: add Ollama or another model on this computer or your network, then choose it below.".into(),
     }
 }
 
@@ -331,7 +331,7 @@ mod tests {
         let (_, drawn) = rows(&catalogue, std::slice::from_ref(&home), &none, None);
         assert_eq!(drawn[0].lane_model, "ollama/qwen3:8b");
         assert!(!drawn[0].is_lane);
-        assert!(lane_words(&catalogue, std::slice::from_ref(&home), &none).starts_with("Keeping personal things on this computer needs"));
+        assert!(lane_words(&catalogue, std::slice::from_ref(&home), &none).starts_with("Using your private model needs one set up"));
         let lane = Consent { lane: Some("ollama/qwen3:8b".into()), ..Consent::default() };
         let (_, drawn) = rows(&catalogue, std::slice::from_ref(&home), &lane, None);
         assert!(drawn[0].is_lane);
