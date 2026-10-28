@@ -132,7 +132,8 @@ fn the_sentences_say_what_the_code_does() {
     assert!(ACCOUNTS_RS.contains("The built-in companion talks to {} directly; this choice applies to your other Minds."));
     assert!(!ACCOUNTS_RS.contains("Your Minds' requests"));
     assert!(!ACCOUNTS_RS.contains("everything else goes to"));
-    assert!(!ACCOUNTS_RS.contains("kept on this computer by"), "the lane's place comes from its address");
+    let code = ACCOUNTS_RS.split("#[cfg(test)]").next().unwrap_or(ACCOUNTS_RS);
+    assert!(!code.contains("kept on this computer by"), "the lane's place comes from its address");
     assert!(ACCOUNTS_RS.contains("\"On this computer or your network.\""));
     assert!(!ACCOUNTS_RS.contains("never leaves it"));
     // The vault holds the free tiers' keys and nothing else.
