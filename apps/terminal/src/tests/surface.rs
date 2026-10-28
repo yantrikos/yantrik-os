@@ -154,6 +154,46 @@ fn an_agent_is_answered_as_the_person_is_and_the_open_ended_actions_still_ask() 
     assert!(f.settled(granted).unwrap()["output"].as_str().unwrap().contains("GRANTED_MARK"));
 }
 
+/// The marker only appears if `printf` itself ran: had the agent's line joined the person's
+/// half-typed one, the shell would have tried `echo haprintf …` and printed words, never this.
+const AGENT_MARK: &str = "NOTJOINED";
+
+#[test]
+fn run_replaces_the_line_the_person_was_typing_and_says_what_it_cleared() {
+    let f = open();
+    // The person's keys, the way the window gives them, and the prompt shows them.
+    f.type_until("echo ha", "echo ha");
+    let answer = f.act("run", json!({ "command": format!("printf '{AGENT_MARK}:%s\\n' ran") })).unwrap();
+    assert_eq!(answer["replaced_line"], json!("echo ha"), "their words are gone from the prompt, so the answer says so");
+    assert_eq!(keys(&answer), with(&["finished", "output", "replaced_line", "sent", "shell_answered"]));
+    f.until("the agent's line alone", |f| f.screen().contains(&format!("{AGENT_MARK}:ran")));
+    assert!(!f.screen().contains("NOTJOINED:ran ran"), "{}, the two lines did not run as one", f.screen());
+    assert!(!f.screen().contains("ha printf"), "{}, the person's line was not echoed on", f.screen());
+    // And the next run at a now-empty prompt clears nothing it should not mention.
+    let next = f.act("run", json!({ "command": "echo ALONE" })).unwrap();
+    assert!(next.get("replaced_line").is_none(), "nothing was in progress: {next}");
+    f.until("the second line", |f| f.screen().contains("ALONE"));
+}
+
+#[test]
+fn send_input_refuses_text_that_would_land_on_the_persons_line_and_sends_their_interrupt() {
+    let f = open();
+    f.type_until("echo ha", "echo ha");
+    let refused = f.act("send_input", json!({ "text": "echo SPLICED\n" })).unwrap_err();
+    assert_eq!(refused, "The person is typing at this shell (`echo ha`); send_input would land on their line. Ask again when it is clear.");
+    assert_eq!(f.notice(), refused, "said twice: to the caller, and on the notice line");
+    f.quiet();
+    assert!(!f.screen().contains("SPLICED"), "a refusal sends nothing");
+
+    // Ctrl-C is why the escape hatch exists: it answers the line rather than joining it.
+    let answer = f.act("send_input", json!({ "text": "\u{3}" })).unwrap();
+    assert_eq!(answer["sent_bytes"], json!(1));
+    // "Ask again when it is clear" is an instruction the caller can follow: the same text is only
+    // text again once the prompt is.
+    f.until("the prompt to clear", |f| f.act("send_input", json!({ "text": "echo CLEAR\n" })).is_ok());
+    f.until("the line sent", |f| f.screen().contains("CLEAR"));
+}
+
 #[test]
 fn the_notice_is_the_sentence_the_caller_was_told_and_is_cleared_by_the_next_tab() {
     let f = open();

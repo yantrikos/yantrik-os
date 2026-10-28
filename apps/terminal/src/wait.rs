@@ -23,8 +23,9 @@ pub const WAIT: Duration = Duration::from_millis(900);
 
 /// What was sent, and what the answer should say about it.
 pub enum Sent {
-    /// A command line and the screen as it was when it was typed.
-    Line { command: String, screen: String },
+    /// A command line, the screen as it was when it was typed, and the person's half-typed line
+    /// that was cleared to make room for it, if there was one.
+    Line { command: String, screen: String, replaced: Option<String> },
     /// Raw bytes, and what was running in the shell before them.
     Bytes { count: usize, was_running: Option<String> },
 }
@@ -62,10 +63,14 @@ pub fn responded(session: &Session, before: u64, shown: Option<&str>, wait: Dura
 pub fn answer(session: Arc<Session>, tab: u64, before: u64, sent: Sent, wait: Duration) -> Command {
     let mut body;
     match sent {
-        Sent::Line { command, screen } => {
+        Sent::Line { command, screen, replaced } => {
             let answered = responded(&session, before, Some(&screen), wait);
             body = shell_body(&session, &probe::read(&session));
             body["sent"] = json!(command);
+            // Only when there was one: a `run` that found an empty prompt cleared nothing.
+            if let Some(line) = replaced {
+                body["replaced_line"] = json!(line);
+            }
             body["shell_answered"] = json!(answered);
             // What came back in the time this call has, which is not the same as the command
             // being over: `running` says whether something is still going, and `settled: false`
