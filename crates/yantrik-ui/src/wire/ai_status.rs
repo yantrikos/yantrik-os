@@ -223,7 +223,6 @@ pub(crate) fn card(target: Option<&Target>, health: &Health) -> AIStatusData {
         model_tier: SharedString::default(),
         status: status.into(),
         detail: detail.into(),
-        using_fallback: false,
     }
 }
 

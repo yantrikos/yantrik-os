@@ -183,3 +183,21 @@ fn nothing_declares_a_privacy_mode_chip_that_nothing_draws() {
     // `ai-privacy-mode` was set from "any saved account" and read by no element; it is gone.
     assert!(!APP.contains("ai-privacy-mode") && !SETTINGS.contains("ai-privacy-mode"));
 }
+
+#[test]
+fn nothing_declares_a_fallback_state_that_nothing_sets() {
+    // `using-fallback`, the "fallback" status and `ai-fallback-banner` were never set by anything.
+    for src in [SETTINGS, APP] {
+        assert!(!src.contains("using-fallback") && !src.contains("ai-fallback-banner"));
+        assert!(!src.contains("status == \"fallback\""));
+    }
+    assert!(!include_str!("../../../yantrik-ui-slint/ui/desktop.slint").contains("ai-fallback-banner"));
+    assert!(!include_str!("ai_status.rs").contains("using_fallback"));
+}
+
+#[test]
+fn the_lane_button_does_not_say_where_the_lane_is() {
+    // A lane on the network is not "on this computer": the labels name the role, not the place.
+    assert!(ACCOUNTS_CARD.contains("Use as your private model"));
+    assert!(!ACCOUNTS_CARD.contains("personal things on this computer") && !ACCOUNTS_CARD.contains("personal things here"));
+}

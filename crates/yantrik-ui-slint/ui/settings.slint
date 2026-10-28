@@ -160,11 +160,10 @@ export struct AIStatusData {
     model-tier: string,         // "Tiny", "Small", "Medium", "Large"
     // What asking the companion's endpoint found (crates/yantrik-ui/src/wire/ai_status.rs):
     // "checking" | "connected" | "missing" (not one of the models it lists) | "refused"
-    // | "unreachable" | "error" (answered, not with a model list) | "unset" | "fallback"
+    // | "unreachable" | "error" (answered, not with a model list) | "unset"
     status: string,
     // The sentence under the name when the status is not "connected": what was found.
     detail: string,
-    using-fallback: bool,
 }
 
 
@@ -1202,7 +1201,6 @@ export component SettingsScreen inherits Rectangle {
                                 border-radius: Theme.r-lg;
                                 border-width: 1px;
                                 border-color: root.ai-status.status == "connected" ? Theme.color-success-dim
-                                            : root.ai-status.status == "fallback" ? Theme.amber-dim
                                             : Theme.color-danger-dim;
                                 height: ai-status-layout.preferred-height;
 
@@ -1220,12 +1218,10 @@ export component SettingsScreen inherits Rectangle {
                                             y: (parent.height - 10px) / 2;
                                             border-radius: 5px;
                                             background: root.ai-status.status == "connected" ? Theme.color-success
-                                                      : root.ai-status.status == "fallback" ? Theme.amber
                                                       : root.ai-status.status == "disconnected" ? Theme.text-dim
                                                       : Theme.color-emotional;
                                             drop-shadow-blur: 8px;
                                             drop-shadow-color: root.ai-status.status == "connected" ? Theme.color-success-dim
-                                                             : root.ai-status.status == "fallback" ? Theme.amber-glow-strong
                                                              : transparent;
                                             animate background { duration: Theme.dur-fast; }
                                             animate drop-shadow-color { duration: Theme.dur-fast; }
@@ -1246,12 +1242,6 @@ export component SettingsScreen inherits Rectangle {
                                                     color: Theme.text-dim;
                                                     font-size: Theme.fs-caption;
                                                 }
-                                                if root.ai-status.using-fallback : Text {
-                                                    text: " \u{2022} using fallback";
-                                                    color: Theme.amber;
-                                                    font-size: Theme.fs-caption;
-                                                    font-weight: 500;
-                                                }
                                             }
                                             if root.ai-status.detail != "" : Text {
                                                 text: root.ai-status.detail;
@@ -1266,12 +1256,12 @@ export component SettingsScreen inherits Rectangle {
                                             height: 24px;
                                             border-radius: Theme.r-lg;
                                             background: root.ai-status.status == "connected" ? Theme.color-success-dim
-                                                      : root.ai-status.status == "fallback" || root.ai-status.status == "checking" ? Theme.tint-amber
+                                                      : root.ai-status.status == "checking" ? Theme.tint-amber
                                                       : root.ai-status.status == "unset" ? Theme.hover-fill
                                                       : Theme.color-danger-dim;
                                             border-width: 1px;
                                             border-color: root.ai-status.status == "connected" ? Theme.color-success-dim
-                                                        : root.ai-status.status == "fallback" || root.ai-status.status == "checking" ? Theme.amber-dim
+                                                        : root.ai-status.status == "checking" ? Theme.amber-dim
                                                         : root.ai-status.status == "unset" ? Theme.border-subtle
                                                         : Theme.color-danger-dim;
                                             status-txt := Text {
@@ -1283,7 +1273,7 @@ export component SettingsScreen inherits Rectangle {
                                                     : root.ai-status.status == "unset" ? "Not set up"
                                                     : "Unverified";
                                                 color: root.ai-status.status == "connected" ? Theme.color-success
-                                                     : root.ai-status.status == "fallback" || root.ai-status.status == "checking" ? Theme.amber
+                                                     : root.ai-status.status == "checking" ? Theme.amber
                                                      : root.ai-status.status == "unset" ? Theme.text-secondary
                                                      : Theme.color-emotional;
                                                 font-size: Theme.fs-caption;

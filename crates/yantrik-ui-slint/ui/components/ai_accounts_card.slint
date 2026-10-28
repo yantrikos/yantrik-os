@@ -117,7 +117,7 @@ component Row inherits Rectangle {
                 pressed => { AiAccountsState.set-sharing(root.item.id, "share"); }
             }
             Choice {
-                text: "Keep personal things on this computer";
+                text: "Use your private model instead";
                 chosen: root.item.sharing == "lane";
                 pressed => { AiAccountsState.set-sharing(root.item.id, "lane"); }
             }
@@ -130,12 +130,12 @@ component Row inherits Rectangle {
         if root.item.local && root.item.lane-model != "" : HorizontalLayout {
             alignment: start;
             if root.item.is-lane : Text {
-                text: "Keeps personal things on this computer";
+                text: "Your private model";
                 color: Theme.color-success;
                 font-size: Theme.fs-caption;
             }
             if !root.item.is-lane : YButton {
-                label: "Keep personal things here";
+                label: "Use as your private model";
                 variant: 1;
                 size: 0;
                 clicked => { AiAccountsState.use-as-lane(root.item.lane-model); }
