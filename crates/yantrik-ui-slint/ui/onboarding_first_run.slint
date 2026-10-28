@@ -13,7 +13,7 @@
 //                         person to pick, or an id typed), and for a provider whose address has
 //                         a part to fill in
 //   3  What minds share   the pre-checked sentence naming the provider, "What's shared?", and
-//                         "Use your private model instead" (Share / Private lane / Off)
+//                         "For your other Minds, use your private model instead" (Share / Private lane / Off)
 //   4  Getting ready      three factual rows per mind, each Not checked yet → Checking (started
 //                         h:mm) → Passed / Needs attention: <reason>. No percentages, no spinners.
 //   5  Your minds         one row per mind with what was seen; Add another mind; Continue
@@ -533,7 +533,7 @@ export component FirstRunScreen inherits Rectangle {
       : root.step == 2 ? "Who should do the thinking? Choose one. "
             + (root.featured.length > 0 && root.featured[0].recommended != "" ? "First: " + root.featured[0].name + ", " + root.featured[0].line + ". " + root.featured[0].recommended + ". " : "")
             + (root.chosen-name == "" ? "" : root.chosen-name + " is chosen. ") + "Then connect it."
-      : root.step == 3 ? root.share-sentence + " Or use your private model instead."
+      : root.step == 3 ? root.share-sentence + " " + root.companion-note + " For your other Minds that use Yantrik models, you can instead use your private model."
       : root.step == 4 ? "Getting your minds ready. Yantrik Companion is checked three ways: can it answer, can it remember, can it reach the desktop. "
             + root.default-mind-words
       : "Your minds. " + root.minds-words + " " + root.default-mind-words;
@@ -543,6 +543,10 @@ export component FirstRunScreen inherits Rectangle {
         ? "Next, Yantrik checks that the thinking you chose in the installer works."
         : "Setting up takes a few minutes: choose who does the thinking, and Yantrik checks that it works.";
     property <string> minds-words: root.minds.length == 0 ? "No mind is set up yet." : root.minds[0].name + ": " + root.minds[0].words + ".";
+    // The built-in companion talks to the provider chosen here directly (`adopt`), so the choices
+    // below do not bind it: they bind the Minds that go through Yantrik's gateway.
+    property <string> companion-note: "Yantrik Companion talks to " + (root.chosen-name == "" ? "your provider" : root.chosen-name)
+        + " directly; this choice applies to your other Minds that use Yantrik models.";
     property <string> share-sentence: "Your minds will send what they remember about you, and where you are, to "
         + (root.chosen-name == "" ? "your provider" : root.chosen-name) + " when they ask it something.";
 
@@ -1056,11 +1060,12 @@ export component FirstRunScreen inherits Rectangle {
                             width: parent.width - 32px;
                             spacing: 6px;
                             FrCheckbox {
-                                label: "Use your private model instead";
+                                label: "For your other Minds, use your private model instead";
                                 checked <=> root.private-lane;
                                 enabled: root.private-lane-words != "";
-                                // Chosen, the sharing sentence above shows unchecked: nothing about
-                                // the person goes to the provider, and the screen does not look as if it did.
+                                // Chosen, the sharing sentence above shows unchecked: the Minds that
+                                // use Yantrik models send nothing about the person to the provider. The
+                                // built-in companion still does, and the note below says so.
                                 toggled(on) => { if on { root.share = false; } }
                             }
                             Text {
@@ -1072,8 +1077,14 @@ export component FirstRunScreen inherits Rectangle {
                             }
                         }
                     }
+                    Text {
+                        text: root.companion-note;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-title-2;
+                        wrap: word-wrap;
+                    }
                     if !root.share && !root.private-lane : Text {
-                        text: "Your minds will still answer, without what they remember about you.";
+                        text: "Your other Minds that use Yantrik models will still answer, without what they remember about you.";
                         color: Theme.text-secondary;
                         font-size: Theme.fs-title-2;
                         wrap: word-wrap;

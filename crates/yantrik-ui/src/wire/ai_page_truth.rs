@@ -133,7 +133,11 @@ fn the_sentences_say_what_the_code_does() {
     assert!(!ACCOUNTS_RS.contains("Your Minds' requests"));
     assert!(!ACCOUNTS_RS.contains("everything else goes to"));
     let code = ACCOUNTS_RS.split("#[cfg(test)]").next().unwrap_or(ACCOUNTS_RS);
-    assert!(!code.contains("kept on this computer by"), "the lane's place comes from its address");
+    assert!(!code.contains("kept on this computer by") && !code.contains("Personal things are kept"), "the lane's place comes from its address");
+    // Share and the lane header speak of the gateway's Minds and the lane, not of every Mind.
+    assert!(code.contains("Requests from your Minds that use Yantrik models go to {} with what they know about you."));
+    assert!(!code.contains("Your minds share what they know"));
+    assert!(code.contains("Your private model: {account} · {model}, {}."));
     assert!(ACCOUNTS_RS.contains("\"On this computer or your network.\""));
     assert!(!ACCOUNTS_RS.contains("never leaves it"));
     // The vault holds the free tiers' keys and nothing else.

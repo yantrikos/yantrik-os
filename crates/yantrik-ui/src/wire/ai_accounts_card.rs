@@ -56,17 +56,22 @@ pub fn companion_direct_account(accounts: &[Account]) -> Option<String> {
         return None;
     }
     let store = crate::wire::settings::ProviderStore::load();
-    let primary = store.primary()?;
-    accounts.iter().find(|a| a.source == Source::Saved && a.name == primary.name).map(|a| a.id.clone())
+    direct_account_id(accounts, store.primary().map(|p| p.id.as_str()))
 }
 
-/// The private lane, in words: "Personal things are kept <where> by Ollama · qwen…".
+/// The account made from the saved primary entry, found by the entry's id: saved names repeat.
+fn direct_account_id(accounts: &[Account], primary_entry: Option<&str>) -> Option<String> {
+    let entry = primary_entry?;
+    accounts.iter().find(|a| a.entry.as_deref() == Some(entry)).map(|a| a.id.clone())
+}
+
+/// The private lane, in words: "Your private model: Ollama · qwen…, on this computer.".
 pub fn lane_words(catalogue: &Catalogue, accounts: &[Account], consent: &Consent) -> String {
     match consent::lane(consent, accounts) {
         Some(id) => {
             let account = accounts.iter().find(|a| id.starts_with(&format!("{}/", a.id))).map(|a| a.name.clone()).unwrap_or_default();
             let model = catalogue.find(&id).map(|m| m.name.clone()).unwrap_or_else(|| id.split_once('/').map(|(_, m)| m.to_string()).unwrap_or_default());
-            format!("Personal things are kept {} by {account} · {model}.", lane_place(accounts, &id))
+            format!("Your private model: {account} · {model}, {}.", lane_place(accounts, &id))
         }
         None => "Using your private model needs one set up: add Ollama or another model on this computer or your network, then choose it below.".into(),
     }
@@ -106,7 +111,7 @@ pub fn rows(catalogue: &Catalogue, accounts: &[Account], consent: &Consent, dire
             // The choice binds the calls that cross the gateway: Minds that use Yantrik models.
             // The built-in companion on a saved primary talks to that provider directly.
             let choice = match sharing {
-                Sharing::Share => format!("Your minds share what they know about you with {}.", a.name),
+                Sharing::Share => format!("Requests from your Minds that use Yantrik models go to {} with what they know about you.", a.name),
                 Sharing::Lane if lane.is_some() => format!(
                     "Requests from your Minds that use Yantrik models to {} go to your private model {} instead.",
                     a.name,
@@ -276,6 +281,7 @@ mod tests {
             provider_type: "openai".into(),
             base_url: "https://api.openai.com/v1".into(),
             key: KeyRef::None,
+            entry: None,
             local,
             source: Source::Saved,
             trains_on_prompts: trains,
@@ -314,7 +320,7 @@ mod tests {
         assert!(drawn[2].local && drawn[2].private_words == "On this computer or your network.", "a local account says where it is, and nothing more");
         let consent = Consent { sharing: [("openai".to_string(), Sharing::Share)].into_iter().collect(), ..Consent::default() };
         let (_, shared) = rows(&catalogue, &[account("openai", false, false)], &consent, None);
-        assert_eq!((shared[0].sharing, shared[0].private_words.as_str()), ("share", "Your minds share what they know about you with openai."));
+        assert_eq!((shared[0].sharing, shared[0].private_words.as_str()), ("share", "Requests from your Minds that use Yantrik models go to openai with what they know about you."));
         let consent = Consent { sharing: [("openai".to_string(), Sharing::Lane)].into_iter().collect(), ..Consent::default() };
         let (_, laned) = rows(&catalogue, &[account("openai", false, false)], &consent, None);
         assert!(laned[0].private_words.contains("no private model on this computer or your network is set up"), "a lane chosen with none set up says so");
@@ -335,7 +341,7 @@ mod tests {
         let lane = Consent { lane: Some("ollama/qwen3:8b".into()), ..Consent::default() };
         let (_, drawn) = rows(&catalogue, std::slice::from_ref(&home), &lane, None);
         assert!(drawn[0].is_lane);
-        assert_eq!(lane_words(&catalogue, std::slice::from_ref(&home), &lane), "Personal things are kept on this computer by ollama · qwen3:8b.");
+        assert_eq!(lane_words(&catalogue, std::slice::from_ref(&home), &lane), "Your private model: ollama · qwen3:8b, on this computer.");
     }
 
     #[test]
@@ -382,7 +388,7 @@ mod tests {
         ] {
             let (catalogue, accounts) = lane_fixture(url);
             let words = lane_words(&catalogue, &accounts, &lane_consent());
-            assert_eq!(words, format!("Personal things are kept {place} by ollama · qwen3:8b."), "{url}");
+            assert_eq!(words, format!("Your private model: ollama · qwen3:8b, {place}."), "{url}");
             let (_, drawn) = rows(&catalogue, &accounts, &lane_consent(), None);
             assert_eq!(
                 drawn[1].private_words,
@@ -421,5 +427,32 @@ mod tests {
             );
             assert!(direct[0].private_words == other[0].private_words, "only the companion's own account says it");
         }
+    }
+
+    #[test]
+    fn the_direct_companion_line_lands_on_the_entry_it_is_about_even_when_names_repeat() {
+        use crate::wire::settings::ProviderStoreEntry;
+        let entry = |id: &str, primary: bool| ProviderStoreEntry {
+            id: id.into(),
+            name: "OpenAI".into(),
+            provider_type: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: Some("k".into()),
+            auth_type: "bearer".into(),
+            is_primary: primary,
+            is_fallback: false,
+            model: String::new(),
+        };
+        // Two saved entries with one name; the second is the companion's primary.
+        let accounts = crate::ai_accounts::account::accounts(&[entry("first", false), entry("second", true)], &[], &Default::default(), &Default::default());
+        assert_eq!((accounts[0].id.as_str(), accounts[1].id.as_str()), ("openai", "openai-2"));
+        let direct = direct_account_id(&accounts, Some("second"));
+        assert_eq!(direct.as_deref(), Some("openai-2"));
+        assert_eq!(direct_account_id(&accounts, Some("first")).as_deref(), Some("openai"));
+        assert_eq!(direct_account_id(&accounts, Some("gone")), None);
+        assert_eq!(direct_account_id(&accounts, None), None);
+        let (_, drawn) = rows(&Catalogue { accounts: vec![], at: 0 }, &accounts, &Consent::default(), direct.as_deref());
+        assert!(!drawn[0].private_words.contains("talks to"), "{}", drawn[0].private_words);
+        assert!(drawn[1].private_words.starts_with("The built-in companion talks to OpenAI directly;"), "{}", drawn[1].private_words);
     }
 }
