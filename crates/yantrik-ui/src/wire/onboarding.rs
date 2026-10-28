@@ -1970,7 +1970,7 @@ mod tests {
         }
         for want in ["Welcome to Yantrik.", "Make text bigger", "Read this to me", "Get started", "Who should do the thinking?",
                      "Connect account", "Paste a key", "Show me where to find it", "Advanced", "What's shared?",
-                     "Keep personal things on this computer instead", "Getting your minds ready", "Your minds", "Add another mind"] {
+                     "Use your private model instead", "Getting your minds ready", "Your minds", "Add another mind"] {
             assert!(slint.contains(want), "{want}");
         }
     }

@@ -13,7 +13,7 @@
 //                         person to pick, or an id typed), and for a provider whose address has
 //                         a part to fill in
 //   3  What minds share   the pre-checked sentence naming the provider, "What's shared?", and
-//                         "Keep personal things on this computer instead" (Share / Private lane / Off)
+//                         "Use your private model instead" (Share / Private lane / Off)
 //   4  Getting ready      three factual rows per mind, each Not checked yet → Checking (started
 //                         h:mm) → Passed / Needs attention: <reason>. No percentages, no spinners.
 //   5  Your minds         one row per mind with what was seen; Add another mind; Continue
@@ -533,7 +533,7 @@ export component FirstRunScreen inherits Rectangle {
       : root.step == 2 ? "Who should do the thinking? Choose one. "
             + (root.featured.length > 0 && root.featured[0].recommended != "" ? "First: " + root.featured[0].name + ", " + root.featured[0].line + ". " + root.featured[0].recommended + ". " : "")
             + (root.chosen-name == "" ? "" : root.chosen-name + " is chosen. ") + "Then connect it."
-      : root.step == 3 ? root.share-sentence + " Or keep personal things on this computer instead."
+      : root.step == 3 ? root.share-sentence + " Or use your private model instead."
       : root.step == 4 ? "Getting your minds ready. Yantrik Companion is checked three ways: can it answer, can it remember, can it reach the desktop. "
             + root.default-mind-words
       : "Your minds. " + root.minds-words + " " + root.default-mind-words;
@@ -1056,7 +1056,7 @@ export component FirstRunScreen inherits Rectangle {
                             width: parent.width - 32px;
                             spacing: 6px;
                             FrCheckbox {
-                                label: "Keep personal things on this computer instead";
+                                label: "Use your private model instead";
                                 checked <=> root.private-lane;
                                 enabled: root.private-lane-words != "";
                                 // Chosen, the sharing sentence above shows unchecked: nothing about

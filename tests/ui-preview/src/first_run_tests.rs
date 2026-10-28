@@ -15,7 +15,7 @@
 //!   again; "Show every provider" opens the full list; Advanced needs only the address, and
 //!   Enter on it lists its models.
 //! - What your minds share: the sentence names the provider and is pre-checked; Space unchecks
-//!   it and the screen says what that means; choosing Keep personal things on this computer
+//!   it and the screen says what that means; choosing Use your private model instead
 //!   shows the sentence unchecked.
 //! - Getting ready and Your minds: the companion's three rows, every one a check that runs, in
 //!   every state; Hermes's own install is said and read out.
@@ -304,7 +304,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     render(w, width, height, &still("3-share-off"))?;
     space();
     assert!(ui.get_share());
-    // Keep personal things on this computer: the sharing sentence shows unchecked.
+    // Use your private model instead: the sharing sentence shows unchecked.
     tab();
     tab();
     space();
