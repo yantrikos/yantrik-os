@@ -214,10 +214,12 @@ fn no_sentence_claims_something_for_every_mind_that_only_the_gateway_does() {
     assert!(!first_run.contains("Which model should your minds use?"));
     let onboarding = include_str!("onboarding.rs");
     assert!(!onboarding.contains("Connected to {name}. Your minds will use"));
-    // By the time the pick fails, `adopt()` has already moved the companion to the model.
+    // True in every arm: `adopt()` moves the companion only when it is not already on Yantrik
+    // models, so the line says the model was saved, not that the companion now uses it.
+    assert!(!onboarding.contains("Yantrik Companion now uses it"));
     assert!(!onboarding.contains("answered, but your minds could not be set to use it"));
     assert_eq!(
-        onboarding.matches("answered and Yantrik Companion now uses it, but your Minds that use Yantrik models could not be set to use it ({why})").count(),
+        onboarding.matches("answered and was saved, but your Minds that use Yantrik models could not be set to use it ({why})").count(),
         2,
         "prove_and_pick and retry_pick say it the same way"
     );
