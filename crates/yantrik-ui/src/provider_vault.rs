@@ -224,9 +224,11 @@ impl ProviderStoreEntry {
         some(&self.api_key) || some(&self.unmigrated_key) || self.vault_key_id().is_some()
     }
 
-    /// The vault id this entry's key is kept under, when it is in the vault.
+    /// The vault id this entry's key is kept under, when it is in the vault. The reference is
+    /// trusted only when it names this entry's own key: one that names another entry, or a free
+    /// tier's, is no key, so it is never read, sent to this entry's address, or removed.
     pub fn vault_key_id(&self) -> Option<String> {
-        self.api_key_ref.as_deref().and_then(id_in).map(str::to_string)
+        self.api_key_ref.as_deref().filter(|r| *r == reference(&self.id)).and_then(id_in).map(str::to_string)
     }
 
     /// Where a reader finds this entry's key: a key in memory first, then the vault, then a key
@@ -370,6 +372,25 @@ pub fn migrate_with(
         }
     }
     report
+}
+
+type Deferred = Box<dyn FnOnce() + Send>;
+
+static DEFERRED: Mutex<Vec<Deferred>> = Mutex::new(Vec::new());
+
+/// Run `work` the next time the vault is opened. For something refused because the vault was
+/// shut, such as the companion's reload at start, which happens before the person has signed in.
+pub fn after_open(work: impl FnOnce() + Send + 'static) {
+    DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(work));
+}
+
+/// The vault was just opened (at sign-in, at a screen unlock, or from the unlock card): run what
+/// was waiting for it, once.
+pub fn opened() {
+    let waiting = std::mem::take(&mut *DEFERRED.lock().unwrap_or_else(|e| e.into_inner()));
+    for work in waiting {
+        work();
+    }
 }
 
 /// Forget the vault entry of a provider being removed. A shut vault is an error, so the key is

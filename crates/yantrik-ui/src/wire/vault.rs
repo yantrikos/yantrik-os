@@ -92,6 +92,7 @@ fn wire_submit(ui: &App, ctx: &AppContext) {
                             first_time = matches!(outcome, Outcome::Protected),
                             "The vault was opened from the desktop's prompt"
                         );
+                        crate::provider_vault::opened();
                         None
                     }
                     Some(other) => Some(other.message()),

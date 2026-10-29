@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use crate::ai_accounts::account::{accounts, KeyRef};
 use crate::ai_accounts::keys::{resolve, Missing};
-use crate::wire::provider_panel::{save_form_with, Form};
+use crate::wire::provider_panel::{save_form_with, start_or_defer, Form, Reload};
 use crate::wire::settings::remove_provider_with;
 
 const KEY: &str = "fake-key-not-a-secret-0001";
@@ -23,6 +23,8 @@ struct Fake {
     refuse_writes: Mutex<bool>,
     garble: Mutex<bool>,
     writes: AtomicUsize,
+    /// Run in the middle of a store, as something else happening while the vault answers.
+    during_store: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
 impl Fake {
@@ -49,6 +51,9 @@ impl KeyVault for Fake {
             return Err(VaultError::Failed);
         }
         self.writes.fetch_add(1, Ordering::SeqCst);
+        if let Some(hook) = self.during_store.lock().unwrap().as_ref() {
+            hook();
+        }
         let kept = if *self.garble.lock().unwrap() { format!("{value}-changed") } else { value.to_string() };
         self.held.lock().unwrap().insert(id.to_string(), kept);
         Ok(())
@@ -484,4 +489,192 @@ fn the_entry_serialises_without_its_key_whatever_it_holds() {
     e.unmigrated_key = Some(OTHER.into());
     let text = serde_yaml::to_string(&e).unwrap();
     assert!(text.contains("api_key: "), "an older file's key is written back until it is moved:\n{text}");
+}
+
+// ── The reload at start, replayed when the vault opens ──
+
+#[test]
+fn a_start_reload_refused_for_a_shut_vault_is_replayed_when_it_opens() {
+    let vault = Fake::new();
+    let _using = Using::vault(&vault);
+    vault.store("saved:p1", KEY).unwrap();
+    vault.shut(true);
+    let mut e = entry("p1", "Mine");
+    e.api_key_ref = Some(reference("p1"));
+    e.is_primary = true;
+
+    let sent: Arc<Mutex<Vec<(Option<String>, String)>>> = Arc::default();
+    let log = sent.clone();
+    let send: crate::wire::provider_panel::Sender = Arc::new(move |r: Reload| log.lock().unwrap().push((r.key, r.model)));
+    let primary = e.clone();
+    let outcome = start_or_defer(&e, send, Arc::new(move || Some(primary.clone())), Arc::new(|| false));
+    assert_eq!(outcome, Err(KeyError::Locked));
+    assert!(sent.lock().unwrap().is_empty(), "nothing is sent with the vault shut");
+
+    // Opened: the reload is done, once.
+    vault.shut(false);
+    opened();
+    assert_eq!(*sent.lock().unwrap(), [(Some(KEY.to_string()), "m".to_string())]);
+    opened();
+    assert_eq!(sent.lock().unwrap().len(), 1, "once");
+}
+
+#[test]
+fn a_replayed_start_reload_leaves_a_companion_on_yantrik_models_alone() {
+    let vault = Fake::new();
+    let _using = Using::vault(&vault);
+    vault.store("saved:p1", KEY).unwrap();
+    vault.shut(true);
+    let mut e = entry("p1", "Mine");
+    e.api_key_ref = Some(reference("p1"));
+    let sent: Arc<Mutex<usize>> = Arc::default();
+    let count = sent.clone();
+    let send: crate::wire::provider_panel::Sender = Arc::new(move |_| *count.lock().unwrap() += 1);
+    let primary = e.clone();
+    let _ = start_or_defer(&e, send, Arc::new(move || Some(primary.clone())), Arc::new(|| true));
+    vault.shut(false);
+    opened();
+    assert_eq!(*sent.lock().unwrap(), 0);
+}
+
+// ── Accounts listed before a key was moved ──
+
+#[test]
+fn an_account_listed_before_the_move_reads_the_key_from_the_vault_after_it() {
+    let vault = Fake::new();
+    vault.store("saved:p1", KEY).unwrap();
+    let mut before = entry("p1", "Mine");
+    before.unmigrated_key = Some(KEY.into());
+    let list = accounts(std::slice::from_ref(&before), &[], &Default::default(), &Default::default());
+    assert_eq!(list[0].key, KeyRef::Saved { entry: "p1".into() });
+    // The file has since been rewritten with a reference only.
+    let mut after = entry("p1", "Mine");
+    after.api_key_ref = Some(reference("p1"));
+    let fetch = |id: &str| vault.value(id).ok().flatten();
+    assert_eq!(resolve(&list[0], std::slice::from_ref(&after), &fetch).unwrap().key.as_deref(), Some(KEY));
+    vault.shut(true);
+    let fetch = |id: &str| vault.value(id).ok().flatten();
+    assert_eq!(resolve(&list[0], std::slice::from_ref(&after), &fetch).unwrap_err(), Missing::Vault);
+}
+
+// ── A reference is trusted only for its own entry ──
+
+#[test]
+fn a_reference_to_another_entry_or_a_free_tier_is_no_key() {
+    let vault = Fake::new();
+    let _using = Using::vault(&vault);
+    vault.store("groq", "fake-free-tier-key").unwrap();
+    vault.store("saved:other", OTHER).unwrap();
+    for foreign in ["vault:groq", "vault:saved:other", "vault:", "saved:p1", "groq"] {
+        let mut e = entry("p1", "Mine");
+        e.base_url = "https://attacker.example/v1".into();
+        e.api_key_ref = Some(foreign.into());
+        assert!(!e.has_key(), "{foreign}");
+        assert_eq!(e.vault_key_id(), None, "{foreign}");
+        assert_eq!(e.resolve_key(), Ok(None), "{foreign}: nothing is read, so nothing goes to its address");
+        let list = accounts(std::slice::from_ref(&e), &[], &Default::default(), &Default::default());
+        assert_eq!(list[0].key, KeyRef::None, "{foreign}");
+        assert_eq!(forget(&*vault, &e), Ok(()));
+    }
+    assert!(vault.has("groq") && vault.has("saved:other"), "removing deletes only an entry's own key");
+}
+
+// ── A save while something else changes the list ──
+
+#[test]
+fn a_migration_and_a_removal_during_a_save_are_kept() {
+    let vault = Fake::new();
+    let path = file("lost-update", &legacy(&[("a", KEY), ("b", OTHER)]));
+    let providers = Arc::new(shared(&path));
+    let at = p(&path);
+
+    // While the vault answers the save, the first provider's key is moved and the second removed.
+    let live = providers.clone();
+    let (v, at2) = (vault.clone(), at.clone());
+    *vault.during_store.lock().unwrap() = Some(Box::new(move || {
+        let mut s = live.lock().unwrap();
+        v.held.lock().unwrap().insert("saved:a".into(), KEY.into());
+        let a = s.entries.iter_mut().find(|e| e.id == "a").unwrap();
+        a.api_key_ref = Some(reference("a"));
+        a.unmigrated_key = None;
+        s.entries.retain(|e| e.id != "b");
+        s.save_at(&at2).unwrap();
+    }));
+    let form = Form {
+        name: "Third".into(),
+        provider_type: "openrouter".into(),
+        base_url: "https://openrouter.ai/api/v1".into(),
+        api_key: Some("fake-key-not-a-secret-0003".into()),
+        auth_type: "bearer".into(),
+        model: "m".into(),
+    };
+    let saved = save_form_with(&providers, "", form, Some(vault.clone()), &mut |s| s.save_at(&at)).expect("saved");
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains(KEY) && !text.contains(OTHER) && !text.contains("0003"), "no plaintext came back:\n{text}");
+    let now = load(&path);
+    let ids: Vec<_> = now.entries.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, ["a", saved.id.as_str()], "the removed provider stayed removed");
+    assert!(now.entries[0].api_key_ref.is_some() && now.entries[0].unmigrated_key.is_none());
+    assert_eq!(vault.get(&vault_id(&saved.id)).as_deref(), Some("fake-key-not-a-secret-0003"));
+}
+
+#[test]
+fn a_provider_removed_while_it_is_edited_is_not_brought_back() {
+    let vault = Fake::new();
+    let path = file("edit-removed", "entries: []\n");
+    let mut store = ProviderStore::default();
+    let mut e = entry("a", "A");
+    e.api_key = Some(KEY.into());
+    store.entries.push(e);
+    store.keep_keys(&*vault).unwrap();
+    let providers = Arc::new(Mutex::new(store));
+    let at = p(&path);
+    let live = providers.clone();
+    *vault.during_store.lock().unwrap() = Some(Box::new(move || live.lock().unwrap().entries.clear()));
+    let form = Form {
+        name: "A".into(),
+        provider_type: "openrouter".into(),
+        base_url: "https://openrouter.ai/api/v1".into(),
+        api_key: Some(OTHER.into()),
+        auth_type: "bearer".into(),
+        model: "m".into(),
+    };
+    let said = save_form_with(&providers, "a", form, Some(vault.clone()), &mut |s| s.save_at(&at)).unwrap_err();
+    assert!(said.contains("removed"), "{said}");
+    assert!(providers.lock().unwrap().entries.is_empty());
+}
+
+// ── The call sites ──
+
+#[test]
+fn no_reader_takes_a_saved_providers_key_from_the_entry_directly() {
+    // A reader that used `entry.api_key` would send nothing, or the wrong thing, once the key is
+    // in the vault. Every reader goes through `resolve_key`, `with_resolved_key` or `key_source`.
+    // `api_key` itself is touched only by the module that owns the rules, the form that fills it
+    // in, the hand-off adapters (given a copy that holds the key) and the Debug that hides it.
+    let allowed_file = |name: &str| name.ends_with("/provider_vault.rs") || name.ends_with("/provider_handoff/deepseek.rs");
+    let mut found = Vec::new();
+    for (name, text) in sources() {
+        if allowed_file(&name) {
+            continue;
+        }
+        for line in code_of(&text).lines() {
+            let l = line.trim_start();
+            // `.api_key` as a whole word: `.api_key_ref` is the reference, and is fine.
+            let whole = l.match_indices(".api_key").any(|(i, m)| {
+                !l[i + m.len()..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_')
+            });
+            if l.starts_with("//") || !whole {
+                continue;
+            }
+            let other_struct = l.contains("llm.api_key") || l.contains("config.api_key");
+            let form_fill = name.ends_with("/wire/provider_panel.rs") && (l.contains("form.api_key") || l.contains("e.api_key = "));
+            let hidden = name.ends_with("/wire/settings.rs") && l.contains("self.api_key");
+            if !(other_struct || form_fill || hidden) {
+                found.push(format!("{name}: {l}"));
+            }
+        }
+    }
+    assert!(found.is_empty(), "read through resolve_key() instead:\n{}", found.join("\n"));
 }

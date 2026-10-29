@@ -69,7 +69,10 @@ impl yantrik_gateway::Accounts for ShellAccounts {
                         keys::Missing::Address => "address_incomplete",
                     };
                     let words = match why {
-                        keys::Missing::Vault => format!("Unlock the credential vault to use {}.", a.name),
+                        keys::Missing::Vault => format!(
+                            "The key for {} could not be read from the credential vault. If the vault is locked, unlock it; otherwise enter the key again.",
+                            a.name
+                        ),
                         _ => format!("{} cannot be used now: {why}.", a.name),
                     };
                     Refusal::new(503, code, words)

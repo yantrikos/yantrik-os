@@ -822,7 +822,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // start: it lives in providers.yaml, not in config.yaml, which is never rewritten (#524).
     if let Some(chosen) = providers.lock().ok().and_then(|s| s.primary().cloned()) {
         tracing::info!(provider = %chosen.provider_type, "The companion starts on the provider chosen in Settings");
-        crate::wire::provider_panel::reload_primary_telling(ui, &ctx.bridge, &chosen);
+        crate::wire::provider_panel::reload_primary_at_start(ui, &ctx.bridge, &chosen);
     }
     // Keys an older version left in providers.yaml move into the vault once it is open.
     crate::provider_vault::migrate_in_background(&ctx.bridge, providers.clone());
