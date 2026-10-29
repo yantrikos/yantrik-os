@@ -482,6 +482,8 @@ pub fn publish(
     // restarting the shell — which is what `accepted: true` ought to mean.
     let installed = ctx.installed_apps.clone();
     let refresh_catalogue = ctx.installed_apps.clone();
+    // `start_app`: an app of the framework started on demand with no window, for an agent.
+    let (start_app, start_app_handler) = crate::wire::app_service::action(ctx.installed_apps.clone());
     let describe = {
         let weak = ui.as_weak();
         move || {
@@ -1291,6 +1293,7 @@ pub fn publish(
                 }
             },
         )
+        .action(start_app, start_app_handler)
         .action(
             // The launcher rescans when it opens; this is the same thing without a person
             // having to open it. An agent that installs a package and then wants to run it

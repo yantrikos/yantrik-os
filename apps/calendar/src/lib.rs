@@ -93,7 +93,7 @@ impl App for Calendar {
         view::wire(cx);
     }
 
-    fn start(m: &Model, fx: &mut Effects<Self>) {
+    fn start_service(m: &Model, fx: &mut Effects<Self>) {
         fx.every(CLOCK, CLOCK_EVERY, Command::Minute);
         fx.every(STORE_WATCH, STORE_WATCH_EVERY, Command::Watch);
         update::arm_midnight(m, fx);

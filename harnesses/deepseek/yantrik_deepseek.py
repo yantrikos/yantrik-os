@@ -633,7 +633,7 @@ def apps_from_listing(text: str) -> List[Tuple[str, str, str]]:
         if not line.startswith((" ", "\t")):
             if bare.startswith("Open now"):
                 where = "open"
-            elif bare.startswith("Can be opened with"):
+            elif bare.startswith(("Can be opened with", "Answers when asked")):
                 where = "closed"
             elif bare.startswith("Services answering:"):
                 where = ""

@@ -47,6 +47,7 @@ struct Model {
     launches: u32,
     presented: Vec<WindowId>,
     opened: Vec<WindowId>,
+    not_opened: Vec<WindowId>,
     ticks: u32,
 }
 
@@ -58,6 +59,7 @@ enum Command {
     /// Asks to linger without closing anything: ignored.
     LingerOnly,
     Open,
+    NotOpened(WindowId),
     Launched,
     Presented(WindowId),
     LoggingOut,
@@ -105,6 +107,7 @@ impl App for Lingerer {
             }
             Command::LingerOnly => fx.linger(BACKSTOP),
             Command::Open => m.opened.push(fx.open_window()),
+            Command::NotOpened(window) => m.not_opened.push(window),
             Command::Launched => m.launches += 1,
             // The person is back: the close is cancelled, and the writes land as any other. A
             // logout's end is not the person's to cancel.
@@ -133,6 +136,7 @@ impl App for Lingerer {
             Event::CloseRequested(window) => Some(Command::Close(window)),
             Event::Launch(_) => Some(Command::Launched),
             Event::Presented(window) => Some(Command::Presented(window)),
+            Event::WindowNotOpened { window, .. } => Some(Command::NotOpened(window)),
             Event::ExitRequested(ExitReason::Logout) => Some(Command::LoggingOut),
             _ => None,
         }
@@ -264,14 +268,17 @@ fn the_desktops_present_during_a_linger_opens_the_window_and_tells_the_app() {
 }
 
 #[test]
-fn a_window_the_app_opens_during_a_linger_ends_it() {
+fn a_window_the_app_asks_for_during_a_linger_is_not_opened_and_the_linger_goes_on() {
     let app = lingering();
     app.run(Command::Open);
-    let opened = *app.model(|m| m.opened.clone()).last().expect("a window was opened");
-    assert_eq!(app.windows(), vec![opened]);
-    assert!(!app.lingering());
-    app.advance(BACKSTOP * 2);
-    assert_eq!(app.exit_reason(), None, "the backstop went with the linger");
+    // L9: a command of the app's (an agent's act can reach one) puts no window on the desktop the
+    // person just cleared. The person's ways back, a second launch and `present`, are below.
+    assert!(app.windows().is_empty(), "no window");
+    assert_eq!(app.model(|m| m.not_opened.len()), 1, "the app heard it was not opened");
+    assert!(app.lingering(), "the linger goes on");
+    assert_eq!(app.timers_armed(), 1, "with its backstop armed");
+    app.advance(BACKSTOP);
+    assert_eq!(app.exit_reason(), Some(ExitReason::LastWindowClosed), "and the backstop still ends it");
 }
 
 #[test]

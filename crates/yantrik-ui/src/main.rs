@@ -270,6 +270,8 @@ fn main() {
     // A Mind View an earlier shell left running goes now, not when a mind next opens an app: until
     // then it sits on the desktop as a window nothing tracks.
     mind_view::stop_left_behind();
+    // The display the apps will take to be the person's, and the ones that are Mind View's.
+    mind_view::record_displays();
 
     // Pick the renderer before Slint reads SLINT_BACKEND — it only looks once, at App::new().
     // Getting this wrong is not a small penalty: femtovg on a machine with no GPU falls through

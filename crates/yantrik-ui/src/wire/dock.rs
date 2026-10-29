@@ -390,6 +390,11 @@ pub fn openable_with(
             "running": running(&surface.id),
         });
         describe_declared(&mut entry, surface);
+        // An app of the framework answers whether or not it is open: asking it starts it, with no
+        // window, and a Mind cannot open it in its view (#978 step 1).
+        if yantrik_shell_core::framework::by_id(&surface.id).is_some() {
+            entry["on_demand"] = serde_json::Value::Bool(true);
+        }
         listed.push(entry);
     }
     listed

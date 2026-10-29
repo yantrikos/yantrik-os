@@ -150,3 +150,23 @@ fn the_triage_tabs_filter_what_is_in_hand_without_asking_the_server() {
     assert_eq!(notice(&app), "There is no triage tab 7.");
     assert_eq!(mail.asked().len(), asked);
 }
+
+/// The 520 gate: an agent's first describe of an Email that is starting said the mail service could
+/// not be reached, which was only the state it begins in. Until the first look lands it says
+/// Email is starting, with the contract phrase; a look that failed says why.
+#[test]
+fn describe_before_the_first_look_lands_says_email_is_starting_not_unreachable() {
+    let mail = with_inbox();
+    let (app, _) = start_with(&mail, FakeMind::new());
+    let first = app.describe();
+    assert_eq!(first["summary"], "Email is starting; ask again in a moment.", "{first}");
+    assert_eq!(first["state"]["service"], "starting");
+    quiet(&app);
+    let after = app.describe();
+    assert!(after["summary"].as_str().unwrap().starts_with("Email — "), "{after}");
+    assert_ne!(after["state"]["service"], "starting");
+
+    let down = started(&FakeMail::unreachable());
+    let said = down.describe()["summary"].as_str().unwrap().to_string();
+    assert!(said.contains("could not be reached") && said.contains(UNREACHABLE), "a failed look says why: {said}");
+}

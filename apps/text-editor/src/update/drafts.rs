@@ -131,6 +131,15 @@ pub fn forget(m: &mut Model, fx: &mut Effects<TextEditor>, name: &str) {
 /// The first command: every tab with a file watched, and the old build's tabs handed to the lane
 /// at once, so its file can be set aside.
 pub fn started(m: &mut Model, fx: &mut Effects<TextEditor>) {
+    // The person is here: what an agent's start left for them opens now, after anything the agent
+    // opened itself, and is said as it always is.
+    if let Some(found) = m.recovery_owed.take() {
+        let state = m.state_dir.clone();
+        let notice = crate::recovery::restore(m, &found, legacy::read(&state, None));
+        if !notice.is_empty() {
+            m.notice.set(notice);
+        }
+    }
     for t in &m.tabs {
         if let Some((key, path, seen)) = m.doc(t).watch_entry() {
             fx.watch(&key, path, seen);

@@ -269,13 +269,14 @@ fn names_app(surfaces: &[String], app: &str) -> bool {
     })
 }
 
-/// The app an act opens, when it is `shell.open_app` and its `name` says which one.
+/// The app an act opens, when it is `shell.open_app` or `shell.start_app` (the app started on
+/// demand with no window, for a describe or an act on it) and its `name` says which one.
 ///
 /// No other act's arguments are read: an argument of another action is not a licence to open what
 /// it happens to name. An `open_app` with no name to open is answered by the dispatch for the
 /// missing argument, not by this rule.
 fn opening<'a>(app_id: &str, action: &str, args: &'a Value) -> Option<&'a str> {
-    if !app_id.eq_ignore_ascii_case("shell") || action != "open_app" {
+    if !app_id.eq_ignore_ascii_case("shell") || !matches!(action, "open_app" | "start_app") {
         return None;
     }
     args.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty())
@@ -517,6 +518,11 @@ mod tests {
         // text, are all decided as an act off the surfaces is.
         let notes = json!({ "name": "notes" });
         assert!(within(&planner(), "shell", "start_service", "standard", &notes).is_err());
+        // Starting an app the reach names, with no window, for a describe or an act on it, is as
+        // much within it as opening it was; one it does not name is not.
+        let start = |name| within(&planner(), "shell", "start_app", "standard", &json!({ "name": name }));
+        assert!(start("notes").is_ok());
+        assert!(start("terminal").is_err());
         assert!(within(&planner(), "shell", "open_app", "standard", &json!({})).is_err());
         assert!(within(&planner(), "shell", "open_app", "standard", &json!({ "name": ["notes"] })).is_err());
     }

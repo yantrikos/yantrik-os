@@ -487,6 +487,19 @@ def still_starting(name, surface):
         % (name, STARTING_WAIT, surface["id"]))
 
 
+def closed_text(name, surface, legacy_suffix=""):
+    """What is said of a declared app with no socket. Opening it is the way forward only for an app
+    the shell does not start on demand (or cannot, an older build): a Yantrik app starts by itself,
+    with no window, when it is described or acted on, and `open_app` refuses a Mind it. So the
+    words that point at `open_app` are said for the first kind only (#978)."""
+    purpose = (" (%s: %s)" % (surface["id"], surface["purpose"])) if surface["purpose"] else ""
+    if surface["id"] in _LEGACY:
+        return ("%s is closed%s. Open it first: act shell open_app name=%s — then describe %s."
+                % (name, purpose, surface["id"], surface["id"])) + legacy_suffix
+    return ("%s is not running yet%s. A Yantrik app starts by itself, with no window, when it is "
+            "described or acted on: ask again in a moment." % (name, purpose))
+
+
 def request(name, method, params=None, timeout=40, waited=False):
     """One JSON-RPC round trip. One line in, one line out.
 
@@ -500,17 +513,16 @@ def request(name, method, params=None, timeout=40, waited=False):
     """
     if not waited:
         start_if_on_demand(name, (params or {}).get("agent_token"))
+        # An app of the framework that is not running is started with no window, and the call
+        # waits for it (or is dropped, never queued): see `start_framework_app`.
+        start_framework_app(name, method, (params or {}).get("agent_token"))
     candidates = socket_candidates(name)
     if not candidates:
         surface = declared_surface(name)
         if surface:
             if not waited and still_starting(name, surface):
                 return request(name, method, params, timeout, waited=True)
-            raise Unreachable(
-                "%s is closed%s. Open it first: act shell open_app name=%s — then describe %s. "
-                "(no socket for %r yet)"
-                % (name, (" (%s: %s)" % (surface["id"], surface["purpose"])) if surface["purpose"] else "",
-                   surface["id"], surface["id"], name))
+            raise Unreachable(closed_text(name, surface, " (no socket for %r yet)" % name))
         raise Unreachable("no socket for %r (try: yos ls)" % name)
 
     last_error = None
@@ -544,10 +556,7 @@ def request(name, method, params=None, timeout=40, waited=False):
                 # is the desktop's own plumbing, which `yos ls` does not offer (#190).
                 surface = declared_surface(name)
                 if surface:
-                    raise Unreachable(
-                        "%s is closed%s. Open it first: act shell open_app name=%s — then "
-                        "describe %s." % (name, (" (%s: %s)" % (surface["id"], surface["purpose"]))
-                                         if surface["purpose"] else "", surface["id"], surface["id"]))
+                    raise Unreachable(closed_text(name, surface))
                 raise Unreachable(
                     "%s is part of the desktop's plumbing, not an app or a service to describe: "
                     "it does not answer describe. `yos ls` lists what can be described. "
@@ -562,10 +571,7 @@ def request(name, method, params=None, timeout=40, waited=False):
     if surface:
         if not waited and still_starting(name, surface):
             return request(name, method, params, timeout, waited=True)
-        raise Unreachable(
-            "%s is closed%s. Open it first: act shell open_app name=%s — then describe %s."
-            % (name, (" (%s: %s)" % (surface["id"], surface["purpose"])) if surface["purpose"] else "",
-               surface["id"], surface["id"]))
+        raise Unreachable(closed_text(name, surface))
     raise Unreachable(
         "%s is not open. If it is an app, open it first: act shell open_app name=%s — then "
         "describe it again. (`yos ls` shows what is open and what can be opened.)" % (name, name))
@@ -575,13 +581,15 @@ def call(name, method, params=None, timeout=40):
     """`request`, with an unreachable service as the end of the command."""
     try:
         return request(name, method, params, timeout)
+    except StartRefused as e:
+        die(str(e), e.code)
     except Unreachable as e:
         die(str(e))
 
 
-def die(message):
+def die(message, code=1):
     print("yos: " + message, file=sys.stderr)
-    raise SystemExit(1)
+    raise SystemExit(code)
 
 
 def read_value(text, declared):
@@ -767,6 +775,161 @@ def start_if_on_demand(name, token=None):
         started_on_demand(service, token=token)
 
 
+# ── Apps that start on demand, with no window (design #978, step 1) ──
+#
+# A describe or an act on an app of the framework that is not running used to be told to open it,
+# and a Mind that opened it got a window of its own. Now the shell starts the app's one instance,
+# on the person's display and with no window (`act shell start_app`, graded safe), and the call is
+# answered by the instance.
+#
+# An act WAITS for the start, at most START_BOUND in all, and then runs exactly once. If the start
+# has not finished by then, or fails, the act is dropped, never queued, so it can never answer
+# "nothing was done" and run later. The bound is of the whole act: a caller that has waited already
+# (the bridge reads an action's grade with a describe before it acts) hands the deadline on in
+# YOS_START_DEADLINE, so the two never wait more than START_BOUND together. A describe does not
+# wait for a start: it answers within DESCRIBE_BOUND that the app is starting, and only a start
+# that failed says the app is not running. The sentences are the shell's (`say` in its answer, made
+# from `yantrik_shell_core::framework`), so they are written once.
+#
+# The wait polls the app's socket. The shell is asked when the wait begins, once more after
+# RECHECK_AFTER to hear of a start that has already failed, and once when the bound passes.
+
+START_BOUND = 15.0
+DESCRIBE_BOUND = 1.5
+START_DEADLINE_ENV = "YOS_START_DEADLINE"
+RECHECK_AFTER = 2.0
+# How `yos` ends when the call was not made: sysexits' EX_TEMPFAIL for "starting, ask again" and
+# EX_UNAVAILABLE for "could not start". yos-mcp answers both with the sentence alone.
+EX_STARTING = 75
+EX_NOT_STARTED = 69
+
+
+class StartRefused(Unreachable):
+    """The call was not made, because the app it is for is starting or could not be started."""
+
+    def __init__(self, sentence, code):
+        super().__init__(sentence)
+        self.code = code
+
+
+# Apps the shell said do not start on demand, or that it has no way to start (an older build, no
+# desktop): the words that tell a Mind to open them are still true for these, and for no others.
+_LEGACY = set()
+
+
+def app_answers(app_id):
+    """Whether the app's own surface (`app-<id>`) answers; a service of the same name does not
+    count, because it is not the app."""
+    wanted = "app-%s.sock" % app_id
+    return any(_answers(path) for path in socket_candidates("app-" + app_id)
+               if os.path.basename(path).lower() == wanted)
+
+
+def ask_to_start(app_id, token, acting=True, timeout=5, previous=None, shown=None):
+    """The shell's answer to `start_app`: `{app, name, state, say, reason?}`. None when there is no
+    desktop to ask, or it does not know the action (an older build): the caller carries on as it
+    did before. A desktop that said no ends the call. One that is there and slow to answer (the
+    shell asks from its UI thread) is busy, not gone: the first ask ends the call with the starting
+    sentence, and a later ask keeps `previous`, what it said before."""
+    params = {"action": "start_app", "args": {"name": app_id}}
+    if token:
+        params["agent_token"] = token
+    try:
+        reply = request("shell", "app.act", params, timeout=timeout, waited=True)
+    except (OSError, ValueError):
+        # The desktop is there and slow to answer: busy, not gone (a timeout, a connection cut
+        # short). Its UI thread answers this, so it can be busy for a moment. The first ask ends the
+        # call with the starting sentence; a later one keeps what the desktop said before.
+        if previous is not None:
+            return previous
+        refuse_start({"name": shown or app_id}, acting, False)
+    except Unreachable as e:
+        text = str(e)
+        if "unknown action" in text or "no socket for" in text or "is closed" in text:
+            return None
+        reason = text.split(" refused: ", 1)[1] if " refused: " in text else text
+        raise StartRefused(
+            ("%s could not be started (%s); nothing was done." if acting else
+             "%s is not running: the desktop could not start it (%s).") % (app_id, reason),
+            EX_NOT_STARTED)
+    said = reply.get("result") if isinstance(reply.get("result"), dict) else reply
+    return said if isinstance(said, dict) and "state" in said else None
+
+
+def refuse_start(said, acting, failed):
+    """End the call with the shell's sentence for this case."""
+    kind = "%s_%s" % ("act" if acting else "describe", "failed" if failed else "starting")
+    sentence = (said.get("say") or {}).get(kind)
+    if not sentence:
+        name = said.get("name") or said.get("app") or "The app"
+        sentence = {
+            ("act", True): "%s could not be started; nothing was done.",
+            ("act", False): "%s is starting; nothing was done — send it again in a moment.",
+            ("describe", True): "%s is not running: the desktop could not start it.",
+            ("describe", False): "%s is starting; ask again in a moment.",
+        }[("act" if acting else "describe", failed)] % name
+    raise StartRefused(sentence, EX_NOT_STARTED if failed else EX_STARTING)
+
+
+def carried_deadline():
+    """The deadline a caller that has waited already handed on, as seconds since the epoch."""
+    try:
+        return float(os.environ.get(START_DEADLINE_ENV, ""))
+    except ValueError:
+        return None
+
+
+def start_framework_app(name, method, token=None, clock=None, pause=None):
+    """Make sure the app `name` means answers before `method` is sent to it, starting it with no
+    window if the shell says it starts on demand. Returns when it answers within the bound, or when
+    `name` is nothing that starts on demand; raises `StartRefused` otherwise, and the call is not
+    made. The bound is of the whole wait: an app that answers after it is not called."""
+    clock = clock or time.time
+    pause = pause or time.sleep
+    if method not in ("app.describe", "app.act"):
+        return
+    surface = declared_surface(name)
+    if not surface or surface["id"] in ("shell", "yantrik"):
+        return
+    app = surface["id"]
+    if app_answers(app):
+        return
+    if app in _LEGACY:
+        return
+    token = token or take_agent_token([])[0]
+    acting = method == "app.act"
+    deadline = clock() + (START_BOUND if acting else DESCRIBE_BOUND)
+    carried = carried_deadline() if acting else None
+    if carried is not None:
+        deadline = min(deadline, carried)
+    said = ask_to_start(app, token, acting, timeout=5 if acting else 2, shown=surface["title"])
+    if said is None or said["state"] == "not_on_demand":
+        _LEGACY.add(app)
+        return
+    if clock() >= deadline and not app_answers(app):
+        refuse_start(said, acting, said["state"] == "failed")
+    began = clock()
+    rechecked = False
+    while True:
+        if said["state"] == "failed":
+            refuse_start(said, acting, True)
+        if said["state"] == "running" and app_answers(app):
+            return
+        if clock() >= deadline:
+            break
+        pause(0.1)
+        if app_answers(app) and clock() < deadline:
+            return
+        if acting and not rechecked and clock() - began >= RECHECK_AFTER:
+            rechecked = True
+            said = ask_to_start(app, token, acting, timeout=5, previous=said) or said
+    # The bound passed. An act hears the shell once more, so a start that failed in the meantime is
+    # told as failed; the call is dropped either way.
+    if acting:
+        said = ask_to_start(app, token, acting, timeout=5, previous=said) or said
+    refuse_start(said, acting, said["state"] == "failed")
+
+
 def ensure_service(name):
     """Make sure a service is up, asking the desktop to start it if it is not.
 
@@ -935,6 +1098,15 @@ def cmd_ls(argv):
     # it again, and gave up on the task; describing it now waits for it (`still_starting`).
     starting = [a for a in closed if a["name"] in windows or a.get("describe_as") in windows]
     closed = [a for a in closed if a not in starting]
+    # An app of the framework answers when asked, open or not: asking it starts it with no window.
+    # A Mind cannot open it in its view, so it is not listed as something to open (#978).
+    on_demand = [a for a in closed if a.get("on_demand")]
+    closed = [a for a in closed if not a.get("on_demand")]
+    if on_demand:
+        print("Answers when asked, with no window (`describe` or `act` on it starts it; it cannot "
+              "be opened in your view):")
+        for a in on_demand:
+            print("    %-18s (not running)  %s" % (a.get("describe_as") or a["name"], a.get("for", "")))
     if starting:
         print("Starting (the window is open, the app has not answered yet; describe it in a few "
               "seconds, and do not open it again):")
@@ -1006,6 +1178,15 @@ def without_raw_breaks(json_text):
 def cmd_describe(argv):
     if not argv:
         die("usage: yos describe <shell|notes|...> [--json]")
+    # `--for-act`: this describe is the first half of an act (the bridge reads the action's grade
+    # before it acts), so an app that has to be started is waited for as an act waits, and one
+    # that cannot run in time ends the act with the act's sentence, not the describe's.
+    if "--for-act" in argv:
+        argv = [a for a in argv if a != "--for-act"]
+        try:
+            start_framework_app(argv[0], "app.act")
+        except StartRefused as e:
+            die(str(e), e.code)
     view = call(argv[0], "app.describe")
     if "--json" in argv:
         # The result as it came back, one JSON document, nothing else on stdout, so a script can
@@ -1374,6 +1555,12 @@ def cmd_act(argv):
             "[--agent-token <t>]")
     target, action = argv[0], argv[1]
     pairs = argv[2:]
+    # Before anything else asks the app a question: an app of the framework that is not running is
+    # started with no window first, so the typing of the arguments below reads the app itself.
+    try:
+        start_framework_app(target, "app.act", agent_token)
+    except StartRefused as e:
+        die(str(e), e.code)
     params = {"action": action, "args": parse_args(pairs, declared_types(target, action, pairs))}
     # An `expect_revision` is lifted out of the args, because it guards the call rather
     # than being an argument to the action.
@@ -1385,6 +1572,8 @@ def cmd_act(argv):
         params["agent_token"] = agent_token
     try:
         reply = request(target, "app.act", params, timeout=act_timeout(action, params["args"]))
+    except StartRefused as e:
+        die(str(e), e.code)
     except Unreachable as e:
         # A refusal for want of a grant is a question, not an ending — unless the caller said
         # it would do its own asking, or already brought a grant that did not hold.

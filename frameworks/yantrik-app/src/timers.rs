@@ -31,6 +31,8 @@ pub enum Fired<C> {
     /// A linger's backstop (`fx.linger`): the app has run on without a window for as long as it
     /// asked, and the framework ends it.
     LingerOver,
+    /// An instance with no window has gone unused for [`crate::service::IDLE`] (`cx/serve.rs`).
+    IdleOver,
 }
 
 /// The names of the framework's own timers start with this. An app's `fx.every`, `fx.after` or
@@ -40,6 +42,9 @@ const FRAMEWORK: &str = "yantrik-app.";
 
 /// The timer a linger's backstop is armed under: the framework's own.
 pub(crate) const LINGER: TimerId = TimerId("yantrik-app.linger");
+
+/// The timer an instance with no window ends under when no agent uses it: the framework's own.
+pub(crate) const IDLE: TimerId = TimerId("yantrik-app.idle");
 
 impl TimerId {
     /// Whether this is one of the framework's own timers, which the app may not touch.

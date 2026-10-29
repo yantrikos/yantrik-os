@@ -89,7 +89,11 @@ pub fn looked(m: &mut Model, why: Look, folder: &str, loaded: Loaded, fx: &mut E
         m.sync_status = format!("Synced \u{00b7} {count} in {folder}");
     }
     if why == Look::Start {
-        super::drafts::offer_unsent(m, fx);
+        m.start_look_over = true;
+        // Said to the person, so only when they are here; if not, their first window says it.
+        if m.person_here {
+            super::drafts::offer_unsent(m, fx);
+        }
     }
 }
 

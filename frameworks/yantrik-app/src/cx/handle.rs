@@ -20,13 +20,13 @@ impl<A: App> Clone for Cx<A> {
 }
 
 /// The window, borrowed through a [`Cx`] for as long as the guard lives.
-pub struct UiRef<A: App>(Rc<Core<A>>);
+pub struct UiRef<A: App>(Rc<A::Ui>);
 
 impl<A: App> Deref for UiRef<A> {
     type Target = A::Ui;
 
     fn deref(&self) -> &A::Ui {
-        &self.0.ui
+        &self.0
     }
 }
 
@@ -62,7 +62,7 @@ impl<A: App> Cx<A> {
 
     /// The window, for a view that binds a list model at wire time. Not for `update`.
     pub fn ui(&self) -> UiRef<A> {
-        UiRef(self.core_or_panic())
+        UiRef(self.core_or_panic().ui())
     }
 
     /// The `Send` endpoint, for tests and for anything off the UI thread.

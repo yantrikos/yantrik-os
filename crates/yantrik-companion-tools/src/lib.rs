@@ -11,6 +11,7 @@ pub use yantrik_companion_core::permission::{PermissionLevel, parse_permission};
 pub use yantrik_companion_core::sanitize;
 
 pub mod antivirus;
+pub mod app_start;
 pub mod app_ui;
 pub mod archive;
 pub mod artifacts;

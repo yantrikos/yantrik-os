@@ -327,6 +327,7 @@ if argv[:1] == ["describe"]:
     # form (`--fold`, for a mind paying by the token) from the one the bridge parses for itself
     # (plain, because a folded family has no purpose lines and the card needs one).
     state.setdefault("describes", []).append(argv)
+    state.setdefault("deadlines", []).append(os.environ.get("YOS_START_DEADLINE"))
     save(state)
     if target == "shell":
         if state.get("shell_down"):
@@ -389,6 +390,20 @@ if argv[:1] == ["describe"]:
     if target == "forged":
         sys.stdout.write(DESCRIBE_FORGED)
         raise SystemExit(0)
+    if target in (state.get("starting_for") or []):
+        # An app of the framework the desktop is starting with no window (`yos`: EX_STARTING).
+        # With `--for-act` (the bridge reading the grade before an act) it is the act's sentence.
+        if "--for-act" in argv:
+            sys.stderr.write("yos: Notes is starting; nothing was done — send it again in a moment.\n")
+        else:
+            sys.stderr.write("yos: Notes is starting; ask again in a moment.\n")
+        raise SystemExit(75)
+    if target in (state.get("not_started_for") or []):
+        if "--for-act" in argv:
+            sys.stderr.write("yos: Notes could not be started (it ended); nothing was done.\n")
+        else:
+            sys.stderr.write("yos: Notes is not running: the desktop could not start it (it ended).\n")
+        raise SystemExit(69)
     if target in (state.get("no_socket_for") or []):
         # A declared app whose window is closed, in the real `yos`'s words — including the
         # "(no socket for ...)" the bridge keys its own way-forward sentence on (#195).
@@ -404,6 +419,14 @@ if argv[:1] == ["web"]:
 
 if argv[:1] == ["act"]:
     target, action = argv[1], argv[2]
+    state.setdefault("act_deadlines", []).append(os.environ.get("YOS_START_DEADLINE"))
+    save(state)
+    if target in (state.get("starting_for") or []):
+        sys.stderr.write("yos: Notes is starting; nothing was done — send it again in a moment.\n")
+        raise SystemExit(75)
+    if target in (state.get("not_started_for") or []):
+        sys.stderr.write("yos: Notes could not be started (it ended); nothing was done.\n")
+        raise SystemExit(69)
     # What the app's own dispatch does now (issue #116): a `--grant` is spent — bound to the
     # app, the action and the exact arguments — before anything runs, and the call is refused
     # in the shell's words if it does not hold. `--no-ask` is the bridge telling yos not to
@@ -1932,7 +1955,7 @@ with tempfile.TemporaryDirectory() as d:
     module.action_detail("calendar", "delete_event")
     describes = read(state).get("describes") or []
     check("action_detail does NOT fold, because the card needs the purpose line",
-          describes and describes[-1] == ["describe", "calendar"], describes)
+          describes and describes[-1] == ["describe", "calendar", "--for-act"] and "--fold" not in describes[-1], describes)
     grade, purpose = module.action_detail("calendar", "delete_event")
     check("and it still reads the purpose the card shows",
           grade == "sensitive" and "not recoverable" in purpose.lower(), (grade, purpose))
@@ -2866,6 +2889,49 @@ with tempfile.TemporaryDirectory() as d:
           and "Your reach names notes, so you may open it." in told, told)
     check("and one the reach does not name promises nothing, and still shows the way",
           "Open it first" in other and "reach" not in other, other)
+
+    # 24h. An app the desktop is starting with no window, or could not start (#978): the bridge
+    # answers with the sentence alone, as it came, and not wrapped in a failure. An act that was
+    # dropped says nothing was done; a describe says to ask again, or that the app is not running.
+    module, state = case(tmp, "starting", token=TOKEN, starting_for=["notes"], not_started_for=["weather"])
+    told, failed = module.run_tool(module.BY_NAME["os_describe"], {"app": "notes"})
+    check("a describe during the start is the sentence, exactly",
+          told == "Notes is starting; ask again in a moment." and not failed, told)
+    told, failed = module.run_tool(module.BY_NAME["os_act"], {"app": "notes", "action": "add_note", "args": {}})
+    check("an act dropped during the start says nothing was done, exactly",
+          told == "Notes is starting; nothing was done — send it again in a moment." and not failed, told)
+    handed = [d for d in (read(state).get("deadlines") or []) if d]
+    check("the grade read hands the act's deadline on, fifteen seconds from its start (#978 L1)",
+          handed and 0 < float(handed[-1]) - time.time() <= 15.0, handed)
+    told, failed = module.run_tool(module.BY_NAME["os_describe"], {"app": "weather"})
+    check("a describe of an app that could not start says it is not running, as an error",
+          told.startswith("Notes is not running: the desktop could not start it") and failed, told)
+    told, failed = module.run_tool(module.BY_NAME["os_act"], {"app": "weather", "action": "refresh", "args": {}})
+    check("an act of one that could not start says nothing was done",
+          "nothing was done" in told and failed and "failed (exit" not in told, told)
+
+    # 24i. A person asked in between: the deadline of the grade read is stale, and the approved act
+    # gets a fresh bound of its own (#978 L4). Without an approval it is handed on.
+    module, state = case(tmp, "stale-deadline", token=TOKEN)
+    real_guard = module.guard_act
+
+    def guard_that_asked(args):
+        module._LOCAL.start_deadline = time.time() + 15.0
+        return None, "", None, "appr-1"
+
+    def guard_that_did_not(args):
+        module._LOCAL.start_deadline = time.time() + 15.0
+        return None, "", None, None
+
+    module.guard_act = guard_that_asked
+    module.run_tool(module.BY_NAME["os_act"], {"app": "calendar", "action": "add_event", "args": {"title": "t", "date": "2026-10-01"}})
+    asked = read(state).get("act_deadlines") or []
+    check("after a person was asked the act is not handed the grade read's deadline", asked and asked[-1] is None, asked)
+    module.guard_act = guard_that_did_not
+    module.run_tool(module.BY_NAME["os_act"], {"app": "calendar", "action": "add_event", "args": {"title": "t", "date": "2026-10-01"}})
+    asked = read(state).get("act_deadlines") or []
+    check("with nobody asked it is", asked and asked[-1] and 0 < float(asked[-1]) - time.time() <= 15.0, asked)
+    module.guard_act = real_guard
 
     # 25. os_describe names the apps this machine declares, from their .desktop files — anybody's
     # as well as ours — and names none of its own. os_apps says a closed app is listed.

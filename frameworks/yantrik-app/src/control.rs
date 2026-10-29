@@ -861,8 +861,9 @@ impl App {
                 .published_grade(crate::present::ACTION)
                 .is_none()
         {
+            let id = self.registry.app_id().to_string();
             self.registry
-                .add(crate::present::action(), Box::new(crate::present::handle));
+                .add(crate::present::action(), Box::new(move |args| crate::present::handle(&id, args)));
         }
         let app_id = self.registry.app_id().to_string();
         let action_count = self.registry.action_count();

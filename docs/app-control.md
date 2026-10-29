@@ -310,6 +310,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `install_harness`, `start_harness` | sensitive | fetches software onto the machine; decides what it runs on every login |
 | shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |
 | shell | `lock` | safe | only takes access away — Super+L must lock, not ask about locking (#215) |
+| shell | `start_app` | safe | starts an app of the framework's instance with no window so a describe or an act on it answers; it opens nothing the person sees and takes only an id (#978 step 1) |
 | shell | `capture_open`, `capture_region`, `capture_screen_to_clipboard`, `capture_record_toggle` | safe | the person's capture keys (Print, Shift+Print, Super+Shift+S, Ctrl+Print, Super+Shift+R): a key must not raise a card, so each refuses any caller the shell takes for a mind instead (design/capture-2026-10-15.md) |
 | shell | `screenshot_mind_view` | safe | a mind photographing its own display; saved to ~/Pictures/Screenshots and the person told which mind took it; one every 2 s from minds, and none with under 1 GB free |
 | shell | `screenshot_screen` | sensitive | a picture of the person's desktop; its purpose says it cannot be undone, word for word as `read_screen`'s, so it asks every time and no session rule covers it; the person is told which mind took it |
@@ -698,7 +699,8 @@ surface (above) — an adapter is how one gets there. The rest publish through A
 ## Where a mind's windows go (Mind View)
 
 While the setting `minds open apps in Mind View` is on (the default; only the person can change it),
-every window a mind opens is drawn in Mind View and never on the person's desktop:
+every window a mind opens is drawn in Mind View and never on the person's desktop. (No app of the
+framework opens there at all any more; see the last section.)
 
 - Every launch for a mind clears `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `XAUTHORITY`
   and then sets Mind View's own display (`mind_view::Seat::display`; the companion's browser tools
@@ -706,7 +708,7 @@ every window a mind opens is drawn in Mind View and never on the person's deskto
   toolkit settings, so a dead socket fails the app instead of falling back to the person's X display.
 - Mind View down is a refusal that says so (`failed_launches`), never a fall back to the desktop.
   A failed start is tried again after 30 s.
-- `open_app` for an app already open on the person's desktop starts nothing: the answer says it was
+- `open_app` for a program already open on the person's desktop starts nothing: the answer says it was
   not launched again and not raised, and the mind drives the open window through its surface.
 - `open_app` and, for a mind, `files_open` answer after the window is seen: `window: appeared`
   with `where`, or an error that says only what was observed (a refusal; an exit; "no window listed
@@ -728,12 +730,59 @@ every window a mind opens is drawn in Mind View and never on the person's deskto
   read masks it when `Boot::for_mind` is set (`yantrik_app::for_mind`). It is set when the launch
   carries `YANTRIK_FOR_MIND` (set on every app started on a mind's display,
   `MindDisplay::mind_view`) or when the window's `WAYLAND_DISPLAY` is not the person's
-  (`present::elsewhere`, the comparison `present` already makes), so a launch that lost the marker is
-  still masked. The marker only turns masking on. `TestApp::start_for_mind` starts a test that way.
-  The display rule assumes the person's session is on `wayland-0` (`PERSON_DISPLAY`); on any other
-  display every window is masked, which fails closed. Snippets shows "Code is hidden in this
+  (a Mind's display, below), so a launch that lost the marker is still masked. The marker only turns
+  masking on. `TestApp::start_for_mind` starts a test that way. There is no literal display name:
+  the shell records its own `WAYLAND_DISPLAY` as the person's (`person-display`) and the displays
+  Mind View serves (`mind-displays`) in the session's socket directory
+  (`yantrik_ipc_contracts::mind_view_displays`). A display Mind View lists is always a Mind's; any
+  display but the recorded person's is a Mind's; and if the person's record is lost, a display is a
+  Mind's only if Mind View lists it (or the marker says so). A person on `wayland-1` is the person.
+  Snippets shows "Code is hidden in this
   window." for its code, searches only titles, tags and language, offers no rail question, and
   refuses editing, Copy, AI Explain and the rail's "What does this do?".
 - Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
   `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
   drives whichever Terminal window is open, including the person's if that is the one open.
+
+### Yantrik's own apps never open in a mind's view (design #978, step 1)
+
+No app of the framework (`frameworks/yantrik-app`) gives a mind a window, whatever order the
+launches came in and whether or not the person has the app open. The list of those apps is one
+registry in the shell (`yantrik_shell_core::framework`), and each app declares `App::VIEWABLE`
+(false for all of them; a guard test reads every app). Everything below is made from it.
+
+- A mind's `open_app` of one, and a mind's `files_open` that would open a file in one, is refused
+  before anything is applied, with exactly `<Name> cannot open in your view; use its actions and
+  os_describe <surface id> instead.` The browser, `foot` for `agent_run` and the Python apps are
+  unchanged. A copy of an app that a mind started itself (a launch carrying `YANTRIK_FOR_MIND`, or
+  on a display that is not the person's) never becomes the instance and never hands its launch to
+  one: it says the same sentence and ends. A launch handed over from a mind's view applies nothing
+  and shows nothing, with files or without.
+- `describe shell` → `mind_view.apps_the_person_has_open` says so, generated from the registry.
+- **Start on demand.** A `describe` or an `act` on one of these apps that is not running makes the
+  shell start its one instance, `act shell start_app name=<id>` (safe; within the reach of a role
+  that names the app). The instance starts on the person's display, from the person's session,
+  with `--service` and no window: it loads its store and serves intents and `describe`
+  (`App::start_service`), and runs nothing the person sees (`App::start`: recovery, dialogs,
+  notifications, the Email unsent-draft sentence) until their first window opens. The person's
+  launch then presents a native window of the same instance. It ends five minutes after the last
+  time an agent used it with no window open, and the person closing their last window does not end it
+  while agents are using it.
+- An **act waits** for the start, at most 15 s, and then runs exactly once. If the start has not
+  finished by then, or failed, the act is dropped, never queued: the answer is `<Name> is starting;
+  nothing was done — send it again in a moment.`, or `<Name> could not be started (<why>); nothing was
+  done.` A **describe** during the start answers `<Name> is starting; ask again in a moment.`; only a
+  failed start says `<Name> is not running: the desktop could not start it (<why>).`
+- The shell's `windows`, `launcher.running` and `mind_view.apps` come from what the instances report
+  (`<id>.windows` beside the socket), never from launch pids: a windowless instance is not a window.
+- **What step 1 does not close.** It decides person against Mind from the asking process's
+  environment and display, and (for a launch handed to a running copy) from which program it is:
+  only a Yantrik app binary or the shell may hand a launch over. A Mind's `agent_run` that rewrites
+  both and runs a Yantrik app binary can still pose as the person. Identity a caller cannot claim
+  comes from sessions the shell creates (design #978 section 1), which step 2 builds.
+  The display rule has no X11 side either: a process with `DISPLAY=:N` (Mind View's Xwayland) and
+  no `WAYLAND_DISPLAY` is "not on Wayland" and counts as the person's. That is a step-2 item too.
+- **Left in an agent's start, on purpose.** Email's look at the mail service (it can start the
+  service and connect the account, which its intents need), Weather's fetch and its refetch timer
+  (they run until the instance goes idle, five minutes after the last use), and Download Manager's
+  notifications for a download an agent started.

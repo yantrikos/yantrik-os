@@ -23,7 +23,8 @@
 //! - A second launch (the dock, `present`, a launch handed over) opens the first window again,
 //!   drawn whole from the model, and raises `Event::Presented`: the linger is over, the app runs
 //!   on as before the close, and that event is where it cancels the exit it was waiting to make.
-//!   A window the app opens itself (`fx.open_window`) ends the linger too.
+//!   A window the app asks for itself (`fx.open_window`) is not opened during a linger: the person's
+//!   second launch is the way back, and the app hears `Event::WindowNotOpened` (#978 L9).
 //! - A logout is raised as ever (`Event::ExitRequested(Logout)`), and the signal deadline
 //!   (`crate::quit::SIGNAL_DEADLINE`) still ends the app, whatever its backstop.
 //! - The backstop, at most [`MAX_LINGER`], ends the app if nothing else has, and logs that it did.
@@ -64,6 +65,7 @@ impl<A: App> Core<A> {
         match fired {
             Fired::Command(command) => self.run(command),
             Fired::LingerOver => self.linger_over(),
+            Fired::IdleOver => self.idle_over(),
         }
     }
 

@@ -11574,6 +11574,7 @@ name = "yantrik-ipc-contracts"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
  "serde_json",
 ]
@@ -11828,6 +11829,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "tracing",
+ "yantrik-ipc-contracts",
 ]
 
 [[package]]
@@ -12101,6 +12103,11 @@ dependencies = [
 [[package]]
 name = "yantrik-windows-core-tests"
 version = "0.1.0"
+dependencies = [
+ "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
+ "yantrik-shell-core",
+]
 
 [[package]]
 name = "yantrikdb"

@@ -49,6 +49,7 @@ mod linger;
 mod persisted;
 mod quitting;
 mod rail_hooks;
+mod serve;
 pub use rail_hooks::is_person_applying;
 mod settlement;
 mod windows;
@@ -94,7 +95,10 @@ struct Waiting<C> {
 pub struct Core<A: App> {
     id: &'static str,
     model: RefCell<A::Model>,
-    ui: A::Ui,
+    /// The primary window. An instance an agent started has none until the person arrives
+    /// (`cx/serve.rs`): a window made before the event loop is not the same thing to a windowing
+    /// system as one made in it, and a service start makes none it will not show.
+    ui: RefCell<Option<Rc<A::Ui>>>,
     timers: RefCell<Box<dyn Timers<Fired<A::Command>>>>,
     executor: RefCell<Box<dyn Executor<A::Command>>>,
     settings: RefCell<Store<A::Settings>>,
@@ -130,6 +134,8 @@ pub struct Core<A: App> {
     logout: Cell<Option<crate::quit::LoggedOut>>,
     /// Running on with no window since the last one closed, by `fx.linger` (`cx/linger.rs`).
     linger: Cell<Option<linger::Lingering>>,
+    /// How the instance started, and whether agents use it (`cx/serve.rs`).
+    serve: serve::Serve,
     /// The windows beyond the first, and whether the first is open (`cx/windows.rs`).
     windows: RefCell<windows::Windows<A::Ui>>,
     /// This core, weakly: a window opened later is wired through a `Cx` made from it.
@@ -172,7 +178,7 @@ pub struct Parts<A: App> {
 
 impl<A: App> Core<A> {
     /// A core over `model` and `ui`, with the parts it is given.
-    pub fn new(model: A::Model, ui: A::Ui, parts: Parts<A>) -> Rc<Core<A>> {
+    pub fn new(model: A::Model, ui: Option<A::Ui>, parts: Parts<A>) -> Rc<Core<A>> {
         let (post, inbox) = queue::bounded(queue::CAPACITY, parts.wake);
         let report: Arc<dyn Report> = Arc::new(persisted::PostWritten(post.clone()));
         Rc::new_cyclic(|weak: &Weak<Core<A>>| {
@@ -185,7 +191,7 @@ impl<A: App> Core<A> {
             Core {
                 id: A::ID,
                 model: RefCell::new(model),
-                ui,
+                ui: RefCell::new(ui.map(Rc::new)),
                 timers: RefCell::new((parts.timers)(sink)),
                 executor: RefCell::new(parts.executor),
                 settings: RefCell::new(parts.settings),
@@ -211,6 +217,7 @@ impl<A: App> Core<A> {
                 exit: Cell::new(None),
                 logout: Cell::new(None),
                 linger: Cell::new(None),
+                serve: serve::Serve::default(),
                 windows: RefCell::new(windows::Windows::new()),
                 me: weak.clone(),
                 registry: RefCell::new(None),
@@ -228,8 +235,15 @@ impl<A: App> Core<A> {
         self.id
     }
 
-    pub fn ui(&self) -> &A::Ui {
-        &self.ui
+    /// The primary window. Panics before it exists, which only a service start can be before the
+    /// person arrives: nothing that wires, renders or shows it runs then.
+    pub fn ui(&self) -> Rc<A::Ui> {
+        self.primary().expect("the primary window exists (a service start makes it when the person arrives)")
+    }
+
+    /// The primary window, if it exists.
+    pub fn primary(&self) -> Option<Rc<A::Ui>> {
+        self.ui.borrow().clone()
     }
 
     /// Where the app's files are.
@@ -258,29 +272,6 @@ impl<A: App> Core<A> {
         self.fresh_wake();
         self.applying.set(true);
         self.render_windows(&Changed::all());
-        self.applying.set(false);
-        self.drain_pending();
-    }
-
-    /// `App::start`, and its effects. `start` cannot change the model (it reads it), so nothing
-    /// is redrawn unless it says so; the first render has just happened.
-    pub fn start(&self) {
-        self.fresh_wake();
-        let mut fx = self.effects(None).starting();
-        A::start(&self.model.borrow(), &mut fx);
-        let (requests, changed, next) = fx.into_parts();
-        self.next_job.set(next);
-        self.applying.set(true);
-        self.current.set(None);
-        self.commit(requests);
-        if !changed.is_empty() {
-            self.render_windows(&changed);
-        }
-        // An app with a rail: the first refresh now. Later ones follow the model's changes and
-        // the Mind's reach; there is no tick (see `rail`).
-        if let Some(refresh) = A::rail(RailCommand::Refresh) {
-            self.queue(None, refresh);
-        }
         self.applying.set(false);
         self.drain_pending();
     }

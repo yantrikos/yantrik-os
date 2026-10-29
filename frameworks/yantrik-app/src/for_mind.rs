@@ -4,22 +4,30 @@
 //! An app with content an agent must not read (a snippet's code, a note) masks it when
 //! `Boot::for_mind` is set, and keeps what is safe to show: titles, tags, counts.
 //!
-//! It fails closed. Masking is on when either says so:
+//! It fails closed. A copy is drawn for a Mind when either says so:
 //! - the launch carries the marker [`FOR_MIND_VAR`], which the shell sets on every app it starts
 //!   on a mind's display; or
-//! - the window's Wayland display is not the person's own, by the same comparison `present` makes
-//!   of two displays ([`present::elsewhere`]): a launch that lost the marker but landed on Mind
-//!   View is still masked.
+//! - its Wayland display is a Mind's by the shell's own record of displays
+//!   (`yantrik_ipc_contracts::mind_view_displays`): a display Mind View lists, or any display but
+//!   the one the shell recorded as the person's. There is no literal display name: a person on
+//!   `wayland-1` is the person. A launch that lost the marker but landed on Mind View is still
+//!   a Mind's.
 //!
-//! The person's display is taken to be [`PERSON_DISPLAY`] (`wayland-0`), as every shipping setup
-//! has it. A session on another display is masked throughout: that is the fail-closed side, so an
-//! app's sentence must not say a Mind is looking when only this rule decided it.
+//! When the shell's record of the person's display is lost (missing, unreadable, not the shell's),
+//! a copy is a Mind's only if its display is one Mind View lists, or the marker says so; see
+//! `mind_view_displays` for the whole rule. An app's sentence must not say a Mind is looking when
+//! only this rule decided it.
 //!
 //! The marker can only turn masking on. Nothing here reads a variable that turns it off.
 
-use crate::present;
+use yantrik_ipc_contracts::mind_view_displays::Known;
 
-pub use yantrik_ipc_contracts::mind_view::{FOR_MIND_VAR, PERSON_DISPLAY};
+pub use yantrik_ipc_contracts::mind_view::FOR_MIND_VAR;
+
+/// The shell's record of the displays, from the session's socket directory.
+pub fn known_displays() -> Known {
+    Known::read(&yantrik_ipc_transport::server::socket_dir())
+}
 
 /// Whether a window with this launch is drawn for a Mind: `marker` is the value of
 /// [`FOR_MIND_VAR`] and `display` that of `WAYLAND_DISPLAY`, both as the process has them.
@@ -27,7 +35,12 @@ pub use yantrik_ipc_contracts::mind_view::{FOR_MIND_VAR, PERSON_DISPLAY};
 /// Any value of the marker but an empty one counts, so `0` and `false` still mask. With no display
 /// named the window is not on Wayland and the display rule has nothing to compare.
 pub fn drawn_for_mind(marker: Option<&str>, display: Option<&str>) -> bool {
-    marker.is_some_and(|m| !m.is_empty()) || present::elsewhere(display, Some(PERSON_DISPLAY))
+    drawn_for_mind_in(marker, display, &known_displays())
+}
+
+/// [`drawn_for_mind`] against the displays `known`.
+pub fn drawn_for_mind_in(marker: Option<&str>, display: Option<&str>, known: &Known) -> bool {
+    marker.is_some_and(|m| !m.is_empty()) || known.is_minds(display)
 }
 
 /// [`drawn_for_mind`], for this process.
@@ -86,30 +99,51 @@ pub fn refuse_if(for_mind: bool, would_run_as_person: bool) -> Result<(), crate:
 mod tests {
     use super::*;
 
+    fn known(person: Option<&str>, minds: &[&str]) -> Known {
+        Known { person: person.map(str::to_string), minds: minds.iter().map(|m| m.to_string()).collect() }
+    }
+
     #[test]
     fn the_marker_turns_masking_on_whatever_the_display() {
-        assert!(drawn_for_mind(Some("1"), Some(PERSON_DISPLAY)));
-        assert!(drawn_for_mind(Some("1"), None));
-        assert!(drawn_for_mind(Some("0"), None), "no value of it turns masking off");
+        let k = known(Some("wayland-1"), &[]);
+        assert!(drawn_for_mind_in(Some("1"), Some("wayland-1"), &k));
+        assert!(drawn_for_mind_in(Some("1"), None, &k));
+        assert!(drawn_for_mind_in(Some("0"), None, &k), "no value of it turns masking off");
     }
 
     #[test]
     fn a_display_that_is_not_the_persons_masks_without_the_marker() {
-        assert!(drawn_for_mind(None, Some("wayland-1")));
-        assert!(drawn_for_mind(Some(""), Some("wayland-mind")));
+        let k = known(Some("wayland-0"), &[]);
+        assert!(drawn_for_mind_in(None, Some("wayland-1"), &k));
+        assert!(drawn_for_mind_in(Some(""), Some("wayland-mind"), &k));
     }
 
+    /// A person on any display is the person: there is no literal `wayland-0`.
     #[test]
     fn the_persons_own_display_and_no_display_do_not_mask() {
-        assert!(!drawn_for_mind(None, Some(PERSON_DISPLAY)));
-        assert!(!drawn_for_mind(None, None));
-        assert!(!drawn_for_mind(Some(""), None));
+        for person in ["wayland-0", "wayland-1", "wayland-5"] {
+            let k = known(Some(person), &["wayland-9"]);
+            assert!(!drawn_for_mind_in(None, Some(person), &k), "{person}");
+            assert!(drawn_for_mind_in(None, Some("wayland-9"), &k), "a Mind on its seat");
+        }
+        let k = known(Some("wayland-1"), &[]);
+        assert!(!drawn_for_mind_in(None, None, &k));
+        assert!(!drawn_for_mind_in(Some(""), None, &k));
+    }
+
+    /// The shell's record is lost: only Mind View's own list, or the marker, makes a Mind's.
+    #[test]
+    fn with_the_record_lost_a_display_is_a_minds_only_if_mind_view_lists_it() {
+        let lost = known(None, &["wayland-1"]);
+        assert!(!drawn_for_mind_in(None, Some("wayland-0"), &lost), "absent from the seats");
+        assert!(drawn_for_mind_in(None, Some("wayland-1"), &lost), "listed");
+        assert!(drawn_for_mind_in(Some("1"), Some("wayland-0"), &lost), "the marker still says so");
     }
 
     #[test]
     fn a_window_on_another_display_shows_the_one_sentence_and_refuses_edits() {
         // The display rule alone decided: no marker, a display that is not the person's.
-        let for_mind = drawn_for_mind(None, Some("wayland-mind"));
+        let for_mind = drawn_for_mind_in(None, Some("wayland-mind"), &known(Some("wayland-0"), &[]));
         assert_eq!(shown(for_mind, "secret"), HIDDEN);
         assert_eq!(shown_if_any(for_mind, ""), "", "nothing to hide, nothing said");
         assert_eq!(refuse_if(for_mind, true).unwrap_err().sentence, READ_ONLY);

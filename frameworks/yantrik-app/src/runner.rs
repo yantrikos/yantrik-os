@@ -2,6 +2,7 @@
 //! (design/app-framework-2026-10-21.md, §2.2). An app's `main` is
 //! `yantrik_app::run::<MyApp>()` and nothing else.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -31,6 +32,33 @@ thread_local! {
     /// How the wake reaches the core: a closure installed on the UI thread, so the wake itself
     /// captures nothing and is `Send`.
     static DRAIN: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The first window of a start, made once for the runner and for the test harness. A service
+/// start makes none: a window made before the event loop runs is not created by the windowing
+/// system until the loop next idles, so the person's arrival makes it, in the loop
+/// (`Core::make_primary_if_none`, which uses [`made_window`]).
+pub fn first_window<A: App>(boot: &Boot<A::Settings>, theme: &theme::ThemeSettings) -> Result<Option<A::Ui>, String> {
+    if boot.service {
+        return Ok(None);
+    }
+    made_window::<A>(theme).map(Some)
+}
+
+/// A window of the app, themed and given its chrome: what a person's start shows first and what
+/// their arrival at a service start makes.
+pub(crate) fn made_window<A: App>(theme: &theme::ThemeSettings) -> Result<A::Ui, String> {
+    let ui = A::Ui::make().map_err(|e| e.to_string())?;
+    ui.apply_theme(theme);
+    ui.connect_chrome();
+    Ok(ui)
+}
+
+/// Binds the first window with `App::wire`, when there is one (a service start has none yet).
+pub fn wire_first_window<A: App>(core: &Rc<Core<A>>) {
+    if core.primary().is_some() {
+        A::wire(&Cx::new(core.clone()));
+    }
 }
 
 pub(crate) fn drain_on_ui_thread() {
@@ -75,6 +103,14 @@ pub fn run<A: App>() -> ExitCode {
         }
     }
 
+    // A launch drawn for a Mind never becomes the instance or a window: the instance is always on
+    // the person's display (#978). An agent reaches the app through the service start instead.
+    let service = boot.service;
+    if let Some(said) = crate::service::start_refusal(A::ID, boot.for_mind) {
+        tracing::warn!(app = A::ID, "{said}");
+        eprintln!("{said}");
+        return ExitCode::from(1);
+    }
     // One instance per app and profile: a second launch hands what it was asked to open to the
     // running copy, which shows its window, and exits.
     let instance = paths.instance_name();
@@ -82,6 +118,12 @@ pub fn run<A: App>() -> ExitCode {
     // twice has lost the launch, and the person hears so rather than nothing.
     let unanswered = std::cell::RefCell::new(None::<String>);
     let claimed = instance::claim_or_hand_over(&instance, |_| {
+        if service {
+            // The shell started this copy on demand and another copy is running already: it is
+            // the instance, and nothing is asked of it from here (no window is raised).
+            tracing::info!(app = A::ID, "a service start found the app running; nothing to start");
+            return Held::HandedOver;
+        }
         match launch::hand_over(&instance, &boot.launch) {
             Presented::Unanswered(why) => {
                 tracing::warn!(app = A::ID, "the running copy did not answer the hand-over: {why}");
@@ -116,13 +158,11 @@ pub fn run<A: App>() -> ExitCode {
         Ok(model) => model,
         Err(declined) => return model_declined(A::ID, &declined, &problems::dir()),
     };
-    let ui = match A::Ui::make() {
-        Ok(ui) => ui,
-        Err(e) => return startup_failed(A::ID, "window", &e.to_string()),
-    };
     let theme_now = theme::load();
-    ui.apply_theme(&theme_now);
-    ui.connect_chrome();
+    let ui = match first_window::<A>(&boot, &theme_now) {
+        Ok(ui) => ui,
+        Err(e) => return startup_failed(A::ID, "window", &e),
+    };
 
     let wake: crate::queue::Wake = Arc::new(|| {
         let _ = slint::invoke_from_event_loop(drain_on_ui_thread);
@@ -140,6 +180,8 @@ pub fn run<A: App>() -> ExitCode {
         },
     );
     install(&core);
+    // How many windows of the person's are open, for the shell's lists (`report`).
+    core.report_windows_to(crate::report::Reporter::for_instance(&instance));
     core.set_theme(theme_now);
     // A file of an older schema is rewritten at this one, once.
     core.flush_settings();
@@ -153,35 +195,65 @@ pub fn run<A: App>() -> ExitCode {
         core.notice(),
     );
 
-    let cx = Cx::new(core.clone());
-    A::wire(&cx);
+    wire_first_window(&core);
     core.render_all();
-    core.start();
-    // The launch is applied once, here (§2.2 step 11): the files to open, or the deep link.
-    core.event(Event::Launch(boot.launch.clone()));
+    if service {
+        // No window, and nothing for the person: their launch brings both (`cx/serve.rs`).
+        core.start_service();
+    } else {
+        core.start();
+        // The launch is applied once, here (§2.2 step 11): the files to open, or the deep link.
+        core.event(Event::Launch(boot.launch.clone()));
+    }
 
     // The surface: the app's intents, `present` for the desktop's own handover, and `launch`
     // for a second copy's. Served only now that commands can be applied, on the instance's own
     // socket (`app-<id>[-<profile>].sock`).
-    let registry = intents::registry(&core, table);
-    let registry = crate::control::App::from_registry(registry).serve_as(&instance);
-    core.attach_registry(registry);
+    //
+    // A service start has made no window, so Slint has no platform yet: a call that arrived over
+    // the socket before the loop's first turn would be answered `NoEventLoopProvider`, and a wake
+    // would be dropped. It is served from the loop's first turn instead, and the wakes dropped
+    // before it are drained once (the review of efafef94, F2). A person's start made its window,
+    // so the platform exists, and serves at once.
+    let serve_core = core.clone();
+    let serve_instance = instance.clone();
+    let serve: Rc<dyn Fn()> = {
+        let once = RefCell::new(Some((table, serve_instance)));
+        Rc::new(move || {
+            let Some((table, instance)) = once.borrow_mut().take() else { return };
+            let core = &serve_core;
+            let registry = intents::registry(core, table);
+            let registry = crate::control::App::from_registry(registry).serve_as(&instance);
+            core.attach_registry(registry);
 
-    // A second launch's `present` goes through the core, which knows which windows are open.
-    let presenting = Rc::downgrade(&core);
-    crate::present::install(move || presenting.upgrade().ok_or("the app is closing")?.present());
-    // A logout or a shutdown (SIGTERM, SIGHUP) asks the app, so it can save, rather than
-    // killing it (`quit`). Without the handler the signals keep their default.
-    if let Err(e) = crate::quit::listen::<A>(core.post(), crate::quit::SIGNAL_DEADLINE) {
-        tracing::warn!(app = A::ID, "SIGTERM and SIGHUP will end the app unasked: {e}");
+            // A second launch's `present` goes through the core, which knows which windows are open.
+            let presenting = Rc::downgrade(core);
+            crate::present::install(move || presenting.upgrade().ok_or("the app is closing")?.present());
+            // A logout or a shutdown (SIGTERM, SIGHUP) asks the app, so it can save, rather than
+            // killing it (`quit`). Without the handler the signals keep their default.
+            if let Err(e) = crate::quit::listen::<A>(core.post(), crate::quit::SIGNAL_DEADLINE) {
+                tracing::warn!(app = A::ID, "SIGTERM and SIGHUP will end the app unasked: {e}");
+            }
+            drain_on_ui_thread();
+        })
+    };
+    if service {
+        let first_turn = serve.clone();
+        slint::Timer::single_shot(Duration::ZERO, move || first_turn());
+    } else {
+        serve();
     }
     // An exit asked for in `start` or for the launch ends here, with no loop: Slint drops a quit
     // posted before its loop runs. The first window is shown only if it is still open.
     let first_open = core.windows_open().contains(&WindowId::PRIMARY);
     let ending = match crate::event_loop::before_loop(core.exit_reason().is_some(), first_open) {
-        crate::event_loop::BeforeLoop::Skip => crate::event_loop::Ending::Closed,
+        crate::event_loop::BeforeLoop::Skip => {
+            // No loop will run the first turn; the surface is served as it always was before the end.
+            serve();
+            crate::event_loop::Ending::Closed
+        }
         crate::event_loop::BeforeLoop::Run { show_first } => {
-            crate::event_loop::run_loop(core.ui(), A::ID, show_first)
+            crate::event_loop::run_loop(core.primary().as_deref(), A::ID, show_first)
         }
     };
     // The compositor went (a logout, or a shutdown that signals the whole session at once): no
@@ -203,10 +275,12 @@ pub fn run<A: App>() -> ExitCode {
 fn install<A: App>(core: &Rc<Core<A>>) {
     let for_drain = core.clone();
     DRAIN.with(|cell| *cell.borrow_mut() = Some(Box::new(move || for_drain.drain())));
-    core.hear_window(WindowId::PRIMARY, core.ui());
+    // A service start has no window yet; the person's arrival makes and binds it.
+    let Some(ui) = core.primary() else { return };
+    core.hear_window(WindowId::PRIMARY, &ui);
     let post = core.post();
     use slint::ComponentHandle as _;
-    core.ui().window().on_close_requested(move || {
+    ui.window().on_close_requested(move || {
         // The app decides (`App::event`): a close now, or a flow that ends in `fx.close`.
         let _ = post.post(Inbound::Event(Event::CloseRequested(WindowId::PRIMARY)));
         drain_on_ui_thread();
@@ -244,6 +318,21 @@ mod tests {
         let d = std::env::temp_dir().join(format!("yantrik-runner-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d.join("problems")
+    }
+
+    /// The runner makes its first window only through [`first_window`], handing it the boot it was
+    /// started with: the service fact is read there, from the boot, and the runner has no copy of
+    /// it to get wrong (the review of efafef94, F1). `run` needs a display, so this is pinned as
+    /// the text of the runner: one call, with that boot, and no window made any other way.
+    #[test]
+    fn the_runner_asks_the_one_function_for_its_first_window_with_its_own_boot() {
+        let whole = include_str!("runner.rs");
+        let run = whole.split("#[cfg(test)]").next().unwrap_or_default();
+        let flat: String = run.split_whitespace().collect();
+        assert_eq!(flat.matches("first_window::<A>(&boot,&theme_now)").count(), 1, "one call, with the runner's boot");
+        assert_eq!(flat.matches("first_window::<A>(").count(), 1, "and no other");
+        assert_eq!(flat.matches("Ui::make()").count(), 1, "the one place that makes a window (made_window)");
+        assert!(flat.contains("made_window::<A>(theme)"), "and it is the shared one");
     }
 
     #[test]

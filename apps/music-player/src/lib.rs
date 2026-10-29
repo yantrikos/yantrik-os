@@ -70,7 +70,7 @@ impl App for Music {
         view::wire(cx);
     }
 
-    fn start(_: &Model, fx: &mut Effects<Self>) {
+    fn start_service(_: &Model, fx: &mut Effects<Self>) {
         // The library is read again at every start: it is whatever the folders hold.
         fx.then(Command::Rescan);
     }

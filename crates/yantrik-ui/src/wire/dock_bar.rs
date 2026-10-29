@@ -235,7 +235,7 @@ mod tests {
         let src = include_str!("../windows.rs");
         let f = &src[src.find("pub fn shell_windows").unwrap()..];
         let f = &f[..f.find("\n}\n").unwrap()];
-        assert!(f.contains("mind_view::app_pids()") && f.contains("launched.retain(|app| !in_mind_view.contains(&app.pid))"), "shell_windows drops the apps a mind opened:\n{f}");
+        assert!(f.contains("mind_view::app_pids()") && f.contains("running::persons(&in_mind_view)"), "shell_windows drops the apps a mind opened and lists a framework app by its own report:\n{f}");
         // And the dock reads only that list.
             }
 

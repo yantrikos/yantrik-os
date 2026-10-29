@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use yantrik_app::app::{App, Boot, Event, ExitReason};
-use yantrik_app::cx::{Core, Cx, Inbound, Parts};
+use yantrik_app::cx::{Core, Inbound, Parts};
 use yantrik_app::intents::{self, Intents};
 use yantrik_app::jobs::Manual;
 use yantrik_app::paths::Paths;
@@ -35,7 +35,6 @@ use yantrik_app::queue::Post;
 use yantrik_app::refused::Refused;
 use yantrik_app::timers::{Fired, ManualTimers, Sink};
 use yantrik_app::watch::Seen;
-use yantrik_app::window::Window;
 use yantrik_ipc_transport::gate::{Authority, Mode};
 use yantrik_surface::{AgentTokenScope, CallerScope, Later, LaterScope, LocalRegistry};
 
@@ -230,6 +229,24 @@ impl<A: App> TestApp<A> {
         TestApp::start_as(paths, args, mind, services, false)
     }
 
+    /// The app started for an agent with no window, as the shell starts it on demand (`--service`,
+    /// `yantrik_app::service`): the store is loaded and the intents answer, and nothing waits on
+    /// the person but their start, which their first window runs.
+    pub fn start_service_at(paths: Paths) -> TestApp<A> {
+        TestApp::start_as(
+            paths,
+            vec![std::ffi::OsString::from(yantrik_app::service::FLAG)],
+            Arc::new(yantrik_mind::fake::FakeMind::new()),
+            yantrik_app::services::Services::fakes(),
+            false,
+        )
+    }
+
+    /// [`TestApp::start_service_at`] with files of its own under the temporary directory.
+    pub fn start_service() -> TestApp<A> {
+        TestApp::start_service_at(Paths::temporary(A::ID))
+    }
+
     /// [`TestApp::start_at`] as an app drawn for a Mind (Mind View): `Boot::for_mind` is set, so
     /// the app masks what an agent must not read. The other starts are never for a mind, whatever
     /// this process's environment says.
@@ -254,7 +271,10 @@ impl<A: App> TestApp<A> {
                 .unwrap_or_else(|e| panic!("{}: the launch was refused: {e}", A::ID));
             let model = A::model(&boot)
                 .unwrap_or_else(|e| panic!("{}: the model did not start: {e}", A::ID));
-            let ui = A::Ui::make().unwrap_or_else(|e| panic!("{}: no headless window: {e}", A::ID));
+            // The runner's own function: a service start has no window until the person arrives
+            // (#978, the 520 gate), and there is one place that decides it.
+            let ui = yantrik_app::runner::first_window::<A>(&boot, &yantrik_app::theme::ThemeSettings::default())
+                .unwrap_or_else(|e| panic!("{}: no headless window: {e}", A::ID));
             let jobs = SharedJobs(Arc::new(Mutex::new(Manual::new())));
             let made: Rc<RefCell<Option<AppClock<A::Command>>>> = Rc::new(RefCell::new(None));
             let made_out = made.clone();
@@ -289,11 +309,15 @@ impl<A: App> TestApp<A> {
             // Hermetic: a window opened in a test wears the default theme, not this machine's.
             core.set_theme(yantrik_app::theme::ThemeSettings::default());
             core.flush_settings();
-            A::wire(&Cx::new(core.clone()));
+            yantrik_app::runner::wire_first_window(&core);
             core.render_all();
-            core.start();
-            // As the runner does: the launch, once, after `start`.
-            core.event(Event::Launch(boot.launch.clone()));
+            if boot.service {
+                core.start_service();
+            } else {
+                core.start();
+                // As the runner does: the launch, once, after `start`.
+                core.event(Event::Launch(boot.launch.clone()));
+            }
             let mut table = Intents::new();
             A::intents(&mut table);
             let registry = Rc::new(intents::registry(&core, table));
@@ -458,7 +482,7 @@ impl<A: App> TestApp<A> {
     }
 
     pub fn ui<R: Send + 'static>(&self, f: impl FnOnce(&A::Ui) -> R + Send + 'static) -> R {
-        self.with(move |u| f(u.core.ui()))
+        self.with(move |u| f(&u.core.ui()))
     }
 
     pub fn last_refusal(&self) -> Option<Refused> {
@@ -489,6 +513,16 @@ impl<A: App> TestApp<A> {
     /// What the Mind reads: the real `describe`, through the registry.
     pub fn describe(&self) -> Value {
         self.with(|u| u.registry.describe())
+    }
+
+    /// [`TestApp::describe`] as an agent reads it, with this token: the instance learns an agent
+    /// uses it.
+    pub fn describe_as_agent(&self, token: &str) -> Value {
+        let token = token.to_string();
+        self.with(move |u| {
+            let _agent = AgentTokenScope::enter(Some(token));
+            u.registry.describe()
+        })
     }
 
     /// The app's current revision, as `describe` reports it.

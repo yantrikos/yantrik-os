@@ -39,6 +39,12 @@ pub struct Model {
     pub visited: Vec<WindowId>,
     /// The library has been read; until then nothing but `reload` touches it.
     pub ready: bool,
+    /// The person has a window (their start has run). An agent's start has none, and weighs no
+    /// recovery: that waits for them.
+    pub person_here: bool,
+    /// The interrupted save the library read replayed, kept for the weighing that waits for the
+    /// person.
+    pub interrupted_held: Option<Box<crate::store::Interrupted>>,
     /// The one store job in flight. The store does one thing at a time, as it always has.
     pub busy: Option<Work>,
     /// The window the store's job was started from: its landing is applied there.
@@ -241,6 +247,8 @@ impl Model {
             parked: BTreeMap::new(),
             visited: vec![WindowId::PRIMARY],
             ready: false,
+            person_here: false,
+            interrupted_held: None,
             busy: None,
             job_window: WindowId::PRIMARY,
             notice: String::new(),
