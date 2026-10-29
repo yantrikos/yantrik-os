@@ -87,7 +87,8 @@ impl Fixture {
             if done(self) {
                 return;
             }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            assert!(Instant::now() < deadline, "timed out waiting for {what}; tabs: {}, the screen:
+{}", self.tabs(), self.screen());
             std::thread::sleep(Duration::from_millis(10));
         }
     }
