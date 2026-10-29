@@ -921,12 +921,13 @@ export component AiScrollProbe inherits Window {
     in property <string> summary;
     in property <[AIProviderData]> providers;
     in property <AIStatusData> status;
+    in-out property <int> category: 1;
     out property <length> visible-height <=> screen.ai-visible-height;
     out property <length> viewport-height <=> screen.ai-viewport-height;
     out property <length> viewport-y <=> screen.ai-viewport-y;
     screen := SettingsScreen {
         width: 100%; height: 100%;
-        active-category: 1;
+        active-category: root.category;
         runs-on-rows: root.rows;
         runs-on-summary: root.summary;
         ai-providers: root.providers;

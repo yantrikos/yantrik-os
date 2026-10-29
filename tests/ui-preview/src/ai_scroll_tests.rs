@@ -72,6 +72,26 @@ fn free(id: &str, name: &str, state: &str, trains: bool) -> FreeAiRow {
 
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let ui = AiScrollProbe::new()?;
+    ui.set_category(0);
+    ui.show()?;
+    w.set_size(slint::PhysicalSize::new(W, H));
+    let draw = || {
+        let mut p = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W, H);
+        for _ in 0..3 {
+            slint::platform::update_timers_and_animations();
+            w.request_redraw();
+            w.draw_if_needed(|r| {
+                r.render(p.make_mut_slice(), W as usize);
+            });
+        }
+        p
+    };
+    // As in the shell: the person opens Settings on Appearance, goes to AI & Intelligence, and the
+    // services fill the page afterwards.
+    draw();
+    ui.set_category(1);
+    let empty = draw();
+    println!("AI page, before any data: visible {}px, content {}px", ui.get_visible_height(), ui.get_viewport_height());
     ui.set_rows(ModelRc::new(VecModel::from(vec![
         mind("Yantrik Mind", "Answering", "Ollama Cloud \u{b7} deepseek-v4.1-flash"),
         mind("Yantrik Companion", "Built in", "A service you set up \u{b7} qwen3.8:27b"),
@@ -115,20 +135,8 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     tiers.set_summary("1 of 4 ready".into());
     tiers.set_expanded(true);
 
-    ui.show()?;
-    w.set_size(slint::PhysicalSize::new(W, H));
-    let draw = || {
-        let mut p = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W, H);
-        for _ in 0..3 {
-            slint::platform::update_timers_and_animations();
-            w.request_redraw();
-            w.draw_if_needed(|r| {
-                r.render(p.make_mut_slice(), W as usize);
-            });
-        }
-        p
-    };
     let top = draw();
+    let _ = empty;
     let (visible, viewport) = (ui.get_visible_height(), ui.get_viewport_height());
     println!("AI page: visible {visible}px, content {viewport}px");
 
@@ -168,5 +176,61 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     e.set_depth(png::BitDepth::Eight);
     e.write_header()?.write_image_data(bottom.as_bytes())?;
     println!("PASS ai scroll: {viewport}px of content in a {visible}px window, wheel reaches the bottom ({changed} pixels changed)");
+    Ok(())
+}
+
+/// The same page inside the whole shell (app.slint's App): the window frame around it, the
+/// properties the shell binds, a maximized Settings window.
+pub fn run_in_shell(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let ui = App::new()?;
+    ui.set_current_screen(7);
+    ui.set_settings_category(0);
+    ui.show()?;
+    w.set_size(slint::PhysicalSize::new(W, H));
+    let draw = || {
+        let mut p = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W, H);
+        for _ in 0..3 {
+            slint::platform::update_timers_and_animations();
+            w.request_redraw();
+            w.draw_if_needed(|r| {
+                r.render(p.make_mut_slice(), W as usize);
+            });
+        }
+        p
+    };
+    draw();
+    let at = slint::LogicalPosition::new(760.0, 450.0);
+    let wheel = |clicks: u32| {
+        for _ in 0..clicks {
+            w.dispatch_event(slint::platform::WindowEvent::PointerScrolled { position: at, delta_x: 0.0, delta_y: -60.0 });
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    };
+    // Appearance first: the wheel must move it, or the harness is not delivering wheel events.
+    let appearance = draw();
+    wheel(6);
+    let after_appearance = draw();
+    let appearance_changed = (0..(W * H) as usize).filter(|&i| appearance.as_slice()[i] != after_appearance.as_slice()[i]).count();
+    println!("shell: Appearance after 6 clicks: {appearance_changed} pixels changed");
+
+    ui.set_settings_category(1);
+    ui.set_runs_on_rows(ModelRc::new(VecModel::from(vec![
+        mind("Yantrik Mind", "Answering", "Ollama Cloud, deepseek-v4.1-flash"),
+        mind("Yantrik Companion", "Built in", "A service you set up, qwen3.8:27b"),
+    ])));
+    ui.set_runs_on_summary("Ollama Cloud runs 1 mind.".into());
+    ui.set_settings_ai_providers(ModelRc::new(VecModel::from(vec![provider("p1", "OpenAI", true)])));
+    let before = draw();
+    wheel(30);
+    let after = draw();
+    let changed = (0..(W * H) as usize).filter(|&i| before.as_slice()[i] != after.as_slice()[i]).count();
+    let f = BufWriter::new(File::create(output)?);
+    let mut e = png::Encoder::new(f, W, H);
+    e.set_color(png::ColorType::Rgb);
+    e.set_depth(png::BitDepth::Eight);
+    e.write_header()?.write_image_data(after.as_bytes())?;
+    println!("shell: AI page after 30 clicks: {changed} pixels changed");
+    assert!(changed > 100_000, "the wheel did not move the AI page inside the shell ({changed} pixels changed)");
     Ok(())
 }
