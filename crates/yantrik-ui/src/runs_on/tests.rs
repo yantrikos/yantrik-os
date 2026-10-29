@@ -43,7 +43,7 @@ fn vm_520_every_mind_says_what_it_runs_on_and_where_that_is_set() {
     assert_eq!(got, want);
     assert_eq!(
         summary(&rows),
-        "Ollama Cloud runs 4 minds. A service you set up runs 1 mind. 1 mind does not say what it runs on. No mind here runs on a signed-in account."
+        "Ollama Cloud runs 4 minds. A service you set up runs 1 mind. 1 mind does not say what it runs on."
     );
     // The thing that started this: nothing here may name Claude, whose sign-in no mind uses.
     for r in &rows {
@@ -287,7 +287,7 @@ fn vm_541_a_mind_on_the_gateway_is_said_by_where_the_gateway_sends_it() {
     assert!(crate::wire::runs_on_card::row_details(&rows, "hermes").contains("Custom endpoint \u{b7} aig.example \u{b7} qwen3.5:27b \u{b7} set by this desktop"));
     // The Minds quick panel's line says where the person's messages go: the host is named.
     assert_eq!(r.plain_answering(), "A service you set up at aig.example \u{b7} qwen3.5:27b");
-    assert_eq!(summary(&rows), "A service you set up runs 1 mind. No mind here runs on a signed-in account.");
+    assert_eq!(summary(&rows), "A service you set up runs 1 mind.");
     assert!(in_use_not_saved(&rows, None, &[]).is_empty(), "the account is the person's own, already set up");
 }
 
@@ -325,7 +325,7 @@ fn with_no_pick_a_mind_on_the_gateway_says_nothing_is_sent() {
     assert_eq!(rows[0].destination(), "No model picked yet: nothing is sent");
     assert_eq!(rows[0].runs_on(), "No model picked yet");
     assert_eq!(rows[0].source(), "set by this desktop");
-    assert_eq!(summary(&rows), "No mind here runs on a signed-in account.", "not counted as a mind that does not say");
+    assert_eq!(summary(&rows), "", "not counted as a mind that does not say, and nothing is claimed about signed-in accounts");
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn a_pick_the_gateway_refuses_says_what_the_gateway_does_not_the_pick() {
     let line = rows[0].destination();
     assert_eq!(
         line,
-        format!("Nothing is sent: what your minds know about you is not shared with the picked model's account. {message}")
+        format!("Nothing is sent: what this Mind knows about you is not shared with the picked model's account. {message}")
     );
     assert!(!line.starts_with(TO), "no place is named");
     assert_eq!(rows[0].runs_on(), "Nothing is sent: the gateway refuses it");

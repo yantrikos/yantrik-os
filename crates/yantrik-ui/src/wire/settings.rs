@@ -1032,29 +1032,6 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
         crate::wire::ai_status::refresh(&ui, &store);
     });
 
-    // Set fallback provider
-    let ui_weak = ui.as_weak();
-    let ps = providers.clone();
-    let bridge = ctx.bridge.clone();
-    ui.on_set_fallback_provider(move |id| {
-        let id = id.to_string();
-        tracing::info!(id = %id, "Setting fallback provider");
-        if let Ok(mut store) = ps.lock() {
-            let before = store.clone();
-            for e in &mut store.entries {
-                e.is_fallback = e.id == id;
-            }
-            if store.save().is_err() {
-                *store = before;
-                return;
-            }
-            if let Some(ui) = ui_weak.upgrade() {
-                push_providers_to_ui(&ui, &store);
-                crate::wire::ai_status::refresh(&ui, &store);
-            }
-        }
-    });
-
     // Select model
     let ui_weak = ui.as_weak();
     let ui_weak_sm = ui.as_weak();
@@ -1148,11 +1125,6 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
             });
         }
     });
-
-    // Toggle auto-fallback
-    ui.on_toggle_auto_fallback(move || {
-        tracing::info!("Auto-fallback toggled");
-    });
 }
 
 /// Back-compat: load theme preference (delegates to full settings).
@@ -1232,10 +1204,6 @@ impl ProviderStore {
 
     pub fn primary(&self) -> Option<&ProviderStoreEntry> {
         self.entries.iter().find(|e| e.is_primary)
-    }
-
-    pub fn fallback(&self) -> Option<&ProviderStoreEntry> {
-        self.entries.iter().find(|e| e.is_fallback)
     }
 }
 

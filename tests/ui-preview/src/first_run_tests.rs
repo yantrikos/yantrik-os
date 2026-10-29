@@ -15,7 +15,7 @@
 //!   again; "Show every provider" opens the full list; Advanced needs only the address, and
 //!   Enter on it lists its models.
 //! - What your minds share: the sentence names the provider and is pre-checked; Space unchecks
-//!   it and the screen says what that means; choosing Keep personal things on this computer
+//!   it and the screen says what that means; choosing "For your other Minds, use your private model instead"
 //!   shows the sentence unchecked.
 //! - Getting ready and Your minds: the companion's three rows, every one a check that runs, in
 //!   every state; Hermes's own install is said and read out.
@@ -245,12 +245,12 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     space();
     assert_eq!(ui.get_picked(), "qwen/qwen3.8-27b", "the person picks, by keyboard");
     ui.set_connect_status("pick-failed".into());
-    ui.set_connect_words("Needs attention: qwen/qwen3.8-27b answered, but your minds could not be set to use it (not one of the listed models)".into());
+    ui.set_connect_words("Needs attention: qwen/qwen3.8-27b answered and was saved, but your Minds that use Yantrik models could not be set to use it (not one of the listed models)".into());
     render(w, width, height, &still("2-pick-failed"))?;
     enter();
     assert_eq!(ui.get_retries(), 1, "Try again has focus, and retries the pick");
     ui.set_connect_status("connected".into());
-    ui.set_connect_words("Connected to Groq. Your minds will use qwen/qwen3.8-27b.".into());
+    ui.set_connect_words("Connected to Groq. Yantrik Companion and your Minds that use Yantrik models will use qwen/qwen3.8-27b.".into());
     ui.set_default_mind_words(HERMES_SETTING_UP.into());
     render(w, width, height, &still("2-connected"))?;
     ui.set_light(true);
@@ -304,7 +304,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     render(w, width, height, &still("3-share-off"))?;
     space();
     assert!(ui.get_share());
-    // Keep personal things on this computer: the sharing sentence shows unchecked.
+    // For your other Minds, use your private model instead: the sharing sentence shows unchecked.
     tab();
     tab();
     space();

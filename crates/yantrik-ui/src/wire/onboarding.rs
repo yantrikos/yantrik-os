@@ -707,7 +707,7 @@ fn list_choices(entry: &ProviderStoreEntry) -> Result<Vec<ModelChoice>, String> 
 fn adopt(entry: &ProviderStoreEntry) -> Result<(), String> {
     save_primary(entry.clone())?;
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/root"));
-    if !home.join(".config/yantrik/companion-models.json").exists() {
+    if !crate::provider_handoff::companion::companion_on_gateway(&home) {
         if let Some(bridge) = BRIDGE.get() {
             crate::wire::provider_panel::reload_primary(bridge, entry);
         }
@@ -1306,13 +1306,13 @@ fn prove_and_pick(ui: &App) {
             match (result, picked) {
                 (Ok(()), Ok(())) => {
                     ui.set_fr_connect_status("connected".into());
-                    ui.set_fr_connect_words(format!("Connected to {name}. Your minds will use {model}.").into());
+                    ui.set_fr_connect_words(format!("Connected to {name}. Yantrik Companion and your Minds that use Yantrik models will use {model}.").into());
                     set_up_default_mind(&ui);
                 }
                 (Ok(()), Err(why)) => {
                     ui.set_fr_connect_status("pick-failed".into());
                     ui.set_fr_connect_words(
-                        format!("Needs attention: {model} answered, but your minds could not be set to use it ({why})").into(),
+                        format!("Needs attention: {model} answered and was saved, but your Minds that use Yantrik models could not be set to use it ({why})").into(),
                     );
                 }
                 (Err(why), _) => {
@@ -1361,13 +1361,13 @@ fn retry_pick(ui: &App) {
             match picked {
                 Ok(()) => {
                     ui.set_fr_connect_status("connected".into());
-                    ui.set_fr_connect_words(format!("Connected to {name}. Your minds will use {model}.").into());
+                    ui.set_fr_connect_words(format!("Connected to {name}. Yantrik Companion and your Minds that use Yantrik models will use {model}.").into());
                     set_up_default_mind(&ui);
                 }
                 Err(why) => {
                     ui.set_fr_connect_status("pick-failed".into());
                     ui.set_fr_connect_words(
-                        format!("Needs attention: {model} answered, but your minds could not be set to use it ({why})").into(),
+                        format!("Needs attention: {model} answered and was saved, but your Minds that use Yantrik models could not be set to use it ({why})").into(),
                     );
                 }
             }
@@ -1970,7 +1970,7 @@ mod tests {
         }
         for want in ["Welcome to Yantrik.", "Make text bigger", "Read this to me", "Get started", "Who should do the thinking?",
                      "Connect account", "Paste a key", "Show me where to find it", "Advanced", "What's shared?",
-                     "Keep personal things on this computer instead", "Getting your minds ready", "Your minds", "Add another mind"] {
+                     "For your other Minds, use your private model instead", "Yantrik Companion talks to ", " directly; this choice applies to your other Minds that use Yantrik models.", "Your other Minds that use Yantrik models will still answer", "Getting your minds ready", "Your minds", "Add another mind"] {
             assert!(slint.contains(want), "{want}");
         }
     }

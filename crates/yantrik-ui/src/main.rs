@@ -56,6 +56,7 @@ mod companion_rpc;
 mod control;
 mod control_approvals;
 mod control_overlays;
+mod control_settings;
 mod control_switcher;
 mod alt_tab;
 mod window_name;

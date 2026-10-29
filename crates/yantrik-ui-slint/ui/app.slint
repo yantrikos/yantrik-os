@@ -770,6 +770,10 @@ export component App inherits Window {
     in property <[SettingsCategoryItem]> settings-categories;
     // Which Settings section is open, so anything can deep-link to one.
     in-out property <int> settings-category: 0;
+    // The AI page's scroll geometry in logical px, written by the page and read by describe shell.
+    in-out property <length> settings-ai-visible-height;
+    in-out property <length> settings-ai-viewport-height;
+    in-out property <length> settings-ai-viewport-y;
 
     // ── Which mind is answering ──
     //
@@ -829,35 +833,8 @@ export component App inherits Window {
     in-out property <string> settings-selected-preset: "";
     in property <[ProviderPresetGroup]> settings-provider-presets: [];
     callback set-primary-provider(string);
-    callback set-fallback-provider(string);
     callback select-model(string);
     callback refresh-models();
-    callback toggle-auto-fallback();
-
-    // V60 — Task routing
-    in-out property <string> settings-route-fast: "";
-    in-out property <string> settings-route-balanced: "";
-    in-out property <string> settings-route-powerful: "";
-    callback save-task-routing(string, string, string);
-
-    // V60 — Privacy controls
-    in-out property <bool> settings-privacy-local-only: false;
-    in-out property <bool> settings-privacy-cloud-confirm: true;
-    in-out property <string> settings-privacy-preset: "balanced";
-    callback set-privacy-preset(string);
-
-    // V62 — Usage / Cost tracking
-    in property <string> settings-usage-period: "monthly";
-    in property <float> settings-usage-local-percent: 0.0;
-    in property <float> settings-usage-cloud-percent: 0.0;
-    in property <string> settings-usage-total-cost: "$0.00";
-    in property <string> settings-usage-daily-cost: "$0.00";
-    in property <string> settings-usage-tokens-today: "0";
-    in property <string> settings-usage-tokens-month: "0";
-    in property <string> settings-budget-limit: "";
-    in property <float> settings-budget-used-percent: 0.0;
-    in property <bool> settings-budget-warning: false;
-    callback save-budget(string);
 
     // Connected Services
     in property <string> conn-google-status: "disconnected";
@@ -1463,26 +1440,9 @@ export component App inherits Window {
     in property <[ProviderPresetData]> onboard-ai-cloud-presets: [];
 
     // V61 — Runtime provider state (status bar + quick switcher)
-    in property <string> ai-privacy-mode: "local";   // "local", "cloud", "hybrid"
     in property <string> ai-active-provider-label: "";
-    in property <string> ai-fallback-banner: "";      // non-empty when fallback active
     in-out property <bool> ai-quick-switcher-open: false;
     callback ai-quick-switch-provider(string);
-
-    // V62 — Cost tracking / usage
-    in property <string> ai-usage-period: "monthly";
-    in property <float> ai-usage-local-percent: 0.0;
-    in property <float> ai-usage-cloud-percent: 0.0;
-    in property <string> ai-usage-total-cost: "$0.00";
-    in property <string> ai-usage-daily-cost: "$0.00";
-    in property <string> ai-usage-tokens-today: "0";
-    in property <string> ai-usage-tokens-month: "0";
-    in property <string> ai-budget-limit: "";
-    in property <float> ai-budget-used-percent: 0.0;
-    in property <bool> ai-budget-warning: false;
-    in-out property <bool> ai-cost-tooltip-visible: false;
-    in property <string> ai-cost-estimate: "";
-    callback ai-set-budget(string);
 
     // Callbacks to Rust
     callback send-message(string);
@@ -1789,8 +1749,6 @@ export component App inherits Window {
             wallpaper-path: root.wallpaper-path;
             wallpaper-image: root.wallpaper-image;
             // V61 — AI privacy mode
-            ai-privacy-mode: root.ai-privacy-mode;
-            ai-fallback-banner: root.ai-fallback-banner;
             ai-privacy-clicked => { root.ai-quick-switcher-open = !root.ai-quick-switcher-open; }
             active-harness-id: root.active-harness-id;
             active-harness-name: root.active-harness-name;
@@ -2207,6 +2165,9 @@ export component App inherits Window {
                 decision-toggle-use(id) => { root.decision-toggle-use(id); }
                 categories: root.settings-categories;
                 active-category <=> root.settings-category;
+                ai-visible-height <=> root.settings-ai-visible-height;
+                ai-viewport-height <=> root.settings-ai-viewport-height;
+                ai-viewport-y <=> root.settings-ai-viewport-y;
                 search-query <=> root.settings-query;
                 save-status:root.settings-save-status;save-error:root.settings-save-error;save-can-retry:root.settings-save-can-retry;
                 retry-save=>{root.retry-settings-save();}
@@ -2263,20 +2224,8 @@ export component App inherits Window {
                 selected-preset <=> root.settings-selected-preset;
                 provider-presets: root.settings-provider-presets;
                 set-primary-provider(id) => { root.set-primary-provider(id); }
-                set-fallback-provider(id) => { root.set-fallback-provider(id); }
                 select-model(id) => { root.select-model(id); }
                 refresh-models => { root.refresh-models(); }
-                toggle-auto-fallback => { root.toggle-auto-fallback(); }
-                // V60 — Task routing
-                route-fast-provider <=> root.settings-route-fast;
-                route-balanced-provider <=> root.settings-route-balanced;
-                route-powerful-provider <=> root.settings-route-powerful;
-                save-task-routing(fast, balanced, powerful) => { root.save-task-routing(fast, balanced, powerful); }
-                // V60 — Privacy controls
-                privacy-local-only <=> root.settings-privacy-local-only;
-                privacy-cloud-confirm <=> root.settings-privacy-cloud-confirm;
-                privacy-preset <=> root.settings-privacy-preset;
-                set-privacy-preset(preset) => { root.set-privacy-preset(preset); }
                 // The vault row reads the same three facts `describe shell` publishes, so the
                 // panel and the control surface cannot disagree about whether this machine's
                 // credentials are protected.
@@ -2284,18 +2233,6 @@ export component App inherits Window {
                 vault-unlocked: root.vault-unlocked;
                 vault-why: root.vault-why;
                 vault-set-passphrase => { root.vault-set-passphrase(); }
-                // V62 — Usage / Cost tracking
-                usage-period: root.settings-usage-period;
-                usage-local-percent: root.settings-usage-local-percent;
-                usage-cloud-percent: root.settings-usage-cloud-percent;
-                usage-total-cost: root.settings-usage-total-cost;
-                usage-daily-cost: root.settings-usage-daily-cost;
-                usage-tokens-today: root.settings-usage-tokens-today;
-                usage-tokens-month: root.settings-usage-tokens-month;
-                budget-limit: root.settings-budget-limit;
-                budget-used-percent: root.settings-budget-used-percent;
-                budget-warning: root.settings-budget-warning;
-                save-budget(val) => { root.save-budget(val); }
                 // Skills
                 skills: root.skills;
                 skill-categories: root.skill-categories;

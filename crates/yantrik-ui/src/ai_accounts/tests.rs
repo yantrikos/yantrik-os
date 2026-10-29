@@ -201,6 +201,7 @@ fn saved_account(id: &str, local: bool, trains: bool) -> super::account::Account
         provider_type: "openai".into(),
         base_url: "https://example.invalid/v1".into(),
         key: super::account::KeyRef::None,
+        entry: None,
         local,
         source: super::account::Source::Saved,
         trains_on_prompts: trains,

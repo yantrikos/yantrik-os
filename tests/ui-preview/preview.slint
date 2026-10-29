@@ -263,10 +263,11 @@ export component FilesProbe inherits Window {
     }
 }
 
-import { SettingsScreen, SettingsCategoryItem, RunsOnRow, InUseRow, ThemeCardData } from "settings.slint";
+import { SettingsScreen, SettingsCategoryItem, RunsOnRow, InUseRow, ThemeCardData, AIProviderData, AIStatusData } from "settings.slint";
+import { AiAccountsState, AiAccountRow } from "components/ai_accounts_card.slint";
 import { FreeAiCard } from "components/free_ai_card.slint";
 export { FreeAiState, FreeAiRow, FreeAiValue } from "components/free_ai_card.slint";
-export { RunsOnRow, InUseRow, ThemeCardData }
+export { RunsOnRow, InUseRow, ThemeCardData, AIProviderData, AIStatusData, AiAccountsState, AiAccountRow }
 // The compositor's lock screen (crates/yantrik-lock), the real component, beside the shell's own.
 export { LockView } from "../../crates/yantrik-lock/ui/lock.slint";
 export component SettingsProbe inherits Window {
@@ -910,6 +911,30 @@ export component ProviderPanelProbe inherits Window {
 
 // Settings → Minds with the provider card open: the card must be drawn on the page it is
 // opened from. It was placed inside the AI page and never appeared on Harnesses (VM 520).
+// Settings → AI & Intelligence at the size of a real window, with its scroll geometry read back,
+// for verify-ai-scroll. The accounts and free tiers come through AiAccountsState and FreeAiState.
+export component AiScrollProbe inherits Window {
+    in property <length> canvas-width: 1280px;
+    in property <length> canvas-height: 800px;
+    width: root.canvas-width; height: root.canvas-height; background: Theme.bg-deep;
+    in property <[RunsOnRow]> rows;
+    in property <string> summary;
+    in property <[AIProviderData]> providers;
+    in property <AIStatusData> status;
+    in-out property <int> category: 1;
+    out property <length> visible-height <=> screen.ai-visible-height;
+    out property <length> viewport-height <=> screen.ai-viewport-height;
+    out property <length> viewport-y <=> screen.ai-viewport-y;
+    screen := SettingsScreen {
+        width: 100%; height: 100%;
+        active-category: root.category;
+        runs-on-rows: root.rows;
+        runs-on-summary: root.summary;
+        ai-providers: root.providers;
+        ai-status: root.status;
+    }
+}
+
 // Settings → AI & Intelligence with its "What runs on what" map, for verify-ai-map.
 export component AiMapProbe inherits Window {
     in property <length> tall: 800px;

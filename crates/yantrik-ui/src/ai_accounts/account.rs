@@ -42,6 +42,10 @@ pub struct Account {
     /// The OpenAI-compatible base URL requests go to (`…/v1`). May hold `{account_id}`.
     pub base_url: String,
     pub key: KeyRef,
+    /// The saved provider entry this account was made from (its `ProviderStoreEntry.id`), whether
+    /// or not it has a key; `None` for a free tier. Names repeat, so this is what an entry is
+    /// matched by.
+    pub entry: Option<String>,
     /// On this machine or the local network: no private context leaves it.
     pub local: bool,
     pub source: Source,
@@ -102,6 +106,7 @@ pub fn accounts(saved: &[ProviderStoreEntry], free: &[FreeTier], kept: &BTreeSet
             local: crate::runs_on::identity::is_local(&base_url),
             base_url,
             key: if has_key && e.auth_type != "none" { KeyRef::Saved { entry: e.id.clone() } } else { KeyRef::None },
+            entry: Some(e.id.clone()),
             source: Source::Saved,
             trains_on_prompts: false,
             saved_model: e.model.clone(),
@@ -127,6 +132,7 @@ pub fn accounts(saved: &[ProviderStoreEntry], free: &[FreeTier], kept: &BTreeSet
             provider_type: t.id.to_string(),
             base_url: t.base_url.to_string(),
             key,
+            entry: None,
             local: false,
             source: Source::Free,
             trains_on_prompts: t.trains_on_prompts,

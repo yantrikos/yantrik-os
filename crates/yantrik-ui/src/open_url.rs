@@ -40,8 +40,8 @@ pub fn open(url: &str) -> Result<(), String> {
 }
 
 /// Open a page where a credential is made or shown, in a browser apart from the desktop's own:
-/// a private profile of its own and no remote-debugging port, so nothing on this machine can
-/// drive it or read its pages. It comes to the front like any page.
+/// a private profile of its own and no remote-debugging port, so the desktop's own browser
+/// session cannot drive it. It comes to the front like any page.
 pub fn open_apart(url: &str) -> Result<(), String> {
     let url = web_address(url)?;
     let (browser, _) = crate::wire::dock::find_browser().ok_or("there is no browser on this machine")?;

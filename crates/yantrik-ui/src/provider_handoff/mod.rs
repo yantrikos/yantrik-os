@@ -29,7 +29,7 @@
 //! gateway when the plan is applied and revoked by Revert. A harness that is never given it keeps
 //! its own models, and the picker says "uses its own models".
 
-mod companion;
+pub(crate) mod companion;
 mod deepseek;
 mod hermes;
 mod mind;

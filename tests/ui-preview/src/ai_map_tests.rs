@@ -33,7 +33,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         row("OpenClaw", "Attached", "Ollama Cloud \u{b7} kimi-k3", own),
         row("Pi", "Attached", "Ollama Cloud \u{b7} deepseek-v4.1-flash", own),
     ])));
-    ui.set_summary("Ollama Cloud runs 4 minds. A service you set up runs 1 mind. 1 mind does not say what it runs on. No mind here runs on a signed-in account.".into());
+    ui.set_summary("Ollama Cloud runs 4 minds. A service you set up runs 1 mind. 1 mind does not say what it runs on.".into());
     let after = draw();
     // The map is the first thing under the page title: the band below the title must change.
     let (x0, x1, y0, y1) = (300, 1200, 170, 420);

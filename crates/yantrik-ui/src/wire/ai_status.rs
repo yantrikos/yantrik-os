@@ -62,18 +62,20 @@ pub(crate) fn set_config_llm(config: ConfigLlm) {
 
 /// The companion as the destination line needs it: the target, how it is reached, its fallback
 /// and what it was set up as. A saved primary is applied as an API backend (`ReloadLLM`),
-/// whatever config.yaml names, and its type is what it was set up as; a saved fallback provider
-/// is named over config.yaml's. In-process and CLI backends are described even with no address.
+/// whatever config.yaml names, and its type is what it was set up as. The only fallback there is
+/// is config.yaml's `llm.fallback` (`FallbackLLM`), and a saved primary swaps in a bare API
+/// backend that drops it, so with one applied no fallback is named. A provider's stored
+/// `is_fallback` flag builds nothing and is never named. In-process and CLI backends are
+/// described even with no address.
 pub(crate) fn companion_fact(
     target: Option<&Target>,
     config: &ConfigLlm,
     saved_primary_kind: Option<String>,
-    saved_fallback: Option<String>,
 ) -> Option<crate::runs_on::CompanionFact> {
     use crate::runs_on::{Backend, CompanionFact};
     let backend = if saved_primary_kind.is_some() { Backend::Api } else { config.backend };
-    let provider_kind = saved_primary_kind.unwrap_or_else(|| config.kind.clone());
-    let fallback = saved_fallback.or_else(|| config.fallback.clone());
+    let provider_kind = saved_primary_kind.clone().unwrap_or_else(|| config.kind.clone());
+    let fallback = if saved_primary_kind.is_some() { None } else { config.fallback.clone() };
     match target {
         Some(t) => Some(CompanionFact {
             base_url: t.base_url.clone(),
@@ -189,7 +191,7 @@ pub(crate) fn judge(result: Result<Vec<ListedModel>, ListError>, model: &str) ->
 }
 
 /// The card, from a target and what asking it found. Never carries a key.
-pub(crate) fn card(target: Option<&Target>, health: &Health, fallback: Option<&str>) -> AIStatusData {
+pub(crate) fn card(target: Option<&Target>, health: &Health) -> AIStatusData {
     let (status, detail) = match (target, health) {
         (None, _) | (_, Health::NotSetUp) => (
             "unset",
@@ -221,12 +223,6 @@ pub(crate) fn card(target: Option<&Target>, health: &Health, fallback: Option<&s
         model_tier: SharedString::default(),
         status: status.into(),
         detail: detail.into(),
-        latency_ms: -1,
-        tokens_per_sec: 0.0,
-        tokens_today: 0,
-        using_fallback: false,
-        fallback_provider: fallback.unwrap_or_default().into(),
-        fallback_model: SharedString::default(),
     }
 }
 
@@ -238,7 +234,6 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
         &ui.get_settings_llm_api_model(),
         config_key(),
     );
-    let fallback = store.fallback().map(|f| f.name.clone());
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     // Before the config is known, nothing is claimed for it: an API, which is never "stays".
     let config = CONFIG_LLM
@@ -250,14 +245,13 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
         target.as_ref(),
         &config,
         store.primary().map(|p| p.provider_type.clone()),
-        fallback.clone(),
     );
     super::runs_on_card::publish(ui);
     let Some(target) = target else {
-        ui.set_settings_ai_status(card(None, &Health::NotSetUp, fallback.as_deref()));
+        ui.set_settings_ai_status(card(None, &Health::NotSetUp));
         return;
     };
-    ui.set_settings_ai_status(card(Some(&target), &Health::Checking, fallback.as_deref()));
+    ui.set_settings_ai_status(card(Some(&target), &Health::Checking));
     let weak = ui.as_weak();
     let spawned = std::thread::Builder::new().name("ai-status".into()).spawn(move || {
         let health = judge(list_models(&target.base_url, target.key.as_deref(), &target.auth_type), &target.model);
@@ -266,7 +260,7 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
                 return; // a newer question was asked; its answer is the one to show
             }
             if let Some(ui) = weak.upgrade() {
-                ui.set_settings_ai_status(card(Some(&target), &health, fallback.as_deref()));
+                ui.set_settings_ai_status(card(Some(&target), &health));
             }
         });
     });
@@ -307,17 +301,22 @@ mod tests {
             kind: kind.into(),
         };
         let t = target(&ProviderStore::default(), "http://localhost:11434/v1", "qwen3.5:9b", None).unwrap();
-        let f = companion_fact(Some(&t), &cfg(Backend::Api, None, "api"), None, None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, None, "api"), None).unwrap();
         assert_eq!((f.backend, f.fallback.as_deref(), f.provider_kind.as_str()), (Backend::Api, None, "api"));
-        let f = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), None, None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), None).unwrap();
         assert_eq!(f.backend, Backend::ClaudeCli);
-        let saved = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), Some("litellm".into()), None).unwrap();
+        let saved = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), Some("litellm".into())).unwrap();
         assert_eq!((saved.backend, saved.provider_kind.as_str()), (Backend::Api, "litellm"), "a saved primary is applied as the API, as what it was saved as");
-        let f = companion_fact(None, &cfg(Backend::InProcess, Some("Ollama at localhost:8341"), "llamacpp"), None, None).unwrap();
+        let f = companion_fact(None, &cfg(Backend::InProcess, Some("Ollama at localhost:8341"), "llamacpp"), None).unwrap();
         assert_eq!((f.backend, f.fallback.as_deref()), (Backend::InProcess, Some("Ollama at localhost:8341")));
-        assert!(companion_fact(None, &cfg(Backend::Api, None, "api"), None, None).is_none());
-        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), None, Some("Saved".into())).unwrap();
-        assert_eq!(f.fallback.as_deref(), Some("Saved"));
+        assert!(companion_fact(None, &cfg(Backend::Api, None, "api"), None).is_none());
+        // Only config.yaml's fallback is named, and only while no saved primary is applied: a
+        // saved primary swaps in a bare API backend that drops it.
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), None).unwrap();
+        assert_eq!(f.fallback.as_deref(), Some("x"), "config.yaml's fallback is real");
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), Some("openai".into())).unwrap();
+        assert_eq!(f.fallback, None, "a saved primary drops it");
+
     }
 
     #[test]
@@ -361,7 +360,7 @@ mod tests {
         // A local endpoint with nothing listening there.
         let t = target(&ProviderStore::default(), "http://127.0.0.1:8341/v1", "qwen3.5-4b", None).unwrap();
         let health = judge(Err(ListError::Unreachable { host: "127.0.0.1:8341".into() }), &t.model);
-        let c = card(Some(&t), &health, None);
+        let c = card(Some(&t), &health);
         assert_eq!(c.status, "unreachable");
         assert_eq!(c.detail, "Could not reach 127.0.0.1:8341.");
         assert_eq!(c.provider_name, "127.0.0.1:8341");
@@ -375,19 +374,19 @@ mod tests {
         let model = shipped.llm.api_model.clone().unwrap_or_default();
         let t = target(&ProviderStore::default(), &url, &model, None);
         assert_eq!(t, None, "nothing is chosen");
-        let c = card(t.as_ref(), &Health::NotSetUp, None);
+        let c = card(t.as_ref(), &Health::NotSetUp);
         assert_eq!(c.status, "unset", "the card reads Not set up");
         assert_eq!((c.model_name.as_str(), c.provider_name.as_str()), ("", ""));
-        assert!(!format!("{}{}", c.detail, c.fallback_provider).contains("yantrik-4b"));
+        assert!(!c.detail.to_string().contains("yantrik-4b"));
     }
 
     #[test]
     fn a_model_is_named_only_once_its_account_lists_it() {
         let t = target(&ProviderStore::default(), "http://127.0.0.1:8341/v1", "qwen3.5-4b", None).unwrap();
         for h in [Health::Checking, Health::ModelMissing { listed: 2 }, Health::Unreachable("x".into()), Health::KeyRefused] {
-            assert_eq!(card(Some(&t), &h, None).model_name, "", "{h:?}");
+            assert_eq!(card(Some(&t), &h).model_name, "", "{h:?}");
         }
-        assert_eq!(card(Some(&t), &Health::Connected, None).model_name, "qwen3.5-4b");
+        assert_eq!(card(Some(&t), &Health::Connected).model_name, "qwen3.5-4b");
     }
 
     #[test]
@@ -401,7 +400,7 @@ mod tests {
             auth_type: "bearer".into(),
         };
         for h in [Health::Checking, Health::Connected, Health::KeyRefused, Health::ModelMissing { listed: 3 }] {
-            let c = card(Some(&t), &h, None);
+            let c = card(Some(&t), &h);
             let all = format!("{}{}{}{}{}", c.provider_name, c.provider_type, c.model_name, c.status, c.detail);
             assert!(!all.contains("sk-secret"), "{all}");
         }

@@ -88,6 +88,8 @@ pub mod onboarding_proofs;
 pub mod onboarding_nearby;
 pub mod ai_provider;
 pub mod ai_status;
+#[cfg(test)]
+mod ai_page_truth;
 pub mod harness_provider;
 pub mod provider_catalogue;
 pub mod provider_models;

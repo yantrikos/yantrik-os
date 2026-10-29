@@ -49,6 +49,7 @@ mod picker_tests;
 mod first_run_tests;
 mod accounts_page_tests;
 mod ai_map_tests;
+mod ai_scroll_tests;
 mod provider_panel_tests;
 mod rail_tests;
 mod calendar_tests;
@@ -103,6 +104,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-first-run") { return first_run_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-accounts-page") { return accounts_page_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-ai-map") { return ai_map_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-ai-scroll") { return ai_scroll_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-ai-scroll-shell") { return ai_scroll_tests::run_in_shell(&window, output); }
     if args.iter().any(|a| a == "verify-providers-in-use") { return ai_map_tests::run_providers(&window, output); }
     if args.iter().any(|a| a == "verify-provider-panel") { return provider_panel_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-context-rail") { return rail_tests::run(&window, output); }

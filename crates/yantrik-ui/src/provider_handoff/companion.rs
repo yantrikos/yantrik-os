@@ -35,6 +35,13 @@ pub(crate) fn read(home: &Path) -> Option<(String, String, String)> {
     Some((s("base_url")?, s("model")?, s("api_key")?))
 }
 
+/// Whether the built-in companion is on Yantrik models (its file says so). When it is not, it
+/// talks to the saved primary provider itself. One answer for `adopt()` and for the accounts card,
+/// so what the screen says cannot drift from what the code does.
+pub(crate) fn companion_on_gateway(home: &Path) -> bool {
+    read(home).is_some()
+}
+
 /// Put the companion on what its file says, or back on the primary provider when there is none.
 pub(crate) fn reload(home: &Path) {
     let Some(bridge) = BRIDGE.get() else { return };

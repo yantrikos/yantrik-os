@@ -296,7 +296,7 @@ impl RunsOn {
             Some(Via::Refused { code, message }) => {
                 return match code.as_str() {
                     "private_context_not_shared" => format!(
-                        "Nothing is sent: what your minds know about you is not shared with the picked model's account. {message}"
+                        "Nothing is sent: what this Mind knows about you is not shared with the picked model's account. {message}"
                     ),
                     "private_mode" => format!("Nothing is sent. {message}"),
                     _ => format!("Nothing is sent: the gateway refuses it. {message}"),
@@ -428,9 +428,10 @@ fn one(m: &MindFact, companion: Option<&CompanionFact>) -> RunsOn {
     base(provider, model, SetIn::OwnSettings, true)
 }
 
-/// One sentence under the map: what pays for the minds, and what does not.
-/// "Ollama Cloud runs 4 minds. 1 mind does not say what it runs on. No mind here runs on a
-/// signed-in account."
+/// The sentences under the map: how many minds each provider runs, and how many do not say.
+/// "Ollama Cloud runs 4 minds. 1 mind does not say what it runs on." Nothing is said about what
+/// the minds do not run on: that was never computed, so it is not claimed. Empty when no row
+/// names a provider.
 pub fn summary(rows: &[RunsOn]) -> String {
     // Counted by the provider's words, not its address: the map above names no host, and two
     // services someone set up are said together, as what they are.
@@ -455,7 +456,6 @@ pub fn summary(rows: &[RunsOn]) -> String {
     if silent > 0 {
         parts.push(format!("{silent} {} not say what {} on.", if silent == 1 { "mind does" } else { "minds do" }, if silent == 1 { "it runs" } else { "they run" }));
     }
-    parts.push("No mind here runs on a signed-in account.".to_string());
     parts.join(" ")
 }
 
