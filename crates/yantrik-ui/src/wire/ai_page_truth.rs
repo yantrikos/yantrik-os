@@ -220,6 +220,13 @@ fn no_sentence_claims_something_for_every_mind_that_only_the_gateway_does() {
 }
 
 #[test]
+fn what_runs_on_what_claims_nothing_it_does_not_compute() {
+    // "No mind here runs on a signed-in account" was a fixed sentence; nothing checked it.
+    assert!(!include_str!("../runs_on/mod.rs").contains("signed-in account"));
+    assert!(!SETTINGS.contains("signed-in account.\""));
+}
+
+#[test]
 fn the_lane_button_does_not_say_where_the_lane_is() {
     // A lane on the network is not "on this computer": the labels name the role, not the place.
     assert!(ACCOUNTS_CARD.contains("Use as your private model"));

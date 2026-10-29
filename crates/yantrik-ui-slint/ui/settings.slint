@@ -1104,8 +1104,8 @@ export component SettingsScreen inherits Rectangle {
                                                 }
                                             }
                                         }
-                                        Rectangle { height: 1px; background: Theme.border-subtle; }
-                                        Text {
+                                        if root.runs-on-summary != "" : Rectangle { height: 1px; background: Theme.border-subtle; }
+                                        if root.runs-on-summary != "" : Text {
                                             text: root.runs-on-summary;
                                             color: Theme.text-secondary;
                                             font-size: Theme.fs-caption;
