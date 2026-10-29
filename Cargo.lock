@@ -11264,6 +11264,7 @@ dependencies = [
  "crossbeam-channel",
  "imap",
  "lettre",
+ "libc",
  "mailparse",
  "native-tls",
  "regex",

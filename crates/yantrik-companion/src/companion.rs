@@ -1338,21 +1338,6 @@ impl CompanionService {
         self.decisions.publish(self.judge.clone(), &self.config.judge, self.incognito, crate::judge_route::chat_locality(&self.config.llm));
     }
 
-    /// Persist the current config to disk (config.yaml).
-    pub fn save_config(&self) {
-        let path = "/opt/yantrik/config.yaml";
-        match serde_yaml::to_string(&self.config) {
-            Ok(yaml) => {
-                if let Err(e) = std::fs::write(path, yaml) {
-                    tracing::error!(path, error = %e, "Failed to save config");
-                } else {
-                    tracing::info!(path, "Config saved");
-                }
-            }
-            Err(e) => tracing::error!(error = %e, "Failed to serialize config"),
-        }
-    }
-
     /// Buffer a system event for automation matching during think cycles.
     pub fn push_event(&mut self, event_type: &str, event_data: serde_json::Value) {
         // Keep buffer bounded (last 50 events)
