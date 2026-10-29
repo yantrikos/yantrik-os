@@ -770,6 +770,10 @@ export component App inherits Window {
     in property <[SettingsCategoryItem]> settings-categories;
     // Which Settings section is open, so anything can deep-link to one.
     in-out property <int> settings-category: 0;
+    // The AI page's scroll geometry in logical px, written by the page and read by describe shell.
+    in-out property <length> settings-ai-visible-height;
+    in-out property <length> settings-ai-viewport-height;
+    in-out property <length> settings-ai-viewport-y;
 
     // ── Which mind is answering ──
     //
@@ -2161,6 +2165,9 @@ export component App inherits Window {
                 decision-toggle-use(id) => { root.decision-toggle-use(id); }
                 categories: root.settings-categories;
                 active-category <=> root.settings-category;
+                ai-visible-height <=> root.settings-ai-visible-height;
+                ai-viewport-height <=> root.settings-ai-viewport-height;
+                ai-viewport-y <=> root.settings-ai-viewport-y;
                 search-query <=> root.settings-query;
                 save-status:root.settings-save-status;save-error:root.settings-save-error;save-can-retry:root.settings-save-can-retry;
                 retry-save=>{root.retry-settings-save();}

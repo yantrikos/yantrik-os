@@ -489,10 +489,11 @@ export component SettingsScreen inherits Rectangle {
     callback vault-set-passphrase();
 
     // The AI page's scroll geometry: how tall its Flickable is, how tall its content is, and where
-    // it is scrolled to. Written by the page, read by tests/ui-preview.
-    out property <length> ai-visible-height;
-    out property <length> ai-viewport-height;
-    out property <length> ai-viewport-y;
+    // it is scrolled to. Written by the page; read by tests/ui-preview and by `describe shell`
+    // (settings.ai_page), through the shell's own in-out copies.
+    in-out property <length> ai-visible-height;
+    in-out property <length> ai-viewport-height;
+    in-out property <length> ai-viewport-y;
 
     // ── What runs on what (top of category 1) ──
     in property <[RunsOnRow]> runs-on-rows: [];

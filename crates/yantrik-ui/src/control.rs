@@ -1068,7 +1068,7 @@ pub fn publish(
                 .with("private", crate::private_mode::is_on())
                 // The theme in use and the ones to choose from (`set_theme`).
                 .with("theme", crate::wire::theme::for_describe(ui.get_settings_theme().as_str()))
-                .with("settings", serde_json::json!({"category":ui.get_settings_category(),"query":ui.get_settings_query().to_string(),"dark":ui.get_settings_dark_mode(),"accent":ui.get_settings_accent_color().to_string(),"wallpaper":ui.get_wallpaper_path().to_string(),"save_error":ui.get_settings_save_error(),"save_status":ui.get_settings_save_status().to_string(),"auto_lock_secs":ui.get_settings_auto_lock_secs(),"auto_lock_available":ui.get_settings_auto_lock_available()}))
+                .with("settings", crate::control_settings::section(&ui, screen))
         }
     };
 
@@ -3770,16 +3770,9 @@ mod auto_lock_action_tests {
     /// the button, which is the blind half of the issue.
     #[test]
     fn describe_reports_the_idle_lock_timeout() {
+        // The `settings` section lives in control_settings.rs; its test pins the timeout there.
         let src = source();
-        let at = src
-            .find(".with(\"settings\",")
-            .expect("describe shell has a `settings` section");
-        let settings = &src[at..at + 900];
-        assert!(
-            settings.contains("\"auto_lock_secs\":ui.get_settings_auto_lock_secs()"),
-            "describe's `settings` must carry `auto_lock_secs` read off the window, the same \
-             property the idle watcher polls. Section as written:\n{settings}"
-        );
+        assert!(src.contains("crate::control_settings::section(&ui, screen)"));
     }
 }
 
