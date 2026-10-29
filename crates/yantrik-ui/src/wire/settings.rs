@@ -822,8 +822,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // start: it lives in providers.yaml, not in config.yaml, which is never rewritten (#524).
     if let Some(chosen) = providers.lock().ok().and_then(|s| s.primary().cloned()) {
         tracing::info!(provider = %chosen.provider_type, "The companion starts on the provider chosen in Settings");
-        crate::wire::provider_panel::reload_primary(&ctx.bridge, &chosen);
+        crate::wire::provider_panel::reload_primary_telling(ui, &ctx.bridge, &chosen);
     }
+    // Keys an older version left in providers.yaml move into the vault once it is open.
+    crate::provider_vault::migrate_in_background(&ctx.bridge, providers.clone());
     let s = settings.clone();
     ui.on_retry_settings_save(move || {
         let _ = persist(&s);
@@ -930,25 +932,27 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
     // Presets, Connect, the model picker and Save live in their own module.
     crate::wire::provider_panel::wire(ui, ctx, providers.clone());
 
-    // Delete provider
+    // Delete provider: its vault entry goes with it. A shut vault refuses, so the key is not
+    // left behind with the provider gone from the list.
     let ui_weak = ui.as_weak();
     let ps = providers.clone();
-    let bridge = ctx.bridge.clone();
     ui.on_delete_provider(move |id| {
         let id = id.to_string();
         tracing::info!(id = %id, "Deleting provider");
-        if let Ok(mut store) = ps.lock() {
-            let before = store.clone();
-            store.entries.retain(|e| e.id != id);
-            if store.save().is_err() {
-                *store = before;
-                return;
-            }
-            if let Some(ui) = ui_weak.upgrade() {
-                push_providers_to_ui(&ui, &store);
-                crate::wire::ai_status::refresh(&ui, &store);
-            }
-        }
+        let (ui_weak, ps) = (ui_weak.clone(), ps.clone());
+        std::thread::spawn(move || {
+            let outcome = remove_provider(&ps, &id);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                if let Err(sentence) = &outcome {
+                    ui.set_settings_provider_test_result(sentence.clone().into());
+                }
+                if let Ok(store) = ps.lock() {
+                    push_providers_to_ui(&ui, &store);
+                    crate::wire::ai_status::refresh(&ui, &store);
+                }
+            });
+        });
     });
 
     // Test existing provider
@@ -967,11 +971,11 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
             let weak = ui_weak.clone();
             let ps2 = ps.clone();
             std::thread::spawn(move || {
-                let result = test_provider_connection(
-                    &entry.base_url,
-                    entry.api_key.as_deref(),
-                    &entry.auth_type,
-                );
+                // A shut vault is a refusal: nothing is sent with an empty key.
+                let result = match entry.resolve_key() {
+                    Ok(key) => test_provider_connection(&entry.base_url, key.as_deref(), &entry.auth_type),
+                    Err(why) => TestResult { success: false, message: why.to_use(&entry.name), latency_ms: 0, models: Vec::new() },
+                };
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = weak.upgrade() {
                         // Update the provider status in the store
@@ -1008,6 +1012,7 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
         for e in &mut store.entries {
             e.is_primary = !id.is_empty() && e.id == id;
         }
+        // Nothing here asks the vault: the key is read on a thread of its own by the reload.
         if store.save().is_err() {
             *store = before;
             return;
@@ -1018,7 +1023,7 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
                 if !chosen.model.is_empty() {
                     ui.set_settings_llm_api_model(chosen.model.clone().into());
                 }
-                crate::wire::provider_panel::reload_primary(&bridge, &chosen);
+                crate::wire::provider_panel::reload_primary_telling(&ui, &bridge, &chosen);
             }
             None => {
                 let url = ui.get_settings_llm_api_url().to_string();
@@ -1071,7 +1076,9 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
         };
 
         if let Some(provider) = primary {
-            crate::wire::provider_panel::reload_primary(&bridge_sm, &provider);
+            if let Some(ui) = ui_weak_sm.upgrade() {
+                crate::wire::provider_panel::reload_primary_telling(&ui, &bridge_sm, &provider);
+            }
             // Push fresh AI status with new online state
             if let (Some(ui), Ok(store)) = (ui_weak_sm.upgrade(), ps_sm.lock()) {
                 crate::wire::ai_status::refresh(&ui, &store);
@@ -1095,12 +1102,19 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
         if let Some(provider) = primary {
             let weak = ui_weak.clone();
             std::thread::spawn(move || {
-                let models = fetch_models(
-                    &provider.base_url,
-                    provider.api_key.as_deref(),
-                    &provider.auth_type,
-                    &provider.model,
-                );
+                let key = match provider.resolve_key() {
+                    Ok(key) => key,
+                    Err(why) => {
+                        let sentence = why.to_use(&provider.name);
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = weak.upgrade() {
+                                ui.set_settings_provider_test_result(sentence.into());
+                            }
+                        });
+                        return;
+                    }
+                };
+                let models = fetch_models(&provider.base_url, key.as_deref(), &provider.auth_type, &provider.model);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = weak.upgrade() {
                         let model_data: Vec<AIModelData> = models
@@ -1127,6 +1141,50 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
     });
 }
 
+/// Take the provider `id` out of the saved list and its key out of the vault. The vault goes
+/// first, because a shut vault refuses and the key would otherwise stay behind unreachable; a
+/// vault that is open but fails is logged and the provider is removed all the same. The sentence
+/// returned is for the person.
+fn remove_provider(providers: &Arc<Mutex<ProviderStore>>, id: &str) -> Result<(), String> {
+    remove_provider_with(providers, id, crate::provider_vault::current(), &mut |s| s.save())
+}
+
+/// [`remove_provider`], with the vault and the way the file is written given.
+pub(crate) fn remove_provider_with(
+    providers: &Arc<Mutex<ProviderStore>>,
+    id: &str,
+    vault: Option<Arc<dyn crate::provider_vault::KeyVault>>,
+    save: &mut dyn FnMut(&mut ProviderStore) -> Result<(), String>,
+) -> Result<(), String> {
+    let entry = providers
+        .lock()
+        .map_err(|_| "The providers could not be read just now.".to_string())?
+        .entries
+        .iter()
+        .find(|e| e.id == id)
+        .cloned();
+    let Some(entry) = entry else { return Ok(()) };
+    // The vault is asked without the list locked: it can take a while to answer.
+    if entry.vault_key_id().is_some() {
+        let vault = vault.ok_or("The credential vault is not ready yet. Try again in a moment.")?;
+        match crate::provider_vault::forget(&*vault, &entry) {
+            Ok(()) => {}
+            Err(crate::provider_vault::KeyError::Locked) => {
+                return Err(format!("{} was not removed: the credential vault is locked. Unlock it, then remove it again.", entry.name));
+            }
+            Err(_) => tracing::warn!("a provider's vault entry could not be removed; removing the provider anyway"),
+        }
+    }
+    let mut store = providers.lock().map_err(|_| "The providers could not be read just now.".to_string())?;
+    let before = store.clone();
+    store.entries.retain(|e| e.id != id);
+    if let Err(why) = save(&mut store) {
+        *store = before;
+        return Err(format!("{} was not removed: {why}", entry.name));
+    }
+    Ok(())
+}
+
 /// Back-compat: load theme preference (delegates to full settings).
 pub fn load_theme_preference() -> bool {
     load().dark_mode
@@ -1142,15 +1200,27 @@ fn providers_path() -> String {
 }
 
 /// A single AI provider entry persisted to YAML.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderStoreEntry {
     pub id: String,
     pub name: String,
     #[serde(default = "default_provider_type")]
     pub provider_type: String,
     pub base_url: String,
-    #[serde(default)]
+    /// The key, in memory only: one just typed, or one resolved for a reader. Never written to
+    /// the file; `ProviderStore::save` moves it into the credential vault first
+    /// (`provider_vault`).
+    #[serde(skip)]
     pub api_key: Option<String>,
+    /// Where the vault keeps the key: `vault:saved:<id>`. This, and not the key, is what the
+    /// file holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_ref: Option<String>,
+    /// A key an older version left in the file as `api_key:`. Read so it is not lost, kept until
+    /// the vault is open, then moved by `provider_vault::migrate`. Nothing new is written here
+    /// except by the installer, which has no vault to write to yet.
+    #[serde(rename = "api_key", default, skip_serializing_if = "Option::is_none")]
+    pub unmigrated_key: Option<String>,
     #[serde(default = "default_auth_type")]
     pub auth_type: String,
     #[serde(default)]
@@ -1162,6 +1232,24 @@ pub struct ProviderStoreEntry {
     /// the companion falls back to the catalogue's default.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
+}
+
+// By hand, so a key never reaches a log through `{:?}`.
+impl std::fmt::Debug for ProviderStoreEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let held = |k: &Option<String>| k.as_ref().map(|_| "<redacted>");
+        f.debug_struct("ProviderStoreEntry")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("provider_type", &self.provider_type)
+            .field("base_url", &crate::runs_on::identity::shown_host(&self.base_url))
+            .field("api_key", &held(&self.api_key))
+            .field("api_key_ref", &self.api_key_ref)
+            .field("unmigrated_key", &held(&self.unmigrated_key))
+            .field("is_primary", &self.is_primary)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 fn default_provider_type() -> String {
@@ -1192,14 +1280,26 @@ impl ProviderStore {
         }
     }
 
-    pub fn save(&self) -> Result<(), String> {
-        let result = validate_file::<Self>(&providers_path()).and_then(|()| {
-            serde_yaml::to_string(self)
-                .map_err(|_| "Cannot serialize providers.".into())
-                .and_then(|yaml| crate::config_store::save(providers_path(), &yaml))
-        });
+    /// Write the list. A key held in memory goes into the credential vault first, verified by
+    /// reading it back, and the file gets its reference; a shut or silent vault refuses the whole
+    /// save, with the file untouched. Keys an older version left in the file are written back as
+    /// they were until `provider_vault::migrate` moves them.
+    pub fn save(&mut self) -> Result<(), String> {
+        let result = self.save_at(&providers_path());
         report_for(&result, false);
         result
+    }
+
+    pub(crate) fn save_at(&mut self, path: &str) -> Result<(), String> {
+        if self.has_unkept_keys() {
+            let vault = crate::provider_vault::current().ok_or("The credential vault is not ready yet. Try again in a moment.")?;
+            self.keep_keys(&*vault).map_err(|e| e.to_string())?;
+        }
+        validate_file::<Self>(path).and_then(|()| {
+            serde_yaml::to_string(self)
+                .map_err(|_| "Cannot serialize providers.".into())
+                .and_then(|yaml| crate::config_store::save(path, &yaml))
+        })
     }
 
     pub fn primary(&self) -> Option<&ProviderStoreEntry> {
@@ -1457,7 +1557,7 @@ mod tests {
         let store: ProviderStore = serde_yaml::from_str(old).expect("an old file loads");
         let primary = store.primary().expect("primary");
         assert_eq!(primary.model, "", "no model was ever chosen");
-        assert_eq!(primary.api_key.as_deref(), Some("sk-1"));
+        assert_eq!(primary.unmigrated_key.as_deref(), Some("sk-1"), "an older file's key is read, to be moved to the vault");
     }
 
     #[test]

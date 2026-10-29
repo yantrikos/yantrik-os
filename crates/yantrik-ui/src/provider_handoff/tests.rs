@@ -29,6 +29,8 @@ fn nim() -> ProviderStoreEntry {
         provider_type: "nvidia-nim".into(),
         base_url: "https://integrate.api.nvidia.com/v1".into(),
         api_key: Some(KEY.into()),
+        api_key_ref: None,
+        unmigrated_key: None,
         auth_type: "bearer".into(),
         is_primary: true,
         is_fallback: false,

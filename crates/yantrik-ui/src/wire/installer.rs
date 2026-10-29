@@ -99,7 +99,15 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
             // over when present, so a key typed in the live session is not typed twice.
             let wizard = ProviderStore::load().primary().cloned();
             let (ai_provider, ai_name, ai_base_url, ai_api_key, ai_model) = match wizard {
-                Some(p) => (p.provider_type, p.name, p.base_url, p.api_key.unwrap_or_default(), p.model),
+                Some(p) => {
+                    // Read from the vault, or from the file for a key not moved yet. A vault that
+                    // will not give it up means the key is typed again, not that it is guessed.
+                    let key = p.resolve_key().unwrap_or_else(|why| {
+                        tracing::warn!(?why, "Installer: the live session's provider key could not be read; it will be asked for again");
+                        None
+                    });
+                    (p.provider_type, p.name, p.base_url, key.unwrap_or_default(), p.model)
+                }
                 None => (String::new(), String::new(), String::new(), String::new(), String::new()),
             };
             // The endpoint is not a secret; the key is, so only its presence is logged.
@@ -1093,7 +1101,10 @@ fn installed_providers_yaml(state: &InstallerState) -> Option<String> {
         name: name.to_string(),
         provider_type: state.ai_provider.clone(),
         base_url: base_url.to_string(),
-        api_key: (!state.ai_api_key.is_empty()).then(|| state.ai_api_key.clone()),
+        api_key: None,
+        api_key_ref: None,
+        // The new home has no vault to put it in yet: it is moved at the first start.
+        unmigrated_key: (!state.ai_api_key.is_empty()).then(|| state.ai_api_key.clone()),
         auth_type: auth_type_for(&state.ai_provider).to_string(),
         is_primary: true,
         is_fallback: false,
@@ -1746,6 +1757,8 @@ mod tests {
             provider_type: state.ai_provider.clone(),
             base_url: state.ai_base_url.clone(),
             api_key: None,
+            api_key_ref: None,
+            unmigrated_key: None,
             auth_type: String::new(),
             is_primary: true,
             is_fallback: false,
@@ -1799,7 +1812,10 @@ mod tests {
         let primary = store.primary().expect("the entry is primary");
         assert_eq!(primary.provider_type, "openai");
         assert_eq!(primary.base_url, "https://api.openai.com/v1");
-        assert_eq!(primary.api_key.as_deref(), Some("sk-secret-123"));
+        // In the file as an older version wrote it, to be moved into the new home's vault at its
+        // first start (provider_vault::migrate); never as a reference to a vault that is not there.
+        assert_eq!(primary.unmigrated_key.as_deref(), Some("sk-secret-123"));
+        assert!(primary.api_key_ref.is_none());
         assert_eq!(primary.auth_type, "bearer");
     }
 

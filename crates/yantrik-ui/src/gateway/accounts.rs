@@ -68,7 +68,11 @@ impl yantrik_gateway::Accounts for ShellAccounts {
                         keys::Missing::Vault => "vault_locked",
                         keys::Missing::Address => "address_incomplete",
                     };
-                    Refusal::new(503, code, format!("{} cannot be used now: {why}.", a.name))
+                    let words = match why {
+                        keys::Missing::Vault => format!("Unlock the credential vault to use {}.", a.name),
+                        _ => format!("{} cannot be used now: {why}.", a.name),
+                    };
+                    Refusal::new(503, code, words)
                 })?
             }
             Keys::NotRead => keys::Resolved { base_url: a.base_url.clone(), key: None },

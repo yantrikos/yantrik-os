@@ -225,7 +225,10 @@ pub(crate) fn plan(harness: &str, provider: &str) -> Result<Plan, String> {
             }
         }
     };
-    adapter.plan(&home(), chosen)
+    // The adapter reads the key from the entry it is given, so it is given a copy that holds it.
+    // A shut vault is a refusal here: nothing is written with an empty key.
+    let with_key = chosen.with_resolved_key().map_err(|why| why.to_use(&chosen.name))?;
+    adapter.plan(&home(), &with_key)
 }
 
 /// The approval card's sentence for `assign_provider`: where the key goes and which file, or

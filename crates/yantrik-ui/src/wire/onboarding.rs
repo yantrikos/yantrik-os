@@ -695,7 +695,8 @@ fn list_choices(entry: &ProviderStoreEntry) -> Result<Vec<ModelChoice>, String> 
     let listed = if crate::ai_accounts::models::needs_no_listing(&account, free) {
         None
     } else {
-        Some(crate::wire::provider_models::list_models(&entry.base_url, entry.api_key.as_deref(), &entry.auth_type))
+        let key = entry.resolve_key().map_err(|why| why.to_use(&entry.name))?;
+        Some(crate::wire::provider_models::list_models(&entry.base_url, key.as_deref(), &entry.auth_type))
     };
     model_choices(&account, listed)
 }
@@ -722,7 +723,8 @@ fn prove_answer(entry: &ProviderStoreEntry) -> Result<i32, String> {
         return Err("no model is chosen yet".into());
     }
     let started = std::time::Instant::now();
-    match check_key(&entry.base_url, entry.api_key.as_deref().unwrap_or(""), &entry.model) {
+    let key = entry.resolve_key().map_err(|why| why.to_use(&entry.name))?;
+    match check_key(&entry.base_url, key.as_deref().unwrap_or(""), &entry.model) {
         KeyCheck::Works => Ok(started.elapsed().as_millis() as i32),
         KeyCheck::Refused => Err("the key was refused".into()),
         KeyCheck::Unconfirmed(why) => Err(why.trim_end_matches('.').to_string()),
@@ -732,11 +734,10 @@ fn prove_answer(entry: &ProviderStoreEntry) -> Result<i32, String> {
 /// The AI-accounts id the catalogue gave `entry` once saved: its own key entry, else its address
 /// and model; the slug of its name when the catalogue has not listed it yet.
 fn catalogue_account(entry: &ProviderStoreEntry) -> String {
-    use crate::ai_accounts::account::KeyRef;
     let base = crate::wire::provider_models::openai_base(&entry.base_url);
     crate::ai_accounts::accounts()
         .into_iter()
-        .find(|a| matches!(&a.key, KeyRef::Saved { entry: id } if *id == entry.id))
+        .find(|a| a.entry.as_deref() == Some(entry.id.as_str()))
         .or_else(|| crate::ai_accounts::accounts().into_iter().find(|a| a.base_url == base && a.saved_model == entry.model))
         .map(|a| a.id)
         .unwrap_or_else(|| account_id(entry))
@@ -787,6 +788,7 @@ pub fn nearby_words(result: &Result<Vec<Found>, String>) -> (&'static str, Strin
 
 pub fn wire(ui: &App, ctx: &AppContext) {
     let _ = BRIDGE.set(ctx.bridge.clone());
+    crate::provider_vault::install_for(&ctx.bridge);
     let proofs: Arc<dyn Proofs> = Arc::new(CompanionProofs);
     let lane: Arc<dyn Lane> = Arc::new(PendingLane);
     let saved = saved_path();
@@ -916,6 +918,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     provider_type: f.runtime.into(),
                     base_url: f.base_url.clone(),
                     api_key: None,
+                    api_key_ref: None,
+                    unmigrated_key: None,
                     auth_type: "none".into(),
                     is_primary: true,
                     is_fallback: false,
@@ -932,6 +936,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     provider_type: c.id.clone(),
                     base_url: crate::wire::provider_catalogue::provider_preset(&c.id).1.into(),
                     api_key: None,
+                    api_key_ref: None,
+                    unmigrated_key: None,
                     auth_type: auth_type_for(&c.id).into(),
                     is_primary: true,
                     is_fallback: false,
@@ -1009,6 +1015,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 provider_type: id.to_string(),
                 base_url: url.into(),
                 api_key: Some(key.trim().to_string()),
+                api_key_ref: None,
+                unmigrated_key: None,
                 auth_type: auth_type_for(&id).into(),
                 is_primary: true,
                 is_fallback: false,
@@ -1043,6 +1051,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 base_url: url,
                 auth_type: if key.is_empty() { "none".into() } else { auth },
                 api_key: if key.is_empty() { None } else { Some(key) },
+                api_key_ref: None,
+                unmigrated_key: None,
                 is_primary: true,
                 is_fallback: false,
                 // The person typed it: this one is theirs.
@@ -1097,6 +1107,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 provider_type: "llamacpp".into(),
                 base_url: LOCAL_ENDPOINT.into(),
                 api_key: None,
+                api_key_ref: None,
+                unmigrated_key: None,
                 auth_type: "none".into(),
                 is_primary: true,
                 is_fallback: false,
@@ -1790,6 +1802,8 @@ mod tests {
             provider_type: "anthropic".into(),
             base_url: "https://api.anthropic.com/v1".into(),
             api_key: Some("k".into()),
+            api_key_ref: None,
+            unmigrated_key: None,
             auth_type: "x-api-key".into(),
             is_primary: true,
             is_fallback: false,
@@ -1810,6 +1824,8 @@ mod tests {
             provider_type: provider.into(),
             base_url: "https://example.com/v1".into(),
             api_key: Some("k".into()),
+            api_key_ref: None,
+            unmigrated_key: None,
             auth_type: "bearer".into(),
             is_primary: true,
             is_fallback: false,

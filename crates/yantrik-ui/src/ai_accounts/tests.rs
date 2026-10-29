@@ -19,6 +19,8 @@ fn saved(id: &str, name: &str, kind: &str, url: &str, key: Option<&str>, model: 
         provider_type: kind.into(),
         base_url: url.into(),
         api_key: key.map(str::to_string),
+        api_key_ref: None,
+        unmigrated_key: None,
         auth_type: if key.is_some() { "bearer".into() } else { "none".into() },
         is_primary: false,
         is_fallback: false,

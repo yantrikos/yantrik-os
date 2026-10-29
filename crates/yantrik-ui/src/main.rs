@@ -196,6 +196,7 @@ mod toplevel_watch;
 // The compositor's window list from the stream `toplevel_watch` follows, for `windows`.
 mod live_windows;
 mod provider_handoff;
+mod provider_vault;
 mod private_file;
 mod programs;
 mod runs_on;

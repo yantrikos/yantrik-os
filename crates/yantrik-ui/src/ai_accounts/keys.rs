@@ -66,7 +66,7 @@ pub fn resolve(
             let key = saved
                 .iter()
                 .find(|e| &e.id == entry)
-                .and_then(|e| e.api_key.clone())
+                .and_then(|e| e.key_source().plain)
                 .filter(|k| !k.trim().is_empty())
                 .ok_or(Missing::Key)?;
             (Some(key), None)
