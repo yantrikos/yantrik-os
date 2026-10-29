@@ -1312,7 +1312,7 @@ fn prove_and_pick(ui: &App) {
                 (Ok(()), Err(why)) => {
                     ui.set_fr_connect_status("pick-failed".into());
                     ui.set_fr_connect_words(
-                        format!("Needs attention: {model} answered, but your minds could not be set to use it ({why})").into(),
+                        format!("Needs attention: {model} answered and Yantrik Companion now uses it, but your Minds that use Yantrik models could not be set to use it ({why})").into(),
                     );
                 }
                 (Err(why), _) => {
@@ -1367,7 +1367,7 @@ fn retry_pick(ui: &App) {
                 Err(why) => {
                     ui.set_fr_connect_status("pick-failed".into());
                     ui.set_fr_connect_words(
-                        format!("Needs attention: {model} answered, but your minds could not be set to use it ({why})").into(),
+                        format!("Needs attention: {model} answered and Yantrik Companion now uses it, but your Minds that use Yantrik models could not be set to use it ({why})").into(),
                     );
                 }
             }

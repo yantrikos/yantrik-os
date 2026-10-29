@@ -245,7 +245,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     space();
     assert_eq!(ui.get_picked(), "qwen/qwen3.8-27b", "the person picks, by keyboard");
     ui.set_connect_status("pick-failed".into());
-    ui.set_connect_words("Needs attention: qwen/qwen3.8-27b answered, but your minds could not be set to use it (not one of the listed models)".into());
+    ui.set_connect_words("Needs attention: qwen/qwen3.8-27b answered and Yantrik Companion now uses it, but your Minds that use Yantrik models could not be set to use it (not one of the listed models)".into());
     render(w, width, height, &still("2-pick-failed"))?;
     enter();
     assert_eq!(ui.get_retries(), 1, "Try again has focus, and retries the pick");
