@@ -50,6 +50,9 @@ fn typing_draws_the_screen_and_then_rests_again() {
     f.until("the probe", |f| f.summary().contains("idle at a prompt"));
     f.app.settle_frames();
     f.type_until("echo hello", "echo hello");
+    // The shell's screen has it; the window shows it once the frame that carries it has been
+    // rendered, which is its own step. Wait for the window, then ask.
+    f.until("the window shows it", |f| f.app.ui(|ui| ui.get_screen_text().contains("echo hello")));
     assert!(f.app.ui(|ui| ui.get_screen_text().contains("echo hello")), "a key moves the screen");
     f.app.draw_until_still();
     f.app.advance(Duration::from_secs(2));
