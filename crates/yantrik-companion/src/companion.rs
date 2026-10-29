@@ -1343,10 +1343,10 @@ impl CompanionService {
         let path = "/opt/yantrik/config.yaml";
         match serde_yaml::to_string(&self.config) {
             Ok(yaml) => {
-                if let Err(e) = std::fs::write(path, yaml) {
+                if let Err(e) = crate::config_file::save_atomic(std::path::Path::new(path), &yaml) {
                     tracing::error!(path, error = %e, "Failed to save config");
                 } else {
-                    tracing::info!(path, "Config saved");
+                    tracing::info!(path, last_good = "/opt/yantrik/config.yaml.last-good", "Config saved");
                 }
             }
             Err(e) => tracing::error!(error = %e, "Failed to serialize config"),
