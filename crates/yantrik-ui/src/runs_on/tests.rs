@@ -337,7 +337,7 @@ fn a_pick_the_gateway_refuses_says_what_the_gateway_does_not_the_pick() {
     let line = rows[0].destination();
     assert_eq!(
         line,
-        format!("Nothing is sent: what your minds know about you is not shared with the picked model's account. {message}")
+        format!("Nothing is sent: what this Mind knows about you is not shared with the picked model's account. {message}")
     );
     assert!(!line.starts_with(TO), "no place is named");
     assert_eq!(rows[0].runs_on(), "Nothing is sent: the gateway refuses it");

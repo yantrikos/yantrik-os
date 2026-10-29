@@ -21,7 +21,7 @@ pub struct Row {
     pub local: bool,
     /// The person's choice as the gateway applies it: "share", "lane" or "off".
     pub sharing: &'static str,
-    /// "Share what your minds know about you with OpenAI".
+    /// "Let your Minds that use Yantrik models share what they know about you with OpenAI".
     pub share_words: String,
     /// What happens now, in one plain sentence.
     pub private_words: String,
@@ -52,7 +52,7 @@ fn lane_place(accounts: &[Account], lane_id: &str) -> &'static str {
 /// sharing choice.
 pub fn companion_direct_account(accounts: &[Account]) -> Option<String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/root"));
-    if crate::provider_handoff::companion::read(&home).is_some() {
+    if crate::provider_handoff::companion::companion_on_gateway(&home) {
         return None;
     }
     let store = crate::wire::settings::ProviderStore::load();
@@ -124,7 +124,7 @@ pub fn rows(catalogue: &Catalogue, accounts: &[Account], consent: &Consent, dire
                 Sharing::Off => format!("Requests from your Minds that use Yantrik models to {} are not sent.", a.name),
             };
             if direct == Some(a.id.as_str()) {
-                format!("The built-in companion talks to {} directly; this choice applies to your other Minds. {choice}", a.name)
+                format!("The built-in companion talks to {} directly; this choice applies to your other Minds that use Yantrik models. {choice}", a.name)
             } else {
                 choice
             }
@@ -143,7 +143,7 @@ pub fn rows(catalogue: &Catalogue, accounts: &[Account], consent: &Consent, dire
             detail,
             local: a.local,
             sharing: sharing.as_str(),
-            share_words: format!("Share what your minds know about you with {}", a.name),
+            share_words: format!("Let your Minds that use Yantrik models share what they know about you with {}", a.name),
             private_words,
             switchable: !a.local,
             offers_share: !a.local && !a.trains_on_prompts,
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(drawn[0].state, "ready");
         assert_eq!(drawn[0].sharing, "off", "nothing is shared until the person says so");
         assert_eq!(drawn[0].private_words, "Requests from your Minds that use Yantrik models to openai are not sent.");
-        assert_eq!(drawn[0].share_words, "Share what your minds know about you with openai");
+        assert_eq!(drawn[0].share_words, "Let your Minds that use Yantrik models share what they know about you with openai");
         assert_eq!(drawn[1].state, "failed");
         assert!(drawn[1].detail.contains("refused"));
         assert!(!drawn[1].offers_share && drawn[1].switchable, "a free tier that may train: keep on this computer, or don't share");
@@ -421,7 +421,7 @@ mod tests {
             assert!(!other[1].private_words.contains("talks to"), "no direct primary: {}", other[1].private_words);
             let (_, direct) = rows(&catalogue, &accounts, &consent, Some("openai"));
             assert!(
-                direct[1].private_words.starts_with("The built-in companion talks to openai directly; this choice applies to your other Minds."),
+                direct[1].private_words.starts_with("The built-in companion talks to openai directly; this choice applies to your other Minds that use Yantrik models."),
                 "{}",
                 direct[1].private_words
             );

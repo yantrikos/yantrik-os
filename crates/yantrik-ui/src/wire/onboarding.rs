@@ -707,7 +707,7 @@ fn list_choices(entry: &ProviderStoreEntry) -> Result<Vec<ModelChoice>, String> 
 fn adopt(entry: &ProviderStoreEntry) -> Result<(), String> {
     save_primary(entry.clone())?;
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/root"));
-    if !home.join(".config/yantrik/companion-models.json").exists() {
+    if !crate::provider_handoff::companion::companion_on_gateway(&home) {
         if let Some(bridge) = BRIDGE.get() {
             crate::wire::provider_panel::reload_primary(bridge, entry);
         }
@@ -1306,7 +1306,7 @@ fn prove_and_pick(ui: &App) {
             match (result, picked) {
                 (Ok(()), Ok(())) => {
                     ui.set_fr_connect_status("connected".into());
-                    ui.set_fr_connect_words(format!("Connected to {name}. Your minds will use {model}.").into());
+                    ui.set_fr_connect_words(format!("Connected to {name}. Yantrik Companion and your Minds that use Yantrik models will use {model}.").into());
                     set_up_default_mind(&ui);
                 }
                 (Ok(()), Err(why)) => {
@@ -1361,7 +1361,7 @@ fn retry_pick(ui: &App) {
             match picked {
                 Ok(()) => {
                     ui.set_fr_connect_status("connected".into());
-                    ui.set_fr_connect_words(format!("Connected to {name}. Your minds will use {model}.").into());
+                    ui.set_fr_connect_words(format!("Connected to {name}. Yantrik Companion and your Minds that use Yantrik models will use {model}.").into());
                     set_up_default_mind(&ui);
                 }
                 Err(why) => {

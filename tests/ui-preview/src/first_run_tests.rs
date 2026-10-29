@@ -250,7 +250,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     enter();
     assert_eq!(ui.get_retries(), 1, "Try again has focus, and retries the pick");
     ui.set_connect_status("connected".into());
-    ui.set_connect_words("Connected to Groq. Your minds will use qwen/qwen3.8-27b.".into());
+    ui.set_connect_words("Connected to Groq. Yantrik Companion and your Minds that use Yantrik models will use qwen/qwen3.8-27b.".into());
     ui.set_default_mind_words(HERMES_SETTING_UP.into());
     render(w, width, height, &still("2-connected"))?;
     ui.set_light(true);

@@ -16,7 +16,7 @@ export struct AiAccountRow {
     detail: string,        // where the list came from, or why it did not come
     local: bool,           // on this machine or the local network
     sharing: string,       // "share" · "lane" · "off": where what minds know about the person goes
-    share-words: string,   // "Share what your minds know about you with OpenAI"
+    share-words: string,   // "Let your Minds that use Yantrik models share what they know about you with OpenAI"
     private-words: string, // what happens now, in one plain sentence
     switchable: bool,      // the three choices are offered: not local
     offers-share: bool,    // Share is one of them: not a free tier that may train on prompts
@@ -176,7 +176,7 @@ export component AiAccountsCard inherits Rectangle {
             // How a mind reaches these accounts without a key (a token for the desktop's gateway on
             // 127.0.0.1:7460) was this sentence, and read as jargon in the sweep of 17 October; the
             // address is in each mind's Details under What runs on what.
-            text: "Add an account once and every mind can use its models, through the picker in the ask bar. Free-tier keys are kept in the vault.";
+            text: "Add an account once and every Mind that uses Yantrik models can use its models, through the picker in the ask bar. Free-tier keys are kept in the vault.";
             color: Theme.text-dim;
             font-size: Theme.fs-caption;
             wrap: word-wrap;

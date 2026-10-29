@@ -129,7 +129,7 @@ fn the_sentences_say_what_the_code_does() {
     // The choice binds the gateway, so the lines are about Minds that use Yantrik models; the
     // built-in companion on a saved primary talks to its provider directly and the row says so.
     assert!(ACCOUNTS_RS.contains("Requests from your Minds that use Yantrik models to {} go to your private model {} instead."));
-    assert!(ACCOUNTS_RS.contains("The built-in companion talks to {} directly; this choice applies to your other Minds."));
+    assert!(ACCOUNTS_RS.contains("The built-in companion talks to {} directly; this choice applies to your other Minds that use Yantrik models. {choice}"));
     assert!(!ACCOUNTS_RS.contains("Your Minds' requests"));
     assert!(!ACCOUNTS_RS.contains("everything else goes to"));
     let code = ACCOUNTS_RS.split("#[cfg(test)]").next().unwrap_or(ACCOUNTS_RS);
@@ -198,6 +198,25 @@ fn nothing_declares_a_fallback_state_that_nothing_sets() {
     }
     assert!(!include_str!("../../../yantrik-ui-slint/ui/desktop.slint").contains("ai-fallback-banner"));
     assert!(!include_str!("ai_status.rs").contains("using_fallback"));
+}
+
+#[test]
+fn no_sentence_claims_something_for_every_mind_that_only_the_gateway_does() {
+    // The sharing choice, the picker and the lane bind the Minds that use Yantrik models. The
+    // built-in companion on a saved primary talks to its provider directly.
+    assert!(ACCOUNTS_RS.contains("Let your Minds that use Yantrik models share what they know about you with {}"));
+    assert!(!ACCOUNTS_RS.contains("Share what your minds know about you with {}"));
+    assert!(ACCOUNTS_CARD.contains("every Mind that uses Yantrik models can use its models"));
+    assert!(!ACCOUNTS_CARD.contains("every mind can use"));
+    let first_run = include_str!("../../../yantrik-ui-slint/ui/onboarding_first_run.slint");
+    // The spoken step 3 offers the private model only when the visible checkbox is enabled.
+    assert!(first_run.contains("(root.private-lane-words != \"\" ? \" For your other Minds that use Yantrik models, you can instead use your private model.\" : \"\")"));
+    assert!(!first_run.contains("Which model should your minds use?"));
+    let onboarding = include_str!("onboarding.rs");
+    assert!(!onboarding.contains("Connected to {name}. Your minds will use"));
+    // One check says whether the companion is on Yantrik models, for first run and the card.
+    assert!(onboarding.contains("companion_on_gateway(&home)") && ACCOUNTS_RS.contains("companion_on_gateway(&home)"));
+    assert!(!onboarding.contains("companion-models.json\").exists()"));
 }
 
 #[test]

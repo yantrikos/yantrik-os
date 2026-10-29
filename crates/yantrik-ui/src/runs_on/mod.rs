@@ -296,7 +296,7 @@ impl RunsOn {
             Some(Via::Refused { code, message }) => {
                 return match code.as_str() {
                     "private_context_not_shared" => format!(
-                        "Nothing is sent: what your minds know about you is not shared with the picked model's account. {message}"
+                        "Nothing is sent: what this Mind knows about you is not shared with the picked model's account. {message}"
                     ),
                     "private_mode" => format!("Nothing is sent. {message}"),
                     _ => format!("Nothing is sent: the gateway refuses it. {message}"),

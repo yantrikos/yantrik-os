@@ -533,7 +533,8 @@ export component FirstRunScreen inherits Rectangle {
       : root.step == 2 ? "Who should do the thinking? Choose one. "
             + (root.featured.length > 0 && root.featured[0].recommended != "" ? "First: " + root.featured[0].name + ", " + root.featured[0].line + ". " + root.featured[0].recommended + ". " : "")
             + (root.chosen-name == "" ? "" : root.chosen-name + " is chosen. ") + "Then connect it."
-      : root.step == 3 ? root.share-sentence + " " + root.companion-note + " For your other Minds that use Yantrik models, you can instead use your private model."
+      : root.step == 3 ? root.share-sentence + " " + root.companion-note
+            + (root.private-lane-words != "" ? " For your other Minds that use Yantrik models, you can instead use your private model." : "")
       : root.step == 4 ? "Getting your minds ready. Yantrik Companion is checked three ways: can it answer, can it remember, can it reach the desktop. "
             + root.default-mind-words
       : "Your minds. " + root.minds-words + " " + root.default-mind-words;
@@ -954,7 +955,7 @@ export component FirstRunScreen inherits Rectangle {
                     if root.models.length > 0 && root.connect-mode != "" && root.connect-status != "connected" && root.connect-status != "pick-failed" : VerticalLayout {
                         spacing: 8px;
                         Text {
-                            text: "Which model should your minds use?";
+                            text: "Which model should Yantrik Companion and your Minds that use Yantrik models use?";
                             color: Theme.text-primary;
                             font-size: Theme.fs-title-1;
                             font-weight: 600;
