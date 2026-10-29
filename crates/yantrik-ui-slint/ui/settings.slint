@@ -488,6 +488,12 @@ export component SettingsScreen inherits Rectangle {
     /// `no_published_action_can_carry_a_passphrase`.
     callback vault-set-passphrase();
 
+    // The AI page's scroll geometry: how tall its Flickable is, how tall its content is, and where
+    // it is scrolled to. Written by the page, read by tests/ui-preview.
+    out property <length> ai-visible-height;
+    out property <length> ai-viewport-height;
+    out property <length> ai-viewport-y;
+
     // ── What runs on what (top of category 1) ──
     in property <[RunsOnRow]> runs-on-rows: [];
     in property <string> runs-on-summary: "";
@@ -1023,6 +1029,11 @@ export component SettingsScreen inherits Rectangle {
                         height: 100%;
                         viewport-width: self.width;
                         viewport-height: ai-body.preferred-height;
+                        // The page's scroll geometry, read by tests/ui-preview (verify-ai-scroll).
+                        init => { root.ai-visible-height = self.height; root.ai-viewport-height = self.viewport-height; root.ai-viewport-y = self.viewport-y; }
+                        changed height => { root.ai-visible-height = self.height; }
+                        changed viewport-height => { root.ai-viewport-height = self.viewport-height; }
+                        changed viewport-y => { root.ai-viewport-y = self.viewport-y; }
 
                         ai-body := VerticalLayout {
                             padding: Theme.sp-6;

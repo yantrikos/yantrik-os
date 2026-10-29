@@ -31,6 +31,7 @@ run target/ui-validation/picker.png 760 560 verify-picker
 run target/ui-validation/first-run.png 1280 800 verify-first-run
 run target/ui-validation/accounts-page.png 1280 800 verify-accounts-page
 run target/ui-validation/ai-map.png 1280 800 verify-ai-map
+run target/ui-validation/ai-scroll.png 1280 800 verify-ai-scroll
 run target/ui-validation/free-ai.png 600 1800 verify-free-ai
 run target/ui-validation/providers-in-use.png 1280 2400 verify-providers-in-use
 run target/ui-validation/unused.png 1280 800 verify-screen-controls
