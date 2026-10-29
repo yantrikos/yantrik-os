@@ -128,6 +128,17 @@ pub fn check_arguments(spec: &Action, args: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// [`check_arguments`] against an action as an app published it — one entry of its `describe`'s
+/// `actions` — for the caller that holds only that: the shell, deciding whether a card is worth
+/// raising for a call on another app's action. The same check, run on the declaration read back
+/// ([`Action::from_schema`]); an entry that declares no parameters has nothing to check.
+pub fn check_published(entry: &Value, args: &Value) -> Result<(), String> {
+    match Action::from_schema(entry) {
+        Some(spec) => check_arguments(&spec, args),
+        None => Ok(()),
+    }
+}
+
 /// One argument a caller sent, against its declaration: of the declared type, or converted to it
 /// without loss ([`coerced`]). When it converts, the converted value is what is checked (an
 /// integer for an enum is checked against the list as its digits); when it does not, the refusal
@@ -418,6 +429,41 @@ fn listed(values: &[String]) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The declaration read back off the wire is checked by the same code, with the same
+    /// sentences, as the declaration the dispatch holds.
+    #[test]
+    fn a_published_declaration_refuses_what_the_declared_one_does() {
+        let spec = Action::new("run", "Run")
+            .arg(Param::text("command"))
+            .arg(Param::number("wait").optional())
+            .arg(Param::one_of("mode", &["a", "b"]).optional())
+            .arg(Param::array("paths", "string").optional())
+            .arg(Param::integer("n").default(3));
+        let entry = spec.schema();
+        for args in [
+            json!({"command": "x"}),
+            json!({"command": "x", "wait": 30, "mode": "a", "paths": ["p"], "n": 2}),
+            json!({"command": "x", "wait": "30"}),
+            json!({"command": "x", "wait": true}),
+            json!({"command": "x", "mode": "c"}),
+            json!({"command": "x", "paths": ["p", 2]}),
+            json!({"command": "x", "n": 1.5}),
+            json!({}),
+            json!([]),
+        ] {
+            assert_eq!(check_published(&entry, &args), check_arguments(&spec, &args), "{args}");
+        }
+        assert!(check_published(&entry, &json!({"command": "x", "wait": true})).is_err());
+        // A published `properties` object is sorted by name, so only the order of the names in
+        // "it takes: …" can differ from the declared one.
+        let unknown = check_published(&entry, &json!({"command": "x", "colour": 1})).unwrap_err();
+        assert!(unknown.starts_with("`run` has no argument `colour`; it takes: "), "{unknown}");
+        // An entry that declares nothing has nothing to check; a type nobody defined fails closed.
+        assert_eq!(check_published(&json!({"name": "x"}), &json!({"anything": 1})), Ok(()));
+        let odd = json!({"name": "x", "parameters": {"properties": {"a": {"type": "blob"}}, "required": []}});
+        assert!(check_published(&odd, &json!({"a": 1})).is_err());
+    }
 
     fn one(p: Param) -> Action {
         Action::new("act", "An action with one argument").arg(p)
