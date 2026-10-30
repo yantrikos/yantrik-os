@@ -17,7 +17,11 @@
 //! The person's config is never lost. Before the file is rewritten the original is archived as
 //! `config.yaml.before-1022-<stamp>` (mode 0600, the file's owner) and is never deleted here: it
 //! holds the old password, and [`Outcome::notice`] tells the person where it is so they can delete
-//! it when they are sure mail works. The rewrite is atomic. No password is echoed to a log, a
+//! it when they are sure mail works. The rewrite is atomic where the config's directory takes a new
+//! file; on an installed machine, where `/opt/yantrik` is root's and only `config.yaml` is the
+//! person's, the archive goes to their state directory and the file is written in place. A
+//! `config.yaml` that is a link, or has a second name, is left alone and the person is told: the
+//! password would stay in the file behind the link. No password is echoed to a log, a
 //! notice or an error; the pass reports counts and addresses only.
 //!
 //! Rewriting goes through a YAML tree, so comments in `config.yaml` do not survive the rewrite.
@@ -34,6 +38,7 @@ use std::path::{Path, PathBuf};
 use serde_yaml::Value;
 
 pub use account::LegacyAccount;
+pub use file::Refusal;
 use super::port::{is_locked, MailPort};
 
 /// What one pass did. Counts and addresses, never a secret.
@@ -51,6 +56,11 @@ pub struct Outcome {
     pub unmovable: Vec<String>,
     /// Where the original `config.yaml` was archived, when this pass rewrote the file.
     pub archive: Option<PathBuf>,
+    /// Accounts the service now has whose entry could not be taken out of the file: the password
+    /// is still there, and the person is told so.
+    pub uncleaned: usize,
+    /// Why the file was not touched at all: it is a link, or has a second name.
+    pub blocked: Option<Refusal>,
 }
 
 impl Outcome {
@@ -62,11 +72,25 @@ impl Outcome {
     /// What to tell the person, when there is something to tell. Names the archive, which holds
     /// the old password, and never quotes it.
     pub fn notice(&self) -> Option<String> {
+        if let Some(why) = self.blocked {
+            return Some(format!(
+                "Your mail password is still in config.yaml: it was left alone because {}, and a rewrite would not reach the file behind it. Move it into the Email app's account settings, then remove the mail section from config.yaml.",
+                why.says()
+            ));
+        }
+        if self.uncleaned > 0 {
+            let copy = self
+                .archive
+                .as_ref()
+                .map(|a| format!(" An older copy of your settings with your mail password in it is at {}; delete it when you're sure mail works.", a.display()))
+                .unwrap_or_default();
+            return Some(format!(
+                "Your mail accounts are in the mail service now, but config.yaml could not be cleaned, so your mail password is still in it. Yantrik will keep trying.{copy}"
+            ));
+        }
         let archive = self.archive.as_ref()?;
         let mut text = format!(
-            "Your mail accounts moved out of config.yaml into the mail service, and their passwords \
-             into the credential vault. An older copy of your settings with your mail password in it is at {}; \
-             delete it when you're sure mail works.",
+            "Your mail accounts moved out of config.yaml into the mail service, and their passwords into the credential vault. An older copy of your settings with your mail password in it is at {}; delete it when you're sure mail works.",
             archive.display()
         );
         if !self.unmovable.is_empty() {
@@ -107,6 +131,11 @@ fn without(mut root: Value, gone: &[usize]) -> Value {
 /// Safe to call again and again: with nothing left in the file it reads the file and does nothing
 /// else, and asks the service nothing.
 pub fn migrate(config: &Path, mail: &dyn MailPort, stamp: &str) -> Outcome {
+    migrate_in(config, mail, stamp, &yantrik_foundation::xdg::state_home().join("yantrik"))
+}
+
+/// [`migrate`], with the directory an archive goes to when the config's own takes no new file.
+pub fn migrate_in(config: &Path, mail: &dyn MailPort, stamp: &str, fallback: &Path) -> Outcome {
     let mut outcome = Outcome::default();
     let Ok(original) = std::fs::read(config) else { return outcome };
     // An unreadable file is left alone. The parse error is not logged: it can quote the text.
@@ -115,6 +144,12 @@ pub fn migrate(config: &Path, mail: &dyn MailPort, stamp: &str) -> Outcome {
         return outcome;
     };
     let Some(entries) = accounts_of(&root) else { return outcome };
+    // Before anything is copied anywhere: a file that cannot be cleaned is not imported from.
+    let holds_a_secret = entries.iter().filter_map(LegacyAccount::from_entry).any(|a| a.has_secret());
+    if let (true, Err(why)) = (holds_a_secret, file::check_target(config)) {
+        outcome.blocked = Some(why);
+        return outcome;
+    }
 
     let mut gone: Vec<usize> = Vec::new();
     let mut secrets: Vec<String> = Vec::new();
@@ -150,11 +185,12 @@ pub fn migrate(config: &Path, mail: &dyn MailPort, stamp: &str) -> Outcome {
     }
 
     // The original is safe before the file changes. If it cannot be kept, nothing changes.
-    let archive = match file::archive(config, &original, stamp) {
+    let archive = match file::archive(config, &original, stamp, fallback) {
         Ok(path) => path,
         Err(_) => {
             tracing::error!("config.yaml could not be archived, so its mail accounts were left in it");
             outcome.failed += gone.len();
+            outcome.uncleaned = gone.len();
             outcome.moved = 0;
             outcome.already_there = 0;
             return outcome;
@@ -167,6 +203,7 @@ pub fn migrate(config: &Path, mail: &dyn MailPort, stamp: &str) -> Outcome {
         // The service has the accounts, so the next pass drops them from the file.
         tracing::error!("config.yaml could not be rewritten, so its mail accounts are still in it");
         outcome.failed += gone.len();
+        outcome.uncleaned = gone.len();
         outcome.moved = 0;
         outcome.already_there = 0;
         outcome.archive = Some(archive);
@@ -196,6 +233,8 @@ pub fn pass(config: &Path, mail: &dyn MailPort, when: &str) -> (bool, Option<Str
             waiting_for_the_vault = outcome.waiting,
             failed = outcome.failed,
             unmovable = outcome.unmovable.len(),
+            uncleaned = outcome.uncleaned,
+            blocked = outcome.blocked.is_some(),
             archived = outcome.archive.is_some(),
             when,
             "Mail accounts moved out of config.yaml"

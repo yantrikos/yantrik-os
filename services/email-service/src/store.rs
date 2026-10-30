@@ -264,8 +264,17 @@ impl AccountStore {
         let all = accounts::load_file(&self.path).map_err(StoreError::File)?;
         let id = accounts::id_for(&import.email);
         let wanted = import.email.trim();
-        if let Some(have) = all.iter().find(|a| a.id == id || a.email.eq_ignore_ascii_case(wanted)) {
+        // The address is the identity, compared as an address: outer space and case are not a
+        // different account. The id is a lossy slug (`ann.work` and `ann+work` are one), so it
+        // decides nothing here, except that two different addresses must not share it: the second
+        // would overwrite the first.
+        if let Some(have) = all.iter().find(|a| a.email.trim().eq_ignore_ascii_case(wanted)) {
             return Ok(ImportResult { account: have.summary(), created: false });
+        }
+        if all.iter().any(|a| a.id == id) {
+            return Err(StoreError::Refused(
+                "another account here has a name that is too close to this address to keep both".to_string(),
+            ));
         }
         let account = if import.uses_oauth() {
             let (access, refresh) = (

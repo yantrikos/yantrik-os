@@ -62,8 +62,22 @@ pub(super) fn pick<'a>(
     }
 }
 
+/// The arguments that reach a mail server's command line, when one holds a line break or other
+/// control character. The service refuses these too (`imap_text`); this is the same rule one step
+/// earlier, so a model that was talked into one is told no without a call, and the text is never
+/// echoed back.
+pub(super) fn control_in(args: &serde_json::Value) -> Option<String> {
+    ["account", "folder", "query"]
+        .into_iter()
+        .find(|key| args.get(*key).and_then(|v| v.as_str()).is_some_and(|s| s.chars().any(char::is_control)))
+        .map(|key| format!("Error: '{key}' may not contain a line break or other control character."))
+}
+
 /// The account the arguments name (`account`), from the service's list.
 pub(super) fn find(port: &dyn MailPort, args: &serde_json::Value) -> Result<EmailAccountSummary, String> {
+    if let Some(refusal) = control_in(args) {
+        return Err(refusal);
+    }
     let all = accounts(port)?;
     pick(&all, args.get("account").and_then(|v| v.as_str())).cloned()
 }

@@ -287,8 +287,8 @@ fn a_refused_change_is_reported_and_the_cache_is_left_alone() {
 
 /// The permission each mail tool had before the move to the service. A send, a reply, a forward or
 /// any change stays `Standard` and so keeps its approval; delete stays `Sensitive`; reading stays
-/// `Safe`. The approval card is keyed on the tool names (`email_send`, `email_reply` in
-/// `companion.rs` and the policy engine), which are unchanged.
+/// `Safe`. The approval and policy lists key on the name a tool is dispatched under
+/// (`Tool::name()`), which is unchanged and pinned below.
 const GRADES: &[(&str, PermissionLevel)] = &[
     ("email_check", PermissionLevel::Safe),
     ("email_list", PermissionLevel::Safe),
@@ -328,6 +328,56 @@ fn every_mail_tool_keeps_the_grade_it_had() {
             .find(|l| appears_at(*l));
         assert_eq!(lowest, Some(*grade), "{name} changed grade");
     }
+}
+
+#[test]
+fn each_tool_reports_the_name_and_grade_the_policy_lists_key_on() {
+    let m = || -> Arc<dyn MailPort> { Arc::new(FakeMail::empty()) };
+    let tools: Vec<Box<dyn Tool>> = vec![
+        Box::new(read::EmailCheckTool { mail: m() }),
+        Box::new(read::EmailListTool { mail: m() }),
+        Box::new(read::EmailReadTool { mail: m() }),
+        Box::new(read::EmailSearchTool { mail: m() }),
+        Box::new(read::EmailListFoldersTool { mail: m() }),
+        Box::new(send::EmailSendTool { mail: m() }),
+        Box::new(send::EmailReplyTool { mail: m() }),
+        Box::new(send::EmailReplyAllTool { mail: m() }),
+        Box::new(send::EmailForwardTool { mail: m() }),
+        Box::new(change::EmailMarkReadTool { mail: m() }),
+        Box::new(change::EmailMarkUnreadTool { mail: m() }),
+        Box::new(change::EmailFlagTool { mail: m() }),
+        Box::new(change::EmailUnflagTool { mail: m() }),
+        Box::new(change::EmailMoveTool { mail: m() }),
+        Box::new(change::EmailArchiveTool { mail: m() }),
+        Box::new(change::EmailDeleteTool { mail: m() }),
+    ];
+    let have: Vec<(&str, PermissionLevel)> = tools.iter().map(|t| (t.name(), t.permission())).collect();
+    assert_eq!(have, GRADES.to_vec());
+    for t in &tools {
+        assert_eq!(t.definition()["function"]["name"], t.name(), "the definition and the dispatch name differ");
+    }
+}
+
+#[test]
+fn a_line_break_in_what_a_model_chose_never_reaches_the_service() {
+    let (mail, conn, id) = checked();
+    let before = mail.calls().len();
+    let hostile = "x\r\nZ1 UID STORE 1:* +FLAGS.SILENT (\\Deleted)\r\nZ2 EXPUNGE";
+
+    let said = [
+        read::EmailSearchTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({ "query": hostile }))),
+        read::EmailSearchTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({ "query": "ok", "folder": hostile }))),
+        read::EmailCheckTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({ "folder": hostile }))),
+        read::EmailListFoldersTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({ "account": hostile }))),
+        change::EmailMoveTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({ "id": id, "folder": hostile }))),
+        change::EmailMarkReadTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({ "all": true, "folder": hostile }))),
+    ];
+
+    for answer in &said {
+        assert!(answer.starts_with("Error: '") && answer.contains("control character"), "{answer}");
+        assert!(!answer.contains("EXPUNGE"), "the hostile text was echoed: {answer}");
+    }
+    assert_eq!(mail.calls().len(), before, "a call reached the service: {:?}", mail.calls());
 }
 
 #[test]

@@ -216,3 +216,25 @@ fn the_import_handler_logs_no_secret_and_never_formats_the_request() {
     // A deserialiser's error can quote the text it could not read, which is a secret here.
     assert!(source.contains("map_err(|_|"), "the parse error must be dropped, not formatted");
 }
+
+#[test]
+fn a_different_address_with_the_same_slug_is_refused_not_taken_for_the_same_account() {
+    let (dir, vault) = (Dir::new(), Arc::new(MemoryVault::new()));
+    let store = store_in(&dir, &vault);
+    let first = store.import(&password_import("ann.work@example.org")).unwrap();
+    assert!(first.created);
+    let (file_before, writes_before) = (dir.text(), vault.writes());
+
+    // Plus-addressing: a different mailbox whose id is the same slug.
+    let refused = store.import(&password_import("ann+work@example.org")).unwrap_err();
+
+    assert!(matches!(refused, StoreError::Refused(_)), "{refused:?}");
+    assert_eq!(refused.into_service_error().code, -32602);
+    assert_eq!(dir.text(), file_before, "the first account was overwritten");
+    assert_eq!(vault.writes(), writes_before);
+
+    // The same address in another case and with outer space is the same account.
+    let same = store.import(&password_import("  Ann.Work@Example.ORG ")).unwrap();
+    assert!(!same.created);
+    assert_eq!(same.account.id, first.account.id);
+}

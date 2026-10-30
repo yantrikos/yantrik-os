@@ -386,6 +386,9 @@ impl EmailMoveTool {
             Some(f) if !f.is_empty() => f,
             _ => return "Error: 'folder' (destination) is required.".to_string(),
         };
+        if let Some(refusal) = support::control_in(args) {
+            return refusal;
+        }
         let c = match support::cached(conn, &*self.mail, email_id) {
             Ok(c) => c,
             Err(e) => return e,

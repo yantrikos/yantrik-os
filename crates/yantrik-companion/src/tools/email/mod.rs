@@ -10,8 +10,11 @@
 //! executions on a worker.
 //!
 //! Grades and approvals are the tools' own and unchanged by where the mail goes: `Safe` to read,
-//! `Standard` to send, reply, forward, flag, move or archive, `Sensitive` to delete. A send is
-//! still a card; the approval path keys on the tool names, which are the same.
+//! `Standard` to send, reply, forward, flag, move or archive, `Sensitive` to delete. The approval
+//! and policy lists key on the tool names, which are the same.
+//!
+//! Reach: the tools ask the mail service, so they reach every account it holds, not only the ones
+//! once listed in `config.yaml`. See the PR for #1022.
 
 mod change;
 mod read;
