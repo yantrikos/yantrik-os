@@ -297,6 +297,16 @@ mod tests {
     }
     use crate::wire::settings::ProviderStoreEntry;
 
+    /// The card for a companion on config.yaml's service asks with config.yaml's key and never
+    /// reaches for the vault, so a shut or silent vault cannot change what it reads.
+    #[test]
+    fn the_config_yaml_card_reads_its_key_without_the_vault() {
+        let t = target(&ProviderStore::default(), "https://svc.example/v1", "m", Some("sk-fake-config-key".into())).unwrap();
+        assert_eq!((t.source.as_str(), t.vault_id.as_deref()), ("config.yaml", None));
+        let source = crate::provider_vault::KeySource { plain: t.key.clone(), vault_id: t.vault_id.clone() };
+        assert_eq!(crate::provider_vault::read(&source, None), Ok(Some("sk-fake-config-key".to_string())));
+    }
+
     fn listed(ids: &[&str]) -> Vec<ListedModel> {
         ids.iter().map(|i| ListedModel { id: i.to_string(), name: i.to_string(), size_bytes: 0 }).collect()
     }

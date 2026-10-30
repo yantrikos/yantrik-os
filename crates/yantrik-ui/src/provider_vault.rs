@@ -309,6 +309,17 @@ pub struct Migration {
     pub failed: usize,
 }
 
+static KEY_WRITES: Mutex<()> = Mutex::new(());
+
+/// Held while a key is kept in the vault and the entry that names it is committed, by a migration
+/// pass and by a save of a provider. Without it a pass that read an old key and a save that kept a
+/// new one for the same entry could interleave, and the old key would be written over the new.
+/// Taken before the providers' lock and never inside it; the vault is asked with this held and
+/// the providers' lock not.
+pub(crate) fn key_writes() -> std::sync::MutexGuard<'static, ()> {
+    KEY_WRITES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Move the keys older versions left in `providers.yaml` into the vault, once the vault is open.
 ///
 /// - Each key is stored and read back; only a key that reads back equal is dropped from the file.
@@ -316,6 +327,7 @@ pub struct Migration {
 ///   at least one key. A vault that refuses leaves the file exactly as it was.
 /// - Idempotent: with nothing left in the file it does nothing.
 /// - The vault is asked outside the store's lock; under it only memory and the file are touched.
+/// - Not while a provider is being saved, and not beside another pass ([`key_writes`]).
 pub fn migrate(vault: &dyn KeyVault, store: &Mutex<ProviderStore>) -> Migration {
     migrate_with(vault, store, &mut |s: &mut ProviderStore| s.save())
 }
@@ -326,6 +338,7 @@ pub fn migrate_with(
     store: &Mutex<ProviderStore>,
     save: &mut dyn FnMut(&mut ProviderStore) -> Result<(), String>,
 ) -> Migration {
+    let _writing = key_writes();
     let pending: Vec<(String, String)> = match store.lock() {
         Ok(s) => s
             .entries
@@ -402,32 +415,69 @@ pub fn forget(vault: &dyn KeyVault, entry: &ProviderStoreEntry) -> Result<(), Ke
     }
 }
 
-/// How often, and how many times, a migration that found the vault shut asks again.
+/// How often, and how many times, a migration that left keys behind asks again.
 const RETRY_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 const RETRIES: usize = 60;
 
+/// How a pass writes the file.
+type SaveFile = Arc<dyn Fn(&mut ProviderStore) -> Result<(), String> + Send + Sync>;
+
+/// Whether a pass left keys in the file.
+fn keys_left(report: &Migration) -> bool {
+    report.waiting + report.failed > 0
+}
+
+/// One pass, logged when it did anything. Counts only. A pass with nothing to do is silent.
+fn pass(vault: &dyn KeyVault, store: &Mutex<ProviderStore>, save: &SaveFile, when: &str) -> Migration {
+    let report = migrate_with(vault, store, &mut |s: &mut ProviderStore| save(s));
+    if report != Migration::default() {
+        tracing::info!(
+            moved = report.moved,
+            waiting_for_the_vault = report.waiting,
+            failed = report.failed,
+            when,
+            "Saved providers' keys moved into the credential vault"
+        );
+    }
+    report
+}
+
+/// One more pass when the vault opens. It asks again for the next opening if keys are still left,
+/// so an unlock at any time, even after the timer has given up, reaches the vault.
+fn migrate_when_opened(vault: Arc<dyn KeyVault>, store: Arc<Mutex<ProviderStore>>, save: SaveFile) {
+    after_open(move || {
+        if keys_left(&pass(&*vault, &store, &save, "unlock")) {
+            migrate_when_opened(vault, store, save);
+        }
+    });
+}
+
+/// The first pass, and the one that waits for the vault to open when it left keys behind,
+/// whether the vault was shut or did not answer (the companion's worker may still be starting).
+fn begin_migration(vault: &Arc<dyn KeyVault>, store: &Arc<Mutex<ProviderStore>>, save: &SaveFile) -> Migration {
+    let report = pass(&**vault, store, save, "start");
+    if keys_left(&report) {
+        migrate_when_opened(vault.clone(), store.clone(), save.clone());
+    }
+    report
+}
+
 /// [`migrate`] on a thread of its own, at start. The vault may be shut at start (its passphrase
-/// is typed on the shell's unlock card), so a pass that found it shut asks again every minute for
-/// an hour, and the next start tries again after that. Logs counts only.
+/// is typed on the shell's unlock card) or the worker not yet answering, so a pass that left keys
+/// behind asks again every minute for an hour, and once more whenever the vault is opened
+/// ([`opened`]). Logs counts only.
 pub fn migrate_in_background(bridge: &Arc<CompanionBridge>, store: Arc<Mutex<ProviderStore>>) {
     install_for(bridge);
+    let Some(vault) = current() else { return };
+    let save: SaveFile = Arc::new(|s| s.save());
     let spawned = std::thread::Builder::new().name("provider-keys-migrate".into()).spawn(move || {
-        for attempt in 0..=RETRIES {
-            let Some(vault) = current() else { return };
-            let report = migrate(&*vault, &store);
-            if report != Migration::default() {
-                tracing::info!(
-                    moved = report.moved,
-                    waiting_for_the_vault = report.waiting,
-                    failed = report.failed,
-                    attempt,
-                    "Saved providers' keys moved into the credential vault"
-                );
-            }
-            if report.waiting == 0 {
+        let mut report = begin_migration(&vault, &store, &save);
+        for _ in 0..RETRIES {
+            if !keys_left(&report) {
                 return;
             }
             std::thread::sleep(RETRY_EVERY);
+            report = pass(&*vault, &store, &save, "retry");
         }
     });
     if spawned.is_err() {

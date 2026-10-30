@@ -108,6 +108,7 @@ pub fn reason(status: u16) -> &'static str {
         405 => "Method Not Allowed",
         411 => "Length Required",
         413 => "Payload Too Large",
+        423 => "Locked",
         429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         502 => "Bad Gateway",

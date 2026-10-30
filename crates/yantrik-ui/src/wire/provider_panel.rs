@@ -176,7 +176,9 @@ pub(crate) fn wire(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStor
 ///
 /// The vault is asked without the list locked, so the form is applied to the list as it is when
 /// the vault has answered, not to a copy taken before: a migration or a removal that happened
-/// meanwhile is kept.
+/// meanwhile is kept. A migration pass that is moving the same entry's older key waits for this
+/// save, or this one waits for it (`provider_vault::key_writes`), so the new key is not written
+/// over by the old.
 pub(crate) fn save_form_with(
     providers: &Arc<Mutex<ProviderStore>>,
     editing: &str,
@@ -185,6 +187,7 @@ pub(crate) fn save_form_with(
     save: &mut dyn FnMut(&mut ProviderStore) -> Result<(), String>,
 ) -> Result<ProviderStoreEntry, String> {
     let busy = || "The providers could not be read just now.".to_string();
+    let _writing = crate::provider_vault::key_writes();
     let id = {
         let store = providers.lock().map_err(|_| busy())?;
         match store.entries.iter().find(|e| !editing.is_empty() && e.id == editing) {
@@ -331,7 +334,7 @@ pub(crate) fn reload_now(entry: &ProviderStoreEntry, send: &dyn Fn(Reload)) -> R
 }
 
 /// The companion's reload at start. Refused while the vault is shut, which it is until the
-/// person signs in; the reload is then done again the moment the vault opens
+/// person signs in, or while it does not answer; the reload is then done again the moment the vault opens
 /// (`provider_vault::opened`), from whatever the saved primary is by then, and not if the
 /// companion has been put on Yantrik models meanwhile.
 pub(crate) fn start_or_defer(
@@ -341,7 +344,9 @@ pub(crate) fn start_or_defer(
     on_gateway: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<(), crate::provider_vault::KeyError> {
     let outcome = reload_now(entry, &*send);
-    if outcome == Err(crate::provider_vault::KeyError::Locked) {
+    // Shut, or not answering yet (the worker is still starting): either way the key may be had
+    // once the vault opens, and the replay re-reads the primary, so a changed one is not undone.
+    if matches!(outcome, Err(crate::provider_vault::KeyError::Locked | crate::provider_vault::KeyError::Unavailable)) {
         crate::provider_vault::after_open(move || {
             if on_gateway() {
                 return;
