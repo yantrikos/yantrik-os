@@ -215,9 +215,13 @@ CREATE TRIGGER IF NOT EXISTS contracts_not_deleted BEFORE DELETE ON contracts
 CREATE TRIGGER IF NOT EXISTS decided_stays BEFORE UPDATE ON contracts
     WHEN OLD.state IN ('accepted', 'failed', 'cancelled')
     BEGIN SELECT RAISE(ABORT, 'a decided or ended contract stays as it is'); END;
-CREATE TABLE IF NOT EXISTS director_runs (
-    run INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, pid INTEGER NOT NULL, at REAL NOT NULL);
-CREATE TRIGGER IF NOT EXISTS director_runs_kept BEFORE UPDATE ON director_runs
+-- A run is named by the boot and its unit's cgroup inode: the inode alone repeats across boots.
+-- The table before that named runs by the inode alone; its rows only ever meant their own boot.
+DROP TABLE IF EXISTS director_runs;
+CREATE TABLE IF NOT EXISTS director_runs_v2 (
+    boot TEXT NOT NULL, run INTEGER NOT NULL, key_hash TEXT NOT NULL, pid INTEGER NOT NULL,
+    at REAL NOT NULL, PRIMARY KEY (boot, run));
+CREATE TRIGGER IF NOT EXISTS director_runs_kept BEFORE UPDATE ON director_runs_v2
     BEGIN SELECT RAISE(ABORT, 'a run keeps the key it was given'); END;
 CREATE TRIGGER IF NOT EXISTS accepted_needs_decision BEFORE UPDATE ON contracts
     WHEN NEW.state = 'accepted' AND (NEW.decision IS NULL OR OLD.state != 'delivered')
@@ -459,6 +463,19 @@ def show_view(db, cid):
     return c
 
 
+def this_boot():
+    """This boot's id from the kernel: unlike a cgroup inode it is never repeated, and unlike the
+    clock it does not move. Refusing when it cannot be read keeps a run from being misnamed."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as f:
+            boot = f.read(64).strip()
+    except OSError:
+        boot = ""
+    if not boot:
+        raise Refused("this boot cannot be named")
+    return boot
+
+
 def register(db, peer_pid, now):
     """The Director, at the start of a run of its unit, asking for that run's key. Given once a
     run, and only while the caller is the one process in the unit: the Director registers before
@@ -473,10 +490,15 @@ def register(db, peer_pid, now):
         raise Refused("the Director's unit cannot be read") from None
     if procs != [str(peer_pid)]:
         raise Refused("the Director registers only as the one process in its unit, before it starts anything")
+    # A cgroup's inode names one run within a boot only: after a restart the kernel numbers them
+    # from the start again (561, 30 Oct 2026: 809 runs from earlier boots refused every new one).
+    # So a run is (boot, inode), and runs of other boots, which ended with them, are dropped.
+    boot = this_boot()
+    db.execute("DELETE FROM director_runs_v2 WHERE boot != ?", (boot,))
     key = secrets.token_hex(32)
     try:
-        db.execute("INSERT INTO director_runs VALUES (?,?,?,?)",
-                   (run, hashlib.sha256(key.encode()).hexdigest(), peer_pid, now))
+        db.execute("INSERT INTO director_runs_v2 VALUES (?,?,?,?,?)",
+                   (boot, run, hashlib.sha256(key.encode()).hexdigest(), peer_pid, now))
     except sqlite3.IntegrityError:
         raise Refused("this run of the Director's unit has its key already") from None
     return {"key": key}
@@ -486,10 +508,11 @@ def director_key(db, req):
     """Whether `req` carries the key of the current run of the Director's unit; takes it out."""
     key = req.pop("key", None)
     try:
-        run = os.stat(DIRECTOR_UNIT_DIR).st_ino
-    except OSError:
-        run = None
-    row = db.execute("SELECT key_hash FROM director_runs WHERE run=?", (run,)).fetchone() if run else None
+        run, boot = os.stat(DIRECTOR_UNIT_DIR).st_ino, this_boot()
+    except (OSError, Refused):
+        run = boot = None
+    row = (db.execute("SELECT key_hash FROM director_runs_v2 WHERE boot=? AND run=?", (boot, run)).fetchone()
+           if run and boot else None)
     if not (isinstance(key, str) and KEY.match(key) and row
             and hmac.compare_digest(hashlib.sha256(key.encode()).hexdigest(), row[0])):
         raise Refused("not the Director: no key from this run of its unit")
