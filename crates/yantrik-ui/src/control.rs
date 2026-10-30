@@ -92,6 +92,8 @@ fn shelved_refusal(
 /// it, and `show_screen screen=launchpad`, because a listing that called it a screen taught
 /// every caller to try that next.
 fn open_launcher(ui: &crate::App) -> Result<serde_json::Value, String> {
+    // The grid comes up over the person's work (#1033).
+    crate::shell_view::refuse_for_mind("the launcher")?;
     // The launcher is drawn over whatever is on the screen, so it waits for a decision card like
     // every other thing that comes over the shell (card_watch).
     crate::card_watch::hold_windows("open_launcher")?;
@@ -1179,6 +1181,11 @@ pub fn publish(
                 // app whose program is not installed used to be answered "launching" as well.
                 let catalogue = installed.get();
                 check_launchable(&name, &catalogue)?;
+                // A screen of the shell is the person's view, and a Mind is never sent there: it
+                // reads it with `describe shell` and drives it with the shell's actions (#1033).
+                if let Some((screen, _)) = switches_the_shell(&name) {
+                    crate::shell_view::refuse_for_mind(screen)?;
+                }
                 // A mind launches Yantrik's own apps only; LibreOffice by name is closed (#942, #953).
                 crate::control_files_mind::may_launch(&name, &catalogue)?;
                 // The launcher is drawn by the shell itself and settles on return, so it is
@@ -1464,6 +1471,8 @@ pub fn publish(
                         .describe("Put this in the field, ready to edit. It is NOT submitted — use send_message to ask"),
                 ),
             move |args| {
+                // The ask bar comes up over the person's screen (#1033).
+                crate::shell_view::refuse_for_mind("the ask bar")?;
                 let ui = lens_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().to_string();
 
@@ -1765,6 +1774,8 @@ pub fn publish(
             )
             .risk("safe"),
             move |_args| {
+                // Putting the person's windows away is moving their view (#1033).
+                crate::shell_view::refuse_for_mind("the desktop")?;
                 let ui = desk_ui()?;
                 // Putting everything away uncovers a card, so it is never held. The second press
                 // brings every window back over the shell, and with it over a waiting card
@@ -1787,6 +1798,8 @@ pub fn publish(
             move |args| {
                 let ui = screen_ui()?;
                 let want = args["screen"].as_str().unwrap_or_default().trim().to_lowercase();
+                // Before anything is applied, a screen name or not: it is the person's view (#1033).
+                crate::shell_view::refuse_for_mind(&want)?;
 
                 // The launcher is not a screen, but `yos ls` listed it among the screens of the
                 // desktop, so this is where a caller who read that arrives — and was refused
