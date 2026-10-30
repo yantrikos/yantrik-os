@@ -67,11 +67,11 @@ fn read(lane: &VaultLane, id: &str) -> Reply {
     lane.keys(Op::Value { id: id.into() }, PROMPT).expect("the lane answers")
 }
 
-/// The bug of VM 520, 30 Oct: a read issued while a companion turn held the worker waited out its
-/// 10 s and failed. The worker here is a thread in the middle of a turn, with a read transaction
-/// open on its connection as a turn has; the lane must not wait for it.
+/// The lane answers while another connection sits in a transaction, as a turn's does. (In WAL
+/// mode a reader never blocks anyone; the 520 bug was the worker's command loop, which
+/// `a_vault_call_returns_while_the_worker_is_mid_turn` pins through the bridge.)
 #[test]
-fn a_vault_read_does_not_wait_for_a_companion_turn() {
+fn the_lane_answers_beside_a_connection_in_a_transaction() {
     let _g = serial();
     vault::lock();
     let store = Store::new("turn");
@@ -179,23 +179,128 @@ fn the_lane_and_the_worker_share_one_store() {
     assert!(!companion::load_all(&worker).unwrap().contains_key("groq"));
 }
 
-/// No store yet (the worker has not made it): the lane says the vault is unavailable at once,
-/// makes no file of its own, and answers once the store exists.
+/// Review of #1032, Low 4: a request made before the store exists waits for it (up to its own
+/// deadline) instead of being refused, and a store that never comes is a prompt failure.
 #[test]
-fn a_lane_before_the_store_exists_waits_for_it() {
+fn a_request_before_the_store_exists_waits_for_it() {
     let _g = serial();
     vault::lock();
-    let store = Store::new("late");
+    let store = Store::new("late-src");
     let late = std::env::temp_dir().join(format!("yantrik-lane-late-{}.db", std::process::id()));
     remove_db(&late);
-    let lane = VaultLane::start(late.to_str().unwrap());
-    assert_eq!(lane.keys(Op::Tails, Duration::from_secs(1)).unwrap(), Reply::Failed);
-    assert!(lane.vault(VaultOp::Read, Duration::from_secs(1)).is_err());
-    assert!(!late.exists(), "the lane never creates the store");
+    let lane = Arc::new(VaultLane::start(late.to_str().unwrap()));
 
+    let asked = {
+        let lane = lane.clone();
+        std::thread::spawn(move || lane.vault(VaultOp::Adopt(FAKE_PASSPHRASE.into()), Duration::from_secs(4)))
+    };
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(!late.exists(), "the lane never creates the store");
     std::fs::copy(&store.path, &late).unwrap();
-    assert_eq!(put(&lane, "groq", FAKE_KEY), Reply::Done);
+    let reply = asked.join().unwrap().expect("answered once the store appeared");
+    assert!(matches!(reply.outcome, Some(Outcome::Protected)));
+
+    let never = std::env::temp_dir().join(format!("yantrik-lane-never-{}.db", std::process::id()));
+    let nobody = VaultLane::start(never.to_str().unwrap());
+    let started = Instant::now();
+    assert_eq!(nobody.keys(Op::Tails, Duration::from_millis(600)).unwrap(), Reply::Failed);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(!never.exists());
+    vault::lock();
     remove_db(&late);
+}
+
+/// The 520 bug, through the bridge's own routing: a stub worker takes a turn (it blocks for 3 s on
+/// a command and serves nothing meanwhile, as the real one does inside a model call), and a vault
+/// call made during it must return. Routed through the worker's queue, as before #1032, it waits
+/// for the turn and fails.
+#[test]
+fn a_vault_call_returns_while_the_worker_is_mid_turn() {
+    let _g = serial();
+    vault::lock();
+    let store = Store::new("bridge");
+    let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<crate::bridge::CompanionCommand>();
+    let in_turn = Arc::new(AtomicBool::new(false));
+    let worker = {
+        let in_turn = in_turn.clone();
+        std::thread::spawn(move || {
+            while let Ok(_command) = cmd_rx.recv() {
+                in_turn.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_secs(3));
+                in_turn.store(false, Ordering::SeqCst);
+            }
+        })
+    };
+    let bridge = crate::bridge::CompanionBridge::with_stub_worker(cmd_tx, store.path());
+    let started = Instant::now();
+    assert!(bridge.provider_keys(Op::Store { id: "groq".into(), value: FAKE_KEY.into() }, Duration::from_secs(1)).is_ok());
+    bridge.queue_turn_for_test();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(in_turn.load(Ordering::SeqCst), "the worker is in its turn");
+
+    let one = Duration::from_secs(1);
+    let value = bridge.provider_keys(Op::Value { id: "groq".into() }, one).expect("answered inside a second");
+    let state = bridge.vault(VaultOp::Read, one).expect("answered inside a second");
+    assert!(value == Reply::Value(Some(FAKE_KEY.into())));
+    assert!(!state.status.protected);
+    assert!(in_turn.load(Ordering::SeqCst), "the turn was still running when the vault answered");
+    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+    drop(bridge);
+    worker.join().unwrap();
+}
+
+fn has_clear_key(conn: &Connection) -> bool {
+    conn.query_row("SELECT count(*) FROM vault_security WHERE key = 'vault_dek'", [], |r| r.get::<_, i64>(0)).unwrap() > 0
+}
+
+/// Review of #1032, repro 2: protecting the vault while the worker stores a key for the first
+/// time. Nothing is lost, every row still opens, and the file holds no clear key beside the wrap.
+#[test]
+fn protecting_the_vault_while_the_worker_stores_loses_nothing() {
+    use yantrik_companion::tools::provider_keys as companion;
+    let _g = serial();
+    for round in 0..5 {
+        vault::lock();
+        let store = Store::new(&format!("adopt{round}"));
+        let lane = VaultLane::start(store.path());
+        let worker_conn = store.connect();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let storing = {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                std::thread::sleep(Duration::from_millis(30));
+                companion::store(&worker_conn, "gemini", FAKE_KEY)
+            })
+        };
+        barrier.wait();
+        let adopted = lane.vault(VaultOp::Adopt(FAKE_PASSPHRASE.into()), PROMPT).expect("answered");
+        assert!(matches!(adopted.outcome, Some(Outcome::Protected)), "round {round}");
+        let stored = storing.join().unwrap();
+        let reader = store.connect();
+        let all = companion::load_all(&reader).expect("every row still opens");
+        if stored.is_ok() {
+            assert_eq!(all.get("gemini").map(String::as_str), Some(FAKE_KEY), "round {round}");
+        }
+        assert!(!has_clear_key(&reader), "round {round}: no clear key beside the wrapping");
+    }
+    vault::lock();
+}
+
+/// Review of #1032, Low 3: a panic in the lane drops that request and the lane comes back.
+#[test]
+fn a_lane_that_panicked_starts_again() {
+    let _g = serial();
+    vault::lock();
+    let store = Store::new("panic");
+    let lane = VaultLane::start(store.path());
+    assert_eq!(put(&lane, "groq", FAKE_KEY), Reply::Done);
+    lane.poison_for_test();
+    let answered = (0..30).find_map(|_| {
+        std::thread::sleep(Duration::from_millis(100));
+        lane.keys(Op::Value { id: "groq".into() }, Duration::from_secs(1)).ok()
+    });
+    assert!(answered == Some(Reply::Value(Some(FAKE_KEY.into()))), "the lane did not come back");
 }
 
 #[test]

@@ -58,6 +58,7 @@ pub mod terminal;
 pub mod terminal_analysis;
 pub mod text;
 pub mod time;
+pub mod vault_key;
 pub mod vault;
 pub mod vision;
 pub mod wallpaper;

@@ -3471,6 +3471,41 @@ mod bond_property_tests {
     }
 }
 
+/// A bridge around a stub worker, to test what is routed where (`vault_lane::tests`).
+#[cfg(test)]
+impl CompanionBridge {
+    pub(crate) fn with_stub_worker(cmd_tx: Sender<CompanionCommand>, memory_db: &str) -> Self {
+        Self {
+            board: crate::jobs::Board::new(),
+            cmd_tx,
+            worker_handle: None,
+            online: Arc::new(AtomicBool::new(true)),
+            cached_bond_level: Arc::new(std::sync::atomic::AtomicU8::new(1)),
+            ambient: AmbientState::new(),
+            event_bus: yantrik_os::EventBus::new(),
+            judge: Arc::new(std::sync::Mutex::new(Default::default())),
+            decisions: yantrik_companion::decisions::Decisions::default(),
+            incognito_setting: AtomicBool::new(false),
+            private: AtomicBool::new(false),
+            memory_db: memory_db.to_string(),
+            vault_lane: crate::vault_lane::VaultLane::start(memory_db),
+        }
+    }
+
+    /// Put a turn on the worker's queue, as a chat message does.
+    pub(crate) fn queue_turn_for_test(&self) {
+        let (token_tx, _token_rx) = crossbeam_channel::unbounded();
+        let _ = self.cmd_tx.send(CompanionCommand::SendMessage {
+            text: "a turn".into(),
+            token_tx,
+            job: None,
+            model: None,
+            remote: false,
+            outside: false,
+        });
+    }
+}
+
 #[cfg(test)]
 mod ask_tests {
     use super::*;

@@ -2644,7 +2644,7 @@ impl Tool for BrowserLoginTool {
             }
         }
 
-        let enc = match yantrikdb_core::vault::vault_encryption(&ctx.db.conn()) {
+        let enc = match crate::vault_key::encryption(&ctx.db.conn()) {
             Ok(e) => e,
             Err(e) => return format!("Error: {e}"),
         };
