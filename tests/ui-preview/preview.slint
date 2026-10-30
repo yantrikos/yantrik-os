@@ -28,7 +28,8 @@ export component Preview inherits Window {
     in property <bool> app-view: false;
     in property <bool> actual-desktop: false;
     in property <bool> agent-view: false;
-    // Where the Bench starts on the actual desktop (DesktopScreen.bench-top), for tests that aim at icons.
+    // Where the Bench starts on the actual desktop, in window coordinates (DesktopScreen.bench-top is
+    // inside the area under the status bar), for tests that aim at icons.
     in-out property <length> bench-y: 0;
     in-out property <int> activations: 0;
     in-out property <string> launched: "";
@@ -37,7 +38,9 @@ export component Preview inherits Window {
     Image { width: 100%; height: 100%; source: @image-url("../../crates/yantrik-ui-slint/ui/wallpapers/serenity.png"); image-fit: cover; }
     if root.light : Rectangle { width: 100%; height: 100%; background: #f3f5f8b0; }
     if root.actual-desktop : DesktopScreen {
-        init => { root.bench-y = self.bench-top; }
+        init => { root.bench-y = Theme.status-bar-height + self.bench-top; }
+        // The home's height settles after the first layout; follow it.
+        changed bench-top => { root.bench-y = Theme.status-bar-height + self.bench-top; }
         x: 0px; y: 0px; width: 100%; height: 100%;
         agent-mode: root.agent-view;
         ambient-interval-ms: 0;

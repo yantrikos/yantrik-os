@@ -16,6 +16,7 @@
 //! `.blend` is read only as far as [`BLEND_SCAN_BYTES`].
 
 use std::io::Read;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -131,7 +132,8 @@ fn read_cached(file: &Path) -> Option<Thumb> {
 
 fn keep(file: &Path, thumb: &Thumb) -> std::io::Result<()> {
     if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
+        // 0700: a thumbnail is a small copy of something the person may keep private.
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     }
     let img = RgbaImage::from_raw(thumb.width, thumb.height, thumb.rgba.clone()).ok_or(std::io::ErrorKind::InvalidData)?;
     let mut png = std::io::Cursor::new(Vec::new());
@@ -139,8 +141,23 @@ fn keep(file: &Path, thumb: &Thumb) -> std::io::Result<()> {
     crate::atomic::write(file, png.get_ref())
 }
 
+/// Open a regular file for reading and check it is one on the descriptor itself, not on the name:
+/// a name that was a file a moment ago can be a FIFO now, and a read of that would stall the one
+/// worker every picture waits on. `O_NONBLOCK` makes the open itself return at once.
+fn open_regular(path: &Path) -> Result<std::fs::File, ThumbError> {
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(ThumbError::NotAFile);
+    }
+    Ok(file)
+}
+
 fn cut_image(path: &Path) -> Result<Thumb, ThumbError> {
-    let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
+    let file = open_regular(path)?;
+    if file.metadata()?.len() > MAX_SOURCE_BYTES {
+        return Err(ThumbError::TooBig(file.metadata()?.len()));
+    }
+    let mut reader = image::ImageReader::new(std::io::BufReader::new(file)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
@@ -159,7 +176,7 @@ fn shrink(img: DynamicImage) -> Thumb {
 
 fn cut_blend(path: &Path) -> Result<Thumb, ThumbError> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?.take(BLEND_SCAN_BYTES).read_to_end(&mut bytes)?;
+    open_regular(path)?.take(BLEND_SCAN_BYTES).read_to_end(&mut bytes)?;
     let preview = blend_preview(&bytes).ok_or(ThumbError::NoPreview)?;
     let img = RgbaImage::from_raw(preview.width, preview.height, preview.rgba).ok_or(ThumbError::NoPreview)?;
     Ok(shrink(DynamicImage::ImageRgba8(img)))
@@ -231,13 +248,13 @@ pub fn trim(root: &Path, max_bytes: u64) -> std::io::Result<u64> {
     let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
     for dir in std::fs::read_dir(root)? {
         let dir = dir?.path();
-        if !dir.is_dir() || dir.file_name().map_or(true, |n| n.len() != 2) {
+        if !dir.is_dir() || dir.file_name().is_none_or(|n| n.len() != 2) {
             continue;
         }
         for f in std::fs::read_dir(&dir)? {
             let f = f?;
             let p = f.path();
-            if p.extension().map_or(false, |e| e == "png") {
+            if p.extension().is_some_and(|e| e == "png") {
                 if let Ok(m) = f.metadata() {
                     if m.is_file() {
                         files.push((m.modified().unwrap_or(UNIX_EPOCH), m.len(), p));
@@ -354,6 +371,32 @@ mod tests {
         assert!(matches!(load_or_make(tmp.path(), &tmp.path().join("doc.pdf")), Err(ThumbError::Unsupported)));
     }
 
+    /// A name that has become a FIFO since it was listed must not stall the worker: the open
+    /// returns at once and the descriptor says it is not a file.
+    #[test]
+    fn a_fifo_is_refused_without_waiting_for_a_writer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("pipe.png");
+        let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(fifo.as_os_str())).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(matches!(open_regular(&fifo), Err(ThumbError::NotAFile)));
+        assert!(matches!(cut_image(&fifo), Err(ThumbError::NotAFile)));
+        assert!(matches!(cut_blend(&tmp.path().join("pipe.png")), Err(ThumbError::NotAFile)));
+    }
+
+    #[test]
+    fn the_cache_folders_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let (cache, src) = (tmp.path().join("cache"), tmp.path().join("p.png"));
+        png(&src, 10, 10);
+        load_or_make(&cache, &src).unwrap();
+        let shard = std::fs::read_dir(&cache).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::metadata(&shard).unwrap().permissions().mode() & 0o777, 0o700);
+        let file = std::fs::read_dir(&shard).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
     #[test]
     fn a_folder_or_a_missing_file_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
@@ -369,7 +412,7 @@ mod tests {
         let src = tmp.path().join("bomb.png");
         let mut data = Vec::new();
         {
-            let mut enc = png_encoder(&mut data, 60_000, 60_000);
+            let enc = png_encoder(&mut data, 60_000, 60_000);
             enc.write_header().unwrap();
             // Header only; no image data follows, which is itself invalid, and must not matter.
         }

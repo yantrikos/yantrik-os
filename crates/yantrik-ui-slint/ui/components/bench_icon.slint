@@ -62,7 +62,10 @@ export component BenchIcon inherits Rectangle {
     property <length> press-x;
     property <length> press-y;
     property <bool> drag-started: false;
-    property <length> label-h: 2 * Theme.lh-label;
+    // The plate is as tall as the name needs, one line or two: a short name on a two-line plate is a
+    // dark box with nothing in its lower half. The probe below measures the name at the plate's width.
+    property <int> label-lines: root.item.renaming ? 2 : max(1, min(2, round(probe.preferred-height / Theme.lh-label)));
+    property <length> label-h: root.label-lines * Theme.lh-label;
 
     width: BenchState.cell-w;
     height: BenchState.cell-h;
@@ -170,6 +173,16 @@ export component BenchIcon inherits Rectangle {
 
         // The label: one treatment for every kind. The plate is dark and flat; a selected icon's
         // is the accent's own dark blue, so the ink stays white in either theme.
+        probe := Text {
+            x: 4px + 3px;
+            width: parent.width - 8px - 6px;
+            text: root.item.label;
+            wrap: word-wrap;
+            font-size: Theme.fs-label;
+            font-weight: Theme.fw-label;
+            visible: false;
+        }
+
         plate := Rectangle {
             x: 4px;
             y: tile.y + BenchState.tile + 6px;
@@ -182,7 +195,7 @@ export component BenchIcon inherits Rectangle {
                 y: 2px;
                 width: parent.width - 6px;
                 text: root.item.label;
-                lines: 2;
+                lines: root.label-lines;
                 on-wallpaper: true;
             }
             if root.item.renaming : Rectangle {

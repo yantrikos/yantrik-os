@@ -49,8 +49,7 @@ fn a_moved_icon_stays_and_the_rest_flow_around_it() {
 #[test]
 fn a_free_icon_stays_exactly_where_it_was_put_and_holds_no_cell() {
     let g = grid();
-    let mut s = Store::default();
-    s.snap = false;
+    let mut s = Store { snap: false, ..Store::default() };
     s.set(&g.key(), "b", Pos::Free { x: 143, y: 77 });
     let placed = s.resolve(&g, &names(&["a", "b"]));
     assert_eq!((placed[1].x, placed[1].y, placed[1].cell), (143, 77, None));
@@ -156,9 +155,7 @@ fn the_panel_takes_columns_but_not_the_layouts_key() {
 fn the_layout_round_trips_through_the_file() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join(".yantrik/desktop_layout.json");
-    let mut s = Store::default();
-    s.snap = false;
-    s.icons = false;
+    let mut s = Store { snap: false, icons: false, ..Store::default() };
     s.set("1920x1080", "a.txt", Pos::Cell { col: 1, row: 2 });
     s.set("1920x1080", "b.png", Pos::Free { x: 300, y: -4 });
     s.set("1280x800", "a.txt", Pos::Cell { col: 0, row: 0 });

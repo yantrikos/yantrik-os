@@ -48,7 +48,8 @@ fn picture(seed: u8, w: u32, h: u32) -> Image {
         *px = if y > ridge {
             Rgba8Pixel { r: 40, g: 70u8.saturating_add(seed), b: 85, a: 255 }
         } else {
-            Rgba8Pixel { r: 150, g: 190u8.saturating_sub(seed), b: 205, a: 255 }
+            // A warm sky, so no pixel of a picture is near the accent blue the checks look for.
+            Rgba8Pixel { r: 214, g: 160u8.saturating_sub(seed), b: 112, a: 255 }
         };
     }
     Image::from_rgba8(buf)
@@ -219,6 +220,8 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
     state.set_continue_title("summit.blend".into());
     state.set_continue_subtitle("Desktop".into());
     let log = listen(&ui);
+    // The first layout settles the home's height; the second draw runs the change handler that tells us.
+    draw(window);
     let still = draw(window);
     let top = ui.get_bench_y();
     assert!(top > 100. && top < 260., "the Bench starts under the greeting and the ask field, at {top}");
@@ -233,10 +236,13 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
     let (rx, ry) = tile_of(2, 1);
     let accent_ish = |p: &Pixels| count(p, ((rx - 30.) as u32, (ry - 30.) as u32, 60, 60), (0x8f, 0xb4, 0xe3), 40);
     assert!(accent_ish(&still) > 40, "the selected picture's tile is outlined in the accent");
-    let (lx, ly) = tile_of(3, 2);
-    let plate = |p: &Pixels, x: f32, y: f32| px(p, x as u32, (y + 48.) as u32);
-    let (r, g, b) = plate(&still, lx - 40., ly);
-    assert!(r < 40 && g < 50 && b < 60, "a name sits on a dark plate, not straight on the photograph: {:?}", (r, g, b));
+    // A name sits on a flat dark plate, not straight on the photograph: in the plate's left padding,
+    // clear of the letters, a pixel is darker than the wallpaper in the gap just outside it.
+    let lum = |c: (u8, u8, u8)| (c.0 as i32 * 3 + c.1 as i32 * 6 + c.2 as i32) / 10;
+    let plate_mid = (top + PAD_Y + 2. * CELL_H + 4. + 56. + 6. + 18.) as u32;
+    let plate_left = (PAD_X + 3. * CELL_W + 4.) as u32;
+    let (in_px, out_px) = (px(&still, plate_left + 1, plate_mid), px(&still, plate_left - 3, plate_mid));
+    assert!(lum(in_px) + 8 <= lum(out_px), "the name's plate is darker than the wallpaper beside it: inside {in_px:?}, outside {out_px:?} at y {plate_mid}");
 
     // ── Pointer: select, add, open ──
     tap(window, rx, ry);
@@ -256,9 +262,10 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
     assert_eq!(state.get_drag_id().as_str(), "Ridge study.png", "a drag in progress names its icon");
     assert!((state.get_drag_dx() - 210.).abs() < 1.0 && state.get_drag_dy().abs() < 4.0, "{} {}", state.get_drag_dx(), state.get_drag_dy());
     let going = draw(window);
+    // The cell's own left edge, a 2px line well clear of the moving tile's border.
     let (tx, ty) = tile_of(4, 1);
-    let outline = count(&going, ((tx - CELL_W / 2.) as u32, (ty - 30. - PAD_Y) as u32, CELL_W as u32, CELL_H as u32), (0x8f, 0xb4, 0xe3), 30);
-    assert!(outline > 150, "the target cell is outlined while the icon moves: {outline} accent pixels");
+    let edge = count(&going, ((tx - CELL_W / 2.) as u32, (ty - 30.) as u32, 3, 100), (0x8f, 0xb4, 0xe3), 30);
+    assert!(edge > 100, "the target cell is outlined while the icon moves: {edge} accent pixels on its left edge");
     save(&going, &side("bench-drag.png"))?;
     release(window, rx + 210., ry + 2., PointerEventButton::Left);
     assert_eq!(take(&log), ["select:Ridge study.png:false", "move:Ridge study.png:210:2"]);

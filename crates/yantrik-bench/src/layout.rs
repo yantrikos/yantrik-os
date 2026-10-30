@@ -260,7 +260,7 @@ impl Store {
         let mut added = false;
         for p in placed {
             if let Some((col, row)) = p.cell {
-                if self.layouts.get(grid_key).map_or(true, |l| !l.contains_key(&p.name)) {
+                if self.layouts.get(grid_key).is_none_or(|l| !l.contains_key(&p.name)) {
                     self.set(grid_key, &p.name, Pos::Cell { col, row });
                     added = true;
                 }
@@ -383,7 +383,7 @@ pub fn drop_place(grid: &Grid, taken: &HashSet<(u32, u32)>, x: i32, y: i32, snap
                 continue;
             }
             let d = col.abs_diff(c0) + row.abs_diff(r0);
-            if best.map_or(true, |(bd, bc, br)| (d, col, row) < (bd, bc, br)) {
+            if best.is_none_or(|(bd, bc, br)| (d, col, row) < (bd, bc, br)) {
                 best = Some((d, col, row));
             }
         }

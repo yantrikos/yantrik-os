@@ -18,9 +18,11 @@ use crate::{App, BenchState, ToastActionData, ToastData};
 /// Opening more than this at once is a mistake (a selection of the whole desktop and Enter).
 const OPEN_AT_ONCE: usize = 8;
 
-/// A plain line on the screen, not stored as a notification.
+/// A plain line on the screen, not stored as a notification. What reaches it can carry a file
+/// name (an error from a copy, a rename), so it is cleaned the way a label is.
 fn say(ui: &App, summary: &str, body: &str) {
-    crate::wire::toast::local(&ui.as_weak(), "Desktop", summary, body, 1);
+    let clean = |s: &str| if s.is_empty() { String::new() } else { display_name(s) };
+    crate::wire::toast::local(&ui.as_weak(), "Desktop", &clean(summary), &clean(body), 1);
 }
 
 // ── Opening ──

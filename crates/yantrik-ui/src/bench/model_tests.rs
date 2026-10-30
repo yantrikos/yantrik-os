@@ -218,7 +218,7 @@ fn rename_never_replaces_and_takes_its_place_with_it() {
     m.place_in_cell("a.txt", 2, 2).unwrap();
     assert!(matches!(m.rename("a.txt", "b.txt"), Err(ModelError::Taken(_))));
     assert_eq!(std::fs::read_to_string(t.path().join("Desktop/b.txt")).unwrap(), "contents of b.txt");
-    for bad in ["", "..", "x/y", ".hidden"] {
+    for bad in ["", "..", "x/y", ".hidden", "two\nlines", "esc\u{1b}[2J"] {
         assert!(matches!(m.rename("a.txt", bad), Err(ModelError::BadName(_))), "{bad:?}");
     }
     m.press("a.txt", false);

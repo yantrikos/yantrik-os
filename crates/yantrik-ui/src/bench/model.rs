@@ -348,7 +348,9 @@ impl Model {
         if self.item(old).is_none() {
             return Err(ModelError::NotThere(old.to_string()));
         }
-        if !is_plain_name(new) || new.starts_with('.') {
+        // Not a hidden name (it would leave the desktop), and no control characters (a name that
+        // draws as something else).
+        if !is_plain_name(new) || new.starts_with('.') || new.chars().any(char::is_control) {
             return Err(ModelError::BadName(new.to_string()));
         }
         if new == old {
