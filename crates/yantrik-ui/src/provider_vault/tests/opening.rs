@@ -9,12 +9,12 @@ use crate::wire::provider_panel::{save_form_with, start_or_defer, Reload};
 fn deferred_tests() -> std::sync::MutexGuard<'static, ()> {
     static TURN: Mutex<()> = Mutex::new(());
     let turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
-    DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    yantrik_foundation::vault::opening::forget_waiting();
     turn
 }
 
 fn waiting_for_the_vault() -> usize {
-    DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).len()
+    yantrik_foundation::vault::opening::waiting()
 }
 
 // ── The reload at start, replayed when the vault opens ──

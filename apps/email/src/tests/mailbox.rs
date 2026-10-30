@@ -40,7 +40,8 @@ fn the_three_states_are_three_screens() {
     assert!(empty.ui(|ui| !ui.get_has_account()));
     assert_eq!(empty.ui(|ui| ui.get_service_state()), "up");
     assert_eq!(empty.ui(|ui| ui.get_email_sync_status()), "No account");
-    assert!(empty.ui(|ui| ui.get_setup_note()).contains("stored in clear text in /home/p/.config/yantrik/email.json"));
+    assert!(empty.ui(|ui| ui.get_setup_note()).contains("kept in the credential vault"));
+    assert!(empty.ui(|ui| ui.get_setup_note()).contains("/home/p/.config/yantrik/email.json holds the server names only"));
     assert!(empty.ui(|ui| ui.get_google_available()));
 
     let broken = started(&FakeMail::ready().failing("email.list_messages", "No Response: SELECT failed"));

@@ -11,6 +11,9 @@ path = "src/main.rs"
 [dependencies]
 yantrik-ipc-contracts = { workspace = true }
 yantrik-service-sdk = { workspace = true }
+# The vault trait and its opening hook, shared with the shell; the shell's own transport rules.
+yantrik-foundation = { workspace = true }
+yantrik-ipc-transport = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

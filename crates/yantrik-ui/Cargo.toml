@@ -77,6 +77,10 @@ html2text = { workspace = true }
 rusqlite = { workspace = true }
 libc = { workspace = true }
 
+[dev-dependencies]
+# The mail service's end of the credential door, so the door is tested against the client that uses it.
+yantrik-service-sdk = { workspace = true }
+
 [features]
 default = ["claude-cli"]
 claude-cli = ["yantrik-ml/claude-cli"]

@@ -48,6 +48,10 @@ pub fn view(m: &Model) -> View {
         .with("service", mail_state.service_word())
         .with("notice", m.notice.clone())
         .with("account_store", mail_state.config_path().to_string());
+    // Mail is paused until the credential vault opens, and this is how a caller knows why nothing
+    // new is coming (the notice says it in words). Present only while it is so, so every other
+    // description stays what it always was.
+    let base = if mail_state.waiting_for_vault() { base.with("waiting_for_vault", true) } else { base };
 
     let base = match mail_state.has_account() {
         // Deliberately null rather than false. With nothing answering, this app has not been

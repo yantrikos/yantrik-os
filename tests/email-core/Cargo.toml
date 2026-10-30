@@ -7,6 +7,8 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 yantrik-ipc-contracts = { path = "../../crates/yantrik-ipc-contracts" }
+# The vault trait the account store keeps secrets through, and a vault in memory to test it with.
+yantrik-foundation = { path = "../../frameworks/yantrik-foundation" }
 # What `services/email-service/src/google.rs` needs. Same versions as the workspace, so the file
 # included below is compiled against exactly what the service compiles it against.
 sha2 = "0.10"
