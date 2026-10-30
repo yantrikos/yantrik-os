@@ -56,7 +56,7 @@ use Root::{Cache, Config, Data, State};
 
 pub const ENTRIES: &[Entry] = &[
     // config: secrets marked (S) in the audit table.
-    other(Config, "email.json", "email-service (accounts, password and OAuth tokens in clear text) (S)"),
+    other(Config, "email.json", "email-service (accounts; passwords and OAuth tokens are in the credential vault, not here) (S)"),
     other(Config, "google-oauth.json", "email-service (Google client secret) (S)"),
     other(Config, "providers.yaml", "shell, installer, ISO build (API keys) (S)"),
     other(Config, "deepseek.json", "shell handoff, DeepSeek harness (API key) (S)"),

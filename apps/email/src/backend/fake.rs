@@ -44,7 +44,7 @@ impl FakeMail {
             json!({
                 "accounts": [],
                 "config_path": "/home/p/.config/yantrik/email.json",
-                "secrets_are_plaintext": true,
+                "secrets_are_plaintext": false,
                 "google_sign_in": { "available": true, "note": "Google sign-in uses this build's client." },
             }),
         )
@@ -62,7 +62,7 @@ impl FakeMail {
                         "smtp_server": "smtp.gmail.com", "smtp_port": 587,
                     }],
                     "config_path": "/home/p/.config/yantrik/email.json",
-                    "secrets_are_plaintext": true,
+                    "secrets_are_plaintext": false,
                     "google_sign_in": { "available": true, "note": "Google sign-in uses this build's client." },
                 }),
             )

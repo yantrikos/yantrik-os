@@ -7,6 +7,8 @@
 //!   email.accounts        { }                                      → AccountsResult
 //!   email.test_account    AccountSettings                          → TestAccountResult
 //!   email.save_account    AccountSettings                          → EmailAccountSummary
+//!   email.remove_account  { account_id }                           → { removed }
+//!   email.vault_opened    { }                                      → { migrating }   (the shell only)
 //!   email.oauth_begin     { provider }                             → OAuthBeginResult
 //!   email.oauth_status    { flow_id }                              → OAuthStatus
 //!   email.oauth_cancel    { flow_id }                              → { cancelled }
@@ -40,12 +42,19 @@ mod envelope;
 mod folders;
 mod google;
 mod oauth;
+mod secrets;
+mod setup;
+mod store;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use accounts::Account;
+use setup::{imap_try, parse_settings, try_account};
+use store::{AccountStore, Doing};
+use yantrik_foundation::vault::opening;
 use yantrik_ipc_contracts::email::*;
+use yantrik_service_sdk::credentials::ShellVault;
 use yantrik_service_sdk::prelude::*;
 
 /// How long any single network step may take: the TCP connect, and then each read and write on
@@ -61,37 +70,51 @@ const NET_TIMEOUT: Duration = Duration::from_secs(8);
 const NO_ACCOUNT: i32 = -32001;
 
 fn main() {
-    ServiceBuilder::new("email")
-        .handler(EmailHandler::new())
-        .run();
+    let handler = EmailHandler::new();
+    handler.move_secrets_into_the_vault();
+    ServiceBuilder::new("email").handler(handler).run();
 }
+
+/// How often, and how many times, a migration that left secrets behind asks again, as the shell's
+/// own does for the providers' keys: the vault may only be slow to start.
+const MIGRATE_EVERY: Duration = Duration::from_secs(60);
+const MIGRATE_TIMES: usize = 60;
 
 // ── Account configuration ────────────────────────────────────────────
 
 struct EmailHandler {
     config_path: std::path::PathBuf,
-    /// Held only to serialise writes. Reads go to the file: it is a few hundred bytes, it can be
-    /// edited by hand while this is running, and a cached copy is how a service comes to insist
-    /// an account exists that somebody deleted an hour ago.
-    ///
-    /// An `Arc` because the Google sign-in's background thread writes the account it just
-    /// verified, and it outlives the request that started it.
-    writing: Arc<Mutex<()>>,
+    /// The accounts file and the credential vault, kept in step (`store.rs`). Cloned into the
+    /// Google sign-in's background thread, which writes the account it just verified and outlives
+    /// the request that started it.
+    store: AccountStore,
     /// The Google sign-ins this service is in the middle of.
     flows: oauth::Flows,
 }
 
 impl EmailHandler {
     fn new() -> Self {
+        let config_path = accounts::config_path();
         Self {
-            config_path: accounts::config_path(),
-            writing: Arc::new(Mutex::new(())),
+            store: AccountStore::new(config_path.clone(), Arc::new(ShellVault::new())),
+            config_path,
             flows: oauth::Flows::default(),
         }
     }
 
+    /// Move an older service's clear-text passwords into the shell's vault, now and whenever it
+    /// can: it may be shut at start, so this asks again every minute for an hour and once more at
+    /// each opening (`vault_opened`). Counts only are logged.
+    fn move_secrets_into_the_vault(&self) {
+        let store = self.store.clone();
+        let pass: opening::Pass = Arc::new(move |when| migrate_and_say(&store, when));
+        if let Err(e) = opening::until_done("email-secrets-migrate", pass, MIGRATE_EVERY, MIGRATE_TIMES) {
+            tracing::warn!(error = %e, "no thread to move mail passwords into the vault");
+        }
+    }
+
     fn all_accounts(&self) -> Result<Vec<Account>, ServiceError> {
-        accounts::load(&self.config_path).map_err(|message| ServiceError { code: -32000, message })
+        self.store.accounts().map_err(|message| ServiceError { code: -32000, message })
     }
 
     /// The account a mail request is about, ready to sign in with.
@@ -122,6 +145,9 @@ impl EmailHandler {
                     all.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
                 ),
             })?;
+        // The secrets come out of the vault now, for this call, or the call is refused with
+        // "Mail is waiting for the vault": no mail server is dialled without them.
+        let account = self.store.resolve(account).map_err(store::StoreError::into_service_error)?;
         self.with_fresh_token(account)
     }
 
@@ -178,18 +204,13 @@ impl EmailHandler {
 
         // Written down, and a failure to write is reported rather than swallowed: a service that
         // kept renewing because it could not remember the answer would look like it was working
-        // while making a token request per mail click.
-        let _writing = self.writing.lock().unwrap_or_else(|e| e.into_inner());
-        let mut all = self.all_accounts()?;
-        if accounts::store_refreshed(
-            &mut all,
-            &account.id,
-            &tokens.access,
-            &tokens.refresh,
-            tokens.expires_at,
-        ) {
-            accounts::save(&self.config_path, &all)
-                .map_err(|message| ServiceError { code: -32000, message })?;
+        // while making a token request per mail click. The tokens go to the vault, the time they
+        // stop working to the file.
+        let kept = self
+            .store
+            .store_refreshed(&account, &tokens.access, &tokens.refresh, tokens.expires_at)
+            .map_err(store::StoreError::into_service_error)?;
+        if kept {
             tracing::info!(account = %account.id, "Google access token renewed");
         } else {
             tracing::warn!(
@@ -217,8 +238,7 @@ impl EmailHandler {
             message,
         })?;
 
-        let config_path = self.config_path.clone();
-        let writing = self.writing.clone();
+        let store = self.store.clone();
         let finish: oauth::Finish = Arc::new(move |email: &str, tokens: &google::Tokens| {
             let (imap_server, imap_port, smtp_server, smtp_port) = accounts::GOOGLE_SERVERS;
             let candidate = Account {
@@ -252,24 +272,12 @@ impl EmailHandler {
                 }
             }
 
-            let _writing = writing.lock().unwrap_or_else(|e| e.into_inner());
-            let mut all = accounts::load(&config_path)?;
-            let id = accounts::upsert_google(
-                &mut all,
-                email,
-                &tokens.access,
-                &tokens.refresh,
-                tokens.expires_at,
-            );
-            accounts::save(&config_path, &all)?;
-
-            // Read back from disk, so the answer is the account as it is now stored.
-            let stored = accounts::load(&config_path)?;
-            let saved = stored.iter().find(|a| a.id == id).ok_or_else(|| {
-                format!("the account was written to {} and is not in it", config_path.display())
-            })?;
+            // The tokens into the vault, read back, and then the account into the file.
+            let saved = store
+                .save_google(email, &tokens.access, &tokens.refresh, tokens.expires_at)
+                .map_err(|e| e.into_service_error().message)?;
             tracing::info!(account = %saved.id, "account saved from a Google sign-in");
-            Ok(saved.summary())
+            Ok(saved)
         });
 
         self.flows
@@ -296,6 +304,7 @@ impl ServiceHandler for EmailHandler {
         if matches!(
             method,
             method::SAVE_ACCOUNT
+                | method::REMOVE_ACCOUNT
                 | method::OAUTH_BEGIN
                 | method::OAUTH_CANCEL
                 | method::SEND_MESSAGE
@@ -305,6 +314,12 @@ impl ServiceHandler for EmailHandler {
                 | method::DELETE_MESSAGE
         ) {
             yantrik_service_sdk::desktop_programs_only(peer, method)?;
+        }
+        // Only the shell knows when its vault opens, and a caller that could say so falsely would
+        // only make this service try its migration early; it still answers the shell alone.
+        if method == method::VAULT_OPENED {
+            yantrik_ipc_transport::owner::must_be_the_shell(peer)
+                .map_err(|message| ServiceError { code: -32001, message })?;
         }
         self.handle(method, params)
     }
@@ -326,10 +341,13 @@ impl ServiceHandler for EmailHandler {
                 Ok(serde_json::to_value(AccountsResult {
                     accounts: accounts::summaries(&all),
                     config_path: self.config_path.display().to_string(),
-                    // Said out loud rather than assumed. See the note at the head of
-                    // `accounts.rs`: the password is in that file in clear text, and the app
-                    // puts this on the screen beside the field it was typed into.
-                    secrets_are_plaintext: true,
+                    // Said out loud rather than assumed, and true only while an older service's
+                    // clear-text password is still in the file (`accounts.rs`): the app puts
+                    // this on the screen beside the field the password is typed into.
+                    secrets_are_plaintext: all.iter().any(Account::held_in_file),
+                    // Asked here, on the call the app makes on every look, so it can say "Mail is
+                    // waiting for the vault" and stop asking the mail server for anything.
+                    waiting_for_vault: self.store.waiting_for_vault(&all),
                     // Answered here because this is the call the app already makes on every
                     // load, and because the screen has to know before it draws the button. A
                     // "Sign in with Google" that cannot work is the dead control this whole
@@ -393,10 +411,15 @@ impl ServiceHandler for EmailHandler {
             // Verified before it is written. An account that cannot sign in is not an account,
             // and storing it would move the app to "configured" while every later call failed —
             // which is the fault this whole file was opened for, one layer up.
+            //
+            // The password goes into the shell's vault, read back, before the account goes into
+            // the file; a shut vault is asked first so no mailbox sign-in is spent on an account
+            // that could not be kept.
             method::SAVE_ACCOUNT => {
                 let settings = parse_settings(&params)?;
                 accounts::refuse_bad_settings(&settings)
                     .map_err(|message| ServiceError { code: -32602, message })?;
+                self.store.check_open(Doing::Saving).map_err(store::StoreError::into_service_error)?;
 
                 let attempt = connect::Attempt::new(
                     "IMAP",
@@ -410,23 +433,33 @@ impl ServiceHandler for EmailHandler {
                     });
                 }
 
-                let _writing = self.writing.lock().unwrap_or_else(|e| e.into_inner());
-                let mut all = self.all_accounts()?;
-                let id = accounts::upsert(&mut all, &settings);
-                accounts::save(&self.config_path, &all)
-                    .map_err(|message| ServiceError { code: -32000, message })?;
-
-                // Read back from disk, so the answer is the account as it is now stored rather
-                // than the one this process just built in memory.
-                let stored = accounts::load(&self.config_path)
-                    .map_err(|message| ServiceError { code: -32000, message })?;
-                let saved = stored.iter().find(|a| a.id == id).ok_or_else(|| ServiceError {
-                    code: -32000,
-                    message: format!("the account was written to {} and is not in it",
-                                     self.config_path.display()),
-                })?;
+                // The answer is the account as it is now stored, read back from the file.
+                let saved = self
+                    .store
+                    .save_settings(&settings)
+                    .map_err(store::StoreError::into_service_error)?;
                 tracing::info!(account = %saved.id, "account saved");
-                Ok(serde_json::to_value(saved.summary()).unwrap())
+                Ok(serde_json::to_value(saved).unwrap())
+            }
+
+            // The account and its vault entry, together: a shut vault refuses, so a secret is
+            // never left behind by an account that has gone from the list.
+            method::REMOVE_ACCOUNT => {
+                let wanted = require_str(&params, "account_id")?;
+                let removed = self.store.remove(wanted).map_err(store::StoreError::into_service_error)?;
+                if removed {
+                    tracing::info!("account removed");
+                }
+                Ok(serde_json::json!({ "removed": removed }))
+            }
+
+            // The shell opened the vault. What this service moved aside for it, and the mail it
+            // paused, go on: the migration asks again, and the next call finds the secrets.
+            method::VAULT_OPENED => {
+                let spawned = std::thread::Builder::new()
+                    .name("email-vault-opened".into())
+                    .spawn(opening::opened);
+                Ok(serde_json::json!({ "migrating": spawned.is_ok() }))
             }
 
             "email.list_folders" => {
@@ -534,73 +567,6 @@ fn folder_or_inbox_logged<'a>(params: &'a serde_json::Value, method: &str) -> &'
         );
     }
     folder_or_inbox(params)
-}
-
-// ── Setting an account up ────────────────────────────────────────────
-
-fn parse_settings(params: &serde_json::Value) -> Result<AccountSettings, ServiceError> {
-    serde_json::from_value(params.clone()).map_err(|e| ServiceError {
-        code: -32602,
-        // `e` is serde's account of which field is missing or mistyped. It never contains a
-        // value, only a field name and a type, so there is no password in it.
-        message: format!("these are not account settings: {e}"),
-    })
-}
-
-/// Sign in to both halves of an account and say what each one did.
-///
-/// Nothing is stored and nothing is sent. The password is passed to
-/// [`connect::name_failure`] so that a server quoting the line it was sent cannot put it on a
-/// screen.
-fn try_account(settings: &AccountSettings) -> TestAccountResult {
-    let imap_where =
-        connect::Attempt::new("IMAP", &settings.imap_server, settings.imap_port);
-    let (imap_ok, imap) = match imap_try(settings) {
-        Ok(()) => (true, connect::name_success(&imap_where)),
-        Err(raw) => (false, connect::name_failure(&imap_where, &raw, &settings.password)),
-    };
-
-    let smtp_where =
-        connect::Attempt::new("SMTP", &settings.smtp_server, settings.smtp_port);
-    let (smtp_ok, smtp) = match smtp_try(settings) {
-        Ok(()) => (true, connect::name_success(&smtp_where)),
-        Err(raw) => (false, connect::name_failure(&smtp_where, &raw, &settings.password)),
-    };
-
-    TestAccountResult { imap_ok, imap, smtp_ok, smtp }
-}
-
-/// One IMAP sign-in with the supplied settings, and straight back out.
-fn imap_try(settings: &AccountSettings) -> Result<(), String> {
-    let account = Account {
-        email: settings.email.clone(),
-        password: settings.password.clone(),
-        imap_server: settings.imap_server.clone(),
-        imap_port: settings.imap_port,
-        smtp_server: settings.smtp_server.clone(),
-        smtp_port: settings.smtp_port,
-        ..Account::default()
-    };
-    let mut session = imap_session(&account)?;
-    let _ = session.logout();
-    Ok(())
-}
-
-/// One SMTP sign-in with the supplied settings. `test_connection` in lettre opens the
-/// connection, which is where authentication happens, then sends NOOP and quits.
-fn smtp_try(settings: &AccountSettings) -> Result<(), String> {
-    let mailer = smtp_transport(
-        &settings.email,
-        &settings.password,
-        &settings.smtp_server,
-        settings.smtp_port,
-        false,
-    )?;
-    match lettre::SmtpTransport::test_connection(&mailer) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err("the server accepted the connection and then dropped it".to_string()),
-        Err(e) => Err(e.to_string()),
-    }
 }
 
 // ── IMAP operations ──────────────────────────────────────────────────
@@ -1460,4 +1426,20 @@ mod tests {
         assert!(names_a_folder(&serde_json::json!({"folder": "Spam"})));
         assert!(names_a_folder(&serde_json::json!({"folder": "[Gmail]/Sent Mail"})));
     }
+}
+
+/// One migration pass, with counts and nothing else in the log. Answers whether secrets are left
+/// in the file, for the retry loop.
+fn migrate_and_say(store: &AccountStore, when: &str) -> bool {
+    let report = store.migrate();
+    if report != store::Migration::default() {
+        tracing::info!(
+            moved = report.moved,
+            waiting_for_the_vault = report.waiting,
+            failed = report.failed,
+            when,
+            "Mail account secrets moved into the credential vault"
+        );
+    }
+    report.left_some()
 }

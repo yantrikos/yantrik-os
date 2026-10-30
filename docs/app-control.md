@@ -504,7 +504,9 @@ calls `a11y.act`.
 | email | `email.list_messages` | read | — | |
 | email | `email.get_message` | read | — | |
 | email | `email.search` | read | — | |
-| email | `email.save_account` | change | none | writes the account configuration, password included. The app's settings screen calls it |
+| email | `email.save_account` | change | none | writes the account configuration and keeps its password in the credential vault (never in the file). The app's settings screen calls it |
+| email | `email.remove_account` | change | none | forgets an account and its password in the credential vault; a shut vault refuses, so nothing is left behind |
+| email | `email.vault_opened` | change | none | answers the shell only: the credential vault has opened, so the service retries what it was waiting for. Changes nothing a caller can choose |
 | email | `email.oauth_begin` | change | `begin_google_sign_in` (app) — sensitive | starts the OAuth dance: a browser opens on a full-access consent screen |
 | email | `email.oauth_cancel` | change | none | abandons a sign-in in flight |
 | email | `email.send_message` | change | none | **sends mail.** The app publishes `compose` and deliberately never `send` — mail that has gone cannot be taken back — but the method sends |

@@ -6,6 +6,11 @@ use yantrik_app::jobs::{Concurrency, JobKey, Scope};
 use yantrik_app::Refused;
 use yantrik_ipc_contracts::email::EmailSummary;
 
+use std::time::Duration;
+
+use yantrik_app::timers::TimerId;
+use yantrik_ipc_contracts::email::WAITING_FOR_VAULT;
+
 use super::{clear_notice, say};
 use crate::backend::{calls, look::{self, Loaded}};
 use crate::command::{Command, Listing, Look, Work};
@@ -20,6 +25,11 @@ fn listing() -> JobKey {
     JobKey { feature: "listing", scope: Scope::App }
 }
 
+/// The timer that asks again while mail is waiting for the credential vault. Arming it restarts it;
+/// a look that finds the vault open stops it. This is how mail resumes by itself after an unlock.
+pub const VAULT_WAIT: TimerId = TimerId("email.vault");
+const VAULT_WAIT_EVERY: Duration = Duration::from_secs(5);
+
 /// What a job replaced before it started carries. The framework drops a replaced job's
 /// result, so this is never shown.
 pub const REPLACED: &str = "a newer request replaced this one";
@@ -31,7 +41,9 @@ pub fn look(m: &mut Model, why: Look, fx: &mut Effects<Email>) {
         return;
     }
     m.syncing = true;
-    m.sync_status = "Syncing\u{2026}".into();
+    if why != Look::Resume {
+        m.sync_status = "Syncing\u{2026}".into();
+    }
     fx.changed(part::STATUS);
     let folder = m.folder.clone();
     let mail = m.mail.clone();
@@ -51,12 +63,42 @@ pub fn looked(m: &mut Model, why: Look, folder: &str, loaded: Loaded, fx: &mut E
     m.syncing = false;
     m.looked = true;
     m.loading = false;
-    let count = loaded.messages.len();
-    let ok = matches!(loaded.state, MailState::Ready { .. }) && loaded.mailbox_error.is_none();
     m.state = loaded.state.clone();
     m.account_name = loaded.state.account_name();
     fx.changed(part::STATE);
     fx.changed(part::SETUP);
+
+    if loaded.state.waiting_for_vault() {
+        pause_for_the_vault(m, fx);
+    } else {
+        // Not waiting, or not any more: the timer that was asking has nothing left to ask.
+        fx.stop_timer(VAULT_WAIT);
+        show_mailbox(m, why, folder, loaded, fx);
+    }
+    if why == Look::Start {
+        m.start_look_over = true;
+        // Said to the person, so only when they are here; if not, their first window says it.
+        if m.person_here {
+            super::drafts::offer_unsent(m, fx);
+        }
+    }
+}
+
+/// The credential vault is shut and the password is in it: nothing was asked of the mail server,
+/// what is on screen stays as it was, and the window says why and asks again every few seconds.
+fn pause_for_the_vault(m: &mut Model, fx: &mut Effects<Email>) {
+    m.sync_status = "Waiting for the vault".into();
+    fx.changed(part::STATUS);
+    if m.notice != WAITING_FOR_VAULT {
+        say(m, fx, WAITING_FOR_VAULT);
+    }
+    fx.every(VAULT_WAIT, VAULT_WAIT_EVERY, Command::Look(Look::Resume));
+}
+
+/// Put what the look found on screen: the folders, the messages, and the line that says how it went.
+fn show_mailbox(m: &mut Model, why: Look, folder: &str, loaded: Loaded, fx: &mut Effects<Email>) {
+    let count = loaded.messages.len();
+    let ok = matches!(loaded.state, MailState::Ready { .. }) && loaded.mailbox_error.is_none();
 
     // The folder that is open, highlighted by name. `is_selected: idx == 0` was hardcoded, so
     // after switching mailboxes the sidebar still pointed at whichever folder came back first.
@@ -87,13 +129,6 @@ pub fn looked(m: &mut Model, why: Look, folder: &str, loaded: Loaded, fx: &mut E
     if ok && why == Look::Sync {
         // The count it returned, because that is what was observed.
         m.sync_status = format!("Synced \u{00b7} {count} in {folder}");
-    }
-    if why == Look::Start {
-        m.start_look_over = true;
-        // Said to the person, so only when they are here; if not, their first window says it.
-        if m.person_here {
-            super::drafts::offer_unsent(m, fx);
-        }
     }
 }
 

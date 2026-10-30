@@ -15,6 +15,8 @@
 
 use std::sync::{Arc, Mutex, RwLock};
 
+use yantrik_foundation::vault::opening::{self, Pass};
+
 use crate::bridge::CompanionBridge;
 use crate::wire::free_ai::store::{Op, Reply};
 use crate::wire::settings::{ProviderStore, ProviderStoreEntry};
@@ -42,23 +44,10 @@ pub fn id_in(reference: &str) -> Option<&str> {
     reference.strip_prefix(REF_SCHEME).filter(|id| !id.is_empty())
 }
 
-/// Why the vault did not do what was asked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VaultError {
-    /// The vault has a passphrase and is shut.
-    Locked,
-    /// The vault refused, did not answer, or gave back something other than what was stored.
-    Failed,
-}
-
-/// The vault as this module needs it. The shell's implementation is [`BridgeVault`]; tests use a
-/// fake.
-pub trait KeyVault: Send + Sync {
-    fn store(&self, id: &str, value: &str) -> Result<(), VaultError>;
-    /// The value kept under `id`, or `None` when nothing is.
-    fn value(&self, id: &str) -> Result<Option<String>, VaultError>;
-    fn remove(&self, id: &str) -> Result<(), VaultError>;
-}
+// The vault's trait, its two errors and the read-back rule are the OS's one (the mail service
+// keeps its passwords through the same ones), so they live in the foundation.
+pub use yantrik_foundation::vault::opening::{after_open, opened};
+pub use yantrik_foundation::vault::{keep, KeyVault, VaultError};
 
 /// The credential vault, reached through the companion's worker like the free tiers' keys.
 pub struct BridgeVault {
@@ -168,15 +157,6 @@ impl From<VaultError> for KeyError {
             VaultError::Locked => KeyError::Locked,
             VaultError::Failed => KeyError::Unavailable,
         }
-    }
-}
-
-/// Keep `key` under `id` and read it back: Ok only when the vault gives the same text.
-pub fn keep(vault: &dyn KeyVault, id: &str, key: &str) -> Result<(), VaultError> {
-    vault.store(id, key)?;
-    match vault.value(id)? {
-        Some(back) if back == key => Ok(()),
-        _ => Err(VaultError::Failed),
     }
 }
 
@@ -387,25 +367,6 @@ pub fn migrate_with(
     report
 }
 
-type Deferred = Box<dyn FnOnce() + Send>;
-
-static DEFERRED: Mutex<Vec<Deferred>> = Mutex::new(Vec::new());
-
-/// Run `work` the next time the vault is opened. For something refused because the vault was
-/// shut, such as the companion's reload at start, which happens before the person has signed in.
-pub fn after_open(work: impl FnOnce() + Send + 'static) {
-    DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(work));
-}
-
-/// The vault was just opened (at sign-in, at a screen unlock, or from the unlock card): run what
-/// was waiting for it, once.
-pub fn opened() {
-    let waiting = std::mem::take(&mut *DEFERRED.lock().unwrap_or_else(|e| e.into_inner()));
-    for work in waiting {
-        work();
-    }
-}
-
 /// Forget the vault entry of a provider being removed. A shut vault is an error, so the key is
 /// not left behind with the provider gone from the list.
 pub fn forget(vault: &dyn KeyVault, entry: &ProviderStoreEntry) -> Result<(), KeyError> {
@@ -442,14 +403,9 @@ fn pass(vault: &dyn KeyVault, store: &Mutex<ProviderStore>, save: &SaveFile, whe
     report
 }
 
-/// One more pass when the vault opens. It asks again for the next opening if keys are still left,
-/// so an unlock at any time, even after the timer has given up, reaches the vault.
-fn migrate_when_opened(vault: Arc<dyn KeyVault>, store: Arc<Mutex<ProviderStore>>, save: SaveFile) {
-    after_open(move || {
-        if keys_left(&pass(&*vault, &store, &save, "unlock")) {
-            migrate_when_opened(vault, store, save);
-        }
-    });
+/// The passes as the foundation's retry loop runs them: true while keys are left in the file.
+fn as_pass(vault: Arc<dyn KeyVault>, store: Arc<Mutex<ProviderStore>>, save: SaveFile) -> Pass {
+    Arc::new(move |when| keys_left(&pass(&*vault, &store, &save, when)))
 }
 
 /// The first pass, and the one that waits for the vault to open when it left keys behind,
@@ -457,7 +413,7 @@ fn migrate_when_opened(vault: Arc<dyn KeyVault>, store: Arc<Mutex<ProviderStore>
 fn begin_migration(vault: &Arc<dyn KeyVault>, store: &Arc<Mutex<ProviderStore>>, save: &SaveFile) -> Migration {
     let report = pass(&**vault, store, save, "start");
     if keys_left(&report) {
-        migrate_when_opened(vault.clone(), store.clone(), save.clone());
+        opening::until_open_finishes(as_pass(vault.clone(), store.clone(), save.clone()));
     }
     report
 }
@@ -470,17 +426,7 @@ pub fn migrate_in_background(bridge: &Arc<CompanionBridge>, store: Arc<Mutex<Pro
     install_for(bridge);
     let Some(vault) = current() else { return };
     let save: SaveFile = Arc::new(|s| s.save());
-    let spawned = std::thread::Builder::new().name("provider-keys-migrate".into()).spawn(move || {
-        let mut report = begin_migration(&vault, &store, &save);
-        for _ in 0..RETRIES {
-            if !keys_left(&report) {
-                return;
-            }
-            std::thread::sleep(RETRY_EVERY);
-            report = pass(&*vault, &store, &save, "retry");
-        }
-    });
-    if spawned.is_err() {
+    if opening::until_done("provider-keys-migrate", as_pass(vault, store, save), RETRY_EVERY, RETRIES).is_err() {
         tracing::warn!("no thread to move saved providers' keys into the vault");
     }
 }

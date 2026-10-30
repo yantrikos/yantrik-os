@@ -53,6 +53,7 @@ mod bridge;
 /// Who is actually on the socket, as far as the kernel and `/proc` can say. See issue #43.
 mod caller_identity;
 mod companion_rpc;
+mod credential_door;
 mod control;
 mod control_approvals;
 mod control_overlays;
@@ -338,6 +339,10 @@ fn main() {
     // Publish the companion so the apps under apps/ can use it. Without this their AI actions
     // are stubs: the model, the memory and the bond all live in this process.
     companion_rpc::serve(ctx.bridge.handle());
+
+    // The credential door: the mail service keeps its accounts' passwords in this process's vault
+    // through it, and not in a file (#538).
+    credential_door::serve(&ctx.bridge);
 
     // Adopt the windows that were already open.
     //

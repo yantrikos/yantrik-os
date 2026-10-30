@@ -1,23 +1,22 @@
-//! Where mail accounts are kept, and what is done with their passwords.
+//! Where mail accounts are kept, and what is kept in them.
 //!
 //! This module is the whole of the service's account model and it touches no network, so the
 //! rules below can be tested on a machine with no mailbox — which is every machine this is
 //! developed on. `tests/email-core` includes this file directly.
 //!
-//! ## The password, said plainly
+//! ## The file holds servers, not secrets
 //!
-//! An account's password is written into the same JSON file as its server names, in clear text,
-//! with the file created mode 0600 and its directory 0700. That is not where a credential
-//! belongs and the service says so: [`AccountsResult::secrets_are_plaintext`] is `true`, the app
-//! puts the sentence on the setup screen next to the password field, and
-//! `design/email-2026-09-20.md` records it as a decision the project owner has to make rather
-//! than something that was quietly done.
+//! `email.json` is the account list: addresses, servers, ports, and when an OAuth access token
+//! stops working. An account's password and its OAuth tokens are in the credential vault, under
+//! `mail:<account id>` (`secrets.rs`, `store.rs`), and reach this process only for as long as a
+//! call to a mail server takes. [`save`] writes no secret that was not already in the file when it
+//! was read: an [`Account`] built in memory (a form, a Google sign-in, a resolved account) has
+//! [`Account::in_file`] false, and [`Account::stored`] leaves its secrets out.
 //!
-//! The alternative that exists in this tree is `yantrikdb_core::vault` — AES-256-GCM, a
-//! per-vault data key, an optional PIN — and it is the right home. Reaching it from here means
-//! either linking the companion's database into a mail service, or a credential service neither
-//! of them has yet, and it has to answer what a background IMAP poll does when the vault is
-//! PIN-protected and nobody is at the keyboard. None of that is a change to make on the way past.
+//! The one way a secret is in the file is an account an older service wrote with its password in
+//! clear text. [`load`] marks it, [`save`] leaves it exactly as it was until `store::migrate` has
+//! copied it into the vault, read it back and cleared it, and `email.accounts` says
+//! `secrets_are_plaintext` for as long as that is so.
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +27,7 @@ use yantrik_ipc_contracts::email::{AccountSettings, EmailAccountSummary};
 /// [`Debug`] is written out rather than derived, for the reason [`AccountSettings`] does the
 /// same: a derived one prints the password into every `{:?}`, and a tracing line is a file on
 /// disk that outlives the session.
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, serde::Deserialize)]
 pub struct Account {
     pub id: String,
     pub email: String,
@@ -67,6 +66,38 @@ pub struct Account {
     /// as a broken account.
     #[serde(default)]
     pub oauth_expires_at: Option<i64>,
+    /// This account came from the environment (`YANTRIK_EMAIL_*`), not from the file. Its secret
+    /// is in this process already, it is never saved, and there is nothing to move.
+    #[serde(skip)]
+    pub from_env: bool,
+    /// Whatever secret this account holds was read from the accounts file and is still there: an
+    /// older service's clear-text password. False for every account built in memory, so [`save`]
+    /// can never write one of those secrets down.
+    #[serde(skip)]
+    pub in_file: bool,
+}
+
+/// What [`save`] writes for one account: [`Account`] without a secret, unless the secret is one
+/// that was read out of this file and has not been moved yet.
+#[derive(serde::Serialize)]
+struct Stored<'a> {
+    id: &'a str,
+    email: &'a str,
+    display_name: &'a str,
+    provider: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    password: &'a str,
+    imap_server: &'a str,
+    imap_port: u16,
+    smtp_server: &'a str,
+    smtp_port: u16,
+    use_oauth: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_token: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_refresh_token: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_expires_at: Option<i64>,
 }
 
 fn default_imap_port() -> u16 {
@@ -95,11 +126,51 @@ impl std::fmt::Debug for Account {
                 &self.oauth_refresh_token.as_ref().map(|_| "<redacted>"),
             )
             .field("oauth_expires_at", &self.oauth_expires_at)
+            .field("in_file", &self.in_file)
             .finish()
     }
 }
 
+/// A token as the file may hold it: only one that was read from the file.
+fn only_if_legacy(legacy: bool, secret: &Option<String>) -> Option<&str> {
+    secret.as_deref().filter(|s| legacy && !s.is_empty())
+}
+
 impl Account {
+    /// The account as the file holds it. A secret is written only when it was read from the file:
+    /// anything this process learned since (a typed password, a token Google issued, a refreshed
+    /// one) belongs to the vault.
+    fn stored(&self) -> Stored<'_> {
+        let legacy = self.in_file;
+        Stored {
+            id: &self.id,
+            email: &self.email,
+            display_name: &self.display_name,
+            provider: &self.provider,
+            password: if legacy { &self.password } else { "" },
+            imap_server: &self.imap_server,
+            imap_port: self.imap_port,
+            smtp_server: &self.smtp_server,
+            smtp_port: self.smtp_port,
+            use_oauth: self.use_oauth,
+            oauth_token: only_if_legacy(legacy, &self.oauth_token),
+            oauth_refresh_token: only_if_legacy(legacy, &self.oauth_refresh_token),
+            oauth_expires_at: self.oauth_expires_at,
+        }
+    }
+
+    /// Whether a secret of this account is in the accounts file now, in clear text.
+    pub fn held_in_file(&self) -> bool {
+        self.in_file && !self.from_env && self.secrets().iter().any(|s| !s.is_empty())
+    }
+
+    /// Forget the secrets this account holds in memory, once the vault has them.
+    pub fn clear_secrets(&mut self) {
+        self.password.clear();
+        self.oauth_token = None;
+        self.oauth_refresh_token = None;
+    }
+
     /// Every string on this account that must never reach a screen, a log or `describe`.
     ///
     /// A password was the only one until Google sign-in. An OAuth account has two more, and a
@@ -192,13 +263,24 @@ pub fn id_for(email: &str) -> String {
 /// mailbox whose config has a typo in it is how this app came to show an onboarding screen to
 /// someone who already had an account.
 pub fn load(path: &Path) -> Result<Vec<Account>, String> {
+    let from_file = load_file(path)?;
+    if from_file.is_empty() {
+        return Ok(from_env());
+    }
+    Ok(from_file)
+}
+
+/// The accounts the file holds, and only those: none when it is missing or empty, and never the
+/// environment's. What a change to the list starts from, so that an account that exists only in
+/// the environment is not written into the file by a change to another.
+pub fn load_file(path: &Path) -> Result<Vec<Account>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(from_env()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("could not read {}: {e}", path.display())),
     };
     if text.trim().is_empty() {
-        return Ok(from_env());
+        return Ok(Vec::new());
     }
     let mut accounts: Vec<Account> = serde_json::from_str(&text)
         .map_err(|e| format!("{} is not a list of accounts: {e}", path.display()))?;
@@ -206,6 +288,8 @@ pub fn load(path: &Path) -> Result<Vec<Account>, String> {
         if account.id.trim().is_empty() {
             account.id = id_for(&account.email);
         }
+        // Whatever secret it holds, it read from this file.
+        account.in_file = true;
     }
     Ok(accounts)
 }
@@ -237,6 +321,8 @@ pub fn from_env() -> Vec<Account> {
         oauth_token: None,
         oauth_refresh_token: None,
         oauth_expires_at: None,
+        from_env: true,
+        in_file: false,
     }]
 }
 
@@ -260,6 +346,8 @@ pub fn upsert(accounts: &mut Vec<Account>, settings: &AccountSettings) -> String
         oauth_token: None,
         oauth_refresh_token: None,
         oauth_expires_at: None,
+        from_env: false,
+        in_file: false,
     };
     match accounts.iter().position(|a| a.id == id) {
         Some(at) => accounts[at] = account,
@@ -313,6 +401,8 @@ pub fn upsert_google(
         oauth_token: Some(access_token.to_string()),
         oauth_refresh_token: Some(refresh_token.to_string()),
         oauth_expires_at: Some(expires_at),
+        from_env: false,
+        in_file: false,
     };
     match accounts.iter().position(|a| a.id == id) {
         Some(at) => accounts[at] = account,
@@ -321,8 +411,10 @@ pub fn upsert_google(
     id
 }
 
-/// Write a refreshed access token back onto the stored account.
+/// Write when a refreshed access token stops working onto the stored account.
 ///
+/// The token itself is not written: it goes to the credential vault with the rest of the
+/// account's secrets (`store::AccountStore::store_refreshed`), and the file keeps only the time.
 /// Separate from [`upsert_google`] because a refresh must not touch anything else: it happens on
 /// the way to opening a mailbox, with no person watching, and a function that rebuilt the whole
 /// record would be one edit away from resetting a display name or a server on every poll.
@@ -330,17 +422,9 @@ pub fn upsert_google(
 /// Returns false when the address is not in the list any more — somebody removed the account
 /// while a mail call was in flight — so the caller can say that rather than report a write that
 /// did not happen.
-pub fn store_refreshed(
-    accounts: &mut [Account],
-    id: &str,
-    access_token: &str,
-    refresh_token: &str,
-    expires_at: i64,
-) -> bool {
+pub fn store_expiry(accounts: &mut [Account], id: &str, expires_at: i64) -> bool {
     match accounts.iter_mut().find(|a| a.id == id) {
         Some(account) => {
-            account.oauth_token = Some(access_token.to_string());
-            account.oauth_refresh_token = Some(refresh_token.to_string());
             account.oauth_expires_at = Some(expires_at);
             true
         }
@@ -348,48 +432,37 @@ pub fn store_refreshed(
     }
 }
 
+/// Take the account called `wanted` (its id or its address, exactly, with no fallback to "the
+/// first one": this is for a removal) out of the list, and hand it back.
+pub fn take(accounts: &mut Vec<Account>, wanted: &str) -> Option<Account> {
+    let wanted = wanted.trim();
+    let at = accounts
+        .iter()
+        .position(|a| a.id.eq_ignore_ascii_case(wanted) || a.email.eq_ignore_ascii_case(wanted))?;
+    Some(accounts.remove(at))
+}
+
 /// Write the accounts file, and the directory above it, so that nobody but this user can read
 /// either.
 ///
-/// The mode is set on create rather than afterwards, and again on the finished file, because a
-/// file that is world-readable for the microseconds between `write` and `set_permissions` is
-/// world-readable on a machine that is shared — which is the only kind this matters on.
+/// Whole or not at all: the new text goes to a file of its own, mode 0600 from the moment it is
+/// made, is synced, and replaces the old file in one rename (`yantrik_foundation::json_store`). A
+/// crash or a full disk leaves the file as it was, which is what a migration that fails depends
+/// on. What is written is [`Account::stored`]: no secret that is not already in this file.
 pub fn save(path: &Path, accounts: &[Account]) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(accounts)
+    let stored: Vec<Stored<'_>> = accounts.iter().map(Account::stored).collect();
+    let text = serde_json::to_string_pretty(&stored)
         .map_err(|e| format!("could not serialise the accounts: {e}"))?;
 
-    if let Some(dir) = path.parent() {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("could not make {}: {e}", dir.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-        }
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
-
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-        file.write_all(text.as_bytes())
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, text.as_bytes())
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    }
-    Ok(())
+    yantrik_foundation::json_store::write_atomically(path, text.as_bytes())
+        .map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
 /// What is wrong with these settings, before anything is tried against a server.

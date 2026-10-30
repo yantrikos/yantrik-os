@@ -2283,7 +2283,9 @@ dependencies = [
  "sha2",
  "ureq 2.12.1",
  "yantrik-email-text",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
  "yantrik-service-sdk",
 ]
 
@@ -11460,6 +11462,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
 ]
 
@@ -11799,6 +11802,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-surface",
@@ -12054,6 +12058,7 @@ dependencies = [
  "yantrik-ipc-transport",
  "yantrik-ml",
  "yantrik-os",
+ "yantrik-service-sdk",
  "yantrik-shell-core",
  "yantrik-ui-kit",
  "yantrik-ui-slint",
