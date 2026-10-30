@@ -326,9 +326,44 @@ fresh "$T/img4"; "$VERIFY" revoke-merge --state "$STATE" "$KEYS/revoked.sha256" 
 mkdir -p "$T/bundleS/bin" "$T/bundleS/share/update-keys"; chmod 755 "$T/bundleS" "$T/bundleS/bin" "$T/bundleS/share" "$T/bundleS/share/update-keys"
 cp "$T/n1.pub" "$T/bundleS/share/update-keys/nightly.n1.pub"; chmod 644 "$T/bundleS/share/update-keys/nightly.n1.pub"
 (cd "$T/bundleS/share" && sha256sum update-keys/*) > "$T/bundleS/bin/yantrik-root-files.sha256"; chmod 644 "$T/bundleS/bin/yantrik-root-files.sha256"
-out="$("$VERIFY" verify --channel nightly --source releases.example --keys "$T/bundleS/share/update-keys" --state "$STATE" --listed "$T/bundleS/bin/yantrik-root-files.sha256" --now "$((NOW + 86400))" "$T/n-rotated")"
-is  "a bundle whose keys cannot verify the current manifest is caught before install" "no_keys" "$(printf '%s\n' "$out" | sed -n 's/^status=//p')"
+# The install guard asks `trusts`: does the bundle's key set hold a listed, unrevoked key that may
+# sign this channel? Installed revocations count even before they are in the record.
+out="$("$VERIFY" trusts --channel nightly --keys "$T/bundleS/share/update-keys" --state "$STATE" --listed "$T/bundleS/bin/yantrik-root-files.sha256" --revoked "$KEYS/revoked.sha256")"
+is  "a bundle whose only key is revoked is caught before install" "no_keys" "$(printf '%s\n' "$out" | sed -n 's/^status=//p')"
 has "and the sentence says what to do" "install a current build from a fresh image" "$out"
+out="$("$VERIFY" trusts --channel nightly --keys "$T/bundleS/share/update-keys" --state "$T/state-none" --listed "$T/bundleS/bin/yantrik-root-files.sha256")"
+is  "(with nothing revoked, that same key set is fine)" "ok" "$(printf '%s\n' "$out" | sed -n 's/^status=//p')"
+out="$("$VERIFY" trusts --channel stable --keys "$T/bundleS/share/update-keys" --state "$T/state-none" --listed "$T/bundleS/bin/yantrik-root-files.sha256")"
+is  "a nightly-only key set does not cover stable" "no_keys" "$(printf '%s\n' "$out" | sed -n 's/^status=//p')"
+
+# ── Emergency rotation: N trusts only n1, N+1 drops it, revokes it, and is delivered by n1 ──
+echo "  emergency rotation (no overlap)"
+ER="$T/emerg"; rm -rf "$ER"; mkdir -p "$ER/bin" "$ER/share/update-keys"; chmod 755 "$ER" "$ER/bin" "$ER/share" "$ER/share/update-keys"
+cp "$T/n1.pub" "$ER/share/update-keys/nightly.n1.pub"; chmod 644 "$ER/share/update-keys"/*
+KEYS="$ER/share/update-keys"; STATE="$ER/update-state"; LIST="$ER/bin/yantrik-root-files.sha256"; relist
+verify nightly "$T/n100" --commit
+is  "build N, trusting only n1: the manifest that delivers N+1 (n1-signed) is accepted" "ok:0" "$(field status):$rc"
+BN1="$T/bundleN1"; rm -rf "$BN1"; mkdir -p "$BN1/bin" "$BN1/share/update-keys"; chmod 755 "$BN1" "$BN1/bin" "$BN1/share" "$BN1/share/update-keys"
+cp "$T/n2.pub" "$BN1/share/update-keys/nightly.n2.pub"; cp "$T/bundle-revoked" "$BN1/share/update-keys/revoked.sha256"; chmod 644 "$BN1/share/update-keys"/*
+(cd "$BN1/share" && sha256sum update-keys/*) > "$BN1/bin/yantrik-root-files.sha256"; chmod 644 "$BN1/bin/yantrik-root-files.sha256"
+before="$(cat "$STATE"/* 2>/dev/null | sha256sum)"
+out="$("$VERIFY" trusts --channel nightly --keys "$BN1/share/update-keys" --state "$STATE" --listed "$BN1/bin/yantrik-root-files.sha256" --revoked "$KEYS/revoked.sha256" 2>&1)"
+is  "the guard lets N+1 through: it has a key for nightly (n1's manifest need not verify against it)" "status=ok" "$out"
+is  "and the guard wrote nothing to the record" "$before" "$(cat "$STATE"/* 2>/dev/null | sha256sum)"
+"$VERIFY" revoke-merge --state "$STATE" "$BN1/share/update-keys/revoked.sha256" > /dev/null
+rm -rf "$ER/share/update-keys"; cp -a "$BN1/share/update-keys" "$ER/share/update-keys"; relist
+sign "$T/n2-101" nightly 101 n2
+verify nightly "$T/n2-101"
+is  "after installing N+1: n2 works" "ok:0" "$(field status):$rc"
+verify nightly "$T/n100"
+is  "and n1 is refused" "bad_signature:20" "$(field status):$rc"
+# The guard refusal leaves the record as it was (a bundle that cannot sign nightly).
+mkdir -p "$T/state-keep"; chmod 755 "$T/state-keep"; printf '%s\n' "$FP1" > "$T/state-keep/revoked-keys"; chmod 644 "$T/state-keep/revoked-keys"
+b4="$(cat "$T/state-keep/revoked-keys" | sha256sum)"
+"$VERIFY" trusts --channel nightly --keys "$T/bundleS/share/update-keys" --state "$T/state-keep" --listed "$T/bundleS/bin/yantrik-root-files.sha256" > /dev/null || true
+is  "a refusing guard leaves the record untouched" "$b4" "$(cat "$T/state-keep/revoked-keys" | sha256sum)"
+KEYS="$PFX/share/update-keys"; STATE="$PFX/update-state"; LIST="$PFX/bin/yantrik-root-files.sha256"
+
 # Revocation lines that revoke nothing are errors, not silence.
 for bad in "$(printf 'A%.0s' $(seq 1 64))" " $(printf 'a%.0s' $(seq 1 64))" "$(printf 'a%.0s' $(seq 1 63))"; do
   printf '%s\n' "$bad" > "$T/badrev"

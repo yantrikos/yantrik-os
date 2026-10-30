@@ -981,16 +981,37 @@ safely. Old backups live in $BACKUP_DIR."
   [ "$(id -u)" = 0 ] && chmod -R go-w "$backup"
   echo "$backup" > "$UPDATES_DIR/last-backup"
 
+  # ── A build with no key that may sign this channel is not installed ──
+  #
+  # A downgrade across a key rotation (or any bundle whose keys are all revoked or do not cover
+  # this channel) would install cleanly and then refuse every update, and the person would meet
+  # "no trusted keys" with no idea why. So the bundle's own key set is asked, before anything is
+  # written (the record in update-state included, so a refusal leaves it as it was): is there a
+  # listed, unrevoked key in it whose scope may sign $CHANNEL? Not "does it verify the manifest
+  # that brought it": an emergency rotation arrives in a manifest signed by the key the new build
+  # drops. Revocations already installed count; the incoming ones count through the bundle's own
+  # list.
+  if [ -d "$root/share/update-keys" ] && [ -x "$VERIFY" ] && [ -f "$root/bin/yantrik-root-files.sha256" ] && tree_is_roots; then
+    local vout installed_rev=""
+    if [ -f "$UPDATE_KEYS_DIR/revoked.sha256" ] && root_file_ok "update-keys/revoked.sha256" "$UPDATE_KEYS_DIR/revoked.sha256"; then
+      installed_rev="$UPDATE_KEYS_DIR/revoked.sha256"
+    fi
+    vout="$("$VERIFY" trusts --channel "$CHANNEL" --keys "$root/share/update-keys" --state "$UPDATE_STATE_DIR" \
+      --listed "$root/bin/yantrik-root-files.sha256" ${installed_rev:+--revoked "$installed_rev"})" || true
+    case "$(probe_field "$vout" status)" in
+      ok|keys_untrusted|keys_unlisted|state_untrusted) ;;
+      *) fail "build ${remote_ver:-$remote_git} cannot verify updates any more (its signing keys were rotated out or revoked); installing it would leave this machine unable to update itself. Nothing was installed. $(probe_field "$vout" detail)" ;;
+    esac
+  fi
+
   # ── Revocations only accumulate (#537) ──
   #
-  # The bundle's list of revoked update keys joins the record in update-state BEFORE anything is
-  # installed, so a rollback of this very install (or any later one) cannot bring a revoked key
-  # back: share/ is restored from the backup, update-state is not. A bundle without a list
-  # revokes nothing. If the record cannot be written the update stops here, untouched.
-  # What is revoked and installed now is recorded too, not only what is incoming: a machine
-  # imaged from a build that already revoked a key has no record yet, and an older build's
-  # share/ is about to replace the list that says so. Only from a root-owned file the installed
-  # build lists (ROOT_FILES), like everything else root trusts from share/.
+  # After the guard, the bundle's list of revoked update keys joins the record in update-state
+  # BEFORE anything is installed, so a rollback of this very install (or any later one) cannot
+  # bring a revoked key back: share/ is restored from the backup, update-state is not. What is
+  # revoked and installed now is recorded too, not only what is incoming: a machine imaged from
+  # a build that already revoked a key has no record yet, and an older build's share/ is about to
+  # replace the list that says so (only from a root-owned file the installed build lists).
   if [ -x "$VERIFY" ]; then
     if [ -f "$UPDATE_KEYS_DIR/revoked.sha256" ] && root_file_ok "update-keys/revoked.sha256" "$UPDATE_KEYS_DIR/revoked.sha256"; then
       "$VERIFY" revoke-merge --state "$UPDATE_STATE_DIR" "$UPDATE_KEYS_DIR/revoked.sha256" >/dev/null \
@@ -1002,23 +1023,6 @@ safely. Old backups live in $BACKUP_DIR."
     fi
   elif [ -f "$root/share/update-keys/revoked.sha256" ]; then
     fail "this updater cannot record revoked update keys ($VERIFY is missing); nothing was installed"
-  fi
-
-  # ── A build that could not verify its own channel is not installed ──
-  #
-  # A downgrade across a key rotation (or any bundle whose keys are all revoked or do not cover
-  # this channel) would install cleanly and then refuse every update, and the person would meet
-  # "no trusted keys" with no idea why. The manifest just accepted is checked against the keys
-  # and list the BUNDLE carries, with the real record of revocations, before a byte is replaced.
-  if [ -d "$root/share/update-keys" ] && [ -x "$VERIFY" ] && [ -f "$root/bin/yantrik-root-files.sha256" ] \
-     && [ -f "$UPDATE_STATE_DIR/$CHANNEL.last-good" ] && tree_is_roots; then
-    local vout
-    vout="$("$VERIFY" verify --channel "$CHANNEL" --source "$HOST" --keys "$root/share/update-keys" \
-      --state "$UPDATE_STATE_DIR" --listed "$root/bin/yantrik-root-files.sha256" "$UPDATE_STATE_DIR/$CHANNEL.last-good")" || true
-    case "$(probe_field "$vout" status)" in
-      ok|keys_untrusted|keys_unlisted|state_untrusted|expired|replay) ;;
-      *) fail "build ${remote_ver:-$remote_git} cannot verify updates any more (its signing keys were rotated out or revoked); installing it would leave this machine unable to update itself. Nothing was installed. $(probe_field "$vout" detail)" ;;
-    esac
   fi
 
   # ── Swap: install each new binary over the old, atomically per file ──
@@ -1034,7 +1038,11 @@ safely. Old backups live in $BACKUP_DIR."
   }
   # The root-files list goes in last, after share/: it names the update keys, and a failure
   # between the two must leave a list and a key directory that still agree (restore_backup keeps
-  # the keys installed now and never restores the list).
+  # the keys installed now and never restores the list). What is left is one window, between
+  # the mirror of share/ and the rename of this one file, in which the new keys are not yet on
+  # the installed list; it closes with the rename, or the install is rolled back. A crash or
+  # power loss inside it leaves a machine that refuses updates (`no_keys`) until it is
+  # reinstalled from an image: failing closed, not open. Two renames cannot be made one.
   local deferred_list=""
   while IFS= read -r f; do
     local base; base="$(basename "$f")"
