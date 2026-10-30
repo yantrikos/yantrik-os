@@ -30,7 +30,7 @@ use crate::email::port::{MailPort, ServiceMail};
 
 /// Register all email tools, over the real mail service.
 pub fn register(reg: &mut ToolRegistry) {
-    register_with(reg, Arc::new(ServiceMail));
+    register_with(reg, Arc::new(ServiceMail::live()));
 }
 
 /// Register all email tools over `mail`. The tests pass a fake.

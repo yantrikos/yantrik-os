@@ -16,3 +16,6 @@ pub mod port;
 
 #[cfg(test)]
 pub mod fake;
+
+#[cfg(test)]
+mod port_tests;

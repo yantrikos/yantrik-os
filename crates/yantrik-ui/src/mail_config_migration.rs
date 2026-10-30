@@ -32,7 +32,7 @@ pub fn start(config: Option<PathBuf>) {
     // not once per minute.
     let told = Mutex::new(None::<String>);
     let pass: Pass = Arc::new(move |when| {
-        let (left, notice) = legacy::pass(&config, &ServiceMail, when);
+        let (left, notice) = legacy::pass(&config, &ServiceMail::live(), when);
         if let Some(text) = notice {
             let mut last = told.lock().unwrap_or_else(|e| e.into_inner());
             if last.as_deref() != Some(text.as_str()) {
