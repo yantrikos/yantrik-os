@@ -1399,41 +1399,17 @@ impl Default for MemoryEvolutionConfig {
 }
 
 // ── Email Config ────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmailAccountConfig {
-    pub name: String,               // "Personal Gmail"
-    pub email: String,              // user@gmail.com
-    pub provider: String,           // "gmail", "outlook", "yahoo", "imap"
-    #[serde(default)]
-    pub imap_server: Option<String>,  // auto-detected from provider, or custom
-    #[serde(default = "default_imap_port")]
-    pub imap_port: u16,
-    #[serde(default)]
-    pub smtp_server: Option<String>,
-    #[serde(default = "default_smtp_port")]
-    pub smtp_port: u16,
-    #[serde(default)]
-    pub password: String,           // App password (empty if OAuth)
-    #[serde(default)]
-    pub auth_method: Option<String>, // "password" or "oauth2" (default: password)
-    #[serde(default)]
-    pub oauth_access_token: Option<String>,
-    #[serde(default)]
-    pub oauth_refresh_token: Option<String>,
-    #[serde(default)]
-    pub oauth_token_expiry: Option<f64>,  // unix timestamp
-}
-
-fn default_imap_port() -> u16 { 993 }
-fn default_smtp_port() -> u16 { 587 }
+//
+// Mail accounts are not kept here. They live in email-service, with their passwords in the
+// credential vault; the companion reaches them over the service's own IPC, the same methods the
+// Email app uses (#1022). `config.yaml` used to carry `email.accounts` with each password in
+// clear text; `yantrik_companion::email::legacy` moves any that are still there. This section
+// keeps only the companion's own switches.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
-    pub accounts: Vec<EmailAccountConfig>,
     #[serde(default = "default_email_poll_minutes")]
     pub poll_interval_minutes: u32,
     #[serde(default = "default_evolution_enabled")]
@@ -1446,7 +1422,6 @@ impl Default for EmailConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            accounts: Vec::new(),
             poll_interval_minutes: default_email_poll_minutes(),
             notify_important: true,
         }

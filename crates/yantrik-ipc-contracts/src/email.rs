@@ -28,6 +28,11 @@ pub mod method {
     /// credential vault. A shut vault refuses, so a secret is never left behind by an account that
     /// is gone from the list.
     pub const REMOVE_ACCOUNT: &str = "email.remove_account";
+    /// Bring in an account kept somewhere else, with its secret: the companion's old
+    /// `config.yaml` mail accounts (#1022). The address is the identity, so an address the service
+    /// already has is left exactly as it is and its secret is not replaced. A new one has its
+    /// secret kept in the credential vault, read back, before it is written to the accounts file.
+    pub const IMPORT_ACCOUNT: &str = "email.import_account";
     /// The shell tells the service the credential vault has just been opened, so a service that
     /// paused for it ([`super::WAITING_FOR_VAULT`]) moves what it was holding and resumes. Answers
     /// the shell only.
@@ -149,6 +154,75 @@ impl std::fmt::Debug for AccountSettings {
     }
 }
 
+/// An account to bring in with [`method::IMPORT_ACCOUNT`]: the settings, and either a password or
+/// the tokens a Google sign-in issued.
+///
+/// Like [`AccountSettings`] this carries secrets in one direction only, to the service, and its
+/// [`Debug`] is written by hand to redact every one of them.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ImportAccount {
+    pub email: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub provider: String,
+    pub imap_server: String,
+    pub imap_port: u16,
+    pub smtp_server: String,
+    pub smtp_port: u16,
+    /// An app password. Empty for an account that signs in with Google.
+    #[serde(default)]
+    pub password: String,
+    /// Google sign-in tokens, when the account has them instead of a password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_refresh_token: Option<String>,
+    /// Unix seconds at which the access token stops working, when known.
+    #[serde(default)]
+    pub oauth_expires_at: i64,
+}
+
+impl ImportAccount {
+    /// Whether this account signs in with Google tokens rather than a password.
+    pub fn uses_oauth(&self) -> bool {
+        self.oauth_refresh_token.as_deref().is_some_and(|t| !t.is_empty())
+    }
+
+    /// Whether there is any secret to keep.
+    pub fn has_secret(&self) -> bool {
+        !self.password.is_empty()
+            || self.oauth_access_token.as_deref().is_some_and(|t| !t.is_empty())
+            || self.oauth_refresh_token.as_deref().is_some_and(|t| !t.is_empty())
+    }
+}
+
+impl std::fmt::Debug for ImportAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportAccount")
+            .field("email", &self.email)
+            .field("display_name", &self.display_name)
+            .field("provider", &self.provider)
+            .field("imap_server", &self.imap_server)
+            .field("imap_port", &self.imap_port)
+            .field("smtp_server", &self.smtp_server)
+            .field("smtp_port", &self.smtp_port)
+            .field("password", &"<redacted>")
+            .field("oauth_access_token", &self.oauth_access_token.as_ref().map(|_| "<redacted>"))
+            .field("oauth_refresh_token", &self.oauth_refresh_token.as_ref().map(|_| "<redacted>"))
+            .field("oauth_expires_at", &self.oauth_expires_at)
+            .finish()
+    }
+}
+
+/// The answer to [`method::IMPORT_ACCOUNT`]: the account as the service now holds it. No secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub account: EmailAccountSummary,
+    /// False when the address was already an account here: nothing was written.
+    pub created: bool,
+}
+
 /// The answer to [`method::TEST_ACCOUNT`]: what each half of the connection did.
 ///
 /// Both halves are reported rather than the first failure, because an account whose IMAP works
@@ -262,6 +336,14 @@ pub struct EmailSummary {
     pub has_attachments: bool,
     pub folder: String,
     pub thread_id: Option<String>,
+    /// The sender's address alone (`name@host`), where `from` is the display name when there is
+    /// one. A caller that has to write back to the sender, or tell one sender from another, needs
+    /// this and not the name. `#[serde(default)]` so an older service parses as "not told".
+    #[serde(default)]
+    pub from_address: String,
+    /// The `Message-ID` header, for threading a reply under it.
+    #[serde(default)]
+    pub message_id: String,
 }
 
 /// Full email detail (for reading view).
@@ -288,6 +370,9 @@ pub struct EmailDetail {
     pub is_read: bool,
     #[serde(default)]
     pub is_starred: bool,
+    /// The `Message-ID` header, so a reply can say what it answers.
+    #[serde(default)]
+    pub message_id: String,
 }
 
 /// An email attachment.
@@ -398,7 +483,53 @@ impl std::error::Error for ServiceError {}
 
 #[cfg(test)]
 mod tests {
-    use super::folder_or_inbox;
+    use super::{folder_or_inbox, ImportAccount};
+
+    fn import() -> ImportAccount {
+        ImportAccount {
+            email: "a@example.org".into(),
+            display_name: String::new(),
+            provider: String::new(),
+            imap_server: "imap.example.org".into(),
+            imap_port: 993,
+            smtp_server: "smtp.example.org".into(),
+            smtp_port: 587,
+            password: "fake-pw-SENTINEL-9001".into(),
+            oauth_access_token: Some("fake-access-SENTINEL-9002".into()),
+            oauth_refresh_token: Some("fake-refresh-SENTINEL-9003".into()),
+            oauth_expires_at: 0,
+        }
+    }
+
+    #[test]
+    fn an_import_prints_none_of_its_secrets() {
+        let said = format!("{:?}", import());
+        for secret in ["SENTINEL-9001", "SENTINEL-9002", "SENTINEL-9003"] {
+            assert!(!said.contains(secret), "{said}");
+        }
+        assert!(said.contains("a@example.org") && said.contains("<redacted>"));
+    }
+
+    #[test]
+    fn an_import_signs_in_with_google_only_when_it_has_a_refresh_token() {
+        let mut one = import();
+        assert!(one.uses_oauth() && one.has_secret());
+        one.oauth_refresh_token = None;
+        assert!(!one.uses_oauth() && one.has_secret(), "a password and a lone access token is a password account");
+        one.password.clear();
+        one.oauth_access_token = None;
+        assert!(!one.has_secret());
+    }
+
+    #[test]
+    fn an_older_service_listing_without_the_new_fields_still_parses() {
+        let summary: super::EmailSummary = serde_json::from_value(serde_json::json!({
+            "id": "1", "from": "A", "to": [], "subject": "s", "snippet": "", "date": "d",
+            "is_read": false, "is_starred": false, "has_attachments": false, "folder": "INBOX", "thread_id": null
+        }))
+        .unwrap();
+        assert_eq!((summary.from_address.as_str(), summary.message_id.as_str()), ("", ""));
+    }
 
     #[test]
     fn folder_param_defaults_to_inbox_so_old_callers_keep_working() {
