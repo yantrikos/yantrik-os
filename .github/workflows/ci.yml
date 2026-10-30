@@ -278,6 +278,11 @@ jobs:
       - name: The MCP bridge agrees with the shell about what the mind may do
         run: python3 deploy/yantrik-os/yos-mcp-selftest.py
 
+      # The release manifest is signed and the updater refuses what is not (#537): made, signed,
+      # tampered, replayed and expired here with throwaway keys, and then through `check`.
+      - name: The updater verifies the signed manifest
+        run: bash deploy/yantrik-os/yantrik-update-verify-selftest.sh
+
       - name: The update server's publish path
         run: python3 deploy/yantrik-os/server/publish_selftest.py
 

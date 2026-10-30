@@ -39,13 +39,26 @@
 # answer "up to date" because every failure path in it returned the success value.
 #
 # check exits: 0 up to date · 10 update available · 11 channel not published · 12 server
-# unreachable · 13 this machine is ahead of the channel · 1 anything else. The porcelain
-# `result=` line says the same thing in words; both are emitted so neither has to be inferred
+# unreachable · 13 this machine is ahead of the channel · 14 the server's update information
+# was refused (not signed by Yantrik, expired, replayed; `result=unverified`) · 1 anything
+# else. The porcelain `result=` line says the same thing in words; both are emitted so neither has to be inferred
 # from the other.
 #
 # 13 is not a failure and not 0 either: there is nothing to install, but "up to date" would say
 # this machine is on the channel's build, and it is not — it is past it. A caller that only
 # reads exit codes sees "no update to apply", which is the true part.
+
+# ── The manifest is signed, and nothing is read from it until the signature is checked ──
+#
+# Everything this script installs as root is chosen by one file on the release server, so that
+# file is signed (#537): `/<channel>/release.signed`, checked by yantrik-update-verify against
+# the public keys in share/update-keys, which are root's. A nightly key signs only the nightly
+# channel; beta and stable have their own. The file carries a serial that only rises and an
+# expiry. A file that is unsigned, badly signed, signed for another channel, expired or older
+# than one already accepted is refused with a sentence, the last good one is kept, and there is
+# no fallback to the old unsigned /manifest.json. `rollback`, which restores a build already on
+# this disk, asks the server nothing and is not affected. `check` exits 14 (result=unverified)
+# for a refusal.
 
 set -uo pipefail
 
@@ -68,6 +81,11 @@ SHARE_DIR="$PREFIX/share"
 BUILD_FILE="$PREFIX/BUILD"
 UPDATES_DIR="$PREFIX/updates"
 BACKUP_DIR="$PREFIX/backups"
+# The signed-manifest check (#537): its code beside this script, the public keys the bundle
+# ships (root's, like everything else root trusts), and the last serial accepted per channel.
+VERIFY="$(dirname "$SELF_PATH")/yantrik-update-verify"
+UPDATE_KEYS_DIR="$SHARE_DIR/update-keys"
+UPDATE_STATE_DIR="$PREFIX/update-state"
 CONF="$PREFIX/update.conf"
 # The systemd unit that owns the desktop session.
 SESSION_UNIT="${YANTRIK_SESSION_UNIT:-yantrik-session.service}"
@@ -212,35 +230,93 @@ has_porcelain() {
 # expanding a shell variable inside it is how you ship a malformed request.
 #
 # Prints KEY=value lines, `status=` first, and exits 0 ok / 11 not published / 12 unreachable.
+#
+# ── Signed (#537) ──
+#
+# What it reads is `/<channel>/release.signed`, one file, fetched to disk and handed to
+# yantrik-update-verify before any of it is parsed. The result is the verifier's: `status=ok`
+# and the fields of a manifest that was signed for this channel, is unexpired and not older
+# than the last one accepted, or `status=unverified` with `detail=` a sentence for a person and
+# `why=` the verifier's own word for it. The unsigned /manifest.json is read for one thing only:
+# telling a channel nobody published to (11) from one published without a signature (an old
+# server, or someone's file), which is refused like any other unsigned file. It is never
+# believed. A second argument `commit` (apply, as root) records the accepted serial.
+#
+# Exits 0 ok / 11 not published / 12 unreachable / 20 refused.
 channel_probe() {
-  YANTRIK_UPDATE_HOST="$HOST" YANTRIK_UPDATE_SCHEME="$SCHEME" \
-  python3 -I - "$1" <<'PY'
-import sys, os, json, urllib.request
-channel = sys.argv[1]
+  local tmp fetched fstatus rc=0 out
+  tmp="$(mktemp)" || { printf 'status=unreachable\ndetail=no scratch space for the update information\n'; return 12; }
+  fetched="$(YANTRIK_UPDATE_HOST="$HOST" YANTRIK_UPDATE_SCHEME="$SCHEME" \
+  python3 -I - "$1" "$tmp" <<'PY'
+import sys, os, json, urllib.request, urllib.error
+channel, dest = sys.argv[1], sys.argv[2]
 host = os.environ.get("YANTRIK_UPDATE_HOST", "releases.yantrikos.com")
 scheme = os.environ.get("YANTRIK_UPDATE_SCHEME", "https")
-# One URL. The second entry here used to be a literal private address on the author's LAN,
+# One host. The second entry here used to be a literal private address on the author's LAN,
 # tried on every machine this OS was ever installed on; see the note beside HOST_DEFAULT.
+def get(path, limit):
+    with urllib.request.urlopen(f"{scheme}://{host}{path}", timeout=10) as r:
+        data = r.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("the answer is larger than any update information should be")
+    return data
 try:
-    with urllib.request.urlopen(f"{scheme}://{host}/manifest.json", timeout=10) as r:
-        m = json.load(r)
+    data = get(f"/{channel}/release.signed", 65536)
+    open(dest, "wb").write(data)
+    print("fetch=ok")
+except urllib.error.HTTPError as e:
+    if e.code not in (403, 404):
+        print("fetch=unreachable")
+        print(("detail=" + f"HTTP {e.code}")[:200])
+        sys.exit(0)
+    # Nothing signed there. Is that a channel nobody published to, or one published unsigned?
+    try:
+        channels = json.loads(get("/manifest.json", 1 << 20)).get("channels") or {}
+    except Exception as e2:
+        print("fetch=unreachable")
+        print(("detail=" + str(e2).replace("\n", " "))[:200])
+        sys.exit(0)
+    if isinstance(channels.get(channel), dict) and channels.get(channel):
+        print("fetch=unsigned")
+    else:
+        print("fetch=missing")
+        print("published=" + ",".join(sorted(str(k) for k in channels)))
 except Exception as e:
-    print("status=unreachable")
+    print("fetch=unreachable")
     print(("detail=" + str(e).replace("\n", " "))[:200])
-    sys.exit(12)
-channels = m.get("channels") or {}
-ch = channels.get(channel)
-if not isinstance(ch, dict) or not ch:
-    print("status=not_published")
-    print("published=" + ",".join(sorted(str(k) for k in channels)))
-    sys.exit(11)
-print("status=ok")
-for f in ("version", "git", "artifact", "sha256", "date"):
-    v = ch.get(f, "")
-    if v != "":
-        print(f"{f}={str(v)}")
-sys.exit(0)
 PY
+  )"
+  fstatus="$(probe_field "$fetched" fetch)"
+  case "$fstatus" in
+    ok) ;;
+    unsigned) : > "$tmp" ;;   # the verifier turns an empty file into the plain sentence
+    missing)
+      rm -f "$tmp"
+      printf 'status=not_published\npublished=%s\n' "$(probe_field "$fetched" published)"
+      return 11 ;;
+    *)
+      rm -f "$tmp"
+      printf 'status=unreachable\ndetail=%s\n' "$(probe_field "$fetched" detail)"
+      return 12 ;;
+  esac
+  local args=(verify --channel "$1" --source "$HOST" --keys "$UPDATE_KEYS_DIR" --state "$UPDATE_STATE_DIR" --listed "$ROOT_FILES")
+  [ "${2:-}" = commit ] && args+=(--commit)
+  if [ -x "$VERIFY" ]; then
+    out="$("$VERIFY" "${args[@]}" "$tmp")" || rc=$?
+  else
+    out="status=no_verifier
+detail=This updater is missing its signature check ($VERIFY), so it cannot trust any update information and nothing was installed."
+    rc=20
+  fi
+  rm -f "$tmp"
+  if [ "$rc" = 0 ] && [ "$(probe_field "$out" status)" = ok ]; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  # Anything but a clean accept is a refusal. A verifier that died without a word is one too.
+  printf 'status=unverified\nwhy=%s\ndetail=%s\n' "$(probe_field "$out" status)" \
+    "$(probe_field "$out" detail | grep . || echo "The update information from $HOST could not be verified, so nothing was installed.")"
+  return 20
 }
 
 # One field out of a channel_probe result. $1 = the whole result, $2 = the key.
@@ -455,6 +531,12 @@ cmd_check() {
       reason="channel '$CHANNEL' is not published — the server has nothing on it"
       [ -n "$published" ] && reason="$reason (published: $published)"
       ;;
+    unverified)
+      # Refused, not failed: the server answered and what it said cannot be believed. The
+      # sentence is the verifier's; "up to date" would be a lie and "unreachable" another.
+      result="unverified"; code=14
+      reason="$detail"
+      ;;
     ok)
       decision="$(decide_check "$local_git" "$local_ver" "$remote_git" "$remote_ver" "$CHANNEL")"
       result="$(probe_field "$decision" result)"
@@ -490,7 +572,7 @@ cmd_check() {
 
   say "Checking channel '$CHANNEL' on $HOST"
   case "$result" in
-    unreachable|not_published|error)
+    unreachable|not_published|unverified|error)
       warn "$reason"
       return "$code"
       ;;
@@ -750,12 +832,13 @@ cmd_apply() {
   # One request for the whole channel entry, rather than four requests for four fields of it.
   # Four requests could also see four different manifests if the publisher was mid-upload.
   local probe pstatus remote_git remote_ver artifact remote_sha
-  probe="$(channel_probe "$CHANNEL")"
+  probe="$(channel_probe "$CHANNEL" commit)"
   pstatus="$(probe_field "$probe" status)"
   case "$pstatus" in
     ok) ;;
     not_published) fail "channel '$CHANNEL' is not published — there is nothing to install \
 from it. Change it with: yantrik-update set-channel nightly" ;;
+    unverified) fail "$(probe_field "$probe" detail)" ;;
     *) fail "cannot reach $HOST over $SCHEME — $(probe_field "$probe" detail)" ;;
   esac
   remote_ver="$(probe_field "$probe" version)"
@@ -898,6 +981,50 @@ safely. Old backups live in $BACKUP_DIR."
   [ "$(id -u)" = 0 ] && chmod -R go-w "$backup"
   echo "$backup" > "$UPDATES_DIR/last-backup"
 
+  # ── A build with no key that may sign this channel is not installed ──
+  #
+  # A downgrade across a key rotation (or any bundle whose keys are all revoked or do not cover
+  # this channel) would install cleanly and then refuse every update, and the person would meet
+  # "no trusted keys" with no idea why. So the bundle's own key set is asked, before anything is
+  # written (the record in update-state included, so a refusal leaves it as it was): is there a
+  # listed, unrevoked key in it whose scope may sign $CHANNEL? Not "does it verify the manifest
+  # that brought it": an emergency rotation arrives in a manifest signed by the key the new build
+  # drops. Revocations already installed count; the incoming ones count through the bundle's own
+  # list.
+  if [ -d "$root/share/update-keys" ] && [ -x "$VERIFY" ] && [ -f "$root/bin/yantrik-root-files.sha256" ] && tree_is_roots; then
+    local vout installed_rev=""
+    if [ -f "$UPDATE_KEYS_DIR/revoked.sha256" ] && root_file_ok "update-keys/revoked.sha256" "$UPDATE_KEYS_DIR/revoked.sha256"; then
+      installed_rev="$UPDATE_KEYS_DIR/revoked.sha256"
+    fi
+    vout="$("$VERIFY" trusts --channel "$CHANNEL" --keys "$root/share/update-keys" --state "$UPDATE_STATE_DIR" \
+      --listed "$root/bin/yantrik-root-files.sha256" ${installed_rev:+--revoked "$installed_rev"})" || true
+    case "$(probe_field "$vout" status)" in
+      ok|keys_untrusted|keys_unlisted|state_untrusted) ;;
+      *) fail "build ${remote_ver:-$remote_git} cannot verify updates any more (its signing keys were rotated out or revoked); installing it would leave this machine unable to update itself. Nothing was installed. $(probe_field "$vout" detail)" ;;
+    esac
+  fi
+
+  # ── Revocations only accumulate (#537) ──
+  #
+  # After the guard, the bundle's list of revoked update keys joins the record in update-state
+  # BEFORE anything is installed, so a rollback of this very install (or any later one) cannot
+  # bring a revoked key back: share/ is restored from the backup, update-state is not. What is
+  # revoked and installed now is recorded too, not only what is incoming: a machine imaged from
+  # a build that already revoked a key has no record yet, and an older build's share/ is about to
+  # replace the list that says so (only from a root-owned file the installed build lists).
+  if [ -x "$VERIFY" ]; then
+    if [ -f "$UPDATE_KEYS_DIR/revoked.sha256" ] && root_file_ok "update-keys/revoked.sha256" "$UPDATE_KEYS_DIR/revoked.sha256"; then
+      "$VERIFY" revoke-merge --state "$UPDATE_STATE_DIR" "$UPDATE_KEYS_DIR/revoked.sha256" >/dev/null \
+        || fail "could not record the update keys this machine's build revokes; nothing was installed"
+    fi
+    if [ -f "$root/share/update-keys/revoked.sha256" ]; then
+      "$VERIFY" revoke-merge --state "$UPDATE_STATE_DIR" "$root/share/update-keys/revoked.sha256" >/dev/null \
+        || fail "could not record the update keys this build revokes; nothing was installed"
+    fi
+  elif [ -f "$root/share/update-keys/revoked.sha256" ]; then
+    fail "this updater cannot record revoked update keys ($VERIFY is missing); nothing was installed"
+  fi
+
   # ── Swap: install each new binary over the old, atomically per file ──
   say "Installing"
   local installed=0
@@ -909,9 +1036,18 @@ safely. Old backups live in $BACKUP_DIR."
     keep_updater=1
     warn "this build predates the root-files list; keeping the current yantrik-update"
   }
+  # The root-files list goes in last, after share/: it names the update keys, and a failure
+  # between the two must leave a list and a key directory that still agree (restore_backup keeps
+  # the keys installed now and never restores the list). What is left is one window, between
+  # the mirror of share/ and the rename of this one file, in which the new keys are not yet on
+  # the installed list; it closes with the rename, or the install is rolled back. A crash or
+  # power loss inside it leaves a machine that refuses updates (`no_keys`) until it is
+  # reinstalled from an image: failing closed, not open. Two renames cannot be made one.
+  local deferred_list=""
   while IFS= read -r f; do
     local base; base="$(basename "$f")"
     if [ "$keep_updater" = 1 ] && is_updater_file "$base"; then continue; fi
+    if [ "$base" = yantrik-root-files.sha256 ] && [ -d "$root/share" ]; then deferred_list="$f"; continue; fi
     local tmp="$BIN_DIR/.$base.new"
     if cp "$f" "$tmp" 2>/dev/null \
        && [ "$(stat -c%s "$tmp" 2>/dev/null || echo 0)" = "$(stat -c%s "$f")" ] \
@@ -964,6 +1100,17 @@ safely. Old backups live in $BACKUP_DIR."
     fi
     seal_share
     info "installed $(find "$SHARE_DIR" -type f | wc -l) shared files"
+    if [ -n "$deferred_list" ]; then
+      local ltmp="$BIN_DIR/.yantrik-root-files.sha256.new"
+      if cp "$deferred_list" "$ltmp" 2>/dev/null && chmod 755 "$ltmp" && mv -f "$ltmp" "$ROOT_FILES"; then
+        installed=$((installed + 1))
+      else
+        rm -f "$ltmp"
+        warn "could not install the root-files list — rolling back"
+        restore_backup "$backup"
+        fail "install failed at yantrik-root-files.sha256; rolled back to the previous build"
+      fi
+    fi
 
     # ── The app icon ──
     #
@@ -1354,6 +1501,14 @@ restore_backup() {
     warn "backup $backup is not root's alone to write; refusing to restore binaries from it"
     return 1
   fi
+  # share/ goes back too, and it holds the update keys: from a backup that only root could have
+  # written, as bin/ does (#537). The keys that count are the ones the installed build lists
+  # (yantrik-update-verify), so a restored share/ can add no trust, but a planted one is refused
+  # outright rather than sealed as root's.
+  if tree_is_roots && [ -d "$backup/share" ] && [ -n "$(find "$backup/share" \( ! -user root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ]; then
+    warn "backup $backup/share is not root's alone to write; refusing to restore from it"
+    return 1
+  fi
   while IFS= read -r f; do
     local base; base="$(basename "$f")"
     # Never back: an older updater would undo what this one checks (#419).
@@ -1361,8 +1516,23 @@ restore_backup() {
     cp "$f" "$BIN_DIR/.$base.rb" 2>/dev/null && chmod 755 "$BIN_DIR/.$base.rb" && mv -f "$BIN_DIR/.$base.rb" "$BIN_DIR/$base"
   done < <(find "$backup/bin" -maxdepth 1 -type f)
   if [ -d "$backup/share" ]; then
+    # The trusted update keys only move forward (#537), like the updater: the keys installed now
+    # stay, whatever the backup's share/ held. Putting an older set back would trust a key a later
+    # build dropped, and an automatic rollback right after a rotation is exactly when that
+    # happens. (yantrik-update-verify also trusts only keys the installed build lists, and
+    # refuses revoked ones, so this is the second lock, not the only one.)
+    local keys_now=""
+    if [ -d "$UPDATE_KEYS_DIR" ]; then
+      keys_now="$SHARE_DIR/../.update-keys.keep"
+      rm -rf "$keys_now"
+      mv "$UPDATE_KEYS_DIR" "$keys_now" || keys_now=""
+    fi
     rm -rf "$SHARE_DIR"
     cp -a "$backup/share" "$SHARE_DIR"
+    if [ -n "$keys_now" ]; then
+      rm -rf "$UPDATE_KEYS_DIR"
+      mv "$keys_now" "$UPDATE_KEYS_DIR"
+    fi
     seal_share
   fi
   [ -f "$backup/BUILD" ] && cp -a "$backup/BUILD" "$BUILD_FILE"
@@ -2239,7 +2409,7 @@ source_is_roots() {
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
 # from before a capability was required.
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -6977,7 +7147,8 @@ usage() {
     "  selftest                                  offline checks, no network" \
     "" \
     "check exits 0 up to date · 10 update available · 11 channel not published ·" \
-    "12 server unreachable · 13 this machine is ahead of the channel · 1 anything else."
+    "12 server unreachable · 13 this machine is ahead of the channel · 14 update information not" \
+    "verified (unsigned, wrongly signed, expired or older than one already accepted) · 1 anything else."
 }
 
 # ── dispatch ────────────────────────────────────────────────────────────────────────────
