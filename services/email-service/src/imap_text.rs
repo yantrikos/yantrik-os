@@ -96,10 +96,21 @@ pub fn thread_id(parent: &str) -> Option<String> {
     ok.then(|| parent.to_string())
 }
 
+/// What is said when the server cannot take text outside ASCII.
+const NO_LITERALS: &str = "This mail server cannot search for text with accents or other non-English letters.";
+
 /// UIDs in the selected folder whose subject or sender contains `query`.
 ///
 /// The one place a free-text query becomes an IMAP command. The query is checked and quoted
 /// ([`search_criteria`]) before the folder is even selected, so a refused query sends nothing.
+///
+/// **Non-ASCII text.** An IMAP quoted string is 7-bit, so `"café"` is not a command a server will
+/// parse ("Could not parse command"). Such a query is sent as `SEARCH CHARSET UTF-8` with the text
+/// as an IMAP literal (RFC 3501 section 4.3, `{n+}` from LITERAL+ or LITERAL-, RFC 7888): the
+/// literal carries its byte count, so what is inside it cannot end the command, and CR, LF and NUL
+/// are refused before any of this ([`plain`]) all the same. A server that offers neither LITERAL+
+/// nor LITERAL- cannot be sent a literal without waiting for its `+` (which the library does not
+/// let a caller do), so it is told no in words. ASCII queries are sent exactly as before.
 pub fn find_uids<T: Read + Write>(
     session: &mut imap::Session<T>,
     folder: &str,
@@ -111,10 +122,41 @@ pub fn find_uids<T: Read + Write>(
         code: -32000,
         message: format!("IMAP SELECT {folder} failed: {e}"),
     })?;
-    let found = session
-        .search(&criteria)
+    if query.is_ascii() {
+        let found = session
+            .search(&criteria)
+            .map_err(|e| ServiceError { code: -32000, message: format!("IMAP SEARCH failed: {e}") })?;
+        return Ok(found.into_iter().collect());
+    }
+    let literals = session
+        .capabilities()
+        .map(|caps| caps.has_str("LITERAL+") || caps.has_str("LITERAL-"))
+        .map_err(|e| ServiceError { code: -32000, message: format!("IMAP CAPABILITY failed: {e}") })?;
+    if !literals {
+        return Err(ServiceError { code: -32000, message: NO_LITERALS.to_string() });
+    }
+    let reply = session
+        .run_command_and_read_response(utf8_search_command(query)?)
         .map_err(|e| ServiceError { code: -32000, message: format!("IMAP SEARCH failed: {e}") })?;
-    Ok(found.into_iter().collect())
+    Ok(search_reply(&reply))
+}
+
+/// The command for a query with non-ASCII text: `SEARCH CHARSET UTF-8 OR SUBJECT {n+}` and the
+/// text, then ` FROM {n+}` and the text again. `n` is the text's length in bytes, which is what
+/// makes the literal safe: the server reads exactly that many bytes, whatever they are.
+pub fn utf8_search_command(query: &str) -> Result<String, ServiceError> {
+    let text = plain("query", query, MAX_QUERY)?;
+    let n = text.len();
+    Ok(format!("SEARCH CHARSET UTF-8 OR SUBJECT {{{n}+}}\r\n{text} FROM {{{n}+}}\r\n{text}"))
+}
+
+/// The numbers in a server's `* SEARCH 2 3 9` answer. Anything else in the reply is ignored.
+pub fn search_reply(reply: &[u8]) -> Vec<u32> {
+    String::from_utf8_lossy(reply)
+        .lines()
+        .filter_map(|line| line.trim_end().strip_prefix("* SEARCH"))
+        .flat_map(|numbers| numbers.split_whitespace().filter_map(|n| n.parse().ok()).collect::<Vec<u32>>())
+        .collect()
 }
 
 #[cfg(test)]
@@ -186,8 +228,10 @@ mod tests {
         assert_eq!(thread_id(&format!("<{}>", "a".repeat(1000))), None);
     }
 
-    /// A server that says what the protocol needs and writes down every line it is sent.
-    fn scripted_server() -> (TcpStream, Arc<Mutex<Vec<String>>>) {
+    /// A server that says what the protocol needs and writes down every line it is sent. `caps` is
+    /// what it answers to CAPABILITY. A command whose line ends in a literal marker (`{5+}`) goes on
+    /// in the next line, as a non-synchronising literal does, and is answered when it is complete.
+    fn scripted_server(caps: &'static str) -> (TcpStream, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -195,13 +239,20 @@ mod tests {
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut writer = stream.try_clone().unwrap();
+            let mut first: Option<String> = None;
             for line in BufReader::new(stream).lines() {
                 let Ok(line) = line else { return };
                 log.lock().unwrap().push(line.clone());
-                let (tag, command) = line.split_once(' ').unwrap_or((&line, ""));
+                let head = first.get_or_insert_with(|| line.clone()).clone();
+                if line.ends_with("+}") {
+                    continue; // the literal's bytes are the next line
+                }
+                first = None;
+                let (tag, command) = head.split_once(' ').unwrap_or((&head, ""));
                 let reply = match command.split(' ').next().unwrap_or("") {
                     "SELECT" => format!("* 3 EXISTS\r\n{tag} OK selected\r\n"),
                     "SEARCH" => format!("* SEARCH 2 3\r\n{tag} OK done\r\n"),
+                    "CAPABILITY" => format!("* CAPABILITY {caps}\r\n{tag} OK done\r\n"),
                     _ => format!("{tag} OK done\r\n"),
                 };
                 if writer.write_all(reply.as_bytes()).is_err() {
@@ -212,11 +263,28 @@ mod tests {
         (TcpStream::connect(address).unwrap(), seen)
     }
 
+    /// A session on a server that offers LITERAL+, as Dovecot does.
     fn session() -> (imap::Session<TcpStream>, Arc<Mutex<Vec<String>>>) {
-        let (stream, seen) = scripted_server();
+        session_with("IMAP4rev1 LITERAL+")
+    }
+
+    fn session_with(caps: &'static str) -> (imap::Session<TcpStream>, Arc<Mutex<Vec<String>>>) {
+        let (stream, seen) = scripted_server(caps);
         let client = imap::Client::new(stream);
         let session = client.login("u", "p").map_err(|e| e.0).unwrap();
         (session, seen)
+    }
+
+    /// What the server was sent after LOGIN, without the tags.
+    fn commands(seen: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+        let lines = seen.lock().unwrap().clone();
+        let mut out = Vec::new();
+        for (n, line) in lines.iter().enumerate().skip(1) {
+            // A line after a literal marker is the literal's bytes: it carries no tag.
+            let continues = lines[n - 1].ends_with("+}");
+            out.push(if continues { line.clone() } else { line.split_once(' ').map(|(_, c)| c).unwrap_or(line).to_string() });
+        }
+        out
     }
 
     #[test]
@@ -247,5 +315,67 @@ mod tests {
         assert_eq!(commands.len(), 3, "{lines:?}");
         assert_eq!(commands[2], "SEARCH OR SUBJECT \"x\\\" FROM \\\"x\" FROM \"x\\\" FROM \\\"x\"");
         assert!(!lines.iter().any(|l| l.contains("EXPUNGE") || l.contains("STORE")), "{lines:?}");
+    }
+
+    #[test]
+    fn an_ascii_search_is_sent_exactly_as_it_was_and_asks_for_no_capabilities() {
+        let (mut session, seen) = session();
+        assert_eq!(find_uids(&mut session, "INBOX", "invoice").unwrap().len(), 2);
+        assert_eq!(commands(&seen), ["SELECT \"INBOX\"", "SEARCH OR SUBJECT \"invoice\" FROM \"invoice\""]);
+    }
+
+    #[test]
+    fn a_utf8_search_is_charset_utf8_with_literals_of_the_right_byte_count() {
+        // "café" is four characters and five bytes: the count must be bytes.
+        let (mut session, seen) = session();
+        let mut uids = find_uids(&mut session, "INBOX", "café").unwrap();
+        uids.sort();
+        assert_eq!(uids, [2, 3]);
+        assert_eq!(
+            commands(&seen),
+            ["SELECT \"INBOX\"", "CAPABILITY", "SEARCH CHARSET UTF-8 OR SUBJECT {5+}", "café FROM {5+}", "café"]
+        );
+    }
+
+    #[test]
+    fn a_server_with_literal_minus_gets_the_same_search() {
+        let (mut session, seen) = session_with("IMAP4rev1 UTF8=ACCEPT LITERAL-");
+        assert_eq!(find_uids(&mut session, "INBOX", "日本語").unwrap().len(), 2);
+        assert!(commands(&seen).contains(&"SEARCH CHARSET UTF-8 OR SUBJECT {9+}".to_string()), "{:?}", commands(&seen));
+    }
+
+    #[test]
+    fn a_server_that_takes_no_literals_is_told_no_in_words_and_sent_no_search() {
+        let (mut session, seen) = session_with("IMAP4rev1");
+        let e = find_uids(&mut session, "INBOX", "café").unwrap_err();
+        assert!(e.message.contains("cannot search for text with accents"), "{}", e.message);
+        assert!(!commands(&seen).iter().any(|c| c.contains("SEARCH")), "{:?}", commands(&seen));
+    }
+
+    #[test]
+    fn hostile_text_is_refused_in_utf8_too_and_nothing_is_sent() {
+        // CR, LF and NUL beside a non-ASCII letter, and the control character U+0085 (next line).
+        for bad in ["café\r\nZ1 EXPUNGE", "café\nZ1 EXPUNGE", "café\0", "caf\u{e9}\u{85}x"] {
+            let (mut session, seen) = session();
+            let before = seen.lock().unwrap().len();
+            assert_eq!(find_uids(&mut session, "INBOX", bad).unwrap_err().code, -32602, "{bad:?}");
+            assert_eq!(seen.lock().unwrap().len(), before, "{bad:?} reached the server");
+            assert!(utf8_search_command(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn u2028_is_text_not_a_line_break_and_travels_inside_its_byte_count() {
+        // U+2028 is three bytes in UTF-8 and no IMAP line ending; inside a literal it is only data.
+        let command = utf8_search_command("a\u{2028}b").unwrap();
+        assert_eq!(command, "SEARCH CHARSET UTF-8 OR SUBJECT {5+}\r\na\u{2028}b FROM {5+}\r\na\u{2028}b");
+        assert_eq!(command.matches("\r\n").count(), 2, "only the two the protocol needs");
+    }
+
+    #[test]
+    fn the_search_reply_is_read_for_its_numbers_only() {
+        assert_eq!(search_reply(b"* SEARCH 4 7 9\r\na1 OK done\r\n"), [4, 7, 9]);
+        assert_eq!(search_reply(b"* SEARCH\r\na1 OK done\r\n"), Vec::<u32>::new());
+        assert_eq!(search_reply(b"* 3 EXISTS\r\n* SEARCH 1\r\n* SEARCH 2 x 3\r\n"), [1, 2, 3]);
     }
 }

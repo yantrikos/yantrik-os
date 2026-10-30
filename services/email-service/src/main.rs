@@ -1363,6 +1363,37 @@ mod tests {
         assert_eq!(handler.handle("email.mark_read", many).unwrap_err().code, -32602);
     }
 
+    /// The Low from the #1031 review: putting a concatenated SEARCH back in `imap_search` failed no
+    /// test. The search command is built in `imap_text` and nowhere else, so `imap_search` has to go
+    /// through `find_uids`, and no file of the service may call the library's `search` by hand.
+    #[test]
+    fn the_search_command_is_built_in_imap_text_and_nowhere_else() {
+        fn production(text: &str) -> &str {
+            text.split("#[cfg(test)]\nmod tests {").next().unwrap_or(text)
+        }
+        let main = production(include_str!("main.rs"));
+        let start = main.find("fn imap_search(").expect("imap_search");
+        let body = &main[start..main[start..].find("\n}\n").map(|n| start + n).unwrap_or(main.len())];
+        assert!(body.contains("imap_text::find_uids("), "imap_search no longer goes through find_uids:\n{body}");
+        for forbidden in ["SUBJECT", "format!(\"SEARCH", ".search(", ".uid_search(", "run_command"] {
+            assert!(!body.contains(forbidden), "imap_search builds or sends a command itself (`{forbidden}`)");
+        }
+        for (file, text) in [
+            ("main.rs", main),
+            ("accounts.rs", include_str!("accounts.rs")),
+            ("connect.rs", include_str!("connect.rs")),
+            ("folders.rs", include_str!("folders.rs")),
+            ("google.rs", include_str!("google.rs")),
+            ("oauth.rs", include_str!("oauth.rs")),
+            ("setup.rs", include_str!("setup.rs")),
+            ("store.rs", include_str!("store.rs")),
+        ] {
+            for forbidden in [".search(", ".uid_search(", "run_command", "SUBJECT \\\""] {
+                assert!(!text.contains(forbidden), "{file} builds or sends a command by hand (`{forbidden}`); it belongs in imap_text");
+            }
+        }
+    }
+
     use super::{extract_parts, flag_change, names_a_folder, plain_body};
     use yantrik_ipc_contracts::email::EmailAttachment;
 
