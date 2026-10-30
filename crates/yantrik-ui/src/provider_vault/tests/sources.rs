@@ -104,7 +104,7 @@ fn no_reader_takes_a_saved_providers_key_from_the_entry_directly() {
                 continue;
             }
             let other_struct = l.contains("llm.api_key") || l.contains("config.api_key");
-            let form_fill = name.ends_with("/wire/provider_panel.rs") && (l.contains("form.api_key") || l.contains("e.api_key = "));
+            let form_fill = name.ends_with("/wire/provider_panel/save.rs") && (l.contains("form.api_key") || l.contains("e.api_key = "));
             let hidden = name.ends_with("/wire/settings.rs") && l.contains("self.api_key");
             if !(other_struct || form_fill || hidden) {
                 found.push(format!("{name}: {l}"));
