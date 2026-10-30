@@ -10,7 +10,8 @@
   The same theme as the person's desktop (config/labwc/rc.xml), so a window reads as this OS's
   wherever it is drawn. What differs is deliberate:
 
-  - No <margin>. There is no status bar or taskbar in here to keep clear of.
+  - A <margin> at the top and bottom, and only there: the Mind desk's two bars (#1023, apps/mind-desk)
+    live in them. Nothing else in here reserves space, so there is no status bar or taskbar.
   - Two keybindings, not the desktop's thirty. The person's compositor sees every key first, so
     their own shortcuts — lock, screenshot, the launcher — keep working while Mind View has the
     keyboard; the only keys that reach this one are ones the person's compositor did not bind.
@@ -43,6 +44,12 @@
   </focus>
 
   <!--
+    The Mind desk's two bars: the header and strip above (116px: the header 76, the strip 40) and
+    the footer below (44px). A maximised window fills what is between them. See the window rules.
+  -->
+  <margin top="116" bottom="44" left="0" right="0" />
+
+  <!--
     Every window fills Mind View. It is a view onto what the mind is doing, not a second desktop
     to arrange: Mind View opens at 70% of the person's screen (mind_view::SIZE_PERCENT, about
     896×560 on the VM's 1280×800), and an app opening at its preferred 1100×800 in there was
@@ -52,6 +59,41 @@
   <windowRules>
     <windowRule identifier="*">
       <action name="Maximize" />
+    </windowRule>
+
+    <!--
+      The Mind desk (#1023, apps/mind-desk): two windows of one app, the bars above and below
+      Mind View's apps. Two, not one, because a window the height of Mind View would sit over the
+      apps and take their clicks; these two leave the middle to them.
+
+      The numbers below are apps/mind-desk's `metrics` (its tests read this file and fail if they
+      drift): the margins are the two bars' heights, so a maximised app fills exactly what is left.
+
+      Placed with no screen size written anywhere, as the shell's OSD is (config/labwc/rc.xml):
+      Mind View's size is 70% of the person's screen, which only the startup script knows. Each
+      bar is made as wide as the output, then dropped onto the usable area's edge, which is
+      <margin>'s inside edge, and moved the one bar's height past it, which is the screen's.
+
+      - Always on top, no title bar, not in Alt+Tab or the taskbar: they are the room's walls, not
+        windows in it. Matched by title, which the desk sets before it maps (the app declares no
+        id); a window of an app that borrowed the title would only be placed like a bar.
+      - Never force-maximised: the rule above matches every window and has already run, so the
+        first thing each bar's rule does is undo it (rules run in order, and every one that
+        matches runs).
+    -->
+    <windowRule title="Yantrik Mind Desk Top" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes">
+      <action name="UnMaximize" />
+      <action name="ToggleMaximize" direction="horizontal" />
+      <action name="ToggleAlwaysOnTop" />
+      <action name="MoveToEdge" direction="up" snapWindows="no" />
+      <action name="MoveRelative" x="0" y="-116" />
+    </windowRule>
+    <windowRule title="Yantrik Mind Desk Bottom" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes">
+      <action name="UnMaximize" />
+      <action name="ToggleMaximize" direction="horizontal" />
+      <action name="ToggleAlwaysOnTop" />
+      <action name="MoveToEdge" direction="down" snapWindows="no" />
+      <action name="MoveRelative" x="0" y="44" />
     </windowRule>
   </windowRules>
 

@@ -329,6 +329,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `new_agent`, `hand_off` | sensitive | starts an agent, with what that costs and whatever reach the role carries |
 | shell | `send_to_agent`, `stop_agent` | standard | talking to, or stopping, an agent the person started |
 | shell | `read_agent`, `show_agent`, `show_workroom` | safe | reads and showings; `show_workroom` changes the Agents page and nothing about any agent, and is held while an approval card waits |
+| shell | `mind_desk` | safe | what the Mind desk around Mind View shows (#1023): the Mind it follows by name, state, its own line, one tool's name, counts, a model label and a kind of account. Reads, changes nothing, and takes only how long to wait. Refused to a Mind (the kernel's word, a token, or descent from an attached mind): the Mind's line is the person's, as `describe shell` holds it back |
 | shell | `agent_run`, `agent_input` | sensitive | arbitrary commands; typing into a live shell |
 | shell | `agent_job`, `agent_kill` | standard | reading a job's state; ending a job the caller's token owns |
 | shell | `request_approval`, `approval_status`, `consume_approval`, `set_mind_mode`, `record_unasked_action`, `show_mind_audit`, `close_mind_menu` | safe | the approval machinery itself, which must never act; `set_mind_mode` refuses every loosening, so it can only tighten |
@@ -740,6 +741,20 @@ framework opens there at all any more; see the last section.)
   Snippets shows "Code is hidden in this
   window." for its code, searches only titles, tags and language, offers no rail question, and
   refuses editing, Copy, AI Explain and the rail's "What does this do?".
+- The Mind desk (#1023, phase 1, `apps/mind-desk`) is the bars around the apps: a header (the Mind's
+  name and state; its own line quoted and marked Reported, or the state in the desk's own voice;
+  Stop… with a confirmation; Open in Agents) and a tool strip above, a footer below (the apps open,
+  how the Mind is housed, the model it says it runs). It is a framework app of two windows that the
+  nested labwc starts and keeps in the margins `config/labwc-mind/rc.xml` reserves (always on top,
+  undecorated, out of Alt+Tab, never force-maximised). A Mind acting there can read it and press
+  its buttons, so it offers only what is harmless pressed by a Mind: `stop_agent` (a Mind stopping
+  itself) and `show_workroom` (the person's own screen), and it claims "Stopped" only on the shell's
+  acknowledgement. It never offers approve, deny, a grant, Take over or Hand back. It reads the
+  shell through `mind_desk` above, waiting on one socket call for a change and polling on no timer;
+  the strings it is sent are display-safe by construction (`yantrik_ipc_contracts::mind_desk`:
+  no field for an argument, a path, a prompt or a token). Which account a harness runs under comes
+  from the kernel's word when it attached (`Host::attached_uid`), not from a list of names. A copy
+  started anywhere but a Mind's display refuses to run (`App::ON_MINDS_DISPLAY`).
 - Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
   `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
   drives whichever Terminal window is open, including the person's if that is the one open.

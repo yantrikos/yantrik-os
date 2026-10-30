@@ -11,6 +11,7 @@ run verify-idle
 run verify-controls
 run verify-monitor
 run verify-weather
+run target/ui-validation/mind-desk.png 1184 660 verify-mind-desk
 run target/ui-validation/weather.png 1000 720 verify-weather-snapped
 run target/ui-validation/installer.png 1280 800 verify-installer
 run target/ui-validation/editor.png 1100 760 verify-editor

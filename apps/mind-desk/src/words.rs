@@ -1,0 +1,385 @@
+//! What the desk says, and in which colour: the whole of its wording, as plain functions.
+//!
+//! Nothing here draws. Each takes what the shell sent (`yantrik_ipc_contracts::mind_desk`) and
+//! returns words, and each cleans what it was given again with the contract's own functions: the
+//! shell has already, and the desk does not rely on it, because a Mind acting in Mind View can read
+//! this window, and one end's mistake must not become the other's leak.
+//!
+//! The rules the wording keeps:
+//! - A state is said in words and a colour, never a colour alone.
+//! - Amber is for a Mind waiting for the person, red for one that failed, green for one that
+//!   finished, teal for one at work, and the rest is quiet.
+//! - The Mind's own line is quoted and marked Reported, with the time the shell heard it. With no
+//!   line to quote, the desk says the state or the tool in its own plain voice, unquoted.
+//! - A fact the shell does not have is said as unavailable, not filled in with a comfortable one.
+
+use yantrik_ipc_contracts::mind_desk::{self as wire, Account, Counts, DeskMind, DeskTool, Evidence, MindState, Outcome};
+
+/// The colour a state wears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Quiet,
+    Mind,
+    Amber,
+    Red,
+    Green,
+}
+
+impl Tone {
+    /// The number `ui/desk.slint`'s `DeskTone` reads.
+    pub fn index(self) -> i32 {
+        match self {
+            Tone::Quiet => 0,
+            Tone::Mind => 1,
+            Tone::Amber => 2,
+            Tone::Red => 3,
+            Tone::Green => 4,
+        }
+    }
+}
+
+/// The word for a state, as the header says it.
+pub fn state_label(state: MindState) -> &'static str {
+    match state {
+        MindState::Thinking => "Thinking",
+        MindState::RunningTool => "Running a tool",
+        MindState::WaitingForYou => "Waiting for you",
+        MindState::Idle => "Idle",
+        MindState::Done => "Done",
+        MindState::Failed => "Failed",
+        MindState::HarnessGone => "Connection lost",
+    }
+}
+
+/// The colour for a state. A lost connection is quiet: it is said in words, and red and amber
+/// keep their own meanings.
+pub fn tone_of(state: MindState) -> Tone {
+    match state {
+        MindState::Thinking | MindState::RunningTool => Tone::Mind,
+        MindState::WaitingForYou => Tone::Amber,
+        MindState::Failed => Tone::Red,
+        MindState::Done => Tone::Green,
+        MindState::Idle | MindState::HarnessGone => Tone::Quiet,
+    }
+}
+
+/// The small line above the Mind's own: its name and its state, in capitals.
+pub fn label(mind: &DeskMind) -> String {
+    let name = wire::display_name(&mind.name);
+    let name = if name.is_empty() { "Mind".to_string() } else { name };
+    format!("{} · {}", name.to_uppercase(), state_label(mind.state).to_uppercase())
+}
+
+/// The big line, and whether it is the Mind's own words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Headline {
+    pub text: String,
+    /// Quoted words of the Mind's, marked Reported. Otherwise the desk's own plain words.
+    pub quoted: bool,
+    /// "◇ Reported · 14:32" beside a quoted line; empty beside the desk's own.
+    pub reported: String,
+}
+
+/// What the header says the Mind is doing: its own line, quoted and marked Reported with the
+/// time it was heard, or, with none (or one that is not fit to show), the state, or the tool it
+/// is running, unquoted.
+pub fn headline(mind: &DeskMind) -> Headline {
+    if let Some(said) = &mind.narration {
+        if let Some(text) = wire::narration_text(&said.text) {
+            return Headline {
+                text: format!("“{text}”"),
+                quoted: true,
+                reported: format!("{} · {}", evidence_mark(Evidence::Reported), wire::one_line(&said.heard, 8)),
+            };
+        }
+    }
+    let running = mind.tool.as_ref().filter(|t| t.outcome == Outcome::Running).and_then(|t| wire::tool_name(&t.name));
+    let text = match (mind.state, running) {
+        (MindState::RunningTool, Some(tool)) => format!("Running {tool}"),
+        (state, _) => state_label(state).to_string(),
+    };
+    Headline { text, quoted: false, reported: String::new() }
+}
+
+/// "◆ Verified" (the shell saw it) or "◇ Reported" (the harness said so).
+pub fn evidence_mark(evidence: Evidence) -> &'static str {
+    match evidence {
+        Evidence::Verified => "◆ Verified",
+        Evidence::Reported => "◇ Reported",
+    }
+}
+
+fn outcome_word(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Running => "Running",
+        Outcome::Ok => "Ok",
+        Outcome::Failed => "Failed",
+        Outcome::Interrupted => "Interrupted",
+        Outcome::Untold => "No outcome told",
+    }
+}
+
+/// The tool strip's words: a heading, the tool's name, and who vouches for it and how it went.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Strip {
+    pub heading: String,
+    pub tool: String,
+    pub mark: String,
+}
+
+/// The tool the Mind is running, or the last it ran, by name only.
+pub fn strip(mind: &DeskMind) -> Strip {
+    let named = |t: &DeskTool| wire::tool_name(&t.name);
+    match &mind.tool {
+        Some(tool) => Strip {
+            heading: if tool.outcome == Outcome::Running { "RUNNING TOOL" } else { "LAST TOOL" }.to_string(),
+            // A name that is not a plain name was never shown: the call is counted, and said as
+            // "a tool".
+            tool: named(tool).unwrap_or_else(|| "a tool".to_string()),
+            mark: format!("{} · {}", evidence_mark(tool.evidence), outcome_word(tool.outcome)),
+        },
+        None if mind.counts.calls > 0 => Strip { heading: "LAST TOOL".into(), tool: "a tool".into(), mark: String::new() },
+        None => Strip { heading: "NO TOOL YET".into(), tool: String::new(), mark: String::new() },
+    }
+}
+
+/// "4:32", or "1:04:32" past the hour.
+pub fn clock(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+fn plural(n: u32, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The run's counts, and its age as of when the shell made the snapshot, never as a clock that
+/// ticks: "4:32 elapsed at 14:32 · 12 calls · 1 failed · 1 interrupted". Nothing for a Mind that
+/// has not run.
+pub fn stats(mind: &DeskMind, as_of: &str) -> String {
+    let Counts { calls, failed, interrupted } = mind.counts;
+    let Some(secs) = mind.elapsed_secs else { return String::new() };
+    let at = wire::one_line(as_of, 8);
+    let age = if at.is_empty() { format!("{} elapsed", clock(secs)) } else { format!("{} elapsed at {at}", clock(secs)) };
+    format!("{age} · {} · {failed} failed · {interrupted} interrupted", plural(calls, "call", "calls"))
+}
+
+/// The footer's safety line, from the kind of account the shell named for the Mind's harness:
+/// the kernel's word at attach, and not a list of names.
+///
+/// "OS actions ask first" is the OS-mediated path only: it says nothing of what a harness running
+/// as the person can do to the person's files by itself, which is why that line says so.
+pub fn safety_line(account: Account) -> &'static str {
+    match account {
+        Account::Own => "Own account · Network checked · OS actions ask first",
+        Account::Person => "Runs as you · OS actions ask first · Not isolated (planned)",
+        Account::Unknown => "Account unavailable",
+    }
+}
+
+/// The model the harness said it runs, and the mark that says whose word that is; or that there
+/// is none to say.
+pub fn model_line(model: Option<&str>) -> (String, &'static str) {
+    match model.and_then(wire::model_label) {
+        Some(model) => (model, "◇ Harness-reported model"),
+        None => ("Model unavailable".to_string(), ""),
+    }
+}
+
+/// The apps open in Mind View, as a person reads them.
+pub fn apps_line(apps: &[String]) -> String {
+    let names: Vec<String> = apps.iter().map(|a| wire::display_name(a)).filter(|a| !a.is_empty()).collect();
+    if names.is_empty() {
+        "No apps open".to_string()
+    } else {
+        names.join(" / ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wire::Narration;
+
+    fn mind(state: MindState) -> DeskMind {
+        DeskMind {
+            agent: "hermes:main".into(),
+            name: "Hermes".into(),
+            state,
+            since: 0,
+            narration: None,
+            tool: None,
+            counts: Counts::default(),
+            elapsed_secs: None,
+            model: None,
+            account: Account::Person,
+        }
+    }
+
+    const ALL: [MindState; 7] = [
+        MindState::Thinking,
+        MindState::RunningTool,
+        MindState::WaitingForYou,
+        MindState::Idle,
+        MindState::Done,
+        MindState::Failed,
+        MindState::HarnessGone,
+    ];
+
+    #[test]
+    fn every_state_has_its_word() {
+        let said: Vec<&str> = ALL.iter().map(|s| state_label(*s)).collect();
+        assert_eq!(said, ["Thinking", "Running a tool", "Waiting for you", "Idle", "Done", "Failed", "Connection lost"]);
+    }
+
+    #[test]
+    fn amber_is_only_for_waiting_red_only_for_failed_and_green_only_for_done() {
+        let tones: Vec<(MindState, Tone)> = ALL.iter().map(|s| (*s, tone_of(*s))).collect();
+        for (state, tone) in &tones {
+            assert_eq!(*tone == Tone::Amber, *state == MindState::WaitingForYou, "{state:?}");
+            assert_eq!(*tone == Tone::Red, *state == MindState::Failed, "{state:?}");
+            assert_eq!(*tone == Tone::Green, *state == MindState::Done, "{state:?}");
+            assert_eq!(*tone == Tone::Mind, matches!(state, MindState::Thinking | MindState::RunningTool), "{state:?}");
+        }
+        // A lost connection is said in words and wears no alarm colour.
+        assert_eq!(tone_of(MindState::HarnessGone), Tone::Quiet);
+        // And the numbers the Slint global reads are distinct, so no two tones look alike.
+        let mut seen: Vec<i32> = [Tone::Quiet, Tone::Mind, Tone::Amber, Tone::Red, Tone::Green].iter().map(|t| t.index()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 5);
+    }
+
+    #[test]
+    fn the_label_names_the_mind_and_its_state() {
+        assert_eq!(label(&mind(MindState::RunningTool)), "HERMES · RUNNING A TOOL");
+        assert_eq!(label(&mind(MindState::HarnessGone)), "HERMES · CONNECTION LOST");
+        let mut nameless = mind(MindState::Idle);
+        nameless.name = String::new();
+        assert_eq!(label(&nameless), "MIND · IDLE");
+    }
+
+    #[test]
+    fn the_minds_line_is_quoted_and_marked_reported_with_its_time() {
+        let mut m = mind(MindState::RunningTool);
+        m.narration = Some(Narration { text: "Shaping the last ascent.".into(), heard: "14:32".into() });
+        let h = headline(&m);
+        assert_eq!(h, Headline { text: "“Shaping the last ascent.”".into(), quoted: true, reported: "◇ Reported · 14:32".into() });
+    }
+
+    /// With no line, the desk says the state (or the tool) in its own voice: unquoted, and not
+    /// marked as anyone's report.
+    #[test]
+    fn with_no_line_it_says_the_state_or_the_tool_unquoted() {
+        for state in ALL {
+            let h = headline(&mind(state));
+            assert_eq!((h.text.as_str(), h.quoted, h.reported.as_str()), (state_label(state), false, ""), "{state:?}");
+        }
+        let mut running = mind(MindState::RunningTool);
+        running.tool = Some(DeskTool { name: "blender.add_object".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
+        assert_eq!(headline(&running).text, "Running blender.add_object");
+        // A tool that has finished is not "running".
+        running.tool.as_mut().unwrap().outcome = Outcome::Ok;
+        assert_eq!(headline(&running).text, "Running a tool");
+    }
+
+    /// A line that carries a path, a flag or a secret is not quoted, whatever the shell sent.
+    #[test]
+    fn a_line_that_is_not_fit_to_show_falls_back_to_the_state() {
+        let mut m = mind(MindState::Thinking);
+        for private in ["Reading /home/pranab/Documents/Ridge/notes.md", "Running ls --all", "token=abc", "Writing ~/x/y"] {
+            m.narration = Some(Narration { text: private.into(), heard: "14:32".into() });
+            let h = headline(&m);
+            assert_eq!((h.text.as_str(), h.quoted), ("Thinking", false), "{private}");
+        }
+    }
+
+    #[test]
+    fn the_strip_names_the_tool_and_who_vouches_and_how_it_went() {
+        let mut m = mind(MindState::RunningTool);
+        m.tool = Some(DeskTool { name: "blender.add_object".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
+        assert_eq!(
+            strip(&m),
+            Strip { heading: "RUNNING TOOL".into(), tool: "blender.add_object".into(), mark: "◇ Reported · Running".into() }
+        );
+        m.tool = Some(DeskTool { name: "agent_run".into(), evidence: Evidence::Verified, outcome: Outcome::Failed });
+        assert_eq!(strip(&m), Strip { heading: "LAST TOOL".into(), tool: "agent_run".into(), mark: "◆ Verified · Failed".into() });
+        m.tool = Some(DeskTool { name: "agent_run".into(), evidence: Evidence::Reported, outcome: Outcome::Untold });
+        assert_eq!(strip(&m).mark, "◇ Reported · No outcome told");
+        // Nothing yet, and a call whose name was not fit to show.
+        m.tool = None;
+        assert_eq!(strip(&m).heading, "NO TOOL YET");
+        m.counts.calls = 2;
+        assert_eq!((strip(&m).heading.as_str(), strip(&m).tool.as_str()), ("LAST TOOL", "a tool"));
+    }
+
+    #[test]
+    fn a_command_line_is_never_a_tool_name_on_the_strip() {
+        let mut m = mind(MindState::RunningTool);
+        m.tool = Some(DeskTool { name: "cat ~/.ssh/id_ed25519".into(), evidence: Evidence::Verified, outcome: Outcome::Running });
+        let s = strip(&m);
+        assert_eq!(s.tool, "a tool");
+        assert!(!format!("{s:?}{:?}", headline(&m)).contains("ssh"));
+    }
+
+    #[test]
+    fn the_runs_counts_and_its_age_as_of_the_snapshot() {
+        let mut m = mind(MindState::RunningTool);
+        assert_eq!(stats(&m, "14:32"), "", "nothing for a Mind that has not run");
+        m.elapsed_secs = Some(272);
+        m.counts = Counts { calls: 12, failed: 1, interrupted: 1 };
+        assert_eq!(stats(&m, "14:32"), "4:32 elapsed at 14:32 · 12 calls · 1 failed · 1 interrupted");
+        m.counts = Counts { calls: 1, failed: 0, interrupted: 0 };
+        assert_eq!(stats(&m, "14:32"), "4:32 elapsed at 14:32 · 1 call · 0 failed · 0 interrupted");
+        m.elapsed_secs = Some(3_872);
+        assert_eq!(stats(&m, ""), "1:04:32 elapsed · 1 call · 0 failed · 0 interrupted");
+    }
+
+    /// The safety line is chosen from the account the shell named, which the kernel decided: the
+    /// built-in Mind's account says what it says, a harness that runs as the person says that, and
+    /// what is not known is not given either claim.
+    #[test]
+    fn the_safety_line_follows_the_account_and_never_flatters() {
+        assert_eq!(safety_line(Account::Own), "Own account · Network checked · OS actions ask first");
+        assert_eq!(safety_line(Account::Person), "Runs as you · OS actions ask first · Not isolated (planned)");
+        assert_eq!(safety_line(Account::Unknown), "Account unavailable");
+        for claim in ["Own account", "Network checked"] {
+            assert!(!safety_line(Account::Person).contains(claim) && !safety_line(Account::Unknown).contains(claim));
+        }
+        assert!(!safety_line(Account::Own).contains("Not isolated") && !safety_line(Account::Own).contains("Runs as you"));
+    }
+
+    /// No Mind's name is written down to decide it: the same account gives the same line to a
+    /// harness called anything.
+    #[test]
+    fn the_line_does_not_depend_on_the_minds_name() {
+        let line = |name: &str, account| {
+            let mut m = mind(MindState::Idle);
+            m.name = name.into();
+            m.account = account;
+            safety_line(m.account)
+        };
+        for name in ["Hermes", "Pi", "OpenClaw", "DeepSeek", "Yantrik Mind", "Anything else"] {
+            assert_eq!(line(name, Account::Person), "Runs as you · OS actions ask first · Not isolated (planned)");
+            assert_eq!(line(name, Account::Own), "Own account · Network checked · OS actions ask first");
+        }
+    }
+
+    #[test]
+    fn the_model_is_the_harnesss_word_or_unavailable() {
+        assert_eq!(model_line(Some("deepseek-v4.1-flash via ollama-cloud")), ("deepseek-v4.1-flash via ollama-cloud".to_string(), "◇ Harness-reported model"));
+        assert_eq!(model_line(None), ("Model unavailable".to_string(), ""));
+        assert_eq!(model_line(Some("/home/me/private.gguf")), ("Model unavailable".to_string(), ""), "a path is not a model");
+    }
+
+    #[test]
+    fn the_apps_are_read_as_names() {
+        assert_eq!(apps_line(&[]), "No apps open");
+        assert_eq!(apps_line(&["Blender".into(), "Terminal".into(), "Files".into()]), "Blender / Terminal / Files");
+        assert_eq!(apps_line(&["/usr/bin/x".into(), "Notes".into()]), "Notes");
+    }
+}

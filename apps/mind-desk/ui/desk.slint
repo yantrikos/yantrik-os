@@ -1,0 +1,281 @@
+// The Mind desk's three strips (#1023, phase 1): the header and the tool strip above Mind View's
+// apps, and the footer below them. Design: design/mind-view-2026-10-30/.
+//
+// Solid fills and alpha only. No blur, no shader, no animation of its own and nothing that
+// repeats: a strip changes when the shell says something changed, and not otherwise. The kit's
+// button animates its own hover for a moment, which is the kit's.
+//
+// Nothing here draws what a Mind's call was made with. Every string arrives already cleaned
+// (`yantrik_ipc_contracts::mind_desk`), and there is no property that could carry an argument.
+import { Theme } from "@yantrik-design/theme.slint";
+import { YButton } from "@yantrik-kit/y_button.slint";
+
+// Which colour a tone is. Teal is the Mind, amber is a decision waiting for the person, red is a
+// failure, green is a finish, and everything else is quiet. The words say the same: no colour is
+// the only way to know.
+export global DeskTone {
+    pure public function of(tone: int) -> color {
+        return tone == 1 ? Theme.mind
+             : tone == 2 ? Theme.amber
+             : tone == 3 ? Theme.color-danger
+             : tone == 4 ? Theme.color-success
+             :             Theme.text-secondary;
+    }
+}
+
+// The Mind's name and state, what it is saying, and what the person may do about it: stop it, or
+// look at it on the Agents screen. Nothing else: no approve, no deny, no grant, no take over.
+export component DeskHeader inherits Rectangle {
+    in property <string> label;
+    in property <int> tone;
+    in property <string> headline;
+    in property <bool> quoted;
+    in property <string> reported;
+    in property <bool> can-stop;
+    in property <bool> confirming;
+    in property <string> confirm-question;
+    in property <string> stop-note;
+    in property <bool> agents-offered;
+    callback stop-pressed();
+    callback stop-confirmed();
+    callback stop-cancelled();
+    callback agents-pressed();
+
+    background: Theme.bg-surface;
+
+    HorizontalLayout {
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
+        padding-top: Theme.sp-2;
+        padding-bottom: Theme.sp-2;
+        spacing: Theme.sp-4;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Theme.sp-1;
+
+            HorizontalLayout {
+                spacing: Theme.sp-2;
+                alignment: start;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: DeskTone.of(root.tone);
+                    }
+                }
+                Text {
+                    text: root.label;
+                    color: DeskTone.of(root.tone);
+                    font-size: Theme.fs-caption;
+                    font-weight: 700;
+                    letter-spacing: 1.2px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: text;
+                    accessible-label: root.label;
+                }
+            }
+            Text {
+                text: root.headline;
+                color: root.quoted ? Theme.text-primary : Theme.text-secondary;
+                font-size: Theme.fs-title-2;
+                font-weight: root.quoted ? 600 : 500;
+                overflow: elide;
+                accessible-role: text;
+                accessible-label: root.headline;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: center;
+            spacing: Theme.sp-1;
+
+            Text {
+                text: root.reported;
+                color: Theme.text-dim;
+                font-size: Theme.fs-caption;
+                horizontal-alignment: right;
+                accessible-role: text;
+                accessible-label: root.reported;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: Theme.sp-2;
+
+                if root.stop-note != "" : Text {
+                    text: root.stop-note;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    accessible-role: text;
+                    accessible-label: root.stop-note;
+                }
+                if root.confirming : Text {
+                    text: root.confirm-question;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    accessible-role: text;
+                    accessible-label: root.confirm-question;
+                }
+                if root.confirming : YButton {
+                    variant: 3;
+                    size: 0;
+                    label: "Stop";
+                    clicked => { root.stop-confirmed(); }
+                }
+                if root.confirming : YButton {
+                    variant: 1;
+                    size: 0;
+                    label: "Keep going";
+                    clicked => { root.stop-cancelled(); }
+                }
+                if root.agents-offered && !root.confirming : YButton {
+                    variant: 1;
+                    size: 0;
+                    label: "Open in Agents";
+                    clicked => { root.agents-pressed(); }
+                }
+                if root.can-stop && !root.confirming : YButton {
+                    variant: 4;
+                    size: 0;
+                    label: "Stop…";
+                    clicked => { root.stop-pressed(); }
+                }
+            }
+        }
+    }
+}
+
+// The tool the Mind is running, or ran last: its name, who vouches for it, how it went, and the
+// counts of the run. The run's age is a snapshot, said as of when it was taken, and never a clock.
+export component DeskStrip inherits Rectangle {
+    in property <string> heading;
+    in property <string> tool;
+    in property <string> mark;
+    in property <string> stats;
+
+    background: Theme.bg-deep;
+
+    Rectangle {
+        height: 1px;
+        y: 0px;
+        background: Theme.border-subtle;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
+        spacing: Theme.sp-3;
+
+        Text {
+            text: root.heading;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            font-weight: 700;
+            letter-spacing: 1.2px;
+            vertical-alignment: center;
+            accessible-role: text;
+            accessible-label: root.heading;
+        }
+        if root.tool != "" : Text {
+            text: root.tool;
+            color: Theme.text-primary;
+            font-family: Theme.font-mono;
+            font-size: Theme.fs-label;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: text;
+            accessible-label: root.tool;
+        }
+        if root.mark != "" : Text {
+            text: root.mark;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            accessible-role: text;
+            accessible-label: root.mark;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Text {
+            text: root.stats;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+            accessible-role: text;
+            accessible-label: root.stats;
+        }
+    }
+}
+
+// What is open here, how safe the Mind is to leave alone, and which model it says it is.
+export component DeskFooter inherits Rectangle {
+    in property <string> apps;
+    in property <string> safety;
+    in property <string> model;
+    in property <string> model-mark;
+
+    background: Theme.bg-surface;
+
+    Rectangle {
+        height: 1px;
+        y: 0px;
+        background: Theme.border-subtle;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-4;
+        padding-right: Theme.sp-4;
+        spacing: Theme.sp-4;
+
+        Text {
+            text: root.apps;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 0;
+            accessible-role: text;
+            accessible-label: root.apps;
+        }
+        Text {
+            text: root.safety;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            accessible-role: text;
+            accessible-label: root.safety;
+        }
+        Text {
+            text: root.model;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-alignment: right;
+            horizontal-stretch: 0;
+            accessible-role: text;
+            accessible-label: root.model;
+        }
+        if root.model-mark != "" : Text {
+            text: root.model-mark;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: text;
+            accessible-label: root.model-mark;
+        }
+    }
+}

@@ -11626,6 +11626,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-mind-desk"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "slint",
+ "tracing",
+ "yantrik-app",
+ "yantrik-app-build",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-services",
+ "yantrik-testing",
+ "yantrik-ui-kit",
+]
+
+[[package]]
 name = "yantrik-mind-view-title"
 version = "0.1.0"
 dependencies = [

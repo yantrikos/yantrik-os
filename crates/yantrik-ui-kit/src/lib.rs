@@ -660,6 +660,12 @@ mod every_app_is_an_app_window {
     /// it, and a new app cannot go on it.
     const NOT_YET: &[&str] = &[];
 
+    /// Apps whose windows are bars of something else, not windows of their own: the Mind desk's
+    /// header and footer (#1023), which the nested compositor keeps above and below Mind View's
+    /// apps. A title bar with minimise, maximise and close would be wrong on a wall, so these are
+    /// a bare frameless `Window`, and this list says so instead of the check passing them over.
+    const BARS: &[&str] = &["mind-desk"];
+
     /// Every app's window is the base app window (#256).
     ///
     /// The ask was one base shell that every app extends, the way every app on macOS is an
@@ -680,6 +686,12 @@ mod every_app_is_an_app_window {
             seen += 1;
             let base_window = src.contains(" inherits AppWindow {");
             let plain_window = src.contains(" inherits Window {");
+            if BARS.contains(&app.as_str()) {
+                if base_window || !plain_window || !src.contains("no-frame: true;") {
+                    wrong.push(format!("{app}: is a bar, so it is a frameless `Window` (`no-frame: true;`), not an AppWindow"));
+                }
+                continue;
+            }
             // A bar nobody connected draws its buttons and does nothing when they are pressed.
             // The chrome is connected by `window_chrome!(ui)` directly, through the framework's
             // `Window` adapter (`yantrik_app::window!(App)` then `ui.connect_chrome()`), which

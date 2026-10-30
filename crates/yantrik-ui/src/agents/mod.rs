@@ -29,6 +29,7 @@
 // The agent catalog — roles work can be handed to — and the reach each role's agent is held to
 // (design/desk-and-mind-2026-09-23.md, section 5).
 pub mod catalog;
+mod changes;
 mod erasing;
 pub mod feed;
 pub mod handover;
@@ -40,7 +41,7 @@ pub mod store;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub use model::{AgentId, AgentMeta, ApprovalOutcome, CallState, Event, Provenance, RecipeOrigin, RoleMeta, State, Stream, Tab};
@@ -78,6 +79,8 @@ pub struct Agents {
     /// not written over the erased file (see [`Agents::redact`]). Read without a lock, so the UI
     /// thread's save never waits on an erasure's disk writes.
     erased: AtomicU64,
+    /// Raised when a holder of `store` lets go having changed it (`changes`).
+    moved: Condvar,
 }
 
 static AGENTS: OnceLock<Agents> = OnceLock::new();
@@ -99,13 +102,13 @@ pub fn store() -> &'static Agents {
         #[cfg(test)]
         let store = store.keeping(usize::MAX);
         tracing::info!(agents = store.agents().len(), dir = %dir.display(), "Agents loaded");
-        Agents { store: Mutex::new(store), dir, saved: Mutex::new(Instant::now()), disk: Mutex::new(()), erased: AtomicU64::new(0) }
+        Agents { store: Mutex::new(store), dir, saved: Mutex::new(Instant::now()), disk: Mutex::new(()), erased: AtomicU64::new(0), moved: Condvar::new() }
     })
 }
 
 impl Agents {
-    fn lock(&self) -> MutexGuard<'_, Store> {
-        self.store.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> changes::Held<'_> {
+        changes::Held::new(self.store.lock().unwrap_or_else(|e| e.into_inner()), &self.moved)
     }
 
     // The input API. Each is the store's own, under the lock; see `store.rs` for the rules.

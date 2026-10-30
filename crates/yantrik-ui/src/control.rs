@@ -2275,6 +2275,8 @@ pub fn publish(
     let surface = crate::control_taint_scope::actions(surface);
     // The workroom's own navigation: show_workroom. See `control_workroom`.
     let surface = crate::control_workroom::actions(surface, ui);
+    // What the Mind desk around Mind View shows (#1023): read-only, and the person's alone.
+    let surface = crate::control_mind_desk::actions(surface);
     crate::control_agents::actions(surface, ui).serve();
 }
 

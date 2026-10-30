@@ -1,0 +1,102 @@
+// The Mind desk: the bars around Mind View's apps (#1023, phase 1).
+//
+// One app, two windows of this one component. `role` says which: 0 is the header and the tool
+// strip, above the apps; 1 is the footer, below them. Two windows and not one because a window
+// the height of Mind View would sit over the apps and take their clicks; these two leave the
+// middle to the apps. The nested compositor places them (config/labwc-mind/rc.xml), found by the
+// titles below.
+import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
+import { WindowChrome } from "@yantrik-kit/window_chrome.slint";
+import { DeskHeader, DeskStrip, DeskFooter } from "desk.slint";
+
+export { ThemeMode, AccentPreset, WindowChrome }
+
+export component MindDeskApp inherits Window {
+    // Which window this is, and how tall: set by the app before the window is shown, so the
+    // compositor finds its title and its height at map.
+    in property <int> role: 0;
+    in property <length> bar-height: 0px;
+    // How much of the top window is the tool strip, the rest being the header.
+    in property <length> strip-height: 0px;
+
+    // ── The header (role 0) ──
+    in property <string> label;
+    in property <int> tone;
+    in property <string> headline;
+    in property <bool> quoted;
+    in property <string> reported;
+    in property <bool> can-stop;
+    in property <bool> confirming;
+    in property <string> confirm-question;
+    in property <string> stop-note;
+    in property <bool> agents-offered;
+    callback stop-pressed();
+    callback stop-confirmed();
+    callback stop-cancelled();
+    callback agents-pressed();
+
+    // ── The tool strip (role 0) ──
+    in property <string> strip-heading;
+    in property <string> strip-tool;
+    in property <string> strip-mark;
+    in property <string> strip-stats;
+
+    // ── The footer (role 1) ──
+    in property <string> apps;
+    in property <string> safety;
+    in property <string> model;
+    in property <string> model-mark;
+
+    // The titles are the nested compositor's way to find each bar: they are in its window rules,
+    // and a test holds the two files together.
+    title: root.role == 0 ? "Yantrik Mind Desk Top" : "Yantrik Mind Desk Bottom";
+    no-frame: true;
+    background: Theme.bg-surface;
+    default-font-family: Theme.font-ui;
+    preferred-width: 1184px;
+    min-width: 480px;
+    preferred-height: root.bar-height;
+    min-height: root.bar-height;
+    max-height: root.bar-height;
+
+    if root.role == 0 : DeskHeader {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height - root.strip-height;
+        label: root.label;
+        tone: root.tone;
+        headline: root.headline;
+        quoted: root.quoted;
+        reported: root.reported;
+        can-stop: root.can-stop;
+        confirming: root.confirming;
+        confirm-question: root.confirm-question;
+        stop-note: root.stop-note;
+        agents-offered: root.agents-offered;
+        stop-pressed => { root.stop-pressed(); }
+        stop-confirmed => { root.stop-confirmed(); }
+        stop-cancelled => { root.stop-cancelled(); }
+        agents-pressed => { root.agents-pressed(); }
+    }
+    if root.role == 0 : DeskStrip {
+        x: 0px;
+        y: root.height - root.strip-height;
+        width: root.width;
+        height: root.strip-height;
+        heading: root.strip-heading;
+        tool: root.strip-tool;
+        mark: root.strip-mark;
+        stats: root.strip-stats;
+    }
+    if root.role == 1 : DeskFooter {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        apps: root.apps;
+        safety: root.safety;
+        model: root.model;
+        model-mark: root.model-mark;
+    }
+}

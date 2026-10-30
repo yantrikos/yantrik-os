@@ -19,6 +19,16 @@
 //! (`SO_PEERCRED`) and any agent token are still in scope when the dock's spawn runs. A click
 //! has no caller at all. Everything else is sorted by [`classify`].
 //!
+//! # The Mind desk
+//!
+//! Around the apps, inside the nested compositor, run the bars of the Mind desk (#1023,
+//! `apps/mind-desk`): the Mind's name, state and own words, Stop, the tool it is running, how it
+//! is housed and the model it says it runs. The startup script starts them
+//! ([`crate::mind_view_desk`]), `config/labwc-mind/rc.xml` keeps every other window out of their
+//! margins, and the shell answers what they ask through one read-only action
+//! (`control_mind_desk`). A Mind acting in here can read and press them, so they offer only what
+//! is harmless pressed by a Mind.
+//!
 //! # When Mind View cannot start
 //!
 //! If the nested compositor cannot be started — no labwc, no config, or it does not say which
@@ -603,8 +613,10 @@ fn start() -> Result<Nested, String> {
     stop_left_behind();
     let script = dir.join(SEAT_SCRIPT);
     let outer = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
-    std::fs::write(&script, seat_script(&seat_file, &config, &outer))
-        .map_err(|e| format!("{}: {e}", script.display()))?;
+    // The seat script, and the bars (#1023) started last, once the nested compositor serves.
+    let desk = crate::wire::dock::find_program(crate::mind_view_desk::PROGRAM);
+    let text = seat_script(&seat_file, &config, &outer) + &crate::mind_view_desk::launch_lines(desk.as_deref());
+    std::fs::write(&script, text).map_err(|e| format!("{}: {e}", script.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

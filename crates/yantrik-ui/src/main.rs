@@ -104,6 +104,7 @@ mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.
 mod control_agents;
 mod control_workroom;
+mod control_mind_desk;
 // The chat in one read, for the Yantrik terminal (`chat_view`).
 mod control_chat;
 // Which of the person's conversations a bridge's private reads count against (`taint_scope`,
@@ -146,7 +147,9 @@ mod mind_panel;
 mod mind_panel_room;
 mod mind_panel_words;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
+mod mind_desk;
 mod mind_view;
+mod mind_view_desk;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
 mod app_glance;

@@ -41,6 +41,7 @@ mod battery_tests;
 mod network_tests;
 mod monitor_tests;
 mod weather_tests;
+mod mind_desk_tests;
 mod minds_tests;
 mod for_you_tests;
 mod jump_tests;
@@ -140,6 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-approval-fit") { return approval_fit_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
+    if args.iter().any(|a| a == "verify-mind-desk") { return mind_desk_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-weather") { return weather_tests::run(&window); }
     if args.iter().any(|a| a == "verify-weather-snapped") { return weather_tests::snapped(&window, output); }
     if args.iter().any(|a| a == "verify-installer") { return installer_tests::run(&window, output); }
