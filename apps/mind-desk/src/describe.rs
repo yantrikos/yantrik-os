@@ -9,7 +9,7 @@ use crate::model::Model;
 
 pub fn view(m: &Model) -> View {
     let top = chrome::top(m);
-    let bottom = chrome::bottom(m);
+    let footer = chrome::footer(m);
     View::new(format!("Mind desk — {}", top.label))
         .with("label", top.label)
         .with("stop_offered", top.can_stop)
@@ -17,7 +17,7 @@ pub fn view(m: &Model) -> View {
         .with("tool", top.strip_tool)
         .with("tool_mark", top.strip_mark)
         .with("counts", top.strip_stats)
-        .with("apps", bottom.apps)
-        .with("safety", bottom.safety)
-        .with("model", bottom.model)
+        .with("apps", footer.apps)
+        .with("safety", footer.safety)
+        .with("model", footer.model)
 }

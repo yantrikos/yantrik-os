@@ -16,9 +16,9 @@ fn down() -> ServiceError {
 }
 
 #[test]
-fn it_opens_two_windows_and_asks_the_shell_for_the_first_snapshot() {
+fn it_opens_one_window_and_asks_the_shell_for_the_first_snapshot() {
     let (app, shell) = start(FakeMindDesk::new().answering(snapshot(1, Some(hermes(MindState::RunningTool)))));
-    assert!(app.model(|m| m.bottom.is_some()), "the footer's window was asked for");
+    assert_eq!(app.ui(|ui| ui.get_bar_height()), crate::metrics::BAR_HEIGHT as f32, "one window, the bar's height");
     assert_eq!(app.model(|m| m.link), Link::Connecting);
     assert!(top_words(&app).contains("CONNECTING"), "{}", top_words(&app));
 
@@ -34,27 +34,29 @@ fn it_opens_two_windows_and_asks_the_shell_for_the_first_snapshot() {
     assert!(app.ui(|ui| ui.get_can_stop()));
 }
 
-/// The compositor reads these at map: which bar, how tall, and the titles its rules match.
+/// The compositor reads the height at map, and the heights the three strips share out are the
+/// bar's, with the pixel over the apps.
 #[test]
-fn each_window_says_which_bar_it_is_and_how_tall_before_it_is_shown() {
-    use crate::metrics::{BOTTOM_HEIGHT, STRIP_HEIGHT, TOP_HEIGHT};
+fn the_bar_says_how_tall_it_is_and_how_it_is_shared_out_before_it_is_shown() {
+    use crate::metrics::{BAR_HEIGHT, FOOTER_HEIGHT, HEADER_HEIGHT, MARGIN_TOP, OVERLAP, STRIP_HEIGHT};
     let (app, _) = start(FakeMindDesk::new());
     app.ui(|ui| {
-        assert_eq!(ui.get_role(), 0);
-        assert_eq!(ui.get_bar_height(), TOP_HEIGHT as f32);
+        assert_eq!(ui.get_bar_height(), BAR_HEIGHT as f32);
+        assert_eq!(ui.get_header_height(), HEADER_HEIGHT as f32);
         assert_eq!(ui.get_strip_height(), STRIP_HEIGHT as f32);
     });
-    // The footer's words, by the same chrome its window is drawn from.
-    let bottom = app.model(chrome::bottom);
-    assert_eq!(bottom.apps, "Apps unavailable", "nothing is claimed before the shell has said");
-    assert_eq!(BOTTOM_HEIGHT, 44);
+    assert_eq!(HEADER_HEIGHT + STRIP_HEIGHT + FOOTER_HEIGHT, MARGIN_TOP);
+    assert_eq!(BAR_HEIGHT, MARGIN_TOP + OVERLAP);
+    // The footer's words, by the same chrome the window is drawn from.
+    let footer = app.model(chrome::footer);
+    assert_eq!(footer.apps, "Apps unavailable", "nothing is claimed before the shell has said");
 }
 
 #[test]
 fn the_footer_says_the_apps_the_account_and_the_model_from_the_snapshot() {
     let (app, _) = start(FakeMindDesk::new().answering(snapshot(1, Some(hermes(MindState::Thinking)))));
     app.run_jobs();
-    let b = app.model(chrome::bottom);
+    let b = app.model(chrome::footer);
     assert_eq!(b.apps, "Blender / Terminal / Files");
     assert_eq!(b.safety, "Runs as you · OS actions ask first · Not isolated (planned)");
     assert_eq!(b.model, "deepseek-v4.1-flash via ollama-cloud");
@@ -66,7 +68,7 @@ fn the_footer_says_the_apps_the_account_and_the_model_from_the_snapshot() {
     own.account = yantrik_ipc_contracts::mind_desk::Account::Own;
     own.model = None;
     app.run(Command::Heard(Ok(snapshot(2, Some(own)))));
-    let b = app.model(chrome::bottom);
+    let b = app.model(chrome::footer);
     assert_eq!(b.safety, "Own account · Network checked · OS actions ask first");
     assert_eq!((b.model.as_str(), b.model_mark.as_str()), ("Model unavailable", ""));
 }
@@ -128,7 +130,7 @@ fn a_shell_that_does_not_answer_is_said_and_asked_again_with_a_longer_pause_each
     let words = top_words(&app);
     assert!(words.contains("NOT CONNECTED") && words.contains("The shell is not answering"), "{words}");
     assert!(!app.ui(|ui| ui.get_can_stop()) && !app.ui(|ui| ui.get_agents_offered()), "nothing it could not do");
-    let footer = app.model(chrome::bottom);
+    let footer = app.model(chrome::footer);
     assert_eq!((footer.apps.as_str(), footer.safety.as_str()), ("Apps unavailable", "Account unavailable"));
 
     // 3 s, then 6, then 12: never a loop.
@@ -182,7 +184,7 @@ fn a_desk_left_alone_costs_nothing() {
     app.run_jobs();
     assert_eq!(shell.asked().len(), 1);
     assert_eq!(app.jobs_waiting(), 1, "the next ask is out, waiting on the shell, as in life");
-    app.resize(1184, 116);
+    app.resize(1184, 161);
     assert!(app.settle_frames());
     app.advance(Duration::from_secs(600));
     assert_eq!(app.timers_armed(), 0, "no timer while the shell answers");
@@ -195,7 +197,7 @@ fn a_desk_left_alone_costs_nothing() {
 fn the_same_snapshot_again_changes_nothing_on_screen() {
     let (app, _) = start(FakeMindDesk::new().answering(snapshot(1, Some(hermes(MindState::Thinking)))));
     app.run_jobs();
-    app.resize(1184, 116);
+    app.resize(1184, 161);
     assert!(app.settle_frames());
     app.run(Command::Heard(Ok(snapshot(1, Some(hermes(MindState::Thinking))))));
     assert_eq!(app.draw(), 0, "the wait ran its course with the same words");

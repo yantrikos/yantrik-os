@@ -13,7 +13,9 @@
 //!   only if the pid the kernel names on the socket and the start time both match
 //!   ([`is_the_desk`]). The start time is what a reused pid cannot have. Nothing is exempted by the
 //!   path of an executable: any Mind can run that binary, and the one it runs is not this one.
-//! - **It restarts it** when it ends, with a pause that grows, for as long as Mind View is there.
+//! - **It restarts it** when it ends, for as long as Mind View is there, after a pause that starts
+//!   at one second and doubles to thirty (so a desk killed over and over comes back after about
+//!   thirty-two: the cap and the desk's own start), and starts over after a run of a minute.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -149,3 +149,40 @@ fn what_the_shell_says_when_agents_will_not_open_is_said_in_the_desks_words() {
         assert_eq!(app.ui(|ui| ui.get_stop_note()), said, "{sentence}");
     }
 }
+
+/// The shell does not put the same question in front of the person again for two minutes after a
+/// "Keep going". The desk says that, in a sentence that says what happened and when it ends.
+#[test]
+fn after_keep_going_the_desk_says_the_question_waits_two_minutes() {
+    let (app, shell) = start(working());
+    app.run_jobs();
+    shell.stop_answers(Err(ServiceError::Refused {
+        code: -32000,
+        sentence: "the person denied `shell.stop_agent` with these exact arguments 5s ago, so this was not put in front of them again.".into(),
+    }));
+    app.run(Command::StopAsked);
+    app.run_jobs();
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "You kept it going; it can be asked again in two minutes");
+    assert!(matches!(app.model(|m| m.stop.clone()), Stop::NotTaken { kept_going: true, .. }));
+}
+
+/// While a stop is being asked of the person on their desktop, a press on Open in Agents that the
+/// shell holds says why: the card is what holds it. It is not hidden behind the stop's own line,
+/// and it is let go when the stop's standing changes.
+#[test]
+fn the_agents_screen_being_held_for_a_card_is_said_while_a_stop_is_asked() {
+    let asked = || with_stop(1, MindState::RunningTool, Some(StopStatus::Asked));
+    let (app, shell) = start(FakeMindDesk::new().answering(asked()).answering(asked()));
+    app.run_jobs();
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "Waiting for your answer on the desktop");
+    shell.show_answers(Err(ServiceError::Refused {
+        code: -32000,
+        sentence: "`mind_desk_open_agents` was not run: an approval card is waiting for the person at this machine".into(),
+    }));
+    app.run(Command::AgentsAsked);
+    app.run_jobs();
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "An approval card is waiting on your desktop");
+    // The person answers the card: the stop's standing changes, and the line about the screen goes.
+    app.run(Command::Heard(Ok(with_stop(2, MindState::Idle, Some(StopStatus::Stopped)))));
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "Stopped");
+}

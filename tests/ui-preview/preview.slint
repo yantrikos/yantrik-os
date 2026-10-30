@@ -1273,10 +1273,10 @@ export component ForYouProbe inherits Window {
 
 // ── Mind desk (#1023) ───────────────────────────────────────────────────────
 
-// The desk's three strips around a stand-in for Mind View's apps, filled with fixture words by
-// src/mind_desk_tests.rs. The strips are the app's own (apps/mind-desk/ui/desk.slint); the middle
-// is a plain panel marked as a fixture, because the apps are somebody else's pixels. Heights are
-// the app's own `metrics`: header 76, strip 40, footer 44.
+// The desk's bar around a stand-in for Mind View's apps, filled with fixture words by
+// src/mind_desk_tests.rs. The three strips are the app's own (apps/mind-desk/ui/desk.slint); the
+// middle is a plain panel marked as a fixture, because the apps are somebody else's pixels.
+// Heights are the app's own `metrics`: header 76, strip 40, footer 45 (44 and its bottom edge).
 import { DeskHeader, DeskStrip, DeskFooter } from "../../apps/mind-desk/ui/desk.slint";
 export component MindDeskProbe inherits Window {
     preferred-width: 1184px;
@@ -1301,7 +1301,6 @@ export component MindDeskProbe inherits Window {
     out property <length> strip-height: strip.height;
     out property <length> footer-height: footer.height;
     out property <length> middle-top: middle.y;
-    out property <length> middle-height: middle.height;
     header := DeskHeader {
         x: 0px;
         y: 0px;
@@ -1324,12 +1323,22 @@ export component MindDeskProbe inherits Window {
         mark: root.strip-mark;
         stats: root.strip-stats;
     }
-    // Where the apps are: not drawn by the desk, so a plain panel that says so.
-    middle := Rectangle {
+    footer := DeskFooter {
         x: 0px;
         y: 116px;
         width: root.width;
-        height: root.height - 116px - 44px;
+        height: 45px;
+        apps: root.apps;
+        safety: root.safety;
+        model: root.model;
+        model-mark: root.model-mark;
+    }
+    // Where the apps are: not drawn by the desk, so a plain panel that says so.
+    middle := Rectangle {
+        x: 0px;
+        y: 161px;
+        width: root.width;
+        height: root.height - 161px;
         background: Theme.bg-card;
         Text {
             text: "Mind View's apps go here (fixture)";
@@ -1338,15 +1347,5 @@ export component MindDeskProbe inherits Window {
             horizontal-alignment: center;
             vertical-alignment: center;
         }
-    }
-    footer := DeskFooter {
-        x: 0px;
-        y: root.height - 44px;
-        width: root.width;
-        height: 44px;
-        apps: root.apps;
-        safety: root.safety;
-        model: root.model;
-        model-mark: root.model-mark;
     }
 }

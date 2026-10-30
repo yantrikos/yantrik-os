@@ -17,12 +17,6 @@ use crate::MindDesk;
 
 pub fn update(m: &mut Model, command: Command, fx: &mut Effects<MindDesk>) -> Result<(), Refused> {
     match command {
-        Command::OpenFooter => {
-            if m.bottom.is_none() {
-                m.bottom = Some(fx.open_window());
-            }
-        }
-        Command::FooterNotOpened => m.bottom = None,
         Command::Ask => ask(m, fx),
         Command::Heard(Ok(snapshot)) => heard(m, snapshot, fx),
         Command::Heard(Err(why)) => lost(m, &why, fx),
@@ -49,7 +43,10 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<MindDesk>) -> Re
             // comes of it arrives in a snapshot.
             m.stop = match answer {
                 Ok(ack) if ack.agent == agent => Stop::Resting,
-                _ => Stop::NotTaken { agent },
+                Err(ServiceError::Refused { sentence, .. }) if sentence.contains("the person denied") => {
+                    Stop::NotTaken { agent, kept_going: true }
+                }
+                _ => Stop::NotTaken { agent, kept_going: false },
             };
         }
         Command::AgentsAsked => {
@@ -96,6 +93,12 @@ fn heard(m: &mut Model, snapshot: DeskSnapshot, fx: &mut Effects<MindDesk>) {
     m.asking = false;
     m.retry = RETRY_FROM;
     let same = m.snapshot.as_ref().is_some_and(|s| s.tag == snapshot.tag);
+    // A line about the Agents screen is about what was pressed; a stop that has come out another
+    // way is news that replaces it.
+    let stop_of = |s: &DeskSnapshot| s.mind.as_ref().and_then(|mind| mind.stop);
+    if m.snapshot.as_ref().map(stop_of) != Some(stop_of(&snapshot)) {
+        m.note.clear();
+    }
     let quick = m.asked_at.is_some_and(|at| fx.now().saturating_duration_since(at) < QUICK);
     let drawn_the_same = same && m.link == Link::Live;
     m.link = Link::Live;
@@ -130,7 +133,9 @@ fn settle_stop(m: &mut Model) {
     m.stop = match std::mem::replace(&mut m.stop, Stop::Resting) {
         // The answer is still to come; it is for this agent, whatever the desk shows meanwhile.
         asking @ Stop::Asking { .. } => asking,
-        Stop::NotTaken { agent } if current.is_some_and(|(a, working)| a == agent && working) => Stop::NotTaken { agent },
+        Stop::NotTaken { agent, kept_going } if current.is_some_and(|(a, working)| a == agent && working) => {
+            Stop::NotTaken { agent, kept_going }
+        }
         _ => Stop::Resting,
     };
 }

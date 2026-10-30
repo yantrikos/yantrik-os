@@ -10,8 +10,8 @@
   The same theme as the person's desktop (config/labwc/rc.xml), so a window reads as this OS's
   wherever it is drawn. What differs is deliberate:
 
-  - A <margin> at the top and bottom, and only there: the Mind desk's two bars (#1023, apps/mind-desk)
-    live in them. Nothing else in here reserves space, so there is no status bar or taskbar.
+  - A <margin> at the top, and only there: the Mind desk's bar (#1023, apps/mind-desk) lives in it.
+    Nothing else in here reserves space, so there is no status bar or taskbar.
   - Two keybindings, not the desktop's thirty. The person's compositor sees every key first, so
     their own shortcuts — lock, screenshot, the launcher — keep working while Mind View has the
     keyboard; the only keys that reach this one are ones the person's compositor did not bind.
@@ -44,10 +44,10 @@
   </focus>
 
   <!--
-    The Mind desk's two bars: the header and strip above (116px: the header 76, the strip 40) and
-    the footer below (44px). A maximised window fills what is between them. See the window rules.
+    The Mind desk's bar (#1023): the header, the tool strip and the footer along the top, 160px
+    (76 + 40 + 44). A maximised window fills what is below it. See the window rule.
   -->
-  <margin top="116" bottom="44" left="0" right="0" />
+  <margin top="160" bottom="0" left="0" right="0" />
 
   <!--
     Every window fills Mind View. It is a view onto what the mind is doing, not a second desktop
@@ -62,42 +62,42 @@
     </windowRule>
 
     <!--
-      The Mind desk (#1023, apps/mind-desk): two windows of one app, the bars above and below
-      Mind View's apps. Two, not one, because a window the height of Mind View would sit over the
-      apps and take their clicks; these two leave the middle to them.
+      The Mind desk (#1023, apps/mind-desk): one window, a bar along the top of Mind View, over
+      the first pixel of the apps' area and as wide as the display at every size. A window the
+      height of Mind View would sit over the apps and take their clicks; a bar leaves them the rest.
 
-      The numbers below are apps/mind-desk's `metrics` (its tests read this file and fail if they
-      drift): the margins are the two bars' heights, so a maximised app fills exactly what is left.
+      The numbers are apps/mind-desk's `metrics` (its tests read this file and fail if they drift):
+      the margin is the bar's height less one pixel, and the window is 161px.
 
-      Placed with no screen size written anywhere, as the shell's OSD is (config/labwc/rc.xml):
-      Mind View's size is 70% of the person's screen, which only the startup script knows. Each
-      bar is made as wide as the output, then dropped onto the usable area's edge, which is
-      <margin>'s inside edge, and moved the one bar's height past it, which is the screen's.
-
-      - Always on top, no title bar, not in Alt+Tab or the taskbar: they are the room's walls, not
-        windows in it. Matched by title, which the desk sets before it maps (the app declares no
-        id). Any client can set its own title, so a window in here can be placed like a bar and
+      Why these actions, in this order, found by running labwc 0.8.3 (tests/mind-desk-placement
+      does it again and fails if a bar is not where it belongs, at 896x560 and at 1280x690 and
+      after a restart):
+      - MoveTo places a window at an absolute position at its first map; MoveToEdge does nothing
+        there, and MoveRelative then moves it from where it was centred. Nothing here is a screen
+        size: the bar is at the top, which is 0 at every size.
+      - ToggleMaximize horizontally is what makes the bar as wide as the display, now and after
+        the display is resized. labwc keeps such a window at its stored position, and re-centres
+        it if that position does not touch the usable area, which the margin makes it not: so the
+        bar is one pixel taller than the margin, and the pixel keeps it where it is. A second
+        MoveTo puts the window itself back, as the toggle moves it.
+      - fixedPosition: nothing moves it afterwards, a Mind dragging it with a modifier included.
+      - Always on top, no title bar, not in Alt+Tab or the taskbar: it is the room's wall, not a
+        window in it. Matched by title, which the desk sets before it maps (the app declares no
+        id). Any client can set its own title, so a window in here can be placed like the bar and
         drawn over the real one: labwc cannot tell them apart. Nothing the desk is trusted for
         rests on this. The shell answers the one desk process it started (pid and start time),
         and a stop is asked of the person on their own desktop, never in here. A forged bar can
         only mislead the eye.
       - Never force-maximised: the rule above matches every window and has already run, so the
-        first thing each bar's rule does is undo it (rules run in order, and every one that
-        matches runs).
+        first thing this rule does is undo it (rules run in order, and every one that matches
+        runs).
     -->
-    <windowRule title="Yantrik Mind Desk Top" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes">
+    <windowRule title="Yantrik Mind Desk" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes" fixedPosition="yes">
       <action name="UnMaximize" />
+      <action name="MoveTo" x="0" y="0" />
       <action name="ToggleMaximize" direction="horizontal" />
+      <action name="MoveTo" x="0" y="0" />
       <action name="ToggleAlwaysOnTop" />
-      <action name="MoveToEdge" direction="up" snapWindows="no" />
-      <action name="MoveRelative" x="0" y="-116" />
-    </windowRule>
-    <windowRule title="Yantrik Mind Desk Bottom" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes">
-      <action name="UnMaximize" />
-      <action name="ToggleMaximize" direction="horizontal" />
-      <action name="ToggleAlwaysOnTop" />
-      <action name="MoveToEdge" direction="down" snapWindows="no" />
-      <action name="MoveRelative" x="0" y="44" />
     </windowRule>
   </windowRules>
 

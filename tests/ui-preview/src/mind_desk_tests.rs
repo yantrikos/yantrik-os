@@ -6,8 +6,8 @@ use super::*;
 /// fixtures: what a harness would say, and what the desk would make of it
 /// (apps/mind-desk/src/words.rs holds the real wording, and its own tests hold it).
 ///
-/// Checked: the three strips are the heights the compositor's margins reserve (116 above, 44
-/// below), the apps' middle is what is left, and every scene drew. One still per moment, and a
+/// Checked: the three strips are the height the compositor's margin reserves (160, and the pixel
+/// over the apps), the apps' area starts under them, and every scene drew. One still per moment, and a
 /// collage of all five.
 pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     const W: u32 = 1184;
@@ -39,15 +39,12 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
         stills.push((scene.name.to_string(), pixels));
     }
 
-    // The geometry the compositor's rules reserve.
-    if ui.get_header_height() + ui.get_strip_height() != 116.0 {
-        problems.push(format!("the top bar is {}px; the compositor reserves 116", ui.get_header_height() + ui.get_strip_height()));
+    // The geometry the compositor reserves: the margin is the three strips, the window a pixel more.
+    if ui.get_header_height() + ui.get_strip_height() + ui.get_footer_height() != 161.0 {
+        problems.push("the bar is not 161px: 160 reserved and the pixel over the apps".to_string());
     }
-    if ui.get_footer_height() != 44.0 {
-        problems.push(format!("the footer is {}px; the compositor reserves 44", ui.get_footer_height()));
-    }
-    if ui.get_middle_top() != 116.0 || ui.get_middle_height() != H as f32 - 116.0 - 44.0 {
-        problems.push("the apps' middle is not what the margins leave".to_string());
+    if ui.get_middle_top() != 161.0 {
+        problems.push("the apps' area does not start under the bar".to_string());
     }
     // Five scenes that are the same picture are five scenes that did not change.
     for pair in stills.windows(2) {
@@ -56,29 +53,28 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
         }
     }
 
-    // The collage: the five stills in a column, top bar and footer of each, cut from the middle.
-    let strip_h = 116 + 44;
-    let mut collage = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W, strip_h * stills.len() as u32);
+    // The collage: the bar of each scene, one under the other.
+    let bar_h = 161u32;
+    let mut collage = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W, bar_h * stills.len() as u32);
     for (i, (_, still)) in stills.iter().enumerate() {
         let src = still.as_bytes();
         let dst = collage.make_mut_slice();
         let row = W as usize;
-        for y in 0..strip_h as usize {
-            let from = if y < 116 { y } else { (H as usize - 44) + (y - 116) };
-            let to = i * strip_h as usize + y;
+        for y in 0..bar_h as usize {
+            let to = i * bar_h as usize + y;
             for x in 0..row {
-                dst[to * row + x] = slint::Rgb8Pixel { r: src[(from * row + x) * 3], g: src[(from * row + x) * 3 + 1], b: src[(from * row + x) * 3 + 2] };
+                dst[to * row + x] = slint::Rgb8Pixel { r: src[(y * row + x) * 3], g: src[(y * row + x) * 3 + 1], b: src[(y * row + x) * 3 + 2] };
             }
         }
     }
     let path = output.replace(".png", "-collage.png");
-    let mut encoder = png::Encoder::new(BufWriter::new(File::create(&path)?), W, strip_h * stills.len() as u32);
+    let mut encoder = png::Encoder::new(BufWriter::new(File::create(&path)?), W, bar_h * stills.len() as u32);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.write_header()?.write_image_data(collage.as_bytes())?;
 
     assert!(problems.is_empty(), "the Mind desk:\n{}", problems.join("\n"));
-    println!("PASS: the Mind desk draws its strips at the heights the compositor reserves, in five moments");
+    println!("PASS: the Mind desk draws its bar at the height the compositor reserves, in five moments");
     Ok(())
 }
 

@@ -30,7 +30,7 @@ fn nothing_a_hostile_snapshot_carries_reaches_either_window_or_the_minds_describ
     app.run(Command::Heard(Ok(hostile())));
     let shown = [
         top_words(&app),
-        format!("{:?}", app.model(chrome::bottom)),
+        format!("{:?}", app.model(chrome::footer)),
         app.describe().to_string(),
         format!("{:?}", app.model(chrome::top)),
     ]
@@ -63,7 +63,7 @@ fn every_string_the_desk_draws_is_one_short_clean_line() {
         mind.counts = Counts { calls: 12, failed: 3, interrupted: 2 };
         app.run(Command::Heard(Ok(snapshot(n as u64 + 1, Some(mind)))));
         let top = app.model(chrome::top);
-        let bottom = app.model(chrome::bottom);
+        let bottom = app.model(chrome::footer);
         let lines = [
             &top.label, &top.headline, &top.stop_note, &top.strip_heading,
             &top.strip_tool, &top.strip_mark, &top.strip_stats, &bottom.apps, &bottom.safety, &bottom.model, &bottom.model_mark,
@@ -162,7 +162,7 @@ fn nothing_a_mind_said_it_is_doing_has_anywhere_to_go() {
     let snap: yantrik_ipc_contracts::mind_desk::DeskSnapshot = serde_json::from_value(value).unwrap();
     let (app, _) = start(FakeMindDesk::new());
     app.run(Command::Heard(Ok(snap)));
-    let shown = [top_words(&app), format!("{:?}", app.model(chrome::bottom)), app.describe().to_string()].join("
+    let shown = [top_words(&app), format!("{:?}", app.model(chrome::footer)), app.describe().to_string()].join("
 ");
     for word in ["biopsy", "hunter2", "sam.patel", "Password", "Emailing"] {
         assert!(!shown.contains(word), "`{word}` is on the desk: {shown}");
@@ -182,7 +182,7 @@ fn token_shaped_names_and_labels_are_not_shown() {
     mind.model = Some("user@internal-host:8080/private-model".into());
     let (app, _) = start(FakeMindDesk::new());
     app.run(Command::Heard(Ok(snapshot(1, Some(mind)))));
-    let shown = [top_words(&app), format!("{:?}", app.model(chrome::bottom))].join("
+    let shown = [top_words(&app), format!("{:?}", app.model(chrome::footer))].join("
 ");
     assert!(!shown.contains("ghp_") && !shown.contains("internal-host"), "{shown}");
     assert!(shown.contains("a tool") && shown.contains("Model unavailable"), "{shown}");

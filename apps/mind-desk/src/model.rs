@@ -7,7 +7,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use yantrik_app::app::WindowId;
 use yantrik_app::timers::TimerId;
 use yantrik_ipc_contracts::mind_desk::{DeskSnapshot, StopAck};
 use yantrik_services::mind_desk::MindDeskApi;
@@ -46,7 +45,9 @@ pub enum Stop {
     /// Stop… was pressed and the shell has not answered.
     Asking { agent: String },
     /// The shell would not take the question. Nothing is said to have happened to the Mind.
-    NotTaken { agent: String },
+    /// `kept_going` when the person answered the last one "Keep going": the shell does not put the
+    /// same question in front of them again for two minutes (`approvals::DENIAL_QUIET`).
+    NotTaken { agent: String, kept_going: bool },
 }
 
 pub struct Model {
@@ -55,8 +56,6 @@ pub struct Model {
     /// The last the shell said, kept through a lost link.
     pub snapshot: Option<DeskSnapshot>,
     pub stop: Stop,
-    /// The footer's window, once opened.
-    pub bottom: Option<WindowId>,
     /// An ask of the shell is out.
     pub asking: bool,
     /// When it was made.
@@ -70,10 +69,6 @@ pub struct Model {
 /// Every change to the desk.
 #[derive(Clone, Debug)]
 pub enum Command {
-    /// The footer's window is opened.
-    OpenFooter,
-    /// A window `OpenFooter` asked for could not be made.
-    FooterNotOpened,
     /// Ask the shell for what changed.
     Ask,
     /// What the shell said.

@@ -1,10 +1,9 @@
-// The Mind desk: the bars around Mind View's apps (#1023, phase 1).
+// The Mind desk: the bar along the top of Mind View (#1023, phase 1).
 //
-// One app, two windows of this one component. `role` says which: 0 is the header and the tool
-// strip, above the apps; 1 is the footer, below them. Two windows and not one because a window
-// the height of Mind View would sit over the apps and take their clicks; these two leave the
-// middle to the apps. The nested compositor places them (config/labwc-mind/rc.xml), found by the
-// titles below.
+// One window, the header, the tool strip and the footer one under the other. A window the height
+// of Mind View would sit over the apps and take their clicks; this one is as tall as the margin the
+// nested compositor keeps for it (config/labwc-mind/rc.xml) and one pixel more, its own bottom
+// edge over the apps' first row. The compositor finds it by the title below.
 import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
 import { WindowChrome } from "@yantrik-kit/window_chrome.slint";
 import { DeskHeader, DeskStrip, DeskFooter } from "desk.slint";
@@ -12,14 +11,13 @@ import { DeskHeader, DeskStrip, DeskFooter } from "desk.slint";
 export { ThemeMode, AccentPreset, WindowChrome }
 
 export component MindDeskApp inherits Window {
-    // Which window this is, and how tall: set by the app before the window is shown, so the
-    // compositor finds its title and its height at map.
-    in property <int> role: 0;
+    // The heights, set by the app before the window is shown (apps/mind-desk/src/metrics.rs), so
+    // the compositor finds its height at map.
     in property <length> bar-height: 0px;
-    // How much of the top window is the tool strip, the rest being the header.
+    in property <length> header-height: 0px;
     in property <length> strip-height: 0px;
 
-    // ── The header (role 0) ──
+    // ── The header ──
     in property <string> label;
     in property <int> tone;
     in property <string> headline;
@@ -29,21 +27,21 @@ export component MindDeskApp inherits Window {
     callback stop-pressed();
     callback agents-pressed();
 
-    // ── The tool strip (role 0) ──
+    // ── The tool strip ──
     in property <string> strip-heading;
     in property <string> strip-tool;
     in property <string> strip-mark;
     in property <string> strip-stats;
 
-    // ── The footer (role 1) ──
+    // ── The footer ──
     in property <string> apps;
     in property <string> safety;
     in property <string> model;
     in property <string> model-mark;
 
-    // The titles are the nested compositor's way to find each bar: they are in its window rules,
-    // and a test holds the two files together.
-    title: root.role == 0 ? "Yantrik Mind Desk Top" : "Yantrik Mind Desk Bottom";
+    // The nested compositor's way to find the bar: it is in its window rule, and a test holds the
+    // two files together.
+    title: "Yantrik Mind Desk";
     no-frame: true;
     background: Theme.bg-surface;
     default-font-family: Theme.font-ui;
@@ -53,11 +51,11 @@ export component MindDeskApp inherits Window {
     min-height: root.bar-height;
     max-height: root.bar-height;
 
-    if root.role == 0 : DeskHeader {
+    DeskHeader {
         x: 0px;
         y: 0px;
         width: root.width;
-        height: root.height - root.strip-height;
+        height: root.header-height;
         label: root.label;
         tone: root.tone;
         headline: root.headline;
@@ -67,9 +65,9 @@ export component MindDeskApp inherits Window {
         stop-pressed => { root.stop-pressed(); }
         agents-pressed => { root.agents-pressed(); }
     }
-    if root.role == 0 : DeskStrip {
+    DeskStrip {
         x: 0px;
-        y: root.height - root.strip-height;
+        y: root.header-height;
         width: root.width;
         height: root.strip-height;
         heading: root.strip-heading;
@@ -77,11 +75,11 @@ export component MindDeskApp inherits Window {
         mark: root.strip-mark;
         stats: root.strip-stats;
     }
-    if root.role == 1 : DeskFooter {
+    DeskFooter {
         x: 0px;
-        y: 0px;
+        y: root.header-height + root.strip-height;
         width: root.width;
-        height: root.height;
+        height: root.height - root.header-height - root.strip-height;
         apps: root.apps;
         safety: root.safety;
         model: root.model;

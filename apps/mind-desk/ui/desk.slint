@@ -198,10 +198,17 @@ export component DeskFooter inherits Rectangle {
         y: 0px;
         background: Theme.border-subtle;
     }
+    // The bar's own bottom edge: the one pixel of it that is over the apps' first row.
+    Rectangle {
+        height: 1px;
+        y: root.height - 1px;
+        background: Theme.border-default;
+    }
 
     HorizontalLayout {
         padding-left: Theme.sp-4;
         padding-right: Theme.sp-4;
+        padding-bottom: 1px;
         spacing: Theme.sp-4;
 
         Text {

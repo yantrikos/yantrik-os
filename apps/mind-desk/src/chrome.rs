@@ -1,4 +1,4 @@
-//! What each of the two windows says, as plain data: the model, put into the words of
+//! What the bar says, as plain data: the model, put into the words of
 //! [`crate::words`]. `view` writes these to the windows and `describe` reads them back to a Mind,
 //! so what is drawn and what is said are one thing.
 
@@ -27,7 +27,7 @@ pub struct Top {
 
 /// The footer.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Bottom {
+pub struct Footer {
     pub apps: String,
     pub safety: String,
     pub model: String,
@@ -51,14 +51,22 @@ fn quiet(label: &str, headline: &str) -> Top {
 
 /// What the person is told of a stop. Nothing until one is asked; "Stopped" only when the shell
 /// says it stopped the Mind, which it does only after the person's yes on their own desktop.
+///
+/// What was last pressed comes first: a stop being asked, or the shell not taking it, then what
+/// the person was told about the Agents screen (which says why it did not open, whatever else is
+/// waiting), and last how a stop already asked stands.
 fn stop_note(m: &Model, mind: &DeskMind) -> String {
     match (&m.stop, mind.stop) {
         (Stop::Asking { agent }, _) if *agent == mind.agent => "Asking…".to_string(),
-        (Stop::NotTaken { agent }, _) if *agent == mind.agent => "The shell did not take the request".to_string(),
+        (Stop::NotTaken { agent, kept_going: true }, _) if *agent == mind.agent => {
+            "You kept it going; it can be asked again in two minutes".to_string()
+        }
+        (Stop::NotTaken { agent, .. }, _) if *agent == mind.agent => "The shell did not take the request".to_string(),
+        _ if !m.note.is_empty() => m.note.clone(),
         (_, Some(StopStatus::Asked)) => "Waiting for your answer on the desktop".to_string(),
         (_, Some(StopStatus::Stopped)) => "Stopped".to_string(),
         (_, Some(StopStatus::NotStopped)) => "Not stopped".to_string(),
-        _ => m.note.clone(),
+        _ => String::new(),
     }
 }
 
@@ -94,12 +102,12 @@ pub fn top(m: &Model) -> Top {
     }
 }
 
-pub fn bottom(m: &Model) -> Bottom {
+pub fn footer(m: &Model) -> Footer {
     let live = if m.link == Link::Live { m.snapshot.as_ref() } else { None };
     let mind = live.and_then(|s| s.mind.as_ref());
     let account = mind.map_or(yantrik_ipc_contracts::mind_desk::Account::Unknown, |mind| mind.account);
     let (model, model_mark) = words::model_line(mind.and_then(|mind| mind.model.as_deref()));
-    Bottom {
+    Footer {
         // What is not known is said so, and not filled in from a snapshot that may be old.
         apps: live.map_or_else(|| "Apps unavailable".to_string(), |s| words::apps_line(&s.apps)),
         safety: words::safety_line(account).to_string(),

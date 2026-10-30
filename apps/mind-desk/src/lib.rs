@@ -1,16 +1,17 @@
 //! Yantrik Mind desk, on YantrikApp (#1023, phase 1): the bars around Mind View's apps.
 //!
 //! Mind View is a second labwc, nested, in which the apps a Mind opens are drawn. This app runs
-//! inside it, started by the shell itself (not by the compositor's startup script), and draws two
-//! windows the nested compositor keeps above and below the apps (config/labwc-mind/rc.xml): above,
-//! the Mind's name and state, the tool it is running, Stop… and Open in Agents, and the tool's
-//! mark and the counts of its run; below, the apps open, how the Mind is housed (its own account or
-//! the person's), and the model it says it runs.
+//! inside it, started by the shell itself (not by the compositor's startup script), and draws one
+//! bar along the top of it, which the nested compositor keeps the apps below
+//! (config/labwc-mind/rc.xml): the Mind's name and state, the tool it is running, Stop… and Open in
+//! Agents; the tool's mark and the counts of its run; and the apps open, how the Mind is housed
+//! (its own account or the person's) and the model it says it runs.
 //!
-//! # Why two windows
+//! # Why one bar, along the top
 //!
-//! One window tall enough to hold both bars would sit over the apps and take their clicks. Two
-//! leave the middle to them, and each reserves its own margin in the compositor.
+//! A window the height of Mind View would sit over the apps and take their clicks, so the desk is a
+//! bar. labwc can hold a bar at the top of a display that is resized, and cannot hold one at the
+//! bottom (see `metrics`), so the footer is under the strip.
 //!
 //! # What it is told, and what it may do
 //!
@@ -30,7 +31,7 @@
 //! # How it is put together
 //!
 //! - `words.rs`: every sentence and colour, as plain functions. `chrome.rs`: the model as the
-//!   two windows' words. `view.rs`: the only code that writes a window. `describe.rs`: what a
+//!   bar's words. `view.rs`: the only code that writes the window. `describe.rs`: what a
 //!   Mind reads of it.
 //! - `model.rs` and `update.rs`: the state, and the only code that changes it.
 //! - `metrics.rs`: the numbers the nested compositor's rules agree with.
@@ -75,7 +76,6 @@ impl App for MindDesk {
             link: Link::Connecting,
             snapshot: None,
             stop: Stop::Resting,
-            bottom: None,
             asking: false,
             asked_at: None,
             retry: model::RETRY_FROM,
@@ -88,12 +88,7 @@ impl App for MindDesk {
         view::wire(cx, &ui);
     }
 
-    fn wire_window(cx: &Cx<Self>, ui: &MindDeskApp, _: WindowId) {
-        view::wire(cx, ui);
-    }
-
     fn start(_: &Model, fx: &mut Effects<Self>) {
-        fx.then(Command::OpenFooter);
         fx.then(Command::Ask);
     }
 
@@ -101,8 +96,8 @@ impl App for MindDesk {
         update::update(m, command, fx)
     }
 
-    fn render(ui: &MindDeskApp, window: WindowId, m: &Model, _: &Changed) {
-        view::render(ui, window, m);
+    fn render(ui: &MindDeskApp, _: WindowId, m: &Model, _: &Changed) {
+        view::render(ui, m);
     }
 
     fn describe(m: &Model) -> View {
@@ -111,10 +106,9 @@ impl App for MindDesk {
 
     fn event(event: Event<()>, _: &Model) -> Option<Command> {
         match event {
-            // The bars are the room's walls, not windows a person closes. A close asked of one
+            // The bar is the room's wall, not a window a person closes. A close asked of it
             // (Alt+F4 is bound in the nested compositor) changes nothing.
             Event::CloseRequested(_) => Some(Command::CloseAsked),
-            Event::WindowNotOpened { .. } => Some(Command::FooterNotOpened),
             _ => None,
         }
     }
