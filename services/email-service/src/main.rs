@@ -41,6 +41,7 @@ mod connect;
 mod envelope;
 mod folders;
 mod google;
+mod imap_text;
 mod oauth;
 mod secrets;
 mod setup;
@@ -329,6 +330,9 @@ impl ServiceHandler for EmailHandler {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ServiceError> {
+        // Before an account is looked up or a socket opened: text from a caller never reaches an
+        // IMAP command unchecked (`imap_text`).
+        imap_text::check_params(&params)?;
         let account_id = params["account_id"]
             .as_str()
             .unwrap_or("default");
@@ -971,6 +975,12 @@ fn smtp_send(account: &Account, compose: &ComposeRequest) -> Result<(), ServiceE
         })?)
         .subject(&compose.subject);
 
+    // A reply says which message it answers, so the other end threads it. `reply_to_id` is that
+    // message's `Message-ID` header value.
+    if let Some(parent) = compose.reply_to_id.as_deref().and_then(imap_text::thread_id) {
+        email_builder = email_builder.in_reply_to(parent.clone()).references(parent);
+    }
+
     for to in &compose.to {
         email_builder = email_builder.to(to.parse().map_err(|e| ServiceError {
             code: -32000,
@@ -1228,19 +1238,8 @@ fn imap_search(
     // The folder the caller is looking at: search SELECTed INBOX whichever folder was on
     // screen, so searching with Spam open answered with mail from a mailbox nobody was
     // looking at (#288).
-    session.select(folder).map_err(|e| ServiceError {
-        code: -32000,
-        message: format!("IMAP SELECT {folder} failed: {e}"),
-    })?;
 
-    // IMAP search by subject or from
-    let search_query = format!("OR SUBJECT \"{}\" FROM \"{}\"", query, query);
-    let uids = session
-        .search(&search_query)
-        .map_err(|e| ServiceError {
-            code: -32000,
-            message: format!("IMAP SEARCH failed: {e}"),
-        })?;
+    let uids = imap_text::find_uids(&mut session, folder, query)?;
 
     if uids.is_empty() {
         let _ = session.logout();
@@ -1336,6 +1335,32 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, -32001, "{}", err.message);
         assert!(err.message.starts_with("email.send_message answers the desktop's own programs"), "{}", err.message);
+    }
+
+    /// Hostile text in any parameter of any mail method is refused before an account is looked up
+    /// or a socket opened: no method puts a caller's line break into an IMAP command.
+    #[test]
+    fn hostile_text_in_any_mail_method_is_refused_before_anything_is_dialled() {
+        use yantrik_service_sdk::ServiceHandler as _;
+        let hostile = "x\r\nZ1 UID STORE 1:* +FLAGS.SILENT (\\Deleted)\r\nZ2 EXPUNGE";
+        let cases = [
+            ("email.search", "query"), ("email.search", "folder"), ("email.list_messages", "folder"),
+            ("email.get_message", "message_id"), ("email.get_message", "folder"),
+            ("email.mark_read", "message_id"), ("email.mark_read", "folder"),
+            ("email.mark_starred", "message_id"), ("email.move_message", "target_folder"),
+            ("email.move_message", "folder"), ("email.delete_message", "message_id"),
+            ("email.delete_message", "folder"), ("email.list_folders", "account_id"),
+            ("email.send_message", "account_id"),
+        ];
+        let handler = super::EmailHandler::new();
+        for (method, key) in cases {
+            let mut params = serde_json::json!({ "message_id": "1" });
+            params[key] = serde_json::json!(hostile);
+            let err = handler.handle(method, params).unwrap_err();
+            assert_eq!(err.code, -32602, "{method} {key}: {}", err.message);
+        }
+        let many = serde_json::json!({ "message_ids": ["1", hostile] });
+        assert_eq!(handler.handle("email.mark_read", many).unwrap_err().code, -32602);
     }
 
     use super::{extract_parts, flag_change, names_a_folder, plain_body};
