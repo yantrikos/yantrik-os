@@ -1,0 +1,98 @@
+// The Bench's data and its calls into the shell.
+//
+// The desktop's icons are drawn from this one global so nothing has to be threaded through
+// App and DesktopScreen property by property: Rust (crates/yantrik-ui/src/bench) fills the
+// model and the metrics and answers the callbacks, the Bench component only draws and reports
+// what the pointer and the keys did. Nothing here decides anything; where an icon sits, what a
+// menu offers and what a key means are Rust's, so they can be tested without a window.
+import { YMenuAction } from "y_context_menu.slint";
+
+export struct BenchItem {
+    // The real file name. Every callback names an icon by this, never by its position, because
+    // the list changes under a drag when a file arrives.
+    id: string,
+    // The name as it is drawn: control characters and bidi overrides already replaced.
+    label: string,
+    // items::Kind::word(): app, folder, image, pdf, blend, document, sheet, audio, video,
+    // archive, code, text, file.
+    kind: string,
+    x: length,
+    y: length,
+    selected: bool,
+    renaming: bool,
+    // A shortcut to an app: drawn as the app's own tile with a small arrow.
+    shortcut: bool,
+    app-id: string,
+    has-icon: bool,
+    icon: image,
+    // The picture cut from the file, once the worker has made it.
+    has-thumb: bool,
+    thumb: image,
+}
+
+export global BenchState {
+    // ── What Rust sets ──
+    // The grid, in logical pixels: the same numbers the layout arithmetic uses
+    // (crates/yantrik-bench/src/layout.rs), so a drop lands where it is drawn.
+    in property <length> cell-w: 104px;
+    in property <length> cell-h: 116px;
+    in property <length> pad-x: 20px;
+    in property <length> pad-y: 8px;
+    in property <length> tile: 56px;
+    in property <[BenchItem]> items: [];
+    in property <bool> snap: true;
+    // False: "Show desktop icons" is off; the wallpaper is bare.
+    in property <bool> show-icons: true;
+    // What is written when the desktop folder cannot be read; empty otherwise.
+    in property <string> problem: "";
+
+    // The Continue row: the last thing opened, kept by the Bench itself because the Lens's
+    // recents are cleared whenever the Lens closes.
+    in property <bool> has-continue: false;
+    in property <string> continue-title: "";
+    in property <string> continue-subtitle: "";
+
+    // The right-click menu. Rust builds the rows; a row that opens a submenu swaps them and sets
+    // menu-keep so the click that chose it does not close the menu.
+    in-out property <bool> menu-open: false;
+    in-out property <bool> menu-keep: false;
+    in-out property <length> menu-x: 0;
+    in-out property <length> menu-y: 0;
+    in property <[YMenuAction]> menu-rows: [];
+
+    // The inline rename (F2, or Rename in the menu): the text being edited.
+    in-out property <string> rename-text: "";
+
+    // ── What the Bench keeps while a pointer is down ──
+    in-out property <string> drag-id: "";
+    in-out property <length> drag-dx: 0;
+    in-out property <length> drag-dy: 0;
+    in-out property <length> drag-x0: 0;
+    in-out property <length> drag-y0: 0;
+
+    // ── What the Bench reports ──
+    // The icon area changed size (and the first time it is drawn): its width, its height, and how
+    // much of the right edge the Minds panel covers.
+    callback area-changed(length, length, length);
+    // A press on an icon: its name and whether Ctrl is held.
+    callback select(string, bool);
+    // The press ended on the same icon without a drag: a plain click on one of several selected
+    // icons selects just that one.
+    callback click-released(string, bool);
+    callback open-item(string);
+    // The selected icons were dragged by (dx, dy) from where the named one started.
+    callback move-items(string, length, length);
+    // A rubber band was drawn: x, y, width, height, and whether Ctrl is held (add to the selection).
+    callback rubber-band(length, length, length, length, bool);
+    // A press on the bare desktop: clear the selection unless Ctrl is held.
+    callback background-pressed(bool);
+    callback item-menu(string, length, length);
+    callback background-menu(length, length);
+    callback menu-action(string);
+    callback rename-commit(string, string);
+    callback rename-cancel();
+    // A key: its name (enter, f2, delete, escape, up, down, left, right, a), Ctrl, Shift. True
+    // when it was used.
+    callback key(string, bool, bool) -> bool;
+    callback continue-open();
+}

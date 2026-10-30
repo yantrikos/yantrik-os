@@ -225,6 +225,11 @@ export global Theme {
     // ink contrasts with all of it; the shadow is what keeps white legible over its light parts.
     out property <color> label-on-wallpaper: #ffffff;
     out property <color> label-shadow:       #00000059;
+    // The plate under the name of a desktop icon (the Bench, #1030): flat and dark in both themes, because
+    // the wallpaper is a photograph and white needs a ground under it, and a blur would cost the software
+    // renderer a pass on every repaint.
+    out property <color> label-plate:        #0a0f14b8;
+    out property <color> label-plate-selected: #24456fe6;
 
     // ─── Amber palette ────────────────────────────────────────────
     out property <color> amber:             ThemeOverrides.enabled ? ThemeOverrides.amber-override

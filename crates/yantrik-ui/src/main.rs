@@ -60,6 +60,8 @@ mod control_overlays;
 mod control_settings;
 mod control_switcher;
 mod alt_tab;
+/// The Bench: the desktop's icons, where the person put them (#1030).
+mod bench;
 mod window_name;
 mod power_status;
 mod control_network;
@@ -71,6 +73,8 @@ mod control_installer_target;
 mod control_levels;
 mod control_levels_actions;
 mod control_theme;
+/// The desktop's icons on the control surface: desktop_place, desktop_archive (#1030).
+mod control_bench;
 mod boot_unlock;
 mod installer_medium;
 mod installer_rules;
