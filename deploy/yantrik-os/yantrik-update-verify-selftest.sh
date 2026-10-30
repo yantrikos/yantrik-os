@@ -43,6 +43,12 @@ mkkey nightly n1; mkkey release r1; mkkey release rogue
 openssl pkey -in "$T/n1.key" -pubout -out "$KEYS/nightly.n1.pub"
 openssl pkey -in "$T/r1.key" -pubout -out "$KEYS/release.r1.pub"
 chmod 644 "$KEYS"/*.pub
+cp "$KEYS/nightly.n1.pub" "$T/n1.pub"
+# The list of what the installed build shipped (bin/yantrik-root-files.sha256): a key counts only
+# when it is on it. `relist` is what a build's packaging does.
+LIST="$PFX/bin/yantrik-root-files.sha256"
+relist() { (cd "$(dirname "$KEYS")" && sha256sum update-keys/*) > "$LIST"; chmod 644 "$LIST"; }
+relist
 
 SHA="$(printf 'bundle' | sha256sum | cut -d' ' -f1)"
 NOW=1800000000   # a fixed clock, so expiry cases do not depend on the day this runs
@@ -53,7 +59,7 @@ sign() { # <out> <channel> <serial> <key> [days]
 }
 verify() { # <channel> <file> [extra args]: prints the verifier's answer; sets $rc
   local ch="$1" f="$2"; shift 2
-  out="$("$VERIFY" verify --channel "$ch" --source releases.example --keys "$KEYS" --state "$STATE" --now "$((NOW + 86400))" "$@" "$f" 2>&1)"; rc=$?
+  out="$("$VERIFY" verify --channel "$ch" --source releases.example --keys "$KEYS" --state "$STATE" --listed "$LIST" --now "$((NOW + 86400))" "$@" "$f" 2>&1)"; rc=$?
 }
 field() { printf '%s\n' "$out" | sed -n "s/^$1=//p" | head -1; }
 
@@ -166,13 +172,20 @@ is  "no keys is a refusal" "no_keys:20" "$(field status):$rc"
 rmdir "$KEYS"; mv "$PFX/share/keys.away" "$KEYS"
 # A second key of a scope is trusted too: that is how a key is rotated.
 mkkey nightly n2; openssl pkey -in "$T/n2.key" -pubout -out "$KEYS/nightly.n2.pub"; chmod 644 "$KEYS/nightly.n2.pub"
+cp "$KEYS/nightly.n2.pub" "$T/n2.pub"
+relist
 sign "$T/n-rotated" nightly 100 n2
 verify nightly "$T/n-rotated"
 is  "a second nightly key (a rotation) is accepted" "ok:0" "$(field status):$rc"
 is  "and named" "nightly.n2" "$(field key)"
-rm -f "$KEYS/nightly.n2.pub"
+rm -f "$KEYS/nightly.n2.pub"; relist
 verify nightly "$T/n-rotated"
 is  "removing the old key stops trusting it" "bad_signature:20" "$(field status):$rc"
+# A key file nobody vouched for (not on the build's list) is ignored, whoever owns it.
+cp "$T/n2.pub" "$KEYS/nightly.n2.pub"
+verify nightly "$T/n-rotated"
+is  "a key that is not on the installed build's list is not trusted" "bad_signature:20" "$(field status):$rc"
+rm -f "$KEYS/nightly.n2.pub"
 if [ "$(id -u)" != 0 ]; then
   # Outside the selftest the uid that counts is root's; nobody sets it from the environment.
   out="$(env -u YANTRIK_SELFTEST "$VERIFY" verify --channel nightly --keys "$KEYS" --state "$STATE" "$T/n100")"
@@ -202,6 +215,78 @@ openssl genrsa -out "$T/rsa.key" 2048 2>/dev/null
 out="$("$SIGN" --channel nightly --version v1 --git abc1234 --artifact a.tar.zst --sha256 "$SHA" \
   --key-file "$T/rsa.key" --out "$T/rsa.out" 2>&1)"; rc=$?
 is    "only ed25519 keys sign" "1" "$rc"
+
+# ── 7b. The trusted key set only moves forward (#537 review) ────────────────────────────
+echo "  rotation, rollback, revocation, planted keys"
+extract() { sed -n "/^$1() {/,/^}/p" "$UPDATE"; }
+RB="$T/restore.sh"; { extract restore_backup; extract is_updater_file; extract seal_share; } > "$RB"
+rollback_in() { # <prefix> <backup> <tree is root's: 0|1>: restore_backup as the updater runs it
+  ( PREFIX="$1"; BIN_DIR="$1/bin"; SHARE_DIR="$1/share"; UPDATE_KEYS_DIR="$1/share/update-keys"; BUILD_FILE="$1/BUILD"
+    TREE_ROOT="$3"
+    warn() { :; }; info() { :; }; swap_memory() { :; }; stamp_version_file() { :; }; installed_version() { :; }
+    tree_is_roots() { [ "$TREE_ROOT" = 1 ]; }
+    # shellcheck disable=SC1090
+    . "$RB"; restore_backup "$2" ) > /dev/null 2>&1
+}
+P="$T/rot"; mkdir -p "$P/bin" "$P/share/update-keys"; chmod 755 "$P" "$P/share" "$P/share/update-keys"
+cp "$VERIFY" "$P/bin/"; echo "tool" > "$P/bin/other"; chmod 755 "$P/bin"
+KEYS="$P/share/update-keys"; STATE="$P/update-state"; LIST="$P/bin/yantrik-root-files.sha256"
+# Build N-1: trusts n1.
+cp "$T/n1.pub" "$KEYS/nightly.n1.pub"; chmod 644 "$KEYS"/*; relist
+verify nightly "$T/n100"
+is  "build N-1: its own key works" "ok:0" "$(field status):$rc"
+mkdir -p "$T/bk"; cp -a "$P/bin" "$T/bk/bin"; cp -a "$P/share" "$T/bk/share"; chmod -R go-w "$T/bk"
+# Build N rotates n1 out: n2 in, n1 revoked, and apply merges the revocation before installing.
+FP1="$("$VERIFY" fingerprint "$T/n1.pub")"
+printf '# rotated out
+%s nightly.n1 leaked
+' "$FP1" > "$T/bundle-revoked"
+out="$("$VERIFY" revoke-merge --state "$STATE" "$T/bundle-revoked")"
+has "applying a bundle records its revocations" "1 new" "$out"
+rm -f "$KEYS/nightly.n1.pub"; cp "$T/n2.pub" "$KEYS/nightly.n2.pub"; cp "$T/bundle-revoked" "$KEYS/revoked.sha256"; chmod 644 "$KEYS"/*; relist
+verify nightly "$T/n-rotated"
+is  "build N: a normal update, signed by the new key, works" "ok:0" "$(field status):$rc"
+verify nightly "$T/n100"
+is  "build N: the revoked key is refused" "bad_signature:20" "$(field status):$rc"
+# Rollback to N-1 (a failed install, a manual rollback or a downgrade restores its share/).
+rollback_in "$P" "$T/bk" 0; rbrc=$?
+is  "the rollback itself goes ahead" "0" "$rbrc"
+is  "but the old key does not come back with it" "no" "$([ -e "$KEYS/nightly.n1.pub" ] && echo yes || echo no)"
+is  "and the current key stays" "yes" "$([ -e "$KEYS/nightly.n2.pub" ] && echo yes || echo no)"
+verify nightly "$T/n100"
+is  "after the rollback the revoked key is still refused" "bad_signature:20" "$(field status):$rc"
+verify nightly "$T/n-rotated"
+is  "and the current one still works (the updater can still update)" "ok:0" "$(field status):$rc"
+# Even a .pub put back by hand, on a list that names it (an older bundle's), is dead: revoked.
+cp "$T/n1.pub" "$KEYS/nightly.n1.pub"; chmod 644 "$KEYS/nightly.n1.pub"; rm -f "$KEYS/revoked.sha256"; relist
+verify nightly "$T/n100"
+is  "a revoked key restored AND listed is still refused" "bad_signature:20" "$(field status):$rc"
+"$VERIFY" revoke-merge --state "$STATE" "$T/empty" > /dev/null
+printf '%s
+' "$(printf 'c%.0s' $(seq 1 64))" > "$T/other-revoked"
+"$VERIFY" revoke-merge --state "$STATE" "$T/other-revoked" > /dev/null
+has "the revocation record only grows" "$FP1" "$(cat "$STATE/revoked-keys")"
+is  "and holds the newer line too" "2" "$(wc -l < "$STATE/revoked-keys" | tr -d ' ')"
+rm -f "$KEYS/nightly.n1.pub"; relist
+# A key planted in a backup's share/.
+rm -rf "$T/bk2"; cp -a "$T/bk" "$T/bk2"; chmod -R u+w "$T/bk2"
+mkdir -p "$T/bk2/share/update-keys"; openssl pkey -in "$T/rogue.key" -pubout -out "$T/bk2/share/update-keys/release.planted.pub"
+[ "$(id -u)" != 0 ] || chown -R 65534 "$T/bk2"
+rollback_in "$P" "$T/bk2" 1; rbrc=$?
+is  "a backup whose share/ is not root's alone is refused" "1" "$rbrc"
+is  "and nothing was restored from it" "no" "$([ -e "$KEYS/release.planted.pub" ] && echo yes || echo no)"
+rollback_in "$P" "$T/bk2" 0 || true
+is  "even where ownership cannot be judged, a planted key is not copied in" "no" "$([ -e "$KEYS/release.planted.pub" ] && echo yes || echo no)"
+sign "$T/planted-stable" stable 100 rogue
+verify stable "$T/planted-stable"
+is  "a manifest signed by the planted key is refused" "20" "$rc"
+cp "$T/bk2/share/update-keys/release.planted.pub" "$KEYS/"; chmod 644 "$KEYS/release.planted.pub"
+verify stable "$T/planted-stable"
+is  "a planted key that is in share/ but not on the list is refused" "20" "$rc"
+rm -f "$KEYS/release.planted.pub"
+verify nightly "$T/n-rotated"
+is  "the machine still updates normally afterwards" "ok:0" "$(field status):$rc"
+KEYS="$PFX/share/update-keys"; STATE="$PFX/update-state"; LIST="$PFX/bin/yantrik-root-files.sha256"
 
 # ── 8. The real updater, against a real (local) web server ──────────────────────────────
 echo "  the updater against a server"

@@ -283,30 +283,38 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # The release manifest machines believe is signed (#537), and it is signed before a byte is
+      # uploaded: with no key there is nothing to publish, never an unsigned release. This is its
+      # own step so the signing key is in the environment of nothing else. The nightly key is a CI
+      # secret and may sign the nightly channel only (the machines enforce that). Beta and stable
+      # are signed offline by the owner with a key CI never holds: their bundle and image are
+      # published below, and the manifest that makes them visible to updaters is signed and
+      # published by hand afterwards.
+      - name: Sign the nightly manifest
+        if: needs.decide.outputs.publish == 'true' && needs.decide.outputs.channel == 'nightly'
+        env:
+          UPDATE_SIGNING_KEY_NIGHTLY: ${{ secrets.UPDATE_SIGNING_KEY_NIGHTLY }}
+          BUNDLE: ${{ steps.bundle.outputs.path }}
+          BUNDLE_VERSION: ${{ steps.bundle.outputs.version }}
+          BUNDLE_GIT: ${{ steps.bundle.outputs.git }}
+          BUNDLE_BINARIES: ${{ steps.bundle.outputs.binaries }}
+          SIGNED: ${{ runner.temp }}/release.signed
+        run: |
+          [ -n "$UPDATE_SIGNING_KEY_NIGHTLY" ] || { echo "::error::UPDATE_SIGNING_KEY_NIGHTLY is not set on this repository, so the nightly manifest cannot be signed and nothing was published (make a key with deploy/yantrik-os/update-keys/new-key.sh)"; exit 1; }
+          deploy/yantrik-os/sign-manifest.sh --channel nightly \
+            --version "$BUNDLE_VERSION" --git "$BUNDLE_GIT" \
+            --artifact "$(basename "$BUNDLE")" --sha256 "$(sha256sum "$BUNDLE" | cut -d' ' -f1)" \
+            --binaries "$BUNDLE_BINARIES" \
+            --key-env UPDATE_SIGNING_KEY_NIGHTLY --out "$SIGNED"
+
       - name: Publish
         if: needs.decide.outputs.publish == 'true'
         env:
           ISO_PUBLISH_KEY: ${{ secrets.ISO_PUBLISH_KEY }}
-          UPDATE_SIGNING_KEY_NIGHTLY: ${{ secrets.UPDATE_SIGNING_KEY_NIGHTLY }}
         run: |
           [ -n "$ISO_PUBLISH_KEY" ] || { echo "::error::ISO_PUBLISH_KEY is not set on this repository"; exit 1; }
           ch="${{ needs.decide.outputs.channel }}"
-          # The release manifest machines believe is signed (#537), and it is signed before a
-          # byte is uploaded: with no key there is nothing to publish, never an unsigned release.
-          # The nightly key is a CI secret and may sign the nightly channel only (the machines
-          # enforce that). Beta and stable are signed offline by the owner, with a key CI never
-          # holds: their bundle and image are published here, and the manifest that makes them
-          # visible to updaters is signed and published by hand afterwards (see below).
           signed="${{ runner.temp }}/release.signed"
-          if [ "$ch" = nightly ]; then
-            [ -n "$UPDATE_SIGNING_KEY_NIGHTLY" ] || { echo "::error::UPDATE_SIGNING_KEY_NIGHTLY is not set on this repository, so the nightly manifest cannot be signed and nothing was published (make a key with deploy/yantrik-os/update-keys/new-key.sh)"; exit 1; }
-            bundle="${{ steps.bundle.outputs.path }}"
-            deploy/yantrik-os/sign-manifest.sh --channel nightly \
-              --version "${{ steps.bundle.outputs.version }}" --git "${{ steps.bundle.outputs.git }}" \
-              --artifact "$(basename "$bundle")" --sha256 "$(sha256sum "$bundle" | cut -d' ' -f1)" \
-              --binaries "${{ steps.bundle.outputs.binaries }}" \
-              --key-env UPDATE_SIGNING_KEY_NIGHTLY --out "$signed"
-          fi
           install -m 700 -d ~/.ssh
           printf '%s\n' "$ISO_PUBLISH_KEY" > ~/.ssh/yantrik_publish
           chmod 600 ~/.ssh/yantrik_publish

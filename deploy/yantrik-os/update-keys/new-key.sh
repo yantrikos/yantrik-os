@@ -26,15 +26,24 @@ fail() { echo "new-key.sh: $*" >&2; exit 1; }
 SCOPE="$1"; ID="$2"; PRIV="$3"
 case "$SCOPE" in nightly|release) ;; *) fail "the scope is nightly or release" ;; esac
 printf '%s' "$ID" | grep -qE '^[A-Za-z0-9_-]{1,32}$' || fail "the id is letters, digits, - and _ (up to 32)"
-[ ! -e "$PRIV" ] || fail "$PRIV already exists; not overwriting a key"
+[ ! -e "$PRIV" ] && [ ! -L "$PRIV" ] || fail "$PRIV already exists; not overwriting a key"
 [ -d "$(dirname "$PRIV")" ] || fail "no directory for $PRIV"
 command -v openssl >/dev/null 2>&1 || fail "openssl 3 is required"
 
-( umask 077; openssl genpkey -algorithm ed25519 -out "$PRIV" ) 2>/dev/null \
+# Made under a private temporary name beside the target, then linked into place: `ln` refuses an
+# existing name, so a path that appeared (or a link that points elsewhere) since the check above
+# is never written through.
+TMP="$(umask 077 && mktemp "$(dirname "$PRIV")/.new-key.XXXXXX")" || fail "cannot write beside $PRIV"
+trap 'rm -f "$TMP"' EXIT
+( umask 077; openssl genpkey -algorithm ed25519 -out "$TMP" ) 2>/dev/null \
   || fail "openssl could not make an ed25519 key (it needs OpenSSL 3)"
-chmod 600 "$PRIV"
+chmod 600 "$TMP"
+ln "$TMP" "$PRIV" 2>/dev/null || fail "$PRIV appeared meanwhile; not overwriting it"
 
 echo "Private key written to $PRIV (mode 0600). It is not shown and not stored anywhere else."
 echo "Commit this as deploy/yantrik-os/update-keys/$SCOPE.$ID.pub :"
 echo
 openssl pkey -in "$PRIV" -pubout
+echo
+echo "To revoke this key later, add this line to update-keys/revoked.sha256 (and drop the .pub):"
+openssl pkey -in "$PRIV" -pubout -outform DER | sha256sum | cut -d' ' -f1

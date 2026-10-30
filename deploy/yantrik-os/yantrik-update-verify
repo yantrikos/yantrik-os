@@ -4,7 +4,9 @@
 # ═══════════════════════════════════════════════════════════════════════════════════════
 #
 #   yantrik-update-verify verify --channel C [--source NAME] [--keys DIR] [--state DIR]
-#                                [--now EPOCH] [--commit] FILE
+#                                [--listed FILE] [--now EPOCH] [--commit] FILE
+#   yantrik-update-verify revoke-merge [--state DIR] FILE   add a bundle's revocations to the record
+#   yantrik-update-verify fingerprint KEY.pub               the id a revocation list names a key by
 #
 # The manifest decides which bytes yantrik-update installs as root. Until this existed it was
 # a JSON file fetched over https and believed: whoever could write it on the server, or in
@@ -36,10 +38,27 @@
 # number of keys per scope are trusted, which is how a key is rotated: ship the new .pub, sign
 # with it, remove the old one a release later.
 #
+# ── Which keys count: only ones a build vouched for, and never a revoked one ──
+#
+# `share/` is put back wholesale by a rollback or a downgrade, and a backup's `share/` is only as
+# good as who could write it. So a `.pub` in share/update-keys is not trusted for being there. It
+# is trusted when its sha256 is in bin/yantrik-root-files.sha256, the list of everything root
+# installs by content, which a rollback never restores (is_updater_file) and which the newest
+# installed bundle wrote: a key that bundle dropped is no longer listed, whatever `share/` holds,
+# and a key planted in a backup never was. (The list was the simpler of the two sound ways: the
+# build already writes it and the updater already protects it; keys outside share/ would need a
+# new install step that rollback skips.)
+#
+# A downgrade does install an older bundle's list, so there is a second record that only grows:
+# `$STATE/revoked-keys`, the sha256 (of the DER public key, see `fingerprint`) of every key a
+# bundle has revoked. `apply` merges the incoming bundle's share/update-keys/revoked.sha256 into
+# it before installing anything (`revoke-merge`), nothing removes a line, and a key named there is
+# refused even when its .pub and a list entry are back.
+#
 # ── What it checks, in this order ──
 #
-#   1. the keys are root's (outside the selftest), so nothing the desktop's account can write
-#      decides who is trusted;
+#   1. the keys are root's (outside the selftest), listed, and not revoked, so nothing the
+#      desktop's account can write decides who is trusted;
 #   2. the envelope is well formed, and a key allowed to sign THIS channel made the signature;
 #   3. only now the JSON is read: the manifest names this channel (a nightly manifest served
 #      under /stable/ is refused), it has not expired, and its serial is not lower than the
@@ -57,6 +76,7 @@ set -uo pipefail
 PREFIX="${YANTRIK_PREFIX:-/opt/yantrik}"
 KEYS="$PREFIX/share/update-keys"
 STATE="$PREFIX/update-state"
+LISTED="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/yantrik-root-files.sha256"
 SOURCE="the release server"
 CHANNEL=""; NOW=""; COMMIT=0; FILE=""
 # Root's uid. Overridable only by the selftest, which CI runs as an ordinary user and which
@@ -67,24 +87,25 @@ if [ "${YANTRIK_SELFTEST:-}" = 1 ] && [ "$(id -u)" != 0 ]; then
   ROOT_UID="${YANTRIK_VERIFY_ROOT_UID:-0}"
 fi
 
-usage() { echo "usage: yantrik-update-verify verify --channel C [--source NAME] [--keys DIR] [--state DIR] [--now EPOCH] [--commit] FILE" >&2; exit 2; }
+usage() { echo "usage: yantrik-update-verify verify --channel C [--source NAME] [--keys DIR] [--state DIR] [--listed FILE] [--now EPOCH] [--commit] FILE | revoke-merge [--state DIR] FILE | fingerprint KEY.pub" >&2; exit 2; }
 
-[ "${1:-}" = verify ] || usage
-shift
+MODE="${1:-}"
+case "$MODE" in verify|revoke-merge|fingerprint) shift ;; *) usage ;; esac
 while [ $# -gt 0 ]; do
   case "$1" in
     --channel) CHANNEL="${2:-}"; shift 2 ;;
     --source)  SOURCE="${2:-}"; shift 2 ;;
     --keys)    KEYS="${2:-}"; shift 2 ;;
     --state)   STATE="${2:-}"; shift 2 ;;
+    --listed)  LISTED="${2:-}"; shift 2 ;;
     --now)     NOW="${2:-}"; shift 2 ;;
     --commit)  COMMIT=1; shift ;;
     -*)        usage ;;
     *)         FILE="$1"; shift ;;
   esac
 done
-case "$CHANNEL" in nightly|beta|stable) ;; *) usage ;; esac
 [ -n "$FILE" ] || usage
+[ "$MODE" != verify ] || case "$CHANNEL" in nightly|beta|stable) ;; *) usage ;; esac
 [ -n "$NOW" ] || NOW="$(date +%s)"
 case "$NOW" in ''|*[!0-9]*) usage ;; esac
 
@@ -119,27 +140,73 @@ root_only() {
 command -v openssl >/dev/null 2>&1 \
   || refuse no_verifier "This machine cannot check update signatures (openssl is missing), so nothing was installed."
 
+# The id a key is revoked by: the sha256 of its public key in DER form, so a re-wrapped or
+# re-spaced copy of the same PEM is still the same key.
+fingerprint() { openssl pkey -pubin -in "$1" -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1; }
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+
+if [ "$MODE" = fingerprint ]; then
+  fp="$(fingerprint "$FILE")"
+  [ -n "$fp" ] && [ "$fp" != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ] || { echo "not a public key: $FILE" >&2; exit 1; }
+  echo "$fp"; exit 0
+fi
+
+# Add the revocations a bundle carries to the record in $STATE. A union: lines already there stay,
+# nothing is ever removed, and a failure leaves the old record whole.
+if [ "$MODE" = revoke-merge ]; then
+  [ -f "$FILE" ] || exit 0
+  if [ -e "$STATE" ] && ! root_only "$STATE"; then
+    echo "revoke-merge: $STATE is not root's alone" >&2; exit 1
+  fi
+  mkdir -p "$STATE" || exit 1
+  ids() { grep -hoE '^[0-9a-f]{64}' "$@" 2>/dev/null | sort -u; }
+  have="$(ids "$STATE/revoked-keys")"
+  { printf '%s\n' "$have"; ids "$FILE"; } | grep . | sort -u > "$WORK/revoked" || true
+  new="$(comm -13 <(printf '%s\n' "$have" | grep . | sort -u) "$WORK/revoked" | wc -l | tr -d ' ')"
+  cp "$WORK/revoked" "$STATE/.revoked.new" && chmod 644 "$STATE/.revoked.new" \
+    && mv -f "$STATE/.revoked.new" "$STATE/revoked-keys" || exit 1
+  echo "revocations: $new new, $(wc -l < "$STATE/revoked-keys" | tr -d ' ') in the record"
+  exit 0
+fi
+
 # ── 1. The keys ─────────────────────────────────────────────────────────────────────────
 [ -d "$KEYS" ] \
   || refuse no_keys "This machine has no Yantrik update keys, so it cannot tell whether the update information from $SOURCE is genuine. Nothing was installed."
 if ! root_only "$KEYS" "$KEYS/.." "$KEYS/../.."; then
   refuse keys_untrusted "The update keys in $KEYS can be changed by someone other than the administrator, so they are not trusted and nothing was installed."
 fi
+# The state is root's too: a record anyone could edit is not a floor or a revocation list.
+if [ -e "$STATE" ]; then
+  root_only "$STATE" && { [ ! -e "$STATE/revoked-keys" ] || root_only "$STATE/revoked-keys"; } \
+    || refuse state_untrusted "This machine's record of accepted updates can be changed by someone other than the administrator, so nothing was installed."
+fi
+# What the newest installed build says it shipped. Without it no key is vouched for.
+if ! [ -f "$LISTED" ] || ! root_only "$LISTED"; then
+  refuse keys_unlisted "This machine has no trusted list of the update keys its build shipped, so nothing was installed."
+fi
 shopt -s nullglob
 KEYFILES=()
 for k in "$KEYS"/*.pub; do
   root_only "$k" || continue
   openssl pkey -pubin -in "$k" -noout >/dev/null 2>&1 || continue
+  # Vouched for by the installed build's list, which a rollback does not restore.
+  awk -v h="$(sha_of "$k")" -v n="update-keys/$(basename "$k")" \
+    '$1 == h && ($2 == n || $2 == "*" n) { f = 1 } END { exit !f }' "$LISTED" || continue
+  # And not revoked: by the record that only grows, or by the bundle's own list.
+  fp="$(fingerprint "$k")"
+  if grep -qsE "^$fp([[:space:]]|$)" "$STATE/revoked-keys"; then continue; fi
+  if root_only "$KEYS/revoked.sha256" 2>/dev/null && grep -qsE "^$fp([[:space:]]|$)" "$KEYS/revoked.sha256"; then continue; fi
   KEYFILES+=("$k")
 done
 [ "${#KEYFILES[@]}" -gt 0 ] \
-  || refuse no_keys "This machine has no usable Yantrik update keys, so nothing was installed."
+  || refuse no_keys "This machine has no trusted Yantrik update keys (none shipped by this build, or all revoked), so nothing was installed."
 
 # ── 2. The envelope and the signature ───────────────────────────────────────────────────
 [ -s "$FILE" ] \
   || refuse unsigned "The update information from $SOURCE is not signed by Yantrik, so nothing was installed."
-HEADER="$(head -n 1 "$FILE" | tr -d '\r')"
-# An ed25519 signature is 64 bytes: 88 base64 characters, ending in one '='.
+cp "$FILE" "$WORK/env"   # one copy: what is verified, parsed and stored is this one
+HEADER="$(head -n 1 "$WORK/env" | tr -d '\r')"
+# An ed25519 signature is 64 bytes: 88 base64 characters, ending in '=='.
 if ! printf '%s' "$HEADER" | grep -qE '^yantrik-manifest v1 ed25519 [A-Za-z0-9+/]{86}==$'; then
   refuse unsigned "The update information from $SOURCE is not signed by Yantrik, so nothing was installed."
 fi
@@ -147,7 +214,7 @@ printf '%s' "${HEADER##* }" | base64 -d > "$WORK/sig" 2>/dev/null
 [ "$(wc -c < "$WORK/sig" | tr -d ' ')" = 64 ] \
   || refuse bad_signature "The signature on the update information from $SOURCE is damaged, so nothing was installed."
 # Everything after the first newline, byte for byte. `tail -n +2` does not touch a byte of it.
-tail -n +2 "$FILE" > "$WORK/body"
+tail -n +2 "$WORK/env" > "$WORK/body"
 [ -s "$WORK/body" ] \
   || refuse malformed "The update information from $SOURCE is empty, so nothing was installed."
 
@@ -171,7 +238,7 @@ if [ "$allowed" = 0 ]; then
 fi
 
 # ── 3. Only now the content ─────────────────────────────────────────────────────────────
-YANTRIK_V_BODY="$WORK/body" YANTRIK_V_ENVELOPE="$FILE" YANTRIK_V_CHANNEL="$CHANNEL" \
+YANTRIK_V_BODY="$WORK/body" YANTRIK_V_ENVELOPE="$WORK/env" YANTRIK_V_CHANNEL="$CHANNEL" \
 YANTRIK_V_NOW="$NOW" YANTRIK_V_STATE="$STATE" YANTRIK_V_COMMIT="$COMMIT" \
 YANTRIK_V_SOURCE="$SOURCE" YANTRIK_V_KEY="$keyname" \
 python3 -I - <<'PY'

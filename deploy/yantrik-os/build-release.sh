@@ -224,6 +224,12 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
     openssl pkey -pubin -in "$pub" -noout >/dev/null 2>&1 || fail "$pub is not a public key"
     install -m 0644 "$pub" "$ROOT/share/update-keys/$(basename "$pub")"
   done
+  install -m 0644 "$SCRIPT_DIR/update-keys/revoked.sha256" "$ROOT/share/update-keys/revoked.sha256" \
+    || fail "no update-keys/revoked.sha256: the revocation list must ship, even when empty"
+  # A key is trusted by the scope in its file name, so one key under both scopes would give a
+  # nightly key the reach of the release key.
+  dups="$(for pub in "$ROOT"/share/update-keys/*.pub; do "$SCRIPT_DIR/yantrik-update-verify" fingerprint "$pub"; done | sort | uniq -d)"
+  [ -z "$dups" ] || fail "the same update key is committed twice under different names: $dups"
   compgen -G "$ROOT/share/update-keys/nightly.*.pub" >/dev/null \
     || fail "no deploy/yantrik-os/update-keys/nightly.<id>.pub: machines that install this build could not verify a nightly update. Make one with update-keys/new-key.sh"
   echo "   + yantrik-update-verify, share/update-keys ($(ls "$ROOT/share/update-keys" | tr '\n' ' '))"
@@ -361,7 +367,7 @@ fi
 # share/; the updater installs nothing as root whose hash is not in it (#419).
 # An empty directory among these leaves its glob as it is, and sha256sum fails the build; only
 # debs/ may be empty (a build without the patched labwc), so it is listed on its own.
-(cd "$ROOT/share" && sha256sum packages.list root-helpers/* polkit/* sysctl/* containers/* systemd/* grub-theme/* \
+(cd "$ROOT/share" && sha256sum packages.list update-keys/* root-helpers/* polkit/* sysctl/* containers/* systemd/* grub-theme/* \
    && { ! compgen -G 'debs/*.deb' >/dev/null || sha256sum debs/*.deb; }) > "$ROOT/bin/yantrik-root-files.sha256"
 [ "$(wc -l < "$ROOT/bin/yantrik-root-files.sha256")" -ge 4 ] || fail "the root-files list is short: $(cat "$ROOT/bin/yantrik-root-files.sha256")"
 mkdir -p "$ROOT/share/labwc-mind"

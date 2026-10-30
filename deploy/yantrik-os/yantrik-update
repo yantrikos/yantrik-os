@@ -299,7 +299,7 @@ PY
       printf 'status=unreachable\ndetail=%s\n' "$(probe_field "$fetched" detail)"
       return 12 ;;
   esac
-  local args=(verify --channel "$1" --source "$HOST" --keys "$UPDATE_KEYS_DIR" --state "$UPDATE_STATE_DIR")
+  local args=(verify --channel "$1" --source "$HOST" --keys "$UPDATE_KEYS_DIR" --state "$UPDATE_STATE_DIR" --listed "$ROOT_FILES")
   [ "${2:-}" = commit ] && args+=(--commit)
   if [ -x "$VERIFY" ]; then
     out="$("$VERIFY" "${args[@]}" "$tmp")" || rc=$?
@@ -981,6 +981,21 @@ safely. Old backups live in $BACKUP_DIR."
   [ "$(id -u)" = 0 ] && chmod -R go-w "$backup"
   echo "$backup" > "$UPDATES_DIR/last-backup"
 
+  # ── Revocations only accumulate (#537) ──
+  #
+  # The bundle's list of revoked update keys joins the record in update-state BEFORE anything is
+  # installed, so a rollback of this very install (or any later one) cannot bring a revoked key
+  # back: share/ is restored from the backup, update-state is not. A bundle without a list
+  # revokes nothing. If the record cannot be written the update stops here, untouched.
+  if [ -f "$root/share/update-keys/revoked.sha256" ]; then
+    if [ -x "$VERIFY" ]; then
+      "$VERIFY" revoke-merge --state "$UPDATE_STATE_DIR" "$root/share/update-keys/revoked.sha256" \
+        || fail "could not record the update keys this build revokes; nothing was installed"
+    else
+      fail "this updater cannot record revoked update keys ($VERIFY is missing); nothing was installed"
+    fi
+  fi
+
   # ── Swap: install each new binary over the old, atomically per file ──
   say "Installing"
   local installed=0
@@ -1437,6 +1452,14 @@ restore_backup() {
     warn "backup $backup is not root's alone to write; refusing to restore binaries from it"
     return 1
   fi
+  # share/ goes back too, and it holds the update keys: from a backup that only root could have
+  # written, as bin/ does (#537). The keys that count are the ones the installed build lists
+  # (yantrik-update-verify), so a restored share/ can add no trust, but a planted one is refused
+  # outright rather than sealed as root's.
+  if tree_is_roots && [ -d "$backup/share" ] && [ -n "$(find "$backup/share" \( ! -user root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ]; then
+    warn "backup $backup/share is not root's alone to write; refusing to restore from it"
+    return 1
+  fi
   while IFS= read -r f; do
     local base; base="$(basename "$f")"
     # Never back: an older updater would undo what this one checks (#419).
@@ -1444,8 +1467,23 @@ restore_backup() {
     cp "$f" "$BIN_DIR/.$base.rb" 2>/dev/null && chmod 755 "$BIN_DIR/.$base.rb" && mv -f "$BIN_DIR/.$base.rb" "$BIN_DIR/$base"
   done < <(find "$backup/bin" -maxdepth 1 -type f)
   if [ -d "$backup/share" ]; then
+    # The trusted update keys only move forward (#537), like the updater: the keys installed now
+    # stay, whatever the backup's share/ held. Putting an older set back would trust a key a later
+    # build dropped, and an automatic rollback right after a rotation is exactly when that
+    # happens. (yantrik-update-verify also trusts only keys the installed build lists, and
+    # refuses revoked ones, so this is the second lock, not the only one.)
+    local keys_now=""
+    if [ -d "$UPDATE_KEYS_DIR" ]; then
+      keys_now="$SHARE_DIR/../.update-keys.keep"
+      rm -rf "$keys_now"
+      mv "$UPDATE_KEYS_DIR" "$keys_now" || keys_now=""
+    fi
     rm -rf "$SHARE_DIR"
     cp -a "$backup/share" "$SHARE_DIR"
+    if [ -n "$keys_now" ]; then
+      rm -rf "$UPDATE_KEYS_DIR"
+      mv "$keys_now" "$UPDATE_KEYS_DIR"
+    fi
     seal_share
   fi
   [ -f "$backup/BUILD" ] && cp -a "$backup/BUILD" "$BUILD_FILE"
