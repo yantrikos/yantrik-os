@@ -23,6 +23,7 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -72,13 +73,25 @@ pub fn vault_value(bridge: &CompanionBridge, id: &str) -> Option<String> {
     }
 }
 
-/// Read the accounts again and ask each for its models, off the UI thread.
+/// Read the accounts again and ask each for its models, off the UI thread. An account whose key
+/// could not be read because the vault was shut is listed again when the vault opens, once.
 pub fn refresh(bridge: Arc<CompanionBridge>) {
     if !claim() {
         return;
     }
-    let _ = std::thread::Builder::new().name("ai-accounts".into()).spawn(move || rebuild(&bridge));
+    let _ = std::thread::Builder::new().name("ai-accounts".into()).spawn(move || {
+        if rebuild(&bridge) && !WAITING_FOR_THE_VAULT.swap(true, Ordering::SeqCst) {
+            crate::provider_vault::after_open(move || {
+                WAITING_FOR_THE_VAULT.store(false, Ordering::SeqCst);
+                refresh(bridge);
+            });
+        }
+    });
 }
+
+/// Whether a listing again is already waiting for the vault to open, so refreshes made while it
+/// is shut leave one, not one each.
+static WAITING_FOR_THE_VAULT: AtomicBool = AtomicBool::new(false);
 
 /// [`refresh`], waited for: an account added a moment ago is in the catalogue when this returns,
 /// so it can be picked from (the first run's model step). A refresh already running is waited
@@ -91,7 +104,7 @@ pub fn refresh_now(bridge: &CompanionBridge) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    rebuild(bridge);
+    let _ = rebuild(bridge);
 }
 
 /// Take the one refresh slot; false when a refresh is already running.
@@ -104,7 +117,8 @@ fn claim() -> bool {
     true
 }
 
-fn rebuild(bridge: &CompanionBridge) {
+/// List every account again. True when some account's key could not be read from the vault.
+fn rebuild(bridge: &CompanionBridge) -> bool {
     let saved = ProviderStore::load().entries;
     // Which free tiers have their values kept: asked of the vault now, since the card's own
     // read may not have come back yet at start.
@@ -115,7 +129,7 @@ fn rebuild(bridge: &CompanionBridge) {
     let list = account::accounts(&saved, FREE_TIERS, &kept, &off);
     *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = list.clone();
     let vault = |id: &str| vault_value(bridge, id);
-    let built: Vec<AccountModels> = list.iter().map(|a| list_one(a, &saved, &vault)).collect();
+    let (built, waits): (Vec<AccountModels>, Vec<bool>) = list.iter().map(|a| list_one(a, &saved, &vault)).unzip();
     let catalogue = Catalogue { accounts: built, at: chrono::Utc::now().timestamp() };
     if let Err(e) = store::save(&store::path(), &catalogue) {
         tracing::warn!(error = %e, "the model catalogue was not cached");
@@ -126,22 +140,24 @@ fn rebuild(bridge: &CompanionBridge) {
     for f in LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
         f();
     }
+    waits.into_iter().any(|w| w)
 }
 
-fn list_one(a: &Account, saved: &[crate::wire::settings::ProviderStoreEntry], vault: &dyn Fn(&str) -> Option<String>) -> AccountModels {
+/// One account's models, and whether its key was waiting on a shut vault.
+fn list_one(a: &Account, saved: &[crate::wire::settings::ProviderStoreEntry], vault: &dyn Fn(&str) -> Option<String>) -> (AccountModels, bool) {
     if models::needs_no_listing(a, FREE_TIERS) {
-        return models::build(a, FREE_TIERS, None);
+        return (models::build(a, FREE_TIERS, None), false);
     }
     match keys::resolve(a, saved, vault) {
         Ok(r) => {
             let auth = keys::auth_for(a, r.key.as_deref());
             let listed = crate::wire::provider_models::list_models(&r.base_url, r.key.as_deref(), auth);
-            models::build(a, FREE_TIERS, Some(listed))
+            (models::build(a, FREE_TIERS, Some(listed)), false)
         }
         Err(why) => {
             let mut out = models::build(a, FREE_TIERS, None);
             out.listing = models::Listing::Failed(why.to_string());
-            out
+            (out, why == keys::Missing::Vault)
         }
     }
 }

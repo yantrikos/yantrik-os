@@ -111,6 +111,8 @@ pub(crate) struct Target {
     pub base_url: String,
     pub model: String,
     pub key: Option<String>,
+    /// Where the vault keeps the key, when it does: read on the thread that asks, not here.
+    pub vault_id: Option<String>,
     pub auth_type: String,
 }
 
@@ -123,7 +125,8 @@ pub(crate) fn target(store: &ProviderStore, config_url: &str, config_model: &str
             source: "saved provider".into(),
             base_url: p.base_url.clone(),
             model: if p.model.is_empty() { config_model.to_string() } else { p.model.clone() },
-            key: p.api_key.clone(),
+            key: p.key_source().plain,
+            vault_id: p.vault_key_id(),
             auth_type: p.auth_type.clone(),
         });
     }
@@ -137,6 +140,7 @@ pub(crate) fn target(store: &ProviderStore, config_url: &str, config_model: &str
         base_url: url.to_string(),
         model: config_model.trim().to_string(),
         key,
+        vault_id: None,
         auth_type: "bearer".into(),
     })
 }
@@ -254,7 +258,15 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
     ui.set_settings_ai_status(card(Some(&target), &Health::Checking));
     let weak = ui.as_weak();
     let spawned = std::thread::Builder::new().name("ai-status".into()).spawn(move || {
-        let health = judge(list_models(&target.base_url, target.key.as_deref(), &target.auth_type), &target.model);
+        let key = crate::provider_vault::read_now(&crate::provider_vault::KeySource {
+            plain: target.key.clone(),
+            vault_id: target.vault_id.clone(),
+        });
+        let health = match key {
+            Ok(key) => judge(list_models(&target.base_url, key.as_deref(), &target.auth_type), &target.model),
+            // A shut vault is said, and nothing is asked of the provider.
+            Err(why) => Health::Unverified(why.to_use(&target.name)),
+        };
         let _ = slint::invoke_from_event_loop(move || {
             if GENERATION.load(Ordering::SeqCst) != generation {
                 return; // a newer question was asked; its answer is the one to show
@@ -284,6 +296,16 @@ mod tests {
         assert_eq!(name_for("http://u@127.0.0.1:11434"), "127.0.0.1:11434");
     }
     use crate::wire::settings::ProviderStoreEntry;
+
+    /// The card for a companion on config.yaml's service asks with config.yaml's key and never
+    /// reaches for the vault, so a shut or silent vault cannot change what it reads.
+    #[test]
+    fn the_config_yaml_card_reads_its_key_without_the_vault() {
+        let t = target(&ProviderStore::default(), "https://svc.example/v1", "m", Some("sk-fake-config-key".into())).unwrap();
+        assert_eq!((t.source.as_str(), t.vault_id.as_deref()), ("config.yaml", None));
+        let source = crate::provider_vault::KeySource { plain: t.key.clone(), vault_id: t.vault_id.clone() };
+        assert_eq!(crate::provider_vault::read(&source, None), Ok(Some("sk-fake-config-key".to_string())));
+    }
 
     fn listed(ids: &[&str]) -> Vec<ListedModel> {
         ids.iter().map(|i| ListedModel { id: i.to_string(), name: i.to_string(), size_bytes: 0 }).collect()
@@ -337,6 +359,8 @@ mod tests {
             provider_type: "nvidia-nim".into(),
             base_url: "https://integrate.api.nvidia.com/v1".into(),
             api_key: Some("nvapi-x".into()),
+            api_key_ref: None,
+            unmigrated_key: None,
             auth_type: "bearer".into(),
             is_primary: true,
             is_fallback: false,
@@ -397,6 +421,7 @@ mod tests {
             base_url: "https://x/v1".into(),
             model: "m".into(),
             key: Some("sk-secret-123".into()),
+            vault_id: None,
             auth_type: "bearer".into(),
         };
         for h in [Health::Checking, Health::Connected, Health::KeyRefused, Health::ModelMissing { listed: 3 }] {

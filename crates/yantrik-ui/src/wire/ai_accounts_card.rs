@@ -438,6 +438,8 @@ mod tests {
             provider_type: "openai".into(),
             base_url: "https://api.openai.com/v1".into(),
             api_key: Some("k".into()),
+            api_key_ref: None,
+            unmigrated_key: None,
             auth_type: "bearer".into(),
             is_primary: primary,
             is_fallback: false,
