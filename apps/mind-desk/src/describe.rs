@@ -1,6 +1,6 @@
-//! What a Mind may read of the desk through its control surface: the same words the desk
-//! draws, from the same chrome. It is the desk's own view of Mind View, and it carries nothing
-//! that is not already on the window.
+//! What a Mind may read of the desk through its control surface: the state label, the tool by name,
+//! the counts, the apps, the safety line and the model, from the same chrome the window is drawn
+//! from. Never what a Mind said it is doing: that is not on the desk, and so not here.
 
 use yantrik_app::control::View;
 
@@ -10,12 +10,8 @@ use crate::model::Model;
 pub fn view(m: &Model) -> View {
     let top = chrome::top(m);
     let bottom = chrome::bottom(m);
-    let summary = if top.headline.is_empty() { format!("Mind desk — {}", top.label) } else { format!("Mind desk — {}: {}", top.label, top.headline) };
-    View::new(summary)
+    View::new(format!("Mind desk — {}", top.label))
         .with("label", top.label)
-        .with("headline", top.headline)
-        .with("quoted", top.quoted)
-        .with("reported", top.reported)
         .with("stop_offered", top.can_stop)
         .with("tool_heading", top.strip_heading)
         .with("tool", top.strip_tool)

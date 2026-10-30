@@ -1,73 +1,183 @@
-//! Starting the Mind desk inside Mind View (#1023, phase 1).
+//! The Mind desk's process, started and known by the shell (#1023).
 //!
-//! The desk is `apps/mind-desk`: a framework app whose two windows are the bars around Mind View
-//! (a header and a footer). It runs on the nested compositor's display, so the nested labwc
-//! starts it from its startup script, once that compositor is serving, with `WAYLAND_DISPLAY`
-//! already pointing there. This is the script's part; [`config/labwc-mind/rc.xml`] is where the
-//! windows are placed and the margins that keep every other window out of them, and
-//! `apps/mind-desk` holds the numbers the two must agree on.
+//! The desk (`apps/mind-desk`) is a window of Mind View, where a Mind acting can read and press
+//! things. What the shell answers it must therefore be answered to the desk and to nothing else, and
+//! nothing about a process can say it is the desk but the shell's own record of having started it:
 //!
-//! The script starts it again if it ends, a few times, with a pause: the desk is chrome, and a
-//! Mind that closes it (Alt+F4 is one of the two keys the nested compositor binds) should not
-//! leave Mind View without its bars. The desk also refuses a close request of its own, so this
-//! is for a crash. After the last try it stays gone, and the margins it kept are an empty
-//! strip: a Mind View without a desk is as it was, with two bands of its own colour.
+//! - **The shell starts it**, as a child of its own, on the nested display with the person's
+//!   session variables cleared (`Seat::display`, as for every app a Mind opens). It is not started
+//!   by the nested compositor's startup script: a process the script starts has a script and a
+//!   compositor in its ancestry, whose words (`mind`, `view`, `seat`) the shell's by-name guess at
+//!   which Mind is calling matched with the Yantrik Mind, so the desk was refused as a Mind.
+//! - **It records the desk's pid and its start time** (`/proc/<pid>/stat`), and a peer is the desk
+//!   only if the pid the kernel names on the socket and the start time both match
+//!   ([`is_the_desk`]). The start time is what a reused pid cannot have. Nothing is exempted by the
+//!   path of an executable: any Mind can run that binary, and the one it runs is not this one.
+//! - **It restarts it** when it ends, with a pause that grows, for as long as Mind View is there.
 
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use crate::mind_view::Seat;
 
 /// The desk's program, as installed beside the shell.
 pub const PROGRAM: &str = "yantrik-mind-desk";
 
-/// How many times the script starts the desk, and the pause between.
-pub const TRIES: u32 = 5;
-pub const PAUSE_SECS: u32 = 2;
+/// The pause before the desk is started again, doubling to the longest, and the run that is
+/// long enough to start the count over.
+const PAUSE_FROM: Duration = Duration::from_secs(1);
+const PAUSE_UP_TO: Duration = Duration::from_secs(30);
+const RAN_LONG_ENOUGH: Duration = Duration::from_secs(60);
 
-/// The lines the nested labwc's startup script runs to start the desk, or nothing when there is no
-/// desk to start. `program` is the desk's absolute path.
-///
-/// The marker says the process is drawn for a Mind (`FOR_MIND_VAR`), though its display already
-/// says so: the marker cannot be lost on the way, and the desk's one rule is that it is a Mind's.
-pub fn launch_lines(program: Option<&Path>) -> String {
-    let Some(program) = program else { return String::new() };
-    let path = program.display().to_string();
-    // A path with a quote in it is not one this script can carry, and not one the OS installs.
-    if path.contains('\'') || path.contains('\n') {
-        return String::new();
+/// The desk this shell started: which process, told apart from any other that gets its pid later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Record {
+    pub pid: u32,
+    /// Clock ticks after boot at which it started (`/proc/<pid>/stat`, field 22).
+    pub started: u64,
+}
+
+static DESK: Mutex<Option<Record>> = Mutex::new(None);
+
+fn record() -> Option<Record> {
+    *DESK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn set_record(to: Option<Record>) {
+    *DESK.lock().unwrap_or_else(|p| p.into_inner()) = to;
+}
+
+/// The start time a `/proc/<pid>/stat` line holds: field 22, counted after the command name, which
+/// is in brackets and may itself hold spaces and brackets.
+pub fn start_time_in(stat: &str) -> Option<u64> {
+    let after_name = stat.rsplit_once(')')?.1;
+    // Fields from the third (the state) on; the start time is the twenty-second overall.
+    after_name.split_whitespace().nth(19)?.parse().ok()
+}
+
+fn start_time(pid: u32) -> Option<u64> {
+    start_time_in(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// Whether the peer at `pid` is the desk `record` names, with the start time of a pid asked for by
+/// `start_of`. No record, no peer, another pid, or the same pid started at another time: no.
+pub fn is_the_desk(record: Option<Record>, pid: Option<u32>, start_of: impl Fn(u32) -> Option<u64>) -> bool {
+    match (record, pid) {
+        (Some(desk), Some(pid)) => pid == desk.pid && start_of(pid) == Some(desk.started),
+        _ => false,
     }
-    format!(
-        "# The desk: the bars around the apps (#1023). Started again if it ends, a few times.\n\
-         (for _try in $(seq 1 {TRIES}); do {marker}=1 '{path}' >/dev/null 2>&1; sleep {PAUSE_SECS}; done) &\n",
-        marker = yantrik_ipc_contracts::mind_view::FOR_MIND_VAR,
-    )
+}
+
+/// `Ok` when the call being dispatched on this thread comes from the desk this shell started.
+/// Read where the caller is in scope: inside the handler, on the dispatch's thread.
+pub fn require_the_desk() -> Result<(), String> {
+    let pid = yantrik_app_runtime::control::caller().and_then(|c| u32::try_from(c.pid).ok()).filter(|p| *p > 0);
+    if is_the_desk(record(), pid, start_time) {
+        Ok(())
+    } else {
+        Err(REFUSED.to_string())
+    }
+}
+
+/// What a caller that is not the desk is told.
+pub const REFUSED: &str = "this is answered only to the Mind desk the shell started in Mind View. `read_agent` reads \
+    your own session, and `describe shell` says what you may know of the others.";
+
+/// Start the desk on `seat` and keep it running for as long as that is Mind View's display.
+pub fn supervise(seat: Seat) {
+    let Some(program) = crate::wire::dock::find_program(PROGRAM) else {
+        tracing::info!("the Mind desk is not installed beside the shell, so Mind View has no bars");
+        return;
+    };
+    let spawned = std::thread::Builder::new().name("mind-desk".into()).spawn(move || {
+        let mut pause = PAUSE_FROM;
+        while crate::mind_view::display_now().as_deref() == Some(seat.wayland.as_str()) {
+            let began = Instant::now();
+            run_once(&program, &seat);
+            if began.elapsed() >= RAN_LONG_ENOUGH {
+                pause = PAUSE_FROM;
+            }
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(PAUSE_UP_TO);
+        }
+        set_record(None);
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "could not start the thread that keeps the Mind desk running");
+    }
+}
+
+/// One run of the desk, from its start to its end.
+fn run_once(program: &Path, seat: &Seat) {
+    let mut command = std::process::Command::new(program);
+    // On the nested display, with everything that names the person's session cleared, and marked
+    // as drawn for a Mind: the same environment as every app a Mind opens.
+    seat.display().apply(&mut command);
+    command
+        .env_remove("SLINT_FULLSCREEN")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not start the Mind desk");
+            return;
+        }
+    };
+    // Known only with a start time to tell it by: without one, nothing is answered to it.
+    set_record(start_time(child.id()).map(|started| Record { pid: child.id(), started }));
+    let ended = child.wait();
+    set_record(None);
+    tracing::info!(?ended, "the Mind desk ended");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A real `/proc/<pid>/stat` line, with a command name that holds spaces and a bracket.
+    const STAT: &str = "4242 (yantrik (mind) desk) S 1 4242 4242 0 -1 4194560 12345 0 0 0 10 5 0 0 20 0 7 0 987654 1234567 8910 \
+        18446744073709551615 1 1 0 0 0 0 0 4096 0 0 0 0 17 3 0 0 0 0 0";
+
     #[test]
-    fn the_desk_is_started_on_the_nested_display_as_a_minds_and_again_if_it_ends() {
-        let lines = launch_lines(Some(Path::new("/opt/yantrik/bin/yantrik-mind-desk")));
-        assert!(lines.contains("'/opt/yantrik/bin/yantrik-mind-desk'"), "{lines}");
-        assert!(lines.contains(&format!("{}=1 ", yantrik_ipc_contracts::mind_view::FOR_MIND_VAR)), "{lines}");
-        assert!(lines.contains("seq 1 5") && lines.contains("sleep 2"), "bounded, with a pause: {lines}");
-        assert!(lines.trim_end().ends_with('&'), "in the background, so the script goes on: {lines}");
-        // It names no display: the nested labwc's own is in the environment it runs the script in.
-        assert!(!lines.contains("WAYLAND_DISPLAY"), "{lines}");
+    fn the_start_time_is_field_twenty_two_whatever_the_command_is_called() {
+        assert_eq!(start_time_in(STAT), Some(987654));
+        assert_eq!(start_time_in("1 (a) S 1"), None);
+        assert_eq!(start_time_in("no brackets"), None);
     }
 
     #[test]
-    fn no_desk_to_start_is_no_lines_and_a_path_that_cannot_be_quoted_is_not_run() {
-        assert_eq!(launch_lines(None), "");
-        assert_eq!(launch_lines(Some(Path::new("/opt/it's/desk"))), "");
+    fn only_the_process_the_shell_started_is_the_desk() {
+        let desk = Some(Record { pid: 700, started: 5000 });
+        let starts = |pid: u32| match pid {
+            700 => Some(5000),
+            701 => Some(5000),
+            _ => None,
+        };
+        assert!(is_the_desk(desk, Some(700), starts));
+        // Another process, even one that started at the same instant.
+        assert!(!is_the_desk(desk, Some(701), starts));
+        // The same pid, reused by a process that started later.
+        assert!(!is_the_desk(desk, Some(700), |_| Some(6000)));
+        // A pid that has gone, a caller with no pid (no socket), and a shell that started no desk.
+        assert!(!is_the_desk(desk, Some(700), |_| None));
+        assert!(!is_the_desk(desk, None, starts));
+        assert!(!is_the_desk(None, Some(700), starts));
     }
 
-    /// The script is `sh`, and what it starts with is the shell's own; the lines parse as `sh`.
-    #[cfg(unix)]
+    /// With no desk started in a test, and no socket, nobody is the desk: the refusal is the
+    /// default, not a thing that has to be remembered.
     #[test]
-    fn the_lines_are_valid_sh() {
-        let lines = launch_lines(Some(Path::new("/bin/true")));
-        let status = std::process::Command::new("sh").arg("-n").arg("-c").arg(&lines).status().unwrap();
-        assert!(status.success(), "{lines}");
+    fn a_caller_is_refused_unless_it_is_the_desk() {
+        assert_eq!(require_the_desk().unwrap_err(), REFUSED);
+    }
+
+    /// Nothing exempts by the program a process runs: the check has no path in it.
+    #[test]
+    fn the_check_reads_no_executable_path() {
+        let source = include_str!("mind_view_desk.rs").split("#[cfg(test)]").next().unwrap().to_string();
+        assert!(!source.contains("/proc/{pid}/exe") && !source.contains("read_link") && !source.contains("current_exe"));
     }
 }

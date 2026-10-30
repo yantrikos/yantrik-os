@@ -321,7 +321,8 @@ pub trait App: Sized + 'static {
     /// (`service::start_refusal`: the instance is on the person's display, #978), and this one
     /// refuses to start anywhere else, saying so, so a copy is never a window on the person's
     /// desktop pretending to be a wall of someone else's room. Default false: an app is the
-    /// person's.
+    /// person's. Setting it is an exception to a rule that keeps the person's apps out of a Mind's
+    /// room: it must pass a security review, and a test holds the list to one app.
     const ON_MINDS_DISPLAY: bool = false;
 
     /// A Mind may be given a window of this app. No app is (design #978, step 1): an agent drives

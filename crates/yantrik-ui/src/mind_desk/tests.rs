@@ -95,9 +95,7 @@ fn the_tool_is_its_name_with_who_vouches_and_how_it_went() {
     assert_eq!(mind.name, "Hermes");
     assert_eq!(mind.counts.calls, 2);
     assert_eq!(mind.elapsed_secs, Some(200), "as of the snapshot, from the turn's start");
-    let said = mind.narration.unwrap();
-    assert_eq!(said.text, "Shaping the last ascent.");
-    assert_eq!(said.heard.len(), 5, "a local HH:MM: {}", said.heard);
+    assert_eq!(mind.stop, None, "no stop has been asked");
 }
 
 #[test]
@@ -140,20 +138,26 @@ fn a_command_line_put_where_a_name_goes_is_not_shown_as_a_tool() {
     assert_eq!(mind.counts.calls, 1, "though the call is still counted");
 }
 
+/// What a Mind says it is doing is the person's, and the desk is on a screen every Mind reads. So
+/// it is not on the wire in any state, whether or not it looks harmless: free text cannot be made
+/// safe by a pattern, only left out.
 #[test]
-fn the_minds_own_line_is_shown_while_it_is_working_and_not_after() {
-    let mut working = agent("Hermes", "main", State::Thinking, 1_100, vec![], true);
-    working.status = "Waiting on the docs.".into();
-    assert_eq!(snapshot(std::slice::from_ref(&working)).mind.unwrap().narration.unwrap().text, "Waiting on the docs.");
-
-    for state in [State::Done, State::Failed, State::Idle, State::HarnessGone] {
-        let mut a = agent("Hermes", "main", state, 1_100, vec![], false);
-        a.status = "Old words.".into();
-        assert_eq!(snapshot(&[a]).mind.unwrap().narration, None, "{state:?}");
+fn what_a_mind_says_it_is_doing_is_never_on_the_wire() {
+    for state in [State::Thinking, State::RunningTool, State::WaitingForYou, State::Idle, State::Done, State::Failed, State::HarnessGone] {
+        for said in [
+            "Shaping the last ascent.",
+            "Emailing sam.patel@example.com the biopsy results",
+            "Password for the bank is hunter2, typing it now",
+            "Reading Documents/Taxes/2025-return.pdf",
+        ] {
+            let mut a = agent("Hermes", "main", state, 1_100, vec![], true);
+            a.status = said.into();
+            let wire = serde_json::to_string(&snapshot(&[a])).unwrap();
+            for word in ["ascent", "biopsy", "hunter2", "Taxes", "sam.patel", "Shaping"] {
+                assert!(!wire.contains(word), "{state:?}: `{word}` reached the desk: {wire}");
+            }
+        }
     }
-    // A line with a path in it is not shown, whoever said it.
-    working.status = "Writing ~/Documents/ridge/notes.md".into();
-    assert_eq!(snapshot(&[working]).mind.unwrap().narration, None);
 }
 
 #[test]

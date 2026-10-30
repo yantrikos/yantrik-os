@@ -2,7 +2,7 @@ use super::*;
 
 /// The Mind desk's strips (#1023, phase 1), drawn around a stand-in for Mind View's apps in five
 /// moments of the approved design: a Mind at work, one that needs the person, one that failed, a
-/// Mind that finished with its stop confirmed, and a shell that is not answering. The words are
+/// Mind that finished after a stop the person allowed, and a shell that is not answering. The words are
 /// fixtures: what a harness would say, and what the desk would make of it
 /// (apps/mind-desk/src/words.rs holds the real wording, and its own tests hold it).
 ///
@@ -87,10 +87,7 @@ struct Scene {
     label: &'static str,
     tone: i32,
     headline: &'static str,
-    quoted: bool,
-    reported: &'static str,
     can_stop: bool,
-    confirming: bool,
     stop_note: &'static str,
     agents: bool,
     heading: &'static str,
@@ -111,11 +108,8 @@ fn scenes() -> Vec<Scene> {
         name: "working",
         label: "HERMES · RUNNING A TOOL",
         tone: 1,
-        headline: "“Shaping the last ascent.”",
-        quoted: true,
-        reported: "◇ Reported · 14:32",
+        headline: "Running blender.add_object",
         can_stop: true,
-        confirming: false,
         stop_note: "",
         agents: true,
         heading: "RUNNING TOOL",
@@ -131,8 +125,9 @@ fn scenes() -> Vec<Scene> {
         name: "waiting",
         label: "HERMES · WAITING FOR YOU",
         tone: 2,
-        headline: "“Ready to export. May I replace the file?”",
-        reported: "◇ Reported · 14:36",
+        headline: "Waiting for you",
+        can_stop: false,
+        stop_note: "Waiting for your answer on the desktop",
         heading: "LAST TOOL",
         tool: "files.write",
         mark: "◆ Verified · Ok",
@@ -143,8 +138,6 @@ fn scenes() -> Vec<Scene> {
         label: "HERMES · FAILED",
         tone: 3,
         headline: "Failed",
-        quoted: false,
-        reported: "",
         can_stop: false,
         heading: "LAST TOOL",
         tool: "agent_run",
@@ -157,8 +150,6 @@ fn scenes() -> Vec<Scene> {
         label: "YANTRIK MIND · DONE",
         tone: 4,
         headline: "Done",
-        quoted: false,
-        reported: "",
         can_stop: false,
         stop_note: "Stopped",
         heading: "LAST TOOL",
@@ -176,8 +167,6 @@ fn scenes() -> Vec<Scene> {
         label: "MIND VIEW · NOT CONNECTED",
         tone: 0,
         headline: "The shell is not answering",
-        quoted: false,
-        reported: "",
         can_stop: false,
         agents: false,
         heading: "",
@@ -200,10 +189,7 @@ fn working_copy() -> Scene {
         label: "",
         tone: 0,
         headline: "",
-        quoted: true,
-        reported: "",
         can_stop: true,
-        confirming: false,
         stop_note: "",
         agents: true,
         heading: "",
@@ -221,11 +207,7 @@ fn apply(ui: &MindDeskProbe, s: &Scene) {
     ui.set_label(s.label.into());
     ui.set_tone(s.tone);
     ui.set_headline(s.headline.into());
-    ui.set_quoted(s.quoted);
-    ui.set_reported(s.reported.into());
     ui.set_can_stop(s.can_stop);
-    ui.set_confirming(s.confirming);
-    ui.set_confirm_question("".into());
     ui.set_stop_note(s.stop_note.into());
     ui.set_agents_offered(s.agents);
     ui.set_strip_heading(s.heading.into());

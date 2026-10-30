@@ -10,7 +10,7 @@ use std::sync::Arc;
 use yantrik_app::mind::fake::FakeMind;
 use yantrik_app::{Paths, Services};
 use yantrik_ipc_contracts::mind_desk::{
-    Account, Counts, DeskMind, DeskSnapshot, DeskTool, Evidence, MindState, Narration, Outcome,
+    Account, Counts, DeskMind, DeskSnapshot, DeskTool, Evidence, MindState, Outcome,
 };
 use yantrik_services::mind_desk::FakeMindDesk;
 use yantrik_testing::TestApp;
@@ -24,7 +24,7 @@ pub(crate) fn hermes(state: MindState) -> DeskMind {
         name: "Hermes".into(),
         state,
         since: 100,
-        narration: Some(Narration { text: "Shaping the last ascent.".into(), heard: "14:32".into() }),
+        stop: None,
         tool: Some(DeskTool { name: "blender.add_object".into(), evidence: Evidence::Reported, outcome: Outcome::Running }),
         counts: Counts { calls: 12, failed: 1, interrupted: 1 },
         elapsed_secs: Some(272),
@@ -51,8 +51,6 @@ pub(crate) fn top_words(app: &TestApp<MindDesk>) -> String {
         [
             ui.get_label(),
             ui.get_headline(),
-            ui.get_reported(),
-            ui.get_confirm_question(),
             ui.get_stop_note(),
             ui.get_strip_heading(),
             ui.get_strip_tool(),

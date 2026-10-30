@@ -3,12 +3,15 @@
 //! All of it is the shell's own control surface (`app-shell`, `app.act`): the desk is not given a
 //! socket of its own to the Agents store. The three calls are exactly the ones its threat model
 //! allows. A Mind acting in Mind View can press the desk's buttons, so the desk can ask for
-//! nothing a Mind should not be able to ask for by pressing:
+//! nothing a Mind should not be able to ask for by pressing, and the shell answers all three to
+//! the one desk process it started and to no other:
 //!
-//! - [`MindDeskApi::snapshot`]: the `mind_desk` action, a read, waiting for a change.
-//! - [`MindDeskApi::stop`]: `stop_agent`, the existing stop path, which kills the agent's
-//!   commands and withdraws its approvals. A Mind stopping itself is harmless.
-//! - [`MindDeskApi::open_agents`]: `show_workroom`, which puts the person's own Agents screen up.
+//! - [`MindDeskApi::snapshot`]: `mind_desk`, a read, waiting for a change.
+//! - [`MindDeskApi::ask_stop`]: `mind_desk_stop`, which asks the *person*, on their own desktop.
+//!   It stops nothing: `stop_agent` takes the desk for the person, who may stop any agent, so a
+//!   direct stop would let any Mind end another's turn.
+//! - [`MindDeskApi::open_agents`]: `mind_desk_open_agents`, the person's own Agents screen, rate
+//!   limited and only while Mind View is in front.
 //!
 //! There is no method here to approve, deny, grant, take over or hand back, and no way to add one
 //! without adding it to this trait, where a test reads the list.
@@ -18,7 +21,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::json;
-use yantrik_ipc_contracts::mind_desk::{DeskSnapshot, StopAck, ACTION, LONGEST_WAIT_SECS};
+use yantrik_ipc_contracts::mind_desk::{DeskSnapshot, StopAck, ACTION, AGENTS_ACTION, LONGEST_WAIT_SECS, STOP_ACTION};
 use yantrik_ipc_transport::SyncRpcClient;
 
 use crate::{classify, shape_of, ServiceError};
@@ -37,9 +40,10 @@ pub const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(LONGEST_WAIT_SECS + 
 pub trait MindDeskApi: Send + Sync {
     /// The snapshot, once it is not the one tagged `since`, or when the wait ends with the same.
     fn snapshot(&self, since: Option<u64>) -> Result<DeskSnapshot, ServiceError>;
-    /// Stop `agent`. `Ok` is the shell's own acknowledgement, naming the agent it stopped; an
-    /// `Err` is a stop that was not acknowledged, whatever happened to the agent.
-    fn stop(&self, agent: &str) -> Result<StopAck, ServiceError>;
+    /// Ask the person whether to stop `agent`. `Ok` says the shell has put the question on their
+    /// desktop, naming the agent: **not** that anything stopped. An `Err` is a question that was
+    /// not asked.
+    fn ask_stop(&self, agent: &str) -> Result<StopAck, ServiceError>;
     /// Put the person's Agents screen up.
     fn open_agents(&self) -> Result<(), ServiceError>;
 }
@@ -73,12 +77,12 @@ impl MindDeskApi for MindDesk {
         decode(act(ACTION, args, SNAPSHOT_DEADLINE)?)
     }
 
-    fn stop(&self, agent: &str) -> Result<StopAck, ServiceError> {
-        decode(act("stop_agent", json!({ "agent": agent }), QUICK_DEADLINE)?)
+    fn ask_stop(&self, agent: &str) -> Result<StopAck, ServiceError> {
+        decode(act(STOP_ACTION, json!({ "agent": agent }), QUICK_DEADLINE)?)
     }
 
     fn open_agents(&self) -> Result<(), ServiceError> {
-        act("show_workroom", json!({ "page": "workroom" }), QUICK_DEADLINE).map(|_| ())
+        act(AGENTS_ACTION, json!({}), QUICK_DEADLINE).map(|_| ())
     }
 }
 
@@ -91,7 +95,7 @@ pub struct FakeMindDesk {
     stops: Mutex<VecDeque<Result<StopAck, ServiceError>>>,
     opened: Mutex<VecDeque<Result<(), ServiceError>>>,
     asked: Mutex<Vec<Option<u64>>>,
-    stopped: Mutex<Vec<String>>,
+    asked_to_stop: Mutex<Vec<String>>,
     showed: Mutex<usize>,
 }
 
@@ -120,7 +124,7 @@ impl FakeMindDesk {
         lock(&self.snapshots).push_back(answer);
     }
 
-    /// The next stop is answered with this.
+    /// The next stop question is answered with this.
     pub fn stop_answers(&self, answer: Result<StopAck, ServiceError>) {
         lock(&self.stops).push_back(answer);
     }
@@ -135,9 +139,9 @@ impl FakeMindDesk {
         lock(&self.asked).clone()
     }
 
-    /// Every agent a stop was asked for.
-    pub fn stopped(&self) -> Vec<String> {
-        lock(&self.stopped).clone()
+    /// Every agent a stop was asked about.
+    pub fn asked_to_stop(&self) -> Vec<String> {
+        lock(&self.asked_to_stop).clone()
     }
 
     /// How many times the Agents screen was asked for.
@@ -152,8 +156,8 @@ impl MindDeskApi for FakeMindDesk {
         lock(&self.snapshots).pop_front().unwrap_or(Err(ServiceError::Unreachable { service: SERVICE }))
     }
 
-    fn stop(&self, agent: &str) -> Result<StopAck, ServiceError> {
-        lock(&self.stopped).push(agent.to_string());
+    fn ask_stop(&self, agent: &str) -> Result<StopAck, ServiceError> {
+        lock(&self.asked_to_stop).push(agent.to_string());
         lock(&self.stops).pop_front().unwrap_or(Err(ServiceError::Unreachable { service: SERVICE }))
     }
 
@@ -171,7 +175,7 @@ mod tests {
     fn the_desk_may_ask_three_things_and_none_of_them_decides_for_the_person() {
         // The trait is the whole of what the desk can ask. A method added to it has to be added
         // here, where the person's decisions are named as the things it must never be.
-        let methods = ["snapshot", "stop", "open_agents"];
+        let methods = ["snapshot", "ask_stop", "open_agents"];
         let source = include_str!("mind_desk.rs");
         let trait_text = source.split("pub trait MindDeskApi").nth(1).unwrap().split("\n}\n").next().unwrap();
         let declared: Vec<&str> = trait_text
@@ -191,10 +195,10 @@ mod tests {
         assert_eq!(fake.snapshot(None).unwrap().tag, 1);
         assert_eq!(fake.snapshot(Some(1)), Err(ServiceError::Unreachable { service: SERVICE }));
         assert_eq!(fake.asked(), [None, Some(1)]);
-        assert!(fake.stop("pi:main").is_err());
-        assert_eq!(fake.stopped(), ["pi:main"]);
+        assert!(fake.ask_stop("pi:main").is_err());
+        assert_eq!(fake.asked_to_stop(), ["pi:main"]);
         fake.stop_answers(Ok(StopAck { agent: "pi:main".into() }));
-        assert_eq!(fake.stop("pi:main").unwrap().agent, "pi:main");
+        assert_eq!(fake.ask_stop("pi:main").unwrap().agent, "pi:main");
         assert!(fake.open_agents().is_err());
         fake.show_answers(Ok(()));
         assert!(fake.open_agents().is_ok());

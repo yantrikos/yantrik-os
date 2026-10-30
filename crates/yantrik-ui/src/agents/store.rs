@@ -118,6 +118,12 @@ impl Store {
         self.revision
     }
 
+    /// Something a reader of this store shows has changed that is not in it (a stop asked of the
+    /// person, #1023): raise the revision so the readers waiting on it look again.
+    pub fn poke(&mut self) {
+        self.revision += 1;
+    }
+
     pub fn agents(&self) -> &[Agent] {
         &self.agents
     }

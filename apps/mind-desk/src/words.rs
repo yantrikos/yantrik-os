@@ -9,8 +9,9 @@
 //! - A state is said in words and a colour, never a colour alone.
 //! - Amber is for a Mind waiting for the person, red for one that failed, green for one that
 //!   finished, teal for one at work, and the rest is quiet.
-//! - The Mind's own line is quoted and marked Reported, with the time the shell heard it. With no
-//!   line to quote, the desk says the state or the tool in its own plain voice, unquoted.
+//! - The desk says the state, or the tool a Mind is running, in its own plain voice. It quotes
+//!   nobody: what a Mind says it is doing is withheld from every other Mind, and this window is
+//!   one every Mind can read. That line returns with per-Mind attribution (phase 4).
 //! - A fact the shell does not have is said as unavailable, not filled in with a comfortable one.
 
 use yantrik_ipc_contracts::mind_desk::{self as wire, Account, Counts, DeskMind, DeskTool, Evidence, MindState, Outcome};
@@ -70,35 +71,14 @@ pub fn label(mind: &DeskMind) -> String {
     format!("{} · {}", name.to_uppercase(), state_label(mind.state).to_uppercase())
 }
 
-/// The big line, and whether it is the Mind's own words.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Headline {
-    pub text: String,
-    /// Quoted words of the Mind's, marked Reported. Otherwise the desk's own plain words.
-    pub quoted: bool,
-    /// "◇ Reported · 14:32" beside a quoted line; empty beside the desk's own.
-    pub reported: String,
-}
-
-/// What the header says the Mind is doing: its own line, quoted and marked Reported with the
-/// time it was heard, or, with none (or one that is not fit to show), the state, or the tool it
-/// is running, unquoted.
-pub fn headline(mind: &DeskMind) -> Headline {
-    if let Some(said) = &mind.narration {
-        if let Some(text) = wire::narration_text(&said.text) {
-            return Headline {
-                text: format!("“{text}”"),
-                quoted: true,
-                reported: format!("{} · {}", evidence_mark(Evidence::Reported), wire::one_line(&said.heard, 8)),
-            };
-        }
-    }
+/// The big line: the state in the desk's own plain words, or the tool the Mind is running. Never
+/// anything the Mind said it is doing: that is the person's, and this window is read by every Mind.
+pub fn headline(mind: &DeskMind) -> String {
     let running = mind.tool.as_ref().filter(|t| t.outcome == Outcome::Running).and_then(|t| wire::tool_name(&t.name));
-    let text = match (mind.state, running) {
+    match (mind.state, running) {
         (MindState::RunningTool, Some(tool)) => format!("Running {tool}"),
         (state, _) => state_label(state).to_string(),
-    };
-    Headline { text, quoted: false, reported: String::new() }
+    }
 }
 
 /// "◆ Verified" (the shell saw it) or "◇ Reported" (the harness said so).
@@ -203,7 +183,7 @@ pub fn apps_line(apps: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wire::Narration;
+    use wire::StopStatus;
 
     fn mind(state: MindState) -> DeskMind {
         DeskMind {
@@ -211,7 +191,7 @@ mod tests {
             name: "Hermes".into(),
             state,
             since: 0,
-            narration: None,
+            stop: None,
             tool: None,
             counts: Counts::default(),
             elapsed_secs: None,
@@ -263,39 +243,29 @@ mod tests {
         assert_eq!(label(&nameless), "MIND · IDLE");
     }
 
+    /// The desk says the state, or the tool it is running, in its own voice, and quotes nobody.
     #[test]
-    fn the_minds_line_is_quoted_and_marked_reported_with_its_time() {
-        let mut m = mind(MindState::RunningTool);
-        m.narration = Some(Narration { text: "Shaping the last ascent.".into(), heard: "14:32".into() });
-        let h = headline(&m);
-        assert_eq!(h, Headline { text: "“Shaping the last ascent.”".into(), quoted: true, reported: "◇ Reported · 14:32".into() });
-    }
-
-    /// With no line, the desk says the state (or the tool) in its own voice: unquoted, and not
-    /// marked as anyone's report.
-    #[test]
-    fn with_no_line_it_says_the_state_or_the_tool_unquoted() {
+    fn the_desk_says_the_state_or_the_tool_in_its_own_voice() {
         for state in ALL {
-            let h = headline(&mind(state));
-            assert_eq!((h.text.as_str(), h.quoted, h.reported.as_str()), (state_label(state), false, ""), "{state:?}");
+            let said = headline(&mind(state));
+            assert_eq!(said, state_label(state), "{state:?}");
+            assert!(!said.contains('“'), "nobody is quoted");
         }
         let mut running = mind(MindState::RunningTool);
         running.tool = Some(DeskTool { name: "blender.add_object".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
-        assert_eq!(headline(&running).text, "Running blender.add_object");
-        // A tool that has finished is not "running".
+        assert_eq!(headline(&running), "Running blender.add_object");
+        // A tool that has finished is not "running", and one that is not a plain name is not said.
         running.tool.as_mut().unwrap().outcome = Outcome::Ok;
-        assert_eq!(headline(&running).text, "Running a tool");
+        assert_eq!(headline(&running), "Running a tool");
+        running.tool = Some(DeskTool { name: "cat ~/.ssh/id_rsa".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
+        assert_eq!(headline(&running), "Running a tool");
     }
 
-    /// A line that carries a path, a flag or a secret is not quoted, whatever the shell sent.
     #[test]
-    fn a_line_that_is_not_fit_to_show_falls_back_to_the_state() {
-        let mut m = mind(MindState::Thinking);
-        for private in ["Reading /home/pranab/Documents/Ridge/notes.md", "Running ls --all", "token=abc", "Writing ~/x/y"] {
-            m.narration = Some(Narration { text: private.into(), heard: "14:32".into() });
-            let h = headline(&m);
-            assert_eq!((h.text.as_str(), h.quoted), ("Thinking", false), "{private}");
-        }
+    fn a_stop_status_is_the_shells_word() {
+        // The three things a snapshot can say of a stop are all the desk has to say of one.
+        let all = [StopStatus::Asked, StopStatus::Stopped, StopStatus::NotStopped];
+        assert_eq!(all.len(), 3);
     }
 
     #[test]
@@ -323,7 +293,7 @@ mod tests {
         m.tool = Some(DeskTool { name: "cat ~/.ssh/id_ed25519".into(), evidence: Evidence::Verified, outcome: Outcome::Running });
         let s = strip(&m);
         assert_eq!(s.tool, "a tool");
-        assert!(!format!("{s:?}{:?}", headline(&m)).contains("ssh"));
+        assert!(!format!("{s:?}{}", headline(&m)).contains("ssh"));
     }
 
     #[test]

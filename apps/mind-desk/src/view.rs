@@ -19,8 +19,6 @@ fn text(s: &str) -> SharedString {
 /// Bind a window's controls to commands.
 pub fn wire(cx: &Cx<MindDesk>, ui: &MindDeskApp) {
     ui.on_stop_pressed(cx.cmd(|| Command::StopAsked));
-    ui.on_stop_confirmed(cx.cmd(|| Command::StopConfirmed));
-    ui.on_stop_cancelled(cx.cmd(|| Command::StopCancelled));
     ui.on_agents_pressed(cx.cmd(|| Command::AgentsAsked));
 }
 
@@ -47,11 +45,7 @@ pub fn render(ui: &MindDeskApp, window: WindowId, m: &Model) {
         ui.set_label(text(&t.label));
         ui.set_tone(t.tone);
         ui.set_headline(text(&t.headline));
-        ui.set_quoted(t.quoted);
-        ui.set_reported(text(&t.reported));
         ui.set_can_stop(t.can_stop);
-        ui.set_confirming(t.confirming);
-        ui.set_confirm_question(text(&t.confirm_question));
         ui.set_stop_note(text(&t.stop_note));
         ui.set_agents_offered(t.agents_offered);
         ui.set_strip_heading(text(&t.strip_heading));

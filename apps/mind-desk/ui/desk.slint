@@ -23,22 +23,18 @@ export global DeskTone {
     }
 }
 
-// The Mind's name and state, what it is saying, and what the person may do about it: stop it, or
-// look at it on the Agents screen. Nothing else: no approve, no deny, no grant, no take over.
+// The Mind's name and state, the tool it is running, and what the person may do about it: ask to
+// stop it (the question is put on the person's own desktop, not here), or look at it on the Agents
+// screen. Nothing else: no approve, no deny, no grant, no take over. It quotes nobody: what a Mind
+// says it is doing is not on this window, which every Mind can read.
 export component DeskHeader inherits Rectangle {
     in property <string> label;
     in property <int> tone;
     in property <string> headline;
-    in property <bool> quoted;
-    in property <string> reported;
     in property <bool> can-stop;
-    in property <bool> confirming;
-    in property <string> confirm-question;
     in property <string> stop-note;
     in property <bool> agents-offered;
     callback stop-pressed();
-    callback stop-confirmed();
-    callback stop-cancelled();
     callback agents-pressed();
 
     background: Theme.bg-surface;
@@ -81,9 +77,9 @@ export component DeskHeader inherits Rectangle {
             }
             Text {
                 text: root.headline;
-                color: root.quoted ? Theme.text-primary : Theme.text-secondary;
+                color: Theme.text-primary;
                 font-size: Theme.fs-title-2;
-                font-weight: root.quoted ? 600 : 500;
+                font-weight: 600;
                 overflow: elide;
                 accessible-role: text;
                 accessible-label: root.headline;
@@ -95,14 +91,6 @@ export component DeskHeader inherits Rectangle {
             alignment: center;
             spacing: Theme.sp-1;
 
-            Text {
-                text: root.reported;
-                color: Theme.text-dim;
-                font-size: Theme.fs-caption;
-                horizontal-alignment: right;
-                accessible-role: text;
-                accessible-label: root.reported;
-            }
             HorizontalLayout {
                 alignment: end;
                 spacing: Theme.sp-2;
@@ -115,34 +103,13 @@ export component DeskHeader inherits Rectangle {
                     accessible-role: text;
                     accessible-label: root.stop-note;
                 }
-                if root.confirming : Text {
-                    text: root.confirm-question;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-caption;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                    accessible-role: text;
-                    accessible-label: root.confirm-question;
-                }
-                if root.confirming : YButton {
-                    variant: 3;
-                    size: 0;
-                    label: "Stop";
-                    clicked => { root.stop-confirmed(); }
-                }
-                if root.confirming : YButton {
-                    variant: 1;
-                    size: 0;
-                    label: "Keep going";
-                    clicked => { root.stop-cancelled(); }
-                }
-                if root.agents-offered && !root.confirming : YButton {
+                if root.agents-offered : YButton {
                     variant: 1;
                     size: 0;
                     label: "Open in Agents";
                     clicked => { root.agents-pressed(); }
                 }
-                if root.can-stop && !root.confirming : YButton {
+                if root.can-stop : YButton {
                     variant: 4;
                     size: 0;
                     label: "Stop…";

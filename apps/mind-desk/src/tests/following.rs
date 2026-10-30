@@ -27,7 +27,7 @@ fn it_opens_two_windows_and_asks_the_shell_for_the_first_snapshot() {
     assert_eq!(app.model(|m| m.link), Link::Live);
     let words = top_words(&app);
     assert!(words.contains("HERMES · RUNNING A TOOL"), "{words}");
-    assert!(words.contains("“Shaping the last ascent.”") && words.contains("◇ Reported · 14:32"), "{words}");
+    assert!(words.contains("Running blender.add_object"), "{words}");
     assert!(words.contains("RUNNING TOOL | blender.add_object | ◇ Reported · Running"), "{words}");
     assert!(words.contains("4:32 elapsed at 14:32 · 12 calls · 1 failed · 1 interrupted"), "{words}");
     assert_eq!(app.ui(|ui| ui.get_tone()), 1, "teal: the Mind at work");
@@ -101,16 +101,14 @@ fn every_state_is_said_in_words_and_failed_is_red_and_done_is_green() {
     }
 }
 
-/// A Mind that has nothing to say gets no quotation: the desk says the state, in its own voice.
+/// The desk quotes nobody: what a Mind says it is doing is not on a window every Mind can read.
 #[test]
-fn with_no_line_from_the_mind_the_desk_does_not_quote_anyone() {
-    let mut quiet = hermes(MindState::Thinking);
-    quiet.narration = None;
-    let (app, _) = start(FakeMindDesk::new().answering(snapshot(1, Some(quiet))));
+fn the_desk_quotes_nobody() {
+    let (app, _) = start(FakeMindDesk::new().answering(snapshot(1, Some(hermes(MindState::Thinking)))));
     app.run_jobs();
-    assert!(!app.ui(|ui| ui.get_quoted()));
     assert_eq!(app.ui(|ui| ui.get_headline()), "Thinking");
-    assert_eq!(app.ui(|ui| ui.get_reported()), "");
+    assert!(!top_words(&app).contains('“'));
+    assert!(!top_words(&app).contains("Reported ·") || top_words(&app).contains("Reported · Running"), "only a tool's own mark");
 }
 
 #[test]

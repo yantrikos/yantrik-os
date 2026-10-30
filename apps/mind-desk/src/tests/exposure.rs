@@ -4,7 +4,7 @@
 //! of every line) and click it: nothing on it may be an argument, a path, a prompt or a token, and
 //! nothing it offers may decide anything that is the person's.
 
-use yantrik_ipc_contracts::mind_desk::{self as wire, Counts, DeskTool, Evidence, MindState, Narration, Outcome};
+use yantrik_ipc_contracts::mind_desk::{self as wire, Counts, DeskTool, Evidence, MindState, Outcome};
 use yantrik_services::mind_desk::FakeMindDesk;
 
 use super::{hermes, snapshot, start, top_words};
@@ -16,7 +16,6 @@ const SENTINELS: [&str; 10] = ["/home", "~/", "ssh", "secret", "token", "sk-live
 /// field carrying something that is not for the chrome.
 fn hostile() -> yantrik_ipc_contracts::mind_desk::DeskSnapshot {
     let mut mind = hermes(MindState::RunningTool);
-    mind.narration = Some(Narration { text: "Reading /home/pranab/.ssh/secret --token=sk-live-abc".into(), heard: "14:32".into() });
     mind.tool = Some(DeskTool { name: "cat ~/.ssh/id_rsa hunter2".into(), evidence: Evidence::Verified, outcome: Outcome::Running });
     mind.model = Some("/opt/models/secret.gguf".into());
     mind.name = "Hermes".into();
@@ -66,15 +65,13 @@ fn every_string_the_desk_draws_is_one_short_clean_line() {
         let top = app.model(chrome::top);
         let bottom = app.model(chrome::bottom);
         let lines = [
-            &top.label, &top.headline, &top.reported, &top.confirm_question, &top.stop_note, &top.strip_heading,
+            &top.label, &top.headline, &top.stop_note, &top.strip_heading,
             &top.strip_tool, &top.strip_mark, &top.strip_stats, &bottom.apps, &bottom.safety, &bottom.model, &bottom.model_mark,
         ];
         for line in lines {
             assert!(!line.contains('\n') && !line.chars().any(char::is_control), "{state:?}: {line:?}");
             assert!(line.chars().count() <= 200, "{state:?}: {line:?}");
-            // The Mind's own words are quoted and checked; nothing else needs the words a path has.
-            let unquoted = line.trim_matches(|c| c == '“' || c == '”');
-            assert!(!wire::looks_private(unquoted), "{state:?}: `{line}` looks like an argument, a path or a secret");
+            assert!(!wire::looks_private(line), "{state:?}: `{line}` looks like an argument, a path or a secret");
         }
     }
 }
@@ -96,18 +93,25 @@ fn the_windows_source_has_no_tooltip_and_every_label_says_what_is_drawn() {
 #[test]
 fn the_desk_offers_stop_and_the_agents_screen_and_no_decision() {
     let ui = format!("{}{}", include_str!("../../ui/app.slint"), include_str!("../../ui/desk.slint"));
-    let mut callbacks: Vec<&str> = ui
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("callback "))
-        .filter_map(|l| l.split('(').next())
-        .collect();
+    // Every `callback` token, wherever it stands in a line (`pure callback x();` included).
+    let mut callbacks: Vec<&str> = Vec::new();
+    for line in ui.lines() {
+        let mut words = line.split_whitespace();
+        while let Some(word) = words.next() {
+            if word == "callback" {
+                if let Some(name) = words.next().and_then(|n| n.split('(').next()) {
+                    callbacks.push(name);
+                }
+            }
+        }
+    }
     callbacks.sort_unstable();
     callbacks.dedup();
-    assert_eq!(callbacks, ["agents-pressed", "stop-cancelled", "stop-confirmed", "stop-pressed"]);
+    assert_eq!(callbacks, ["agents-pressed", "stop-pressed"]);
 
     // The labels of what can be pressed.
     let labels: Vec<&str> = ui.lines().filter_map(|l| l.trim().strip_prefix("label: \"")).filter_map(|l| l.split('"').next()).collect();
-    assert_eq!(labels, ["Stop", "Keep going", "Open in Agents", "Stop…"]);
+    assert_eq!(labels, ["Open in Agents", "Stop…"]);
 
     // No wording of a decision, a grant or a handover, in the screen or in what it is bound to.
     let rust = [include_str!("../model.rs"), include_str!("../update.rs"), include_str!("../chrome.rs"), include_str!("../view.rs"), include_str!("../words.rs")]
@@ -144,4 +148,61 @@ fn a_mind_that_reads_the_desks_surface_finds_no_action_of_the_desks() {
         table.specs().len()
     };
     assert_eq!(table, 0, "no intent: nothing a Mind can ask of the desk by name");
+}
+
+/// Free text cannot be made safe by a pattern, so none is shown: not what a Mind says it is doing,
+/// in any state, on the windows or in what a Mind reads of them.
+#[test]
+fn nothing_a_mind_said_it_is_doing_has_anywhere_to_go() {
+    // The wire has no such field (the contract pins it), so a snapshot built from JSON that has one
+    // is read without it, and the words never reach a window.
+    let mut value = serde_json::to_value(snapshot(1, Some(hermes(MindState::Thinking)))).unwrap();
+    value["mind"]["narration"] = serde_json::json!({ "text": "Emailing sam.patel@example.com the biopsy results", "heard": "14:32" });
+    value["mind"]["status"] = serde_json::json!("Password for the bank is hunter2");
+    let snap: yantrik_ipc_contracts::mind_desk::DeskSnapshot = serde_json::from_value(value).unwrap();
+    let (app, _) = start(FakeMindDesk::new());
+    app.run(Command::Heard(Ok(snap)));
+    let shown = [top_words(&app), format!("{:?}", app.model(chrome::bottom)), app.describe().to_string()].join("
+");
+    for word in ["biopsy", "hunter2", "sam.patel", "Password", "Emailing"] {
+        assert!(!shown.contains(word), "`{word}` is on the desk: {shown}");
+    }
+    // And describe says no headline or status key at all.
+    let state = app.describe()["state"].clone();
+    for key in ["headline", "status", "narration", "quoted", "reported"] {
+        assert!(state.get(key).is_none(), "describe has `{key}`: {state}");
+    }
+}
+
+/// What a review put through the cleaning, through the desk's own words as well as the contract's.
+#[test]
+fn token_shaped_names_and_labels_are_not_shown() {
+    let mut mind = hermes(MindState::RunningTool);
+    mind.tool = Some(DeskTool { name: "ghp_0123456789abcdefghijABCDEFGHIJ0123456789".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
+    mind.model = Some("user@internal-host:8080/private-model".into());
+    let (app, _) = start(FakeMindDesk::new());
+    app.run(Command::Heard(Ok(snapshot(1, Some(mind)))));
+    let shown = [top_words(&app), format!("{:?}", app.model(chrome::bottom))].join("
+");
+    assert!(!shown.contains("ghp_") && !shown.contains("internal-host"), "{shown}");
+    assert!(shown.contains("a tool") && shown.contains("Model unavailable"), "{shown}");
+}
+
+/// `App::ON_MINDS_DISPLAY` lets an app start on a Mind's display, where every other app refuses
+/// (#978). It grants nothing else, but it is an exception to a rule that keeps the person's apps
+/// out of the Mind's room, so exactly one app sets it, and a second is a decision a review sees.
+#[test]
+fn only_the_desk_starts_on_a_minds_display() {
+    let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut setting: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&apps).unwrap().flatten() {
+        let Ok(files) = std::fs::read_dir(entry.path().join("src")) else { continue };
+        for file in files.flatten().filter(|f| f.path().extension().is_some_and(|e| e == "rs")) {
+            let text = std::fs::read_to_string(file.path()).unwrap_or_default();
+            if text.contains("const ON_MINDS_DISPLAY: bool = true;") {
+                setting.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    assert_eq!(setting, ["mind-desk"]);
 }

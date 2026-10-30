@@ -23,16 +23,10 @@ export component MindDeskApp inherits Window {
     in property <string> label;
     in property <int> tone;
     in property <string> headline;
-    in property <bool> quoted;
-    in property <string> reported;
     in property <bool> can-stop;
-    in property <bool> confirming;
-    in property <string> confirm-question;
     in property <string> stop-note;
     in property <bool> agents-offered;
     callback stop-pressed();
-    callback stop-confirmed();
-    callback stop-cancelled();
     callback agents-pressed();
 
     // ── The tool strip (role 0) ──
@@ -67,16 +61,10 @@ export component MindDeskApp inherits Window {
         label: root.label;
         tone: root.tone;
         headline: root.headline;
-        quoted: root.quoted;
-        reported: root.reported;
         can-stop: root.can-stop;
-        confirming: root.confirming;
-        confirm-question: root.confirm-question;
         stop-note: root.stop-note;
         agents-offered: root.agents-offered;
         stop-pressed => { root.stop-pressed(); }
-        stop-confirmed => { root.stop-confirmed(); }
-        stop-cancelled => { root.stop-cancelled(); }
         agents-pressed => { root.agents-pressed(); }
     }
     if root.role == 0 : DeskStrip {

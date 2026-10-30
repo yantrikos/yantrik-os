@@ -1,6 +1,9 @@
 //! Stop, and the Agents screen: the two things the desk may ask of the shell, and what it claims.
+//!
+//! The desk stops nothing. Stop… asks the shell, which asks the person on their own desktop, and
+//! the desk says "Stopped" only when a snapshot carries the shell's word that it did.
 
-use yantrik_ipc_contracts::mind_desk::{MindState, StopAck};
+use yantrik_ipc_contracts::mind_desk::{MindState, StopAck, StopStatus};
 use yantrik_services::mind_desk::FakeMindDesk;
 use yantrik_services::ServiceError;
 
@@ -13,6 +16,12 @@ fn working() -> FakeMindDesk {
     FakeMindDesk::new()
         .answering(snapshot(1, Some(hermes(MindState::RunningTool))))
         .answering(snapshot(1, Some(hermes(MindState::RunningTool))))
+}
+
+fn with_stop(tag: u64, state: MindState, stop: Option<StopStatus>) -> yantrik_ipc_contracts::mind_desk::DeskSnapshot {
+    let mut mind = hermes(state);
+    mind.stop = stop;
+    snapshot(tag, Some(mind))
 }
 
 #[test]
@@ -37,44 +46,46 @@ fn stop_is_offered_to_a_mind_at_work_and_to_none_other() {
     assert_eq!(app.model(|m| m.stop.clone()), Stop::Resting);
 }
 
+/// Pressing Stop… asks the shell and nothing else: there is no question in the room, because the
+/// room is where a Mind can answer it. The desk says it is asking, and says nothing is stopped.
 #[test]
-fn stop_asks_first_and_the_answer_is_the_persons() {
-    let (app, shell) = start(working());
-    app.run_jobs();
-    app.run(Command::StopAsked);
-    assert!(app.ui(|ui| ui.get_confirming()));
-    assert_eq!(app.ui(|ui| ui.get_confirm_question()), "Stop Hermes?");
-    assert!(!app.ui(|ui| ui.get_can_stop()), "the question stands where the button was");
-    assert!(shell.stopped().is_empty(), "nothing is stopped by asking");
-
-    // Keep going: nothing is stopped, and the button is back.
-    app.run(Command::StopCancelled);
-    assert!(!app.ui(|ui| ui.get_confirming()) && app.ui(|ui| ui.get_can_stop()));
-    assert!(shell.stopped().is_empty());
-}
-
-#[test]
-fn a_stop_that_the_shell_acknowledged_is_said_stopped_and_not_before() {
+fn stop_asks_the_shell_and_the_desk_claims_nothing() {
     let (app, shell) = start(working());
     app.run_jobs();
     shell.stop_answers(Ok(StopAck { agent: "hermes:c-1".into() }));
     app.run(Command::StopAsked);
-    app.run(Command::StopConfirmed);
 
-    // Asked, and not answered: the desk says it is stopping, and says nothing is stopped.
-    assert_eq!(app.ui(|ui| ui.get_stop_note()), "Stopping…");
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "Asking…");
+    assert!(!app.ui(|ui| ui.get_can_stop()), "no second press while one is out");
     assert!(!top_words(&app).contains("Stopped"), "{}", top_words(&app));
-    assert_eq!(app.model(|m| m.stop.clone()), Stop::Stopping { agent: "hermes:c-1".into() });
+    assert!(shell.asked_to_stop().is_empty(), "the job has not run yet");
 
-    // The shell's acknowledgement names the agent it stopped. Only then.
     app.run_jobs();
-    assert_eq!(shell.stopped(), ["hermes:c-1"]);
-    assert_eq!(app.ui(|ui| ui.get_stop_note()), "Stopped");
-    assert!(!app.ui(|ui| ui.get_can_stop()), "nothing to stop again");
+    assert_eq!(shell.asked_to_stop(), ["hermes:c-1"]);
+    // The shell took the question. That is all it said: nothing has stopped, and the desk does not
+    // say it has.
+    assert_eq!(app.model(|m| m.stop.clone()), Stop::Resting);
+    assert!(!top_words(&app).contains("Stopped"), "{}", top_words(&app));
+}
+
+/// What the desk says of a stop is the shell's word in a snapshot, and only that.
+#[test]
+fn stopped_is_said_only_when_the_shell_says_it_stopped_the_mind() {
+    let (app, _) = start(FakeMindDesk::new());
+    let said = |tag, state, stop| {
+        app.run(Command::Heard(Ok(with_stop(tag, state, stop))));
+        app.ui(|ui| ui.get_stop_note()).to_string()
+    };
+    assert_eq!(said(1, MindState::RunningTool, None), "");
+    assert_eq!(said(2, MindState::RunningTool, Some(StopStatus::Asked)), "Waiting for your answer on the desktop");
+    assert!(!app.ui(|ui| ui.get_can_stop()), "while the person is being asked");
+    assert_eq!(said(3, MindState::Idle, Some(StopStatus::Stopped)), "Stopped");
+    assert_eq!(said(4, MindState::RunningTool, Some(StopStatus::NotStopped)), "Not stopped");
+    assert!(app.ui(|ui| ui.get_can_stop()), "and it may be asked again");
 }
 
 #[test]
-fn a_stop_the_shell_did_not_acknowledge_claims_nothing() {
+fn a_question_the_shell_would_not_take_claims_nothing() {
     for answer in [
         Err(ServiceError::Unreachable { service: "app-shell" }),
         Err(ServiceError::Timeout { service: "app-shell", seconds: 10 }),
@@ -86,50 +97,22 @@ fn a_stop_the_shell_did_not_acknowledge_claims_nothing() {
         app.run_jobs();
         shell.stop_answers(answer.clone());
         app.run(Command::StopAsked);
-        app.run(Command::StopConfirmed);
         app.run_jobs();
-        let note = app.ui(|ui| ui.get_stop_note());
-        assert_eq!(note, "The shell did not confirm the stop", "{answer:?}");
+        assert_eq!(app.ui(|ui| ui.get_stop_note()), "The shell did not take the request", "{answer:?}");
         assert!(!top_words(&app).contains("Stopped"), "{answer:?}: {}", top_words(&app));
-        assert!(matches!(app.model(|m| m.stop.clone()), Stop::NotConfirmed { .. }));
+        assert!(matches!(app.model(|m| m.stop.clone()), Stop::NotTaken { .. }));
         assert!(app.ui(|ui| ui.get_can_stop()), "and it may be asked again");
     }
 }
 
-/// A stop is for the Mind that was showing when it was asked.
 #[test]
-fn a_confirmation_does_not_outlive_its_mind() {
-    let (app, shell) = start(working());
-    app.run_jobs();
-    app.run(Command::StopAsked);
-    // The shell now says a different Mind needs the person.
-    let mut other = hermes(MindState::WaitingForYou);
-    other.agent = "pi:c-2".into();
-    other.name = "Pi".into();
-    app.run(Command::Heard(Ok(snapshot(2, Some(other)))));
-    assert!(!app.ui(|ui| ui.get_confirming()), "the question was about Hermes");
-    app.run(Command::StopConfirmed);
-    assert!(app.last_refusal().is_some(), "a yes with no question is refused");
-    assert!(shell.stopped().is_empty());
-}
-
-#[test]
-fn an_acknowledged_stop_is_said_until_the_mind_is_at_work_again() {
-    let (app, shell) = start(working());
-    app.run_jobs();
-    shell.stop_answers(Ok(StopAck { agent: "hermes:c-1".into() }));
-    app.run(Command::StopAsked);
-    app.run(Command::StopConfirmed);
-    app.run_jobs();
-    // The shell reports the Mind at rest: Stopped stays.
-    app.run(Command::Heard(Ok(snapshot(2, Some(hermes(MindState::Idle))))));
-    assert_eq!(app.ui(|ui| ui.get_stop_note()), "Stopped");
-    // A new run, which is a state change: the word is gone.
-    let mut again = hermes(MindState::Thinking);
-    again.since = 500;
-    app.run(Command::Heard(Ok(snapshot(3, Some(again)))));
-    assert_eq!(app.ui(|ui| ui.get_stop_note()), "");
-    assert!(app.ui(|ui| ui.get_can_stop()));
+fn the_desk_has_no_confirmation_of_its_own() {
+    // The question is on the person's desktop, and nothing here can answer it.
+    let source = include_str!("../model.rs");
+    let commands = source.split("pub enum Command").nth(1).unwrap();
+    assert!(!commands.contains("StopConfirmed") && !commands.contains("StopCancelled"));
+    let ui = format!("{}{}", include_str!("../../ui/app.slint"), include_str!("../../ui/desk.slint"));
+    assert!(!ui.contains("Keep going") && !ui.contains("confirm"), "no question is asked in the room");
 }
 
 #[test]
@@ -149,17 +132,20 @@ fn open_in_agents_asks_the_shell_for_the_persons_own_screen() {
     assert_eq!(app.ui(|ui| ui.get_stop_note()), "Agents did not open");
 }
 
-/// The shell holds the Agents screen while an approval card waits: the person is told where the
-/// card is, in the desk's words and not the shell's.
+/// The shell holds the Agents screen while an approval card waits, and rate limits it: the person
+/// is told in the desk's words and not the shell's.
 #[test]
-fn a_card_waiting_is_said_when_agents_will_not_open() {
-    let (app, shell) = start(working());
-    app.run_jobs();
-    shell.show_answers(Err(ServiceError::Refused {
-        code: -32000,
-        sentence: "`show_workroom` was not run: an approval card is waiting for the person at this machine".into(),
-    }));
-    app.run(Command::AgentsAsked);
-    app.run_jobs();
-    assert_eq!(app.ui(|ui| ui.get_stop_note()), "An approval card is waiting on your desktop");
+fn what_the_shell_says_when_agents_will_not_open_is_said_in_the_desks_words() {
+    for (sentence, said) in [
+        ("`mind_desk_open_agents` was not run: an approval card is waiting for the person", "An approval card is waiting on your desktop"),
+        ("Agents was opened from the Mind desk a moment ago; it opens at most once every ten seconds.", "Agents was opened a moment ago"),
+        ("Agents opens from the Mind desk only while Mind View is in front.", "Agents opens while Mind View is in front"),
+    ] {
+        let (app, shell) = start(working());
+        app.run_jobs();
+        shell.show_answers(Err(ServiceError::Refused { code: -32000, sentence: sentence.into() }));
+        app.run(Command::AgentsAsked);
+        app.run_jobs();
+        assert_eq!(app.ui(|ui| ui.get_stop_note()), said, "{sentence}");
+    }
 }

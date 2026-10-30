@@ -4,12 +4,12 @@
 //! its wait), so there is no timer while all is well: one ask is out, blocked on a socket. A timer
 //! exists only to ask again after a failure, or after an answer that did not wait.
 //!
-//! Stop claims nothing the shell has not said. "Stopped" is reached from the shell's own
-//! acknowledgement, naming the agent it stopped, and from nothing else.
+//! Stop stops nothing. It asks the shell to ask the person, on their own desktop, and "Stopped" is
+//! said only from the shell's word in a snapshot that it did.
 
 use yantrik_app::effects::Effects;
 use yantrik_app::Refused;
-use yantrik_ipc_contracts::mind_desk::DeskSnapshot;
+use yantrik_ipc_contracts::mind_desk::{DeskSnapshot, StopStatus};
 use yantrik_services::ServiceError;
 
 use crate::model::{Command, Link, Model, Stop, ASK_AGAIN, QUICK, RETRY_FROM, RETRY_UP_TO, SLOW};
@@ -28,35 +28,28 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<MindDesk>) -> Re
         Command::Heard(Err(why)) => lost(m, &why, fx),
         Command::StopAsked => {
             let mind = m.snapshot.as_ref().and_then(|s| s.mind.as_ref()).filter(|_| m.link == Link::Live);
-            let Some(mind) = mind.filter(|mind| mind.state.working()) else {
-                return Err(Refused::new("nothing_to_stop", "No Mind is at work, so there is nothing to stop."));
+            let Some(mind) = mind.filter(|mind| mind.state.working() && mind.stop != Some(StopStatus::Asked)) else {
+                return Err(Refused::new("nothing_to_stop", "No Mind is at work, or the person is already being asked."));
             };
-            m.stop = Stop::Confirming { agent: mind.agent.clone() };
+            if matches!(m.stop, Stop::Asking { .. }) {
+                return Err(Refused::new("asking", "Stop was asked a moment ago."));
+            }
+            let agent = mind.agent.clone();
+            m.stop = Stop::Asking { agent: agent.clone() };
             m.note.clear();
-        }
-        Command::StopCancelled => m.stop = Stop::Resting,
-        Command::StopConfirmed => {
-            let Stop::Confirming { agent } = m.stop.clone() else {
-                return Err(Refused::new("not_confirming", "Stop was not asked for."));
-            };
-            m.stop = Stop::Stopping { agent: agent.clone() };
             let desk = m.desk.clone();
-            fx.spawn(move |_| Command::StopAnswered { answer: desk.stop(&agent), agent });
+            fx.spawn(move |_| Command::StopAnswered { answer: desk.ask_stop(&agent), agent });
         }
         Command::StopAnswered { agent, answer } => {
-            if m.stop != (Stop::Stopping { agent: agent.clone() }) {
-                // Not the stop this desk is waiting on: nothing is said of it.
+            if m.stop != (Stop::Asking { agent: agent.clone() }) {
                 fx.unchanged();
                 return Ok(());
             }
+            // The shell naming the agent says the person has been asked, and nothing more: what
+            // comes of it arrives in a snapshot.
             m.stop = match answer {
-                // The shell named the agent it stopped: that is the acknowledgement.
-                Ok(ack) if ack.agent == agent => {
-                    let since = m.snapshot.as_ref().and_then(|s| s.mind.as_ref()).map_or(0, |mind| mind.since);
-                    Stop::Stopped { agent, since }
-                }
-                // Anything else is a stop nobody confirmed, and nothing is claimed about it.
-                _ => Stop::NotConfirmed { agent },
+                Ok(ack) if ack.agent == agent => Stop::Resting,
+                _ => Stop::NotTaken { agent },
             };
         }
         Command::AgentsAsked => {
@@ -80,6 +73,8 @@ fn agents_failed(why: &ServiceError) -> &'static str {
         ServiceError::Refused { sentence, .. } if sentence.contains("approval card is waiting") => {
             "An approval card is waiting on your desktop"
         }
+        ServiceError::Refused { sentence, .. } if sentence.contains("at most once") => "Agents was opened a moment ago",
+        ServiceError::Refused { sentence, .. } if sentence.contains("in front") => "Agents opens while Mind View is in front",
         _ => "Agents did not open",
     }
 }
@@ -121,29 +116,21 @@ fn heard(m: &mut Model, snapshot: DeskSnapshot, fx: &mut Effects<MindDesk>) {
 fn lost(m: &mut Model, _why: &ServiceError, fx: &mut Effects<MindDesk>) {
     m.asking = false;
     m.link = Link::Lost;
-    // A confirmation is for a Mind the desk can no longer see. A stop already asked is not
-    // taken back: its own answer, or its own deadline, will say how it came out.
-    if matches!(m.stop, Stop::Confirming { .. }) {
-        m.stop = Stop::Resting;
-    }
+    // A question already asked is not taken back: its own answer, or its own deadline, says how it
+    // came out.
     fx.after(ASK_AGAIN, m.retry, Command::Ask);
     m.retry = (m.retry * 2).min(RETRY_UP_TO);
 }
 
-/// What a new snapshot does to a Stop in progress: a confirmation is for the Mind that was
-/// showing, and a stop that was acknowledged is said until that Mind is at work again.
+/// What a new snapshot does to a Stop in progress: a question the shell could not take is for the
+/// Mind that was showing, and is let go when another is, or when it is no longer at work.
 fn settle_stop(m: &mut Model) {
     let mind = m.snapshot.as_ref().and_then(|s| s.mind.as_ref());
-    let current = mind.map(|mind| (mind.agent.as_str(), mind.state.working(), mind.since));
+    let current = mind.map(|mind| (mind.agent.as_str(), mind.state.working()));
     m.stop = match std::mem::replace(&mut m.stop, Stop::Resting) {
-        Stop::Confirming { agent } if current.is_some_and(|(a, working, _)| a == agent && working) => Stop::Confirming { agent },
-        Stop::Confirming { .. } => Stop::Resting,
         // The answer is still to come; it is for this agent, whatever the desk shows meanwhile.
-        stopping @ Stop::Stopping { .. } => stopping,
-        Stop::Stopped { agent, since } if current.is_some_and(|(a, working, at)| a == agent && !(working && at != since)) => {
-            Stop::Stopped { agent, since }
-        }
-        Stop::NotConfirmed { agent } if current.is_some_and(|(a, working, _)| a == agent && working) => Stop::NotConfirmed { agent },
+        asking @ Stop::Asking { .. } => asking,
+        Stop::NotTaken { agent } if current.is_some_and(|(a, working)| a == agent && working) => Stop::NotTaken { agent },
         _ => Stop::Resting,
     };
 }

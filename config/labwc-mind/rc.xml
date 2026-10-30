@@ -76,7 +76,11 @@
 
       - Always on top, no title bar, not in Alt+Tab or the taskbar: they are the room's walls, not
         windows in it. Matched by title, which the desk sets before it maps (the app declares no
-        id); a window of an app that borrowed the title would only be placed like a bar.
+        id). Any client can set its own title, so a window in here can be placed like a bar and
+        drawn over the real one: labwc cannot tell them apart. Nothing the desk is trusted for
+        rests on this. The shell answers the one desk process it started (pid and start time),
+        and a stop is asked of the person on their own desktop, never in here. A forged bar can
+        only mislead the eye.
       - Never force-maximised: the rule above matches every window and has already run, so the
         first thing each bar's rule does is undo it (rules run in order, and every one that
         matches runs).

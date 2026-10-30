@@ -36,20 +36,17 @@ pub enum Link {
     Lost,
 }
 
-/// Where a Stop is. It claims "Stopped" only from [`Stop::Stopped`], which only the shell's own
-/// acknowledgement reaches.
+/// Where a Stop the desk asked for is, on the desk's side. The desk stops nothing: it asks the
+/// shell, which asks the person on their own desktop, and everything after that arrives in a
+/// snapshot (`DeskMind::stop`). "Stopped" is said from there and from nowhere else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stop {
     /// Nothing asked.
     Resting,
-    /// The person pressed Stop…, and has not yet said yes.
-    Confirming { agent: String },
-    /// Yes was said and the shell has not answered.
-    Stopping { agent: String },
-    /// The shell acknowledged it stopped `agent`, whose state changed last at `since`.
-    Stopped { agent: String, since: u64 },
-    /// The shell did not acknowledge it. Nothing is claimed: the Mind may or may not have stopped.
-    NotConfirmed { agent: String },
+    /// Stop… was pressed and the shell has not answered.
+    Asking { agent: String },
+    /// The shell would not take the question. Nothing is said to have happened to the Mind.
+    NotTaken { agent: String },
 }
 
 pub struct Model {
@@ -81,13 +78,9 @@ pub enum Command {
     Ask,
     /// What the shell said.
     Heard(Result<DeskSnapshot, ServiceError>),
-    /// Stop… was pressed.
+    /// Stop… was pressed: the shell is asked to ask the person, on their desktop.
     StopAsked,
-    /// Keep going was pressed.
-    StopCancelled,
-    /// Stop was pressed on the confirmation.
-    StopConfirmed,
-    /// What the shell said to the stop.
+    /// What the shell said to that.
     StopAnswered { agent: String, answer: Result<StopAck, ServiceError> },
     /// Open in Agents was pressed.
     AgentsAsked,

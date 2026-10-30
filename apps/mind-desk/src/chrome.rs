@@ -2,7 +2,7 @@
 //! [`crate::words`]. `view` writes these to the windows and `describe` reads them back to a Mind,
 //! so what is drawn and what is said are one thing.
 
-use yantrik_ipc_contracts::mind_desk::DeskMind;
+use yantrik_ipc_contracts::mind_desk::{DeskMind, StopStatus};
 
 use crate::model::{Link, Model, Stop};
 use crate::words;
@@ -13,13 +13,8 @@ pub struct Top {
     pub label: String,
     pub tone: i32,
     pub headline: String,
-    pub quoted: bool,
-    pub reported: String,
     /// Stop… is drawn.
     pub can_stop: bool,
-    /// The question is asked, with Stop and Keep going.
-    pub confirming: bool,
-    pub confirm_question: String,
     /// What is said of a stop, or of the Agents screen not opening.
     pub stop_note: String,
     /// Open in Agents is drawn.
@@ -44,11 +39,7 @@ fn quiet(label: &str, headline: &str) -> Top {
         label: label.to_string(),
         tone: words::Tone::Quiet.index(),
         headline: headline.to_string(),
-        quoted: false,
-        reported: String::new(),
         can_stop: false,
-        confirming: false,
-        confirm_question: String::new(),
         stop_note: String::new(),
         agents_offered: false,
         strip_heading: String::new(),
@@ -58,13 +49,15 @@ fn quiet(label: &str, headline: &str) -> Top {
     }
 }
 
-/// What the person is told of a stop: nothing until one is asked, and "Stopped" only once the
-/// shell has said it stopped the Mind.
+/// What the person is told of a stop. Nothing until one is asked; "Stopped" only when the shell
+/// says it stopped the Mind, which it does only after the person's yes on their own desktop.
 fn stop_note(m: &Model, mind: &DeskMind) -> String {
-    match &m.stop {
-        Stop::Stopping { agent } if *agent == mind.agent => "Stopping…".to_string(),
-        Stop::Stopped { agent, .. } if *agent == mind.agent => "Stopped".to_string(),
-        Stop::NotConfirmed { agent } if *agent == mind.agent => "The shell did not confirm the stop".to_string(),
+    match (&m.stop, mind.stop) {
+        (Stop::Asking { agent }, _) if *agent == mind.agent => "Asking…".to_string(),
+        (Stop::NotTaken { agent }, _) if *agent == mind.agent => "The shell did not take the request".to_string(),
+        (_, Some(StopStatus::Asked)) => "Waiting for your answer on the desktop".to_string(),
+        (_, Some(StopStatus::Stopped)) => "Stopped".to_string(),
+        (_, Some(StopStatus::NotStopped)) => "Not stopped".to_string(),
         _ => m.note.clone(),
     }
 }
@@ -82,21 +75,16 @@ pub fn top(m: &Model) -> Top {
         idle.strip_heading = "NO TOOL YET".to_string();
         return idle;
     };
-    let said = words::headline(mind);
     let strip = words::strip(mind);
-    let confirming = matches!(&m.stop, Stop::Confirming { agent } if *agent == mind.agent);
-    let resting = matches!(&m.stop, Stop::Resting | Stop::NotConfirmed { .. });
+    // Stop… is there for a Mind at work that nobody has been asked about, while no ask is out.
+    let resting = matches!(&m.stop, Stop::Resting | Stop::NotTaken { .. }) && mind.stop != Some(StopStatus::Asked);
     Top {
         label: words::label(mind),
         tone: words::tone_of(mind.state).index(),
-        headline: said.text,
-        quoted: said.quoted,
-        reported: said.reported,
+        headline: words::headline(mind),
         // A Mind that is not at work has nothing to stop, and one whose connection is lost has no
         // backend to stop it with.
         can_stop: mind.state.working() && resting,
-        confirming,
-        confirm_question: if confirming { format!("Stop {}?", yantrik_ipc_contracts::mind_desk::display_name(&mind.name)) } else { String::new() },
         stop_note: stop_note(m, mind),
         agents_offered: true,
         strip_heading: strip.heading,

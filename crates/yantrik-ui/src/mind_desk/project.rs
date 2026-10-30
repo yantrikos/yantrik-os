@@ -7,12 +7,13 @@
 //!
 //! Only display-safe things leave here. The tool is its *name* (`Card::name`, checked to be a
 //! plain name), never its target, its arguments, its preview, its summary or its output; the Mind
-//! is its name, never the title (which is what the person asked it); the line is the Mind's own
-//! `status` after the contract's cleaning, or nothing.
+//! is its name, never the title (which is what the person asked it), and **never its `status`**:
+//! what a Mind says it is doing is withheld from every other Mind (`PERSONS_FIELDS`), and the desk
+//! is on a screen all of them can read. That line is for phase 4, with attribution.
 
 use yantrik_harness::AgentId;
 use yantrik_ipc_contracts::mind_desk::{
-    self as wire, Account, Counts, DeskMind, DeskSnapshot, DeskTool, Evidence, MindState, Narration, Outcome,
+    self as wire, Account, Counts, DeskMind, DeskSnapshot, DeskTool, Evidence, MindState, Outcome,
 };
 
 use crate::agents::model::{Agent, CallState, Card, Provenance, State, Turn};
@@ -35,6 +36,15 @@ pub fn project(agents: &[Agent], now: u64, apps: &[String]) -> DeskSnapshot {
             .collect(),
     }
     .tagged()
+}
+
+/// `snapshot`, with how a stop asked of the person stands (`stop_of`: the agent, whether it is at
+/// work), tagged again. Asked of the stops after the store has been let go of.
+pub fn with_stop(mut snapshot: DeskSnapshot, stop_of: impl Fn(&str, bool) -> Option<wire::StopStatus>) -> DeskSnapshot {
+    if let Some(mind) = snapshot.mind.as_mut() {
+        mind.stop = stop_of(&mind.agent, mind.state.working());
+    }
+    snapshot.tagged()
 }
 
 /// `snapshot`, with the account of its Mind's harness as `account_of` says it, and tagged again.
@@ -122,12 +132,9 @@ fn mind_of(agent: &Agent, now: u64) -> DeskMind {
         name: wire::display_name(&agent.meta.mind),
         state: state_of(agent.state),
         since: agent.since,
-        // Its own line, while there is one to say: a finished or lost Mind's last words are not
-        // what it is saying now.
-        narration: Some(agent.state)
-            .filter(|s| matches!(s, State::Thinking | State::RunningTool | State::WaitingForYou))
-            .and_then(|_| wire::narration_text(&agent.status))
-            .map(|text| Narration { text, heard: hm(agent.touched) }),
+        // Nothing it says it is doing, ever: `status` is the person's, and this is read by every
+        // Mind in Mind View. A stop asked of the person is filled in by the caller.
+        stop: None,
         tool,
         counts: Counts { calls: cards.len() as u32, failed: count(CallState::Failed), interrupted: count(CallState::Interrupted) },
         elapsed_secs,

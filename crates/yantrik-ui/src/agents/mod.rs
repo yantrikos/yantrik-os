@@ -203,6 +203,11 @@ impl Agents {
         f(&self.lock())
     }
 
+    /// See [`Store::poke`].
+    pub fn poke(&self) {
+        self.lock().poke()
+    }
+
     pub fn revision(&self) -> u64 {
         self.lock().revision()
     }

@@ -9,11 +9,13 @@
 //!
 //! - [`project`]: which Mind the desk shows, and what of it.
 //! - [`account`]: which account a harness runs under, from what the kernel said when it attached.
-//! - `control_mind_desk` (a sibling module of this one's parent): the `mind_desk` action that
-//!   serves the projection to the person's own processes and refuses a Mind's.
+//! - [`stop`]: a stop the desk asks for is the person's to allow, on their own desktop.
+//! - `control_mind_desk` (a sibling module of this one's parent): the actions, answered to the one
+//!   desk the shell started (`mind_view_desk`) and to nothing else.
 
 pub mod account;
 pub mod project;
+pub mod stop;
 
 #[cfg(test)]
 mod tests;
