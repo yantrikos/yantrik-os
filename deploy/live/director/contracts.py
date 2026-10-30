@@ -459,6 +459,12 @@ def show_view(db, cid):
     return c
 
 
+def boot_started():
+    """When this boot began, in seconds since the epoch: now less the uptime."""
+    with open("/proc/uptime", encoding="ascii") as f:
+        return time.time() - float(f.read().split()[0])
+
+
 def register(db, peer_pid, now):
     """The Director, at the start of a run of its unit, asking for that run's key. Given once a
     run, and only while the caller is the one process in the unit: the Director registers before
@@ -473,6 +479,11 @@ def register(db, peer_pid, now):
         raise Refused("the Director's unit cannot be read") from None
     if procs != [str(peer_pid)]:
         raise Refused("the Director registers only as the one process in its unit, before it starts anything")
+    # A cgroup's inode names one run within a boot only: after a restart the kernel numbers them
+    # from the start again, so a run kept from an earlier boot can carry this run's number and
+    # would refuse it for good (561, 30 Oct 2026: 809 of them). Runs from before this boot ended
+    # with it, so they are dropped first.
+    db.execute("DELETE FROM director_runs WHERE at < ?", (boot_started(),))
     key = secrets.token_hex(32)
     try:
         db.execute("INSERT INTO director_runs VALUES (?,?,?,?)",

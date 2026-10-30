@@ -250,6 +250,19 @@ c.DIRECTOR_UNIT_DIR = unit2
 stale_key = as_unit(dict(open_req(), key=key))
 check("a key is good for its own run only, and a run's key is never changed", not stale_key["ok"] and not rekeyed,
       repr(stale_key))
+# After a reboot the kernel numbers cgroups from the start again, so a run kept from an earlier boot
+# can carry the new run's number. It is dropped, not taken as this run's key (561, 30 Oct 2026).
+unit3 = os.path.join(tmp, "unit-run-3")
+os.mkdir(unit3)
+in_unit(6000, where=unit3)
+c.DIRECTOR_UNIT_DIR = unit3
+real_boot_started, c.boot_started = c.boot_started, lambda: time.time() - 60
+kdb.execute("INSERT INTO director_runs VALUES (?,?,?,?)", (os.stat(unit3).st_ino, "0" * 64, 1, time.time() - 3600))
+after_reboot = as_unit({"op": "register"}, pid=6000)
+twice = as_unit({"op": "register"}, pid=6000)
+c.boot_started = real_boot_started
+check("a run left from an earlier boot does not refuse this boot's run, which is still given its key once",
+      after_reboot["ok"] and c.KEY.match(after_reboot.get("key", "")) and not twice["ok"], repr((after_reboot, twice)))
 c.DIRECTOR_UNIT_DIR = real_unit_dir
 
 # A contract at its event cap still takes a person's decision.
