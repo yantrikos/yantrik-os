@@ -953,9 +953,8 @@ fn configure_ai(mount_dir: &str, state: &InstallerState) {
     // the store went with it.
     if let Some(yaml) = installed_providers_yaml(state) {
         let providers_path = format!("{settings_dir}/providers.yaml");
-        if sudo_write(&providers_path, &yaml).is_ok() {
-            // sudo tee creates the file world-readable; it holds a secret.
-            let _ = run_cmd("chmod", &["600", &providers_path]);
+        if let Err(e) = sudo_write_private(&providers_path, &yaml) {
+            tracing::warn!(error = %e, "installer: providers.yaml was not written");
         }
     }
 
@@ -1219,6 +1218,37 @@ pub(super) fn sudo_write(path: &str, content: &str) -> Result<(), String> {
     } else {
         Err(format!("sudo tee {path}: {}", String::from_utf8_lossy(&output.stderr)))
     }
+}
+
+/// The commands `sudo_write_private` runs, in order. Apart from the running so a test can pin
+/// the order: the file is created at mode 600 while it is still empty, and nothing chmods it
+/// after the content is in.
+fn private_write_steps(path: &str) -> Vec<(String, Vec<String>)> {
+    vec![
+        ("install".to_string(), vec!["-m".to_string(), "600".to_string(), "/dev/null".to_string(), path.to_string()]),
+        ("tee".to_string(), vec![path.to_string()]),
+    ]
+}
+
+/// Write a file that holds a secret — today only the person's providers.yaml, which carries
+/// their provider key.
+///
+/// `sudo tee` on its own creates a missing file at the umask default, 644, so the key sits
+/// world-readable for as long as it lives; the chmod that used to follow it hid the file only
+/// afterwards, and its result was discarded, so a failed chmod left the key exposed with nothing
+/// said. `install -m 600 /dev/null` creates or truncates the file at 600 first, and `tee`
+/// truncates but keeps the mode, so there is no moment when the content is readable by others.
+/// Both steps are checked; a step that guards a secret cannot afford to fail quietly.
+fn sudo_write_private(path: &str, content: &str) -> Result<(), String> {
+    for (program, args) in private_write_steps(path) {
+        if program == "tee" {
+            sudo_write(path, content)?;
+        } else {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            run_cmd(&program, &args)?;
+        }
+    }
+    Ok(())
 }
 
 /// Run a command via sudo, returning Ok(stdout) or Err(stderr).
@@ -1801,6 +1831,28 @@ mod tests {
         assert_eq!(primary.base_url, "https://api.openai.com/v1");
         assert_eq!(primary.api_key.as_deref(), Some("sk-secret-123"));
         assert_eq!(primary.auth_type, "bearer");
+    }
+
+    /// That store is written with `sudo tee`, which creates a missing file at 644 — readable by
+    /// everyone on the machine — so the mode has to be set while the file is still empty.
+    #[test]
+    fn providers_yaml_is_created_private_before_it_is_written() {
+        const PATH: &str = "/home/yantrik/.config/yantrik/providers.yaml";
+        let steps = private_write_steps(PATH);
+        let argv: Vec<(&str, Vec<&str>)> = steps
+            .iter()
+            .map(|(prog, args)| (prog.as_str(), args.iter().map(String::as_str).collect()))
+            .collect();
+        assert_eq!(
+            argv,
+            vec![("install", vec!["-m", "600", "/dev/null", PATH]), ("tee", vec![PATH])],
+            "the mode comes from creating /dev/null at 600; tee only fills that file"
+        );
+        let wrote = argv.iter().position(|(prog, _)| *prog == "tee").expect("content is written");
+        assert!(
+            argv[wrote..].iter().all(|(prog, _)| *prog != "chmod"),
+            "a chmod after the content is written hides the key late at best, and silently if it fails"
+        );
     }
 
     #[test]
