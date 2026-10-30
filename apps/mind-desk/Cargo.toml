@@ -1,0 +1,31 @@
+[package]
+name = "yantrik-mind-desk"
+version = "0.1.0"
+edition = "2021"
+description = "Yantrik Mind desk: the bars around Mind View's apps, on YantrikApp (#1023)"
+
+# The app is a library the framework runs (`src/lib.rs`: the `App`), and a three-line binary. It
+# runs only inside Mind View, on the nested compositor's display. Its behaviour is tested headless
+# through yantrik-testing, with a fake shell.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "yantrik-mind-desk"
+path = "src/main.rs"
+
+[dependencies]
+yantrik-app = { workspace = true }
+yantrik-services = { workspace = true }
+yantrik-ipc-contracts = { workspace = true }
+yantrik-design-tokens = { workspace = true }
+yantrik-ui-kit = { workspace = true }
+slint = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+yantrik-testing = { workspace = true }
+
+[build-dependencies]
+yantrik-app-build = { workspace = true }

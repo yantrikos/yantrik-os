@@ -406,6 +406,8 @@ struct Record {
     /// The shell took it back before anybody answered: the agent that asked was stopped, or its
     /// harness went. Reported as `expired` — nobody answered — and never grantable.
     withdrawn: bool,
+    /// The words this request brought of its own, if any. See [`Wording`].
+    wording: Wording,
     /// The stored state. Expiry is not stored: it is a fact about the clock, derived on every
     /// read, so a request cannot be alive merely because nothing looked at it.
     state: Status,
@@ -644,6 +646,8 @@ pub struct Card {
     /// card carries a per-call sentence (#137): that sentence explained THIS call, and the
     /// session rule would stand in for every later one, unexplained.
     pub can_session: bool,
+    /// The words the request brought of its own ([`Wording`]); empty for the card as it was.
+    pub wording: Wording,
     pub status: Status,
     /// The one-line transcript record, once this has been decided. Empty while pending.
     pub record: String,
@@ -818,6 +822,50 @@ pub const OPEN_ENDED_WARNING: &str = "What it runs can do anything you can. Allo
      session lets any mind or caller on this desktop run any command through it, until the \
      shell restarts or the mode is lowered.";
 
+/// Words a request may bring for a decision that is its own: the button labels, one line saying who
+/// asked, and that the answer is for this once. The default is the card as it always was, with
+/// "Allow once", "Decline" and, where it may be offered, "Allow for this session".
+///
+/// For a question that is not "may this run?" but "do you mean it?", asked of the person on a card
+/// by the shell itself (the Mind desk's stop, #1023): its buttons say what pressing them does, its
+/// identity row says what the shell knows and does not, and it offers no standing yes, so no rule
+/// can ever name the action it stands for. Every field is the shell's own text, bounded and drawn
+/// escaped like the rest of the card.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Wording {
+    /// The affirmative button, in place of the computed one. Empty: the card's own.
+    pub confirm: String,
+    /// The other button, in place of "Decline". Empty: "Decline".
+    pub decline: String,
+    /// The identity row, in place of the caller's: what the shell can say of who asked, and what it
+    /// cannot. Empty: the caller's, as the walk found it.
+    pub asker: String,
+    /// The answer is for this one request and nothing more: no "Allow for this session", and no
+    /// session rule, whatever the action's grade and wording would otherwise allow.
+    pub once_only: bool,
+}
+
+/// The longest button label a [`Wording`] may bring, and the longest asker line.
+pub const LABEL_CHARS: usize = 24;
+pub const ASKER_CHARS: usize = 120;
+
+impl Wording {
+    /// This wording, bounded: a label that would not fit its button is cut, and nothing here may
+    /// make the card taller.
+    fn bounded(self) -> Wording {
+        Wording {
+            confirm: clip_plain(self.confirm.trim(), LABEL_CHARS),
+            decline: clip_plain(self.decline.trim(), LABEL_CHARS),
+            asker: clip_plain(self.asker.trim(), ASKER_CHARS),
+            once_only: self.once_only,
+        }
+    }
+}
+
+fn clip_plain(text: &str, max: usize) -> String {
+    text.chars().filter(|c| !c.is_control()).take(max).collect()
+}
+
 /// What one request is about, beside who asked and with what arguments: the text parts of it.
 /// A struct because the published sentence made nine positional strings, and two strings side
 /// by side are one swap away from the card showing the caller's words as the app's.
@@ -917,6 +965,21 @@ impl Store {
         now: Instant,
         at: &str,
     ) -> Result<Requested, String> {
+        self.raise_worded(requester, verified, asked, args, Wording::default(), now, at)
+    }
+
+    /// [`Store::raise`] with the words of its own that the request brings ([`Wording`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn raise_worded(
+        &mut self,
+        requester: &str,
+        verified: Verified,
+        asked: Asked<'_>,
+        args: serde_json::Value,
+        wording: Wording,
+        now: Instant,
+        at: &str,
+    ) -> Result<Requested, String> {
         let Asked { app, action, grade, purpose, published, target, explained } = asked;
         self.prune(now);
 
@@ -1000,6 +1063,7 @@ impl Store {
             decided_at: String::new(),
             session: false,
             withdrawn: false,
+            wording: wording.bounded(),
             state: Status::Pending,
         });
         Ok(Requested { id, status: Status::Pending, fresh: true })
@@ -1207,7 +1271,9 @@ impl Store {
                 // a standing yes: the session rule would cover every later call of the action,
                 // and the sentence the person just read explained exactly one (#137).
                 can_session: may_offer_session_rule(&record.grade, &record.said())
-                    && record.explained.is_empty(),
+                    && record.explained.is_empty()
+                    && !record.wording.once_only,
+                wording: record.wording.clone(),
                 said: record.said(),
                 status,
                 record: record_line(record, status),
@@ -1326,6 +1392,20 @@ fn request_in(
         return Err(why);
     }
     store.raise(requester, verified, asked, args, now, at)
+}
+
+/// [`request`], with the words of its own that the request brings ([`Wording`]).
+pub fn request_worded(
+    requester: &str,
+    verified: Verified,
+    asked: Asked<'_>,
+    args: serde_json::Value,
+    wording: Wording,
+) -> Result<Requested, String> {
+    if let Some(why) = crate::never_ask::refusal() {
+        return Err(why);
+    }
+    locked().raise_worded(requester, verified, asked, args, wording, Instant::now(), &hhmm())
 }
 
 pub fn status(id: &str) -> Option<Status> {
@@ -2168,6 +2248,54 @@ mod approvals_tests {
             .id;
         let card = store.pending(now).into_iter().find(|c| c.id == none).expect("the card");
         assert_eq!(card.summary, "");
+    }
+
+    /// A request that brings its own words keeps them, bounded, and is a one-time question: no
+    /// standing yes is offered, whatever the grade and wording would otherwise allow, and no card
+    /// without such words is changed by it (#1023).
+    #[test]
+    fn approvals_a_request_with_its_own_words_is_one_time_and_keeps_them() {
+        let mut store = Store::new();
+        let now = Instant::now();
+        let asked = || Asked {
+            app: "shell",
+            action: "stop_agent",
+            grade: "standard",
+            purpose: "Stop Hermes? Its turn is ended.",
+            published: "Stop Hermes? Its turn is ended.",
+            target: "",
+            explained: "",
+        };
+        // As an ordinary card, this action may be allowed for the session.
+        let plain = store.raise("Mind desk", Verified::default(), asked(), args(serde_json::json!({"agent": "a"})), now, "12:00").unwrap().id;
+        let card = store.pending(now).into_iter().find(|c| c.id == plain).unwrap();
+        assert!(card.can_session, "the premise: an ordinary stop card offers a standing yes");
+        assert_eq!(card.wording, Wording::default());
+
+        let words = Wording {
+            confirm: "Stop".into(),
+            decline: "Keep going".into(),
+            asker: "Asked from the Mind desk".into(),
+            once_only: true,
+        };
+        let id = store
+            .raise_worded("Mind desk", Verified::default(), asked(), args(serde_json::json!({"agent": "b"})), words.clone(), now, "12:01")
+            .unwrap()
+            .id;
+        let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
+        assert!(!card.can_session, "a one-time question offers no standing yes");
+        assert_eq!(card.wording, words);
+
+        // Bounded: a label that would not fit a button, and a line that would not fit the row.
+        let long = Wording { confirm: "x".repeat(200), decline: "y\n".repeat(50), asker: "z".repeat(900), once_only: true };
+        let id = store
+            .raise_worded("Mind desk", Verified::default(), asked(), args(serde_json::json!({"agent": "c"})), long, now, "12:02")
+            .unwrap()
+            .id;
+        let card = store.pending(now).into_iter().find(|c| c.id == id).unwrap();
+        assert!(card.wording.confirm.chars().count() <= LABEL_CHARS && card.wording.decline.chars().count() <= LABEL_CHARS);
+        assert!(card.wording.asker.chars().count() <= ASKER_CHARS);
+        assert!(!card.wording.decline.contains('\n'));
     }
 
     /// Security review of #504: a mind asking for `terminal.run` with its own purpose — "list

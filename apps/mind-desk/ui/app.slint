@@ -1,0 +1,88 @@
+// The Mind desk: the bar along the top of Mind View (#1023, phase 1).
+//
+// One window, the header, the tool strip and the footer one under the other. A window the height
+// of Mind View would sit over the apps and take their clicks; this one is as tall as the margin the
+// nested compositor keeps for it (config/labwc-mind/rc.xml) and one pixel more, its own bottom
+// edge over the apps' first row. The compositor finds it by the title below.
+import { Theme, ThemeMode, AccentPreset } from "@yantrik-design/theme.slint";
+import { WindowChrome } from "@yantrik-kit/window_chrome.slint";
+import { DeskHeader, DeskStrip, DeskFooter } from "desk.slint";
+
+export { ThemeMode, AccentPreset, WindowChrome }
+
+export component MindDeskApp inherits Window {
+    // The heights, set by the app before the window is shown (apps/mind-desk/src/metrics.rs), so
+    // the compositor finds its height at map.
+    in property <length> bar-height: 0px;
+    in property <length> header-height: 0px;
+    in property <length> strip-height: 0px;
+
+    // ── The header ──
+    in property <string> label;
+    in property <int> tone;
+    in property <string> headline;
+    in property <bool> can-stop;
+    in property <string> stop-note;
+    in property <bool> agents-offered;
+    callback stop-pressed();
+    callback agents-pressed();
+
+    // ── The tool strip ──
+    in property <string> strip-heading;
+    in property <string> strip-tool;
+    in property <string> strip-mark;
+    in property <string> strip-stats;
+
+    // ── The footer ──
+    in property <string> apps;
+    in property <string> safety;
+    in property <string> model;
+    in property <string> model-mark;
+
+    // The nested compositor's way to find the bar: it is in its window rule, and a test holds the
+    // two files together.
+    title: "Yantrik Mind Desk";
+    no-frame: true;
+    background: Theme.bg-surface;
+    default-font-family: Theme.font-ui;
+    preferred-width: 1184px;
+    min-width: 480px;
+    preferred-height: root.bar-height;
+    min-height: root.bar-height;
+    max-height: root.bar-height;
+
+    DeskHeader {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.header-height;
+        label: root.label;
+        tone: root.tone;
+        headline: root.headline;
+        can-stop: root.can-stop;
+        stop-note: root.stop-note;
+        agents-offered: root.agents-offered;
+        stop-pressed => { root.stop-pressed(); }
+        agents-pressed => { root.agents-pressed(); }
+    }
+    DeskStrip {
+        x: 0px;
+        y: root.header-height;
+        width: root.width;
+        height: root.strip-height;
+        heading: root.strip-heading;
+        tool: root.strip-tool;
+        mark: root.strip-mark;
+        stats: root.strip-stats;
+    }
+    DeskFooter {
+        x: 0px;
+        y: root.header-height + root.strip-height;
+        width: root.width;
+        height: root.height - root.header-height - root.strip-height;
+        apps: root.apps;
+        safety: root.safety;
+        model: root.model;
+        model-mark: root.model-mark;
+    }
+}
