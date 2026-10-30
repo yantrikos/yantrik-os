@@ -226,6 +226,14 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   done
   install -m 0644 "$SCRIPT_DIR/update-keys/revoked.sha256" "$ROOT/share/update-keys/revoked.sha256" \
     || fail "no update-keys/revoked.sha256: the revocation list must ship, even when empty"
+  # A revocation line that revokes nothing (upper-case hex, an indent, a cut hash) is a mistake
+  # that would only show during the next incident: refuse it here.
+  badrev="$(grep -vE '^[[:space:]]*(#.*)?$|^[0-9a-f]{64}([[:space:]].*)?$' "$SCRIPT_DIR/update-keys/revoked.sha256" | head -n 1)"
+  [ -z "$badrev" ] || fail "update-keys/revoked.sha256 has a line that is not a revocation: $badrev"
+  for pub in "$ROOT"/share/update-keys/*.pub; do
+    fp="$("$SCRIPT_DIR/yantrik-update-verify" fingerprint "$pub")"
+    ! grep -qE "^$fp" "$SCRIPT_DIR/update-keys/revoked.sha256" || fail "$(basename "$pub") is revoked in update-keys/revoked.sha256 and still ships"
+  done
   # A key is trusted by the scope in its file name, so one key under both scopes would give a
   # nightly key the reach of the release key.
   dups="$(for pub in "$ROOT"/share/update-keys/*.pub; do "$SCRIPT_DIR/yantrik-update-verify" fingerprint "$pub"; done | sort | uniq -d)"

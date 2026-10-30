@@ -987,13 +987,38 @@ safely. Old backups live in $BACKUP_DIR."
   # installed, so a rollback of this very install (or any later one) cannot bring a revoked key
   # back: share/ is restored from the backup, update-state is not. A bundle without a list
   # revokes nothing. If the record cannot be written the update stops here, untouched.
-  if [ -f "$root/share/update-keys/revoked.sha256" ]; then
-    if [ -x "$VERIFY" ]; then
-      "$VERIFY" revoke-merge --state "$UPDATE_STATE_DIR" "$root/share/update-keys/revoked.sha256" \
-        || fail "could not record the update keys this build revokes; nothing was installed"
-    else
-      fail "this updater cannot record revoked update keys ($VERIFY is missing); nothing was installed"
+  # What is revoked and installed now is recorded too, not only what is incoming: a machine
+  # imaged from a build that already revoked a key has no record yet, and an older build's
+  # share/ is about to replace the list that says so. Only from a root-owned file the installed
+  # build lists (ROOT_FILES), like everything else root trusts from share/.
+  if [ -x "$VERIFY" ]; then
+    if [ -f "$UPDATE_KEYS_DIR/revoked.sha256" ] && root_file_ok "update-keys/revoked.sha256" "$UPDATE_KEYS_DIR/revoked.sha256"; then
+      "$VERIFY" revoke-merge --state "$UPDATE_STATE_DIR" "$UPDATE_KEYS_DIR/revoked.sha256" >/dev/null \
+        || fail "could not record the update keys this machine's build revokes; nothing was installed"
     fi
+    if [ -f "$root/share/update-keys/revoked.sha256" ]; then
+      "$VERIFY" revoke-merge --state "$UPDATE_STATE_DIR" "$root/share/update-keys/revoked.sha256" >/dev/null \
+        || fail "could not record the update keys this build revokes; nothing was installed"
+    fi
+  elif [ -f "$root/share/update-keys/revoked.sha256" ]; then
+    fail "this updater cannot record revoked update keys ($VERIFY is missing); nothing was installed"
+  fi
+
+  # ── A build that could not verify its own channel is not installed ──
+  #
+  # A downgrade across a key rotation (or any bundle whose keys are all revoked or do not cover
+  # this channel) would install cleanly and then refuse every update, and the person would meet
+  # "no trusted keys" with no idea why. The manifest just accepted is checked against the keys
+  # and list the BUNDLE carries, with the real record of revocations, before a byte is replaced.
+  if [ -d "$root/share/update-keys" ] && [ -x "$VERIFY" ] && [ -f "$root/bin/yantrik-root-files.sha256" ] \
+     && [ -f "$UPDATE_STATE_DIR/$CHANNEL.last-good" ] && tree_is_roots; then
+    local vout
+    vout="$("$VERIFY" verify --channel "$CHANNEL" --source "$HOST" --keys "$root/share/update-keys" \
+      --state "$UPDATE_STATE_DIR" --listed "$root/bin/yantrik-root-files.sha256" "$UPDATE_STATE_DIR/$CHANNEL.last-good")" || true
+    case "$(probe_field "$vout" status)" in
+      ok|keys_untrusted|keys_unlisted|state_untrusted|expired|replay) ;;
+      *) fail "build ${remote_ver:-$remote_git} cannot verify updates any more (its signing keys were rotated out or revoked); installing it would leave this machine unable to update itself. Nothing was installed. $(probe_field "$vout" detail)" ;;
+    esac
   fi
 
   # ── Swap: install each new binary over the old, atomically per file ──
@@ -1007,9 +1032,14 @@ safely. Old backups live in $BACKUP_DIR."
     keep_updater=1
     warn "this build predates the root-files list; keeping the current yantrik-update"
   }
+  # The root-files list goes in last, after share/: it names the update keys, and a failure
+  # between the two must leave a list and a key directory that still agree (restore_backup keeps
+  # the keys installed now and never restores the list).
+  local deferred_list=""
   while IFS= read -r f; do
     local base; base="$(basename "$f")"
     if [ "$keep_updater" = 1 ] && is_updater_file "$base"; then continue; fi
+    if [ "$base" = yantrik-root-files.sha256 ] && [ -d "$root/share" ]; then deferred_list="$f"; continue; fi
     local tmp="$BIN_DIR/.$base.new"
     if cp "$f" "$tmp" 2>/dev/null \
        && [ "$(stat -c%s "$tmp" 2>/dev/null || echo 0)" = "$(stat -c%s "$f")" ] \
@@ -1062,6 +1092,17 @@ safely. Old backups live in $BACKUP_DIR."
     fi
     seal_share
     info "installed $(find "$SHARE_DIR" -type f | wc -l) shared files"
+    if [ -n "$deferred_list" ]; then
+      local ltmp="$BIN_DIR/.yantrik-root-files.sha256.new"
+      if cp "$deferred_list" "$ltmp" 2>/dev/null && chmod 755 "$ltmp" && mv -f "$ltmp" "$ROOT_FILES"; then
+        installed=$((installed + 1))
+      else
+        rm -f "$ltmp"
+        warn "could not install the root-files list — rolling back"
+        restore_backup "$backup"
+        fail "install failed at yantrik-root-files.sha256; rolled back to the previous build"
+      fi
+    fi
 
     # ── The app icon ──
     #

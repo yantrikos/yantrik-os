@@ -288,6 +288,58 @@ verify nightly "$T/n-rotated"
 is  "the machine still updates normally afterwards" "ok:0" "$(field status):$rc"
 KEYS="$PFX/share/update-keys"; STATE="$PFX/update-state"; LIST="$PFX/bin/yantrik-root-files.sha256"
 
+# ── 7c. A machine that never applied anything, then downgraded ───────────────────────────
+echo "  fresh machine on the rotating build, then downgraded"
+fresh() { # <dir>: a prefix on the rotating build N: n2 trusted, n1 revoked, and no update-state at all
+  rm -rf "$1"; mkdir -p "$1/bin" "$1/share/update-keys"; chmod 755 "$1" "$1/bin" "$1/share" "$1/share/update-keys"
+  cp "$T/n2.pub" "$1/share/update-keys/nightly.n2.pub"; cp "$T/bundle-revoked" "$1/share/update-keys/revoked.sha256"
+  chmod 644 "$1/share/update-keys"/*
+  KEYS="$1/share/update-keys"; STATE="$1/update-state"; LIST="$1/bin/yantrik-root-files.sha256"; relist
+}
+downgrade() { # <dir>: the older build S replaces share/ and the list; it lists n1 and revokes nothing
+  rm -rf "$1/share/update-keys"; mkdir "$1/share/update-keys"; chmod 755 "$1/share/update-keys"
+  cp "$T/n1.pub" "$1/share/update-keys/nightly.n1.pub"; : > "$1/share/update-keys/revoked.sha256"
+  chmod 644 "$1/share/update-keys"/*; relist
+}
+fresh "$T/img1"
+verify nightly "$T/n100"
+is  "imaged build N, no state: n1 is refused" "bad_signature:20" "$(field status):$rc"
+is  "and there is no record yet" "no" "$([ -e "$STATE/revoked-keys" ] && echo yes || echo no)"
+verify nightly "$T/n-rotated" --commit
+is  "a normal update (commit) works" "ok:0" "$(field status):$rc"
+has "and it records what the installed build revokes" "$FP1" "$(cat "$STATE/revoked-keys")"
+downgrade "$T/img1"
+verify nightly "$T/n100"
+is  "downgraded to the older build: n1 is still refused" "no_keys:20" "$(field status):$rc"
+# The updater's own step, for a machine that has not run verify --commit: merge the INSTALLED list.
+fresh "$T/img2"
+"$VERIFY" revoke-merge --state "$STATE" "$KEYS/revoked.sha256" > /dev/null
+downgrade "$T/img2"
+verify nightly "$T/n100"
+is  "apply merging the installed list first gives the same" "no_keys:20" "$(field status):$rc"
+# Without either step the older build would have trusted it again: the gap this closes.
+fresh "$T/img3"; downgrade "$T/img3"
+verify nightly "$T/n100"
+is  "(control: with no record at all the older build does trust n1)" "ok:0" "$(field status):$rc"
+# The lock-out guard apply runs: the bundle's own keys and list against the manifest just accepted.
+fresh "$T/img4"; "$VERIFY" revoke-merge --state "$STATE" "$KEYS/revoked.sha256" > /dev/null
+mkdir -p "$T/bundleS/bin" "$T/bundleS/share/update-keys"; chmod 755 "$T/bundleS" "$T/bundleS/bin" "$T/bundleS/share" "$T/bundleS/share/update-keys"
+cp "$T/n1.pub" "$T/bundleS/share/update-keys/nightly.n1.pub"; chmod 644 "$T/bundleS/share/update-keys/nightly.n1.pub"
+(cd "$T/bundleS/share" && sha256sum update-keys/*) > "$T/bundleS/bin/yantrik-root-files.sha256"; chmod 644 "$T/bundleS/bin/yantrik-root-files.sha256"
+out="$("$VERIFY" verify --channel nightly --source releases.example --keys "$T/bundleS/share/update-keys" --state "$STATE" --listed "$T/bundleS/bin/yantrik-root-files.sha256" --now "$((NOW + 86400))" "$T/n-rotated")"
+is  "a bundle whose keys cannot verify the current manifest is caught before install" "no_keys" "$(printf '%s\n' "$out" | sed -n 's/^status=//p')"
+has "and the sentence says what to do" "install a current build from a fresh image" "$out"
+# Revocation lines that revoke nothing are errors, not silence.
+for bad in "$(printf 'A%.0s' $(seq 1 64))" " $(printf 'a%.0s' $(seq 1 64))" "$(printf 'a%.0s' $(seq 1 63))"; do
+  printf '%s\n' "$bad" > "$T/badrev"
+  out="$("$VERIFY" revoke-merge --state "$T/state-bad" "$T/badrev" 2>&1)"; rc=$?
+  is "a malformed revocation line is refused ($(printf '%s' "$bad" | cut -c1-4)...)" "1" "$rc"
+done
+fresh "$T/img5"; printf '%s\n' "$(printf 'A%.0s' $(seq 1 64))" >> "$KEYS/revoked.sha256"
+verify nightly "$T/n-rotated"
+is  "a damaged list in the installed build is a refusal, not an ignored line" "revocations_malformed:20" "$(field status):$rc"
+KEYS="$PFX/share/update-keys"; STATE="$PFX/update-state"; LIST="$PFX/bin/yantrik-root-files.sha256"
+
 # ── 8. The real updater, against a real (local) web server ──────────────────────────────
 echo "  the updater against a server"
 WWW="$T/www"; mkdir -p "$WWW/nightly"
