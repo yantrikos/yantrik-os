@@ -15,7 +15,8 @@
 //!   path of an executable: any Mind can run that binary, and the one it runs is not this one.
 //! - **It restarts it** when it ends, with a pause that grows, for as long as Mind View is there.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -46,6 +47,36 @@ fn record() -> Option<Record> {
 
 fn set_record(to: Option<Record>) {
     *DESK.lock().unwrap_or_else(|p| p.into_inner()) = to;
+}
+
+/// Forget the desk recorded, but only if it is `pid`: a run that ends must not wipe the record of
+/// a desk another run has started since.
+fn clear_record_of(pid: u32) {
+    let mut held = DESK.lock().unwrap_or_else(|p| p.into_inner());
+    if held.is_some_and(|d| d.pid == pid) {
+        *held = None;
+    }
+}
+
+/// Which supervisor is the current one. Mind View restarting on the display name it had (labwc
+/// takes the first free `wayland-N`) must not leave the old supervisor running beside the new: two
+/// desks on one display, both placed by the same rules, and each ending wiping the other's record.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn is_current(generation: u64) -> bool {
+    GENERATION.load(Ordering::SeqCst) == generation
+}
+
+/// The desk's program beside the shell, or in the install directory, and nowhere else. Not on
+/// `PATH`: a runs-as-you Mind that can write a directory on it must not get its own binary started
+/// and blessed as the desk.
+fn find_desk() -> Option<PathBuf> {
+    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
+    [beside, Some(PathBuf::from("/opt/yantrik/bin"))]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join(PROGRAM))
+        .find(|p| p.is_file())
 }
 
 /// The start time a `/proc/<pid>/stat` line holds: field 22, counted after the command name, which
@@ -86,13 +117,15 @@ pub const REFUSED: &str = "this is answered only to the Mind desk the shell star
 
 /// Start the desk on `seat` and keep it running for as long as that is Mind View's display.
 pub fn supervise(seat: Seat) {
-    let Some(program) = crate::wire::dock::find_program(PROGRAM) else {
+    let Some(program) = find_desk() else {
         tracing::info!("the Mind desk is not installed beside the shell, so Mind View has no bars");
         return;
     };
+    // This is the supervisor now; any earlier one stops at its next look.
+    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let spawned = std::thread::Builder::new().name("mind-desk".into()).spawn(move || {
         let mut pause = PAUSE_FROM;
-        while crate::mind_view::display_now().as_deref() == Some(seat.wayland.as_str()) {
+        while is_current(generation) && crate::mind_view::display_now().as_deref() == Some(seat.wayland.as_str()) {
             let began = Instant::now();
             run_once(&program, &seat);
             if began.elapsed() >= RAN_LONG_ENOUGH {
@@ -101,7 +134,6 @@ pub fn supervise(seat: Seat) {
             std::thread::sleep(pause);
             pause = (pause * 2).min(PAUSE_UP_TO);
         }
-        set_record(None);
     });
     if let Err(e) = spawned {
         tracing::warn!(error = %e, "could not start the thread that keeps the Mind desk running");
@@ -127,9 +159,10 @@ fn run_once(program: &Path, seat: &Seat) {
         }
     };
     // Known only with a start time to tell it by: without one, nothing is answered to it.
-    set_record(start_time(child.id()).map(|started| Record { pid: child.id(), started }));
+    let pid = child.id();
+    set_record(start_time(pid).map(|started| Record { pid, started }));
     let ended = child.wait();
-    set_record(None);
+    clear_record_of(pid);
     tracing::info!(?ended, "the Mind desk ended");
 }
 
@@ -174,10 +207,34 @@ mod tests {
         assert_eq!(require_the_desk().unwrap_err(), REFUSED);
     }
 
+    /// Two supervisors on one display (Mind View restarting on the name it had) leave one: the
+    /// newest. And a run that ends clears its own desk's record and no other.
+    #[test]
+    fn a_restart_leaves_one_supervisor_and_a_run_clears_only_its_own_record() {
+        let first = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(is_current(first));
+        let second = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(!is_current(first), "the old one stops at its next look");
+        assert!(is_current(second));
+
+        set_record(Some(Record { pid: 900, started: 1 }));
+        clear_record_of(901);
+        assert_eq!(record(), Some(Record { pid: 900, started: 1 }), "another run's end does not wipe it");
+        clear_record_of(900);
+        assert_eq!(record(), None);
+    }
+
+    /// The desk is looked for beside the shell and in the install directory, never on `PATH`.
+    #[test]
+    fn the_desk_is_not_looked_for_on_the_path() {
+        let source = include_str!("mind_view_desk.rs").split("#[cfg(test)]").next().unwrap().to_string();
+        assert!(!source.contains("env::var_os(\"PATH\")") && !source.contains("find_program"));
+    }
+
     /// Nothing exempts by the program a process runs: the check has no path in it.
     #[test]
     fn the_check_reads_no_executable_path() {
         let source = include_str!("mind_view_desk.rs").split("#[cfg(test)]").next().unwrap().to_string();
-        assert!(!source.contains("/proc/{pid}/exe") && !source.contains("read_link") && !source.contains("current_exe"));
+        assert!(!source.contains("/proc/{pid}/exe") && !source.contains("read_link"), "the desk is told by pid and start time");
     }
 }

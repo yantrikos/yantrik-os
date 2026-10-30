@@ -157,6 +157,10 @@ fn read(args: &Value, desk: Result<(), String>) -> Result<Value, String> {
     desk?;
     let since = args.get("since").and_then(Value::as_u64);
     let wait = wait_of(args);
+    // A look, with no wait, takes no place: only a wait blocks anything.
+    if wait.is_zero() {
+        return serde_json::to_value(snapshot_after(since, wait)).map_err(|e| e.to_string());
+    }
     let work = move || {
         // A wait beyond the places there are is not a wait: it answers at once with what there is.
         let slot = Slot::take(WAITS);
@@ -165,9 +169,6 @@ fn read(args: &Value, desk: Result<(), String>) -> Result<Value, String> {
         drop(slot);
         answer
     };
-    if wait.is_zero() {
-        return work();
-    }
     control::answer_later(work).map(|()| json!({ "answering": "off the UI thread" })).or_else(|work| work())
 }
 
@@ -183,7 +184,7 @@ fn raise_card(agent: &str, name: &str) -> Result<String, String> {
     let purpose = format!(
         "Stop {name}? Its turn is ended, every command it is running is killed, and any approval it \
          waits on is withdrawn. This was asked from the Mind desk inside Mind View, where a Mind can \
-         press the button too: allow it only if you meant to stop {name}."
+         press the button too: stop it only if you meant to."
     );
     let asked = approvals::Asked {
         app: "shell",
@@ -194,19 +195,36 @@ fn raise_card(agent: &str, name: &str) -> Result<String, String> {
         target: "",
         explained: "",
     };
-    approvals::request("Mind desk", verified, asked, json!({ "agent": agent })).map(|r| r.id)
+    approvals::request_worded("Mind desk", verified, asked, json!({ "agent": agent }), desk_stop_wording()).map(|r| r.id)
+}
+
+/// The words of the desk's stop card: a one-time question with its own buttons, and an identity row
+/// that says what the shell knows and does not. Never a standing yes: no session rule may ever name
+/// `shell.stop_agent` because of a button a Mind could have pressed.
+pub fn desk_stop_wording() -> approvals::Wording {
+    approvals::Wording {
+        confirm: "Stop".to_string(),
+        decline: "Keep going".to_string(),
+        asker: "Asked from the Mind desk in Mind View \u{b7} a Mind can press that button too".to_string(),
+        once_only: true,
+    }
+}
+
+/// What the card's outcome means for a stop: `None` while it waits, and `Some(true)` only for the
+/// person's Allow. Denied, left to expire and taken back are all "no".
+fn allows(outcome: Option<(approvals::Outcome, String)>) -> Option<bool> {
+    use approvals::Outcome;
+    outcome.map(|(outcome, _)| outcome == Outcome::Allowed)
 }
 
 /// Wait, off every thread that matters, for the person's answer to the card, and act on it: only an
 /// Allow runs `stop_agent`, and the desk is told how it came out.
 fn watch(id: String, agent: String) {
     let spawned = std::thread::Builder::new().name("mind-desk-stop".into()).spawn(move || {
-        use approvals::Outcome;
         let allowed = loop {
-            match approvals::outcome(&id) {
+            match allows(approvals::outcome(&id)) {
                 None => std::thread::sleep(Duration::from_millis(500)),
-                Some((Outcome::Allowed, _)) => break true,
-                Some(_) => break false,
+                Some(allowed) => break allowed,
             }
         };
         let args = json!({ "agent": agent });
@@ -225,12 +243,27 @@ fn watch(id: String, agent: String) {
 }
 
 fn ask_stop(args: &Value, desk: Result<(), String>) -> Result<Value, String> {
+    let shown = || snapshot_now().mind.map(|m| (m.agent, m.name));
+    ask_stop_with(args, desk, stop::stops(), shown, raise_card, watch)
+}
+
+/// [`ask_stop`] with the world given: the stops, which Mind the desk shows, how a card is raised
+/// and how its answer is waited for. Nothing in here stops anything, and nothing it is given can:
+/// the stop is in [`watch`], after the person's Allow.
+fn ask_stop_with(
+    args: &Value,
+    desk: Result<(), String>,
+    stops: &stop::Stops,
+    shown: impl FnOnce() -> Option<(String, String)>,
+    raise: impl FnOnce(&str, &str) -> Result<String, String>,
+    wait_for_answer: impl FnOnce(String, String),
+) -> Result<Value, String> {
     desk?;
     let agent = args.get("agent").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty()).ok_or("`agent` is empty.")?.to_string();
-    let shown = snapshot_now().mind;
-    let name = shown.as_ref().map(|m| m.name.clone()).unwrap_or_default();
-    let id = stop::stops().ask(&agent, shown.as_ref().map(|m| m.agent.as_str()), Instant::now(), || raise_card(&agent, &name))?;
-    watch(id, agent.clone());
+    let shown = shown();
+    let name = shown.as_ref().map(|m| m.1.clone()).unwrap_or_default();
+    let id = stops.ask(&agent, shown.as_ref().map(|m| m.0.as_str()), Instant::now(), || raise(&agent, &name))?;
+    wait_for_answer(id, agent.clone());
     agents::store().poke();
     Ok(json!({ "agent": agent }))
 }
@@ -310,6 +343,96 @@ mod tests {
         // And the real check, with no desk started and no socket in a test, refuses too.
         assert!(read(&json!({}), crate::mind_view_desk::require_the_desk()).is_err());
         assert!(ask_stop(&json!({ "agent": "x" }), crate::mind_view_desk::require_the_desk()).is_err());
+    }
+
+    /// Only the person's Allow is a yes. A card denied, left to expire or taken back stops nothing.
+    #[test]
+    fn only_an_allow_is_a_yes() {
+        use approvals::Outcome;
+        assert_eq!(allows(None), None, "still waiting");
+        assert_eq!(allows(Some((Outcome::Allowed, String::new()))), Some(true));
+        for no in [Outcome::Denied, Outcome::Unanswered, Outcome::Withdrawn] {
+            assert_eq!(allows(Some((no, String::new()))), Some(false), "{no:?}");
+        }
+    }
+
+    /// Asking raises a card and waits for its answer; it stops nothing. The stopper is not even a
+    /// thing `ask_stop_with` is given.
+    #[test]
+    fn asking_for_a_stop_raises_a_card_and_stops_nothing() {
+        use std::cell::Cell;
+        let stops = stop::Stops::default();
+        let raised = Cell::new(0);
+        let waited = Cell::new(0);
+        let said = ask_stop_with(
+            &json!({ "agent": "mind:main" }),
+            Ok(()),
+            &stops,
+            || Some(("mind:main".into(), "Yantrik Mind".into())),
+            |agent, name| {
+                assert_eq!((agent, name), ("mind:main", "Yantrik Mind"));
+                raised.set(raised.get() + 1);
+                Ok("req-1".into())
+            },
+            |id, agent| {
+                assert_eq!((id.as_str(), agent.as_str()), ("req-1", "mind:main"));
+                waited.set(waited.get() + 1);
+            },
+        )
+        .expect("asked");
+        assert_eq!(said, json!({ "agent": "mind:main" }));
+        assert_eq!((raised.get(), waited.get()), (1, 1));
+
+        // Another Mind's, or none shown: no card and no wait.
+        let none = Cell::new(0);
+        for shown in [Some(("hermes:c-1".to_string(), "Hermes".to_string())), None] {
+            let err = ask_stop_with(
+                &json!({ "agent": "mind:main" }),
+                Ok(()),
+                &stop::Stops::default(),
+                || shown,
+                |_, _| {
+                    none.set(none.get() + 1);
+                    Ok("x".into())
+                },
+                |_, _| none.set(none.get() + 1),
+            );
+            assert!(err.is_err());
+        }
+        assert_eq!(none.get(), 0);
+    }
+
+    /// The wiring that keeps a stop behind the person's Allow, read from the source: `stop_agent`
+    /// is called in exactly one place, inside `watch`, after the Allow is spent, and `ask_stop`
+    /// reaches nothing that stops (no direct call, whatever it checks first, and no `NoAgent`).
+    #[test]
+    fn stop_agent_is_called_in_one_place_and_only_after_the_allow_is_spent() {
+        let source = include_str!("control_mind_desk.rs").split("#[cfg(test)]").next().unwrap();
+        let code: String = source.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        assert_eq!(code.matches("stop_agent(").count(), 1, "one call of the stop");
+        let body = |name: &str| {
+            let start = code.find(&format!("fn {name}")).unwrap_or_else(|| panic!("no fn {name}"));
+            let rest = &code[start..];
+            let end = rest[3..].find("\nfn ").map_or(rest.len(), |e| e + 3);
+            rest[..end].to_string()
+        };
+        let watch = body("watch");
+        assert!(watch.contains("stop_agent(") && watch.contains("approvals::consume("), "the stop is in watch");
+        assert!(watch.find("approvals::consume(").unwrap() < watch.find("stop_agent(").unwrap(), "after the Allow is spent");
+        assert!(watch.contains("allows(approvals::outcome"), "and what decides it is the card's outcome");
+        for asking in [body("ask_stop"), body("ask_stop_with"), body("raise_card")] {
+            assert!(!asking.contains("stop_agent(") && !asking.contains("NoAgent") && !asking.contains("stop_on"), "{asking}");
+        }
+    }
+
+    /// The card is a one-time question in its own words, and offers no standing yes.
+    #[test]
+    fn the_stop_card_is_one_time_and_says_stop_and_keep_going() {
+        let words = desk_stop_wording();
+        assert_eq!((words.confirm.as_str(), words.decline.as_str()), ("Stop", "Keep going"));
+        assert!(words.once_only);
+        assert!(words.asker.contains("Mind desk") && words.asker.contains("a Mind can press"), "{}", words.asker);
+        assert!(!words.asker.contains("recipe"), "it is not a recipe step");
     }
 
     #[test]

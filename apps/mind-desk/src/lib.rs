@@ -1,11 +1,11 @@
 //! Yantrik Mind desk, on YantrikApp (#1023, phase 1): the bars around Mind View's apps.
 //!
 //! Mind View is a second labwc, nested, in which the apps a Mind opens are drawn. This app runs
-//! inside it, started by its startup script, and draws two windows the nested compositor keeps
-//! above and below the apps (config/labwc-mind/rc.xml): above, the Mind's name and state, what it
-//! says it is doing (quoted, marked Reported), Stop… and Open in Agents, and the tool it is
-//! running with who vouches for it and the counts of its run; below, the apps open, how the Mind
-//! is housed (its own account or the person's), and the model it says it runs.
+//! inside it, started by the shell itself (not by the compositor's startup script), and draws two
+//! windows the nested compositor keeps above and below the apps (config/labwc-mind/rc.xml): above,
+//! the Mind's name and state, the tool it is running, Stop… and Open in Agents, and the tool's
+//! mark and the counts of its run; below, the apps open, how the Mind is housed (its own account or
+//! the person's), and the model it says it runs.
 //!
 //! # Why two windows
 //!
@@ -15,11 +15,17 @@
 //! # What it is told, and what it may do
 //!
 //! A Mind acting in Mind View can read this window and press its buttons, so the desk is built
-//! for that. It reads one thing from the shell (`mind_desk`: display-safe fields only, answered
-//! to the person's processes), waiting on a socket for a change and never on a timer; and it asks
-//! two things of it, `stop_agent` (a Mind stopping itself is harmless) and `show_workroom` (the
-//! person's Agents screen). There is no way here to approve, deny, grant, take over or hand back,
-//! and `yantrik_services::mind_desk::MindDeskApi` is where that is held to a list.
+//! for that:
+//!
+//! - It is told display-safe fields only (`mind_desk`), never what a Mind says it is doing, which
+//!   is withheld from every other Mind and this is a window they all read. It waits on a socket
+//!   for a change and never on a timer.
+//! - It stops nothing. Stop… asks the shell, which asks the *person* on their own desktop, and
+//!   only the person's Allow there stops the Mind. Open in Agents asks the shell to put up the
+//!   person's screen, which it does only while Mind View is in front, and rarely.
+//! - The shell answers all three only to this one process, which it started and knows by pid and
+//!   start time. There is no way here to approve, deny, grant, take over or hand back, and
+//!   `yantrik_services::mind_desk::MindDeskApi` is where that is held to a list.
 //!
 //! # How it is put together
 //!
