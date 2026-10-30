@@ -1,0 +1,21 @@
+[package]
+name = "yantrik-bench"
+version = "0.1.0"
+edition = "2021"
+description = "The Bench: what the desktop holds, where each thing sits, its thumbnails, and moving it to the archive"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+# png and jpeg only: the two formats a thumbnail is cut from. No default features, so no
+# codec this desktop does not use is linked in (crates/yantrik-ocr and apps/studio do the same).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# renameat2(RENAME_NOREPLACE): the archive must never land on top of something already there.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+png = "0.18"

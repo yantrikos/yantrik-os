@@ -1070,6 +1070,9 @@ pub fn publish(
                 .with("private", crate::private_mode::is_on())
                 // The theme in use and the ones to choose from (`set_theme`).
                 .with("theme", crate::wire::theme::for_describe(ui.get_settings_theme().as_str()))
+                // The desktop's icons: names, kinds and places, never what is in a file (`desktop_place`,
+                // `desktop_archive`). See `bench::describe`.
+                .with("desktop", crate::bench::describe::for_describe())
                 .with("settings", crate::control_settings::section(&ui, screen))
         }
     };
@@ -2243,6 +2246,8 @@ pub fn publish(
     let surface = crate::control_levels_actions::actions(surface, ui);
     // The desktop's theme: set_theme. See `control_theme`.
     let surface = crate::control_theme::actions(surface, ui);
+    // The desktop's icons: desktop_place and desktop_archive, both sensitive. See `control_bench`.
+    let surface = crate::control_bench::actions(surface, ui);
     // The network mark's popover as data: set_wifi, disconnect_network, connect_wifi. See
     // `control_network`, which also says why no action there takes a password.
     let surface = crate::control_network::actions(surface, ui);

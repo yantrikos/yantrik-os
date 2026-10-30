@@ -1,0 +1,163 @@
+// The Bench: the desktop's icons, where the person put them.
+//
+// This draws and reports. Where an icon sits, what a click or a key means and what a menu offers
+// are Rust's (crates/yantrik-ui/src/bench), reached through BenchState. It is a plain desktop
+// first: click selects, Ctrl-click adds, a band selects what it crosses, a drag moves, double-click
+// opens, right-click asks.
+//
+// It redraws when the model changes or a pointer moves with a button down, and not otherwise:
+// no timer, no animation, nothing blurred.
+import { Theme } from "theme.slint";
+import { BenchItem, BenchState } from "bench_state.slint";
+import { BenchIcon } from "bench_icon.slint";
+
+export component Bench inherits Rectangle {
+    // What the Minds panel covers at the right edge: the grid is laid out in the rest.
+    in property <length> reserve-right: 0px;
+    property <bool> band-on: false;
+    property <bool> band-ctrl: false;
+    property <length> band-x0;
+    property <length> band-y0;
+    property <length> band-x1;
+    property <length> band-y1;
+    // Where the dragged icon would land, when it snaps: the cell nearest where it is now.
+    property <length> hint-x: max(BenchState.pad-x, min(BenchState.pad-x + round((BenchState.drag-x0 + BenchState.drag-dx - BenchState.pad-x) / BenchState.cell-w) * BenchState.cell-w, root.width - BenchState.cell-w));
+    property <length> hint-y: max(BenchState.pad-y, min(BenchState.pad-y + round((BenchState.drag-y0 + BenchState.drag-dy - BenchState.pad-y) / BenchState.cell-h) * BenchState.cell-h, root.height - BenchState.cell-h));
+
+    changed width => { BenchState.area-changed(self.width, self.height, self.reserve-right); }
+    changed height => { BenchState.area-changed(self.width, self.height, self.reserve-right); }
+    changed reserve-right => { BenchState.area-changed(self.width, self.height, self.reserve-right); }
+    init => { BenchState.area-changed(self.width, self.height, self.reserve-right); }
+
+    function key-name(text: string) -> string {
+        if text == Key.Return { return "enter"; }
+        if text == Key.F2 { return "f2"; }
+        if text == Key.Delete { return "delete"; }
+        if text == Key.Escape { return "escape"; }
+        if text == Key.UpArrow { return "up"; }
+        if text == Key.DownArrow { return "down"; }
+        if text == Key.LeftArrow { return "left"; }
+        if text == Key.RightArrow { return "right"; }
+        if text == "a" || text == "A" { return "a"; }
+        return "";
+    }
+
+    keys := FocusScope {
+        key-pressed(e) => {
+            let name = root.key-name(e.text);
+            if (name != "" && BenchState.key(name, e.modifiers.control, e.modifiers.shift)) { return accept; }
+            reject
+        }
+    }
+
+    // The bare desktop: a press clears the selection and starts a band; a right-click asks.
+    bare := TouchArea {
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
+                keys.focus();
+                BenchState.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            } else if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                keys.focus();
+                BenchState.drag-id = "";
+                BenchState.background-pressed(e.modifiers.control);
+                root.band-on = true;
+                root.band-ctrl = e.modifiers.control;
+                root.band-x0 = self.mouse-x;
+                root.band-y0 = self.mouse-y;
+                root.band-x1 = self.mouse-x;
+                root.band-y1 = self.mouse-y;
+            } else if (e.button == PointerEventButton.left && e.kind == PointerEventKind.up) {
+                if (root.band-on && (abs((root.band-x1 - root.band-x0) / 1px) > 3 || abs((root.band-y1 - root.band-y0) / 1px) > 3)) {
+                    BenchState.rubber-band(min(root.band-x0, root.band-x1), min(root.band-y0, root.band-y1), abs(root.band-x1 - root.band-x0), abs(root.band-y1 - root.band-y0), root.band-ctrl);
+                }
+                root.band-on = false;
+            }
+        }
+        moved => {
+            if (root.band-on) {
+                root.band-x1 = max(0px, min(self.mouse-x, root.width));
+                root.band-y1 = max(0px, min(self.mouse-y, root.height));
+            }
+        }
+    }
+
+    if BenchState.show-icons : Rectangle {
+        // Where a dragged icon will land, when the desktop snaps.
+        if BenchState.drag-id != "" && BenchState.snap : Rectangle {
+            x: root.hint-x;
+            y: root.hint-y;
+            width: BenchState.cell-w;
+            height: BenchState.cell-h;
+            border-radius: Theme.r-lg;
+            border-width: 2px;
+            border-color: Theme.accent;
+            background: Theme.accent.transparentize(0.88);
+        }
+
+        for it in BenchState.items : BenchIcon {
+            x: it.x;
+            y: it.y;
+            item: it;
+            dx: BenchState.drag-id != "" && it.selected ? BenchState.drag-dx : 0px;
+            dy: BenchState.drag-id != "" && it.selected ? BenchState.drag-dy : 0px;
+            dragging: BenchState.drag-id != "" && it.selected;
+            pressed(ctrl) => {
+                keys.focus();
+                BenchState.select(it.id, ctrl);
+            }
+            released(did-drag, ctrl) => {
+                if (did-drag) {
+                    BenchState.move-items(it.id, BenchState.drag-dx, BenchState.drag-dy);
+                    BenchState.drag-id = "";
+                    BenchState.drag-dx = 0px;
+                    BenchState.drag-dy = 0px;
+                } else {
+                    BenchState.click-released(it.id, ctrl);
+                }
+            }
+            dragged(ddx, ddy) => {
+                if (BenchState.drag-id == "") {
+                    BenchState.drag-id = it.id;
+                    BenchState.drag-x0 = it.x;
+                    BenchState.drag-y0 = it.y;
+                }
+                BenchState.drag-dx = ddx;
+                BenchState.drag-dy = ddy;
+            }
+            opened => { BenchState.open-item(it.id); }
+            menu(mx, my) => {
+                keys.focus();
+                BenchState.item-menu(it.id, mx, my);
+            }
+            renamed(text) => {
+                BenchState.rename-commit(it.id, text);
+                keys.focus();
+            }
+            rename-cancelled => {
+                BenchState.rename-cancel();
+                keys.focus();
+            }
+        }
+    }
+
+    // The band: a flat translucent fill and a 1px edge, drawn only while the button is down.
+    if root.band-on : Rectangle {
+        x: min(root.band-x0, root.band-x1);
+        y: min(root.band-y0, root.band-y1);
+        width: abs(root.band-x1 - root.band-x0);
+        height: abs(root.band-y1 - root.band-y0);
+        background: Theme.accent.transparentize(0.84);
+        border-width: 1px;
+        border-color: Theme.accent;
+    }
+
+    if BenchState.problem != "" : Text {
+        x: BenchState.pad-x;
+        y: BenchState.pad-y;
+        width: parent.width - 2 * BenchState.pad-x;
+        text: BenchState.problem;
+        color: Theme.label-on-wallpaper;
+        font-size: Theme.fs-caption;
+        wrap: word-wrap;
+    }
+}

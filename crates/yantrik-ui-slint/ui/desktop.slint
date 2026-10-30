@@ -39,6 +39,8 @@ import { CommandPalette, CommandItem } from "components/command_palette.slint";
 import { MorningBriefCard, BriefSection } from "components/morning_brief.slint";
 
 import { YContextMenu } from "components/y_context_menu.slint";
+import { Bench } from "components/bench.slint";
+import { BenchState } from "components/bench_state.slint";
 
 export component DesktopScreen inherits Rectangle {
     // Status bar state
@@ -207,11 +209,10 @@ export component DesktopScreen inherits Rectangle {
     callback first-run-chat-done();
     callback first-run-chat-retry();
 
-    // The desktop's right-click menu.
-    //
-    // Every entry dispatches through `launch-app`, the same callback the desktop icons and the
-    // dock already use, so the menu cannot drift away from what clicking an icon does and needs
-    // no wiring of its own on the Rust side.
+    // The desktop's right-click menu, and the icons' menu, are the Bench's: Rust builds the rows
+    // (crates/yantrik-ui/src/bench/menu.rs) and answers the click through BenchState. The older
+    // five entries (Terminal, Files, All Apps, Devices, Settings) are still in it; they still go
+    // out through `launch-app`, from Rust, so a click on one cannot differ from the dock's.
     // The work rail yields to the working area on laptop and compact displays.
     property <bool> show-work-rail: root.width >= 1360px && (root.active-project != "" || root.lens-recents.length > 0);
     // The centre column: 860 wide, centred in what the mind panel leaves; or, beside the work
@@ -223,13 +224,13 @@ export component DesktopScreen inherits Rectangle {
     // that draws this screen (tests/ui-preview), not only by eye.
     out property <length> home-right-edge: root.agent-mode ? root.width - root.content-right
         : (root.width - root.home-inset + min(760px, root.width - root.home-inset - 48px)) / 2;
+    // Where the Bench starts: under the home, which ends where its content ends. A test that draws
+    // this screen finds the icons by it (tests/ui-preview/src/bench_tests.rs).
+    out property <length> bench-top: home.y + home.content-height + 8px;
     out property <length> lens-left-edge: root.width - lens.panel-width - Theme.chat-panel-gap;
     property <length> content-left: root.show-work-rail ? 316px : max(24px, (root.width - root.right-inset - 860px) / 2);
     property <length> content-right: root.right-inset + (root.show-work-rail ? 4px : root.content-left);
 
-    property <bool> desktop-menu-open: false;
-    property <length> desktop-menu-x: 0;
-    property <length> desktop-menu-y: 0;
     callback navigate-to(int);
     callback lens-query(string);
     callback lens-submit(string);
@@ -345,21 +346,19 @@ export component DesktopScreen inherits Rectangle {
 
         // ── The desktop's own right-click ──
         //
-        // There was none, anywhere: YContextMenu has existed in the kit the whole time and was
-        // never once instantiated. And the compositor's root menu cannot stand in for it, because
-        // the shell is a fullscreen window — labwc's root is underneath it and unreachable, so a
-        // right click anywhere on the desktop lands here and, until now, on nothing.
+        // The compositor's root menu cannot stand in for one, because the shell is a fullscreen
+        // window: labwc's root is underneath it and unreachable, so a right click anywhere on the
+        // desktop lands here. Everyday mode's Bench has a bare-desktop target of its own over the
+        // icon area; this one is for the rest of the screen and for agent mode, which has no icons.
         //
-        // Placed before the icons and the orb so those stay on top and keep their left clicks;
-        // this only ever sees what they do not take.
+        // Placed before the home and the Bench so those stay on top and keep their clicks; this
+        // only ever sees what they do not take.
         TouchArea {
             width: 100%;
             height: 100%;
             pointer-event(e) => {
                 if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
-                    root.desktop-menu-x = self.mouse-x;
-                    root.desktop-menu-y = self.mouse-y;
-                    root.desktop-menu-open = true;
+                    BenchState.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
                 }
             }
         }
@@ -368,30 +367,35 @@ export component DesktopScreen inherits Rectangle {
         // used to be two designs (a different search field, different pin tiles, different
         // spacing; the agent one lived here, 380 lines of it). Agent mode only adds what the mind
         // proposes and the day-one card, and sits in the centre column the work rail leaves.
-        if !root.focus-mode : DesktopHome {
+        home := DesktopHome {
+            visible: !root.focus-mode;
             // Centred in what the mind panel, or the open chat, leaves, not under it: with the
             // chat open over its right side the home card's "Open companion" was cut to "Open
             // companio" (13 Oct).
             // Up and to the left, over the quiet sky (art direction B: x 96, y 112, 560 wide at 1280x800).
+            // Everyday mode starts higher and ends where its content ends: the Bench is under it.
             x: root.agent-mode ? root.content-left : min(96px, parent.width * 0.075);
-            y: root.agent-mode ? Theme.sp-4 + 4px : (parent.height < 720px ? 48px : 76px);
+            y: root.agent-mode ? Theme.sp-4 + 4px : (parent.height < 720px ? 36px : 52px);
             width: root.agent-mode ? max(0px, parent.width - root.content-left - root.content-right)
-                                   : min(560px, parent.width - root.home-inset - self.x - 24px);
-            height: max(0px, parent.height - self.y - Theme.taskbar-height - 24px);
+                                   : max(0px, min(720px, parent.width - root.home-inset - self.x - 24px));
+            height: root.agent-mode ? max(0px, parent.height - self.y - Theme.taskbar-height - 24px)
+                                    : min(self.content-height, max(0px, parent.height - self.y - Theme.taskbar-height - 24px));
             agent-mode: root.agent-mode;
             greeting: root.greeting-text;
             date: root.date-text;
             mind-name: root.active-harness-name;
             online: root.companion-online;
             pins: root.dock-items;
-            recents: root.lens-recents;
+            has-continue: BenchState.has-continue;
+            continue-title: BenchState.continue-title;
+            continue-subtitle: BenchState.continue-subtitle;
             urges: root.urges;
             has-windows: root.window-list.length > 0;
             send-message(text) => { root.send-message(text); }
             search => { root.lens-open = true; root.open-lens(); }
             all-apps => { root.app-grid-open = true; }
             launch(id) => { root.launch-app(id); }
-            open-recent(id) => { root.lens-result-selected(id); }
+            open-continue => { BenchState.continue-open(); }
             configure-mind => {
                 if root.companion-online {
                     root.lens-open = true;
@@ -400,6 +404,21 @@ export component DesktopScreen inherits Rectangle {
                     root.active-mind-clicked();
                 }
             }
+        }
+
+        // ── The Bench: the person's icons ──
+        //
+        // Everyday mode only. Agent mode is the machine's desk and has no icons; its right-click is
+        // the TouchArea above. The Bench is under the home (which ends where its content ends),
+        // above the dock, and as wide as the screen; what the Minds panel covers at the right it
+        // reserves, so the grid is laid out in what is left (crates/yantrik-bench/src/layout.rs)
+        // rather than hiding an icon under the panel.
+        if !root.agent-mode && !root.focus-mode : Bench {
+            x: 0px;
+            y: root.bench-top;
+            width: parent.width;
+            height: max(0px, parent.height - self.y - Theme.taskbar-height - 24px);
+            reserve-right: root.home-inset;
         }
 
         // ── Working set (left rail, hidden in focus mode) ──
@@ -628,16 +647,17 @@ export component DesktopScreen inherits Rectangle {
 
     // ── Layer 2.7: Morning Brief Card (floating, upper-left) ──
     MorningBriefCard {
-        // Where there is actually nothing.
+        // Where it covers the least.
         //
-        // "In agent mode there are no icons, so it keeps its corner" was true when it was
-        // written and stopped being true the moment agent mode grew a working-set rail in that
-        // corner. The card then sat on top of PROJECT and RECENT *and* across the hero, with
-        // three layers of text overlapping in the same 400 pixels.
+        // Agent mode has no icons but has a working-set rail in the corner this card used to take,
+        // and the card then sat on top of PROJECT and RECENT *and* across the hero, with three
+        // layers of text overlapping in the same 400 pixels. So there it is the foot of the centre
+        // column, above the taskbar: clear of both rails and the hero, and where a transient card
+        // belongs, since it is an announcement and not part of the layout.
         //
-        // Agent mode: the foot of the centre column, above the taskbar. Clear of both rails,
-        // clear of the hero, and where a transient card belongs — it is an announcement, not
-        // part of the layout.
+        // Everyday mode: the top right, over whatever icons the Bench has there until it is
+        // dismissed. The icons do not move out of its way: a desktop that rearranges itself for a
+        // greeting is not one the person can find things on.
         x: root.agent-mode ? 296px + Theme.sp-5 : parent.width - root.right-inset - self.width - 24px;
         y: root.agent-mode
             ? parent.height - Theme.taskbar-height - self.height - Theme.sp-4
@@ -715,24 +735,24 @@ export component DesktopScreen inherits Rectangle {
 
     // Last in the file so it draws over the icons, the orb and the taskbar. A menu that opened
     // underneath the thing it was summoned from would be worse than no menu.
-    if root.desktop-menu-open : YContextMenu {
+    //
+    // One menu for the bare desktop and for an icon; Rust decides the rows from what was clicked.
+    if BenchState.menu-open : YContextMenu {
         open: true;
         // Kept inside the screen when summoned near an edge: the panel is 220px wide and each
         // row is 32px, so a click in the bottom-right corner would otherwise open a menu mostly
         // off-screen.
-        menu-x: min(root.desktop-menu-x, root.width - 232px);
-        menu-y: min(root.desktop-menu-y, root.height - 200px);
-        actions: [
-            { id: "terminal", label: "Open Terminal" },
-            { id: "files", label: "Open Files", separator-after: true },
-            { id: "launchpad", label: "All Apps" },
-            { id: "devices", label: "Devices", separator-after: true },
-            { id: "settings", label: "Settings" },
-        ];
-        action-clicked(id) => {
-            root.desktop-menu-open = false;
-            root.launch-app(id);
+        menu-x: max(0px, min(BenchState.menu-x, root.width - 232px));
+        menu-y: max(0px, min(BenchState.menu-y, root.height - (BenchState.menu-rows.length * 32px + 12px)));
+        actions: BenchState.menu-rows;
+        action-clicked(id) => { BenchState.menu-action(id); }
+        // A row that opens a submenu swaps the rows and asks to stay open (menu-keep).
+        close-menu => {
+            if (BenchState.menu-keep) {
+                BenchState.menu-keep = false;
+            } else {
+                BenchState.menu-open = false;
+            }
         }
-        close-menu => { root.desktop-menu-open = false; }
     }
 }
