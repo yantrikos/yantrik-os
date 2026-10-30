@@ -211,6 +211,22 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
   install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
     || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
+  # The check the updater runs on the release manifest before it reads a field of it (#537),
+  # and the public keys it trusts. Beside the updater, in the root-owned bin/ and share/, so
+  # nothing the desktop's account can write decides who may sign an update. A build with no
+  # nightly key would leave every machine that installs it unable to update from nightly, so it
+  # stops here: the keys are made with update-keys/new-key.sh and committed as <scope>.<id>.pub.
+  install -m 0755 "$SCRIPT_DIR/yantrik-update-verify" "$ROOT/bin/yantrik-update-verify" \
+    || fail "no yantrik-update-verify: the updater would refuse every update it was offered"
+  mkdir -p "$ROOT/share/update-keys"
+  for pub in "$SCRIPT_DIR"/update-keys/*.pub; do
+    [ -f "$pub" ] || continue
+    openssl pkey -pubin -in "$pub" -noout >/dev/null 2>&1 || fail "$pub is not a public key"
+    install -m 0644 "$pub" "$ROOT/share/update-keys/$(basename "$pub")"
+  done
+  compgen -G "$ROOT/share/update-keys/nightly.*.pub" >/dev/null \
+    || fail "no deploy/yantrik-os/update-keys/nightly.<id>.pub: machines that install this build could not verify a nightly update. Make one with update-keys/new-key.sh"
+  echo "   + yantrik-update-verify, share/update-keys ($(ls "$ROOT/share/update-keys" | tr '\n' ' '))"
 else
   echo "   (no yantrik-update script found — image will not self-update)"
 fi
@@ -643,6 +659,27 @@ if [ -n "${PUBLISH_CHANNEL:-}" ]; then
   ssh $SSH_OPTS "root@$RELEASES_IP" \
     "cd $REMOTE && ln -sf '$BASE' 'yantrik-os-latest-linux-amd64.$EXT' && ln -sf '$BASE.sha256' 'yantrik-os-latest-linux-amd64.$EXT.sha256'" \
     || fail "could not update the latest pointer"
+
+  # The signed manifest (#537), which is the one a current updater believes. It is signed
+  # here, with a key from the environment, and stored beside the bundle; the unsigned manifest
+  # below stays for the machines whose updater predates the signature and reads nothing else.
+  # No key, no publish: this never leaves a release a signed updater would refuse.
+  SIGN_KEY_ARGS=()
+  if [ -n "${UPDATE_SIGNING_KEY_FILE:-}" ]; then
+    SIGN_KEY_ARGS=(--key-file "$UPDATE_SIGNING_KEY_FILE")
+  elif [ "$PUBLISH_CHANNEL" = nightly ] && [ -n "${UPDATE_SIGNING_KEY_NIGHTLY:-}" ]; then
+    SIGN_KEY_ARGS=(--key-env UPDATE_SIGNING_KEY_NIGHTLY)
+  else
+    fail "no signing key for $PUBLISH_CHANNEL: set UPDATE_SIGNING_KEY_FILE to the key's path (nightly may use UPDATE_SIGNING_KEY_NIGHTLY). Nothing was published unsigned."
+  fi
+  SIGNED_MANIFEST="$(mktemp)"
+  "$SCRIPT_DIR/sign-manifest.sh" --channel "$PUBLISH_CHANNEL" --version "$VERSION" --git "$GITREV" \
+    --artifact "$BASE" --sha256 "$(cut -d' ' -f1 < "$TARBALL.sha256")" --binaries "${#BINS[@]}" \
+    "${SIGN_KEY_ARGS[@]}" --out "$SIGNED_MANIFEST" || { rm -f "$SIGNED_MANIFEST"; fail "could not sign the manifest"; }
+  scp $SSH_OPTS "$SIGNED_MANIFEST" "root@$RELEASES_IP:$REMOTE/release.signed.new" \
+    && ssh $SSH_OPTS "root@$RELEASES_IP" "mv '$REMOTE/release.signed.new' '$REMOTE/release.signed'" \
+    || { rm -f "$SIGNED_MANIFEST"; fail "could not upload the signed manifest"; }
+  rm -f "$SIGNED_MANIFEST"
 
   # The manifest is what a machine reads to answer "is there something newer than me".
   # Updated in place so the other channels keep whatever they were pointing at.

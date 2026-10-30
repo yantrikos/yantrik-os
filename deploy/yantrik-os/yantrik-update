@@ -39,13 +39,26 @@
 # answer "up to date" because every failure path in it returned the success value.
 #
 # check exits: 0 up to date · 10 update available · 11 channel not published · 12 server
-# unreachable · 13 this machine is ahead of the channel · 1 anything else. The porcelain
-# `result=` line says the same thing in words; both are emitted so neither has to be inferred
+# unreachable · 13 this machine is ahead of the channel · 14 the server's update information
+# was refused (not signed by Yantrik, expired, replayed; `result=unverified`) · 1 anything
+# else. The porcelain `result=` line says the same thing in words; both are emitted so neither has to be inferred
 # from the other.
 #
 # 13 is not a failure and not 0 either: there is nothing to install, but "up to date" would say
 # this machine is on the channel's build, and it is not — it is past it. A caller that only
 # reads exit codes sees "no update to apply", which is the true part.
+
+# ── The manifest is signed, and nothing is read from it until the signature is checked ──
+#
+# Everything this script installs as root is chosen by one file on the release server, so that
+# file is signed (#537): `/<channel>/release.signed`, checked by yantrik-update-verify against
+# the public keys in share/update-keys, which are root's. A nightly key signs only the nightly
+# channel; beta and stable have their own. The file carries a serial that only rises and an
+# expiry. A file that is unsigned, badly signed, signed for another channel, expired or older
+# than one already accepted is refused with a sentence, the last good one is kept, and there is
+# no fallback to the old unsigned /manifest.json. `rollback`, which restores a build already on
+# this disk, asks the server nothing and is not affected. `check` exits 14 (result=unverified)
+# for a refusal.
 
 set -uo pipefail
 
@@ -68,6 +81,11 @@ SHARE_DIR="$PREFIX/share"
 BUILD_FILE="$PREFIX/BUILD"
 UPDATES_DIR="$PREFIX/updates"
 BACKUP_DIR="$PREFIX/backups"
+# The signed-manifest check (#537): its code beside this script, the public keys the bundle
+# ships (root's, like everything else root trusts), and the last serial accepted per channel.
+VERIFY="$(dirname "$SELF_PATH")/yantrik-update-verify"
+UPDATE_KEYS_DIR="$SHARE_DIR/update-keys"
+UPDATE_STATE_DIR="$PREFIX/update-state"
 CONF="$PREFIX/update.conf"
 # The systemd unit that owns the desktop session.
 SESSION_UNIT="${YANTRIK_SESSION_UNIT:-yantrik-session.service}"
@@ -212,35 +230,93 @@ has_porcelain() {
 # expanding a shell variable inside it is how you ship a malformed request.
 #
 # Prints KEY=value lines, `status=` first, and exits 0 ok / 11 not published / 12 unreachable.
+#
+# ── Signed (#537) ──
+#
+# What it reads is `/<channel>/release.signed`, one file, fetched to disk and handed to
+# yantrik-update-verify before any of it is parsed. The result is the verifier's: `status=ok`
+# and the fields of a manifest that was signed for this channel, is unexpired and not older
+# than the last one accepted, or `status=unverified` with `detail=` a sentence for a person and
+# `why=` the verifier's own word for it. The unsigned /manifest.json is read for one thing only:
+# telling a channel nobody published to (11) from one published without a signature (an old
+# server, or someone's file), which is refused like any other unsigned file. It is never
+# believed. A second argument `commit` (apply, as root) records the accepted serial.
+#
+# Exits 0 ok / 11 not published / 12 unreachable / 20 refused.
 channel_probe() {
-  YANTRIK_UPDATE_HOST="$HOST" YANTRIK_UPDATE_SCHEME="$SCHEME" \
-  python3 -I - "$1" <<'PY'
-import sys, os, json, urllib.request
-channel = sys.argv[1]
+  local tmp fetched fstatus rc=0 out
+  tmp="$(mktemp)" || { printf 'status=unreachable\ndetail=no scratch space for the update information\n'; return 12; }
+  fetched="$(YANTRIK_UPDATE_HOST="$HOST" YANTRIK_UPDATE_SCHEME="$SCHEME" \
+  python3 -I - "$1" "$tmp" <<'PY'
+import sys, os, json, urllib.request, urllib.error
+channel, dest = sys.argv[1], sys.argv[2]
 host = os.environ.get("YANTRIK_UPDATE_HOST", "releases.yantrikos.com")
 scheme = os.environ.get("YANTRIK_UPDATE_SCHEME", "https")
-# One URL. The second entry here used to be a literal private address on the author's LAN,
+# One host. The second entry here used to be a literal private address on the author's LAN,
 # tried on every machine this OS was ever installed on; see the note beside HOST_DEFAULT.
+def get(path, limit):
+    with urllib.request.urlopen(f"{scheme}://{host}{path}", timeout=10) as r:
+        data = r.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("the answer is larger than any update information should be")
+    return data
 try:
-    with urllib.request.urlopen(f"{scheme}://{host}/manifest.json", timeout=10) as r:
-        m = json.load(r)
+    data = get(f"/{channel}/release.signed", 65536)
+    open(dest, "wb").write(data)
+    print("fetch=ok")
+except urllib.error.HTTPError as e:
+    if e.code not in (403, 404):
+        print("fetch=unreachable")
+        print(("detail=" + f"HTTP {e.code}")[:200])
+        sys.exit(0)
+    # Nothing signed there. Is that a channel nobody published to, or one published unsigned?
+    try:
+        channels = json.loads(get("/manifest.json", 1 << 20)).get("channels") or {}
+    except Exception as e2:
+        print("fetch=unreachable")
+        print(("detail=" + str(e2).replace("\n", " "))[:200])
+        sys.exit(0)
+    if isinstance(channels.get(channel), dict) and channels.get(channel):
+        print("fetch=unsigned")
+    else:
+        print("fetch=missing")
+        print("published=" + ",".join(sorted(str(k) for k in channels)))
 except Exception as e:
-    print("status=unreachable")
+    print("fetch=unreachable")
     print(("detail=" + str(e).replace("\n", " "))[:200])
-    sys.exit(12)
-channels = m.get("channels") or {}
-ch = channels.get(channel)
-if not isinstance(ch, dict) or not ch:
-    print("status=not_published")
-    print("published=" + ",".join(sorted(str(k) for k in channels)))
-    sys.exit(11)
-print("status=ok")
-for f in ("version", "git", "artifact", "sha256", "date"):
-    v = ch.get(f, "")
-    if v != "":
-        print(f"{f}={str(v)}")
-sys.exit(0)
 PY
+  )"
+  fstatus="$(probe_field "$fetched" fetch)"
+  case "$fstatus" in
+    ok) ;;
+    unsigned) : > "$tmp" ;;   # the verifier turns an empty file into the plain sentence
+    missing)
+      rm -f "$tmp"
+      printf 'status=not_published\npublished=%s\n' "$(probe_field "$fetched" published)"
+      return 11 ;;
+    *)
+      rm -f "$tmp"
+      printf 'status=unreachable\ndetail=%s\n' "$(probe_field "$fetched" detail)"
+      return 12 ;;
+  esac
+  local args=(verify --channel "$1" --source "$HOST" --keys "$UPDATE_KEYS_DIR" --state "$UPDATE_STATE_DIR")
+  [ "${2:-}" = commit ] && args+=(--commit)
+  if [ -x "$VERIFY" ]; then
+    out="$("$VERIFY" "${args[@]}" "$tmp")" || rc=$?
+  else
+    out="status=no_verifier
+detail=This updater is missing its signature check ($VERIFY), so it cannot trust any update information and nothing was installed."
+    rc=20
+  fi
+  rm -f "$tmp"
+  if [ "$rc" = 0 ] && [ "$(probe_field "$out" status)" = ok ]; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  # Anything but a clean accept is a refusal. A verifier that died without a word is one too.
+  printf 'status=unverified\nwhy=%s\ndetail=%s\n' "$(probe_field "$out" status)" \
+    "$(probe_field "$out" detail | grep . || echo "The update information from $HOST could not be verified, so nothing was installed.")"
+  return 20
 }
 
 # One field out of a channel_probe result. $1 = the whole result, $2 = the key.
@@ -455,6 +531,12 @@ cmd_check() {
       reason="channel '$CHANNEL' is not published — the server has nothing on it"
       [ -n "$published" ] && reason="$reason (published: $published)"
       ;;
+    unverified)
+      # Refused, not failed: the server answered and what it said cannot be believed. The
+      # sentence is the verifier's; "up to date" would be a lie and "unreachable" another.
+      result="unverified"; code=14
+      reason="$detail"
+      ;;
     ok)
       decision="$(decide_check "$local_git" "$local_ver" "$remote_git" "$remote_ver" "$CHANNEL")"
       result="$(probe_field "$decision" result)"
@@ -490,7 +572,7 @@ cmd_check() {
 
   say "Checking channel '$CHANNEL' on $HOST"
   case "$result" in
-    unreachable|not_published|error)
+    unreachable|not_published|unverified|error)
       warn "$reason"
       return "$code"
       ;;
@@ -750,12 +832,13 @@ cmd_apply() {
   # One request for the whole channel entry, rather than four requests for four fields of it.
   # Four requests could also see four different manifests if the publisher was mid-upload.
   local probe pstatus remote_git remote_ver artifact remote_sha
-  probe="$(channel_probe "$CHANNEL")"
+  probe="$(channel_probe "$CHANNEL" commit)"
   pstatus="$(probe_field "$probe" status)"
   case "$pstatus" in
     ok) ;;
     not_published) fail "channel '$CHANNEL' is not published — there is nothing to install \
 from it. Change it with: yantrik-update set-channel nightly" ;;
+    unverified) fail "$(probe_field "$probe" detail)" ;;
     *) fail "cannot reach $HOST over $SCHEME — $(probe_field "$probe" detail)" ;;
   esac
   remote_ver="$(probe_field "$probe" version)"
@@ -2239,7 +2322,7 @@ source_is_roots() {
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
 # from before a capability was required.
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -6977,7 +7060,8 @@ usage() {
     "  selftest                                  offline checks, no network" \
     "" \
     "check exits 0 up to date · 10 update available · 11 channel not published ·" \
-    "12 server unreachable · 13 this machine is ahead of the channel · 1 anything else."
+    "12 server unreachable · 13 this machine is ahead of the channel · 14 update information not" \
+    "verified (unsigned, wrongly signed, expired or older than one already accepted) · 1 anything else."
 }
 
 # ── dispatch ────────────────────────────────────────────────────────────────────────────
