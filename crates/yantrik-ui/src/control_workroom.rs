@@ -104,6 +104,8 @@ fn read_back(asked: &Asked, page: &str, narrowed: &str, on_screen: bool, raised:
 pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     let ui = ui.as_weak();
     surface.action(spec(), move |args| {
+        // The Workroom is a screen of the person's shell (#1033).
+        crate::shell_view::refuse_for_mind("the workroom")?;
         let asked = asked(args, &crate::wire::agents::workroom_minds_now())?;
         // Raising the shell moves the person's view: held while a card waits, like every act that does.
         crate::card_watch::hold_windows("show_workroom")?;

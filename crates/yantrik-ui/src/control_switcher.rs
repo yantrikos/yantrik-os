@@ -162,6 +162,8 @@ fn republish(weak: &Weak<App>) {
 
 /// Open the overview, or — when it is already up — take the next step in the direction asked.
 pub fn open(ui: &App, backwards: bool) -> Result<serde_json::Value, String> {
+    // The card is drawn over the person's windows and the shell raised to show it (#1033).
+    crate::shell_view::refuse_for_mind("the window switcher")?;
     // Held while a card waits, as the bar's panels are: this draws over the card's screen and
     // brings the shell forward, and a card behind a window is a decision nobody can make.
     crate::card_watch::hold_windows("open_switcher")?;

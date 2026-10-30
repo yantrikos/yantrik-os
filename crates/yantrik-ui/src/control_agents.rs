@@ -270,6 +270,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         .action(stop, |args| stop_agent(host()?, &caller()?, &agent_arg(args)?))
         .action(read, |args| read_agent(&caller()?, &agent_arg(args)?, args.get("last")))
         .action(show, move |args| {
+            // It selects an agent on the person's screen and raises the shell (#1033).
+            crate::shell_view::refuse_for_mind("the agents screen")?;
             let agent = agent_arg(args)?;
             let ui = show_ui.upgrade().ok_or("the shell is gone")?;
             let known = agents::store().read(|s| s.agent(&agent).is_some());

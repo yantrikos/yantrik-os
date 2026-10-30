@@ -148,6 +148,9 @@ mod mind_panel_room;
 mod mind_panel_words;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
 mod mind_view;
+mod shell_view;
+mod control_files_cursor;
+mod control_files_make;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
 mod app_glance;
