@@ -50,6 +50,10 @@ pub mod store;
 #[cfg(test)]
 mod vault;
 
+/// `email.import_account`'s store side: the companion's old config.yaml accounts coming in (#1022).
+#[cfg(test)]
+mod import;
+
 #[cfg(test)]
 mod tests {
     use super::accounts::{self, Account};

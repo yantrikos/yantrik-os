@@ -26,8 +26,7 @@ use std::sync::Arc;
 
 use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
 use crate::calendar::backend::{CalendarBackend, ServiceCalendar};
-use crate::calendar::{stamps, sync};
-use crate::config::EmailAccountConfig;
+use crate::calendar::{stamps, sync, GoogleAccess, NoGoogleAccess};
 use yantrik_ipc_contracts::calendar::{
     Attendee, AttendeeStatus, CalendarEvent, CreateEventParams, EventsParams, UpdateEventParams,
     MAX_REMINDER_MINUTES,
@@ -36,16 +35,18 @@ use yantrik_ipc_contracts::calendar::{
 /// Register all calendar tools.
 ///
 /// The calendar is `calendar-service`, running or startable. Google sync is optional: with no
-/// OAuth2 account the tools work exactly as they do with one, minus the syncing.
-pub fn register(reg: &mut ToolRegistry, accounts: Vec<EmailAccountConfig>, cal_account: Option<String>) {
-    if !sync::configured(&accounts) {
-        tracing::info!("Calendar: no OAuth2 account — the machine's calendar only, no Google sync");
+/// Google account the tools work exactly as they do with one, minus the syncing. Nothing here
+/// reads a token from `config.yaml` any more (#1022): the sync is off until `google` provides one.
+pub fn register(reg: &mut ToolRegistry) {
+    register_with(reg, Arc::new(NoGoogleAccess), Arc::new(ServiceCalendar));
+}
+
+/// [`register`] over a given Google source and calendar store.
+pub fn register_with(reg: &mut ToolRegistry, google: Arc<dyn GoogleAccess>, backend: Arc<dyn CalendarBackend>) {
+    if !google.connected() {
+        tracing::info!("Calendar: no Google account — the machine's calendar only, no Google sync");
     }
-    let shared = Arc::new(Calendars {
-        accounts,
-        preferred: cal_account,
-        backend: Arc::new(ServiceCalendar),
-    });
+    let shared = Arc::new(Calendars { google, backend });
     reg.register(Box::new(CalendarTodayTool { cal: shared.clone() }));
     reg.register(Box::new(CalendarListEventsTool { cal: shared.clone() }));
     reg.register(Box::new(CalendarCreateEventTool { cal: shared.clone() }));
@@ -55,18 +56,17 @@ pub fn register(reg: &mut ToolRegistry, accounts: Vec<EmailAccountConfig>, cal_a
 
 /// What every calendar tool needs: the store, and whatever Google account syncs with it.
 struct Calendars {
-    accounts: Vec<EmailAccountConfig>,
-    preferred: Option<String>,
+    google: Arc<dyn GoogleAccess>,
     backend: Arc<dyn CalendarBackend>,
 }
 
 impl Calendars {
     fn google(&self) -> bool {
-        sync::configured(&self.accounts)
+        self.google.connected()
     }
 
     fn token(&self) -> Result<String, String> {
-        sync::token_for(&self.accounts, self.preferred.as_deref())
+        self.google.token()
     }
 
     /// Bring Google's view of a window into the service before reading it back.
@@ -79,8 +79,7 @@ impl Calendars {
             return sync::Sync::default();
         }
         sync::pull(
-            &self.accounts,
-            self.preferred.as_deref(),
+            self.google.as_ref(),
             &ctx.db.conn(),
             self.backend.as_ref(),
             from,
@@ -1055,7 +1054,7 @@ mod tests {
 
     /// The tools over a given calendar, with no Google account configured.
     fn calendars(backend: Arc<dyn CalendarBackend>) -> Arc<Calendars> {
-        Arc::new(Calendars { accounts: Vec::new(), preferred: None, backend })
+        Arc::new(Calendars { google: Arc::new(NoGoogleAccess), backend })
     }
 
     fn create_args() -> serde_json::Value {

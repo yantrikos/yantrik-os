@@ -506,11 +506,12 @@ calls `a11y.act`.
 | email | `email.search` | read | — | |
 | email | `email.save_account` | change | none | writes the account configuration and keeps its password in the credential vault (never in the file). The app's settings screen calls it |
 | email | `email.remove_account` | change | none | forgets an account and its password in the credential vault; a shut vault refuses, so nothing is left behind |
+| email | `email.import_account` | change | none | brings in an account kept elsewhere, with its secret (the companion's old `config.yaml` mail accounts, #1022). The address decides: one already here is left exactly as it is and the secret sent is not kept. A new one has its secret kept in the credential vault, read back, before it is written; a shut vault imports nothing. Answers the desktop's own programs only |
 | email | `email.vault_opened` | change | none | answers the shell only: the credential vault has opened, so the service retries what it was waiting for. Changes nothing a caller can choose |
 | email | `email.oauth_begin` | change | `begin_google_sign_in` (app) — sensitive | starts the OAuth dance: a browser opens on a full-access consent screen |
 | email | `email.oauth_cancel` | change | none | abandons a sign-in in flight |
 | email | `email.send_message` | change | none | **sends mail.** The app publishes `compose` and deliberately never `send` — mail that has gone cannot be taken back — but the method sends |
-| email | `email.mark_read` | change | `mark_read` (app) — standard | sets the read flag on the server |
+| email | `email.mark_read` | change | `mark_read` (app) — standard | sets the read flag on the server; `message_ids` marks several in one mailbox session |
 | email | `email.mark_starred` | change | `flag` (app) — standard | sets the star |
 | email | `email.move_message` | change | none | moves a message between folders on the server |
 | email | `email.delete_message` | change | none | deletes a message on the server |

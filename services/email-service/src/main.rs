@@ -41,10 +41,12 @@ mod connect;
 mod envelope;
 mod folders;
 mod google;
+mod import;
 mod oauth;
 mod secrets;
 mod setup;
 mod store;
+mod summary;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -305,6 +307,7 @@ impl ServiceHandler for EmailHandler {
             method,
             method::SAVE_ACCOUNT
                 | method::REMOVE_ACCOUNT
+                | method::IMPORT_ACCOUNT
                 | method::OAUTH_BEGIN
                 | method::OAUTH_CANCEL
                 | method::SEND_MESSAGE
@@ -453,6 +456,10 @@ impl ServiceHandler for EmailHandler {
                 Ok(serde_json::json!({ "removed": removed }))
             }
 
+            // An account kept somewhere else, with its secret (#1022). The address decides: one
+            // that is already here is left as it is. Handled in `import.rs`.
+            method::IMPORT_ACCOUNT => import::handle(&self.store, &params),
+
             // The shell opened the vault. What this service moved aside for it, and the mail it
             // paused, go on: the migration asks again, and the next call finds the secrets.
             method::VAULT_OPENED => {
@@ -495,9 +502,9 @@ impl ServiceHandler for EmailHandler {
             "email.mark_read" => {
                 let account = self.get_account(account_id)?;
                 let folder = folder_or_inbox(&params);
-                let message_id = require_str(&params, "message_id")?;
+                let uids = summary::uids_to_mark(&params)?;
                 let read = params["read"].as_bool().unwrap_or(true);
-                imap_mark_read(&account, folder, message_id, read)?;
+                imap_mark_read(&account, folder, &uids, read)?;
                 Ok(serde_json::json!(null))
             }
             "email.mark_starred" => {
@@ -778,6 +785,13 @@ fn imap_list_messages(
         let is_read = flags.iter().any(|f| matches!(f, imap::types::Flag::Seen));
         let is_starred = flags.iter().any(|f| matches!(f, imap::types::Flag::Flagged));
 
+        let sender = envelope.from.as_ref().and_then(|addrs| addrs.first());
+        let from_address = summary::address(
+            sender.and_then(|a| a.mailbox.as_deref()),
+            sender.and_then(|a| a.host.as_deref()),
+        );
+        let message_id = summary::message_id(envelope.message_id.as_deref());
+
         result.push(EmailSummary {
             id: uid.to_string(),
             from,
@@ -790,6 +804,8 @@ fn imap_list_messages(
             has_attachments: false,
             folder: folder.to_string(),
             thread_id: None,
+            from_address,
+            message_id,
         });
     }
 
@@ -862,6 +878,13 @@ fn imap_get_message(
         .map(|h| h.get_value().split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
 
+    let message_id_header = parsed
+        .headers
+        .iter()
+        .find(|h| h.get_key_ref().eq_ignore_ascii_case("Message-ID"))
+        .map(|h| h.get_value().trim().to_string())
+        .unwrap_or_default();
+
     let subject = parsed
         .headers
         .iter()
@@ -901,6 +924,7 @@ fn imap_get_message(
         thread_messages: Vec::new(),
         is_read,
         is_starred,
+        message_id: message_id_header,
     })
 }
 
@@ -970,6 +994,12 @@ fn smtp_send(account: &Account, compose: &ComposeRequest) -> Result<(), ServiceE
             message: format!("Invalid from address: {e}"),
         })?)
         .subject(&compose.subject);
+
+    // A reply says which message it answers, so the other end threads it. `reply_to_id` is that
+    // message's `Message-ID` header value.
+    if let Some(parent) = compose.reply_to_id.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        email_builder = email_builder.in_reply_to(parent.to_string()).references(parent.to_string());
+    }
 
     for to in &compose.to {
         email_builder = email_builder.to(to.parse().map_err(|e| ServiceError {
@@ -1091,14 +1121,9 @@ fn flag_change(folder: &str, set: bool, flag: &str) -> (String, String) {
 fn imap_mark_read(
     account: &Account,
     folder: &str,
-    message_id: &str,
+    uids: &[u32],
     read: bool,
 ) -> Result<(), ServiceError> {
-    let uid: u32 = message_id.parse().map_err(|_| ServiceError {
-        code: -32602,
-        message: "Invalid message ID".to_string(),
-    })?;
-
     let mut session = imap_connect(account)?;
     // The message's own folder, for get_message's reason: the app marks a message read right
     // after opening it, and flagging INBOX's UID would touch a stranger's mail (#275).
@@ -1110,7 +1135,7 @@ fn imap_mark_read(
     let flag = "+FLAGS (\\Seen)";
     let unflag = "-FLAGS (\\Seen)";
     session
-        .uid_store(uid.to_string(), if read { flag } else { unflag })
+        .uid_store(summary::uid_set(uids), if read { flag } else { unflag })
         .map_err(|e| ServiceError {
             code: -32000,
             message: format!("IMAP STORE failed: {e}"),
@@ -1301,6 +1326,13 @@ fn imap_search(
         let is_read = flags.iter().any(|f| matches!(f, imap::types::Flag::Seen));
         let is_starred = flags.iter().any(|f| matches!(f, imap::types::Flag::Flagged));
 
+        let sender = envelope.from.as_ref().and_then(|addrs| addrs.first());
+        let from_address = summary::address(
+            sender.and_then(|a| a.mailbox.as_deref()),
+            sender.and_then(|a| a.host.as_deref()),
+        );
+        let message_id = summary::message_id(envelope.message_id.as_deref());
+
         result.push(EmailSummary {
             id: uid.to_string(),
             from,
@@ -1315,6 +1347,8 @@ fn imap_search(
             // reads this back when a result is opened, starred or deleted.
             folder: folder.to_string(),
             thread_id: None,
+            from_address,
+            message_id,
         });
     }
 
