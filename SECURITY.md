@@ -25,7 +25,7 @@ Anything in this repository, and especially the boundaries it draws:
 - the updater and the release path (`deploy/yantrik-os/yantrik-update`, `deploy/yantrik-os/server`);
 - the lock screen and the session.
 
-Known limits that are documented, not hidden, are listed in the README's "Privacy and security"
+Known limits that are documented, not hidden, are listed in the README's "Status and known limits"
 section and in the open issues labelled security; a report that one of them is worse than it says
 is in scope too.
 
