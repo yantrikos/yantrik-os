@@ -239,7 +239,7 @@ mine = as_unit(dict(open_req(), key=key))
 check("with it, the Director's reports are taken", mine["ok"], repr(mine))
 kdb.execute("SELECT 1").fetchall()
 try:
-    kdb.execute("UPDATE director_runs SET key_hash='x'")
+    kdb.execute("UPDATE director_runs_v2 SET key_hash='x'")
     rekeyed = True
 except sqlite3.DatabaseError:
     rekeyed = False
@@ -251,18 +251,28 @@ stale_key = as_unit(dict(open_req(), key=key))
 check("a key is good for its own run only, and a run's key is never changed", not stale_key["ok"] and not rekeyed,
       repr(stale_key))
 # After a reboot the kernel numbers cgroups from the start again, so a run kept from an earlier boot
-# can carry the new run's number. It is dropped, not taken as this run's key (561, 30 Oct 2026).
+# can carry the new run's number. It is another boot's, so it neither refuses nor answers for this
+# run (561, 30 Oct 2026). And no clock decides it: a run is still given its key once when the wall
+# clock jumps forward between two asks (review of #1034: a VM pause steps the guest clock).
 unit3 = os.path.join(tmp, "unit-run-3")
 os.mkdir(unit3)
 in_unit(6000, where=unit3)
 c.DIRECTOR_UNIT_DIR = unit3
-real_boot_started, c.boot_started = c.boot_started, lambda: time.time() - 60
-kdb.execute("INSERT INTO director_runs VALUES (?,?,?,?)", (os.stat(unit3).st_ino, "0" * 64, 1, time.time() - 3600))
+kdb.execute("INSERT INTO director_runs_v2 VALUES (?,?,?,?,?)",
+            ("an-earlier-boot", os.stat(unit3).st_ino, "0" * 64, 1, time.time() - 3600))
 after_reboot = as_unit({"op": "register"}, pid=6000)
-twice = as_unit({"op": "register"}, pid=6000)
-c.boot_started = real_boot_started
-check("a run left from an earlier boot does not refuse this boot's run, which is still given its key once",
-      after_reboot["ok"] and c.KEY.match(after_reboot.get("key", "")) and not twice["ok"], repr((after_reboot, twice)))
+real_time = c.time.time
+c.time.time = lambda: real_time() + 600
+try:
+    after_clock_step = as_unit({"op": "register"}, pid=6000)
+finally:
+    c.time.time = real_time
+earlier_left = kdb.execute("SELECT COUNT(*) FROM director_runs_v2 WHERE boot='an-earlier-boot'").fetchone()[0]
+check("a run left from an earlier boot neither refuses nor answers for this boot's run, which is given its key once",
+      after_reboot["ok"] and c.KEY.match(after_reboot.get("key", "")) and earlier_left == 0,
+      repr((after_reboot, earlier_left)))
+check("a forward step of the wall clock does not give one run a second key",
+      not after_clock_step["ok"] and "already" in after_clock_step.get("error", ""), repr(after_clock_step))
 c.DIRECTOR_UNIT_DIR = real_unit_dir
 
 # A contract at its event cap still takes a person's decision.
