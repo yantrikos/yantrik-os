@@ -140,23 +140,6 @@ pub enum CompanionCommand {
     ListTools {
         reply_tx: Sender<serde_json::Value>,
     },
-    /// Protect, open, re-wrap or read the credential vault.
-    ///
-    /// Separate from `RunTool` on purpose. `RunTool` takes a name and a `serde_json::Value`, and
-    /// everything that reaches it — every mind, every caller on the shell's socket — can compose
-    /// one. This variant takes a typed `vault_unlock::Op` that nothing deserialises, so the only
-    /// way a passphrase gets onto this channel is Rust code the shell compiled, and there are two
-    /// such places: the login wiring, and the callback behind the shell's own unlock prompt.
-    Vault {
-        op: crate::vault_unlock::Op,
-        reply_tx: Sender<crate::vault_unlock::Reply>,
-    },
-    /// The free AI keys (wire::free_ai::store). Typed, like `Vault`, and reached only from the
-    /// UI's own bridge.
-    ProviderKeys {
-        op: crate::wire::free_ai::store::Op,
-        reply_tx: crossbeam_channel::Sender<crate::wire::free_ai::store::Reply>,
-    },
     /// Search memories.
     RecallMemories {
         query: String,
@@ -393,6 +376,8 @@ pub struct CompanionBridge {
     private: AtomicBool,
     /// The memory store's path, for reads that must not wait on the worker (`recent_memories`).
     memory_db: String,
+    /// The credential vault's own thread (`vault_lane`): vault calls never queue behind a turn.
+    vault_lane: crate::vault_lane::VaultLane,
 }
 
 /// A companion you can use from another thread.
@@ -690,19 +675,14 @@ impl CompanionBridge {
     /// passphrase.
     ///
     /// Blocking, because every caller is a person who has just pressed Enter and is waiting to
-    /// find out. The worker holds the only connection to the memory database.
+    /// find out. Answered on the vault's own thread (`vault_lane`), not the worker's, so a turn in
+    /// progress does not delay it.
     pub fn vault(
         &self,
         op: crate::vault_unlock::Op,
         timeout: std::time::Duration,
     ) -> Result<crate::vault_unlock::Reply, String> {
-        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
-        self.cmd_tx
-            .send(CompanionCommand::Vault { op, reply_tx })
-            .map_err(|_| "companion worker is not running".to_string())?;
-        reply_rx
-            .recv_timeout(timeout)
-            .map_err(|_| "the vault did not answer in time".to_string())
+        self.vault_lane.vault(op, timeout)
     }
 
     /// Keep, remove or list the free AI keys (wire::free_ai). Like [`Self::vault`], on the UI's
@@ -713,13 +693,7 @@ impl CompanionBridge {
         op: crate::wire::free_ai::store::Op,
         timeout: std::time::Duration,
     ) -> Result<crate::wire::free_ai::store::Reply, String> {
-        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
-        self.cmd_tx
-            .send(CompanionCommand::ProviderKeys { op, reply_tx })
-            .map_err(|_| "companion worker is not running".to_string())?;
-        reply_rx
-            .recv_timeout(timeout)
-            .map_err(|_| "the vault did not answer in time".to_string())
+        self.vault_lane.keys(op, timeout)
     }
 
     /// A handle that other threads can hold. See [`CompanionHandle`].
@@ -758,6 +732,7 @@ impl CompanionBridge {
         let decisions = yantrik_companion::decisions::Decisions::default();
         let decisions_w = decisions.clone();
         let memory_db = config.yantrikdb.db_path.clone();
+        let vault_lane = crate::vault_lane::VaultLane::start(&memory_db);
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
         let worker_handle = std::thread::spawn(move || {
@@ -777,6 +752,7 @@ impl CompanionBridge {
             incognito_setting: AtomicBool::new(false),
             private: AtomicBool::new(private),
             memory_db,
+            vault_lane,
         }
     }
 
@@ -1737,18 +1713,6 @@ fn worker_loop(
             }
             Ok(CompanionCommand::ListTools { reply_tx }) => {
                 let _ = reply_tx.send(companion.tool_catalog());
-            }
-            Ok(CompanionCommand::Vault { op, reply_tx }) => {
-                // Not put on the job board, and not logged. A board ticket carries a label into
-                // `describe shell` and a log line carries a timestamp into a file, and neither is
-                // a thing anybody needs to know about the moment a person typed their password.
-                // An Argon2id unwrap is a fraction of a second, which is why it can sit in the
-                // worker's queue like anything else instead of blocking the UI thread.
-                let _ = reply_tx.send(crate::vault_unlock::run(&companion.db.conn(), op));
-            }
-            Ok(CompanionCommand::ProviderKeys { op, reply_tx }) => {
-                // Not on the job board and not logged, as the vault's own command is not.
-                let _ = reply_tx.send(crate::wire::free_ai::store::run(&companion.db.conn(), op));
             }
             Ok(CompanionCommand::GetBondLevel { reply_tx }) => {
                 let _ = reply_tx.send(companion.bond_level());
