@@ -715,7 +715,7 @@ pub fn args_rows_with(value: &serde_json::Value, value_chars: usize) -> Vec<Stri
         // not get a card that looks empty.
         return match value {
             serde_json::Value::Null => vec!["(no arguments)".to_string()],
-            other => vec![clip(&other.to_string(), value_chars)],
+            other => vec![clip(&crate::approval_wording::visible(&other.to_string()), value_chars)],
         };
     };
     if map.is_empty() {
@@ -735,7 +735,10 @@ pub fn args_rows_with(value: &serde_json::Value, value_chars: usize) -> Vec<Stri
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-            format!("{key}: {}", clip(&shown, value_chars))
+            // Escaped before the cut, so no row carries a raw control or bidi character and the
+            // marker names the length of what the card draws (the rule of #639 B1, applied here:
+            // the pinned "Exactly:" line and this box must not disagree about what a value is).
+            format!("{key}: {}", clip(&crate::approval_wording::visible(&shown), value_chars))
         })
         .collect();
     if keys.len() > ARG_ROWS {
@@ -1997,6 +2000,30 @@ mod approvals_tests {
             rows[ARG_ROWS]
         );
 
+    }
+
+    /// The values in the arguments box are chosen by the caller: one pasted with a newline in it
+    /// started a row of its own in the card's voice, and a right-to-left override reordered
+    /// everything after it (#1001). So every value is escaped before it is cut — the rule the
+    /// pinned "Exactly:" line has followed since the security review of #639 (B1), which the box
+    /// now draws with the same function.
+    #[test]
+    fn approvals_argument_values_are_drawn_escaped() {
+        let rows = args_rows(&serde_json::json!({ "key": "sk-\nsecret\u{202E}\tvalue" }));
+        assert_eq!(rows, vec![r"key: sk-\nsecret<U+202E>\tvalue".to_string()]);
+        assert!(
+            !rows[0].chars().any(|c| c.is_control()),
+            "no row carries a raw control or bidi character: {:?}",
+            rows[0]
+        );
+        // A cut value still names the true length of what was sent; for a value with no escapes
+        // the escaped and unescaped lengths are the same number, and a cut one is never raw.
+        let rows = args_rows(&serde_json::json!({ "text": "v".repeat(ARG_VALUE_CHARS + 18) }));
+        assert!(
+            rows[0].ends_with(&format!("… ({} characters in full)", ARG_VALUE_CHARS + 18)),
+            "{}",
+            rows[0]
+        );
     }
 
     /// What Studio publishes for `set_backend`, verbatim, as `yos describe studio` prints it.
