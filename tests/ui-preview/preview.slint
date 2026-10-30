@@ -1087,8 +1087,8 @@ export component FirstRunProbe inherits Window {
     in-out property <string> connect-mode <=> screen.connect-mode;
     in-out property <string> key-input <=> screen.key-input;
     in-out property <bool> show-every <=> screen.show-every;
-    in property <string> connect-status;
-    in property <string> connect-words;
+    in-out property <string> connect-status <=> screen.connect-status;
+    in-out property <string> connect-words <=> screen.connect-words;
     in property <string> chosen-key-placeholder;
     in property <bool> chosen-key-help;
     in-out property <bool> share <=> screen.share;
@@ -1125,8 +1125,6 @@ export component FirstRunProbe inherits Window {
         retry-pick => { root.retries += 1; }
         featured: root.featured;
         every-provider: root.every-provider;
-        connect-status: root.connect-status;
-        connect-words: root.connect-words;
         chosen-key-placeholder: root.chosen-key-placeholder;
         chosen-key-help: root.chosen-key-help;
         shared-items: root.shared-items;

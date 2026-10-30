@@ -1399,8 +1399,10 @@ export component App inherits Window {
     in property <string> fr-nearby-status: "";
     in property <string> fr-nearby-words: "";
     callback fr-look-nearby();
-    in property <string> fr-connect-status: "";
-    in property <string> fr-connect-words: "";
+    // The screen clears these when the person abandons the attempt ("Choose another"), so they
+    // carry the screen's state up as well as down.
+    in-out property <string> fr-connect-status: "";
+    in-out property <string> fr-connect-words: "";
     in property <[FirstRunModel]> fr-models: [];
     in-out property <string> fr-chosen-model: "";
     in property <string> fr-chosen-key-placeholder: "";
@@ -1622,8 +1624,8 @@ export component App inherits Window {
             nearby-status: root.fr-nearby-status;
             nearby-words: root.fr-nearby-words;
             look-nearby => { root.fr-look-nearby(); }
-            connect-status: root.fr-connect-status;
-            connect-words: root.fr-connect-words;
+            connect-status <=> root.fr-connect-status;
+            connect-words <=> root.fr-connect-words;
             models: root.fr-models;
             chosen-model <=> root.fr-chosen-model;
             chosen-key-placeholder: root.fr-chosen-key-placeholder;
