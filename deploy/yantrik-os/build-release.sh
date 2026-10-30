@@ -228,7 +228,8 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
     || fail "no update-keys/revoked.sha256: the revocation list must ship, even when empty"
   # A revocation line that revokes nothing (upper-case hex, an indent, a cut hash) is a mistake
   # that would only show during the next incident: refuse it here.
-  badrev="$(grep -vE '^[[:space:]]*(#.*)?$|^[0-9a-f]{64}([[:space:]].*)?$' "$SCRIPT_DIR/update-keys/revoked.sha256" | head -n 1)"
+  # grep finding nothing is the healthy case: `|| true`, or `set -o pipefail` ends the build there.
+  badrev="$( { grep -vE '^[[:space:]]*(#.*)?$|^[0-9a-f]{64}([[:space:]].*)?$' "$SCRIPT_DIR/update-keys/revoked.sha256" || true; } | head -n 1)"
   [ -z "$badrev" ] || fail "update-keys/revoked.sha256 has a line that is not a revocation: $badrev"
   for pub in "$ROOT"/share/update-keys/*.pub; do
     fp="$("$SCRIPT_DIR/yantrik-update-verify" fingerprint "$pub")"
