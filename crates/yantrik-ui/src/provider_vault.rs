@@ -1,7 +1,7 @@
 //! Saved AI providers' API keys, kept in the credential vault and not in `providers.yaml`.
 //!
-//! A saved provider's key goes into the vault under `saved:<entry id>`, through the same worker
-//! and the same operations the free tiers' keys use (`wire::free_ai::store::Op`). The file keeps
+//! A saved provider's key goes into the vault under `saved:<entry id>`, through the same vault
+//! lane (`vault_lane`) and the same operations the free tiers' keys use (`wire::free_ai::store::Op`). The file keeps
 //! only a reference, `api_key_ref: vault:saved:<entry id>`. Every reader asks this module for the
 //! key at the moment it needs it; a shut vault gives a refusal and nothing is sent.
 //!
@@ -49,7 +49,7 @@ pub fn id_in(reference: &str) -> Option<&str> {
 pub use yantrik_foundation::vault::opening::{after_open, opened};
 pub use yantrik_foundation::vault::{keep, KeyVault, VaultError};
 
-/// The credential vault, reached through the companion's worker like the free tiers' keys.
+/// The credential vault, reached through its own lane (`vault_lane`) like the free tiers' keys.
 pub struct BridgeVault {
     bridge: Arc<CompanionBridge>,
 }
@@ -409,7 +409,7 @@ fn as_pass(vault: Arc<dyn KeyVault>, store: Arc<Mutex<ProviderStore>>, save: Sav
 }
 
 /// The first pass, and the one that waits for the vault to open when it left keys behind,
-/// whether the vault was shut or did not answer (the companion's worker may still be starting).
+/// whether the vault was shut or did not answer (the memory store may not exist yet).
 fn begin_migration(vault: &Arc<dyn KeyVault>, store: &Arc<Mutex<ProviderStore>>, save: &SaveFile) -> Migration {
     let report = pass(&**vault, store, save, "start");
     if keys_left(&report) {
@@ -419,7 +419,7 @@ fn begin_migration(vault: &Arc<dyn KeyVault>, store: &Arc<Mutex<ProviderStore>>,
 }
 
 /// [`migrate`] on a thread of its own, at start. The vault may be shut at start (its passphrase
-/// is typed on the shell's unlock card) or the worker not yet answering, so a pass that left keys
+/// is typed on the shell's unlock card) or the store not yet there, so a pass that left keys
 /// behind asks again every minute for an hour, and once more whenever the vault is opened
 /// ([`opened`]). Logs counts only.
 pub fn migrate_in_background(bridge: &Arc<CompanionBridge>, store: Arc<Mutex<ProviderStore>>) {
