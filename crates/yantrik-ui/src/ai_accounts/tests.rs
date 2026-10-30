@@ -88,6 +88,23 @@ fn a_missing_key_or_a_shut_vault_is_said_not_guessed() {
 }
 
 #[test]
+fn an_account_listed_while_the_vault_is_shut_is_listed_again_when_it_opens() {
+    // A saved provider whose key has moved into the vault: the file holds only the reference.
+    let mut moved = saved("a1", "OpenAI", "openai", "https://api.openai.com/v1", None, "m");
+    moved.api_key_ref = Some(crate::provider_vault::reference("a1"));
+    moved.auth_type = "bearer".into();
+    let entries = vec![moved];
+    let list = accounts(&entries, FREE_TIERS, &set(&["groq"]), &set(&[]));
+    let shut = |_: &str| None;
+    let (listed, waits) = super::list_one(&list[0], &entries, &shut);
+    assert!(waits, "a key the shut vault could not give asks for a listing at the opening");
+    assert!(matches!(listed.listing, Listing::Failed(_)));
+    let groq = list.iter().find(|a| a.id == "free-groq").unwrap();
+    let (_, waits) = super::list_one(groq, &entries, &shut);
+    assert!(!waits, "a free tier's list is not asked of the provider, so it waits for nothing");
+}
+
+#[test]
 fn models_come_from_the_provider_a_curated_list_or_the_free_tier() {
     let entries = vec![
         saved("a1", "OpenAI", "openai", "https://api.openai.com/v1", Some(KEY), "gpt-4o-mini"),

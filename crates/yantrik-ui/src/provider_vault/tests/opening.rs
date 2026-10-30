@@ -213,6 +213,42 @@ fn a_save_that_completes_during_a_migration_keeps_the_new_key() {
 }
 
 #[test]
+fn a_provider_removed_during_a_migration_leaves_no_key_in_the_vault() {
+    let vault = Fake::new();
+    let path = file("remove-during-migration", &legacy(&[("a", KEY)]));
+    let providers = Arc::new(shared(&path));
+    let at = p(&path);
+
+    // While the pass is writing the copied key, the person removes the provider. Without
+    // `key_writes` the remove finishes inside the wait, finds no vault reference yet, and the
+    // pass then keeps the key for an entry that is gone.
+    type Removing = std::thread::JoinHandle<Result<(), String>>;
+    let remover: Arc<Mutex<Option<Removing>>> = Arc::default();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let (done_tx, done_rx) = (Mutex::new(done_tx), Mutex::new(done_rx));
+    let (live, v, at2, handle) = (providers.clone(), vault.clone(), at.clone(), remover.clone());
+    *vault.before_write.lock().unwrap() = Some(Arc::new(move || {
+        let (live, v, at2) = (live.clone(), v.clone(), at2.clone());
+        let done = done_tx.lock().unwrap().clone();
+        *handle.lock().unwrap() = Some(std::thread::spawn(move || {
+            let v: Arc<dyn KeyVault> = v;
+            let removed = remove_provider_with(&live, "a", Some(v), &mut |s| s.save_at(&at2));
+            let _ = done.send(());
+            removed
+        }));
+        let _ = done_rx.lock().unwrap().recv_timeout(std::time::Duration::from_millis(500));
+    }));
+
+    run_migration(&vault, &providers, &path);
+    let handle = remover.lock().unwrap().take().expect("the remove started");
+    handle.join().unwrap().expect("removed");
+
+    assert!(!vault.has("saved:a"), "the removed provider's key is not left in the vault");
+    assert!(load(&path).entries.is_empty(), "the provider is gone");
+    assert!(!std::fs::read_to_string(&path).unwrap().contains(KEY), "no plaintext in the file");
+}
+
+#[test]
 fn every_place_the_vault_is_opened_runs_what_waited_for_it() {
     // The sign-in, the unlock card, and the PIN that unlocks the screen each open the vault; what
     // waited for it (saved providers' keys, the companion's reload) runs only if they say so.

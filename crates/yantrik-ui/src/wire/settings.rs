@@ -1159,6 +1159,9 @@ pub(crate) fn remove_provider_with(
     vault: Option<Arc<dyn crate::provider_vault::KeyVault>>,
     save: &mut dyn FnMut(&mut ProviderStore) -> Result<(), String>,
 ) -> Result<(), String> {
+    // Not beside a migration pass: one that copied this entry's key would keep it in the vault
+    // after the entry is gone (`provider_vault::key_writes`).
+    let _writing = crate::provider_vault::key_writes();
     let entry = providers
         .lock()
         .map_err(|_| "The providers could not be read just now.".to_string())?
