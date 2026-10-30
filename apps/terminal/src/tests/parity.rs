@@ -187,6 +187,7 @@ fn an_exited_shell_says_how() {
     assert!(f.summary().contains("`new_tab` starts another"), "{}", f.summary());
     assert_eq!(f.state()["shell_exit_code"], json!(7));
     assert_eq!(f.state()["alive"], json!(false));
+    f.until("the status line", |f| f.app.ui(|ui| ui.get_status().to_string()) == "Shell exited \u{b7} status 7");
     assert_eq!(f.app.ui(|ui| ui.get_status().to_string()), "Shell exited \u{b7} status 7");
 }
 
