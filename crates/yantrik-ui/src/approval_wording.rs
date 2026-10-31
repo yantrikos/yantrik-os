@@ -293,6 +293,15 @@ pub struct Identity {
     pub tag: &'static str,
 }
 
+/// [`identity`], unless the request brought its own line about who asked (`approvals::Wording`):
+/// then that line, which says what the shell knows and does not, and nothing the caller wrote.
+pub fn identity_for(verified: &Verified, asker: &str) -> Identity {
+    if asker.is_empty() {
+        return identity(verified);
+    }
+    Identity { fact: visible(asker), tag: "" }
+}
+
 /// The first identity line, from the walk's structured findings — the kernel's pid, the
 /// executable `/proc` resolved, the attached mind the shell matched by pid, whether a bare shell
 /// stood in between — and never from re-reading `Verified::line`, whose label is the caller's

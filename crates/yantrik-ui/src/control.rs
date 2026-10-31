@@ -2275,6 +2275,9 @@ pub fn publish(
     let surface = crate::control_taint_scope::actions(surface);
     // The workroom's own navigation: show_workroom. See `control_workroom`.
     let surface = crate::control_workroom::actions(surface, ui);
+    // What the Mind desk around Mind View reads, and the two things it may ask (#1023): answered to the
+    // one desk the shell started, and to nothing else.
+    let surface = crate::control_mind_desk::actions(surface, ui);
     crate::control_agents::actions(surface, ui).serve();
 }
 

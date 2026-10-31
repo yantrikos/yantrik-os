@@ -62,6 +62,8 @@ members = [
     "apps/container-manager",
     "apps/download-manager",
     "apps/snippet-manager",
+    # The bars around Mind View's apps, run inside Mind View (#1023).
+    "apps/mind-desk",
     "apps/system-monitor",
     "apps/terminal",
     "apps/music-player",

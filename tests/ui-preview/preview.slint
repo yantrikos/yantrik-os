@@ -1270,3 +1270,82 @@ export component ForYouProbe inherits Window {
         }
     }
 }
+
+// ── Mind desk (#1023) ───────────────────────────────────────────────────────
+
+// The desk's bar around a stand-in for Mind View's apps, filled with fixture words by
+// src/mind_desk_tests.rs. The three strips are the app's own (apps/mind-desk/ui/desk.slint); the
+// middle is a plain panel marked as a fixture, because the apps are somebody else's pixels.
+// Heights are the app's own `metrics`: header 76, strip 40, footer 45 (44 and its bottom edge).
+import { DeskHeader, DeskStrip, DeskFooter } from "../../apps/mind-desk/ui/desk.slint";
+export component MindDeskProbe inherits Window {
+    preferred-width: 1184px;
+    preferred-height: 660px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <string> label;
+    in property <int> tone;
+    in property <string> headline;
+    in property <bool> can-stop;
+    in property <string> stop-note;
+    in property <bool> agents-offered;
+    in property <string> strip-heading;
+    in property <string> strip-tool;
+    in property <string> strip-mark;
+    in property <string> strip-stats;
+    in property <string> apps;
+    in property <string> safety;
+    in property <string> model;
+    in property <string> model-mark;
+    out property <length> header-height: header.height;
+    out property <length> strip-height: strip.height;
+    out property <length> footer-height: footer.height;
+    out property <length> middle-top: middle.y;
+    header := DeskHeader {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: 76px;
+        label: root.label;
+        tone: root.tone;
+        headline: root.headline;
+        can-stop: root.can-stop;
+        stop-note: root.stop-note;
+        agents-offered: root.agents-offered;
+    }
+    strip := DeskStrip {
+        x: 0px;
+        y: 76px;
+        width: root.width;
+        height: 40px;
+        heading: root.strip-heading;
+        tool: root.strip-tool;
+        mark: root.strip-mark;
+        stats: root.strip-stats;
+    }
+    footer := DeskFooter {
+        x: 0px;
+        y: 116px;
+        width: root.width;
+        height: 45px;
+        apps: root.apps;
+        safety: root.safety;
+        model: root.model;
+        model-mark: root.model-mark;
+    }
+    // Where the apps are: not drawn by the desk, so a plain panel that says so.
+    middle := Rectangle {
+        x: 0px;
+        y: 161px;
+        width: root.width;
+        height: root.height - 161px;
+        background: Theme.bg-card;
+        Text {
+            text: "Mind View's apps go here (fixture)";
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}

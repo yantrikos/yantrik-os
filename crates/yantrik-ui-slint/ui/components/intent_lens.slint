@@ -127,6 +127,9 @@ export struct ApprovalRequest {
     // "Delete event" — on a destructive card, else "Allow once". Never the caller's purpose
     // (approval_wording::confirm_label is not handed it).
     confirm-label: string,
+    // The other button's words, for a request that brought its own (`approvals::Wording`): "Keep
+    // going" on the Mind desk's stop. Empty: "Decline".
+    decline-label: string,
     // Whether "Allow for this session" may be offered at all. False for `dangerous` and for any
     // action whose own published sentence says it cannot be undone — the same predicate that
     // draws `warning`, so the card can never offer to stop asking about the thing it is warning
@@ -881,7 +884,7 @@ export component ApprovalCard inherits Rectangle {
                 spacing: Theme.sp-2;
 
                 YButton {
-                    label: "Decline";
+                    label: root.data.decline-label != "" ? root.data.decline-label : "Decline";
                     variant: 1;
                     pointer-only: true;
                     horizontal-stretch: 1;
