@@ -24,6 +24,12 @@ pub const SLOW: Duration = Duration::from_secs(5);
 /// The one timer: the next ask of a shell that did not answer, or answered too quickly.
 pub const ASK_AGAIN: TimerId = TimerId("mind-desk.ask-again");
 
+/// A line about the Agents screen not opening is about the moment it was pressed, and is let go
+/// after this long: a card that held the screen may be answered, and nothing in a snapshot says so.
+/// A one-shot, armed by the press and by nothing else.
+pub const NOTE_GONE: TimerId = TimerId("mind-desk.note-gone");
+pub const NOTE_FOR: Duration = Duration::from_secs(6);
+
 /// How the desk stands with the shell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Link {
@@ -81,6 +87,8 @@ pub enum Command {
     AgentsAsked,
     /// What the shell said to that.
     AgentsAnswered(Result<(), ServiceError>),
+    /// The line about the Agents screen has been said long enough.
+    NoteGone,
     /// A window was asked to close. It is not an app a person closes: nothing happens.
     CloseAsked,
 }

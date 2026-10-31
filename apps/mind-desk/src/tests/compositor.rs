@@ -4,7 +4,7 @@
 //! These read the file. Where labwc really puts the bar is not something a file can say, and is
 //! measured on pixels by `tests/mind-desk-placement/run.sh` against the labwc the OS runs.
 
-use crate::metrics::{BAR_HEIGHT, MARGIN_TOP, OVERLAP, TITLE};
+use crate::metrics::{APP_ID, BAR_HEIGHT, MARGIN_TOP, OVERLAP, TITLE};
 
 const RC: &str = include_str!("../../../../config/labwc-mind/rc.xml");
 
@@ -42,6 +42,8 @@ fn the_rule() -> String {
     let all = rules(&config());
     let mine: Vec<&String> = all.iter().filter(|r| attribute(r, "title").as_deref() == Some(TITLE)).collect();
     assert_eq!(mine.len(), 1, "one rule for the bar");
+    // A window that wants the bar's place has to set the app id as well as the title.
+    assert_eq!(attribute(mine[0], "identifier").as_deref(), Some(APP_ID), "matched by app id too");
     mine[0].clone()
 }
 
@@ -120,6 +122,10 @@ fn the_title_the_rule_matches_is_the_one_the_window_sets() {
     let ui = include_str!("../../ui/app.slint");
     assert!(ui.contains(&format!(r#"title: "{TITLE}";"#)), "ui/app.slint");
     assert_eq!(TITLE, "Yantrik Mind Desk");
+    // And the app id beside it is set before the window is made.
+    let lib = include_str!("../lib.rs");
+    assert!(lib.contains("slint::set_xdg_app_id(metrics::APP_ID)"), "the desk sets its app id");
+    assert_eq!(APP_ID, "yantrik-mind-desk");
     // And the rule is not the title of a second window that no longer exists.
     assert!(!RC.contains("Yantrik Mind Desk Top") && !RC.contains("Yantrik Mind Desk Bottom"));
 }
@@ -143,4 +149,21 @@ fn the_placement_check_is_in_the_tree_and_asks_for_the_bar_where_it_belongs() {
     assert!(run.contains("after-restart"), "and after the desk is started again");
     let measure = include_str!("../../../../tests/mind-desk-placement/measure.py");
     assert!(measure.contains("rows 0.."), "the bar is measured from row 0");
+}
+
+/// What the check runs is what was read: every package is named by file and sha256 in the lock,
+/// and the fetch is https only.
+#[test]
+fn the_labwc_the_check_runs_is_named_by_hash_and_fetched_over_https() {
+    let lock = include_str!("../../../../tests/mind-desk-placement/trixie.lock");
+    let lines: Vec<_> = lock.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    assert!(lines.iter().any(|l| l.starts_with("labwc ")), "labwc is in the lock");
+    for l in &lines {
+        let f: Vec<_> = l.split(' ').collect();
+        assert_eq!(f.len(), 3, "{l}");
+        assert!(f[2].len() == 64 && f[2].bytes().all(|b| b.is_ascii_hexdigit()), "{l}");
+        assert!(!f[1].contains("..") && !f[1].starts_with('/'), "{l}");
+    }
+    let fetch = include_str!("../../../../tests/mind-desk-placement/fetch-trixie.py");
+    assert!(fetch.contains("https://deb.debian.org") && !fetch.contains("http://"), "https only");
 }

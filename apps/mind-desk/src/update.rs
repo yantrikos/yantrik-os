@@ -12,7 +12,7 @@ use yantrik_app::Refused;
 use yantrik_ipc_contracts::mind_desk::{DeskSnapshot, StopStatus};
 use yantrik_services::ServiceError;
 
-use crate::model::{Command, Link, Model, Stop, ASK_AGAIN, QUICK, RETRY_FROM, RETRY_UP_TO, SLOW};
+use crate::model::{Command, Link, Model, Stop, ASK_AGAIN, NOTE_FOR, NOTE_GONE, QUICK, RETRY_FROM, RETRY_UP_TO, SLOW};
 use crate::MindDesk;
 
 pub fn update(m: &mut Model, command: Command, fx: &mut Effects<MindDesk>) -> Result<(), Refused> {
@@ -55,7 +55,11 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<MindDesk>) -> Re
             fx.spawn(move |_| Command::AgentsAnswered(desk.open_agents()));
         }
         Command::AgentsAnswered(Ok(())) => fx.unchanged(),
-        Command::AgentsAnswered(Err(why)) => m.note = agents_failed(&why).to_string(),
+        Command::AgentsAnswered(Err(why)) => {
+            m.note = agents_failed(&why).to_string();
+            fx.after(NOTE_GONE, NOTE_FOR, Command::NoteGone);
+        }
+        Command::NoteGone => m.note.clear(),
         Command::CloseAsked => fx.unchanged(),
     }
     Ok(())

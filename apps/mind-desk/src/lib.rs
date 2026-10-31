@@ -71,6 +71,15 @@ impl App for MindDesk {
     const ON_MINDS_DISPLAY: bool = true;
 
     fn model(boot: &Boot<()>) -> Result<Model, Startup> {
+        // The app id the compositor's rule matches beside the title, before the window is made.
+        // Slint takes it only from a platform that exists, and none does before the first window:
+        // so the default one is chosen here (the same one the window would have chosen).
+        if slint::set_xdg_app_id(metrics::APP_ID).is_err() {
+            let chosen = slint::BackendSelector::new().select();
+            if let Err(e) = chosen.map_err(|e| e.to_string()).and_then(|()| slint::set_xdg_app_id(metrics::APP_ID).map_err(|e| e.to_string())) {
+                tracing::warn!(error = %e, "the desk could not set its app id");
+            }
+        }
         Ok(Model {
             desk: boot.services.mind_desk.clone(),
             link: Link::Connecting,

@@ -82,9 +82,9 @@
         MoveTo puts the window itself back, as the toggle moves it.
       - fixedPosition: nothing moves it afterwards, a Mind dragging it with a modifier included.
       - Always on top, no title bar, not in Alt+Tab or the taskbar: it is the room's wall, not a
-        window in it. Matched by title, which the desk sets before it maps (the app declares no
-        id). Any client can set its own title, so a window in here can be placed like the bar and
-        drawn over the real one: labwc cannot tell them apart. Nothing the desk is trusted for
+        window in it. Matched by app id and title, which the desk sets before it maps. Any client
+        can set its own, so a window in here that sets both can be placed like the bar and drawn
+        over the real one: labwc cannot tell them apart; setting both is what it takes. Nothing the desk is trusted for
         rests on this. The shell answers the one desk process it started (pid and start time),
         and a stop is asked of the person on their own desktop, never in here. A forged bar can
         only mislead the eye.
@@ -92,7 +92,7 @@
         first thing this rule does is undo it (rules run in order, and every one that matches
         runs).
     -->
-    <windowRule title="Yantrik Mind Desk" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes" fixedPosition="yes">
+    <windowRule identifier="yantrik-mind-desk" title="Yantrik Mind Desk" serverDecoration="no" skipTaskbar="yes" skipWindowSwitcher="yes" fixedPosition="yes">
       <action name="UnMaximize" />
       <action name="MoveTo" x="0" y="0" />
       <action name="ToggleMaximize" direction="horizontal" />

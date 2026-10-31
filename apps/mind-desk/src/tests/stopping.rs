@@ -186,3 +186,44 @@ fn the_agents_screen_being_held_for_a_card_is_said_while_a_stop_is_asked() {
     app.run(Command::Heard(Ok(with_stop(2, MindState::Idle, Some(StopStatus::Stopped)))));
     assert_eq!(app.ui(|ui| ui.get_stop_note()), "Stopped");
 }
+
+/// A line about the Agents screen is about the moment it was pressed. Nothing in a snapshot says a
+/// card that held the screen has been answered, so the line is let go on its own, after a few
+/// seconds, whatever the snapshots say, and "Waiting for your answer" is not hidden behind it
+/// for good.
+#[test]
+fn a_line_about_the_agents_screen_does_not_outstay_its_moment() {
+    use std::time::Duration;
+    let (app, shell) = start(working());
+    app.run_jobs();
+    shell.show_answers(Err(ServiceError::Refused {
+        code: -32000,
+        sentence: "`mind_desk_open_agents` was not run: an approval card is waiting for the person at this machine".into(),
+    }));
+    app.run(Command::AgentsAsked);
+    app.run_jobs();
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "An approval card is waiting on your desktop");
+    // The card is answered, and the stop's standing does not change: the snapshot is the same.
+    app.run(Command::Heard(Ok(snapshot(1, Some(hermes(MindState::RunningTool))))));
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "An approval card is waiting on your desktop", "not yet");
+    app.advance(Duration::from_secs(5));
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "An approval card is waiting on your desktop", "five seconds in");
+    app.advance(Duration::from_secs(2));
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "", "gone after six");
+
+    // A second press while the first line is up re-arms the timer: the first press's moment
+    // cannot clear the second's line early.
+    shell.show_answers(Err(ServiceError::Refused { code: -32000, sentence: "at most once every ten seconds".into() }));
+    shell.show_answers(Err(ServiceError::Refused { code: -32000, sentence: "at most once every ten seconds".into() }));
+    app.run(Command::AgentsAsked);
+    app.run_jobs();
+    app.run(Command::Heard(Ok(snapshot(1, Some(hermes(MindState::RunningTool))))));
+    app.advance(Duration::from_secs(4));
+    app.run(Command::AgentsAsked);
+    app.run_jobs();
+    app.run(Command::Heard(Ok(snapshot(1, Some(hermes(MindState::RunningTool))))));
+    app.advance(Duration::from_secs(4));
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "Agents was opened a moment ago", "eight seconds in, four after the last press");
+    app.advance(Duration::from_secs(3));
+    assert_eq!(app.ui(|ui| ui.get_stop_note()), "");
+}
