@@ -256,7 +256,16 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     ui.set_light(true);
     render(w, width, height, &still("2-connected-light"))?;
     ui.set_light(false);
-    // Choose another: the list is back. The person asks to look on the network; what was found
+    // Choose another by its own path: on a card that is connected, Back is that button. It takes
+    // the abandoned attempt's state with it — "Connected to Groq" over the returned list of cards
+    // is what a status left behind looks like, and step 3 still claims that connection.
+    key(w, slint::platform::Key::Escape.into());
+    assert_eq!(ui.get_step(), 2, "'Choose another' stays on the choosing screen");
+    assert_eq!(ui.get_connect_mode(), "", "the list is back");
+    assert_eq!(ui.get_chosen_id(), "");
+    assert_eq!(ui.get_connect_status(), "", "the abandoned attempt's status goes with it");
+    assert!(!ui.get_connect_words().contains("Connected"), "no words of a connection remain");
+    // The person asks to look on the network; what was found
     // leads, saying the conversations would go to that computer, the free one keeps Recommended,
     // and the look's words say what it found.
     ui.set_connect_mode("".into());
