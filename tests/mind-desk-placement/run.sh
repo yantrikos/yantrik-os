@@ -51,13 +51,16 @@ runtime=$(mktemp -d)
 chmod 700 "$runtime"
 export XDG_RUNTIME_DIR=$runtime
 pids=()
+# This run's desks: the one labwc started and the one started again by hand, found by the runtime
+# directory they were given, so no other copy of the binary on the machine is ever touched.
+our_desks() {
+  for p in $(pgrep -f "^$DESK" 2>/dev/null || true); do
+    if tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -qx "XDG_RUNTIME_DIR=$runtime"; then echo "$p"; fi
+  done
+}
 cleanup() {
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
-  # The desk labwc started, and the one started again by hand: found by the runtime directory they
-  # were given, so no other copy of the binary on the machine is touched.
-  for p in $(pgrep -f "^$DESK" 2>/dev/null || true); do
-    if tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -qx "XDG_RUNTIME_DIR=$runtime"; then kill "$p" 2>/dev/null || true; fi
-  done
+  for p in $(our_desks); do kill "$p" 2>/dev/null || true; done
   rm -rf "$runtime"
 }
 trap cleanup EXIT
@@ -107,7 +110,7 @@ shoot maximised-1280x690 1280x690
 shoot restored-896x560 896x560
 
 # The desk ends and the shell starts it again: a new window, a rule run at its map.
-desk=$(pgrep -f "^$DESK" | head -1 || true)
+desk=$(our_desks | head -1)
 if [ -n "$desk" ]; then
   kill "$desk"
   sleep 1
