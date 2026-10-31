@@ -410,15 +410,13 @@ export component DesktopScreen inherits Rectangle {
         //
         // Everyday mode only. Agent mode is the machine's desk and has no icons; its right-click is
         // the TouchArea above. The Bench is under the home (which ends where its content ends),
-        // above the dock, and as wide as the screen; what the Minds panel covers at the right it
-        // reserves, so the grid is laid out in what is left (crates/yantrik-bench/src/layout.rs)
-        // rather than hiding an icon under the panel.
+        // above the dock, and as wide as the screen. The Minds panel, when pinned, is drawn over
+        // the rightmost columns; icons do not move out of its way.
         if !root.agent-mode && !root.focus-mode : Bench {
             x: 0px;
             y: root.bench-top;
             width: parent.width;
             height: max(0px, parent.height - self.y - Theme.taskbar-height - 24px);
-            reserve-right: root.home-inset;
         }
 
         // ── Working set (left rail, hidden in focus mode) ──

@@ -12,12 +12,11 @@
 //!   a moment ago. A move across file systems is refused rather than made as copy-then-delete,
 //!   because that would be a delete.
 
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use crate::items::is_plain_name;
+use crate::rename::rename_no_replace;
 
 /// How many `name (n)` are tried before giving up. A person has not archived a hundred files
 /// of one name on one day.
@@ -109,33 +108,6 @@ fn numbered(name: &str, n: u32) -> String {
         Some((stem, ext)) if !stem.is_empty() => format!("{stem} ({n}).{ext}"),
         _ => format!("{name} ({n})"),
     }
-}
-
-/// A rename that fails with `AlreadyExists` instead of replacing what is at `to`.
-fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
-    let (a, b) = (c_path(from)?, c_path(to)?);
-    // SAFETY: both are NUL-terminated strings that outlive the call.
-    let rc = unsafe { libc::renameat2(libc::AT_FDCWD, a.as_ptr(), libc::AT_FDCWD, b.as_ptr(), libc::RENAME_NOREPLACE) };
-    if rc == 0 {
-        return Ok(());
-    }
-    let err = std::io::Error::last_os_error();
-    match err.raw_os_error() {
-        // The file system cannot do an atomic no-replace rename (some network and FUSE ones):
-        // check first, and say so, since the check and the move are two steps there.
-        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) => {
-            tracing::debug!("renameat2 is not supported here; checking before the move");
-            if std::fs::symlink_metadata(to).is_ok() {
-                return Err(std::io::ErrorKind::AlreadyExists.into());
-            }
-            std::fs::rename(from, to)
-        }
-        _ => Err(err),
-    }
-}
-
-fn c_path(p: &Path) -> std::io::Result<CString> {
-    CString::new(p.as_os_str().as_bytes()).map_err(|_| std::io::ErrorKind::InvalidInput.into())
 }
 
 #[cfg(test)]

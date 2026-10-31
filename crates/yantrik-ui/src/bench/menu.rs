@@ -99,7 +99,9 @@ pub fn item(c: &Context) -> Vec<Row> {
     if one && !c.only_folder && !c.only_app {
         rows.push(row("open-with", "Open with"));
     }
-    rows.last_mut().map(|r| r.separator_after = true);
+    if let Some(r) = rows.last_mut() {
+        r.separator_after = true;
+    }
     if one {
         rows.push(hinted("rename", "Rename", "F2"));
     }
@@ -107,7 +109,9 @@ pub fn item(c: &Context) -> Vec<Row> {
     if one && c.only_app && c.pinnable {
         rows.push(row("pin", if c.pinned { "Unpin from dock" } else { "Pin to dock" }));
     }
-    rows.last_mut().map(|r| r.separator_after = true);
+    if let Some(r) = rows.last_mut() {
+        r.separator_after = true;
+    }
     rows.push(hinted("archive", "Archive", "Delete"));
     rows
 }

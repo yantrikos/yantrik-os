@@ -12,8 +12,6 @@ import { BenchItem, BenchState } from "bench_state.slint";
 import { BenchIcon } from "bench_icon.slint";
 
 export component Bench inherits Rectangle {
-    // What the Minds panel covers at the right edge: the grid is laid out in the rest.
-    in property <length> reserve-right: 0px;
     property <bool> band-on: false;
     property <bool> band-ctrl: false;
     property <length> band-x0;
@@ -24,10 +22,9 @@ export component Bench inherits Rectangle {
     property <length> hint-x: max(BenchState.pad-x, min(BenchState.pad-x + round((BenchState.drag-x0 + BenchState.drag-dx - BenchState.pad-x) / BenchState.cell-w) * BenchState.cell-w, root.width - BenchState.cell-w));
     property <length> hint-y: max(BenchState.pad-y, min(BenchState.pad-y + round((BenchState.drag-y0 + BenchState.drag-dy - BenchState.pad-y) / BenchState.cell-h) * BenchState.cell-h, root.height - BenchState.cell-h));
 
-    changed width => { BenchState.area-changed(self.width, self.height, self.reserve-right); }
-    changed height => { BenchState.area-changed(self.width, self.height, self.reserve-right); }
-    changed reserve-right => { BenchState.area-changed(self.width, self.height, self.reserve-right); }
-    init => { BenchState.area-changed(self.width, self.height, self.reserve-right); }
+    changed width => { BenchState.area-changed(self.width, self.height); }
+    changed height => { BenchState.area-changed(self.width, self.height); }
+    init => { BenchState.area-changed(self.width, self.height); }
 
     function key-name(text: string) -> string {
         if text == Key.Return { return "enter"; }

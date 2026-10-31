@@ -41,8 +41,8 @@ pub struct Model {
     pub problem: Option<String>,
     pub store: Store,
     saver: Saver,
-    /// The icon area: width, height, and what the Minds panel covers at the right.
-    area: Option<(i32, i32, i32)>,
+    /// The icon area: width and height.
+    area: Option<(i32, i32)>,
     pub placed: Vec<Placed>,
     pub selection: BTreeSet<String>,
     anchor: Option<String>,
@@ -67,15 +67,15 @@ impl Model {
     }
 
     pub fn grid(&self) -> Option<Grid> {
-        self.area.map(|(w, h, reserve)| Grid::new(w, h, reserve, METRICS))
+        self.area.map(|(w, h)| Grid::new(w, h, METRICS))
     }
 
     /// The icon area was drawn at this size. True when the icons moved because of it.
-    pub fn set_area(&mut self, w: i32, h: i32, reserve: i32) -> bool {
-        if self.area == Some((w, h, reserve)) || w <= 0 || h <= 0 {
+    pub fn set_area(&mut self, w: i32, h: i32) -> bool {
+        if self.area == Some((w, h)) || w <= 0 || h <= 0 {
             return false;
         }
-        self.area = Some((w, h, reserve));
+        self.area = Some((w, h));
         self.relayout();
         true
     }

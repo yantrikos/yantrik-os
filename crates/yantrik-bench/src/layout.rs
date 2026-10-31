@@ -54,22 +54,17 @@ pub struct Grid {
     pub m: Metrics,
     pub w: i32,
     pub h: i32,
-    /// The width not covered by the panel.
-    pub usable_w: i32,
     pub cols: u32,
     pub rows: u32,
 }
 
 impl Grid {
-    /// The grid for an area `w` by `h` of which the right `reserve` is covered (by the Minds
-    /// panel). The size is what the layout is kept under; the reserve only decides how many
-    /// columns there is room for, so opening the panel reflows the icons without rewriting where
-    /// the person put them.
-    pub fn new(w: i32, h: i32, reserve: i32, m: Metrics) -> Grid {
-        let usable = (w - reserve.max(0)).max(m.cell_w);
-        let cols = ((usable - 2 * m.pad_x) / m.cell_w).max(1) as u32;
+    /// The grid for an icon area `w` by `h`. The Minds panel, when pinned, is drawn over the
+    /// rightmost columns rather than moving them: icons stay where the person put them.
+    pub fn new(w: i32, h: i32, m: Metrics) -> Grid {
+        let cols = ((w - 2 * m.pad_x) / m.cell_w).max(1) as u32;
         let rows = ((h - 2 * m.pad_y) / m.cell_h).max(1) as u32;
-        Grid { m, w: w.max(m.cell_w), h: h.max(m.cell_h), usable_w: usable, cols, rows }
+        Grid { m, w: w.max(m.cell_w), h: h.max(m.cell_h), cols, rows }
     }
 
     /// The key this size's layout is kept under.
@@ -92,7 +87,7 @@ impl Grid {
 
     /// A free pixel position kept wholly on the screen.
     pub fn clamp_free(&self, x: i32, y: i32) -> (i32, i32) {
-        (x.clamp(0, (self.usable_w - self.m.cell_w).max(0)), y.clamp(0, (self.h - self.m.cell_h).max(0)))
+        (x.clamp(0, (self.w - self.m.cell_w).max(0)), y.clamp(0, (self.h - self.m.cell_h).max(0)))
     }
 
     /// How many icons fit before the grid is full.

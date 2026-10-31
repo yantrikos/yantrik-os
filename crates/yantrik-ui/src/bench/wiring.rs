@@ -85,11 +85,11 @@ pub fn wire(ui: &App, shared: Shared) {
 
     {
         let (shared, weak) = (shared.clone(), weak.clone());
-        state.on_area_changed(move |w, h, reserve| {
+        state.on_area_changed(move |w, h| {
             // `set_area` redraws only when the icons moved; `run` publishes in any case, which
             // is one comparison of the model when nothing changed.
             run(&shared, &weak, |_ui, b| {
-                b.model.set_area(w as i32, h as i32, reserve as i32);
+                b.model.set_area(w as i32, h as i32);
             });
         });
     }

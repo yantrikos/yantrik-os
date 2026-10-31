@@ -19,7 +19,7 @@ fn desk(files: &[&str]) -> (tempfile::TempDir, Model) {
     let saver = Saver::Direct { layout: layout.clone(), recent: tmp.path().join(".yantrik/last_opened.json") };
     let mut m = Model::new(desktop, Store::load(&layout), saver);
     m.rescan();
-    m.set_area(4 * METRICS.cell_w + 2 * METRICS.pad_x, 4 * METRICS.cell_h + 2 * METRICS.pad_y, 0);
+    m.set_area(4 * METRICS.cell_w + 2 * METRICS.pad_x, 4 * METRICS.cell_h + 2 * METRICS.pad_y);
     (tmp, m)
 }
 
@@ -65,7 +65,7 @@ fn the_layout_is_in_the_file_and_comes_back_next_session() {
         let saver = Saver::Direct { layout: path.clone(), recent: t.path().join("r.json") };
         let mut m2 = Model::new(m.desktop.clone(), Store::load(&path), saver);
         m2.rescan();
-        m2.set_area(4 * METRICS.cell_w + 2 * METRICS.pad_x, 4 * METRICS.cell_h + 2 * METRICS.pad_y, 0);
+        m2.set_area(4 * METRICS.cell_w + 2 * METRICS.pad_x, 4 * METRICS.cell_h + 2 * METRICS.pad_y);
         m2
     };
     assert_eq!(cell(&again, "b.txt"), Some((3, 3)));
@@ -205,9 +205,9 @@ fn a_smaller_screen_flows_what_does_not_fit_and_the_big_one_is_remembered() {
     let (_t, mut m) = desk(&["a", "b"]);
     m.place_in_cell("b", 3, 3).unwrap();
     let big = m.grid().unwrap().key();
-    m.set_area(2 * METRICS.cell_w + 2 * METRICS.pad_x, 2 * METRICS.cell_h + 2 * METRICS.pad_y, 0);
+    m.set_area(2 * METRICS.cell_w + 2 * METRICS.pad_x, 2 * METRICS.cell_h + 2 * METRICS.pad_y);
     assert_eq!(cell(&m, "b"), Some((0, 1)), "reflowed into the small grid");
-    m.set_area(4 * METRICS.cell_w + 2 * METRICS.pad_x, 4 * METRICS.cell_h + 2 * METRICS.pad_y, 0);
+    m.set_area(4 * METRICS.cell_w + 2 * METRICS.pad_x, 4 * METRICS.cell_h + 2 * METRICS.pad_y);
     assert_eq!(m.grid().unwrap().key(), big);
     assert_eq!(cell(&m, "b"), Some((3, 3)), "and back where the person put it");
 }

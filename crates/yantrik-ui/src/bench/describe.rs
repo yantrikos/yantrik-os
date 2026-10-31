@@ -118,7 +118,7 @@ mod tests {
         let saver = Saver::Direct { layout: layout.clone(), recent: tmp.path().join(".yantrik/last_opened.json") };
         let mut model = Model::new(desktop, Store::load(&layout), saver);
         model.rescan();
-        model.set_area(4 * METRICS.cell_w + 2 * METRICS.pad_x, 4 * METRICS.cell_h + 2 * METRICS.pad_y, 0);
+        model.set_area(4 * METRICS.cell_w + 2 * METRICS.pad_x, 4 * METRICS.cell_h + 2 * METRICS.pad_y);
         let bench = Bench {
             model,
             pictures: Pictures::none(),
@@ -141,7 +141,7 @@ mod tests {
         for name in ["notes.txt", "photo.png", "run.desktop"] {
             assert!(said.contains(name), "{name} is listed: {said}");
         }
-        for leak in ["TOP-SECRET", "/bin/evil", "Exec=", &tmp.path().to_string_lossy().into_owned(), "mtime", "modified", "\"size\"", "bytes"] {
+        for leak in ["TOP-SECRET", "/bin/evil", "Exec=", tmp.path().to_str().unwrap(), "mtime", "modified", "\"size\"", "bytes"] {
             assert!(!said.contains(leak), "describe leaks {leak:?}: {said}");
         }
         let v = describe(&b);

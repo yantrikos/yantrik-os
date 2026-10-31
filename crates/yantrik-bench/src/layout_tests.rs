@@ -4,7 +4,7 @@ use crate::items::Kind;
 
 fn grid() -> Grid {
     // 3 columns by 4 rows with METRICS: 3*104+40 wide, 4*116+16 high.
-    Grid::new(3 * 104 + 40, 4 * 116 + 16, 0, METRICS)
+    Grid::new(3 * 104 + 40, 4 * 116 + 16, METRICS)
 }
 
 fn names(list: &[&str]) -> Vec<String> {
@@ -112,7 +112,7 @@ fn renaming_keeps_the_place_at_every_size() {
 
 #[test]
 fn a_new_screen_size_starts_from_the_last_and_reflows_what_no_longer_fits() {
-    let big = Grid::new(6 * 104 + 40, 6 * 116 + 16, 0, METRICS);
+    let big = Grid::new(6 * 104 + 40, 6 * 116 + 16, METRICS);
     let small = grid();
     let mut s = Store::default();
     s.set(&big.key(), "near", Pos::Cell { col: 0, row: 1 });
@@ -127,28 +127,13 @@ fn a_new_screen_size_starts_from_the_last_and_reflows_what_no_longer_fits() {
 
 #[test]
 fn a_full_grid_cascades_instead_of_losing_icons() {
-    let g = Grid::new(104 + 40, 116 + 16, 0, METRICS);
+    let g = Grid::new(104 + 40, 116 + 16, METRICS);
     assert_eq!(g.capacity(), 1);
     let placed = Store::default().resolve(&g, &names(&["a", "b", "c"]));
     assert_eq!(placed.len(), 3, "every icon is placed");
     assert_eq!(placed[0].cell, Some((0, 0)));
     assert!(placed[1].cell.is_none() && placed[2].cell.is_none());
     assert_ne!((placed[1].x, placed[1].y), (placed[2].x, placed[2].y));
-}
-
-#[test]
-fn the_panel_takes_columns_but_not_the_layouts_key() {
-    let free = Grid::new(6 * 104 + 40, 4 * 116 + 16, 0, METRICS);
-    let covered = Grid::new(6 * 104 + 40, 4 * 116 + 16, 3 * 104, METRICS);
-    assert_eq!((free.cols, covered.cols), (6, 3));
-    assert_eq!(free.key(), covered.key(), "the same layout, so opening the panel rewrites nothing");
-    let mut s = Store::default();
-    s.set(&free.key(), "far", Pos::Cell { col: 5, row: 0 });
-    let placed = s.resolve(&covered, &names(&["far"]));
-    assert_eq!(placed[0].cell, Some((0, 0)), "drawn where there is room");
-    assert_eq!(s.get(&free.key(), "far"), Some(Pos::Cell { col: 5, row: 0 }), "and still remembered where it was");
-    assert!(!s.adopt(&covered.key(), &placed), "a displaced icon is not re-adopted over its saved place");
-    assert!(covered.clamp_free(5000, 0).0 <= covered.usable_w - METRICS.cell_w);
 }
 
 #[test]

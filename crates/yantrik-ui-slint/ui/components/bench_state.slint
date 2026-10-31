@@ -71,9 +71,8 @@ export global BenchState {
     in-out property <length> drag-y0: 0;
 
     // ── What the Bench reports ──
-    // The icon area changed size (and the first time it is drawn): its width, its height, and how
-    // much of the right edge the Minds panel covers.
-    callback area-changed(length, length, length);
+    // The icon area changed size (and the first time it is drawn): its width and its height.
+    callback area-changed(length, length);
     // A press on an icon: its name and whether Ctrl is held.
     callback select(string, bool);
     // The press ended on the same icon without a drag: a plain click on one of several selected
