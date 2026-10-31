@@ -1898,6 +1898,8 @@ pub fn publish(
                     "The app, by the name you describe it by or open it by, e.g. presentation",
                 )),
             move |args| {
+                // A window brought over the person's work is their view moved (#1033).
+                crate::shell_view::refuse_for_mind("app windows")?;
                 let name = args["name"].as_str().unwrap_or_default().trim().to_string();
                 if name.is_empty() {
                     return Err("`name` is empty".into());
@@ -1926,6 +1928,8 @@ pub fn publish(
             .defers()
             .arg(Param::text("title").describe("Window title, or part of one")),
             move |args| {
+                // Raises the shell or any window over the person's work (#1033).
+                crate::shell_view::refuse_for_mind("windows")?;
                 let ui = focus_ui()?;
                 let want = args["title"].as_str().unwrap_or_default();
                 // The same list `describe` publishes under `windows`, plus the shell's own

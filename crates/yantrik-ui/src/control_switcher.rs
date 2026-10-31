@@ -462,6 +462,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     .optional(),
             ),
             move |args| {
+                // The person's switcher and the window it brings forward are theirs (#1033).
+                crate::shell_view::refuse_for_mind("the window switcher")?;
                 let ui = move_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
                 let word = args["direction"].as_str().unwrap_or_default();
                 let how = Move::parse(word)
@@ -480,6 +482,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .risk("standard")
             .defers(),
             move |_args| {
+                // The person's switcher and the window it brings forward are theirs (#1033).
+                crate::shell_view::refuse_for_mind("the window switcher")?;
                 let ui = commit_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
                 commit(&ui, None)
             },
@@ -493,6 +497,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             )
             .risk("safe"),
             move |_args| {
+                // The person's switcher and the window it brings forward are theirs (#1033).
+                crate::shell_view::refuse_for_mind("the window switcher")?;
                 let ui = cancel_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
                 Ok(cancel(&ui))
             },

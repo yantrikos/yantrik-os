@@ -295,9 +295,9 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             // Preserve the existing permission classification for automation callers.
             Action::new("files_delete", "Move a file or folder to recoverable Trash").defers()
                 .risk("dangerous")
-                .arg(Param::text("name").describe("The name to delete, shown in the current listing; in `parent` for a Mind").optional())
-                .arg(Param::text("path").describe("The entry to delete, e.g. /home/user/a/b.txt (a Mind's form; touches nobody's screen)").optional())
-                .arg(Param::text("parent").describe("The folder `name` is in (a Mind's form)").optional()),
+                .arg(Param::text("name").describe("The name to delete, shown in the current listing (the person's form; a Mind gives `path`)").optional())
+                .arg(Param::text("path").describe("The entry to delete, e.g. /home/user/a/b.txt (a Mind's form, required of a Mind so the approval names the whole target; touches nobody's screen)").optional())
+                .arg(Param::text("parent").describe("The folder `name` is in (a Mind's form, with `name`)").optional()),
             move |args| {
                 if let Some(answer) = files_cursor::intercept("files_delete", args) {
                     return answer;
@@ -412,7 +412,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             "Rename an entry without replacing existing files",
         )
         .defers()
-        .arg(Param::text("name").describe("The entry to rename, in the current listing; in `parent` for a Mind").optional())
+        .arg(Param::text("name").describe("The entry to rename, in the current listing (the person's form; a Mind gives `path`)").optional())
         .arg(Param::text("new_name"))
         .arg(Param::text("path").describe("The entry to rename, e.g. /home/user/a/b.txt (a Mind's form; touches nobody's screen)").optional())
         .arg(Param::text("parent").describe("The folder `name` is in (a Mind's form)").optional()),

@@ -73,28 +73,68 @@ mod tests {
     /// `open_app` for a screen.
     #[test]
     fn every_view_mover_asks_first() {
-        // (file, a token that moves the person's view, how many handlers or helpers contain it
-        // unguarded on purpose, and why). The count is exact, so a new mover must either ask or be
-        // argued for here.
-        const EXEMPT: &[(&str, &str, &str)] = &[
-            ("control_installer.rs", "set_current_screen(", "the first-run wizard is drivable by an agent by design, before any person has a view"),
-            ("control_files.rs", "set_current_screen(", "ensure_files_screen itself; every handler intercepts first (files_actions_all_intercept)"),
-            ("control_files.rs", "ensure_files_screen(", "the handlers intercept first (files_actions_all_intercept)"),
-            ("control_approvals.rs", "raise_shell(", "the approval card is the person's own decision surface"),
-            ("control_switcher.rs", "raise_shell(", "reached only once `open` has asked; open_on_worker has no caller in scope"),
+        // (file, a token that moves the person's view, the function it is allowed in or "" for the
+        // file, and why). A new mover must either ask or be argued for here.
+        const EXEMPT: &[(&str, &str, &str, &str)] = &[
+            ("control_installer.rs", "set_current_screen(", "", "the first-run wizard is drivable by an agent by design, before any person has a view"),
+            ("control_installer.rs", "invoke_navigate(", "", "the same wizard"),
+            ("control_files.rs", "set_current_screen(", "", "ensure_files_screen itself; every handler intercepts first (files_actions_all_intercept)"),
+            ("control_files.rs", "ensure_files_screen(", "", "the handlers intercept first (files_actions_all_intercept)"),
+            ("control_approvals.rs", "raise_shell(", "", "the approval card is the person's own decision surface"),
+            ("control_switcher.rs", "raise_shell(", "fn open_on_worker", "reached only once `open` has asked; the worker has no caller in scope"),
+            ("control_switcher.rs", "raise_shell(", "fn activate_cell", "called by `commit`, which asks first (switcher_entry_points_ask_first)"),
+            ("control_switcher.rs", "toplevel_watch::activate(", "fn activate_cell", "called by `commit`, which asks first"),
+            ("control_switcher.rs", "toplevel_watch::activate(", "fn activate_origin", "called by `cancel`, which asks first"),
+            ("control_switcher.rs", "windows::present(", "fn activate_cell", "called by `commit`, which asks first"),
+            ("control_switcher.rs", "windows::present(", "fn activate_origin", "called by `cancel`, which asks first"),
         ];
+        // Every `control*.rs`: `every_control_file_is_scanned` keeps this list equal to the directory.
         let files = [
             ("control.rs", include_str!("control.rs")),
+            ("control_agent_terminal.rs", include_str!("control_agent_terminal.rs")),
             ("control_agents.rs", include_str!("control_agents.rs")),
-            ("control_workroom.rs", include_str!("control_workroom.rs")),
-            ("control_overlays.rs", include_str!("control_overlays.rs")),
-            ("control_switcher.rs", include_str!("control_switcher.rs")),
-            ("control_files.rs", include_str!("control_files.rs")),
-            ("control_files_make.rs", include_str!("control_files_make.rs")),
-            ("control_installer.rs", include_str!("control_installer.rs")),
             ("control_approvals.rs", include_str!("control_approvals.rs")),
+            ("control_capture.rs", include_str!("control_capture.rs")),
+            ("control_chat.rs", include_str!("control_chat.rs")),
+            ("control_decide.rs", include_str!("control_decide.rs")),
+            ("control_files.rs", include_str!("control_files.rs")),
+            ("control_files_create.rs", include_str!("control_files_create.rs")),
+            ("control_files_cursor.rs", include_str!("control_files_cursor.rs")),
+            ("control_files_make.rs", include_str!("control_files_make.rs")),
+            ("control_files_mind.rs", include_str!("control_files_mind.rs")),
+            ("control_files_mind_tests.rs", include_str!("control_files_mind_tests.rs")),
+            ("control_files_paste.rs", include_str!("control_files_paste.rs")),
+            ("control_installer.rs", include_str!("control_installer.rs")),
+            ("control_installer_consent.rs", include_str!("control_installer_consent.rs")),
+            ("control_installer_target.rs", include_str!("control_installer_target.rs")),
+            ("control_levels.rs", include_str!("control_levels.rs")),
+            ("control_levels_actions.rs", include_str!("control_levels_actions.rs")),
+            ("control_network.rs", include_str!("control_network.rs")),
+            ("control_overlays.rs", include_str!("control_overlays.rs")),
+            ("control_power.rs", include_str!("control_power.rs")),
+            ("control_recipes.rs", include_str!("control_recipes.rs")),
+            ("control_screen.rs", include_str!("control_screen.rs")),
+            ("control_settings.rs", include_str!("control_settings.rs")),
+            ("control_switcher.rs", include_str!("control_switcher.rs")),
+            ("control_taint_scope.rs", include_str!("control_taint_scope.rs")),
+            ("control_theme.rs", include_str!("control_theme.rs")),
+            ("control_update.rs", include_str!("control_update.rs")),
+            ("control_wifi_reconnect.rs", include_str!("control_wifi_reconnect.rs")),
+            ("control_workroom.rs", include_str!("control_workroom.rs")),
         ];
-        let movers = ["set_current_screen(", "raise_shell(", "ensure_files_screen(", "invoke_launch_app(", "show_desktop::press("];
+        let movers = [
+            "set_current_screen(",
+            "raise_shell(",
+            "ensure_files_screen(",
+            "invoke_launch_app(",
+            "show_desktop::press(",
+            "invoke_switch_window(",
+            "invoke_navigate(",
+            "set_lens_open(true",
+            "present_app(",
+            "windows::present(",
+            "toplevel_watch::activate(",
+        ];
         let mut unguarded = Vec::new();
         for (file, src) in files {
             let src = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
@@ -110,7 +150,7 @@ mod tests {
                 let code: String = chunk.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
                 for mover in movers {
                     let Some(at) = code.find(mover) else { continue };
-                    if code.contains("fn ensure_files_screen") || EXEMPT.iter().any(|(f, m, _)| *f == file && *m == mover) {
+                    if code.contains("fn ensure_files_screen") || EXEMPT.iter().any(|(f, m, in_fn, _)| *f == file && *m == mover && chunk.trim_start().starts_with(in_fn)) {
                         continue;
                     }
                     let asked = ["refuse_for_mind(", "files_cursor::intercept(", "cursor::caller_key("]
@@ -163,6 +203,50 @@ mod tests {
         // The macro that builds the screen-state actions asks too, before it reads the screen.
         let mac = &src[src.find("macro_rules! action").unwrap()..];
         assert!(mac.find("intercept($name").unwrap() < mac.find("mind::here(").unwrap());
+    }
+
+    /// The scan above reads a list of files; a new `control_*.rs` cannot be left out of it.
+    #[test]
+    fn every_control_file_is_scanned() {
+        let listed: Vec<String> = include_str!("shell_view.rs")
+            .lines()
+            .filter(|l| l.contains("include_str!"))
+            .filter_map(|l| l.trim().strip_prefix("(\"control"))
+            .filter_map(|l| l.split('"').next())
+            .filter(|n| n.ends_with(".rs"))
+            .map(|n| format!("control{n}"))
+            .collect();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with("control") && n.ends_with(".rs"))
+            .collect();
+        on_disk.sort_unstable();
+        let mut listed = listed;
+        listed.sort_unstable();
+        listed.dedup();
+        assert_eq!(listed, on_disk, "every control*.rs is in `every_view_mover_asks_first`'s list");
+    }
+
+    /// The switcher's own actions move the person's selection or bring a window forward; the
+    /// functions the person's keys call are not gated (their callers have no requester), so the
+    /// actions a Mind reaches are: each asks before it does anything.
+    #[test]
+    fn switcher_entry_points_ask_first() {
+        let src = include_str!("control_switcher.rs");
+        let src = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+        for action in ["switcher_move", "switcher_commit", "switcher_cancel"] {
+            let at = src.find(&format!("
+                \"{action}\",
+")).unwrap_or_else(|| panic!("{action} is published"));
+            let rest = &src[at..];
+            let body = &rest[rest.find("move |").unwrap()..];
+            let body = &body[..body.find("let ui = ").unwrap()];
+            assert!(body.contains("refuse_for_mind("), "{action} must ask before it takes the shell or acts");
+        }
+        let open = &src[src.find("pub fn open(").unwrap()..];
+        assert!(open.find("refuse_for_mind(").unwrap() < open.find("hold_windows(").unwrap());
     }
 
     /// `describe` of any of the shell's own screens is answered by `yos` as "part of the shell",

@@ -9,8 +9,12 @@
 //!   `files_list` take `path` (the entry itself, or the folder for a listing), or `parent` and
 //!   `name`. Nothing about the person's screen is read.
 //! - **A private cursor.** `files_go`, `files_enter` and `files_up` move a folder kept per
-//!   caller, never shown; a call with neither `path` nor `parent` acts in the caller's own cursor
-//!   (the home, until it moves). Two Minds keep two cursors.
+//!   caller, never shown; `files_new_*` and `files_list` with no `path` act in the caller's own
+//!   cursor (the home, until it moves). Two Minds keep two cursors. A caller the shell cannot name
+//!   (a token it did not believe, the built-in companion) keeps none and gives explicit paths.
+//! - **Delete and rename name their whole target.** The person's approval of a `files_delete`
+//!   binds the arguments the card shows, so a Mind gives `path` (or `parent` and `name`); a bare
+//!   `name` would be resolved against a cursor the Mind can move after the person has allowed it.
 //! - Whatever acts on the person's selection, clipboard or Trash (`files_select`, `files_copy`,
 //!   `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`,
 //!   `files_cancel`, `files_terminal`) or opens a window (`files_open`) is refused for a Mind
@@ -31,14 +35,48 @@ use crate::mind_view::{mind_id_now, requester_now, Requester};
 /// The folder each Mind is "in", by the caller's identity. Never drawn anywhere.
 static CURSORS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-/// Who is calling, as a key for its cursor: `None` for the person. A Mind the shell cannot name
-/// shares the cursor of its kind ("an agent", "a mind"), never the person's.
-pub(crate) fn caller_key() -> Option<String> {
-    match requester_now() {
-        Requester::Person => None,
-        Requester::Mind(who) => Some(mind_id_now().unwrap_or(who)),
+/// Who is calling, as far as a cursor is concerned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Caller {
+    /// The person: no cursor, their own Files screen.
+    Person,
+    /// A Mind the shell can tell from every other: `agent:<id>` or `mind:<name>`.
+    Named(String),
+    /// A Mind it cannot tell apart (a token it did not believe, the mind account with no attached
+    /// mind, the built-in companion whose turns all arrive as one): no cursor, explicit paths.
+    Unnamed,
+}
+
+impl Caller {
+    pub(crate) fn is_mind(&self) -> bool {
+        !matches!(self, Caller::Person)
+    }
+
+    /// The folder this caller is in: its cursor, when it has one.
+    pub(crate) fn folder(&self) -> Option<String> {
+        match self {
+            Caller::Named(key) => Some(cursor_of(key)),
+            Caller::Person | Caller::Unnamed => None,
+        }
     }
 }
+
+/// Sort a requester, and the id `mind_id_now` gave it, into a [`Caller`].
+pub(crate) fn caller_for(req: &Requester, id: Option<String>) -> Caller {
+    match (req, id) {
+        (Requester::Person, _) => Caller::Person,
+        (Requester::Mind(_), Some(id)) if id.starts_with("agent:") || id.starts_with("mind:") => Caller::Named(id),
+        (Requester::Mind(_), _) => Caller::Unnamed,
+    }
+}
+
+pub(crate) fn caller_key() -> Caller {
+    caller_for(&requester_now(), mind_id_now())
+}
+
+/// What a caller with no cursor is told when the call needed one.
+pub(crate) const NEEDS_PATH: &str =
+    "give a full `path`: the shell cannot tell your calls from another's, so it keeps no folder for you";
 
 pub(crate) fn cursor_of(key: &str) -> String {
     let all = CURSORS.lock().unwrap_or_else(|e| e.into_inner());
@@ -74,9 +112,10 @@ fn text<'a>(args: &'a Value, key: &str) -> &'a str {
     args[key].as_str().unwrap_or_default().trim()
 }
 
-/// An entry and the folder it is in, as one of the three forms names it: `path`; `parent` with
-/// `name`; or `name` alone, in `fallback` (the Mind's cursor).
-pub(crate) fn entry_in(args: &Value, fallback: Option<&str>) -> Result<Option<(String, String)>, String> {
+/// An entry and the folder it is in, as one of the two forms names it: `path`, or `parent` with
+/// `name`. A bare `name` is refused: it would be resolved against a cursor that can move between
+/// the person's approval and the call.
+pub(crate) fn entry_in(args: &Value) -> Result<(String, String), String> {
     let (path, parent, name) = (text(args, "path"), text(args, "parent"), text(args, "name"));
     if !path.is_empty() {
         let path = spelled(path)?.trim_end_matches('/');
@@ -89,15 +128,15 @@ pub(crate) fn entry_in(args: &Value, fallback: Option<&str>) -> Result<Option<(S
         if leaf.is_empty() {
             return Err(format!("`{path}` names no entry"));
         }
-        return Ok(Some((parent.to_string(), leaf.to_string())));
+        return Ok((parent.to_string(), leaf.to_string()));
     }
     if name.is_empty() {
-        return Err("give `path`, or `parent` and `name`, or `name` in the folder you are in".into());
+        return Err("give `path`, or `parent` and `name`".into());
     }
-    if !parent.is_empty() {
-        return Ok(Some((spelled(parent)?.trim_end_matches('/').to_string(), name.to_string())));
+    if parent.is_empty() {
+        return Err("give the whole target as `path`, or `parent` and `name`; a bare `name` is not enough".into());
     }
-    Ok(fallback.map(|folder| (folder.to_string(), name.to_string())))
+    Ok((spelled(parent)?.trim_end_matches('/').to_string(), name.to_string()))
 }
 
 /// The folder read back for an answer, checked again on what it is now, links resolved: a folder
@@ -123,24 +162,26 @@ pub(crate) fn deferred(work: impl FnOnce() -> Result<Value, String> + Send + 'st
 /// `files_list`: what a folder holds, for anyone, without touching the screen. No `path` means the
 /// caller's cursor; for the person, the folder on screen (`on_screen`, read on the UI thread).
 pub(crate) fn list(args: &Value, on_screen: impl FnOnce() -> String) -> Result<Value, String> {
-    let key = caller_key();
-    let path = match (text(args, "path"), &key) {
-        ("", Some(key)) => cursor_of(key),
-        ("", None) => on_screen(),
+    let who = caller_key();
+    let path = match (text(args, "path"), &who) {
+        ("", Caller::Person) => on_screen(),
+        ("", mind) => mind.folder().ok_or(NEEDS_PATH)?,
         (path, _) => spelled(path)?.to_string(),
     };
     mind::may_open(&path)?;
-    let for_mind = key.is_some();
+    let for_mind = who.is_mind();
     deferred(move || read_folder(&path, for_mind))
 }
 
-/// Take the Mind's cursor to `path` and say what is there.
-fn go(key: String, path: String) -> Result<Value, String> {
+/// Take the Mind's cursor to `path` (when it has one) and say what is there.
+fn go(key: Option<String>, path: String) -> Result<Value, String> {
     spelled(&path)?;
     mind::open_verdict(&path, &home())?;
     deferred(move || {
         let listing = read_folder(&path, true)?;
-        move_cursor(&key, &path);
+        if let Some(key) = key {
+            move_cursor(&key, &path);
+        }
         Ok(listing)
     })
 }
@@ -150,22 +191,28 @@ fn go(key: String, path: String) -> Result<Value, String> {
 /// `files_list` and `files_stat` are not here, and `files_new_folder` and `files_new_file` are
 /// the same action for everyone (`make_target`): none of them looks at the screen for a Mind.
 pub(crate) fn intercept(action: &str, args: &Value) -> Option<Result<Value, String>> {
-    let key = caller_key()?;
-    Some(act(&key, action, args))
+    match caller_key() {
+        Caller::Person => None,
+        who => Some(act(&who, action, args)),
+    }
 }
 
 /// [`intercept`] once the caller is known.
-pub(crate) fn act(key: &str, action: &str, args: &Value) -> Result<Value, String> {
-    let here = || cursor_of(key);
+pub(crate) fn act(who: &Caller, action: &str, args: &Value) -> Result<Value, String> {
+    let key = match who {
+        Caller::Named(key) => Some(key.clone()),
+        _ => None,
+    };
+    let here = || who.folder().ok_or(NEEDS_PATH);
     match action {
-        "files_go" => go(key.to_string(), text(args, "path").to_string()),
+        "files_go" => go(key, text(args, "path").to_string()),
         "files_enter" => {
             let name = crate::fileops::name(text(args, "name"))?;
-            go(key.to_string(), mind::into(&here(), name))
+            go(key, mind::into(&here()?, name))
         }
-        "files_up" => go(key.to_string(), mind::up_from(&here())),
+        "files_up" => go(key, mind::up_from(&here()?)),
         "files_refresh" => {
-            let path = here();
+            let path = here()?;
             mind::open_verdict(&path, &home())?;
             deferred(move || read_folder(&path, true))
         }
@@ -180,8 +227,8 @@ pub(crate) fn act(key: &str, action: &str, args: &Value) -> Result<Value, String
                 "note": "grid or list is how the person's own Files screen is drawn; it was left as it is",
             }))
         }
-        "files_rename" => rename(key, args),
-        "files_delete" => delete(key, args),
+        "files_rename" => rename(args),
+        "files_delete" => delete(args),
         "files_open" => Err(crate::shell_view::sentence("files")),
         other => Err(refusal(other)),
     }
@@ -196,8 +243,8 @@ pub(crate) fn refusal(action: &str) -> String {
     )
 }
 
-fn rename(key: &str, args: &Value) -> Result<Value, String> {
-    let (parent, name) = entry_in(args, Some(&cursor_of(key)))?.ok_or("nothing to rename")?;
+fn rename(args: &Value) -> Result<Value, String> {
+    let (parent, name) = entry_in(args)?;
     let new = text(args, "new_name").to_string();
     crate::fileops::name(&new)?;
     let home = home();
@@ -211,8 +258,8 @@ fn rename(key: &str, args: &Value) -> Result<Value, String> {
     })
 }
 
-fn delete(key: &str, args: &Value) -> Result<Value, String> {
-    let (parent, name) = entry_in(args, Some(&cursor_of(key)))?.ok_or("nothing to delete")?;
+fn delete(args: &Value) -> Result<Value, String> {
+    let (parent, name) = entry_in(args)?;
     crate::fileops::name(&name)?;
     let home = home();
     mind::entry_verdict(&parent, &name, &home)?;
@@ -246,7 +293,7 @@ pub(crate) fn make_target(args: &Value, folder: bool, fallback: &str, home: &std
                 }
             }
         }
-        let (label, leaf) = entry_in(args, None)?.ok_or("`path` names no entry")?;
+        let (label, leaf) = entry_in(args)?;
         return Ok(Make::In { dir: crate::filebrowser::expand_home(&label), label, name: leaf });
     }
     if name.is_empty() {
@@ -270,7 +317,7 @@ mod tests {
         }
         let make = include_str!("control_files_make.rs");
         let make = &make[..make.find("#[cfg(test)]").unwrap_or(make.len())];
-        let guard = make.find("if key.is_none() && !explicit").expect("the person-only switch");
+        let guard = make.find("if !who.is_mind() && !explicit").expect("the person-only switch");
         assert!(make.find("ensure_files_screen(").unwrap() > guard, "a Mind's make never switches the screen");
     }
 
@@ -288,7 +335,7 @@ mod tests {
 
     #[test]
     fn a_mind_gets_a_sentence_for_what_acts_on_the_persons_screen() {
-        let key = "mind:test-refuse-1033";
+        let key = &Caller::Named("mind:test-refuse-1033".to_string());
         for action in [
             "files_select", "files_copy", "files_cut", "files_paste", "files_trash_selected",
             "files_undo_trash", "files_toggle_trash", "files_cancel", "files_terminal", "files_anything_new",
@@ -307,16 +354,64 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_is_named_by_path_by_parent_and_name_or_by_the_cursor() {
-        let e = |v: Value, fallback| entry_in(&v, fallback).unwrap();
-        assert_eq!(e(json!({ "path": "/home/p/a/b" }), None), Some(("/home/p/a".into(), "b".into())));
-        assert_eq!(e(json!({ "path": "~/a/" }), None), Some(("~".into(), "a".into())));
-        assert_eq!(e(json!({ "path": "/x" }), None), Some(("/".into(), "x".into())));
-        assert_eq!(e(json!({ "parent": "/home/p/a/", "name": "b" }), None), Some(("/home/p/a".into(), "b".into())));
-        assert_eq!(e(json!({ "name": "b" }), Some("~/docs")), Some(("~/docs".into(), "b".into())));
-        assert_eq!(e(json!({ "name": "b" }), None), None);
-        for bad in [json!({}), json!({ "path": "relative/x" }), json!({ "path": "~" }), json!({ "parent": "docs", "name": "b" })] {
-            assert!(entry_in(&bad, None).is_err(), "{bad}");
+    fn an_entry_is_named_by_path_or_by_parent_and_name() {
+        let e = |v: Value| entry_in(&v).unwrap();
+        assert_eq!(e(json!({ "path": "/home/p/a/b" })), ("/home/p/a".into(), "b".into()));
+        assert_eq!(e(json!({ "path": "~/a/" })), ("~".into(), "a".into()));
+        assert_eq!(e(json!({ "path": "/x" })), ("/".into(), "x".into()));
+        assert_eq!(e(json!({ "parent": "/home/p/a/", "name": "b" })), ("/home/p/a".into(), "b".into()));
+        for bad in [json!({}), json!({ "name": "b" }), json!({ "path": "relative/x" }), json!({ "path": "~" }), json!({ "parent": "docs", "name": "b" })] {
+            assert!(entry_in(&bad).is_err(), "{bad}");
+        }
+    }
+
+    /// #1033 review: the person's Allow binds the arguments the card showed. A bare `name` would
+    /// be resolved against a cursor the Mind can move after that, so a Mind's delete and rename
+    /// are refused without the whole target, whatever the cursor says, and the cursor never
+    /// decides what they act on.
+    #[test]
+    fn a_minds_delete_and_rename_name_the_whole_target() {
+        let key = "mind:test-bound-1033";
+        let who = Caller::Named(key.to_string());
+        for cursor in ["~/scratch", "~/Documents"] {
+            move_cursor(key, cursor);
+            for (action, args) in [
+                ("files_delete", json!({ "name": "notes.txt" })),
+                ("files_rename", json!({ "name": "notes.txt", "new_name": "n2.txt" })),
+            ] {
+                let said = act(&who, action, &args).unwrap_err();
+                assert!(said.contains("whole target"), "{action} at {cursor}: {said}");
+            }
+        }
+        // The same call with the target named reaches the path checks instead, and a path the
+        // home does not hold is refused by them, not by the missing target.
+        let said = act(&who, "files_delete", &json!({ "path": "/etc/passwd" })).unwrap_err();
+        assert!(!said.contains("whole target"), "{said}");
+    }
+
+    #[test]
+    fn a_caller_is_sorted_into_the_person_a_named_mind_or_an_unnamed_one() {
+        let mind = |s: &str| Requester::Mind(s.to_string());
+        let id = |s: &str| Some(s.to_string());
+        assert_eq!(caller_for(&Requester::Person, None), Caller::Person);
+        assert_eq!(caller_for(&Requester::Person, id("mind:x")), Caller::Person, "the person never gets a cursor");
+        let (a, b) = (caller_for(&mind("x"), id("mind:a")), caller_for(&mind("x"), id("mind:b")));
+        assert_eq!((&a, &b), (&Caller::Named("mind:a".into()), &Caller::Named("mind:b".into())));
+        assert_ne!(a, b, "two Minds are two callers");
+        assert_eq!(caller_for(&mind("an agent"), id("agent:7")), Caller::Named("agent:7".into()));
+        for unnamed in [None, id("companion")] {
+            assert_eq!(caller_for(&mind("a mind"), unnamed), Caller::Unnamed);
+        }
+        assert!(Caller::Unnamed.folder().is_none() && Caller::Person.folder().is_none());
+        assert!(Caller::Unnamed.is_mind() && !Caller::Person.is_mind());
+    }
+
+    /// A Mind the shell cannot name keeps no folder: what needs one is refused with a sentence,
+    /// and moving "its" cursor moves nobody's.
+    #[test]
+    fn an_unnamed_mind_has_no_cursor() {
+        for action in ["files_enter", "files_up", "files_refresh"] {
+            assert_eq!(act(&Caller::Unnamed, action, &json!({ "name": "a" })).unwrap_err(), NEEDS_PATH, "{action}");
         }
     }
 
@@ -353,6 +448,8 @@ mod tests {
         assert!(go.contains("invoke_file_navigate_to_path"));
         // Every Mind-only branch sits behind `caller_key`, which is `None` for the person.
         let lib = include_str!("control_files_cursor.rs");
-        assert!(lib.contains("Requester::Person => None"));
+        let lib = &lib[..lib.find("#[cfg(test)]").unwrap()];
+        assert!(lib.contains("caller_for(&requester_now(), mind_id_now())"), "caller_key reads who is asking");
+        assert!(lib.contains("Caller::Person => None"), "intercept lets the person's call go on as written");
     }
 }

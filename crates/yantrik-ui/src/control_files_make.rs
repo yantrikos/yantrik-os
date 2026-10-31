@@ -18,20 +18,22 @@ use crate::App;
 pub(crate) fn make_here(weak: &slint::Weak<App>, args: &Value, folder: bool) -> Result<Value, String> {
     use slint::ComponentHandle;
     let ui = weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
-    let key = cursor::caller_key();
+    let who = cursor::caller_key();
     let given = |k: &str| args[k].as_str().is_some_and(|v| !v.trim().is_empty());
     let explicit = given("path") || given("parent");
     let name = args["name"].as_str().unwrap_or_default().to_string();
     let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
     // The folder a bare `name` is made in: the Mind's own, or the one on the person's screen.
-    let fallback = match &key {
-        Some(key) => cursor::cursor_of(key),
-        None => ui.get_file_browser_path().to_string(),
+    let tilde = !explicit && name.starts_with("~/");
+    let fallback = match &who {
+        cursor::Caller::Person => ui.get_file_browser_path().to_string(),
+        // A Mind with no cursor names the folder; a `~/…` name does.
+        mind if !explicit && !tilde => mind.folder().ok_or(cursor::NEEDS_PATH)?,
+        mind => mind.folder().unwrap_or_default(),
     };
     // A `~/…` name does not depend on the folder; anything else is made inside one, which a mind
     // must be allowed to see. A nested path's levels are each judged on the worker, where they
     // exist one after another (`make_nested_checked`).
-    let tilde = !explicit && name.starts_with("~/");
     let target = if tilde { Make::Levels(name.clone()) } else { cursor::make_target(args, folder, &fallback, &home)? };
     if let Make::In { label, name, .. } = &target {
         if is_nested(name) && !folder {
@@ -50,12 +52,12 @@ pub(crate) fn make_here(weak: &slint::Weak<App>, args: &Value, folder: bool) -> 
     }
     // Only the person's own bare call goes to the Files screen: a Mind's never does, and a call
     // that names its folder needs no screen.
-    if key.is_none() && !explicit {
+    if !who.is_mind() && !explicit {
         crate::control_files::ensure_files_screen(&ui);
     }
     let weak = ui.as_weak();
     // Who is asking is known here; the worker may not be able to tell, so it is carried in.
-    let mind = key.is_some();
+    let mind = who.is_mind();
     let work = move || {
         let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
         let answer = match target {
