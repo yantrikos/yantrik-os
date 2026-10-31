@@ -1,9 +1,13 @@
 //! The mailbox: the first look, Sync, folders, search and the triage tabs, by button and by
 //! intent, each answered from what the service said.
 
+use std::time::Duration;
+
 use serde_json::json;
 use yantrik_app::mind::fake::FakeMind;
+use yantrik_ipc_contracts::email::WAITING_FOR_VAULT;
 
+use super::vault::accounts;
 use super::{act, inbox, listed, message, notice, quiet, start_with, started, state, with_inbox};
 use crate::backend::fake::{FakeMail, UNREACHABLE};
 use crate::command::{Command, Look};
@@ -170,4 +174,56 @@ fn describe_before_the_first_look_lands_says_email_is_starting_not_unreachable()
     let down = started(&FakeMail::unreachable());
     let said = down.describe()["summary"].as_str().unwrap().to_string();
     assert!(said.contains("could not be reached") && said.contains(UNREACHABLE), "a failed look says why: {said}");
+}
+
+/// #1025: an unreachable service is not the end of the story. The look that could not reach the
+/// service arms a timer that asks again, so a service that comes back — after an update, or a
+/// crash — is found by itself, and the retry stops the moment a look lands.
+#[test]
+fn the_app_recovers_when_the_service_comes_back() {
+    let mail = FakeMail::unreachable();
+    let app = started(&mail);
+    assert_eq!(app.ui(|ui| ui.get_email_sync_status()), "Service unreachable");
+    assert_eq!(notice(&app), format!("The mail service could not be reached: {UNREACHABLE}"));
+
+    // The service comes back — same fake, now answering what a ready service answers.
+    mail.set("email.accounts", Ok(accounts(false, false)));
+    mail.set("email.list_folders", Ok(json!([{ "name": "INBOX", "counts": { "unread": 2, "total": 3 } }])));
+    mail.set("email.list_messages", Ok(inbox()));
+
+    // The retry timer asks again by itself; nobody closed and reopened the window.
+    app.advance(Duration::from_secs(5));
+    quiet(&app);
+    assert_eq!(app.ui(|ui| ui.get_email_sync_status()), "Synced", "the look the timer asked for landed");
+    assert_eq!(notice(&app), "", "the sentence about the unreachable service is gone");
+
+    // And it stopped asking: a wait that has ended leaves no timer behind.
+    let asked = mail.asked_for("email.accounts").len();
+    app.advance(Duration::from_secs(60));
+    quiet(&app);
+    assert_eq!(mail.asked_for("email.accounts").len(), asked, "the retry timer was stopped");
+}
+
+/// #1025: a look that lands on the vault wait replaces whatever sentence was on screen. The
+/// old "could not be reached" from before the service came back must not stay under a status
+/// line that says "Waiting for the vault", and the retry timer gives the asking to the vault wait.
+#[test]
+fn a_stale_unreachable_notice_does_not_survive_a_vault_wait() {
+    let mail = FakeMail::unreachable();
+    let app = started(&mail);
+    assert_eq!(notice(&app), format!("The mail service could not be reached: {UNREACHABLE}"));
+
+    // The service is back, but the vault is still shut: the next look lands on the vault wait.
+    mail.set("email.accounts", Ok(accounts(true, false)));
+    app.advance(Duration::from_secs(5));
+    quiet(&app);
+
+    assert_eq!(notice(&app), WAITING_FOR_VAULT, "the leftover sentence is replaced, not left under the wait");
+    assert_eq!(app.ui(|ui| ui.get_email_sync_status()), "Waiting for the vault");
+
+    // The vault wait has taken over the asking: it goes on, the retry timer does not double it.
+    let asked = mail.asked_for("email.accounts").len();
+    app.advance(Duration::from_secs(5));
+    quiet(&app);
+    assert_eq!(mail.asked_for("email.accounts").len(), asked + 1, "asked again once, by the vault wait alone");
 }
