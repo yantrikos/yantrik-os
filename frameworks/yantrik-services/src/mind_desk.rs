@@ -21,7 +21,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::json;
-use yantrik_ipc_contracts::mind_desk::{DeskSnapshot, StopAck, ACTION, AGENTS_ACTION, LONGEST_WAIT_SECS, STOP_ACTION};
+use yantrik_ipc_contracts::mind_desk::{
+    DeskSnapshot, StopAck, AGENTS_ACTION, LONGEST_WAIT_SECS, SNAPSHOT_ACTION, STOP_ACTION,
+};
 use yantrik_ipc_transport::SyncRpcClient;
 
 use crate::{classify, shape_of, ServiceError};
@@ -74,7 +76,7 @@ impl MindDeskApi for MindDesk {
         if let Some(tag) = since {
             args["since"] = json!(tag);
         }
-        decode(act(ACTION, args, SNAPSHOT_DEADLINE)?)
+        decode(act(SNAPSHOT_ACTION, args, SNAPSHOT_DEADLINE)?)
     }
 
     fn ask_stop(&self, agent: &str) -> Result<StopAck, ServiceError> {
