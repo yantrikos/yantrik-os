@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use yantrik_companion_core::judge_config::JudgeConfig;
+use yantrik_companion_core::config::last_good_path;
 
 use crate::CompanionConfig;
 
@@ -35,7 +36,51 @@ pub fn write_judge_section(path: &Path, judge: &JudgeConfig) -> std::io::Result<
     if parsed.judge != *judge {
         return Err(invalid("the decision model could not be placed in the config without changing something else"));
     }
+    // What is on disk now is the last thing a boot could recover to, so keep it before the
+    // truncate below. Nothing is said when it cannot be kept: on an installed machine the
+    // directory belongs to root, and a person choosing not to be woken by that every save is
+    // worth more than the warning.
+    if let Err(e) = keep_last_good(path, &current) {
+        tracing::warn!(
+            path = %path.display(),
+            last_good = %last_good_path(path).display(),
+            "the last good copy could not be kept ({e}); this save leaves the machine nothing to fall back on if it is interrupted"
+        );
+    }
     write_in_place(path, text.as_bytes())
+}
+
+/// Writes `previous` — the text `path` held before this save — to `config.yaml.last-good` beside
+/// it, which is what the loader at boot falls back to when the file itself no longer parses.
+/// Made by hand rather than with `write_atomically`: a durable copy needs no rename, and a rename
+/// would put a new owner and mode on the file in a directory that is not always the writer's.
+/// A file that does not parse is not a good copy and never replaces one: an empty file parses as
+/// nothing but defaults, which is exactly the loss the copy exists to prevent.
+fn keep_last_good(path: &Path, previous: &str) -> std::io::Result<()> {
+    if serde_yaml::from_str::<CompanionConfig>(previous).is_err() || previous.trim().is_empty() {
+        return Ok(());
+    }
+    let copy = last_good_path(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A copy is a new file, so it is opened by the rule the config itself is opened by.
+        options.custom_flags(libc::O_NOFOLLOW);
+        options.mode(0o600);
+    }
+    let mut file = options.open(&copy)?;
+    file.write_all(previous.as_bytes())?;
+    file.sync_all()?;
+    // `mode` applies only to a file this call creates; a copy that is already there keeps
+    // whatever mode it was left with, which may be another account's.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 fn invalid(why: impl ToString) -> std::io::Error {
@@ -169,7 +214,13 @@ mod tests {
         let meta = std::fs::metadata(&path).unwrap();
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         assert_eq!(meta.ino(), inode);
-        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        // No temporary: the only thing beside the file is the copy a boot recovers from.
+        let mut left: Vec<String> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["config.yaml".to_string(), "config.yaml.last-good".to_string()]);
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -230,5 +281,69 @@ mod tests {
     fn the_loaded_path_is_the_one_saved_to() {
         assert_eq!(machine_config_path(Some(Path::new("/x/c.yaml"))), PathBuf::from("/x/c.yaml"));
         assert_eq!(machine_config_path(None), PathBuf::from("/opt/yantrik/config.yaml"));
+    }
+
+    #[test]
+    fn a_save_keeps_what_was_on_disk_beside_it() {
+        let d = dir("keep");
+        let path = d.join("config.yaml");
+        std::fs::write(&path, DISK).unwrap();
+        write_judge_section(&path, &CompanionConfig::default().judge).unwrap();
+        let copy = d.join("config.yaml.last-good");
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), DISK, "the copy holds the text the file held before the save");
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), DISK, "and the file itself moved on");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn the_copy_moves_on_with_every_save() {
+        let d = dir("keep-two");
+        let path = d.join("config.yaml");
+        std::fs::write(&path, DISK).unwrap();
+        let mut judge = CompanionConfig::default().judge;
+        judge.provider = "jev".into();
+        judge.endpoint = "https://api.typesafe.ai".into();
+        write_judge_section(&path, &judge).unwrap();
+        let copy = d.join("config.yaml.last-good");
+        assert!(std::fs::read_to_string(&copy).unwrap().contains("provider: kev"));
+        judge.provider = "mov".into();
+        write_judge_section(&path, &judge).unwrap();
+        let after = std::fs::read_to_string(&copy).unwrap();
+        assert!(after.contains("provider: jev") && !after.contains("provider: kev"), "the copy is the previous save, not the first one");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// A file torn by an interrupted save parses as nothing — so a later save must not let it
+    /// stand in as the good copy, which is the one thing the machine would boot from.
+    #[test]
+    fn a_torn_file_is_never_kept_as_the_copy() {
+        let d = dir("keep-torn");
+        let path = d.join("config.yaml");
+        std::fs::write(&path, DISK).unwrap();
+        write_judge_section(&path, &CompanionConfig::default().judge).unwrap();
+        let copy = d.join("config.yaml.last-good");
+        let kept = std::fs::read_to_string(&copy).unwrap();
+        assert!(kept.contains("provider: kev"));
+        let torn = "llm:\n  backend: \"ap";
+        std::fs::write(&path, torn).unwrap();
+        let mut judge = CompanionConfig::default().judge;
+        judge.provider = "jev".into();
+        judge.endpoint = "https://api.typesafe.ai".into();
+        let _ = write_judge_section(&path, &judge);
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), kept, "the torn text was not kept in the copy's place");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_copy_is_readable_by_the_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = dir("keep-mode");
+        let path = d.join("config.yaml");
+        std::fs::write(&path, DISK).unwrap();
+        write_judge_section(&path, &CompanionConfig::default().judge).unwrap();
+        let copy = d.join("config.yaml.last-good");
+        assert_eq!(std::fs::metadata(&copy).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(d);
     }
 }

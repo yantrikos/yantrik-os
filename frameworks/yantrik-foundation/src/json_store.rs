@@ -20,6 +20,10 @@ static SERIAL: AtomicU64 = AtomicU64::new(0);
 pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(dir)?;
+    // A directory made just now is not itself on the disk yet. Synced before anything is written
+    // into it, so a rename that lands is not naming a file inside a directory the next boot
+    // cannot find.
+    sync_dir(dir);
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
     let temp = dir.join(format!(
         ".{name}.{}-{}.tmp",
@@ -47,12 +51,20 @@ pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&temp);
         return Err(e);
     }
-    // The directory entry too, where the platform allows a directory to be synced.
+    // The directory entry of the rename itself.
+    sync_dir(dir);
+    Ok(())
+}
+
+/// Opens `dir` and syncs it, so what it now names is on the disk. Where a directory cannot be
+/// opened and synced this way, nothing is synced and nothing is said.
+fn sync_dir(dir: &Path) {
     #[cfg(unix)]
     if let Ok(d) = File::open(dir) {
         let _ = d.sync_all();
     }
-    Ok(())
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// [`write_atomically`], for text.
@@ -117,6 +129,26 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// How `email-service`'s `accounts::save` uses it: the directory is made first, its mode set,
+    /// and only then is the file written into it.
+    #[test]
+    fn a_file_written_into_a_directory_made_for_it_is_whole() {
+        let dir = temp_dir("fresh");
+        let nested = dir.join("secrets");
+        let path = nested.join("accounts.json");
+        fs::create_dir_all(&nested).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&nested, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        write_atomically(&path, b"{\"a\":1}").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"a\":1}");
+        let left: Vec<_> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("secrets")], "the write left no mark beside the directory");
         let _ = fs::remove_dir_all(&dir);
     }
 

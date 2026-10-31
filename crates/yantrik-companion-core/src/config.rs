@@ -4,7 +4,7 @@
 //! Supports YAML deserialization.
 
 pub use crate::judge_config::{judge_use, JudgeConfig, JudgeKind, JudgeUse, JUDGE_USES, PRESETS as JUDGE_PRESETS};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -1826,14 +1826,115 @@ impl Default for CompanionConfig {
 
 impl CompanionConfig {
     /// Load from a YAML file.
+    ///
+    /// A file that does not parse — torn by a crash between the truncate and the last byte, or
+    /// truncated to nothing — does not end the boot: a copy the writer kept beside it is used
+    /// instead, and the torn file is left on disk as it is, for a person to see. Only when
+    /// neither parses does this fail, as it did before any copy existed.
     pub fn from_yaml(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
-        let config: Self = serde_yaml::from_str(&content)?;
-        Ok(config)
+        match Self::parse(&content) {
+            Ok(config) => Ok(config),
+            Err(why) => match read_last_good(path) {
+                Some(config) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        last_good = %last_good_path(path).display(),
+                        "config.yaml does not parse ({why}); the machine boots from the last good copy beside it"
+                    );
+                    Ok(config)
+                }
+                None => Err(why.into()),
+            },
+        }
+    }
+
+    /// `text` as a configuration. A file truncated to nothing would deserialise as all defaults,
+    /// losing every setting quietly, so an empty file counts as not parsing and the copy beside
+    /// it gets its turn.
+    fn parse(text: &str) -> Result<Self, String> {
+        if text.trim().is_empty() {
+            return Err("the file is empty".into());
+        }
+        serde_yaml::from_str(text).map_err(|e| e.to_string())
     }
 
     /// Check if a service is enabled by the user.
     pub fn has_service(&self, service: &str) -> bool {
         self.enabled_services.iter().any(|s| s.eq_ignore_ascii_case(service))
+    }
+}
+
+/// The file a good copy of `path` is kept in, beside it. The companion's own config writer keeps
+/// one: `config.yaml` is rewritten in place, so a machine whose power died mid-write would
+/// otherwise boot with nothing where its settings were.
+pub fn last_good_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| format!("{}.last-good", n.to_string_lossy()))
+        .unwrap_or_else(|| "config.yaml.last-good".into());
+    path.with_file_name(name)
+}
+
+fn read_last_good(path: &Path) -> Option<CompanionConfig> {
+    let text = std::fs::read_to_string(last_good_path(path)).ok()?;
+    CompanionConfig::parse(&text).ok()
+}
+
+#[cfg(test)]
+mod last_good_recovery_tests {
+    use super::CompanionConfig;
+
+    const GOOD: &str = "llm:\n  backend: \"api\"\n  api_model: \"machine-model\"\njudge:\n  provider: kev\n  endpoint: \"http://127.0.0.1:8009\"\n";
+    /// What an interrupted write leaves: the file ends where the power ran out, mid-quote.
+    const TORN: &str = "llm:\n  backend: \"ap";
+
+    fn dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("yos-cfgboot-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_torn_config_boots_from_the_copy_beside_it() {
+        let d = dir("torn");
+        let path = d.join("config.yaml");
+        std::fs::write(&path, TORN).unwrap();
+        std::fs::write(d.join("config.yaml.last-good"), GOOD).unwrap();
+        let config = CompanionConfig::from_yaml(&path).unwrap();
+        assert_eq!(config.llm.api_model.as_deref(), Some("machine-model"));
+        assert_eq!(config.judge.provider, "kev");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TORN, "the torn file stays for a person to see");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn a_config_truncated_to_nothing_boots_from_the_copy_too() {
+        let d = dir("empty");
+        let path = d.join("config.yaml");
+        std::fs::write(&path, "").unwrap();
+        std::fs::write(d.join("config.yaml.last-good"), GOOD).unwrap();
+        let config = CompanionConfig::from_yaml(&path).unwrap();
+        assert_eq!(config.llm.api_model.as_deref(), Some("machine-model"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn a_torn_config_with_no_copy_fails_as_it_always_did() {
+        let d = dir("torn-alone");
+        let path = d.join("config.yaml");
+        std::fs::write(&path, TORN).unwrap();
+        assert!(CompanionConfig::from_yaml(&path).is_err());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn an_empty_config_with_no_copy_fails_rather_than_booting_on_defaults() {
+        let d = dir("empty-alone");
+        let path = d.join("config.yaml");
+        std::fs::write(&path, "").unwrap();
+        assert!(CompanionConfig::from_yaml(&path).is_err());
+        let _ = std::fs::remove_dir_all(d);
     }
 }
