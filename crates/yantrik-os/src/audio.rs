@@ -11,7 +11,7 @@
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
 
@@ -177,14 +177,33 @@ const SETTLE: Duration = Duration::from_millis(120);
 /// How long to wait before asking the audio server again after it went away.
 const RETRY: Duration = Duration::from_secs(5);
 
+/// How long a `pactl subscribe` must live before it is credited with a subscription that was
+/// actually there. One refused by the server, or with no server to reach, exits in milliseconds;
+/// this is the lower bound that separates it from one that connected and only then died. The wait
+/// that measures it is bounded by `RETRY`, so it can never hold the watcher longer than a retry.
+const MOMENT: Duration = Duration::from_millis(500);
+
+/// Whether a `pactl subscribe` that has just exited had a real subscription to lose, and so is
+/// worth asking again. It was there if the process produced an output-event line at all, or lived
+/// longer than [`MOMENT`]: either means it was talking to the server and only then died (a PipeWire
+/// restart). A `pactl` that exited at once having said nothing had no subscription — there is no
+/// server to follow, and retrying every [`RETRY`] forever only spams the log with the same news.
+fn subscription_was_there(got_a_line: bool, ran_for: Duration) -> bool {
+    got_a_line || ran_for >= MOMENT
+}
+
 /// Watch the audio server and say `AudioChanged` when the default output's volume or mute
 /// changes, whoever changed it: the keys, another app, `wpctl` in a terminal.
 ///
-/// Stops at once, logging once, when `pactl` is not installed. When the server goes away
-/// (a restart of PipeWire) it asks again every few seconds, without logging each time.
+/// Stops at once, logging once, when `pactl` is not installed, or when a `pactl subscribe` exits
+/// at once having produced no output-event line — a server that refuses the subscription, or none
+/// to reach, so there is nothing to follow (see [`subscription_was_there`]). Only when a `pactl`
+/// that had subscribed then died (a PipeWire restart) does it ask again every [`RETRY`]; it says
+/// it is waiting to follow changes at most once, never once per restart.
 pub fn run_audio_watcher(tx: Sender<SystemEvent>) {
     let mut last = read();
     let mut warned = false;
+    let mut announced = false;
     loop {
         let mut child = match Command::new("pactl")
             .arg("subscribe")
@@ -208,7 +227,10 @@ pub fn run_audio_watcher(tx: Sender<SystemEvent>) {
             }
         };
         let Some(stdout) = child.stdout.take() else { return };
-        tracing::info!("Audio watcher started (pactl subscribe)");
+        if !announced {
+            tracing::info!("Audio watcher started (pactl subscribe)");
+            announced = true;
+        }
 
         // A reader thread, so the settling wait below can time out. It ends when pactl does.
         let (line_tx, line_rx) = mpsc::channel::<()>();
@@ -220,8 +242,14 @@ pub fn run_audio_watcher(tx: Sender<SystemEvent>) {
             }
         });
 
-        // `Err` from the blocking recv means the reader finished: pactl exited.
-        while line_rx.recv().is_ok() {
+        // `Err` from the first recv means pactl exited before producing an output-event line.
+        // Later lines are drained with the settling wait, which also stops when pactl does: a
+        // bare `recv()` would block forever if it died between two lines. The first recv is left
+        // untimed so a line already on the channel is never dropped by a `MOMENT`-long wait.
+        let started = Instant::now();
+        let mut got_a_line = false;
+        if line_rx.recv().is_ok() {
+            got_a_line = true;
             while line_rx.recv_timeout(SETTLE).is_ok() {}
             let now = read();
             if now != last {
@@ -230,8 +258,27 @@ pub fn run_audio_watcher(tx: Sender<SystemEvent>) {
                     let _ = tx.try_send(SystemEvent::AudioChanged { volume_pct, muted });
                 }
             }
+            while line_rx.recv_timeout(MOMENT).is_ok() {
+                while line_rx.recv_timeout(SETTLE).is_ok() {}
+                let now = read();
+                if now != last {
+                    last = now;
+                    if let Some(AudioState { volume_pct, muted }) = now {
+                        let _ = tx.try_send(SystemEvent::AudioChanged { volume_pct, muted });
+                    }
+                }
+            }
         }
+
+        // A wait bounded by `RETRY`, so this never holds the watcher longer than a retry already
+        // does; `ran_for` is then a lower bound on how long pactl lived.
+        let ran_for = started.elapsed();
         let _ = child.wait();
+
+        if !subscription_was_there(got_a_line, ran_for) {
+            tracing::info!("pactl subscribe exited at once; the shell will not follow volume changes made elsewhere");
+            return;
+        }
         std::thread::sleep(RETRY);
     }
 }
@@ -335,5 +382,17 @@ mod tests {
             ["set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+"]
         );
         assert_eq!(step_volume_args(-5), ["set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"]);
+    }
+
+    #[test]
+    fn a_pactl_that_exits_at_once_is_not_retried_but_one_that_ran_is() {
+        // No output-event line and no elapsed time: the subscription was never there (no server,
+        // or one that refuses it), so the watcher must not respawn it every RETRY.
+        assert!(!subscription_was_there(false, Duration::ZERO));
+        // But a pactl that produced a line, or lived a while before dying (a PipeWire restart),
+        // had a subscription to lose and is worth asking again.
+        assert!(subscription_was_there(true, Duration::ZERO));
+        assert!(subscription_was_there(false, MOMENT));
+        assert!(subscription_was_there(true, MOMENT));
     }
 }
