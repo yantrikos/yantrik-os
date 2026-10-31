@@ -79,7 +79,12 @@ fn pause_then_resume_continues_from_the_bytes_on_disk() {
     let data = body(600_000);
     let f = open(vec![("/big.bin", File::held_at(data.clone(), 100_000))]);
     let id = f.act("add", json!({ "url": f.server.url("/big.bin") })).unwrap()["id"].as_i64().unwrap();
-    f.until("the first part is in", |f| f.row(id)["status"] == "downloading");
+    // Bytes on disk, not just the status word: a pause set before the worker has written
+    // anything is legitimate, but this test is about resuming a part-written file.
+    f.until("the first part is in", |f| {
+        f.row(id)["status"] == "downloading"
+            && std::fs::metadata(f.default_dir().join("big.bin")).map(|m| m.len() > 0).unwrap_or(false)
+    });
     f.act("pause", json!({ "id": id })).unwrap();
     // The worker is blocked on the server and sees the flag at its next chunk.
     f.server.release();
