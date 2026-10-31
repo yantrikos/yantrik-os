@@ -11503,6 +11503,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tracing",
+ "yantrik-bench",
  "yantrik-foundation",
 ]
 
