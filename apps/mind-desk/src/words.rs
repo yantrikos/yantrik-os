@@ -71,13 +71,13 @@ pub fn label(mind: &DeskMind) -> String {
     format!("{} · {}", name.to_uppercase(), state_label(mind.state).to_uppercase())
 }
 
-/// The big line: the state in the desk's own plain words, or the tool the Mind is running. Never
-/// anything the Mind said it is doing: that is the person's, and this window is read by every Mind.
+/// The big line: what the Mind is doing, in the desk's own plain words. The tool it is running is
+/// the strip's to name, so this does not say it twice. Never anything the Mind said it is doing:
+/// that is the person's, and this window is read by every Mind.
 pub fn headline(mind: &DeskMind) -> String {
-    let running = mind.tool.as_ref().filter(|t| t.outcome == Outcome::Running).and_then(|t| wire::tool_name(&t.name));
-    match (mind.state, running) {
-        (MindState::RunningTool, Some(tool)) => format!("Running {tool}"),
-        (state, _) => state_label(state).to_string(),
+    match mind.state {
+        MindState::RunningTool => "Working on it".to_string(),
+        state => state_label(state).to_string(),
     }
 }
 
@@ -161,12 +161,13 @@ pub fn safety_line(account: Account) -> &'static str {
     }
 }
 
-/// The model the harness said it runs, and the mark that says whose word that is; or that there
-/// is none to say.
+/// The model the harness said it runs, and the mark that says whose word that is; or nothing at
+/// all. "Unavailable" would claim a model call failed, and a Mind that is answering has no such
+/// failure: a Mind on its own account may simply not name its model, and then the line is empty.
 pub fn model_line(model: Option<&str>) -> (String, &'static str) {
     match model.and_then(wire::model_label) {
         Some(model) => (model, "◇ Harness-reported model"),
-        None => ("Model unavailable".to_string(), ""),
+        None => (String::new(), ""),
     }
 }
 
@@ -243,22 +244,20 @@ mod tests {
         assert_eq!(label(&nameless), "MIND · IDLE");
     }
 
-    /// The desk says the state, or the tool it is running, in its own voice, and quotes nobody.
+    /// The desk says what the Mind is doing in its own voice, quotes nobody, and leaves the tool's
+    /// name to the strip, whatever the tool is.
     #[test]
-    fn the_desk_says_the_state_or_the_tool_in_its_own_voice() {
+    fn the_desk_says_what_the_mind_is_doing_in_its_own_voice() {
         for state in ALL {
             let said = headline(&mind(state));
-            assert_eq!(said, state_label(state), "{state:?}");
+            let want = if state == MindState::RunningTool { "Working on it" } else { state_label(state) };
+            assert_eq!(said, want, "{state:?}");
             assert!(!said.contains('“'), "nobody is quoted");
         }
         let mut running = mind(MindState::RunningTool);
-        running.tool = Some(DeskTool { name: "blender.add_object".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
-        assert_eq!(headline(&running), "Running blender.add_object");
-        // A tool that has finished is not "running", and one that is not a plain name is not said.
-        running.tool.as_mut().unwrap().outcome = Outcome::Ok;
-        assert_eq!(headline(&running), "Running a tool");
-        running.tool = Some(DeskTool { name: "cat ~/.ssh/id_rsa".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
-        assert_eq!(headline(&running), "Running a tool");
+        running.tool = Some(DeskTool { name: "describe".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
+        assert_eq!(headline(&running), "Working on it");
+        assert!(!headline(&running).contains("describe"), "the strip names the tool");
     }
 
     #[test]
@@ -340,10 +339,10 @@ mod tests {
     }
 
     #[test]
-    fn the_model_is_the_harnesss_word_or_unavailable() {
+    fn the_model_is_the_harnesss_word_or_nothing() {
         assert_eq!(model_line(Some("deepseek-v4.1-flash via ollama-cloud")), ("deepseek-v4.1-flash via ollama-cloud".to_string(), "◇ Harness-reported model"));
-        assert_eq!(model_line(None), ("Model unavailable".to_string(), ""));
-        assert_eq!(model_line(Some("/home/me/private.gguf")), ("Model unavailable".to_string(), ""), "a path is not a model");
+        assert_eq!(model_line(None), (String::new(), ""));
+        assert_eq!(model_line(Some("/home/me/private.gguf")), (String::new(), ""), "a path is not a model");
     }
 
     #[test]

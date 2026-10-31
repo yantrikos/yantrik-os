@@ -104,7 +104,7 @@ fn scenes() -> Vec<Scene> {
         name: "working",
         label: "HERMES · RUNNING A TOOL",
         tone: 1,
-        headline: "Running blender.add_object",
+        headline: "Working on it",
         can_stop: true,
         stop_note: "",
         agents: true,
@@ -154,7 +154,7 @@ fn scenes() -> Vec<Scene> {
         stats: "1:12 elapsed at 14:40 · 4 calls · 0 failed · 0 interrupted",
         apps: "Notes",
         safety: OWN,
-        model: "Model unavailable",
+        model: "",
         model_mark: "",
         ..working_copy()
     };
@@ -171,7 +171,7 @@ fn scenes() -> Vec<Scene> {
         stats: "",
         apps: "Apps unavailable",
         safety: "Account unavailable",
-        model: "Model unavailable",
+        model: "",
         model_mark: "",
         ..working_copy()
     };

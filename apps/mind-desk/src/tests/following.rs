@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use yantrik_ipc_contracts::mind_desk::MindState;
+use yantrik_ipc_contracts::mind_desk::{DeskTool, Evidence, MindState, Outcome};
 use yantrik_services::mind_desk::FakeMindDesk;
 use yantrik_services::ServiceError;
 
@@ -27,7 +27,7 @@ fn it_opens_one_window_and_asks_the_shell_for_the_first_snapshot() {
     assert_eq!(app.model(|m| m.link), Link::Live);
     let words = top_words(&app);
     assert!(words.contains("HERMES · RUNNING A TOOL"), "{words}");
-    assert!(words.contains("Running blender.add_object"), "{words}");
+    assert!(words.contains("Working on it"), "{words}");
     assert!(words.contains("RUNNING TOOL | blender.add_object | ◇ Reported · Running"), "{words}");
     assert!(words.contains("4:32 elapsed at 14:32 · 12 calls · 1 failed · 1 interrupted"), "{words}");
     assert_eq!(app.ui(|ui| ui.get_tone()), 1, "teal: the Mind at work");
@@ -70,7 +70,26 @@ fn the_footer_says_the_apps_the_account_and_the_model_from_the_snapshot() {
     app.run(Command::Heard(Ok(snapshot(2, Some(own)))));
     let b = app.model(chrome::footer);
     assert_eq!(b.safety, "Own account · Network checked · OS actions ask first");
-    assert_eq!((b.model.as_str(), b.model_mark.as_str()), ("Model unavailable", ""));
+    assert_eq!((b.model.as_str(), b.model_mark.as_str()), ("", ""));
+}
+
+/// A Mind on its own account that is running a tool and names no model is answering: the footer
+/// says nothing of its model, and certainly not that it is unavailable.
+#[test]
+fn a_mind_running_a_tool_with_no_model_picked_is_not_said_to_have_none_available() {
+    let mut own = hermes(MindState::RunningTool);
+    own.name = "Yantrik Mind".into();
+    own.account = yantrik_ipc_contracts::mind_desk::Account::Own;
+    own.model = None;
+    own.tool = Some(DeskTool { name: "describe".into(), evidence: Evidence::Reported, outcome: Outcome::Running });
+    let (app, _) = start(FakeMindDesk::new());
+    app.run(Command::Heard(Ok(snapshot(1, Some(own)))));
+    let b = app.model(chrome::footer);
+    assert_eq!((b.model.as_str(), b.model_mark.as_str()), ("", ""));
+    let shown = [top_words(&app), format!("{b:?}")].join(" ");
+    assert!(!shown.to_lowercase().contains("unavailable"), "{shown}");
+    assert_eq!(app.ui(|ui| ui.get_headline()), "Working on it");
+    assert_eq!(app.ui(|ui| ui.get_strip_tool()), "describe", "the strip names the tool, once");
 }
 
 #[test]

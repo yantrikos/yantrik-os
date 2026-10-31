@@ -185,7 +185,7 @@ fn token_shaped_names_and_labels_are_not_shown() {
     let shown = [top_words(&app), format!("{:?}", app.model(chrome::footer))].join("
 ");
     assert!(!shown.contains("ghp_") && !shown.contains("internal-host"), "{shown}");
-    assert!(shown.contains("a tool") && shown.contains("Model unavailable"), "{shown}");
+    assert!(shown.contains("a tool") && !shown.contains("unavailable"), "{shown}");
 }
 
 /// `App::ON_MINDS_DISPLAY` lets an app start on a Mind's display, where every other app refuses
