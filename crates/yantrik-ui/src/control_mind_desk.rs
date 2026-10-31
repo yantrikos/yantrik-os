@@ -37,7 +37,9 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use slint::ComponentHandle;
 use yantrik_app_runtime::control::{self, Action, App as ControlSurface, Param};
-use yantrik_ipc_contracts::mind_desk::{DeskSnapshot, ACTION, AGENTS_ACTION, LONGEST_WAIT_SECS, STOP_ACTION};
+use yantrik_ipc_contracts::mind_desk::{
+    DeskSnapshot, AGENTS_ACTION, LONGEST_WAIT_SECS, SNAPSHOT_ACTION, STOP_ACTION,
+};
 
 use crate::agents::{self, AgentId};
 use crate::approvals;
@@ -54,7 +56,7 @@ pub const WAITS: usize = 2;
 
 fn read_spec() -> Action {
     Action::new(
-        ACTION,
+        SNAPSHOT_ACTION,
         "What the Mind desk around Mind View shows: the Mind it follows (its name, state, the tool it \
          is running by name, counts, model and kind of account) and the apps open in Mind View. Reads \
          and changes nothing. Answered only to the desk the shell started. With `since` (the `tag` of \
@@ -324,7 +326,7 @@ mod tests {
     #[test]
     fn the_read_is_a_safe_stateless_action_that_takes_only_how_long_to_wait() {
         let spec = read_spec();
-        assert_eq!(spec.name, ACTION);
+        assert_eq!(spec.name, SNAPSHOT_ACTION);
         assert_eq!(spec.permission, "safe");
         assert!(spec.stateless, "its answer is the Mind's, not the shell's whole describe");
         let names: Vec<&str> = spec.params.iter().map(|a| a.name.as_str()).collect();

@@ -22,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The shell's action that answers with a [`DeskSnapshot`].
-pub const ACTION: &str = "mind_desk";
+pub const SNAPSHOT_ACTION: &str = "mind_desk";
 
 /// The shell's action that asks the *person*, on their own desktop, whether to stop a Mind.
 pub const STOP_ACTION: &str = "mind_desk_stop";
