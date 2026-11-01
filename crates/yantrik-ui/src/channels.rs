@@ -194,7 +194,8 @@ pub fn is_card_answer(text: &str) -> bool {
 /// What the phone is told when the answering mind is not the built-in companion.
 fn desk_only(name: &str) -> String {
     format!(
-        "{name} answers only at the desk. From your phone you talk to the built-in companion: make it          the answering mind, or ask again when you are back."
+        "{name} answers only at the desk. From your phone you talk to the built-in companion: make \
+         it the answering mind, or ask again when you are back."
     )
 }
 

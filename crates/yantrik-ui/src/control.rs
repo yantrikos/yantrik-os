@@ -1163,7 +1163,8 @@ pub fn publish(
             // about a window it had already seen (VM 520, 3 October), as files_go did (#596).
             Action::new(
                 "open_app",
-                "Launch an app, or focus it if it is already running; the answer says where its window                  is, what the app shows, and the actions to drive it",
+                "Launch an app, or focus it if it is already running; the answer says where its \
+                 window is, what the app shows, and the actions to drive it",
             )
             .arg(Param::text("name").describe("App id, e.g. notes, email, terminal, files")),
             move |args| {
@@ -1961,7 +1962,10 @@ pub fn publish(
                             return Ok(serde_json::json!({
                                 "closing": name,
                                 "where": "Mind View",
-                                "note": "the app was drawn in Mind View, where the apps a mind opens go,                                          and was asked to close there as pressing × does; one with                                          unsaved work may put up its own dialog and stay. Read                                          `mind_view` in `describe shell` to see whether it went.",
+                                "note": "the app was drawn in Mind View, where the apps a mind opens go, \
+                                         and was asked to close there as pressing × does; one with \
+                                         unsaved work may put up its own dialog and stay. Read \
+                                         `mind_view` in `describe shell` to see whether it went.",
                             }));
                         }
                         None => return Err(why),
