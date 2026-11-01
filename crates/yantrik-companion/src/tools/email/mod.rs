@@ -21,16 +21,23 @@ mod read;
 mod send;
 mod support;
 #[cfg(test)]
+mod gate_tests;
+#[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
 
 use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
+use crate::email::approval::{Approving, ShellApprover};
 use crate::email::port::{MailPort, ServiceMail};
 
 /// Register all email tools, over the real mail service.
+///
+/// The port every tool is given asks the person before it sends (`Approving`, over the shell's
+/// approval card): a send is outward and cannot be undone, in every mode. Nothing registers the
+/// bare `ServiceMail`; `approval_tests` reads this function to keep it so.
 pub fn register(reg: &mut ToolRegistry) {
-    register_with(reg, Arc::new(ServiceMail::live()));
+    register_with(reg, Arc::new(Approving::new(Arc::new(ServiceMail::live()), ShellApprover)));
 }
 
 /// Register all email tools over `mail`. The tests pass a fake.

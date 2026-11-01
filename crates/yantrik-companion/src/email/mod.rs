@@ -10,6 +10,7 @@
 //! - [`legacy`]: moves the mail accounts an older companion kept in `config.yaml`, password and
 //!   all, into the service and the vault, and archives the file it changed.
 
+pub mod approval;
 pub mod db;
 mod flight;
 pub mod legacy;

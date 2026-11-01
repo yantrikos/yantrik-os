@@ -43,6 +43,7 @@ pub mod media;
 pub mod memory_hygiene;
 pub mod network;
 pub mod networking;
+pub mod outward;
 pub mod package;
 pub mod pipe;
 /// What run_command may run, without a shell (#445).

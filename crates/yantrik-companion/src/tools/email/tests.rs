@@ -11,16 +11,16 @@ use crate::email::fake::{account, message, FakeMail, Vault};
 use crate::email::port::MailPort;
 use crate::tools::{PermissionLevel, Tool, ToolRegistry};
 
-fn world() -> (Arc<FakeMail>, Connection) {
+pub(super) fn world() -> (Arc<FakeMail>, Connection) {
     let mail = Arc::new(FakeMail::with_accounts(vec![account("ada-at-example.com", "ada@example.com")]));
     (mail, Connection::open_in_memory().unwrap())
 }
 
-fn port(mail: &Arc<FakeMail>) -> Arc<dyn MailPort> {
+pub(super) fn port(mail: &Arc<FakeMail>) -> Arc<dyn MailPort> {
     mail.clone()
 }
 
-fn args(v: serde_json::Value) -> serde_json::Value {
+pub(super) fn args(v: serde_json::Value) -> serde_json::Value {
     v
 }
 
@@ -29,7 +29,7 @@ fn cached_id(conn: &Connection, uid: u32) -> i64 {
     conn.query_row("SELECT id FROM emails WHERE uid = ?1", [uid], |r| r.get(0)).unwrap()
 }
 
-fn detail(from: &str, to: &[&str], cc: &[&str]) -> EmailDetail {
+pub(super) fn detail(from: &str, to: &[&str], cc: &[&str]) -> EmailDetail {
     EmailDetail {
         id: "7".into(),
         from: from.into(),
@@ -49,7 +49,7 @@ fn detail(from: &str, to: &[&str], cc: &[&str]) -> EmailDetail {
 }
 
 /// A checked inbox with one message, uid 7, from Priya.
-fn checked() -> (Arc<FakeMail>, Connection, i64) {
+pub(super) fn checked() -> (Arc<FakeMail>, Connection, i64) {
     let (mail, conn) = world();
     mail.state.lock().unwrap().listed = vec![message(7, "Priya", "priya@example.com", "Plans")];
     let said = read::EmailCheckTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({})));
