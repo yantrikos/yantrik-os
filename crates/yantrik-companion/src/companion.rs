@@ -763,6 +763,8 @@ impl CompanionService {
         }
         // Vault tables (encrypted credential storage)
         yantrikdb_core::vault::init_tables(&db.conn());
+        // The data key too, so the vault's own connection never meets a store without one.
+        crate::tools::vault_key::ensure(&db.conn());
 
         // Memory evolution tables + backfill existing memories
         memory_evolution::ensure_tables(&db.conn());
