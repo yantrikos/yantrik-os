@@ -19,6 +19,12 @@ pub(crate) fn refuse_for_mind(what: &str) -> Result<(), String> {
     refuse_for(&requester_now(), what)
 }
 
+/// Whether a Mind makes the call being dispatched on this thread, for a handler that serves a Mind
+/// something narrower than a refusal (`close_window`: Mind View's apps only).
+pub(crate) fn asked_by_mind() -> bool {
+    matches!(requester_now(), Requester::Mind(_))
+}
+
 /// [`refuse_for_mind`] once the requester is known.
 pub(crate) fn refuse_for(who: &Requester, what: &str) -> Result<(), String> {
     match who {
@@ -81,6 +87,8 @@ mod tests {
             ("control_mind_desk.rs", "set_current_screen(", "fn open_agents", "the Mind desk's own button: refused unless the caller is the desk process and Mind View is in front (Raises::allow)"),
             ("control_mind_desk.rs", "invoke_navigate(", "fn open_agents", "the Mind desk's own button: refused unless the caller is the desk process and Mind View is in front (Raises::allow)"),
             ("control_mind_desk.rs", "raise_shell(", "fn open_agents", "the Mind desk's own button: refused unless the caller is the desk process and Mind View is in front (Raises::allow)"),
+            ("control_mind_desk.rs", "invoke_show_section(", "fn open_agents", "the Mind desk's own button, as above"),
+            ("control_switcher.rs", "set_alt_tab_open(true", "fn publish", "draws the card `open` has already asked for; the person's keys call it too"),
             ("control_files.rs", "set_current_screen(", "", "ensure_files_screen itself; every handler intercepts first (files_actions_all_intercept)"),
             ("control_files.rs", "ensure_files_screen(", "", "the handlers intercept first (files_actions_all_intercept)"),
             ("control_approvals.rs", "raise_shell(", "", "the approval card is the person's own decision surface"),
@@ -135,6 +143,24 @@ mod tests {
             "invoke_switch_window(",
             "invoke_navigate(",
             "set_lens_open(true",
+            "invoke_open_lens(",
+            "invoke_lock_screen(",
+            "windows::close(",
+            "windows::minimise(",
+            "windows::maximise(",
+            // Slint properties and callbacks that raise the shell or switch its screen through
+            // app.slint's `shell-overlay-opened` and the agents global, not through a call above.
+            "set_today_open(true",
+            "set_network_open(true",
+            "set_quick_settings_open(true",
+            "set_battery_popover_open(true",
+            "set_power_menu_open(true",
+            "set_clip_panel_open(true",
+            "set_cheat_sheet_open(true",
+            "set_alt_tab_open(true",
+            "invoke_show_agent(",
+            "invoke_show_section(",
+            "invoke_filter_mind(",
             "present_app(",
             "windows::present(",
             "toplevel_watch::activate(",
@@ -157,7 +183,7 @@ mod tests {
                     if code.contains("fn ensure_files_screen") || EXEMPT.iter().any(|(f, m, in_fn, _)| *f == file && *m == mover && chunk.trim_start().starts_with(in_fn)) {
                         continue;
                     }
-                    let asked = ["refuse_for_mind(", "files_cursor::intercept(", "cursor::caller_key("]
+                    let asked = ["refuse_for_mind(", "asked_by_mind(", "files_cursor::intercept(", "cursor::caller_key("]
                         .iter()
                         .filter_map(|ask| code.find(ask))
                         .min();

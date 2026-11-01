@@ -1970,8 +1970,16 @@ pub fn publish(
             .arg(Param::text("title").describe("Window title, or part of one")),
             move |args| {
                 let want = args["title"].as_str().unwrap_or_default();
-                let open = crate::windows::addressable_titles();
-                let title = match crate::windows::window_to_close(want, &open) {
+                // The person's own windows are theirs to close (#1033): a Mind reaches only the
+                // apps drawn in Mind View, even when the person has a window of the same title.
+                let resolved = if crate::shell_view::asked_by_mind() {
+                    Err(format!(
+                        "`{want}` is not an app in Mind View; windows on the person's desktop can't be closed by a Mind."
+                    ))
+                } else {
+                    crate::windows::window_to_close(want, &crate::windows::addressable_titles())
+                };
+                let title = match resolved {
                     Ok(title) => title,
                     // Not on the person's desktop, but an app a mind opened is drawn in Mind View:
                     // close it there, as its × would.
@@ -2011,6 +2019,8 @@ pub fn publish(
             .defers()
             .arg(Param::text("title").describe("Window title, or part of one")),
             move |args| {
+                // Hides the person's window and uncovers another (#1033).
+                crate::shell_view::refuse_for_mind("windows")?;
                 let want = args["title"].as_str().unwrap_or_default();
                 let open = crate::windows::addressable_titles();
                 let title = crate::windows::window_named(want, &open)?;
@@ -2055,6 +2065,8 @@ pub fn publish(
             .defers()
             .arg(Param::text("title").describe("Window title, or part of one")),
             move |args| {
+                // Changes the layout of the person's desktop (#1033).
+                crate::shell_view::refuse_for_mind("windows")?;
                 let want = args["title"].as_str().unwrap_or_default();
                 let open = crate::windows::addressable_titles();
                 let title = crate::windows::window_named(want, &open)?;
@@ -2232,6 +2244,9 @@ pub fn publish(
             )
             .risk("safe"),
             move |_| {
+                // Replaces the person's view with the lock screen (#1033). Super+L is the
+                // person's call, which this does not touch.
+                crate::shell_view::refuse_for_mind("the lock screen")?;
                 let ui = lock_ui()?;
                 ui.invoke_lock_screen();
                 Ok(serde_json::json!({ "locked": true }))
