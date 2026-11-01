@@ -1414,7 +1414,7 @@ mod tests {
     /// added here because its words are the desktop's.
     #[test]
     fn model_text_reaches_a_notification_only_through_post_companion() {
-        const DESKTOPS_OWN_WORDS: [(&str, &str); 19] = [
+        const DESKTOPS_OWN_WORDS: [(&str, &str); 20] = [
             // Capture: fixed sentences, a file name this desktop chose, the requester's mind name.
             ("capture/notice.rs", "screenshot_saved"),
             ("capture/notice.rs", "screenshot_copied"),
@@ -1427,6 +1427,7 @@ mod tests {
             ("capture/notice.rs", "leftover_stopped"),
             ("default_mind.rs", "handed_over"),            // "Hermes is ready; it answers from now on."
             ("focus.rs", "start"),                         // "Session complete. Nice work."
+            ("mail_config_migration.rs", "tell"),          // "An older copy of your settings … is at <path>"
             ("wire/agents.rs", "notification"),            // turn titles, "You asked: …"
             ("wire/harness.rs", "late_answer_notice"),     // "<mind> answered after you left."
             ("wire/notifications.rs", "watch_for_updates"), // "Update available — <version>"

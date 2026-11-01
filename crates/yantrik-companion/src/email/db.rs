@@ -97,6 +97,9 @@ pub fn update_last_sync_uid(conn: &Connection, account_id: i64, uid: u32) {
 }
 
 /// Insert or update an email in the cache.
+///
+/// An update keeps the row's number and any body already fetched: the mind refers to a message by
+/// its number, and `INSERT OR REPLACE` gave a listed message a new number on every check.
 pub fn upsert_email(
     conn: &Connection,
     account_id: i64,
@@ -109,20 +112,42 @@ pub fn upsert_email(
     date_ts: f64,
     body_preview: &str,
     is_read: bool,
+    is_flagged: bool,
     message_id: &str,
     in_reply_to: &str,
 ) -> i64 {
     conn.execute(
-        "INSERT OR REPLACE INTO emails
-         (account_id, uid, folder, from_addr, from_name, to_addr, subject, date_ts, body_preview, is_read, message_id, in_reply_to)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO emails
+         (account_id, uid, folder, from_addr, from_name, to_addr, subject, date_ts, body_preview, is_read, is_flagged, message_id, in_reply_to)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(account_id, uid, folder) DO UPDATE SET
+            from_addr = excluded.from_addr, from_name = excluded.from_name, to_addr = excluded.to_addr,
+            subject = excluded.subject, date_ts = excluded.date_ts, body_preview = excluded.body_preview,
+            is_read = excluded.is_read, is_flagged = excluded.is_flagged,
+            message_id = excluded.message_id, in_reply_to = excluded.in_reply_to",
         rusqlite::params![
             account_id, uid as i64, folder, from_addr, from_name, to_addr,
-            subject, date_ts, body_preview, is_read as i32, message_id, in_reply_to
+            subject, date_ts, body_preview, is_read as i32, is_flagged as i32, message_id, in_reply_to
         ],
     ).unwrap_or(0);
 
-    conn.last_insert_rowid()
+    conn.query_row(
+        "SELECT id FROM emails WHERE account_id = ?1 AND uid = ?2 AND folder = ?3",
+        rusqlite::params![account_id, uid as i64, folder],
+        |row| row.get(0),
+    ).unwrap_or(0)
+}
+
+/// The cached copy of one listed message, by where the mail service listed it.
+pub fn find(conn: &Connection, account_id: i64, uid: u32, folder: &str) -> Option<CachedEmail> {
+    let id: i64 = conn
+        .query_row(
+            "SELECT id FROM emails WHERE account_id = ?1 AND uid = ?2 AND folder = ?3",
+            rusqlite::params![account_id, uid as i64, folder],
+            |row| row.get(0),
+        )
+        .ok()?;
+    get_email(conn, id)
 }
 
 /// List emails in a folder, sorted by date descending.

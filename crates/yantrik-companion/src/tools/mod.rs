@@ -131,10 +131,11 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
         }
     }
 
-    // Conditionally register email tools
-    if config.email.enabled && !config.email.accounts.is_empty() {
-        email::register(&mut reg, config.email.accounts.clone());
-        tracing::info!("Email tools registered ({} accounts)", config.email.accounts.len());
+    // Conditionally register email tools. The accounts are email-service's, not this config's
+    // (#1022): the tools ask the service, and say so themselves when it has none.
+    if config.email.enabled {
+        email::register(&mut reg);
+        tracing::info!("Email tools registered (through email-service)");
     }
 
     // The calendar tools, always.
@@ -147,20 +148,12 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     // one-calendar probe on a real machine is what found it.
     //
     // The calendar is this machine's own now: calendar-service ships with the OS and owns the
-    // events, so the tools that reach it have no reason to wait on anybody's mail account. What
-    // the switch and the account still decide is whether anything is pulled from Google, so with
-    // the switch off the tools are handed no accounts and sync stays the quiet no-op it is when
-    // there is nobody to sign in as.
-    let sync_accounts = if config.calendar.enabled {
-        config.email.accounts.clone()
-    } else {
-        Vec::new()
-    };
-    calendar::register(&mut reg, sync_accounts, config.calendar.account.clone());
-    tracing::info!(
-        google_sync = config.calendar.enabled && !config.email.accounts.is_empty(),
-        "Calendar tools registered"
-    );
+    // events, so the tools that reach it have no reason to wait on anybody's mail account.
+    // Google sync is off until a Google source provides a token; the companion no longer borrows
+    // one from a mail account in `config.yaml` (#1022), so with none the sync is the quiet no-op
+    // it is when there is nobody to sign in as.
+    calendar::register(&mut reg);
+    tracing::info!("Calendar tools registered");
 
     // Register vision tools (if using API backend like Ollama with vision support)
     if config.llm.is_api_backend() {

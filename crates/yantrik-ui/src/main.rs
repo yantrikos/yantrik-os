@@ -54,6 +54,7 @@ mod bridge;
 mod caller_identity;
 mod companion_rpc;
 mod credential_door;
+mod mail_config_migration;
 mod control;
 mod control_approvals;
 mod control_overlays;
@@ -66,6 +67,7 @@ mod window_name;
 mod power_status;
 mod control_network;
 mod control_wifi_reconnect;
+mod control_mail;
 mod control_power;
 mod control_installer;
 mod control_installer_consent;
@@ -351,6 +353,10 @@ fn main() {
     // The credential door: the mail service keeps its accounts' passwords in this process's vault
     // through it, and not in a file (#538).
     credential_door::serve(&ctx.bridge);
+
+    // The mail accounts an older version kept in config.yaml, password and all, move into the mail
+    // service and the vault (#1022). After the door: the service keeps their passwords through it.
+    mail_config_migration::start(ctx.config_path.clone());
 
     // Adopt the windows that were already open.
     //

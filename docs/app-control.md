@@ -341,6 +341,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `open_today`, `close_today`, `open_quick_settings`, `close_quick_settings`, `open_power_menu`, `close_power_menu`, `open_clipboard`, `close_clipboard`, `open_cheat_sheet`, `close_cheat_sheet` | safe | showing or putting away the bar's panels (Today, Quick Settings, the power menu, the clipboard) and the keyboard cheat sheet; opening the power menu powers nothing off, choosing an entry is the person's |
 | shell | `power_sleep` | sensitive, deferred | suspend, or hibernate where logind offers it (`describe shell` › `power.hibernate_offered`); the session is kept, the machine stops answering. Answers when logind has accepted the request |
 | shell | `power_off` | dangerous, deferred | log out, restart or shut down: ends every program and every mind at work. Refused while minds are working unless `even_if_minds_working` is true; the refusal says how many. Answers when logind has accepted the request, before anything has stopped |
+| shell | `send_mail` | sensitive | a question and not a way to send: the card for a mail leaving the machine (every recipient, the whole subject and the whole body, each quoted; a mail the card cannot show whole is refused, not clipped). The shell sends nothing; the mind asks, waits for the person's Allow, spends it with `consume_approval`, and sends the mail itself. Cannot be undone, so every mode but full bypass raises the card and plan refuses |
 | arcade | `new_character`, `new_game`, `update_game`, `update_character`, `build`, `play`, `verify`, `screenshot` | standard | editing and building library content, editable again |
 | arcade | `delete` | sensitive | destroys the one named game |
 | calendar | `events_between` | safe | a read: events from `from` to `to` (ISO dates, inclusive, at most 62 days) straight from the store, with date, start, end, title, location; no view changes |
@@ -510,11 +511,12 @@ calls `a11y.act`.
 | email | `email.search` | read | — | |
 | email | `email.save_account` | change | none | writes the account configuration and keeps its password in the credential vault (never in the file). The app's settings screen calls it |
 | email | `email.remove_account` | change | none | forgets an account and its password in the credential vault; a shut vault refuses, so nothing is left behind |
+| email | `email.import_account` | change | none | brings in an account kept elsewhere, with its secret (the companion's old `config.yaml` mail accounts, #1022). The address decides: one already here is left exactly as it is and the secret sent is not kept. A new one has its secret kept in the credential vault, read back, before it is written; a shut vault imports nothing. Answers the desktop's own programs only |
 | email | `email.vault_opened` | change | none | answers the shell only: the credential vault has opened, so the service retries what it was waiting for. Changes nothing a caller can choose |
 | email | `email.oauth_begin` | change | `begin_google_sign_in` (app) — sensitive | starts the OAuth dance: a browser opens on a full-access consent screen |
 | email | `email.oauth_cancel` | change | none | abandons a sign-in in flight |
 | email | `email.send_message` | change | none | **sends mail.** The app publishes `compose` and deliberately never `send` — mail that has gone cannot be taken back — but the method sends |
-| email | `email.mark_read` | change | `mark_read` (app) — standard | sets the read flag on the server |
+| email | `email.mark_read` | change | `mark_read` (app) — standard | sets the read flag on the server; `message_ids` marks several in one mailbox session |
 | email | `email.mark_starred` | change | `flag` (app) — standard | sets the star |
 | email | `email.move_message` | change | none | moves a message between folders on the server |
 | email | `email.delete_message` | change | none | deletes a message on the server |

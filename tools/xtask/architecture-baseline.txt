@@ -34,7 +34,6 @@ size crates/yantrik-companion/src/recipe.rs 2291
 size crates/yantrik-companion/src/recipe_executor.rs 3217
 size crates/yantrik-companion/src/recipe_view.rs 1717
 size crates/yantrik-companion/src/tools/calendar.rs 1356
-size crates/yantrik-companion/src/tools/email.rs 1354
 size crates/yantrik-companion/src/world_graph.rs 1248
 size crates/yantrik-companion/src/world_model.rs 1911
 size crates/yantrik-harness/src/host.rs 4539

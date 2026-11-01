@@ -23,7 +23,9 @@ use std::sync::{Arc, Mutex};
 
 use yantrik_foundation::vault::{keep, KeyVault, VaultError};
 use yantrik_ipc_contracts::credentials::ERR_LOCKED;
-use yantrik_ipc_contracts::email::{EmailAccountSummary, ServiceError, WAITING_FOR_VAULT};
+use yantrik_ipc_contracts::email::{
+    AccountSettings, EmailAccountSummary, ImportAccount, ImportResult, ServiceError, WAITING_FOR_VAULT,
+};
 
 use crate::accounts::{self, Account};
 use crate::secrets::{vault_id, MailSecrets};
@@ -50,6 +52,8 @@ pub enum StoreError {
     Missing { email: String, google: bool },
     /// The accounts file could not be read or written.
     File(String),
+    /// The account itself is not one that can be kept (no address, no server). Fixed text.
+    Refused(String),
 }
 
 impl StoreError {
@@ -93,6 +97,7 @@ impl StoreError {
                 format!("The password for {email} is no longer in the credential vault. Enter it again in the account settings."),
             ),
             StoreError::File(message) => (-32000, message),
+            StoreError::Refused(message) => (-32602, message),
         };
         ServiceError { code, message }
     }
@@ -215,6 +220,15 @@ impl AccountStore {
         upsert: impl FnOnce(&mut Vec<Account>) -> String,
     ) -> Result<EmailAccountSummary, StoreError> {
         let _writing = self.lock();
+        self.save_locked(secrets, upsert)
+    }
+
+    /// [`Self::save_with`] for a caller that already holds the writing lock.
+    fn save_locked(
+        &self,
+        secrets: &MailSecrets,
+        upsert: impl FnOnce(&mut Vec<Account>) -> String,
+    ) -> Result<EmailAccountSummary, StoreError> {
         let mut all = accounts::load_file(&self.path).map_err(StoreError::File)?;
         let before: Vec<String> = all.iter().map(|a| a.id.clone()).collect();
         let id = upsert(&mut all);
@@ -235,6 +249,57 @@ impl AccountStore {
                 Err(StoreError::File(message))
             }
         }
+    }
+
+    /// Bring in an account kept elsewhere (the companion's old `config.yaml` mail accounts, #1022).
+    ///
+    /// The address is the identity. One this service already has is left exactly as it is, and the
+    /// secret that came with the import is not kept: the person's existing sign-in is not
+    /// replaced by an older copy. A new one has its secret kept in the vault and read back before
+    /// the account is written, like any other save, so a shut vault imports nothing and the caller
+    /// can ask again when it opens. No mailbox is dialled: an import must work with the network
+    /// down, and the account is tried the first time it is used.
+    pub fn import(&self, import: &ImportAccount) -> Result<ImportResult, StoreError> {
+        let _writing = self.lock();
+        let all = accounts::load_file(&self.path).map_err(StoreError::File)?;
+        let id = accounts::id_for(&import.email);
+        let wanted = import.email.trim();
+        // The address is the identity, compared as an address: outer space and case are not a
+        // different account. The id is a lossy slug (`ann.work` and `ann+work` are one), so it
+        // decides nothing here, except that two different addresses must not share it: the second
+        // would overwrite the first.
+        if let Some(have) = all.iter().find(|a| a.email.trim().eq_ignore_ascii_case(wanted)) {
+            return Ok(ImportResult { account: have.summary(), created: false });
+        }
+        if all.iter().any(|a| a.id == id) {
+            return Err(StoreError::Refused(
+                "another account here has a name that is too close to this address to keep both".to_string(),
+            ));
+        }
+        let account = if import.uses_oauth() {
+            let (access, refresh) = (
+                import.oauth_access_token.clone().unwrap_or_default(),
+                import.oauth_refresh_token.clone().unwrap_or_default(),
+            );
+            let secrets = MailSecrets::google(&access, &refresh);
+            self.save_locked(&secrets, |all| {
+                accounts::upsert_google(all, wanted, &access, &refresh, import.oauth_expires_at)
+            })?
+        } else {
+            let settings = AccountSettings {
+                email: import.email.clone(),
+                display_name: import.display_name.clone(),
+                provider: import.provider.clone(),
+                imap_server: import.imap_server.clone(),
+                imap_port: import.imap_port,
+                smtp_server: import.smtp_server.clone(),
+                smtp_port: import.smtp_port,
+                password: import.password.clone(),
+            };
+            accounts::refuse_bad_settings(&settings).map_err(StoreError::Refused)?;
+            self.save_locked(&MailSecrets::from_settings(&settings), |all| accounts::upsert(all, &settings))?
+        };
+        Ok(ImportResult { account, created: true })
     }
 
     /// A refreshed access token: kept in the vault with the account's other secrets, and the time
