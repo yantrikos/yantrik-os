@@ -142,6 +142,7 @@ const SHELL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Where the desktop's sockets are and how long to wait for a person. The session's own in use;
 /// a test hands in a scratch directory and a shorter wait. `pub(crate)` because `window.rs`
 /// drives the shell's own window actions through the same desk and the same asking.
+#[derive(Clone)]
 pub(crate) struct Desk {
     pub(crate) dir: Option<std::path::PathBuf>,
     pub(crate) wait: Duration,

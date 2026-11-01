@@ -24,14 +24,52 @@ pub fn send_email(
     body: &str,
     in_reply_to: Option<&str>,
 ) -> Result<(), String> {
+    let permit = ask(&account.email, &[to.to_string()], subject, body)?;
+    let sent = deliver(account, to, subject, body, in_reply_to);
+    permit.finish(sent.is_ok());
+    sent
+}
+
+/// One message to each of `recipients`, behind ONE card that lists all of them (bound to exactly
+/// that set), not one card per person. `Err` is the refusal to ask or the person's no: nothing was
+/// sent to anyone. Otherwise each recipient's own outcome.
+pub fn send_email_to_each(
+    account: &EmailAccountConfig,
+    recipients: &[String],
+    subject: &str,
+    body: &str,
+    in_reply_to: Option<&str>,
+) -> Result<Vec<(String, Result<(), String>)>, String> {
+    let permit = ask(&account.email, recipients, subject, body)?;
+    let results: Vec<_> = recipients
+        .iter()
+        .map(|to| (to.clone(), deliver(account, to, subject, body, in_reply_to)))
+        .collect();
+    permit.finish(results.iter().any(|(_, r)| r.is_ok()));
+    Ok(results)
+}
+
+/// The person's say, on the desktop's own card, before anything is built or dialled.
+fn ask(from: &str, to: &[String], subject: &str, body: &str) -> Result<yantrik_companion_tools::outward::Permit, String> {
     yantrik_companion_tools::outward::ask_person_before_sending(&yantrik_companion_tools::outward::OutgoingMail {
-        account: &account.email,
-        to: &[to.to_string()],
+        account: from,
+        to,
         cc: &[],
         bcc: &[],
         subject,
         body,
-    })?;
+    })
+}
+
+/// Build the message and hand it to the server. Private: the only ways in are the two functions
+/// above, which ask first.
+fn deliver(
+    account: &EmailAccountConfig,
+    to: &str,
+    subject: &str,
+    body: &str,
+    in_reply_to: Option<&str>,
+) -> Result<(), String> {
     let (server, port) = resolve_smtp_server(account);
     if server.is_empty() {
         return Err("No SMTP server configured".to_string());
@@ -131,11 +169,24 @@ mod tests {
     #[test]
     fn the_question_comes_first_and_no_other_file_sends() {
         let source = include_str!("smtp_client.rs");
-        let body = source.split("pub fn send_email(").nth(1).expect("send_email");
-        let asked = body.find("ask_person_before_sending").expect("send_email asks");
-        let dialled = body.find("resolve_smtp_server").expect("send_email dials");
-        assert!(asked < dialled, "send_email builds or dials before it asks");
-
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        // Every public sender asks before it delivers; `deliver` is private.
+        for name in ["pub fn send_email(", "pub fn send_email_to_each("] {
+            let body = production.split(name).nth(1).unwrap_or_else(|| panic!("{name}"));
+            let body = &body[..body.find("
+}
+").unwrap()];
+            let asked = body.find("ask(").unwrap_or_else(|| panic!("{name} does not ask"));
+            let delivered = body.find("deliver(").unwrap_or_else(|| panic!("{name} does not deliver"));
+            assert!(asked < delivered, "{name} delivers before it asks");
+            assert!(body.contains("permit.finish("), "{name} does not write down a send that ran unasked");
+        }
+        assert!(production.contains("
+fn deliver("), "deliver is not private");
+        assert_eq!(production.matches("deliver(").count(), 3, "a new caller of deliver (its definition and the two senders are the three): it must ask first");
+        let fn_ask = production.split("
+fn ask(").nth(1).unwrap();
+        assert!(fn_ask.contains("ask_person_before_sending"));
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut stack = vec![src];
         while let Some(dir) = stack.pop() {
