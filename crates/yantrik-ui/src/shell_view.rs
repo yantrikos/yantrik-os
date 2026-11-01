@@ -78,6 +78,9 @@ mod tests {
         const EXEMPT: &[(&str, &str, &str, &str)] = &[
             ("control_installer.rs", "set_current_screen(", "", "the first-run wizard is drivable by an agent by design, before any person has a view"),
             ("control_installer.rs", "invoke_navigate(", "", "the same wizard"),
+            ("control_mind_desk.rs", "set_current_screen(", "fn open_agents", "the Mind desk's own button: refused unless the caller is the desk process and Mind View is in front (Raises::allow)"),
+            ("control_mind_desk.rs", "invoke_navigate(", "fn open_agents", "the Mind desk's own button: refused unless the caller is the desk process and Mind View is in front (Raises::allow)"),
+            ("control_mind_desk.rs", "raise_shell(", "fn open_agents", "the Mind desk's own button: refused unless the caller is the desk process and Mind View is in front (Raises::allow)"),
             ("control_files.rs", "set_current_screen(", "", "ensure_files_screen itself; every handler intercepts first (files_actions_all_intercept)"),
             ("control_files.rs", "ensure_files_screen(", "", "the handlers intercept first (files_actions_all_intercept)"),
             ("control_approvals.rs", "raise_shell(", "", "the approval card is the person's own decision surface"),
@@ -108,6 +111,7 @@ mod tests {
             ("control_installer_consent.rs", include_str!("control_installer_consent.rs")),
             ("control_installer_target.rs", include_str!("control_installer_target.rs")),
             ("control_levels.rs", include_str!("control_levels.rs")),
+            ("control_mind_desk.rs", include_str!("control_mind_desk.rs")),
             ("control_levels_actions.rs", include_str!("control_levels_actions.rs")),
             ("control_network.rs", include_str!("control_network.rs")),
             ("control_overlays.rs", include_str!("control_overlays.rs")),
