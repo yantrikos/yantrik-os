@@ -183,7 +183,12 @@ fn several_tabs_and_a_running_job_are_described_as_they_were() {
 fn an_exited_shell_says_how() {
     let f = open();
     f.type_until("exit 7\r", "exit 7");
-    f.until("the exit", |f| f.summary().contains("shell exited (status 7)"));
+    // `describe` and the window read the same snapshot on their own passes: a summary-only wait
+    // can come back a frame before the window has drawn the exit into the status line.
+    f.until("the exit", |f| {
+        f.summary().contains("shell exited (status 7)")
+            && f.app.ui(|ui| ui.get_status().to_string()) == "Shell exited \u{b7} status 7"
+    });
     assert!(f.summary().contains("`new_tab` starts another"), "{}", f.summary());
     assert_eq!(f.state()["shell_exit_code"], json!(7));
     assert_eq!(f.state()["alive"], json!(false));
