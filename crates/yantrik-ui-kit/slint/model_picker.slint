@@ -120,6 +120,8 @@ component MenuRow inherits Rectangle {
     in property <bool> disabled;
     in property <bool> current;
     callback clicked();
+    // A press of a disabled row: never a pick, but whoever made it disabled can answer the press.
+    callback disabled-pressed();
     height: col.preferred-height;
     border-radius: Theme.r-sm;
     background: rt.has-hover && !root.disabled ? Theme.hover-fill-strong : transparent;
@@ -128,9 +130,15 @@ component MenuRow inherits Rectangle {
     accessible-enabled: !root.disabled;
     accessible-action-default => { if (!root.disabled) { root.clicked(); } }
     rt := TouchArea {
-        enabled: !root.disabled;
+        // A disabled row still hears the press: it is how the person reaches the fix.
         mouse-cursor: root.disabled ? default : pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            if (root.disabled) {
+                root.disabled-pressed();
+            } else {
+                root.clicked();
+            }
+        }
     }
     col := HorizontalLayout {
         padding: 6px;
@@ -202,6 +210,9 @@ export component ModelPicker inherits Rectangle {
     callback fix();
     // A menu was opened ("mind", "model", "effort", "attach"): Rust refreshes what it shows.
     callback opened(string);
+    // A disabled model row was pressed, carrying the reason it shows: Rust opens the screen the
+    // reason names, so a greyed-out menu is never a dead end.
+    callback fix-model(string);
 
     height: 28px;
     width: row.preferred-width;
@@ -381,6 +392,7 @@ export component ModelPicker inherits Rectangle {
                                 disabled: m.disabled;
                                 current: m.current;
                                 clicked => { root.choose-model(m.id); model-menu.close(); }
+                                disabled-pressed => { root.fix-model(m.reason); model-menu.close(); }
                             }
                         }
                     }

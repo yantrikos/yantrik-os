@@ -30,6 +30,8 @@ export global PickerState {
     callback remove-file(string);
     callback fix();
     callback opened(string);
+    // A press of a disabled model row, carrying its reason.
+    callback fix-model(string);
 }
 
 // The kit's picker, bound to the shell's state.
@@ -54,4 +56,5 @@ export component BoundPicker inherits ModelPicker {
     attach(p) => { PickerState.attach(p); }
     fix => { PickerState.fix(); }
     opened(which) => { PickerState.opened(which); }
+    fix-model(reason) => { PickerState.fix-model(reason); }
 }
