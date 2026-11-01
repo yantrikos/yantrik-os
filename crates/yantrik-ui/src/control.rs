@@ -2255,6 +2255,8 @@ pub fn publish(
     let surface = crate::control_wifi_reconnect::actions(surface, ui);
     // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
     let surface = crate::control_power::actions(surface, ui);
+    // The question "may this mail go out?": `send_mail` sends nothing, it is what a send's card is about.
+    let surface = crate::control_mail::actions(surface);
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,

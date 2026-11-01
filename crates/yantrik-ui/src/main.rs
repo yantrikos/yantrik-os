@@ -66,6 +66,7 @@ mod window_name;
 mod power_status;
 mod control_network;
 mod control_wifi_reconnect;
+mod control_mail;
 mod control_power;
 mod control_installer;
 mod control_installer_consent;
