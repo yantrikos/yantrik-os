@@ -3,16 +3,14 @@
 //! row with no way to tell why or what to do. With mixed reasons there is no header and each row
 //! keeps its own. Pure: what is known is handed in, and the rows come out.
 
-use super::menu::{why, MindSeen, ModelRow, Why};
+use super::menu::{why, MindSeen, ModelRow, Why, FIX_AI_ACCOUNTS};
 use crate::ai_accounts::{account::Account, consent::{self, Consent}, store::Catalogue};
 
 /// The header's presses (`ModelRow::id` of an "action" row). Pressing one travels the path a
-/// disabled row's press does (`fix-model` with the reason, `picker::section_for_reason`), and the
-/// reason an action carries names AI accounts: the one place that holds the sharing choice and the private lane. No second consent path.
+/// disabled row's press does (`fix-model` with the typed fix id, `picker::section_for_fix`), and the
+/// fix an action carries is AI accounts: the one place that holds the sharing choice and the private lane. No second consent path.
 pub const ALLOW_SHARING: &str = "allow-sharing";
 pub const PRIVATE_LANE: &str = "private-lane";
-/// What both presses carry as their reason; it names AI accounts, so `section_for_reason` opens it.
-pub const OPENS_AI_ACCOUNTS: &str = "Opens AI accounts, where sharing and the private lane are set.";
 
 /// What holds back every model.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +46,7 @@ impl Blocker {
     /// The header: the reason once, then its presses.
     pub fn rows(&self) -> Vec<ModelRow> {
         match self {
-            Blocker::PrivateMode => vec![ModelRow::banner("Private mode is on: only models on this machine or network can be used, and none is set up.".into())],
+            Blocker::PrivateMode => vec![ModelRow::banner("Private mode is on: only models on this machine or network can be used, and none is set up. (True because every listed model is then on a cloud account; a local one would be usable.)".into())],
             Blocker::SharingOff { accounts, lane_missing } => {
                 let whom = match accounts.as_slice() {
                     [one] => one.clone(),
@@ -61,9 +59,9 @@ impl Blocker {
                     [one] => format!("Allow sharing with {one}\u{2026}"),
                     _ => "Allow sharing\u{2026}".into(),
                 };
-                rows.push(ModelRow::action(ALLOW_SHARING, label, OPENS_AI_ACCOUNTS.into()));
+                rows.push(ModelRow::action(ALLOW_SHARING, label, FIX_AI_ACCOUNTS));
                 if *lane_missing {
-                    rows.push(ModelRow::action(PRIVATE_LANE, "Set up a private lane".into(), OPENS_AI_ACCOUNTS.into()));
+                    rows.push(ModelRow::action(PRIVATE_LANE, "Set up a private lane".into(), FIX_AI_ACCOUNTS));
                 }
                 rows
             }

@@ -31,6 +31,7 @@ export struct PickerModel {
     detail: string,     // "thinks · sees images · 131K"
     disabled: bool,
     reason: string,     // why it cannot be used by this mind, when disabled
+    fix: string,        // the screen that fixes it, as an id ("ai-accounts", "minds"), or ""; what a press carries
     current: bool,
 }
 
@@ -218,8 +219,8 @@ export component ModelPicker inherits Rectangle {
     callback fix();
     // A menu was opened ("mind", "model", "effort", "attach"): Rust refreshes what it shows.
     callback opened(string);
-    // A disabled model row was pressed, carrying the reason it shows: Rust opens the screen the
-    // reason names, so a greyed-out menu is never a dead end.
+    // A disabled model row was pressed, carrying its fix id: Rust opens the screen the
+    // id names, so a greyed-out menu is never a dead end.
     callback fix-model(string);
 
     height: 28px;
@@ -407,7 +408,7 @@ export component ModelPicker inherits Rectangle {
                                 chevron: false;
                                 max-label: 280px;
                                 a11y: m.name;
-                                clicked => { root.fix-model(m.reason); model-menu.close(); }
+                                clicked => { root.fix-model(m.fix); model-menu.close(); }
                             }
                             if m.kind == "model" : MenuRow {
                                 title: m.name;
@@ -416,7 +417,7 @@ export component ModelPicker inherits Rectangle {
                                 disabled: m.disabled;
                                 current: m.current;
                                 clicked => { root.choose-model(m.id); model-menu.close(); }
-                                disabled-pressed => { root.fix-model(m.reason); model-menu.close(); }
+                                disabled-pressed => { root.fix-model(m.fix); model-menu.close(); }
                             }
                         }
                     }

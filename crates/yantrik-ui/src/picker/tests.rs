@@ -126,17 +126,26 @@ fn models_a_mind_cannot_use_are_disabled_with_the_reason() {
 }
 
 #[test]
-fn pressing_a_disabled_row_opens_the_screen_its_reason_names() {
-    use super::{section_for_reason, AI_SECTION, HARNESSES_SECTION};
-    assert_eq!(section_for_reason("Set up a private lane, or allow sharing with OpenAI in AI accounts."), Some(AI_SECTION));
-    assert_eq!(section_for_reason("Hermes uses its own models. Use Yantrik models (Settings → Minds) to pick here."), Some(HARNESSES_SECTION));
-    assert_eq!(section_for_reason("Private mode: only models on this machine or network."), None, "a press of such a row goes nowhere — no screen fixes it");
-    // The menu's own sentences are what the press follows.
+fn pressing_a_disabled_row_opens_the_screen_its_typed_fix_names() {
+    use super::{section_for_fix, AI_SECTION, HARNESSES_SECTION};
+    use crate::picker::menu::{FIX_AI_ACCOUNTS, FIX_MINDS};
+    assert_eq!(section_for_fix(FIX_AI_ACCOUNTS), Some(AI_SECTION));
+    assert_eq!(section_for_fix(FIX_MINDS), Some(HARNESSES_SECTION));
+    assert_eq!(section_for_fix(""), None, "Private mode: a press goes nowhere, no screen here fixes it");
+    assert_eq!(section_for_fix("a sentence"), None, "prose is never a route");
+    // The rows carry the id, whatever their words say.
     let (catalogue, accounts) = fixture();
     let rows = model_rows(&mind("mind", true, true), &catalogue, &accounts, &Consent::default(), false, "", &[], "");
-    assert!(rows.iter().filter(|r| r.disabled).all(|r| section_for_reason(&r.reason) == Some(AI_SECTION)), "fresh install: every greyed row leads to AI accounts");
+    assert!(rows.iter().filter(|r| r.disabled).all(|r| section_for_fix(r.fix) == Some(AI_SECTION)), "fresh install: every greyed row leads to AI accounts");
     let rows = model_rows(&mind("hermes", false, true), &catalogue, &accounts, &Consent::default(), false, "", &[], "");
-    assert!(rows.iter().filter(|r| r.disabled).all(|r| section_for_reason(&r.reason) == Some(HARNESSES_SECTION)), "its own models: every greyed row leads to Minds");
+    assert!(rows.iter().filter(|r| r.disabled).all(|r| section_for_fix(r.fix) == Some(HARNESSES_SECTION)), "its own models: every greyed row leads to Minds");
+    let rows = model_rows(&mind("pi", true, false), &catalogue, &accounts, &Consent::default(), true, "", &[], "");
+    assert!(rows.iter().filter(|r| r.disabled).all(|r| r.fix.is_empty()), "Private mode presses nowhere");
+    // A lane already kept: the per-row sentence no longer offers to set one up.
+    let lane = Consent { lane: Some("home/qwen3:8b".into()), ..Consent::default() };
+    let rows = model_rows(&mind("mind", true, true), &catalogue, &accounts, &lane, false, "", &[], "");
+    let o4 = rows.iter().find(|r| r.id == "openai/o4-mini").unwrap();
+    assert!(o4.disabled && !o4.reason.contains("Set up a private lane") && o4.reason.contains("Allow sharing with OpenAI"), "{}", o4.reason);
 }
 
 #[test]

@@ -56,7 +56,7 @@ fn gateway_fact(harness: &str, detail: Option<&str>) -> Option<GatewayFact> {
 fn no_pick(harness: &str) -> GatewayFact {
     let sends_private = crate::provider_handoff::adapter_for(harness).map(|a| a.private_context()).unwrap_or(true);
     let consent = crate::ai_accounts::consent::load(&crate::ai_accounts::consent::path());
-    if sends_private && crate::ai_accounts::consent::off_for_every_account(&crate::ai_accounts::catalogue(), &crate::ai_accounts::accounts(), &consent) {
+    if sends_private && crate::ai_accounts::consent::off_for_every_account(&crate::ai_accounts::catalogue(), &crate::ai_accounts::accounts(), &consent, crate::private_mode::is_on()) {
         GatewayFact::NoneShared
     } else {
         GatewayFact::NoPick

@@ -307,6 +307,7 @@ fn render(ui: &App, bridge: &Arc<CompanionBridge>) {
             detail: r.detail.into(),
             disabled: r.disabled,
             reason: r.reason.into(),
+            fix: r.fix.into(),
             current: r.current,
         })
         .collect();
@@ -346,16 +347,13 @@ fn open_settings(ui: &App, section: i32) {
     ui.invoke_navigate(SETTINGS_SCREEN);
 }
 
-/// The screen a disabled row's reason names, so pressing the row goes there: "…in AI accounts."
-/// is Settings → AI & Intelligence, "…Use Yantrik models (Settings → Minds)…" is Settings → Minds.
-/// A reason that names no screen (Private mode) presses nowhere.
-pub fn section_for_reason(reason: &str) -> Option<i32> {
-    if reason.contains("AI accounts") {
-        Some(AI_SECTION)
-    } else if reason.contains("Use Yantrik models") {
-        Some(HARNESSES_SECTION)
-    } else {
-        None
+/// The screen a held-back row's fix id names (`menu::Why::fix`), so pressing the row goes there.
+/// "" (Private mode: no screen here switches it off) presses nowhere.
+pub fn section_for_fix(fix: &str) -> Option<i32> {
+    match fix {
+        menu::FIX_AI_ACCOUNTS => Some(AI_SECTION),
+        menu::FIX_MINDS => Some(HARNESSES_SECTION),
+        _ => None,
     }
 }
 
@@ -464,9 +462,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     });
     // A press of a disabled model row is not a pick; it opens the screen its reason names.
     let w = ui.as_weak();
-    g.on_fix_model(move |reason| {
+    g.on_fix_model(move |fix| {
         let Some(ui) = w.upgrade() else { return };
-        if let Some(section) = section_for_reason(&reason) {
+        if let Some(section) = section_for_fix(&fix) {
             open_settings(&ui, section);
         }
     });

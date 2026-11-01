@@ -1,7 +1,8 @@
 //! The Model menu's header when every model is held back for one reason (#1042).
 
-use super::blocked::{blocker, Blocker, ALLOW_SHARING, OPENS_AI_ACCOUNTS, PRIVATE_LANE};
-use super::{section_for_reason, AI_SECTION};
+use super::blocked::{blocker, Blocker, ALLOW_SHARING, PRIVATE_LANE};
+use super::menu::FIX_AI_ACCOUNTS;
+use super::{section_for_fix, AI_SECTION};
 use super::menu::{model_rows, ModelRow};
 use super::tests::{fixture, mind};
 use crate::ai_accounts::account::Account;
@@ -79,22 +80,33 @@ fn mixed_reasons_or_a_usable_model_give_no_header_and_each_row_keeps_its_reason(
 
 #[test]
 fn the_actions_take_the_path_of_a_disabled_rows_press_to_ai_accounts() {
-    // `fix-model(reason)` -> `section_for_reason`: the same door as a greyed row, so the consent
+    // `fix-model(fix)` -> `section_for_fix`: the same door as a greyed row, so the consent
     // choice is made where AI accounts holds it and nowhere else.
     let (catalogue, accounts) = cloud_only(&[]);
     let rows = rows_for(&catalogue, &accounts, &Consent::default(), false);
     let actions: Vec<_> = rows.iter().filter(|r| r.kind == "action").collect();
     assert_eq!(actions.len(), 2);
-    assert!(actions.iter().all(|r| r.reason == OPENS_AI_ACCOUNTS && section_for_reason(&r.reason) == Some(AI_SECTION)));
+    assert!(actions.iter().all(|r| r.fix == FIX_AI_ACCOUNTS && section_for_fix(r.fix) == Some(AI_SECTION)));
 }
 
 #[test]
 fn the_lens_cause_is_sharing_off_for_every_account_that_lists_a_model() {
     let (cloud, accounts) = cloud_only(&[]);
-    assert!(off_for_every_account(&cloud, &accounts, &Consent::default()));
+    assert!(off_for_every_account(&cloud, &accounts, &Consent::default(), false));
     let shared = Consent { sharing: [("openai".to_string(), Sharing::Share)].into_iter().collect(), ..Consent::default() };
-    assert!(!off_for_every_account(&cloud, &accounts, &shared));
+    assert!(!off_for_every_account(&cloud, &accounts, &shared, false));
     let (all, accounts) = fixture();
-    assert!(!off_for_every_account(&all, &accounts, &Consent::default()), "a model on the local network is usable");
-    assert!(!off_for_every_account(&Catalogue::default(), &accounts, &Consent::default()), "no models is not a consent matter");
+    assert!(!off_for_every_account(&all, &accounts, &Consent::default(), false), "a model on the local network is usable");
+    assert!(!off_for_every_account(&Catalogue::default(), &accounts, &Consent::default(), false), "no models is not a consent matter");
+}
+
+#[test]
+fn the_lens_does_not_blame_sharing_when_a_lane_is_kept_or_private_mode_is_the_cause() {
+    let (cloud, accounts) = cloud_only(&[]);
+    let lane = Consent { lane: Some("home/qwen3:8b".into()), ..Consent::default() };
+    assert!(!off_for_every_account(&cloud, &accounts, &lane, false), "a private lane is a way through");
+    assert!(!off_for_every_account(&cloud, &accounts, &Consent::default(), true), "Private mode explains it, not sharing");
+    // A lane naming no local account is not a lane.
+    let stray = Consent { lane: Some("nowhere/x".into()), ..Consent::default() };
+    assert!(off_for_every_account(&cloud, &accounts, &stray, false));
 }
