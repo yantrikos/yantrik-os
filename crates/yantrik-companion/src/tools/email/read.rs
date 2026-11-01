@@ -13,7 +13,7 @@ use crate::email::db;
 use crate::email::port::MailPort;
 
 /// How many of a folder's newest messages one check lists.
-const CHECK_PAGE: u32 = 50;
+pub(super) const CHECK_PAGE: u32 = 50;
 
 // ── email_check ──
 
@@ -74,11 +74,11 @@ impl EmailCheckTool {
             db::update_last_sync_uid(conn, account_id, max_uid);
         }
 
-        let unread = db::count_unread(conn, account_id, folder);
+        let unread = support::unread_in(&*self.mail, &account.id, folder, db::count_unread(conn, account_id, folder), CHECK_PAGE);
         let recent = db::list_emails(conn, account_id, folder, 10);
         let mut result = format!(
-            "Synced {} new emails for {} ({}). {} unread in {}.\n\nRecent:\n",
-            new_count, support::label(&account), account.email, unread, folder
+            "Synced {} new emails for {} ({}). {}.\n\nRecent:\n",
+            new_count, support::label(&account), account.email, unread
         );
         for email in &recent {
             result.push_str(&support::summary_line(email));
@@ -141,13 +141,13 @@ impl EmailListTool {
             Err(e) => return e,
         };
         let account_id = support::cache_id(conn, &account);
-        let unread = db::count_unread(conn, account_id, folder);
+        let unread = support::unread_in(&*self.mail, &account.id, folder, db::count_unread(conn, account_id, folder), CHECK_PAGE);
         let emails = db::list_emails(conn, account_id, folder, limit);
 
         if emails.is_empty() {
             return format!("No emails in {} for {}. Try email_check to sync first.", folder, support::label(&account));
         }
-        let mut result = format!("{} ({}) — {} | {} unread\n", support::label(&account), account.email, folder, unread);
+        let mut result = format!("{} ({}) — {} | {}\n", support::label(&account), account.email, folder, unread);
         result.push_str("Legend: * = unread, ! = flagged\n\n");
         for email in &emails {
             result.push_str(&support::summary_line(email));

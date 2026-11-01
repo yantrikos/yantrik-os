@@ -64,12 +64,48 @@ fn checked() -> (Arc<FakeMail>, Connection, i64) {
 fn a_check_lists_the_inbox_through_the_service_and_shows_the_line_the_pulse_reads() {
     let (mail, conn) = world();
     mail.state.lock().unwrap().listed = vec![message(7, "Priya", "priya@example.com", "Plans")];
+    mail.state.lock().unwrap().folders = vec![EmailFolder::counted("INBOX", 1, 1)];
 
     let said = read::EmailCheckTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({})));
 
-    assert!(said.contains("Synced 1 new emails for ada@example.com (ada@example.com). 1 unread in INBOX."), "{said}");
+    assert!(said.contains("Synced 1 new emails for ada@example.com (ada@example.com). 1 unread of 1 in INBOX."), "{said}");
     assert!(said.contains("Priya | Plans | 2026-10-30 09:15") || said.contains("| Plans |"), "{said}");
-    assert_eq!(mail.calls(), vec!["accounts", "list_messages ada-at-example.com INBOX"]);
+    assert_eq!(mail.calls(), vec!["accounts", "list_messages ada-at-example.com INBOX", "list_folders ada-at-example.com"]);
+}
+
+/// 520 gate, 31 Oct: the companion said "41 unread in INBOX" while the Email app showed 60 of 78,
+/// because it counted the 50 newest messages it had synced. A mailbox of 78 with 60 unseen, of
+/// which only 50 are listed, is stated with the server's numbers.
+#[test]
+fn the_unread_count_is_the_mailboxs_not_the_synced_windows() {
+    let (mail, conn) = world();
+    {
+        let mut state = mail.state.lock().unwrap();
+        state.listed = (1..=50u32).map(|uid| message(uid, "Priya", "priya@example.com", "Hello")).collect();
+        state.folders = vec![EmailFolder::counted("INBOX", 60, 78)];
+    }
+
+    let checked = read::EmailCheckTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({})));
+    let listed = read::EmailListTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({})));
+
+    for said in [&checked, &listed] {
+        assert!(said.contains("60 unread of 78 in INBOX"), "{said}");
+    }
+}
+
+#[test]
+fn when_the_server_will_not_count_the_window_is_named_as_a_window() {
+    let (mail, conn) = world();
+    {
+        let mut state = mail.state.lock().unwrap();
+        state.listed = (1..=50u32).map(|uid| message(uid, "Priya", "priya@example.com", "Hello")).collect();
+        state.folders = vec![EmailFolder::uncounted("INBOX", "the server did not answer")];
+    }
+
+    let said = read::EmailCheckTool { mail: port(&mail) }.run(&conn, &args(serde_json::json!({})));
+
+    assert!(said.contains("unread among the newest 50 messages synced"), "{said}");
+    assert!(!said.contains("unread in INBOX") && !said.contains(" of 78"), "{said}");
 }
 
 #[test]

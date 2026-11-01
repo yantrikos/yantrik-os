@@ -204,3 +204,24 @@ pub(super) fn prefixed(prefix: &str, subject: &str) -> String {
         format!("{prefix} {subject}")
     }
 }
+
+/// How many unread messages a folder has, in words a mind can state as true.
+///
+/// The cache holds only what `email_check` last listed (the newest page), so counting it gives
+/// "41 unread" for a mailbox with 60 (520 gate, 31 Oct). The folder's own number comes from the
+/// service's `list_folders`, which asks the server (IMAP STATUS) and is the number the Email app
+/// shows. When the server will not say, the sentence names the window it counted instead of
+/// presenting it as the folder's.
+pub(super) fn unread_in(port: &dyn MailPort, account_id: &str, folder: &str, cached_unread: i64, window: u32) -> String {
+    let counted = port
+        .list_folders(account_id)
+        .ok()
+        .and_then(|all| all.into_iter().find(|f| f.name.eq_ignore_ascii_case(folder)))
+        .and_then(|f| f.counts);
+    match counted {
+        Some(c) => format!("{} unread of {} in {}", c.unread, c.total, folder),
+        None => format!(
+            "{cached_unread} unread among the newest {window} messages synced (the count of the whole {folder} could not be read)"
+        ),
+    }
+}
