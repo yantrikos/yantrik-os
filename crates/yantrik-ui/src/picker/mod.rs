@@ -11,12 +11,15 @@
 //! model each turn; picking another before sending is how one message goes to another model.
 
 pub mod attach;
+pub mod blocked;
 pub mod choices;
 pub mod menu;
 pub mod status;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_blocked;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

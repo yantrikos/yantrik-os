@@ -46,9 +46,21 @@ fn gateway_fact(harness: &str, detail: Option<&str>) -> Option<GatewayFact> {
                 crate::ai_accounts::accounts().into_iter().find(|a| a.id == t.account).map(|a| a.provider_type).unwrap_or_default();
             GatewayFact::Sends { base_url: t.base_url, provider_kind, model: t.model, lane: routed.lane_for.is_some() }
         }
-        Err(r) if r.message == yantrik_gateway::server::NO_PICK => GatewayFact::NoPick,
+        Err(r) if r.message == yantrik_gateway::server::NO_PICK => no_pick(harness),
         Err(r) => GatewayFact::Refused { code: r.code.to_string(), message: r.message },
     })
+}
+
+/// Nothing is picked and nothing is usable: because sharing is off for every account, when that
+/// is the cause and the mind sends private context (the Lens then says so), else just that.
+fn no_pick(harness: &str) -> GatewayFact {
+    let sends_private = crate::provider_handoff::adapter_for(harness).map(|a| a.private_context()).unwrap_or(true);
+    let consent = crate::ai_accounts::consent::load(&crate::ai_accounts::consent::path());
+    if sends_private && crate::ai_accounts::consent::off_for_every_account(&crate::ai_accounts::catalogue(), &crate::ai_accounts::accounts(), &consent) {
+        GatewayFact::NoneShared
+    } else {
+        GatewayFact::NoPick
+    }
 }
 
 /// The saved providers changed: remember their addresses and show the lists again.

@@ -25,7 +25,7 @@ export struct PickerMind {
 
 // A row of the model menu: a group header ("Recent", "Ollama Cloud"), a model, or a note.
 export struct PickerModel {
-    kind: string,       // "header" · "model" · "note"
+    kind: string,       // "header" · "model" · "note" · "banner" (why every model is held back) · "action" (its press; id is the action)
     id: string,         // "<account>/<model>" for a model
     name: string,
     detail: string,     // "thinks · sees images · 131K"
@@ -119,6 +119,8 @@ component MenuRow inherits Rectangle {
     in property <string> detail;
     in property <bool> disabled;
     in property <bool> current;
+    // Why it cannot be used, under the rest, as small secondary text (never only a tooltip).
+    in property <string> reason;
     callback clicked();
     // A press of a disabled row: never a pick, but whoever made it disabled can answer the press.
     callback disabled-pressed();
@@ -126,7 +128,7 @@ component MenuRow inherits Rectangle {
     border-radius: Theme.r-sm;
     background: rt.has-hover && !root.disabled ? Theme.hover-fill-strong : transparent;
     accessible-role: button;
-    accessible-label: root.title + (root.detail != "" ? ". " + root.detail : "");
+    accessible-label: root.title + (root.detail != "" ? ". " + root.detail : "") + (root.reason != "" ? ". " + root.reason : "");
     accessible-enabled: !root.disabled;
     accessible-action-default => { if (!root.disabled) { root.clicked(); } }
     rt := TouchArea {
@@ -156,6 +158,12 @@ component MenuRow inherits Rectangle {
             if root.detail != "" : Text {
                 text: root.detail;
                 color: root.disabled ? Theme.text-dim : Theme.text-secondary;
+                font-size: Theme.fs-caption;
+                wrap: word-wrap;
+            }
+            if root.reason != "" : Text {
+                text: root.reason;
+                color: Theme.text-secondary;
                 font-size: Theme.fs-caption;
                 wrap: word-wrap;
             }
@@ -223,6 +231,8 @@ export component ModelPicker inherits Rectangle {
         : Theme.amber;
     // The lean row in a narrow Lens (380px): Effort gives its place to the model's name, and the
     // mind's name is shorter. Effort is still in the mind panel's picker.
+    // The model menu opens with a header saying why every model is held back: the rows do not repeat it.
+    property <bool> header-shown: root.models.length > 0 && root.models[0].kind == "banner";
     property <bool> tight: root.lean && root.room > 0 && root.room < 300px;
     // A problem's one press ("Try again", "Add key") takes Effort's place, never the model's: the
     // model chip is how a person moves off a model that fails (VM 541, 15 Oct: the LAN model was
@@ -386,9 +396,23 @@ export component ModelPicker inherits Rectangle {
                                 font-size: Theme.fs-caption;
                                 wrap: word-wrap;
                             }
+                            if m.kind == "banner" : Text {
+                                text: m.name;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-caption;
+                                wrap: word-wrap;
+                            }
+                            if m.kind == "action" : Chip {
+                                label: m.name;
+                                chevron: false;
+                                max-label: 280px;
+                                a11y: m.name;
+                                clicked => { root.fix-model(m.reason); model-menu.close(); }
+                            }
                             if m.kind == "model" : MenuRow {
                                 title: m.name;
-                                detail: m.disabled ? m.reason : m.detail;
+                                detail: m.detail;
+                                reason: m.disabled && !root.header-shown ? m.reason : "";
                                 disabled: m.disabled;
                                 current: m.current;
                                 clicked => { root.choose-model(m.id); model-menu.close(); }

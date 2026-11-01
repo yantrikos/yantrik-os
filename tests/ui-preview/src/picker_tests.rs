@@ -81,5 +81,34 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     }
     assert_eq!(chosen, "free-groq/openai/gpt-oss-120b", "two clicks switch the model");
     println!("PASS picker: mind and model each switched in two clicks");
+
+    // Every model held back for one reason (#1042): the reason once at the top, with its actions,
+    // and the rows below it greyed without repeating it. A press of an action carries the reason
+    // that names AI accounts, as a press of a greyed row does.
+    let off = |id: &str, name: &str, detail: &str| model("model", id, name, detail, true, "Set up a private lane, or allow sharing with Ollama Cloud in AI accounts.");
+    ui.set_models(ModelRc::new(VecModel::from(vec![
+        model("banner", "", "Sharing is off for every account, so no model can be used yet. Your Mind sends what it knows about you only where you allow it.", "", false, ""),
+        PickerModel { reason: "Opens AI accounts, where sharing and the private lane are set.".into(), ..model("action", "allow-sharing", "Allow sharing\u{2026}", "", false, "") },
+        PickerModel { reason: "Opens AI accounts, where sharing and the private lane are set.".into(), ..model("action", "private-lane", "Set up a private lane", "", false, "") },
+        model("header", "", "OLLAMA CLOUD", "", false, ""),
+        off("ollama-cloud/deepseek-v4.1-flash", "deepseek-v4.1-flash", "Ollama Cloud \u{b7} 128K context"),
+        off("kilo/glm-5", "glm-5", "Kilo \u{b7} thinks"),
+    ])));
+    click(w, px + 150.0, py + 14.0);
+    let all_off = draw();
+    save(&all_off, &output.replace(".png", "-alloff.png"))?;
+    let mut fixed = String::new();
+    for dy in (36..160).step_by(6) {
+        click(w, px + 80.0, menu_top + 6.0 + dy as f32);
+        draw();
+        fixed = ui.get_fixed_reason().to_string();
+        if !fixed.is_empty() {
+            break;
+        }
+        click(w, px + 150.0, py + 14.0);
+        draw();
+    }
+    assert!(fixed.contains("AI accounts"), "a press of the header's action carries the reason that opens AI accounts: {fixed:?}");
+    println!("PASS picker: the all-off header shows its reason once and its action opens AI accounts");
     Ok(())
 }

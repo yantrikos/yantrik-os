@@ -104,3 +104,18 @@ pub fn lane(consent: &Consent, accounts: &[Account]) -> Option<String> {
     let (account, _) = lane.split_once('/')?;
     accounts.iter().any(|a| a.id == account && a.local).then(|| lane.to_string())
 }
+
+/// Whether sharing is off for every account that lists a model, none of them local: the case
+/// where a Mind on Yantrik models has nothing it may use and nothing picked (#1042). Said by the
+/// Lens's destination line; an empty catalogue is not this case.
+pub fn off_for_every_account(catalogue: &super::store::Catalogue, accounts: &[Account], consent: &Consent) -> bool {
+    let mut any = false;
+    for group in catalogue.accounts.iter().filter(|g| !g.models.is_empty()) {
+        let Some(a) = accounts.iter().find(|a| a.id == group.account) else { return false };
+        if consent.sharing_for(a) != Sharing::Off {
+            return false;
+        }
+        any = true;
+    }
+    any
+}

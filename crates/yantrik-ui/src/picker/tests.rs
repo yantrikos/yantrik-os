@@ -14,11 +14,11 @@ use crate::ai_accounts::store::Catalogue;
 use crate::wire::provider_models::ListedModel;
 use crate::wire::settings::ProviderStoreEntry;
 
-fn mind(id: &str, on_gateway: bool, private_context: bool) -> MindSeen {
+pub(super) fn mind(id: &str, on_gateway: bool, private_context: bool) -> MindSeen {
     MindSeen { id: id.into(), name: id.to_uppercase(), attached: true, active: true, state: String::new(), on_gateway, private_context, builtin_runs_on: None }
 }
 
-fn fixture() -> (Catalogue, Vec<crate::ai_accounts::account::Account>) {
+pub(super) fn fixture() -> (Catalogue, Vec<crate::ai_accounts::account::Account>) {
     let saved = vec![
         ProviderStoreEntry {
             id: "a1".into(),

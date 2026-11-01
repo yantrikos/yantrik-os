@@ -70,7 +70,7 @@ pub fn mind_rows(minds: &[MindSeen]) -> Vec<MindRow> {
 /// A row of the Model menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelRow {
-    /// "header", "model" or "note".
+    /// "header", "model", "note", "banner" or "action".
     pub kind: &'static str,
     pub id: String,
     pub name: String,
@@ -83,6 +83,14 @@ pub struct ModelRow {
 impl ModelRow {
     fn header(name: &str) -> ModelRow {
         ModelRow { kind: "header", id: String::new(), name: name.to_uppercase(), detail: String::new(), disabled: false, reason: String::new(), current: false }
+    }
+    /// The menu's header: what holds every model back.
+    pub(super) fn banner(text: String) -> ModelRow {
+        ModelRow { kind: "banner", id: String::new(), name: text, detail: String::new(), disabled: false, reason: String::new(), current: false }
+    }
+    /// The header's one press; `id` is the action (`super::blocked`).
+    pub(super) fn action(id: &str, label: String, reason: &str) -> ModelRow {
+        ModelRow { kind: "action", id: id.into(), name: label, detail: String::new(), disabled: false, reason: reason.into(), current: false }
     }
     fn note(text: String) -> ModelRow {
         ModelRow { kind: "note", id: String::new(), name: text, detail: String::new(), disabled: false, reason: String::new(), current: false }
@@ -109,21 +117,49 @@ pub fn caps_words(caps: &ModelCaps) -> String {
     parts.join(" · ")
 }
 
+/// Why a mind cannot use a model of an account: the kind, which is what decides whether the
+/// Model menu says it once at the top ([`super::blocked`]) or on each row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// The mind keeps its own models.
+    OwnModels,
+    /// Private mode, and the account is not on this machine or network.
+    PrivateMode,
+    /// The mind sends private context and the person has not allowed this account to get it.
+    SharingOff,
+}
+
+impl Why {
+    /// The sentence, for `mind` and `account`.
+    pub fn words(self, mind: &MindSeen, account: &Account) -> String {
+        match self {
+            Why::OwnModels => match &mind.builtin_runs_on {
+                Some(_) => format!("{} runs on {}. Use Yantrik models (Settings → Minds) to pick here.", mind.name, mind.runs_on_words()),
+                None => format!("{} uses its own models. Use Yantrik models (Settings → Minds) to pick here.", mind.name),
+            },
+            Why::PrivateMode => "Private mode: only models on this machine or network.".into(),
+            Why::SharingOff => format!("Set up a private lane, or allow sharing with {} in AI accounts.", account.name),
+        }
+    }
+}
+
 /// Why `mind` cannot use a model of `account`, or `None` when it can.
-pub fn reason(mind: &MindSeen, account: &Account, consent: &Consent, private_mode: bool) -> Option<String> {
+pub fn why(mind: &MindSeen, account: &Account, consent: &Consent, private_mode: bool) -> Option<Why> {
     if !mind.on_gateway {
-        return Some(match &mind.builtin_runs_on {
-            Some(_) => format!("{} runs on {}. Use Yantrik models (Settings → Minds) to pick here.", mind.name, mind.runs_on_words()),
-            None => format!("{} uses its own models. Use Yantrik models (Settings → Minds) to pick here.", mind.name),
-        });
+        return Some(Why::OwnModels);
     }
     if private_mode && !account.local {
-        return Some("Private mode: only models on this machine or network.".into());
+        return Some(Why::PrivateMode);
     }
     if mind.private_context && crate::gateway::sharing(account, consent) == crate::ai_accounts::consent::Sharing::Off {
-        return Some(format!("Set up a private lane, or allow sharing with {} in AI accounts.", account.name));
+        return Some(Why::SharingOff);
     }
     None
+}
+
+/// [`why`], in words.
+pub fn reason(mind: &MindSeen, account: &Account, consent: &Consent, private_mode: bool) -> Option<String> {
+    why(mind, account, consent, private_mode).map(|w| w.words(mind, account))
 }
 
 /// Whether a model matches what was typed in the search: every word, in its name, id or account.
@@ -156,8 +192,14 @@ pub fn model_rows(
             None => format!("{} uses its own models. Use Yantrik models on its row in Settings → Minds to pick from these.", mind.name),
         }));
     }
+    // Every model held back for one reason: said once, at the top, with its press; the rows then
+    // do not repeat it.
+    let blocker = super::blocked::blocker(mind, catalogue, accounts, consent, private_mode);
+    if let Some(b) = &blocker {
+        out.extend(b.rows());
+    }
     let row = |m: &crate::ai_accounts::models::CatalogueModel, a: &Account| {
-        let why = reason(mind, a, consent, private_mode);
+        let why = reason(mind, a, consent, private_mode).map(|w| if blocker.is_some() { String::new() } else { w });
         ModelRow {
             kind: "model",
             id: m.id.clone(),
