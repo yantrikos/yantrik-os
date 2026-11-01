@@ -41,9 +41,14 @@ pub(crate) fn literals(source: &str) -> Vec<String> {
 /// word of the line on each side of it, which is what a lost `\` leaves behind — the next line's
 /// indentation joins in between two words and a screen says "written and              your draft".
 ///
-/// A word is a letter or a digit, or the apostrophe of `don't`. A colon counts as a word *before* a
-/// run only: a sentence breaks after one (`"...hands work on:  run it again"`), while a run before
-/// one is a label padded to its `:`. A `{` after a run is the padded value of such a label
+/// A word is a letter or a digit, or the apostrophe of `don't`, and what runs up to one counts
+/// with it: `window              (known: x)` is as lost a continuation as `window              x`,
+/// and `done.              Next` no less. So a run counts against the mark that ends the word
+/// before it (`.`, a closing `)`) and the mark that opens the word after it (`(`). A comma is in
+/// neither, since a column list pads after each of its commas (`"SELECT id,   name"`) without
+/// saying anything was lost. A colon counts as a word *before* a run only: a sentence breaks after
+/// one (`"...hands work on: run it again"`), while a run before one is a label padded to its `:`.
+/// A `{` after a run is the padded value of such a label
 /// (`"  Edges:                 {}"`), never a word, so that run is not a hole.
 ///
 /// A run at the start of a line of what is said indents it (`format!("\n    {body}")`), and a run
@@ -65,7 +70,12 @@ pub(crate) fn lost_its_continuation(said: &str) -> bool {
 /// see [`lost_its_continuation`].
 fn hole_runs(line: &str) -> Vec<(usize, usize)> {
     let chars: Vec<char> = line.chars().collect();
-    let word = |c: char| c.is_alphanumeric() || c == '\'';
+    // What a word ends with, and what the next one opens with. A `{` is in neither (a run before
+    // one pads a label to its value), and so is a `,`, which a column list pads after.
+    let ends = |c: char| {
+        c.is_alphanumeric() || matches!(c, '\'' | ':' | '.' | ';' | '!' | '?' | ')' | ']' | '"')
+    };
+    let opens = |c: char| c.is_alphanumeric() || matches!(c, '\'' | '(' | '[');
     let (mut holes, mut k) = (Vec::new(), 0);
     while k < chars.len() {
         if chars[k] != ' ' {
@@ -76,8 +86,8 @@ fn hole_runs(line: &str) -> Vec<(usize, usize)> {
             .iter()
             .position(|c| *c != ' ')
             .map_or(chars.len(), |d| k + d);
-        let before = k > 0 && (word(chars[k - 1]) || chars[k - 1] == ':');
-        let after = end < chars.len() && chars[end].is_alphanumeric();
+        let before = k > 0 && ends(chars[k - 1]);
+        let after = end < chars.len() && opens(chars[end]);
         if end - k >= 3 && before && after {
             holes.push((k, end - k));
         }
@@ -428,6 +438,12 @@ mod tests {
         // A sentence may break after a colon; a word is a letter, a digit, or an apostrophe.
         assert!(lost_its_continuation("needs the person's leave:   start it from the Recipes screen"));
         assert!(lost_its_continuation("don't   stop"));
+        // Punctuation that ends a word, and what opens the next one, count with it: a lost `\`
+        // before a `(`-ed aside (`(known: {known:?})`) is as lost as one before a plain word.
+        assert!(lost_its_continuation("gives a window              (known: x)"));
+        assert!(lost_its_continuation("done.              Next time"));
+        // A comma is neither: a column list pads after each of its commas.
+        assert!(!lost_its_continuation("id,     name,     size"));
         // A table's row does say holes — it lives in test code, or is excused by name.
         assert!(lost_its_continuation("PID     Type       RSS"));
         // Two holes are two lost continuations.
