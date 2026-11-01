@@ -68,8 +68,14 @@ pub(crate) fn resolve(lines: &[String], want: &str, registry: Option<(&str, &str
                 )
             })
         }
+        many if many.iter().all(|w| w.title == many[0].title) => Err(format!(
+            "Mind View has {} identical '{}' windows; they can't be told apart by name. Nothing was closed \
+             \u{2014} ask the person which to close.",
+            many.len(),
+            many[0].title
+        )),
         many => Err(format!(
-            "`{}` matches {} windows in Mind View and closing the wrong one cannot be undone; say which: {}",
+            "`{}` matches {} windows in Mind View ({}); name one by its exact title. Nothing was closed.",
             want.trim(),
             many.len(),
             many.iter().map(|w| w.title.as_str()).collect::<Vec<_>>().join(", ")
@@ -197,14 +203,20 @@ mod tests {
         let twice = vec!["chromium: New Tab - Chromium".to_string(), "chromium: New Tab - Chromium".to_string()];
         for want in ["New Tab - Chromium", "chromium", "browser"] {
             let said = resolve(&twice, want, Some(("browser", "/usr/bin/chromium"))).unwrap_err();
-            assert!(said.contains("matches 2 windows") && said.contains("New Tab - Chromium"), "{want}: {said}");
+            assert_eq!(
+                said,
+                "Mind View has 2 identical 'New Tab - Chromium' windows; they can't be told apart by name. \
+                 Nothing was closed \u{2014} ask the person which to close.",
+                "{want}"
+            );
         }
         // One window by title, but its app id is shared with a window of another title: the title
         // is the selector that is its alone; a window with neither alone is refused.
         let mixed = vec!["chromium: A".to_string(), "chromium: B".to_string()];
         assert_eq!(resolve(&mixed, "A", None).unwrap().0, "title:A");
         let same_app_by_registry = vec!["chromium: A".to_string(), "chromium: B".to_string()];
-        assert!(resolve(&same_app_by_registry, "chromium", None).unwrap_err().contains("matches 2 windows"));
+        let said = resolve(&same_app_by_registry, "chromium", None).unwrap_err();
+        assert!(said.contains("matches 2 windows in Mind View (A, B)") && said.contains("Nothing was closed"), "{said}");
     }
 
     /// The command is aimed at Mind View's display only: `WAYLAND_SOCKET` is removed (libwayland

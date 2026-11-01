@@ -30,7 +30,7 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 
 use crate::control_files_mind as mind;
-use crate::mind_view::{mind_id_now, requester_now, Requester};
+use crate::mind_view::{identity_now, Identity, requester_now, Requester};
 
 /// The folder each Mind is "in", by the caller's identity. Never drawn anywhere.
 static CURSORS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
@@ -61,17 +61,18 @@ impl Caller {
     }
 }
 
-/// Sort a requester, and the id `mind_id_now` gave it, into a [`Caller`].
-pub(crate) fn caller_for(req: &Requester, id: Option<String>) -> Caller {
-    match (req, id) {
+/// Sort a requester, and who `identity_now` says it is, into a [`Caller`]. Only a Mind the shell
+/// can tell from every other has a cursor.
+pub(crate) fn caller_for(req: &Requester, who: Option<Identity>) -> Caller {
+    match (req, who.and_then(|who| who.named_key())) {
         (Requester::Person, _) => Caller::Person,
-        (Requester::Mind(_), Some(id)) if id.starts_with("agent:") || id.starts_with("mind:") => Caller::Named(id),
-        (Requester::Mind(_), _) => Caller::Unnamed,
+        (Requester::Mind(_), Some(key)) => Caller::Named(key),
+        (Requester::Mind(_), None) => Caller::Unnamed,
     }
 }
 
 pub(crate) fn caller_key() -> Caller {
-    caller_for(&requester_now(), mind_id_now())
+    caller_for(&requester_now(), identity_now())
 }
 
 /// What a caller with no cursor is told when the call needed one.
@@ -392,14 +393,14 @@ mod tests {
     #[test]
     fn a_caller_is_sorted_into_the_person_a_named_mind_or_an_unnamed_one() {
         let mind = |s: &str| Requester::Mind(s.to_string());
-        let id = |s: &str| Some(s.to_string());
+        let mind_id = |s: &str| Some(Identity::Mind(s.to_string()));
         assert_eq!(caller_for(&Requester::Person, None), Caller::Person);
-        assert_eq!(caller_for(&Requester::Person, id("mind:x")), Caller::Person, "the person never gets a cursor");
-        let (a, b) = (caller_for(&mind("x"), id("mind:a")), caller_for(&mind("x"), id("mind:b")));
+        assert_eq!(caller_for(&Requester::Person, mind_id("x")), Caller::Person, "the person never gets a cursor");
+        let (a, b) = (caller_for(&mind("x"), mind_id("a")), caller_for(&mind("x"), mind_id("b")));
         assert_eq!((&a, &b), (&Caller::Named("mind:a".into()), &Caller::Named("mind:b".into())));
         assert_ne!(a, b, "two Minds are two callers");
-        assert_eq!(caller_for(&mind("an agent"), id("agent:7")), Caller::Named("agent:7".into()));
-        for unnamed in [None, id("companion")] {
+        assert_eq!(caller_for(&mind("an agent"), Some(Identity::Agent("7".into()))), Caller::Named("agent:7".into()));
+        for unnamed in [None, Some(Identity::Companion)] {
             assert_eq!(caller_for(&mind("a mind"), unnamed), Caller::Unnamed);
         }
         assert!(Caller::Unnamed.folder().is_none() && Caller::Person.folder().is_none());
@@ -449,7 +450,7 @@ mod tests {
         // Every Mind-only branch sits behind `caller_key`, which is `None` for the person.
         let lib = include_str!("control_files_cursor.rs");
         let lib = &lib[..lib.find("#[cfg(test)]").unwrap()];
-        assert!(lib.contains("caller_for(&requester_now(), mind_id_now())"), "caller_key reads who is asking");
+        assert!(lib.contains("caller_for(&requester_now(), identity_now())"), "caller_key reads who is asking");
         assert!(lib.contains("Caller::Person => None"), "intercept lets the person's call go on as written");
     }
 }
