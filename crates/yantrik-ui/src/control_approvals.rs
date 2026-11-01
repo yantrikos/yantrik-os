@@ -1852,7 +1852,10 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
     let confirm = approval_wording::confirm_label(destructive, &card.action, published);
     let changes = approval_wording::consequences(&card.action, published, &card.said, &card.target, &card.args);
     let warning = approval_wording::warning_beside(&card.warning, &changes.undo);
-    let who = approval_wording::identity(&card.verified);
+    // A request that brought words of its own (`approvals::Wording`) has them drawn; the rest of
+    // the card, and everything the caller says, is exactly what it was.
+    let who = approval_wording::identity_for(&card.verified, &card.wording.asker);
+    let confirm = if card.wording.confirm.is_empty() { confirm } else { approval_wording::visible(&card.wording.confirm) };
     // Every argument and the target drawn with its control, bidi and format characters as
     // visible escapes: none can start a line of the card's own or reorder the rest (review of
     // #639, B1). The app's one-line sentence too, which is pinned to one elided line.
@@ -1869,6 +1872,7 @@ pub(crate) fn row_for(card: Card) -> crate::ApprovalRequest {
         identity_tag: who.tag.into(),
         claim: approval_wording::claim(&card.requester).into(),
         confirm_label: confirm.into(),
+        decline_label: approval_wording::visible(&card.wording.decline).into(),
         destructive,
         what: changes.what.into(),
         exactly: changes.exactly.into(),
@@ -2903,6 +2907,7 @@ mod control_approvals_tests {
                 said: String::new(),
                 caller_says: String::new(),
                 can_session: false,
+                wording: Default::default(),
                 status: Status::Pending,
                 record: String::new(),
                 decided_at: String::new(),
@@ -2910,6 +2915,23 @@ mod control_approvals_tests {
                 age_secs: 3,
             }
         };
+
+        // A request that brought words of its own has them on the card: its buttons, and an
+        // identity row that is not "a recipe step" and not the caller's; none of it offers a
+        // standing yes. A card that did not is as it always was.
+        let plain = super::row_for(card(Verified::default()));
+        assert_eq!(plain.decline_label, "", "the card's own \"Decline\"");
+        let mut worded = card(Verified { raised_by_desktop: true, ..Verified::default() });
+        worded.wording = crate::approvals::Wording {
+            confirm: "Stop".into(),
+            decline: "Keep going".into(),
+            asker: "Asked from the Mind desk in Mind View \u{b7} a Mind can press that button too".into(),
+            once_only: true,
+        };
+        let row = super::row_for(worded);
+        assert_eq!((row.confirm_label.as_str(), row.decline_label.as_str()), ("Stop", "Keep going"));
+        assert_eq!(row.identity, "Asked from the Mind desk in Mind View \u{b7} a Mind can press that button too");
+        assert!(!row.identity.contains("recipe"), "it was not a recipe step");
 
         let nothing = super::row_for(card(Verified::default()));
         assert_eq!(nothing.verified, "could not be identified");
@@ -3101,6 +3123,7 @@ mod control_approvals_tests {
             said: String::new(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status,
             record: String::new(),
             decided_at: String::new(),
@@ -3703,6 +3726,7 @@ mod target_line_tests {
             said: String::new(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status: Status::Pending,
             record: String::new(),
             decided_at: String::new(),
@@ -3742,6 +3766,7 @@ mod target_line_tests {
             said: "End a running process by pid".into(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status: Status::Pending,
             record: String::new(),
             decided_at: String::new(),

@@ -130,6 +130,7 @@ pub const ENTRIES: &[Entry] = &[
     other(Cache, "lock-wallpaper.png", "shell, yantrik-lock"),
     other(Cache, "lock-wallpaper.source", "shell, yantrik-lock"),
     other(Cache, "model-catalogue.json", "shell"),
+    other(Cache, "thumbs", "shell (the Bench's desktop thumbnails)"),
     other(Cache, "binaries", "dev scripts"),
     other(Cache, "build-cache", "dev scripts"),
 ];

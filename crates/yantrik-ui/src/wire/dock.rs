@@ -1395,6 +1395,13 @@ mod tests {
     /// `.desktop` file beside a `src/`) must yield an id, so the next app to move onto the
     /// framework cannot drop out of these checks unnoticed. Blender is a Python add-on with no
     /// crate, and is not read.
+    /// Apps under `apps/` that are not apps a person opens: they run inside something else, are
+    /// started by it, have no launcher tile and are not a name an agent can open (`NoDisplay`
+    /// in their `.desktop` file, and `FRAMEWORK_APPS` lists them so no Mind is told they exist).
+    /// Held out of the checks that say every app is opened by its id and listed while closed.
+    /// The Mind desk (#1023) is the one: Mind View's startup script starts it.
+    const NOT_OPENED_BY_ANYONE: &[&str] = &["mind-desk"];
+
     fn published_ids() -> Vec<(String, String)> {
         let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");
         let Ok(entries) = std::fs::read_dir(&apps) else {
@@ -1405,6 +1412,9 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let dir = e.file_name().into_string().ok()?;
+                if NOT_OPENED_BY_ANYONE.contains(&dir.as_str()) {
+                    return None;
+                }
                 let read = |file: &str| std::fs::read_to_string(e.path().join(file)).unwrap_or_default();
                 published_id(&read("src/main.rs"))
                     .or_else(|| framework_id(&read("src/lib.rs")))
@@ -1427,7 +1437,7 @@ mod tests {
                 let dir = name.strip_prefix("yantrik-")?.strip_suffix(".desktop")?.to_string();
                 apps.join(&dir).join("src").is_dir().then_some(dir)
             })
-            .filter(|dir| !found.iter().any(|(d, _)| d == dir))
+            .filter(|dir| !found.iter().any(|(d, _)| d == dir) && !NOT_OPENED_BY_ANYONE.contains(&dir.as_str()))
             .collect();
         assert!(
             unread.is_empty(),

@@ -28,6 +28,9 @@ export component Preview inherits Window {
     in property <bool> app-view: false;
     in property <bool> actual-desktop: false;
     in property <bool> agent-view: false;
+    // Where the Bench starts on the actual desktop, in window coordinates (DesktopScreen.bench-top is
+    // inside the area under the status bar), for tests that aim at icons.
+    in-out property <length> bench-y: 0;
     in-out property <int> activations: 0;
     in-out property <string> launched: "";
     changed light => { ThemeMode.dark = !root.light; }
@@ -35,6 +38,9 @@ export component Preview inherits Window {
     Image { width: 100%; height: 100%; source: @image-url("../../crates/yantrik-ui-slint/ui/wallpapers/serenity.png"); image-fit: cover; }
     if root.light : Rectangle { width: 100%; height: 100%; background: #f3f5f8b0; }
     if root.actual-desktop : DesktopScreen {
+        init => { root.bench-y = Theme.status-bar-height + self.bench-top; }
+        // The home's height settles after the first layout; follow it.
+        changed bench-top => { root.bench-y = Theme.status-bar-height + self.bench-top; }
         x: 0px; y: 0px; width: 100%; height: 100%;
         agent-mode: root.agent-view;
         ambient-interval-ms: 0;
@@ -71,14 +77,13 @@ export component Preview inherits Window {
             { app-id: "music", icon-id: "music", label: "Music" },
             { app-id: "settings", icon-id: "settings", label: "Settings" },
         ];
-        recents: [
-            { title: "Ideas for a quieter workspace", subtitle: "Notes", action-id: "note:1" },
-            { title: "Project overview.md", subtitle: "Documents", action-id: "file:1" },
-        ];
+        has-continue: true;
+        continue-title: "Ideas for a quieter workspace";
+        continue-subtitle: "Notes";
         search => { root.activations += 1; }
         all-apps => { root.launcher-open = true; }
         launch(id) => { root.launched = id; }
-        open-recent(id) => { root.launched = id; }
+        open-continue => { root.launched = "continue"; }
     }
     if root.app-view : Rectangle {
         x: 24px; y: 64px; width: parent.width - 48px; height: parent.height - 128px;
@@ -306,6 +311,8 @@ export component SettingsProbe inherits Window {
 // The Agents screen (screen 34) and one agent's own window, filled with fixture data by
 // src/agents_tests.rs. Callbacks are recorded there, never acted on.
 import { AgentsScreen } from "agents.slint";
+export { BenchState, BenchItem } from "components/bench_state.slint";
+export { YMenuAction } from "components/y_context_menu.slint";
 export { AgentsState, AgentWindow, AgentRunData, AgentItemData, AgentHeaderData, AgentDetailsData, AgentMindData, AgentRoleData, WorkNavData, DeskCardData, DecisionData, ResultData, ChangeRowData, RunFactData } from "agents.slint";
 export { ToolCallData } from "components/tool_call.slint";
 export { ApprovalRequest } from "components/intent_lens.slint";
@@ -1267,6 +1274,85 @@ export component ForYouProbe inherits Window {
                 padding: Theme.sp-6;
                 InitiativeSettings { }
             }
+        }
+    }
+}
+
+// ── Mind desk (#1023) ───────────────────────────────────────────────────────
+
+// The desk's bar around a stand-in for Mind View's apps, filled with fixture words by
+// src/mind_desk_tests.rs. The three strips are the app's own (apps/mind-desk/ui/desk.slint); the
+// middle is a plain panel marked as a fixture, because the apps are somebody else's pixels.
+// Heights are the app's own `metrics`: header 76, strip 40, footer 45 (44 and its bottom edge).
+import { DeskHeader, DeskStrip, DeskFooter } from "../../apps/mind-desk/ui/desk.slint";
+export component MindDeskProbe inherits Window {
+    preferred-width: 1184px;
+    preferred-height: 660px;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    in property <string> label;
+    in property <int> tone;
+    in property <string> headline;
+    in property <bool> can-stop;
+    in property <string> stop-note;
+    in property <bool> agents-offered;
+    in property <string> strip-heading;
+    in property <string> strip-tool;
+    in property <string> strip-mark;
+    in property <string> strip-stats;
+    in property <string> apps;
+    in property <string> safety;
+    in property <string> model;
+    in property <string> model-mark;
+    out property <length> header-height: header.height;
+    out property <length> strip-height: strip.height;
+    out property <length> footer-height: footer.height;
+    out property <length> middle-top: middle.y;
+    header := DeskHeader {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: 76px;
+        label: root.label;
+        tone: root.tone;
+        headline: root.headline;
+        can-stop: root.can-stop;
+        stop-note: root.stop-note;
+        agents-offered: root.agents-offered;
+    }
+    strip := DeskStrip {
+        x: 0px;
+        y: 76px;
+        width: root.width;
+        height: 40px;
+        heading: root.strip-heading;
+        tool: root.strip-tool;
+        mark: root.strip-mark;
+        stats: root.strip-stats;
+    }
+    footer := DeskFooter {
+        x: 0px;
+        y: 116px;
+        width: root.width;
+        height: 45px;
+        apps: root.apps;
+        safety: root.safety;
+        model: root.model;
+        model-mark: root.model-mark;
+    }
+    // Where the apps are: not drawn by the desk, so a plain panel that says so.
+    middle := Rectangle {
+        x: 0px;
+        y: 161px;
+        width: root.width;
+        height: root.height - 161px;
+        background: Theme.bg-card;
+        Text {
+            text: "Mind View's apps go here (fixture)";
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            horizontal-alignment: center;
+            vertical-alignment: center;
         }
     }
 }

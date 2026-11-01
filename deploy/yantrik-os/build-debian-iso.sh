@@ -692,7 +692,7 @@ for required in share/labwc/rc.xml share/labwc/menu.xml share/labwc/autostart bi
     [ -e "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — the desktop session would not be the shipped one"
 done
 # What both installers run to make an installed machine's /opt/yantrik root's (#397).
-for required in bin/yantrik-update bin/yantrik-lockdown; do
+for required in bin/yantrik-update bin/yantrik-update-verify bin/yantrik-lockdown; do
     [ -x "$ROOTFS/opt/yantrik/$required" ] || fail "$required missing from the image — an install could not make /opt/yantrik root's"
 done
 

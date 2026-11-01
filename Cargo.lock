@@ -11202,6 +11202,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "yantrik-bench"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "libc",
+ "png",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "yantrik-brain"
 version = "0.1.0"
 dependencies = [
@@ -11484,6 +11499,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tracing",
+ "yantrik-bench",
  "yantrik-foundation",
 ]
 
@@ -11622,6 +11638,22 @@ dependencies = [
  "serde_json",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+]
+
+[[package]]
+name = "yantrik-mind-desk"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "slint",
+ "tracing",
+ "yantrik-app",
+ "yantrik-app-build",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-services",
+ "yantrik-testing",
+ "yantrik-ui-kit",
 ]
 
 [[package]]
@@ -12034,6 +12066,8 @@ dependencies = [
  "sha2",
  "slint",
  "sysinfo",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
  "tracing",
@@ -12044,6 +12078,7 @@ dependencies = [
  "wayland-protocols-wlr",
  "yantrik-agent-terminal",
  "yantrik-app-runtime",
+ "yantrik-bench",
  "yantrik-chat",
  "yantrik-companion",
  "yantrik-foundation",

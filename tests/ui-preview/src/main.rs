@@ -27,6 +27,7 @@ mod approval_tests;
 mod approval_fit_tests;
 mod approval_pane_tests;
 mod dock_tests;
+mod bench_tests;
 mod taskbar_menu_tests;
 mod alt_tab_tests;
 mod cards_waiting_tests;
@@ -41,6 +42,7 @@ mod battery_tests;
 mod network_tests;
 mod monitor_tests;
 mod weather_tests;
+mod mind_desk_tests;
 mod minds_tests;
 mod for_you_tests;
 mod jump_tests;
@@ -118,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-launcher-scenes") { return launcher_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-apps-button") { return apps_button_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-dock") { return dock_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-bench") { return bench_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-alt-tab") { return alt_tab_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-taskbar-menu") { return taskbar_menu_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-cards-waiting") { return cards_waiting_tests::run(&window, output); }
@@ -140,6 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-approval-fit") { return approval_fit_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "lens-answer") { return lens_tests::run_lens(&window, output); }
     if args.iter().any(|a| a == "verify-monitor") { return monitor_tests::run(&window); }
+    if args.iter().any(|a| a == "verify-mind-desk") { return mind_desk_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-weather") { return weather_tests::run(&window); }
     if args.iter().any(|a| a == "verify-weather-snapped") { return weather_tests::snapped(&window, output); }
     if args.iter().any(|a| a == "verify-installer") { return installer_tests::run(&window, output); }

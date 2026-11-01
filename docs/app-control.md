@@ -306,6 +306,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `set_volume`, `set_mute`, `set_brightness` | standard | the machine's own output level and backlight, which the keys move too and the same slider takes back; nothing is written to the shell's settings. They answer with the level read back from PipeWire / the panel, and `set_brightness` refuses on a machine with no backlight |
 | shell | `set_theme` | sensitive | chooses the desktop's theme (lake, nightfall): the colours, accent, wallpaper and dark flag together, saved in the shell's settings, and it rewrites files outside the shell (labwc's themerc, foot's colours, GTK's scheme) on a worker. `describe shell` lists the themes under `theme`; the answer is the theme the shell reports back |
 | shell | `set_dark_style` | sensitive | switches between the dark and light appearance through the Quick Settings tile's own callback, which saves `dark_mode` into the shell's settings: still in force after a restart, the #48 rule `set_theme` and `set_do_not_disturb` are graded by. Nothing outside the shell is written. `describe shell` › `settings.dark` is the mode in use |
+| shell | `desktop_place`, `desktop_archive` | sensitive | the desktop's icons (#1030). `desktop_place` puts one icon in one free cell of its grid and the layout is saved in `~/.yantrik/desktop_layout.json`, so it is still there after a restart. `desktop_archive` moves one thing from the desktop to `~/Archive/<date>/` and **never deletes it**; the person gets an Undo toast. Both name an icon by the name `describe shell` lists under `desktop.items` (never a path, and never one outside the desktop folder), both refuse a desktop a mind may not look into (`control_files_mind`), and both answer with what was done, read back. `describe shell` › `desktop` carries the folder, the grid, `snap`, `icons_shown` and `items` — name, kind, x, y, cell, selected — and nothing from inside a file |
 | shell | `report_problem` | sensitive | sends what it carries out of the machine |
 | shell | `install_harness`, `start_harness` | sensitive | fetches software onto the machine; decides what it runs on every login |
 | shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |
@@ -329,6 +330,9 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `new_agent`, `hand_off` | sensitive | starts an agent, with what that costs and whatever reach the role carries |
 | shell | `send_to_agent`, `stop_agent` | standard | talking to, or stopping, an agent the person started |
 | shell | `read_agent`, `show_agent`, `show_workroom` | safe | reads and showings; `show_workroom` changes the Agents page and nothing about any agent, and is held while an approval card waits |
+| shell | `mind_desk` | safe | what the Mind desk around Mind View shows (#1023): the Mind it follows by name and state, one tool's name, counts, a model label and a kind of account, and no line a Mind said it is doing. Reads, changes nothing, takes only how long to wait. Answered only to the one desk process the shell started (its pid and start time, from the kernel), and to nothing else |
+| shell | `mind_desk_stop` | standard | the desk asks the *person*, on their own desktop, whether to stop the Mind it shows; it stops nothing, and only that card's Allow runs `stop_agent`. Same peer rule, and only for the Mind the desk's snapshot shows |
+| shell | `mind_desk_open_agents` | safe | the person's Agents screen from the desk: same peer rule, only while Mind View is in front, at most once every ten seconds |
 | shell | `agent_run`, `agent_input` | sensitive | arbitrary commands; typing into a live shell |
 | shell | `agent_job`, `agent_kill` | standard | reading a job's state; ending a job the caller's token owns |
 | shell | `request_approval`, `approval_status`, `consume_approval`, `set_mind_mode`, `record_unasked_action`, `show_mind_audit`, `close_mind_menu` | safe | the approval machinery itself, which must never act; `set_mind_mode` refuses every loosening, so it can only tighten |
@@ -743,6 +747,30 @@ framework opens there at all any more; see the last section.)
   Snippets shows "Code is hidden in this
   window." for its code, searches only titles, tags and language, offers no rail question, and
   refuses editing, Copy, AI Explain and the rail's "What does this do?".
+- The Mind desk (#1023, phase 1, `apps/mind-desk`) is one bar along the top of Mind View: a header
+  (the Mind's name and state, the tool it is running, Stop… and Open in Agents), a tool strip, and
+  a footer (the apps open, how the Mind is housed, the model it says it runs). It is a framework app
+  of one window that the shell starts (`mind_view_desk`, on the nested display, not through the
+  startup script) and `config/labwc-mind/rc.xml` keeps in a reserved top margin (always on top,
+  undecorated, full width at every size, out of
+  Alt+Tab, never force-maximised). A Mind acting there can read it and press its buttons, so:
+  - the shell answers its three actions to that one process (pid and start time recorded at start;
+    no executable path is trusted, since any Mind can run the binary);
+  - Stop… stops nothing: `mind_desk_stop` raises a card on the person's desktop, outside Mind View,
+    and only the person's Allow runs `stop_agent` (a direct stop would run as the person and let one
+    Mind end another's turn). The desk says "Stopped" only when the shell says it stopped the Mind;
+  - Open in Agents is held to once in ten seconds and to Mind View being in front;
+  - the bar is at the top and not above and below the apps because labwc 0.8 anchors a fixed-height
+    window at the top of a display that is resized and not at the bottom; where it really lands is
+    measured on pixels by `tests/mind-desk-placement/run.sh`;
+  - after a "Keep going" the shell does not put the same stop question in front of the person for two
+    minutes (`approvals::DENIAL_QUIET`), and the desk says so;
+  - it shows no line a Mind said it is doing (that is withheld from other Minds, and the desk is a
+    screen they all read); it returns with per-Mind attribution, phase 4;
+  - every string is display-safe by construction (`yantrik_ipc_contracts::mind_desk`), cleaned again
+    by the desk;
+  - which account a harness runs under comes from the kernel's word at attach, not a name list.
+  A copy started anywhere but a Mind's display refuses to run (`App::ON_MINDS_DISPLAY`).
 - Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
   `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
   drives whichever Terminal window is open, including the person's if that is the one open.

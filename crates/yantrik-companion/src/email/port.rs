@@ -9,11 +9,12 @@
 //! The trait exists so the tools can be tested without a socket: the fake in the tests answers the
 //! same questions the service does, including the answer a shut vault gives.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use yantrik_ipc_transport::server::RpcServer;
 use yantrik_ipc_transport::SyncRpcClient;
+use super::flight::Flight;
 use yantrik_ipc_contracts::credentials::ERR_LOCKED;
 use yantrik_ipc_contracts::email::{
     method, AccountsResult, ComposeRequest, EmailAccountSummary, EmailDetail, EmailFolder, EmailSummary,
@@ -65,19 +66,8 @@ pub const TIMED_OUT: i32 = -32013;
 
 const SERVICE: &str = "email";
 
-/// Whether a transport failure is a read or connect that ran out of time. The transport reports
-/// it as the operating system's words (`Read error (...): Resource temporarily unavailable (os
-/// error 11)`), which is no sentence for a mind to act on.
-pub fn ran_out_of_time(message: &str) -> bool {
-    let m = message.to_lowercase();
-    m.contains("temporarily unavailable") || m.contains("timed out") || m.contains("os error 11") || m.contains("os error 110")
-}
-
-/// Whether the transport refused without touching the socket because the address failed a moment
-/// ago (its breaker). Nothing was sent, so asking again is safe.
-fn breaker_open(message: &str) -> bool {
-    message.contains("is unreachable (retrying")
-}
+/// The code of "too many mail calls are already waiting". Nothing was sent.
+pub const BUSY: i32 = -32014;
 
 /// What the Mind is told when the service did not answer in time. A change may have gone through
 /// anyway, and the sentence says so rather than inviting a blind repeat.
@@ -90,6 +80,12 @@ fn slow_sentence(changes_something: bool) -> String {
     }
 }
 
+/// What the Mind is told when the transport refused to dial an address that failed a moment ago.
+/// Nothing was sent, so this is true of a change as well as a read.
+const NOT_SENT: &str = "Mail did not answer a moment ago, so this was not tried. Nothing was changed; try again in a moment.";
+
+const TOO_BUSY: &str = "Several mail requests are already waiting. Nothing was changed; try again in a moment.";
+
 /// The real one: `email-service` on its socket, started on demand.
 #[derive(Default, Clone)]
 pub struct ServiceMail {
@@ -97,6 +93,8 @@ pub struct ServiceMail {
     address: Option<String>,
     /// Budgets other than [`NETWORK_BUDGET`] and [`LOCAL_BUDGET`], for tests.
     budgets: Option<(Duration, Duration)>,
+    /// The ceiling on calls waiting, and the time of this port's last timeout.
+    flight: Arc<Flight>,
 }
 
 impl ServiceMail {
@@ -107,7 +105,7 @@ impl ServiceMail {
 
     /// A service listening at `address`, with these budgets (network, local). For tests.
     pub fn at(address: &str, network: Duration, local: Duration) -> Self {
-        Self { address: Some(address.to_string()), budgets: Some((network, local)) }
+        Self { address: Some(address.to_string()), budgets: Some((network, local)), flight: Arc::default() }
     }
 
     fn budget(&self, network: bool) -> Duration {
@@ -124,11 +122,12 @@ impl ServiceMail {
         Ok(client.with_timeout(budget))
     }
 
-    fn address(&self) -> String {
-        self.address.clone().unwrap_or_else(|| RpcServer::default_address(SERVICE))
-    }
-
     /// One call. `network` picks the budget; `changes` words a timeout honestly.
+    ///
+    /// Retried once, and only when the transport refused to dial (its breaker, tripped by some
+    /// other call): that refusal is made before anything is built or written, so nothing can be
+    /// done twice. A call that was sent and then timed out is never asked again, and a breaker
+    /// that this port's own timeout just tripped is believed (see [`Flight`]).
     fn call<R: serde::de::DeserializeOwned>(
         &self,
         method_name: &str,
@@ -136,17 +135,22 @@ impl ServiceMail {
         network: bool,
         changes: bool,
     ) -> Result<R, ServiceError> {
-        let mut result = self.client(self.budget(network))?.call_typed(method_name, &params);
-        // The breaker is process-wide and one slow call trips it, so the next call fails at once
-        // with "unreachable" though the service is fine. It failed before anything was sent, so
-        // asking again is safe: forget the verdict and ask once more.
-        if matches!(&result, Err(e) if breaker_open(&e.message)) {
-            SyncRpcClient::clear_breaker(&self.address());
-            result = self.client(self.budget(network))?.call_typed(method_name, &params);
+        let Some(_place) = self.flight.enter() else {
+            return Err(ServiceError { code: BUSY, message: TOO_BUSY.to_string() });
+        };
+        let client = self.client(self.budget(network))?;
+        let mut result = client.call_typed(method_name, &params);
+        if matches!(&result, Err(e) if SyncRpcClient::is_breaker_refusal(e)) && !self.flight.timed_out_recently() {
+            // The client clears the key it dials, which in a mind's process is the door's path.
+            client.forget_breaker();
+            result = client.call_typed(method_name, &params);
         }
         result.map_err(|e| {
-            if ran_out_of_time(&e.message) {
+            if SyncRpcClient::is_io_timeout(&e) {
+                self.flight.note_timeout();
                 ServiceError { code: TIMED_OUT, message: slow_sentence(changes) }
+            } else if SyncRpcClient::is_breaker_refusal(&e) {
+                ServiceError { code: TIMED_OUT, message: NOT_SENT.to_string() }
             } else {
                 ServiceError { code: e.code, message: e.message }
             }

@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::port::{ran_out_of_time, MailPort, ServiceMail, LOCAL_BUDGET, NETWORK_BUDGET, TIMED_OUT};
+use yantrik_ipc_contracts::email::ComposeRequest;
+use yantrik_ipc_transport::SyncRpcClient;
+
+use super::port::{MailPort, ServiceMail, BUSY, LOCAL_BUDGET, NETWORK_BUDGET, TIMED_OUT};
 
 /// A mail service that answers every request after the delay it is given for that request.
 struct Slow {
@@ -116,16 +119,85 @@ fn a_change_that_timed_out_does_not_claim_to_have_failed() {
 }
 
 #[test]
-fn one_slow_call_does_not_make_the_next_one_fail_as_unreachable() {
-    // Request 0 is slow and times out, which trips the transport's breaker for the address;
-    // request 1 is quick and must get through.
+fn after_a_timeout_of_its_own_the_next_call_fails_at_once_in_words_and_asks_nobody() {
+    // The breaker the timeout tripped is believed: clearing it would make every call against a
+    // wedged service wait its full budget again (#1026 review, L3).
     let service = Slow::start(vec![Duration::from_secs(3), Duration::from_millis(10)]);
     let mail = service.mail(Duration::from_secs(1), Duration::from_secs(1));
 
     assert_eq!(mail.list_messages("a", "INBOX", 1, 20).unwrap_err().code, TIMED_OUT);
-    let next = mail.list_messages("a", "INBOX", 1, 20);
+    let started = Instant::now();
+    let next = mail.list_messages("a", "INBOX", 1, 20).unwrap_err();
 
-    assert!(next.is_ok(), "{:?}", next.err().map(|e| e.message));
+    assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+    assert_eq!(next.code, TIMED_OUT);
+    assert!(next.message.contains("Nothing was changed"), "{}", next.message);
+    assert!(!next.message.contains("unreachable") && !next.message.contains(".sock"), "{}", next.message);
+    assert_eq!(service.asked.lock().unwrap().len(), 1, "the second call reached the service");
+}
+
+#[test]
+fn a_breaker_tripped_by_another_caller_is_cleared_and_the_call_goes_through() {
+    // Another client of the same socket (the Email app, on a ten second budget) times out and
+    // trips the process-wide breaker; this port did nothing wrong and must get through.
+    let service = Slow::start(vec![Duration::from_secs(2), Duration::from_millis(10)]);
+    let other = SyncRpcClient::new(service.path.to_str().unwrap()).with_timeout(Duration::from_millis(300));
+    assert!(other.call("email.list_messages", serde_json::json!({})).is_err());
+
+    let mail = service.mail(NETWORK_BUDGET, LOCAL_BUDGET);
+    let listed = mail.list_messages("a", "INBOX", 1, 20);
+
+    assert!(listed.is_ok(), "{:?}", listed.err().map(|e| e.message));
+}
+
+#[test]
+fn a_send_that_timed_out_is_asked_once_and_never_again() {
+    let service = Slow::start(vec![Duration::from_secs(3)]);
+    let mail = service.mail(Duration::from_secs(1), Duration::from_secs(1));
+    let compose = ComposeRequest {
+        to: vec!["x@example.com".into()], cc: vec![], bcc: vec![], subject: "s".into(), body: "b".into(),
+        reply_to_id: None, signature: None,
+    };
+
+    let sent = mail.send("a", &compose).unwrap_err();
+    let again = mail.send("a", &compose).unwrap_err();
+
+    assert!(sent.message.contains("can't say whether that went through"), "{}", sent.message);
+    assert_eq!(again.code, TIMED_OUT);
+    assert_eq!(service.asked.lock().unwrap().as_slice(), ["email.send_message"], "a send went out twice");
+}
+
+#[test]
+fn a_service_that_is_gone_is_not_reported_as_slow() {
+    // A refused connection is not a timeout; the person is not told "slow" about a service that
+    // is not there.
+    let service = Slow::start(vec![Duration::from_millis(10)]);
+    let mail = service.mail(NETWORK_BUDGET, LOCAL_BUDGET);
+    drop(service);
+    let gone = mail.delete_message("a", "INBOX", "7").unwrap_err();
+    assert_ne!(gone.code, TIMED_OUT, "{}", gone.message);
+}
+
+#[test]
+fn a_runaway_cannot_keep_more_than_the_ceiling_waiting() {
+    let service = Slow::start(vec![Duration::from_secs(2)]);
+    let mail = service.mail(NETWORK_BUDGET, LOCAL_BUDGET);
+    let waiting: Vec<_> = (0..4)
+        .map(|_| {
+            let mail = mail.clone();
+            std::thread::spawn(move || mail.list_messages("a", "INBOX", 1, 20))
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let over = mail.list_messages("a", "INBOX", 1, 20).unwrap_err();
+
+    assert_eq!(over.code, BUSY);
+    assert!(over.message.contains("Nothing was changed"), "{}", over.message);
+    for w in waiting {
+        assert!(w.join().unwrap().is_ok());
+    }
+    assert!(mail.list_messages("a", "INBOX", 1, 20).is_ok(), "places did not come back");
 }
 
 #[test]
@@ -136,17 +208,4 @@ fn the_budgets_are_set_in_one_place_and_are_not_the_transports_two_seconds() {
     let production = source.split("#[cfg(test)]").next().unwrap();
     assert!(!production.contains("SyncRpcClient::for_service"), "a client built without a budget");
     assert_eq!(production.matches("with_timeout(").count(), 1, "the budget is applied in one place");
-}
-
-#[test]
-fn the_operating_systems_words_for_a_timeout_are_recognised() {
-    for m in [
-        "Read error (/run/user/1000/yantrik/email.sock): Resource temporarily unavailable (os error 11)",
-        "connection timed out",
-        "Read error: Connection timed out (os error 110)",
-    ] {
-        assert!(ran_out_of_time(m), "{m}");
-    }
-    assert!(!ran_out_of_time("no such folder"));
-    assert!(!ran_out_of_time("Mail is waiting for the vault. Unlock it and mail will check again."));
 }

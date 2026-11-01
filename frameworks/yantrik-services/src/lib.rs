@@ -11,6 +11,7 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use yantrik_ipc_transport::{RpcError, SyncRpcClient};
 
+pub mod mind_desk;
 pub mod weather;
 
 /// Why a call to a service did not answer.
@@ -67,7 +68,7 @@ pub(crate) fn call<T: DeserializeOwned>(
 /// (`Read error (…): Resource temporarily unavailable (os error 11)`: EAGAIN, not TimedOut),
 /// a write that failed, and a peer that closed mid-call. None of those sentences, which carry
 /// the socket's path, is shown to a person: a transport failure is `Timeout` or `Unreachable`.
-fn classify(service: &'static str, deadline: Duration, e: RpcError) -> ServiceError {
+pub(crate) fn classify(service: &'static str, deadline: Duration, e: RpcError) -> ServiceError {
     let text = e.message.to_ascii_lowercase();
     let timed_out = text.contains("timed out")
         || text.contains("timeout")
@@ -93,7 +94,7 @@ fn classify(service: &'static str, deadline: Duration, e: RpcError) -> ServiceEr
 
 /// A decode error by its kind and place, never quoting the value (a service answer may carry
 /// anything).
-fn shape_of(e: &serde_json::Error) -> String {
+pub(crate) fn shape_of(e: &serde_json::Error) -> String {
     use serde_json::error::Category;
     let kind = match e.classify() {
         Category::Io => "could not be read",

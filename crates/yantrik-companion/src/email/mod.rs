@@ -11,6 +11,7 @@
 //!   all, into the service and the vault, and archives the file it changed.
 
 pub mod db;
+mod flight;
 pub mod legacy;
 pub mod port;
 

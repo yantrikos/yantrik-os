@@ -61,6 +61,8 @@ mod control_overlays;
 mod control_settings;
 mod control_switcher;
 mod alt_tab;
+/// The Bench: the desktop's icons, where the person put them (#1030).
+mod bench;
 mod window_name;
 mod power_status;
 mod control_network;
@@ -72,6 +74,8 @@ mod control_installer_target;
 mod control_levels;
 mod control_levels_actions;
 mod control_theme;
+/// The desktop's icons on the control surface: desktop_place, desktop_archive (#1030).
+mod control_bench;
 mod boot_unlock;
 mod installer_medium;
 mod installer_rules;
@@ -106,6 +110,7 @@ mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.
 mod control_agents;
 mod control_workroom;
+mod control_mind_desk;
 // The chat in one read, for the Yantrik terminal (`chat_view`).
 mod control_chat;
 // Which of the person's conversations a bridge's private reads count against (`taint_scope`,
@@ -148,7 +153,9 @@ mod mind_panel;
 mod mind_panel_room;
 mod mind_panel_words;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
+mod mind_desk;
 mod mind_view;
+mod mind_view_desk;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
 mod app_glance;
@@ -204,6 +211,7 @@ mod programs;
 mod runs_on;
 mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
+mod vault_lane;
 mod vault_unlock;
 mod voice;
 mod dock_model;

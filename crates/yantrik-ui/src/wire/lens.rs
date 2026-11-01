@@ -232,6 +232,11 @@ fn wire_result_selected(ui: &App, ctx: &AppContext) {
         if let Some(ui) = ui_weak.upgrade() {
             if let Some((title, result_type, icon_char)) = find_selected_result(&ui, &action) {
                 frecency.borrow_mut().record(&action, &title, &result_type, &icon_char);
+                // The desktop's Continue row keeps its own record: the Lens clears its recents
+                // whenever it closes.
+                if let Some(app) = action.strip_prefix("launch:") {
+                    crate::bench::note_app_opened(&ui, app, &title);
+                }
             }
         }
 

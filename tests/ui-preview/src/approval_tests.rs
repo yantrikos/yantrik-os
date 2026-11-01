@@ -55,6 +55,7 @@ pub(crate) fn card(summary: &str) -> ApprovalRequest {
         identity_tag: "".into(),
         claim: "Claimed name: “pi 0.87”".into(),
         confirm_label: "Allow once".into(),
+        decline_label: "".into(),
         destructive: false,
         what: "Runs: recipe: builtin_formation_council; inputs: {\"question\": \"attack the plan to ship 0.4 on Friday\"}".into(),
         exactly: "recipe: builtin_formation_council; inputs: {\"question\": \"attack the plan to ship 0.4 on Friday\"}".into(),

@@ -316,6 +316,15 @@ pub trait App: Sized + 'static {
     /// (step 4) supplies it from `yantrik.toml`.
     const ID: &'static str;
 
+    /// An app whose one place is a Mind's display, inside Mind View: the Mind desk, whose bars the
+    /// nested compositor keeps around the apps (#1023). Every other app refuses to start there
+    /// (`service::start_refusal`: the instance is on the person's display, #978), and this one
+    /// refuses to start anywhere else, saying so, so a copy is never a window on the person's
+    /// desktop pretending to be a wall of someone else's room. Default false: an app is the
+    /// person's. Setting it is an exception to a rule that keeps the person's apps out of a Mind's
+    /// room: it must pass a security review, and a test holds the list to one app.
+    const ON_MINDS_DISPLAY: bool = false;
+
     /// A Mind may be given a window of this app. No app is (design #978, step 1): an agent drives
     /// an app through its intents and `describe`, and the shell starts the app with no window
     /// when it is asked. The shell's list of the framework's apps carries the same declaration

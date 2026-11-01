@@ -15,7 +15,6 @@
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { DockItem } from "app_dock.slint";
-import { LensResult } from "intent_lens.slint";
 import { YButton } from "y_button.slint";
 import { YKeycap } from "y_keycap.slint";
 import { UrgeCardData, GlanceCard } from "glance_card.slint";
@@ -28,7 +27,12 @@ export component DesktopHome inherits Rectangle {
     in property <string> mind-name;
     in property <bool> online;
     in property <[DockItem]> pins;
-    in property <[LensResult]> recents;
+    // The one thing to pick up: the last file or app the person opened. The Bench keeps this record
+    // itself (crates/yantrik-bench/src/recent.rs); the Lens's recents are cleared whenever the Lens
+    // closes, which left this row empty whenever the Lens was not open.
+    in property <bool> has-continue: false;
+    in property <string> continue-title;
+    in property <string> continue-subtitle;
     in property <[UrgeCardData]> urges: [];
     // Any window is open (agent mode's day-one card goes once there is something to see).
     in property <bool> has-windows: false;
@@ -36,8 +40,14 @@ export component DesktopHome inherits Rectangle {
     callback search();
     callback all-apps();
     callback launch(string);
-    callback open-recent(string);
+    callback open-continue();
     callback configure-mind();
+
+    // As tall as what it holds: the Bench below starts here, and a Flickable that ran on down the
+    // screen would take the pointer from the icons under it.
+    out property <length> content-height: body.preferred-height + 8px;
+    // The ask field's width when the Continue row sits beside it.
+    property <length> ask-width: root.agent-mode ? root.width - 8px : min(root.width - 8px, 340px);
 
     property <int> columns: max(2, min(6, floor((self.width - 48px) / 104px)));
     // The box says where its words go: it opens the chat with the mind that answers, and that
@@ -83,7 +93,13 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
+            // The ask field and, in everyday mode, the Continue row beside it.
             Rectangle {
+                height: 56px;
+
+            Rectangle {
+                x: 0px;
+                width: root.ask-width;
                 height: 56px;
                 background: Theme.bg-card;
                 border-radius: Theme.r-xl;
@@ -111,7 +127,7 @@ export component DesktopHome inherits Rectangle {
                     Text { text: root.ask-words; color: Theme.text-secondary; font-size: Theme.fs-reading; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                     // The compositor's Super+K (config/labwc/rc.xml) — the key that works from
                     // inside any app; the ask bar chip in desktop.slint says why.
-                    if root.width > 440px : VerticalLayout {
+                    if root.ask-width > 300px : VerticalLayout {
                         alignment: center;
                         HorizontalLayout {
                             spacing: 4px;
@@ -120,6 +136,43 @@ export component DesktopHome inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // One thing to pick up, when there is one: the last thing opened, beside the ask field.
+            // Nothing at all when there is none.
+            if !root.agent-mode && root.has-continue : Rectangle {
+                x: root.ask-width + 12px;
+                width: max(0px, parent.width - self.x - 8px);
+                height: 56px;
+                border-radius: Theme.r-lg;
+                background: recent-touch.has-hover ? Theme.bg-elevated : Theme.bg-card;
+                border-width: recent-focus.has-focus ? 2px : 1px;
+                border-color: recent-focus.has-focus ? Theme.accent : Theme.border-floating;
+                drop-shadow-blur: Theme.shadow-float-blur;
+                drop-shadow-offset-y: Theme.shadow-float-dy;
+                drop-shadow-color: Theme.shadow-float;
+                accessible-role: button;
+                accessible-label: "Continue " + root.continue-title;
+                accessible-action-default => { root.open-continue(); }
+                recent-focus := FocusScope {
+                    key-pressed(e) => {
+                        if (e.text == "\n" || e.text == " ") { root.open-continue(); return accept; }
+                        reject
+                    }
+                }
+                recent-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-continue(); } }
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 14px; spacing: 10px;
+                    Icon { commands: Icons.file; size: 18px; tint: Theme.text-secondary; y: (parent.height - self.height) / 2; }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        Text { text: "Continue " + root.continue-title; font-size: Theme.fs-body; font-weight: 600; color: Theme.text-primary; overflow: elide; }
+                        if root.continue-subtitle != "" : Text { text: root.continue-subtitle; font-size: Theme.fs-caption; color: Theme.text-secondary; overflow: elide; }
+                    }
+                }
+            }
             }
 
             // What the mind is proposing. Tapping one sends it to the mind: the suggestion IS a
@@ -136,41 +189,6 @@ export component DesktopHome inherits Rectangle {
                 for u in root.urges : GlanceCard {
                     data: u;
                     tapped(msg) => { root.send-message(msg); }
-                }
-            }
-
-            // One thing to pick up, when there is one: a two-line row, not another dashboard card.
-            // Nothing at all when nothing is recent.
-            if !root.agent-mode && root.recents.length > 0 : Rectangle {
-                height: 60px;
-                border-radius: Theme.r-lg;
-                background: recent-touch.has-hover ? Theme.bg-elevated : Theme.bg-card;
-                border-width: recent-focus.has-focus ? 2px : 1px;
-                border-color: recent-focus.has-focus ? Theme.accent : Theme.border-floating;
-                drop-shadow-blur: Theme.shadow-float-blur;
-                drop-shadow-offset-y: Theme.shadow-float-dy;
-                drop-shadow-color: Theme.shadow-float;
-                accessible-role: button;
-                accessible-label: "Continue " + root.recents[0].title;
-                accessible-action-default => { root.open-recent(root.recents[0].action-id); }
-                recent-focus := FocusScope {
-                    key-pressed(e) => {
-                        if (e.text == "\n" || e.text == " ") { root.open-recent(root.recents[0].action-id); return accept; }
-                        reject
-                    }
-                }
-                recent-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-recent(root.recents[0].action-id); } }
-                HorizontalLayout {
-                    padding-left: 18px; padding-right: 16px; spacing: 12px;
-                    Icon { commands: Icons.file; size: 18px; tint: Theme.text-secondary; y: (parent.height - self.height) / 2; }
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 2px;
-                        horizontal-stretch: 1;
-                        Text { text: "Continue " + root.recents[0].title; font-size: Theme.fs-body; font-weight: 600; color: Theme.text-primary; overflow: elide; }
-                        if root.recents[0].subtitle != "" : Text { text: root.recents[0].subtitle; font-size: Theme.fs-caption; color: Theme.text-secondary; overflow: elide; }
-                    }
-                    Icon { commands: Icons.chevron-right; size: 14px; tint: Theme.text-dim; y: (parent.height - self.height) / 2; }
                 }
             }
 

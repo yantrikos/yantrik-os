@@ -156,6 +156,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     window_switcher::wire(ui, ctx);
     crate::control_switcher::wire(ui);
     show_desktop::wire(ui);
+    // The desktop's icons (#1030).
+    crate::bench::wire(ui, ctx);
     voice_mode::wire(ui, ctx);
     settings::wire(ui, ctx);
     system_poll::wire(ui, ctx);

@@ -1,4 +1,5 @@
-//! The free AI keys, on the companion's worker: the one thread holding the memory database.
+//! The free AI keys, on the vault's own thread (`vault_lane`), never the companion worker's: a
+//! companion turn in progress must not delay a key read (VM 520, 30 Oct 2026).
 //!
 //! Reached only through `CompanionBridge::provider_keys`, which is on the UI's own bridge and not
 //! on the handle the companion socket serves, so nothing on a socket can store, read or remove a
@@ -31,7 +32,7 @@ pub enum Reply {
     /// The vault has a passphrase and is shut.
     Locked,
     Failed,
-    /// The worker did not answer in time (made by the caller, never by `run`): the operation is
+    /// The vault lane did not answer in time (made by the caller, never by `run`): the operation is
     /// still queued and may yet happen.
     NoAnswer,
 }
