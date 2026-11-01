@@ -153,6 +153,7 @@ mod mind_panel_room;
 mod mind_panel_words;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
 mod mind_desk;
+mod mind_identity;
 mod mind_view;
 mod mind_view_close;
 mod shell_view;
