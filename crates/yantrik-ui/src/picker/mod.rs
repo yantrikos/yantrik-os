@@ -343,6 +343,19 @@ fn open_settings(ui: &App, section: i32) {
     ui.invoke_navigate(SETTINGS_SCREEN);
 }
 
+/// The screen a disabled row's reason names, so pressing the row goes there: "…in AI accounts."
+/// is Settings → AI & Intelligence, "…Use Yantrik models (Settings → Minds)…" is Settings → Minds.
+/// A reason that names no screen (Private mode) presses nowhere.
+pub fn section_for_reason(reason: &str) -> Option<i32> {
+    if reason.contains("AI accounts") {
+        Some(AI_SECTION)
+    } else if reason.contains("Use Yantrik models") {
+        Some(HARNESSES_SECTION)
+    } else {
+        None
+    }
+}
+
 fn save_choices() {
     if let Err(e) = choices::save(&choices::path(), &lock(&CHOICES)) {
         tracing::warn!(error = %e, "the picker's choices were not saved");
@@ -445,6 +458,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             Fix::None => {}
         }
         render(&ui, &b);
+    });
+    // A press of a disabled model row is not a pick; it opens the screen its reason names.
+    let w = ui.as_weak();
+    g.on_fix_model(move |reason| {
+        let Some(ui) = w.upgrade() else { return };
+        if let Some(section) = section_for_reason(&reason) {
+            open_settings(&ui, section);
+        }
     });
 
     // A file dragged from another program onto the window: the ask bar takes it.

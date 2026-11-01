@@ -126,6 +126,20 @@ fn models_a_mind_cannot_use_are_disabled_with_the_reason() {
 }
 
 #[test]
+fn pressing_a_disabled_row_opens_the_screen_its_reason_names() {
+    use super::{section_for_reason, AI_SECTION, HARNESSES_SECTION};
+    assert_eq!(section_for_reason("Set up a private lane, or allow sharing with OpenAI in AI accounts."), Some(AI_SECTION));
+    assert_eq!(section_for_reason("Hermes uses its own models. Use Yantrik models (Settings → Minds) to pick here."), Some(HARNESSES_SECTION));
+    assert_eq!(section_for_reason("Private mode: only models on this machine or network."), None, "a press of such a row goes nowhere — no screen fixes it");
+    // The menu's own sentences are what the press follows.
+    let (catalogue, accounts) = fixture();
+    let rows = model_rows(&mind("mind", true, true), &catalogue, &accounts, &Consent::default(), false, "", &[], "");
+    assert!(rows.iter().filter(|r| r.disabled).all(|r| section_for_reason(&r.reason) == Some(AI_SECTION)), "fresh install: every greyed row leads to AI accounts");
+    let rows = model_rows(&mind("hermes", false, true), &catalogue, &accounts, &Consent::default(), false, "", &[], "");
+    assert!(rows.iter().filter(|r| r.disabled).all(|r| section_for_reason(&r.reason) == Some(HARNESSES_SECTION)), "its own models: every greyed row leads to Minds");
+}
+
+#[test]
 fn a_pick_is_one_for_every_mind_effort_per_mind_and_recent_first() {
     let mut c = Choices::default();
     c.pick_model("pi", "openai/o4-mini");
