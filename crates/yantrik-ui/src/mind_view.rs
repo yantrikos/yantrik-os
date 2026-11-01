@@ -715,10 +715,16 @@ pub fn app_named(want: &str) -> Option<String> {
 /// Ask an app drawing in Mind View to close, as its × does: on Mind View's own display, so an app
 /// with unsaved work can still put up its dialog. Returns the name it was asked by.
 pub fn close_app(app_id: &str) -> Result<String, String> {
+    let title = crate::windows::app_display_name(app_id);
+    close_matching(format!("title:{title}"), title)
+}
+
+/// Ask the window of Mind View's compositor that `selector` (`title:…`, `app_id:…`) names to close.
+/// Returns `title`, what the caller calls it.
+pub(crate) fn close_matching(selector: String, title: String) -> Result<String, String> {
     let display = with_state(|s| s.nested.as_ref().map(|n| n.seat.wayland.clone()))
         .ok_or_else(|| "Mind View is not running, so nothing is drawn there to close".to_string())?;
-    let title = crate::windows::app_display_name(app_id);
-    let args = ["toplevel".to_string(), "close".to_string(), format!("title:{title}")];
+    let args = ["toplevel".to_string(), "close".to_string(), selector];
     let (answer, wait) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("yos-wlrctl-mind-view".to_string())

@@ -1974,14 +1974,12 @@ pub fn publish(
             move |args| {
                 let want = args["title"].as_str().unwrap_or_default();
                 // The person's own windows are theirs to close (#1033): a Mind reaches only the
-                // apps drawn in Mind View, even when the person has a window of the same title.
-                let resolved = if crate::shell_view::asked_by_mind() {
-                    Err(format!(
-                        "`{want}` is not an app in Mind View; windows on the person's desktop can't be closed by a Mind."
-                    ))
-                } else {
-                    crate::windows::window_to_close(want, &crate::windows::addressable_titles())
-                };
+                // windows of Mind View's own compositor, by name, app id or current title.
+                if crate::shell_view::asked_by_mind() {
+                    return crate::mind_view_close::close(want);
+                }
+                let open = crate::windows::addressable_titles();
+                let resolved = crate::windows::window_to_close(want, &open);
                 let title = match resolved {
                     Ok(title) => title,
                     // Not on the person's desktop, but an app a mind opened is drawn in Mind View:
