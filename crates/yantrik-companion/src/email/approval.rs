@@ -20,6 +20,8 @@ use yantrik_ipc_contracts::email::{
 
 use std::sync::Arc;
 
+use yantrik_companion_tools::outward::Permit;
+
 use super::port::MailPort;
 
 /// The code of "the person did not allow this send" (a no, silence, or no way to ask).
@@ -28,14 +30,17 @@ pub const NOT_ALLOWED: i32 = -32015;
 /// Whether a message may leave. `Err` is the sentence the Mind is told, and nothing was sent.
 pub trait Approver: Send + Sync {
     /// `from` is the address the message goes out under.
-    fn allow_send(&self, from: &str, compose: &ComposeRequest) -> Result<(), String>;
+    ///
+    /// The [`Permit`] it returns is finished after the send, so a send that ran without anyone
+    /// being asked (the person's full bypass) is still written down.
+    fn allow_send(&self, from: &str, compose: &ComposeRequest) -> Result<Permit, String>;
 }
 
 /// The desktop's approval card.
 pub struct ShellApprover;
 
 impl Approver for ShellApprover {
-    fn allow_send(&self, from: &str, compose: &ComposeRequest) -> Result<(), String> {
+    fn allow_send(&self, from: &str, compose: &ComposeRequest) -> Result<Permit, String> {
         yantrik_companion_tools::outward::ask_person_before_sending(&yantrik_companion_tools::outward::OutgoingMail {
             account: from,
             to: &compose.to,
@@ -71,9 +76,9 @@ impl Scripted {
 
 #[cfg(test)]
 impl Approver for std::sync::Arc<Scripted> {
-    fn allow_send(&self, from: &str, compose: &ComposeRequest) -> Result<(), String> {
+    fn allow_send(&self, from: &str, compose: &ComposeRequest) -> Result<Permit, String> {
         self.cards.lock().unwrap().push((from.to_string(), compose.clone()));
-        self.answer.clone()
+        self.answer.clone().map(|()| Permit::asked())
     }
 }
 
@@ -119,10 +124,13 @@ impl<A: Approver> MailPort for Approving<A> {
             .and_then(|all| all.into_iter().find(|a| a.id == account_id))
             .map(|a| a.email)
             .unwrap_or_else(|| account_id.to_string());
-        self.approver
+        let permit = self
+            .approver
             .allow_send(&from, compose)
             .map_err(|message| ServiceError { code: NOT_ALLOWED, message })?;
-        self.inner.send(account_id, compose)
+        let sent = self.inner.send(account_id, compose);
+        permit.finish(sent.is_ok());
+        sent
     }
 
     fn mark_read(&self, account_id: &str, folder: &str, message_ids: &[String], read: bool) -> Result<(), ServiceError> {

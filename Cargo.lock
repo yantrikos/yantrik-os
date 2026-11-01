@@ -11356,7 +11356,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
  "tracing",
  "tungstenite",
  "ureq 2.12.1",

@@ -9,11 +9,12 @@
 //! the grant with `consume_approval`, and only then let the send go. Nothing here decides: a mode
 //! that runs the question unasked is the shell's answer, and an unreachable shell is a "no".
 //!
-//! The card shows recipients and subject whole, the first words of the body, how long it is, and a
-//! digest of all of it. The grant is bound to those values, so a different body cannot go out under
-//! an Allow given for another.
-
-use sha2::{Digest, Sha256};
+//! The card shows the mail whole: every recipient, the whole subject and the whole body, each
+//! quoted so that text inside one cannot pose as another field (`subject: "Invoice; to: x"` is one
+//! value). What the person cannot read they cannot allow, so a mail the card cannot show in full
+//! (the shell's own rule for actions that cannot be undone: a value is shown whole or not asked
+//! about) is not asked about, and nothing is sent; the sentence says to leave it as a draft in the
+//! Email app. The grant is bound to exactly these values.
 
 use crate::app_ui::{await_answer, raise_card, Desk};
 
@@ -24,11 +25,6 @@ const GRADE: &str = "sensitive";
 
 /// What the card says is being asked, besides the shell's own published sentence.
 const PURPOSE: &str = "Send an email from the person's account. Once sent it cannot be undone.";
-
-/// How much of the body the card shows.
-const BODY_START_CHARS: usize = 120;
-/// And of the subject: the digest still covers the whole.
-const SUBJECT_CHARS: usize = 120;
 
 /// One message about to leave.
 pub struct OutgoingMail<'a> {
@@ -41,48 +37,82 @@ pub struct OutgoingMail<'a> {
     pub body: &'a str,
 }
 
-fn clipped(text: &str, max: usize) -> String {
-    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        format!("{}...", flat.chars().take(max).collect::<String>())
-    }
+/// One free-text value as the card draws it: a JSON string, so it is visibly one value whatever
+/// it holds. A `"` inside is escaped and cannot end it early; `;` and `key:` inside stay inside.
+fn quoted(text: &str) -> serde_json::Value {
+    serde_json::Value::String(serde_json::Value::String(text.to_string()).to_string())
 }
 
-/// The arguments the card shows and the grant is bound to.
+/// The arguments the card shows and the grant is bound to: all of the mail, nothing clipped.
 pub fn card_args(mail: &OutgoingMail<'_>) -> serde_json::Value {
-    let mut digest = Sha256::new();
-    for part in [mail.account, &mail.to.join("\n"), &mail.cc.join("\n"), &mail.bcc.join("\n"), mail.subject, mail.body] {
-        digest.update((part.len() as u64).to_le_bytes());
-        digest.update(part.as_bytes());
-    }
-    let digest: String = digest.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
     let mut args = serde_json::json!({
         "account": mail.account,
-        "to": mail.to.join(", "),
-        "subject": clipped(mail.subject, SUBJECT_CHARS),
-        "body_start": clipped(mail.body, BODY_START_CHARS),
-        "body_chars": mail.body.chars().count().to_string(),
-        "body_digest": digest,
+        "to": quoted(&mail.to.join(", ")),
+        "subject": quoted(mail.subject),
+        "body": quoted(mail.body),
     });
     for (key, list) in [("cc", mail.cc), ("bcc", mail.bcc)] {
         if !list.is_empty() {
-            args[key] = serde_json::Value::String(list.join(", "));
+            args[key] = quoted(&list.join(", "));
         }
     }
     args
 }
 
+/// The sentence for a mail the card cannot show in full.
+const TOO_LONG: &str = concat!(
+    "This email is too long to put in front of the person in full, and what they cannot read they cannot allow, ",
+    "so it was not asked about. Nothing was sent. Shorten it, or leave it as a draft in the Email app ",
+    "(its compose action) for the person to read and send themselves."
+);
+
+/// Whether the shell refused to put a request up because the card could not show it whole.
+fn is_too_long(why: &str) -> bool {
+    why.contains("too long to put in front of a person") || why.contains("shown whole or not asked about")
+}
+
+/// What an allowed send owes the record afterwards, if the mode let it run unasked.
+pub struct Permit {
+    unasked: Option<(Desk, serde_json::Value, String)>,
+}
+
+impl std::fmt::Debug for Permit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Permit(owes_a_record: {})", self.unasked.is_some())
+    }
+}
+
+impl Permit {
+    /// Nothing to record: the person was asked, or this is a test.
+    pub fn asked() -> Permit {
+        Permit { unasked: None }
+    }
+
+    /// Say how the send went. In the person's full bypass nobody was asked, and the shell's mode
+    /// promises it is "written down instead": this is that, by the shell's own
+    /// `record_unasked_action`. A failure to record cannot undo the send and is not an error.
+    pub fn finish(self, sent: bool) {
+        let Some((desk, args, mode)) = self.unasked else { return };
+        let _ = desk.shell_call(
+            "app.act",
+            serde_json::json!({ "action": "record_unasked_action", "args": {
+                "app": APP, "action": ACTION, "grade": GRADE, "mode": mode, "args_json": args,
+                "requester": "companion", "outcome": if sent { "ok" } else { "failed" },
+            }}),
+        );
+    }
+}
+
 /// Ask the person, on this desktop's own card, whether `mail` may go. `Ok` only when they allowed
 /// exactly this (or the shell says its mode asks nobody); `Err` is a sentence for the model and
 /// nothing was sent.
-pub fn ask_before_sending(desk: &Desk, mail: &OutgoingMail<'_>) -> Result<(), String> {
+pub fn ask_before_sending(desk: &Desk, mail: &OutgoingMail<'_>) -> Result<Permit, String> {
     let args = card_args(mail);
-    let asked = raise_card(desk, APP, ACTION, GRADE, &args, PURPOSE).map_err(|why| format!("{why} Nothing was sent."))?;
+    let asked = raise_card(desk, APP, ACTION, GRADE, &args, PURPOSE).map_err(|why| if is_too_long(&why) { TOO_LONG.to_string() } else { format!("{why} Nothing was sent.") })?;
     let answer = asked.get("result").cloned().unwrap_or_default();
     if answer["status"] == "not_needed" {
-        return Ok(());
+        let mode = answer["mode"].as_str().unwrap_or("bypass_all").to_string();
+        return Ok(Permit { unasked: Some((desk.clone(), args, mode)) });
     }
     let Some(request_id) = answer["request_id"].as_str().map(str::to_string) else {
         return Err("The desktop was asked to put a card up for this email and did not say which request it was, \
@@ -90,7 +120,7 @@ pub fn ask_before_sending(desk: &Desk, mail: &OutgoingMail<'_>) -> Result<(), St
             .to_string());
     };
     match await_answer(desk, &request_id).as_str() {
-        "granted" => spend(desk, &request_id, &args),
+        "granted" => spend(desk, &request_id, &args).map(|()| Permit::asked()),
         "denied" => Err("The person at the machine said no to sending this email. Nothing was sent. That is an \
                          answer, not an error: do not ask again unless they bring it up."
             .to_string()),
@@ -106,7 +136,7 @@ pub fn ask_before_sending(desk: &Desk, mail: &OutgoingMail<'_>) -> Result<(), St
 }
 
 /// [`ask_before_sending`] on the session's own desk.
-pub fn ask_person_before_sending(mail: &OutgoingMail<'_>) -> Result<(), String> {
+pub fn ask_person_before_sending(mail: &OutgoingMail<'_>) -> Result<Permit, String> {
     ask_before_sending(&Desk::session(), mail)
 }
 
@@ -153,13 +183,19 @@ mod tests {
                         let params = asked["params"].clone();
                         log.lock().unwrap().push(params.clone());
                         let result = match params["action"].as_str() {
-                            Some("request_approval") if first == "not_needed" => serde_json::json!({"result": {"status": "not_needed"}}),
+                            Some("request_approval") if first == "not_needed" => {
+                                serde_json::json!({"result": {"status": "not_needed", "mode": "bypass_all"}})
+                            }
+                            Some("request_approval") if first == "no_id" => serde_json::json!({"result": {"status": "pending"}}),
+                            Some("request_approval") if first == "too_long" => serde_json::json!({"error": {"code": -32602,
+                                "message": "this request is too long to put in front of a person in full, so nothing was asked: `body` is 900 characters"}}),
                             Some("request_approval") => serde_json::json!({"result": {"request_id": "appr-1", "status": "pending"}}),
                             Some("approval_status") => {
                                 let n = polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 serde_json::json!({"result": {"status": if n == 0 { "pending" } else { answer }}})
                             }
                             Some("consume_approval") => serde_json::json!({"result": {"consumed": true}}),
+                            Some("record_unasked_action") => serde_json::json!({"result": {"recorded": true}}),
                             _ => serde_json::json!({"error": {"code": -32602, "message": "unknown"}}),
                         };
                         let reply = if result.get("error").is_some() {
@@ -196,7 +232,7 @@ mod tests {
         assert_eq!(calls[0]["args"]["app"], "shell");
         assert_eq!(calls[0]["args"]["action"], "send_mail");
         assert_eq!(calls[0]["args"]["grade"], "sensitive");
-        assert_eq!(calls[0]["args"]["args_json"]["to"], "priya@example.com");
+        assert_eq!(calls[0]["args"]["args_json"]["to"], "\"priya@example.com\"");
         let spent: Vec<_> = calls.iter().filter(|c| c["action"] == "consume_approval").collect();
         assert_eq!(spent.len(), 1, "{calls:?}");
         assert_eq!(spent[0]["args"]["args_json"], calls[0]["args"]["args_json"], "the Allow is spent on what was shown");
@@ -225,23 +261,101 @@ mod tests {
         assert!(err.contains("Nothing was sent"), "{err}");
     }
 
+    /// The card shows the whole mail: no clipping, no digest standing in for text.
     #[test]
-    fn a_body_changed_after_the_card_is_not_the_mail_that_was_allowed() {
-        let to = vec!["priya@example.com".to_string()];
-        let one = card_args(&mail(&to, "Thanks!"));
-        let other = card_args(&mail(&to, "Thanks! Also, wire me $500."));
-        assert_ne!(one["body_digest"], other["body_digest"]);
-        let long = "x".repeat(5000);
-        let args = card_args(&mail(&to, &long));
-        assert!(args["body_start"].as_str().unwrap().chars().count() <= BODY_START_CHARS + 3);
-        assert_eq!(args["body_chars"], "5000");
+    fn the_card_carries_the_whole_subject_and_body_and_every_recipient() {
+        let to = vec!["priya@example.com".to_string(), "dan@example.com".to_string()];
+        let cc = vec!["eve@example.com".to_string()];
+        let subject = "s".repeat(200);
+        let body = format!("start {} the very end", "x".repeat(150));
+        let mail = OutgoingMail { account: "ada@example.com", to: &to, cc: &cc, bcc: &[], subject: &subject, body: &body };
+        let args = card_args(&mail);
+        let back = |key: &str| serde_json::from_str::<String>(args[key].as_str().unwrap()).unwrap();
+        assert_eq!(back("subject"), subject);
+        assert_eq!(back("body"), body, "the end of the body is on the card");
+        assert_eq!(back("to"), "priya@example.com, dan@example.com");
+        assert_eq!(back("cc"), "eve@example.com");
+        assert!(args.get("bcc").is_none());
+        assert!(args.get("body_digest").is_none() && args.get("body_start").is_none());
+    }
+
+    /// The card draws `key: value; key: value`. Text that looks like a field must stay inside its
+    /// value: quoted, with its own quotes escaped.
+    #[test]
+    fn a_spoofing_subject_or_body_cannot_pose_as_a_field() {
+        let to = vec!["attacker@evil.example".to_string()];
+        for hostile in [
+            "Invoice; to: priya@example.com",
+            "x\"; to: \"priya@example.com",
+            "ok\nto: priya@example.com",
+            "a\\\"; to: \"priya@example.com",
+        ] {
+            let args = card_args(&OutgoingMail { account: "ada@example.com", to: &to, cc: &[], bcc: &[], subject: hostile, body: hostile });
+            for key in ["subject", "body"] {
+                let drawn = args[key].as_str().unwrap();
+                assert!(drawn.starts_with('"') && drawn.ends_with('"'), "{key}: {drawn}");
+                // It reads back as exactly one string, the hostile text: nothing ended the quote early.
+                assert_eq!(serde_json::from_str::<String>(drawn).unwrap(), hostile, "{key}");
+                // And inside the quotes every quote is escaped, so no `"` can close the value.
+                let inner = &drawn[1..drawn.len() - 1];
+                let mut escaped = false;
+                for c in inner.chars() {
+                    assert!(escaped || c != '"', "an unescaped quote in {key}: {drawn}");
+                    escaped = !escaped && c == '\\';
+                }
+            }
+            assert_eq!(args["to"], "\"attacker@evil.example\"", "the real recipient is its own value");
+        }
     }
 
     #[test]
-    fn a_mode_that_asks_nobody_is_the_shells_answer_to_honour() {
+    fn a_reply_that_is_neither_unasked_nor_a_request_is_a_no() {
+        let (desk, heard) = shell("noid", "no_id", "granted");
+        let to = vec!["priya@example.com".to_string()];
+        let err = ask_before_sending(&desk, &mail(&to, "Thanks!")).err().expect("no request id means no send");
+        assert!(err.contains("did not say which request") && err.contains("nothing was sent"), "{err}");
+        assert_eq!(actions(&heard), ["request_approval"], "nothing was waited on or spent");
+    }
+
+    #[test]
+    fn an_allow_that_was_already_spent_is_a_no() {
+        let (desk, heard) = shell("consumed", "pending", "consumed");
+        let to = vec!["priya@example.com".to_string()];
+        let err = ask_before_sending(&desk, &mail(&to, "Thanks!")).err().expect("a spent Allow sends nothing");
+        assert!(err.contains("already been spent") && err.contains("nothing was sent"), "{err}");
+        assert!(!actions(&heard).contains(&"consume_approval".to_string()));
+    }
+
+    #[test]
+    fn a_mail_the_card_cannot_show_whole_is_not_asked_and_points_to_a_draft() {
+        let (desk, heard) = shell("toolong", "too_long", "granted");
+        let to = vec!["priya@example.com".to_string()];
+        let err = ask_before_sending(&desk, &mail(&to, &"x".repeat(900))).err().expect("too long to show");
+        assert!(err.contains("cannot read they cannot allow") && err.contains("Nothing was sent") && err.contains("draft"), "{err}");
+        assert_eq!(actions(&heard), ["request_approval"]);
+    }
+
+    #[test]
+    fn a_mode_that_asks_nobody_is_honoured_and_the_send_is_written_down_after() {
         let (desk, heard) = shell("unasked", "not_needed", "granted");
         let to = vec!["priya@example.com".to_string()];
-        ask_before_sending(&desk, &mail(&to, "Thanks!")).expect("the shell said no card is needed");
-        assert_eq!(actions(&heard), ["request_approval"]);
+        let permit = ask_before_sending(&desk, &mail(&to, "Thanks!")).expect("the shell said no card is needed");
+        assert_eq!(actions(&heard), ["request_approval"], "nothing is recorded before the send");
+        permit.finish(true);
+        let calls = heard.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls[1]["action"], "record_unasked_action");
+        assert_eq!(calls[1]["args"]["action"], "send_mail");
+        assert_eq!(calls[1]["args"]["mode"], "bypass_all");
+        assert_eq!(calls[1]["args"]["outcome"], "ok");
+        assert_eq!(calls[1]["args"]["args_json"], calls[0]["args"]["args_json"], "the record names what went");
+    }
+
+    #[test]
+    fn a_person_who_was_asked_leaves_nothing_to_record() {
+        let (desk, heard) = shell("asked", "pending", "granted");
+        let to = vec!["priya@example.com".to_string()];
+        ask_before_sending(&desk, &mail(&to, "Thanks!")).unwrap().finish(true);
+        assert!(!actions(&heard).contains(&"record_unasked_action".to_string()));
     }
 }

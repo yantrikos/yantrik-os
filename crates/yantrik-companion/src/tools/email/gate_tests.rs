@@ -69,6 +69,25 @@ fn an_allow_sends_each_exactly_once() {
     assert_eq!(mail.sent().len(), 4, "one message per tool, once each");
 }
 
+/// A reply-all to an external sender's long recipient list is ONE message and ONE card, and the
+/// card names every recipient (the shell refuses a list it cannot show whole; it never splits it).
+#[test]
+fn a_reply_all_to_many_recipients_is_one_card_with_all_of_them() {
+    let (mail, conn, id) = checked();
+    let many: Vec<String> = (0..30).map(|n| format!("p{n}@example.com")).collect();
+    let many_refs: Vec<&str> = many.iter().map(String::as_str).collect();
+    mail.state.lock().unwrap().detail = Some(detail("Priya <priya@example.com>", &many_refs, &[]));
+    let approver = Scripted::allowing();
+    let gated: Arc<dyn MailPort> = Arc::new(Approving::new(port(&mail), approver.clone()));
+
+    send::EmailReplyAllTool { mail: gated }.run(&conn, &args(serde_json::json!({ "id": id, "body": "ok" })));
+
+    let cards = approver.shown();
+    assert_eq!(cards.len(), 1, "one card, not one per person");
+    assert_eq!(cards[0].1.to.len() + cards[0].1.cc.len(), 31, "every recipient is on it");
+    assert_eq!(mail.sent().len(), 1, "one message");
+}
+
 #[test]
 fn a_refusal_carries_its_own_code_so_a_no_is_not_mistaken_for_a_failure() {
     let (mail, _conn, _id) = checked();
@@ -122,6 +141,8 @@ fn a_new_way_to_send_cannot_be_added_without_being_asked_about() {
     let asked = send_body.find("allow_send(").expect("send asks");
     let delegated = send_body.find("self.inner.send(").expect("send delegates");
     assert!(asked < delegated, "send delegates before it asks");
+    // And writes the send down afterwards when the mode let it run unasked (the person's full bypass).
+    assert!(send_body.contains("permit.finish(sent.is_ok())"), "the unasked send is not recorded");
 
     // Only send.rs puts mail on the wire, and the live port is registered behind the approver.
     for (file, text) in [
