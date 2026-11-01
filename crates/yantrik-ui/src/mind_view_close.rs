@@ -40,11 +40,8 @@ pub(crate) fn resolve(lines: &[String], want: &str, registry: Option<(&str, &str
             })
             .collect()
     };
-    let mut titles: Vec<&str> = found.iter().map(|w| w.title.as_str()).collect();
-    titles.sort_unstable();
-    titles.dedup();
-    match (found.first(), titles.len()) {
-        (None, _) => {
+    match found.as_slice() {
+        [] => {
             let shown = windows.iter().map(|w| w.title.clone()).collect::<Vec<_>>().join(", ");
             Err(format!(
                 "`{}` is not an app in Mind View. Windows on the person's desktop can't be closed by a Mind; \
@@ -53,22 +50,50 @@ pub(crate) fn resolve(lines: &[String], want: &str, registry: Option<(&str, &str
                 if shown.is_empty() { "nothing" } else { &shown }
             ))
         }
-        (Some(w), 1) => {
-            // A title names the window as it is; for an app id, the id is what stays true if the
-            // title changes between the list and the close.
-            let selector = if !exact && !w.wayland_app_id.is_empty() {
-                format!("app_id:{}", w.wayland_app_id)
-            } else {
-                format!("title:{}", w.title)
-            };
-            Ok((selector, w.title.clone()))
+        [w] => {
+            // wlrctl closes every window its matchspec matches, and it can name a window only by
+            // title or app id. Use the one of those that is this window's alone.
+            let mut candidates = Vec::new();
+            if !exact && !w.wayland_app_id.is_empty() {
+                candidates.push(format!("app_id:{}", w.wayland_app_id));
+            }
+            candidates.push(format!("title:{}", w.title));
+            let alone = |selector: &str| windows.iter().filter(|o| selects(selector, o)).count() == 1;
+            let selector = candidates.into_iter().find(|s| alone(s));
+            selector.map(|s| (s, w.title.clone())).ok_or_else(|| {
+                format!(
+                    "`{}` is one window, but another in Mind View has the same title and app id, and a close \
+                     cannot tell them apart; close it from Mind View itself",
+                    want.trim()
+                )
+            })
         }
-        (_, n) => Err(format!(
-            "`{}` matches {n} windows in Mind View and closing the wrong one cannot be undone; say which: {}",
+        many => Err(format!(
+            "`{}` matches {} windows in Mind View and closing the wrong one cannot be undone; say which: {}",
             want.trim(),
-            titles.join(", ")
+            many.len(),
+            many.iter().map(|w| w.title.as_str()).collect::<Vec<_>>().join(", ")
         )),
     }
+}
+
+/// Whether `wlrctl toplevel close <selector>` would close `window`: its matchspec is compared
+/// exactly and case-sensitively.
+fn selects(selector: &str, window: &crate::windows::WindowEntry) -> bool {
+    match selector.split_once(':') {
+        Some(("title", t)) => window.title == t,
+        Some(("app_id", id)) => window.wayland_app_id == id,
+        _ => false,
+    }
+}
+
+/// `wlrctl` aimed at Mind View's display and nowhere else: `WAYLAND_SOCKET`, which libwayland
+/// prefers over `WAYLAND_DISPLAY`, is removed so the person's compositor cannot be reached through
+/// an inherited connection.
+pub(crate) fn wlrctl(display: &str, args: &[String]) -> Command {
+    let mut cmd = Command::new("wlrctl");
+    cmd.args(args).env("WAYLAND_DISPLAY", display).env_remove("WAYLAND_SOCKET");
+    cmd
 }
 
 /// Ask the window of Mind View that `want` names to close, as its × does.
@@ -109,7 +134,7 @@ pub(crate) fn close_matching(selector: String, title: String) -> Result<String, 
     std::thread::Builder::new()
         .name("yos-wlrctl-mind-view".to_string())
         .spawn(move || {
-            let _ = answer.send(Command::new("wlrctl").args(&args).env("WAYLAND_DISPLAY", &display).status());
+            let _ = answer.send(wlrctl(&display, &args).status());
         })
         .map_err(|_| "could not start a thread to talk to Mind View's compositor".to_string())?;
     match wait.recv_timeout(Duration::from_secs(2)) {
@@ -153,7 +178,7 @@ mod tests {
             assert!(!src.contains(token), "the Mind's close must not reach the person's desktop: `{token}`");
         }
         assert!(src.contains("nested_window_lines()") && src.contains("close_matching("));
-        assert!(src.contains("display_now()") && src.contains(r#".env("WAYLAND_DISPLAY", &display)"#), "sent to Mind View's display");
+        assert!(src.contains("display_now()") && src.contains("wlrctl(&display, &args)"), "sent to Mind View's display");
         // A Mind's close_window returns here before it reads the person's windows.
         let ctl = include_str!("control.rs");
         let close = &ctl[ctl.find("\"close_window\",").unwrap()..];
@@ -163,6 +188,37 @@ mod tests {
         assert!(mind < close.find("addressable_titles()").unwrap());
         // With the person's window absent from Mind View's list, nothing matches its title.
         assert!(resolve(&["foot: build log".to_string()], "New Tab - Chromium", Some(("browser", "/usr/bin/chromium"))).is_err());
+    }
+
+    /// wlrctl closes every window its matchspec matches, so two identical lines, by title or by app
+    /// id, are refused with the list and nothing is sent.
+    #[test]
+    fn two_identical_windows_are_refused_not_both_closed() {
+        let twice = vec!["chromium: New Tab - Chromium".to_string(), "chromium: New Tab - Chromium".to_string()];
+        for want in ["New Tab - Chromium", "chromium", "browser"] {
+            let said = resolve(&twice, want, Some(("browser", "/usr/bin/chromium"))).unwrap_err();
+            assert!(said.contains("matches 2 windows") && said.contains("New Tab - Chromium"), "{want}: {said}");
+        }
+        // One window by title, but its app id is shared with a window of another title: the title
+        // is the selector that is its alone; a window with neither alone is refused.
+        let mixed = vec!["chromium: A".to_string(), "chromium: B".to_string()];
+        assert_eq!(resolve(&mixed, "A", None).unwrap().0, "title:A");
+        let same_app_by_registry = vec!["chromium: A".to_string(), "chromium: B".to_string()];
+        assert!(resolve(&same_app_by_registry, "chromium", None).unwrap_err().contains("matches 2 windows"));
+    }
+
+    /// The command is aimed at Mind View's display only: `WAYLAND_SOCKET` is removed (libwayland
+    /// prefers it) for the close and for the list, which share this builder.
+    #[test]
+    fn wlrctl_is_aimed_at_mind_views_display_and_cannot_inherit_a_socket() {
+        let cmd = wlrctl("wayland-9", &["toplevel".to_string(), "list".to_string()]);
+        let env: Vec<_> = cmd.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
+        assert!(env.contains(&("WAYLAND_DISPLAY".into(), Some("wayland-9".into()))), "{env:?}");
+        assert!(env.contains(&("WAYLAND_SOCKET".into(), None)), "removed, not left to inherit: {env:?}");
+        let list = include_str!("mind_view.rs");
+        let list = &list[list.find("pub fn nested_window_lines").unwrap()..];
+        let list = &list[..list.find("\n}\n").unwrap()];
+        assert!(list.contains("mind_view_close::wlrctl(&display"), "the lister uses the same builder");
     }
 
     #[test]

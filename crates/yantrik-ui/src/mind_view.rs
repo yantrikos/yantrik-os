@@ -750,9 +750,7 @@ pub fn nested_window_lines() -> Option<Vec<String>> {
         .name("yos-wlrctl-mind-view-list".to_string())
         .spawn(move || {
             let _ = answer.send(
-                Command::new("wlrctl")
-                    .args(["toplevel", "list"])
-                    .env("WAYLAND_DISPLAY", &display)
+                crate::mind_view_close::wlrctl(&display, &["toplevel".to_string(), "list".to_string()])
                     .stderr(Stdio::null())
                     .output(),
             );
