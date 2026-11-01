@@ -1,0 +1,232 @@
+// One icon on the Bench: a tile, and one label treatment for every kind of thing.
+//
+// The tile is what the thing is: the app's own tile (with a small arrow, because it is a shortcut,
+// not the app), the picture cut from an image or a .blend, or a glyph for the rest. The label is
+// the same for all of them: two lines at most, an ellipsis after that, on a dark plate so white
+// reads over any part of the photograph. All flat fills and bitmaps: no blur, no gradient, nothing
+// that moves by itself.
+//
+// The pointer is handled by a TouchArea that stays where the icon sits while it is dragged; only
+// the picture follows the pointer (`dx`, `dy`). A TouchArea that moved with the drag would see the
+// pointer's position change under it with every frame and jitter.
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icon.slint";
+import { AppTile } from "app_tile.slint";
+import { AppLabel } from "app_label.slint";
+import { BenchItem, BenchState } from "bench_state.slint";
+
+component TileGlyph inherits Rectangle {
+    in property <string> kind;
+    in property <bool> selected;
+    pure function glyph(k: string) -> string {
+        if k == "folder" { return Icons.folder; }
+        if k == "image" { return Icons.image; }
+        if k == "pdf" || k == "document" || k == "text" { return Icons.doc; }
+        if k == "sheet" { return Icons.sheets; }
+        if k == "audio" { return Icons.music; }
+        if k == "video" { return Icons.media; }
+        if k == "archive" { return Icons.archive; }
+        if k == "code" { return Icons.code; }
+        if k == "blend" { return Icons.packages; }
+        return Icons.file;
+    }
+    width: BenchState.tile;
+    height: BenchState.tile;
+    border-radius: Theme.r-lg;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : Theme.border-floating;
+    Icon {
+        commands: glyph(root.kind);
+        size: BenchState.tile * 0.5;
+        tint: root.kind == "folder" ? Theme.accent : Theme.text-secondary;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+export component BenchIcon inherits Rectangle {
+    in property <BenchItem> item;
+    // Where the picture is drawn relative to where the icon sits: the drag.
+    in property <length> dx: 0;
+    in property <length> dy: 0;
+    in property <bool> dragging: false;
+    callback pressed(bool);
+    callback released(bool, bool);
+    callback dragged(length, length);
+    callback opened();
+    callback menu(length, length);
+    callback renamed(string);
+    callback rename-cancelled();
+
+    property <length> press-x;
+    property <length> press-y;
+    property <bool> drag-started: false;
+    // The plate is as tall as the name needs, one line or two: a short name on a two-line plate is a
+    // dark box with nothing in its lower half. The probe below measures the name at the plate's width.
+    property <int> label-lines: root.item.renaming ? 2 : max(1, min(2, round(probe.preferred-height / Theme.lh-label)));
+    property <length> label-h: root.label-lines * Theme.lh-label;
+
+    width: BenchState.cell-w;
+    height: BenchState.cell-h;
+    accessible-role: list-item;
+    accessible-label: root.item.label;
+    accessible-action-default => { root.opened(); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
+                root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            } else if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                root.press-x = self.mouse-x;
+                root.press-y = self.mouse-y;
+                root.drag-started = false;
+                root.pressed(e.modifiers.control);
+            } else if (e.button == PointerEventButton.left && e.kind == PointerEventKind.up) {
+                root.released(root.drag-started, e.modifiers.control);
+                root.drag-started = false;
+            }
+        }
+        moved => {
+            let ddx = self.mouse-x - root.press-x;
+            let ddy = self.mouse-y - root.press-y;
+            // A few pixels of wobble in a click is not a drag.
+            if (root.drag-started || (ddx / 1px) * (ddx / 1px) + (ddy / 1px) * (ddy / 1px) > 25) {
+                root.drag-started = true;
+                root.dragged(ddx, ddy);
+            }
+        }
+        double-clicked => { root.opened(); }
+    }
+
+    // Everything drawn rides on the drag; the TouchArea above does not.
+    visual := Rectangle {
+        x: root.dx;
+        y: root.dy;
+        width: parent.width;
+        height: parent.height;
+        opacity: root.dragging ? 0.85 : 1.0;
+
+        tile := Rectangle {
+            x: (parent.width - BenchState.tile) / 2;
+            y: 4px;
+            width: BenchState.tile;
+            height: BenchState.tile;
+
+            if root.item.shortcut : AppTile {
+                app-id: root.item.app-id;
+                glyph: Icons.app-or-window(root.item.app-id);
+                has-icon: root.item.has-icon;
+                icon: root.item.icon;
+                size: BenchState.tile;
+                hovered: touch.has-hover;
+            }
+            if !root.item.shortcut && root.item.has-thumb : Rectangle {
+                width: BenchState.tile;
+                height: BenchState.tile;
+                border-radius: Theme.r-sm;
+                background: Theme.bg-card;
+                border-width: 1px;
+                border-color: root.item.selected ? Theme.accent : Theme.border-floating;
+                Image {
+                    source: root.item.thumb;
+                    x: 3px;
+                    y: 3px;
+                    width: parent.width - 6px;
+                    height: parent.height - 6px;
+                    image-fit: contain;
+                }
+            }
+            if !root.item.shortcut && !root.item.has-thumb : TileGlyph {
+                kind: root.item.kind;
+                selected: root.item.selected;
+            }
+            // The one mark a shortcut wears: it opens an app, it is not the app itself.
+            if root.item.shortcut : Rectangle {
+                x: -2px;
+                y: BenchState.tile - 16px;
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                background: Theme.bg-elevated;
+                border-width: 1px;
+                border-color: Theme.border-floating;
+                Icon {
+                    commands: "M6 14L14 6 M7.5 6H14V12.5";
+                    size: 12px;
+                    thickness: 1.8px;
+                    tint: Theme.text-primary;
+                    x: 3px;
+                    y: 3px;
+                }
+            }
+            // The tile of a selected icon is outlined in the accent: blue means the selection.
+            if root.item.selected && root.item.shortcut : Rectangle {
+                width: BenchState.tile;
+                height: BenchState.tile;
+                border-radius: Theme.r-lg;
+                border-width: 2px;
+                border-color: Theme.accent;
+            }
+        }
+
+        // The label: one treatment for every kind. The plate is dark and flat; a selected icon's
+        // is the accent's own dark blue, so the ink stays white in either theme.
+        probe := Text {
+            x: 4px + 3px;
+            width: parent.width - 8px - 6px;
+            text: root.item.label;
+            wrap: word-wrap;
+            font-size: Theme.fs-label;
+            font-weight: Theme.fw-label;
+            visible: false;
+        }
+
+        plate := Rectangle {
+            x: 4px;
+            y: tile.y + BenchState.tile + 6px;
+            width: parent.width - 8px;
+            height: root.label-h + 4px;
+            border-radius: Theme.r-sm;
+            background: root.item.selected ? Theme.label-plate-selected : Theme.label-plate;
+            if !root.item.renaming : AppLabel {
+                x: 3px;
+                y: 2px;
+                width: parent.width - 6px;
+                text: root.item.label;
+                lines: root.label-lines;
+                on-wallpaper: true;
+            }
+            if root.item.renaming : Rectangle {
+                background: Theme.bg-elevated;
+                border-radius: Theme.r-sm;
+                border-width: 1px;
+                border-color: Theme.accent;
+                edit := TextInput {
+                    x: 3px;
+                    y: 2px;
+                    width: parent.width - 6px;
+                    height: root.label-h;
+                    text <=> BenchState.rename-text;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    single-line: false;
+                    accessible-role: text-input;
+                    accessible-label: "New name for " + root.item.label;
+                    init => {
+                        self.focus();
+                        self.select-all();
+                    }
+                    key-pressed(e) => {
+                        if (e.text == Key.Return) { root.renamed(self.text); return accept; }
+                        if (e.text == Key.Escape) { root.rename-cancelled(); return accept; }
+                        reject
+                    }
+                }
+            }
+        }
+    }
+}
