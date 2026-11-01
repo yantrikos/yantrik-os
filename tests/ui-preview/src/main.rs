@@ -27,6 +27,7 @@ mod approval_tests;
 mod approval_fit_tests;
 mod approval_pane_tests;
 mod dock_tests;
+mod bench_tests;
 mod taskbar_menu_tests;
 mod alt_tab_tests;
 mod cards_waiting_tests;
@@ -119,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-launcher-scenes") { return launcher_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-apps-button") { return apps_button_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-dock") { return dock_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-bench") { return bench_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-alt-tab") { return alt_tab_tests::run(&window, output, width, height); }
     if args.iter().any(|a| a == "verify-taskbar-menu") { return taskbar_menu_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-cards-waiting") { return cards_waiting_tests::run(&window, output); }

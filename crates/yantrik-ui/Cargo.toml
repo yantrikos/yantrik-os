@@ -27,6 +27,9 @@ yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }
 yantrikdb-core = { workspace = true }
 yantrik-os = { workspace = true }
 yantrik-ui-slint = { path = "../yantrik-ui-slint" }
+# The desktop's icons: what ~/Desktop holds, where each sits, its thumbnail and the archive (#1030).
+yantrik-bench = { workspace = true }
+thiserror = { workspace = true }
 yantrik-ipc-contracts = { workspace = true }
 yantrik-ipc-transport = { workspace = true }
 # The shell publishes its own app.describe / app.act, like every app under apps/.
@@ -80,6 +83,8 @@ libc = { workspace = true }
 [dev-dependencies]
 # The mail service's end of the credential door, so the door is tested against the client that uses it.
 yantrik-service-sdk = { workspace = true }
+# A desktop folder to list and arrange in the Bench's tests (src/bench).
+tempfile = "3"
 
 [features]
 default = ["claude-cli"]

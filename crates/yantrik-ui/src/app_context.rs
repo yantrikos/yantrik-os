@@ -373,6 +373,13 @@ impl AppContext {
         let mut sys_config =
             system_context::load_system_config(std::env::args().nth(1).map(PathBuf::from));
         sys_config.watch_dirs.push("~/.yantrik".to_string());
+        // The desktop folder, made if it is missing and wherever XDG puts it: the watcher skips a
+        // folder that is not there, and watches `~/Desktop` whatever the person's XDG says, so
+        // the Bench would never hear of a change in a folder named anything else.
+        if let Ok(home) = std::env::var("HOME") {
+            let desktop = crate::bench::ensure_desktop(std::path::Path::new(&home));
+            sys_config.watch_dirs.push(desktop.to_string_lossy().into_owned());
+        }
 
         // Start system observer
         let observer = Rc::new(yantrik_os::SystemObserver::start(&sys_config));
