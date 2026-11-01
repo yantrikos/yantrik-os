@@ -48,7 +48,7 @@ impl RunsOn {
             return "Nothing set up yet".to_string();
         }
         match &self.via_gateway {
-            Some(Via::NoPick) => return "No model picked yet".to_string(),
+            Some(Via::NoPick | Via::NoneShared) => return "No model picked yet".to_string(),
             Some(Via::Refused { .. }) => return "Nothing is sent: this desktop holds it back".to_string(),
             Some(Via::Sends { lane: true }) => return format!("{}, on your private lane", plain_or_unsaid(self, model, name_host)),
             _ => {}

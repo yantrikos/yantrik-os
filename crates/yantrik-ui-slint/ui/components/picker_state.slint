@@ -30,7 +30,7 @@ export global PickerState {
     callback remove-file(string);
     callback fix();
     callback opened(string);
-    // A press of a disabled model row, carrying its reason.
+    // A press of a disabled model row, carrying its fix id.
     callback fix-model(string);
 }
 
@@ -56,5 +56,5 @@ export component BoundPicker inherits ModelPicker {
     attach(p) => { PickerState.attach(p); }
     fix => { PickerState.fix(); }
     opened(which) => { PickerState.opened(which); }
-    fix-model(reason) => { PickerState.fix-model(reason); }
+    fix-model(fix) => { PickerState.fix-model(fix); }
 }

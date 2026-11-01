@@ -10,7 +10,7 @@ fn mind(id: &str, name: &str, words: &str, current: bool) -> PickerMind {
 }
 
 fn model(kind: &str, id: &str, name: &str, detail: &str, disabled: bool, reason: &str) -> PickerModel {
-    PickerModel { kind: kind.into(), id: id.into(), name: name.into(), detail: detail.into(), disabled, reason: reason.into(), current: false }
+    PickerModel { kind: kind.into(), id: id.into(), name: name.into(), detail: detail.into(), disabled, reason: reason.into(), fix: "".into(), current: false }
 }
 
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -81,5 +81,52 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     }
     assert_eq!(chosen, "free-groq/openai/gpt-oss-120b", "two clicks switch the model");
     println!("PASS picker: mind and model each switched in two clicks");
+
+    // Every model held back for one reason (#1042): the reason once at the top, with its actions,
+    // and the rows below it greyed without repeating it. A press of an action carries the reason
+    // that names AI accounts, as a press of a greyed row does.
+    let off = |id: &str, name: &str, detail: &str| PickerModel { fix: "ai-accounts".into(), ..model("model", id, name, detail, true, "") };
+    ui.set_models(ModelRc::new(VecModel::from(vec![
+        model("banner", "", "Sharing is off for every account, so no model can be used yet. Your Mind sends what it knows about you only where you allow it.", "", false, ""),
+        PickerModel { fix: "ai-accounts".into(), ..model("action", "allow-sharing", "Allow sharing\u{2026}", "", false, "") },
+        PickerModel { fix: "ai-accounts".into(), ..model("action", "private-lane", "Set up a private lane", "", false, "") },
+        model("header", "", "OLLAMA CLOUD", "", false, ""),
+        off("ollama-cloud/deepseek-v4.1-flash", "deepseek-v4.1-flash", "Ollama Cloud \u{b7} 128K context"),
+        off("kilo/glm-5", "glm-5", "Kilo \u{b7} thinks"),
+    ])));
+    click(w, px + 150.0, py + 14.0);
+    let all_off = draw();
+    save(&all_off, &output.replace(".png", "-alloff.png"))?;
+    ui.set_chosen_model("".into());
+    let mut fixed = String::new();
+    for dy in (36..160).step_by(6) {
+        click(w, px + 80.0, menu_top + 6.0 + dy as f32);
+        draw();
+        fixed = ui.get_fixed_reason().to_string();
+        if !fixed.is_empty() {
+            break;
+        }
+        click(w, px + 150.0, py + 14.0);
+        draw();
+    }
+    assert_eq!(fixed, "ai-accounts", "a press of the header's action carries the fix id that opens AI accounts");
+    assert!(ui.get_chosen_model().is_empty(), "an action is never a pick");
+    // A press of a greyed row: the same fix, and never a pick.
+    ui.set_fixed_reason("".into());
+    ui.set_chosen_model("".into());
+    click(w, px + 150.0, py + 14.0);
+    draw();
+    for dy in [177.0f32, 181.0, 185.0] {
+        click(w, px + 80.0, menu_top + 6.0 + dy);
+        draw();
+        if !ui.get_fixed_reason().is_empty() {
+            break;
+        }
+        click(w, px + 150.0, py + 14.0);
+        draw();
+    }
+    assert_eq!(ui.get_fixed_reason(), "ai-accounts", "a press of a greyed row carries its fix id");
+    assert!(ui.get_chosen_model().is_empty(), "a disabled row is never selectable");
+    println!("PASS picker: the all-off header shows its reason once and its action opens AI accounts");
     Ok(())
 }
