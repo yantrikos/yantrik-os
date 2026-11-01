@@ -105,6 +105,7 @@ mod tests {
             ("control_agent_terminal.rs", include_str!("control_agent_terminal.rs")),
             ("control_agents.rs", include_str!("control_agents.rs")),
             ("control_approvals.rs", include_str!("control_approvals.rs")),
+            ("control_bench.rs", include_str!("control_bench.rs")),
             ("control_capture.rs", include_str!("control_capture.rs")),
             ("control_chat.rs", include_str!("control_chat.rs")),
             ("control_decide.rs", include_str!("control_decide.rs")),
