@@ -162,6 +162,8 @@ fn republish(weak: &Weak<App>) {
 
 /// Open the overview, or — when it is already up — take the next step in the direction asked.
 pub fn open(ui: &App, backwards: bool) -> Result<serde_json::Value, String> {
+    // The card is drawn over the person's windows and the shell raised to show it (#1033).
+    crate::shell_view::refuse_for_mind("the window switcher")?;
     // Held while a card waits, as the bar's panels are: this draws over the card's screen and
     // brings the shell forward, and a card behind a window is a decision nobody can make.
     crate::card_watch::hold_windows("open_switcher")?;
@@ -460,6 +462,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     .optional(),
             ),
             move |args| {
+                // The person's switcher and the window it brings forward are theirs (#1033).
+                crate::shell_view::refuse_for_mind("the window switcher")?;
                 let ui = move_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
                 let word = args["direction"].as_str().unwrap_or_default();
                 let how = Move::parse(word)
@@ -478,6 +482,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .risk("standard")
             .defers(),
             move |_args| {
+                // The person's switcher and the window it brings forward are theirs (#1033).
+                crate::shell_view::refuse_for_mind("the window switcher")?;
                 let ui = commit_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
                 commit(&ui, None)
             },
@@ -491,6 +497,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             )
             .risk("safe"),
             move |_args| {
+                // The person's switcher and the window it brings forward are theirs (#1033).
+                crate::shell_view::refuse_for_mind("the window switcher")?;
                 let ui = cancel_weak.upgrade().ok_or_else(|| "the shell is gone".to_string())?;
                 Ok(cancel(&ui))
             },

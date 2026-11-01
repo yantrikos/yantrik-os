@@ -124,6 +124,8 @@ pub fn bar_minds_for_describe(needing: i32, requests: i32, approvals: i32) -> se
 /// Show one panel, put the others away so only one is up, bring the shell forward, and answer
 /// with what was observed afterwards.
 fn open_panel(ui: &App, panel: Panel) -> Result<serde_json::Value, String> {
+    // A panel over the person's work, and the shell raised to show it (#1033).
+    crate::shell_view::refuse_for_mind(panel.name())?;
     // The panels are drawn under the approval overlay but over the Lens, so a card shown in the
     // Lens's chat could be covered by one a mind opened (final review of the card fix). Held
     // while a card waits; putting a panel away never is. Each name written out, so the test that

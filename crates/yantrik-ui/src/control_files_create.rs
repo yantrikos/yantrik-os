@@ -262,10 +262,11 @@ mod settled_tests {
             let end = src[at..].find("make_here(").expect("hands off to make_here") + at;
             assert!(!src[at..end].contains(".defers()"), "{action} must answer settled");
         }
-        let helper = src.find("fn make_here(").expect("make_here");
-        let body = &src[helper..];
-        let later = body.find("answer_later(").expect("answer_later");
-        let io = body.find("control_files_create::make_checked(").expect("make call");
+        let made = include_str!("control_files_make.rs");
+        let helper = made.find("fn make_here(").expect("make_here");
+        let body = &made[helper..];
+        let later = body.find("cursor::deferred(").expect("deferred");
+        let io = body.find("make_checked(&dir").expect("make call");
         assert!(io < later, "the disk work belongs inside the answer_later closure");
         assert!(!body[..io].contains("create_dir") && !body[..io].contains("create_new"));
     }
