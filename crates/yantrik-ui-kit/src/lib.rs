@@ -660,6 +660,12 @@ mod every_app_is_an_app_window {
     /// it, and a new app cannot go on it.
     const NOT_YET: &[&str] = &[];
 
+    /// Apps whose windows are bars of something else, not windows of their own: the Mind desk's
+    /// header and footer (#1023), which the nested compositor keeps above and below Mind View's
+    /// apps. A title bar with minimise, maximise and close would be wrong on a wall, so these are
+    /// a bare frameless `Window`, and this list says so instead of the check passing them over.
+    const BARS: &[&str] = &["mind-desk"];
+
     /// Every app's window is the base app window (#256).
     ///
     /// The ask was one base shell that every app extends, the way every app on macOS is an
@@ -680,6 +686,12 @@ mod every_app_is_an_app_window {
             seen += 1;
             let base_window = src.contains(" inherits AppWindow {");
             let plain_window = src.contains(" inherits Window {");
+            if BARS.contains(&app.as_str()) {
+                if base_window || !plain_window || !src.contains("no-frame: true;") {
+                    wrong.push(format!("{app}: is a bar, so it is a frameless `Window` (`no-frame: true;`), not an AppWindow"));
+                }
+                continue;
+            }
             // A bar nobody connected draws its buttons and does nothing when they are pressed.
             // The chrome is connected by `window_chrome!(ui)` directly, through the framework's
             // `Window` adapter (`yantrik_app::window!(App)` then `ui.connect_chrome()`), which
@@ -856,13 +868,16 @@ mod consent_buttons_are_pointer_only {
         // The affirmative's words are the action's own since the sign-off of 4 October ("Delete
         // event", else "Allow once"), so it is found by the property that labels it.
         let confirm = "label: root.data.confirm-label != \"\" ? root.data.confirm-label : \"Allow once\";";
-        for label in ["label: \"Decline\";", confirm] {
+        // The other button's words may be a request's own ("Keep going", `approvals::Wording`); the
+        // button is the same one and stays pointer-only.
+        let decline = "label: root.data.decline-label != \"\" ? root.data.decline-label : \"Decline\";";
+        for label in [decline, confirm] {
             let b = button_with(&src, label);
             assert!(b.contains("pointer-only: true;"), "{label} lost pointer-only:\n{b}");
         }
         assert_eq!(src.matches("pointer-only: true;").count(), 2, "the card's two buttons, and no third left without it");
         // Nothing on the card takes focus when it appears.
-        let card = &src[src.find("label: \"Decline\";").unwrap() - 600..src.find(confirm).unwrap() + 400];
+        let card = &src[src.find(decline).unwrap() - 600..src.find(confirm).unwrap() + 400];
         for banned in ["forward-focus", "init =>", ".focus()", "key-pressed", "accessible-action"] {
             assert!(!card.contains(banned), "the approval buttons must not use `{banned}`");
         }

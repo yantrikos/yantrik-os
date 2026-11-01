@@ -34,3 +34,4 @@ pub mod home_paths;
 pub mod framework_apps;
 pub mod mind_view;
 pub mod mind_view_displays;
+pub mod mind_desk;

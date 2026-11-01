@@ -19,6 +19,11 @@
 //! (`SO_PEERCRED`) and any agent token are still in scope when the dock's spawn runs. A click
 //! has no caller at all. Everything else is sorted by [`classify`].
 //!
+//! # The Mind desk
+//!
+//! The bars around the apps (#1023, `apps/mind-desk`) are started by the shell itself, not by the
+//! startup script, once the display is on record: see [`crate::mind_view_desk`].
+//!
 //! # When Mind View cannot start
 //!
 //! If the nested compositor cannot be started — no labwc, no config, or it does not say which
@@ -384,6 +389,7 @@ pub fn ensure() -> Result<Seat, String> {
                 return Err(why);
             }
             with_state(|state| state.nested = Some(nested));
+            crate::mind_view_desk::supervise(seat.clone());
             Ok(seat)
         }
         Err(why) => {
