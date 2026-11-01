@@ -1986,7 +1986,7 @@ pub fn publish(
                     // close it there, as its × would.
                     Err(why) => match crate::mind_view::app_named(want) {
                         Some(app) => {
-                            let name = crate::mind_view::close_app(&app)?;
+                            let name = crate::mind_view_close::close_app(&app)?;
                             return Ok(serde_json::json!({
                                 "closing": name,
                                 "where": "Mind View",

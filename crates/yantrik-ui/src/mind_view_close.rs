@@ -7,6 +7,9 @@
 //! as it runs). The close is sent to Mind View's display, so a window of the person's cannot be
 //! reached, whatever it is titled.
 
+use std::process::Command;
+use std::time::Duration;
+
 use serde_json::{json, Value};
 
 use crate::windows::toplevel_entry;
@@ -79,7 +82,7 @@ pub(crate) fn close(want: &str) -> Result<Value, String> {
         .map(|a| a.binary)
         .unwrap_or_default();
     let (selector, title) = resolve(&lines, want, app.as_deref().map(|id| (id, binary.as_str())))?;
-    let name = crate::mind_view::close_matching(selector, title)?;
+    let name = close_matching(selector, title)?;
     Ok(json!({
         "closing": name,
         "where": "Mind View",
@@ -87,6 +90,34 @@ pub(crate) fn close(want: &str) -> Result<Value, String> {
                  there as pressing × does; one with unsaved work may put up its own dialog and stay. \
                  Read `mind_view` in `describe shell` to see whether it went.",
     }))
+}
+
+/// Ask an app drawing in Mind View to close, as its × does: on Mind View's own display, so an app
+/// with unsaved work can still put up its dialog. Returns the name it was asked by.
+pub fn close_app(app_id: &str) -> Result<String, String> {
+    let title = crate::windows::app_display_name(app_id);
+    close_matching(format!("title:{title}"), title)
+}
+
+/// Ask the window of Mind View's compositor that `selector` (`title:…`, `app_id:…`) names to close.
+/// Returns `title`, what the caller calls it.
+pub(crate) fn close_matching(selector: String, title: String) -> Result<String, String> {
+    let display = crate::mind_view::display_now()
+        .ok_or_else(|| "Mind View is not running, so nothing is drawn there to close".to_string())?;
+    let args = ["toplevel".to_string(), "close".to_string(), selector];
+    let (answer, wait) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("yos-wlrctl-mind-view".to_string())
+        .spawn(move || {
+            let _ = answer.send(Command::new("wlrctl").args(&args).env("WAYLAND_DISPLAY", &display).status());
+        })
+        .map_err(|_| "could not start a thread to talk to Mind View's compositor".to_string())?;
+    match wait.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(status)) if status.success() => Ok(title),
+        Ok(Ok(_)) => Err(format!("Mind View's compositor has no window called `{title}` to close")),
+        Ok(Err(e)) => Err(format!("could not run wlrctl: {e}")),
+        Err(_) => Err("Mind View's compositor did not answer within 2 s".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -118,10 +149,11 @@ mod tests {
     fn a_same_titled_person_window_is_never_reached() {
         let src = include_str!("mind_view_close.rs");
         let src = &src[..src.find("#[cfg(test)]").unwrap()];
-        for token in ["addressable_titles", "window_to_close", "windows::close(", "Command::new"] {
+        for token in ["addressable_titles", "window_to_close", "windows::close("] {
             assert!(!src.contains(token), "the Mind's close must not reach the person's desktop: `{token}`");
         }
         assert!(src.contains("nested_window_lines()") && src.contains("close_matching("));
+        assert!(src.contains("display_now()") && src.contains(r#".env("WAYLAND_DISPLAY", &display)"#), "sent to Mind View's display");
         // A Mind's close_window returns here before it reads the person's windows.
         let ctl = include_str!("control.rs");
         let close = &ctl[ctl.find("\"close_window\",").unwrap()..];

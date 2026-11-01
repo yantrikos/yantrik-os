@@ -712,34 +712,6 @@ pub fn app_named(want: &str) -> Option<String> {
     (found.len() == 1).then(|| found.remove(0))
 }
 
-/// Ask an app drawing in Mind View to close, as its × does: on Mind View's own display, so an app
-/// with unsaved work can still put up its dialog. Returns the name it was asked by.
-pub fn close_app(app_id: &str) -> Result<String, String> {
-    let title = crate::windows::app_display_name(app_id);
-    close_matching(format!("title:{title}"), title)
-}
-
-/// Ask the window of Mind View's compositor that `selector` (`title:…`, `app_id:…`) names to close.
-/// Returns `title`, what the caller calls it.
-pub(crate) fn close_matching(selector: String, title: String) -> Result<String, String> {
-    let display = with_state(|s| s.nested.as_ref().map(|n| n.seat.wayland.clone()))
-        .ok_or_else(|| "Mind View is not running, so nothing is drawn there to close".to_string())?;
-    let args = ["toplevel".to_string(), "close".to_string(), selector];
-    let (answer, wait) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .name("yos-wlrctl-mind-view".to_string())
-        .spawn(move || {
-            let _ = answer.send(Command::new("wlrctl").args(&args).env("WAYLAND_DISPLAY", &display).status());
-        })
-        .map_err(|_| "could not start a thread to talk to Mind View's compositor".to_string())?;
-    match wait.recv_timeout(Duration::from_secs(2)) {
-        Ok(Ok(status)) if status.success() => Ok(title),
-        Ok(Ok(_)) => Err(format!("Mind View's compositor has no window called `{title}` to close")),
-        Ok(Err(e)) => Err(format!("could not run wlrctl: {e}")),
-        Err(_) => Err("Mind View's compositor did not answer within 2 s".to_string()),
-    }
-}
-
 /// Forget an app that has exited.
 pub fn mark_exited(pid: u32) {
     with_state(|s| s.apps.retain(|(p, _)| *p != pid));
