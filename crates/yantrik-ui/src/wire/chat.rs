@@ -372,7 +372,7 @@ fn submit(ui_weak: &slint::Weak<App>, bridge: &Arc<CompanionBridge>, text: &str,
             super::agents::answer_typed(&asking.agent, &asking.request, text);
         }
         // The Stop control, typed: consumed, never delivered as a turn (#1058).
-        super::lens_queue::Enter::Stop => super::lens_stop::press(ui_weak, Some(text)),
+        super::lens_queue::Enter::Stop => super::lens_stop::press(ui_weak, composer.turn_id, Some(text)),
     }
 }
 
@@ -431,9 +431,9 @@ fn wire_queue(ui: &App, ctx: &AppContext) {
             }
         }
     });
-    ui.on_lens_stop_turn({
+    ui.global::<crate::LensStop>().on_pressed({
         let ui_weak = ui_weak.clone();
-        move || super::lens_stop::press(&ui_weak, None)
+        move || super::lens_stop::pressed(&ui_weak)
     });
     let bridge = ctx.bridge.clone();
     let streams = streaming::Streams::new();

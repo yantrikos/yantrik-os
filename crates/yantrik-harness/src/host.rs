@@ -1431,7 +1431,7 @@ impl Host {
             let _ = waiting.tx.send(Chunk::Failed(STOPPED.to_string()));
             stopped = true;
         }
-        let cancelled = Self::drop_flights(harness, conversation, STOPPED);
+        let cancelled = Self::drop_flights(harness, conversation, STOPPED, None);
         stopped |= !cancelled.is_empty();
         if existed && harness.announced.conversations {
             harness.ended.push(conversation.to_string());

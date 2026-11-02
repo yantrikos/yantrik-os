@@ -305,7 +305,7 @@ pub fn wire(ui: &App, _ctx: &AppContext) {
                 ui.set_lens_can_open_in_agents(lens_agent);
             }
             publish_lens_questions(&ui);
-            publish_lens_composer(&ui);
+            super::lens_composer::publish(&ui);
             let plan = tick_plan(ui.get_current_screen(), ui.get_lens_open(), ui.get_is_generating());
             if plan.lens_cards {
                 agents::store().read(|s| publish_lens(&ui.global::<AgentsState>(), s));
@@ -1398,27 +1398,6 @@ fn lens_question(agent: &str, mind: &str, q: &crate::agents::model::Question) ->
     }
 }
 
-/// What the Lens's composer says Enter will do (`lens_queue`): send, queue for the busy mind, or
-/// answer its question, which is shown above the box. Set only where it changed.
-pub(super) fn publish_lens_composer(ui: &App) {
-    let composer = super::lens_queue::Composer::active();
-    let g = ui.global::<AgentsState>();
-    let mode = composer.mode().word();
-    if g.get_lens_composer_mode() != mode {
-        g.set_lens_composer_mode(mode.into());
-    }
-    let placeholder = composer.placeholder();
-    if g.get_lens_composer_placeholder() != placeholder.as_str() {
-        g.set_lens_composer_placeholder(placeholder.into());
-    }
-    let turn = composer.turn_word();
-    if ui.get_lens_turn() != turn { ui.set_lens_turn(turn.into()); }
-    let asks = composer.asking.as_ref().map(|a| format!("{} asks: {}", composer.mind, clip(&a.prompt, QUESTION_CHARS))).unwrap_or_default();
-    if g.get_lens_composer_asks() != asks.as_str() {
-        g.set_lens_composer_asks(asks.into());
-    }
-}
-
 /// For a Keep/Erase question (one of its answers is exactly "Erase"): what pressing Erase lets a
 /// `redact` remove, as the shell parses the prompt the person sees — **every** one of its quoted
 /// spans of at least the needle minimum (each could be erased, so each is named; the prompt's
@@ -1445,7 +1424,7 @@ fn erase_removes(q: &crate::agents::model::Question) -> String {
 }
 
 /// `s` drawn in at most `n` characters.
-fn clip(s: &str, n: usize) -> String {
+pub(super) fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { s.chars().take(n - 1).chain(['…']).collect() }
 }
 

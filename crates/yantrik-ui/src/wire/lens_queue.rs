@@ -60,6 +60,8 @@ pub struct Composer {
     pub working: bool,
     /// The person's Stop dropped its turn, and its harness has not closed it yet (#1058).
     pub stopping: bool,
+    /// The turn the host is waiting on, the one a Stop is for (`lens_stop`).
+    pub turn_id: Option<u64>,
     /// The newest question its run waits on.
     pub asking: Option<Asking>,
 }
@@ -77,6 +79,7 @@ impl Composer {
                 mind: a.meta.mind.clone(),
                 working: a.open_turn().is_some(),
                 stopping: false,
+                turn_id: None,
                 asking: a.waiting_questions().last().map(|q| Asking {
                     agent: a.meta.id.0.clone(),
                     request: q.request.clone(),
@@ -92,7 +95,7 @@ impl Composer {
         let active = host.active_id();
         let mind = host.list().into_iter().find(|e| e.id == active).map(|e| e.name).unwrap_or_else(|| active.clone());
         let agent = crate::agents::feed::main_agent(&active);
-        Composer { stopping: host.stopping(&agent), ..Composer::of(&agent, &mind) }
+        Composer { stopping: host.stopping(&agent), turn_id: host.live_turn(&agent), ..Composer::of(&agent, &mind) }
     }
 
     /// What the Stop control shows: "" when no turn is running, "running" for the button, and
@@ -131,8 +134,10 @@ impl Composer {
         if text.trim_start().starts_with('/') {
             return Enter::Send;
         }
-        // A bare "stop" while a turn is in flight is the Stop control, said in words (#1058).
-        if (self.working || self.stopping) && is_bare_stop(text) {
+        // A bare "stop" while a turn is in flight is the Stop control, said in words (#1058). Not
+        // while the mind asks a question: then it is the answer to it ("Cancel the subscription?
+        // cancel / keep"), and the Stop button is there for stopping.
+        if (self.working || self.stopping) && self.asking.is_none() && is_bare_stop(text) {
             return Enter::Stop;
         }
         match (self.mode(), &self.asking) {
@@ -335,6 +340,7 @@ mod tests {
             mind: "Hermes Agent".into(),
             working,
             stopping: false,
+            turn_id: None,
             asking: asking.then(|| Asking {
                 agent: "hermes:main".into(),
                 request: "c1".into(),
@@ -417,11 +423,22 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_stop_while_a_turn_runs_is_the_stop_control_and_is_consumed_in_every_mode() {
+    fn a_bare_stop_while_a_turn_runs_is_the_stop_control_and_is_consumed() {
         for word in ["stop", "Stop.", " STOP! ", "cancel", "Cancel.", "stop!!"] {
-            for composer in [hermes(true, false), hermes(true, true), Composer { stopping: true, ..hermes(false, false) }] {
+            for composer in [hermes(true, false), Composer { stopping: true, ..hermes(false, false) }] {
                 assert_eq!(composer.enter(word), Enter::Stop, "{word:?} in {:?}", composer.mode());
             }
+        }
+    }
+
+    /// Changed with #1072's review: a bare "stop" or "cancel" used to stop the turn even while the
+    /// mind asked a question. It is the person's answer now ("Cancel the subscription? cancel /
+    /// keep"); the Stop button covers stopping.
+    #[test]
+    fn a_bare_stop_or_cancel_while_a_question_is_open_is_the_answer() {
+        for word in ["stop", "cancel", "Cancel."] {
+            assert!(matches!(hermes(true, true).enter(word), Enter::Answer(_)), "{word:?}");
+            assert!(matches!(Composer { stopping: true, ..hermes(true, true) }.enter(word), Enter::Answer(_)), "{word:?}");
         }
     }
 

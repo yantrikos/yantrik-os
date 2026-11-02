@@ -116,8 +116,6 @@ export component DesktopScreen inherits Rectangle {
     callback lens-open-history();
     callback lens-new-chat();
     callback lens-cancel-queued();
-    callback lens-stop-turn();
-    in property <string> lens-turn: "";
 
     // Chat v2: the counts of the runs this chat started, the mode chip's label and the header's
     // identity line. Filled from the Agents store and the mind mode.
@@ -701,8 +699,6 @@ export component DesktopScreen inherits Rectangle {
         queued-mind: root.lens-queued-mind;
         queued-note: root.lens-queued-note;
         cancel-queued => { root.lens-cancel-queued(); }
-        turn: root.lens-turn;
-        stop-turn => { root.lens-stop-turn(); }
         mode-clicked => { root.lens-mode-clicked(); }
         mind-clicked => { root.active-mind-clicked(); }
         view-desk(run) => { root.lens-view-desk(run); }

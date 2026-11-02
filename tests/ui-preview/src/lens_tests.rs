@@ -198,11 +198,11 @@ pub fn run_stop(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
         model: Default::default(),
     };
     ui.set_messages(ModelRc::new(VecModel::from(vec![question, turn(calls())])));
-    ui.set_turn("running".into());
+    ui.global::<LensStop>().set_turn("running".into());
     render(w, width, height);
     std::thread::sleep(std::time::Duration::from_millis(300));
     save(&render(w, width, height), output, width, height)?;
-    ui.set_turn("stopping".into());
+    ui.global::<LensStop>().set_turn("stopping".into());
     save(&render(w, width, height), &output.replace(".png", "-stopping.png"), width, height)?;
     Ok(())
 }
