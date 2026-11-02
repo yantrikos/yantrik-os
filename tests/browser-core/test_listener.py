@@ -133,6 +133,15 @@ class Identify(unittest.TestCase):
             listener.identify(9223, proc.root, ENV)
         self.assertIn("disagree", str(split.exception))
 
+    def test_two_sockets_on_one_port_are_refused_even_when_both_look_like_mind_views(self):
+        self.proc.listen(9223, 1000, 1)
+        self.proc.listen(9223, 1000, 2)
+        for pid, inode in ((1, 1), (2, 2)):
+            self.proc.process(pid, joined("chromium", "--user-data-dir=" + MIND_VIEW), inode=inode)
+        with self.assertRaises(listener.Unidentified) as two:
+            self.who(9223)
+        self.assertIn("two different sockets", str(two.exception))
+
     def test_the_exact_address_beats_a_wildcard_one_as_the_kernel_does(self):
         self.proc.listen(9223, 1000, 1, local="00000000")
         self.proc.listen(9223, 1000, 2)

@@ -2292,7 +2292,7 @@ pub fn publish(
     // `control_agent_terminal` and design/agents-workspace-2026-09-23.md, decision 3.
     let surface = crate::control_agent_terminal::actions(surface);
     // Whether a pid is the person's or a mind's, for the browser service's choice of browser.
-    let surface = crate::control_caller_class::actions(surface);
+    let surface = crate::caller_class::actions(surface);
     // A recipe's question answered, and a recipe paused, resumed or cancelled — answer_recipe,
     // pause_recipe, resume_recipe, cancel_recipe. See `control_recipes`.
     let surface = crate::control_recipes::actions(surface, ctx.bridge.handle());
