@@ -55,6 +55,9 @@ pub enum State {
     Done,
     /// Its last turn failed.
     Failed,
+    /// Its last turn was stopped by the person (the Lens's Stop). Not a failure: the agent stays,
+    /// and takes the next turn.
+    Stopped,
     /// The harness that ran it stopped polling (design: "When a harness dies").
     HarnessGone,
 }
@@ -68,6 +71,7 @@ impl State {
             State::Idle => "idle",
             State::Done => "done",
             State::Failed => "failed",
+            State::Stopped => "stopped",
             State::HarnessGone => "harness_gone",
         }
     }
@@ -81,6 +85,7 @@ impl State {
             State::Idle => "idle",
             State::Done => "done",
             State::Failed => "failed",
+            State::Stopped => "stopped",
             State::HarnessGone => "harness gone",
         }
     }
@@ -92,7 +97,7 @@ impl State {
 
     /// Still able to move on its own or on the next prompt: the Active tab.
     pub fn live(self) -> bool {
-        self.working() || self == State::Idle
+        self.working() || matches!(self, State::Idle | State::Stopped)
     }
 }
 

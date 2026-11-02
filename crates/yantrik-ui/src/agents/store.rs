@@ -289,7 +289,7 @@ impl Store {
             return;
         };
         append(&mut turn.items, cap(delta), false);
-        if matches!(agent.state, State::Idle | State::Done | State::Failed) {
+        if matches!(agent.state, State::Idle | State::Done | State::Failed | State::Stopped) {
             set_state(agent, State::Thinking, now);
         }
         self.mark(i);
@@ -309,6 +309,16 @@ impl Store {
 
     /// The turn ended — completed (`ok`) or failed.
     pub fn close_turn(&mut self, id: &AgentId, ok: bool) {
+        self.close_turn_as(id, ok, false)
+    }
+
+    /// The turn ended because the person stopped it: failed as a turn (it did not finish), but the
+    /// agent reads `stopped`, not `failed`.
+    pub fn close_turn_stopped(&mut self, id: &AgentId) {
+        self.close_turn_as(id, false, true)
+    }
+
+    fn close_turn_as(&mut self, id: &AgentId, ok: bool, stopped: bool) {
         let Some(i) = self.index(id) else { return };
         let now = self.now();
         let agent = &mut self.agents[i];
@@ -324,6 +334,8 @@ impl Store {
             State::RunningTool
         } else if ok {
             State::Done
+        } else if stopped {
+            State::Stopped
         } else {
             State::Failed
         };

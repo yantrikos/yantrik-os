@@ -30,6 +30,9 @@ const STOPPED_LINE: &str = concat!(
     "were stopped too."
 );
 
+/// Added when a message the person had queued in the Lens behind the turn was taken back with it.
+const QUEUED_LINE: &str = " The message you had queued was taken back, not sent.";
+
 /// A second Stop while the first waits for the mind to hear it.
 const ALREADY_LINE: &str =
     "Already stopping. The mind has not confirmed it yet, so anything it runs on its own may still carry on.";
@@ -56,13 +59,15 @@ enum Outcome {
 }
 
 impl Outcome {
-    fn line(self) -> &'static str {
-        match self {
+    /// What the desktop says; `queued` when a message queued in the Lens was taken back too.
+    fn line(self, queued: bool) -> String {
+        let line = match self {
             Outcome::Stopped => STOPPED_LINE,
             Outcome::Already => ALREADY_LINE,
             Outcome::Ended => ENDED_LINE,
             Outcome::Nothing => NOTHING_LINE,
-        }
+        };
+        if queued { format!("{line}{QUEUED_LINE}") } else { line.to_string() }
     }
 }
 
@@ -102,12 +107,16 @@ fn stop_now(host: &Host, agent: &AgentId, observed: Option<u64>) -> Outcome {
 /// the person's own word when they wrote it instead of pressing the button: it is shown in the
 /// conversation, once, and never sent. The desktop says what came of it, and the composer is
 /// republished at once so "Stopping..." is there before the next tick.
+///
+/// Stop means stop: a message the person queued in the Lens behind the turn (`lens_queue`) is
+/// taken back with it, never sent when the turn ends.
 pub fn press(ui_weak: &slint::Weak<App>, observed: Option<u64>, typed: Option<&str>) {
     let outcome = match super::harness::host() {
         Some(host) => stop_now(host, &crate::agents::feed::main_agent(&host.active_id()), observed),
         None => Outcome::Nothing,
     };
-    streaming::say(ui_weak, typed, "desktop", outcome.line());
+    let queued = ui_weak.upgrade().is_some_and(|ui| super::lens_queue::cancel(&ui));
+    streaming::say(ui_weak, typed, "desktop", &outcome.line(queued));
     if let Some(ui) = ui_weak.upgrade() {
         super::lens_composer::publish(&ui);
     }
@@ -244,6 +253,51 @@ mod tests {
         assert!(ALREADY_LINE.starts_with("Already stopping"));
         assert!(!STOPPED_LINE.contains("  "), "no run of spaces: {STOPPED_LINE}");
         assert!(!STOPPED_LINE.contains("has stopped"), "never claims the mind has stopped");
+    }
+
+    /// The typed path: "stop" during "Stopping..." is read as a Stop (the composer sends it to
+    /// `press`, not to the mind), and what is said is "Already stopping.".
+    #[test]
+    fn a_typed_stop_during_stopping_is_a_stop_and_says_already_stopping() {
+        use crate::wire::lens_queue::{Composer, Enter};
+        let (host, _session, agent, turn) = running("stop-typed");
+        assert_eq!(stop_now(&host, &agent, Some(turn)), Outcome::Stopped);
+        let composer = Composer { agent: Some(agent.clone()), stopping: host.stopping(&agent), turn_id: host.live_turn(&agent), ..Composer::default() };
+        assert_eq!(composer.enter("stop"), Enter::Stop, "typed, while stopping, it is the Stop");
+        assert_eq!(composer.enter("Cancel."), Enter::Stop);
+        let said = stop_now(&host, &agent, composer.turn_id).line(false);
+        assert!(said.starts_with("Already stopping"), "{said}");
+    }
+
+    /// Stop means stop: the message queued in the Lens behind the turn is taken back with it,
+    /// and the line says so. Read from the source, as the Lens queue lives in the window.
+    #[test]
+    fn stop_takes_back_the_message_queued_in_the_lens_and_says_so() {
+        let src = include_str!("lens_stop.rs");
+        let press = src.split_once("pub fn press(").expect("press").1;
+        let press = &press[..press.find("\n}\n").unwrap()];
+        assert!(press.contains("lens_queue::cancel("), "press takes back the queued message");
+        assert!(press.contains("outcome.line(queued)"), "and says so");
+        let said = Outcome::Stopped.line(true);
+        assert!(said.starts_with(STOPPED_LINE) && said.ends_with("taken back, not sent."), "{said}");
+        assert_eq!(Outcome::Nothing.line(false), NOTHING_LINE);
+    }
+
+    /// The agent reads `stopped`, not `failed`, after a Stop; the next turn works as for any agent.
+    #[test]
+    fn the_agent_reads_stopped_after_a_stop() {
+        use crate::agents::State;
+        let agent = AgentId::new("stop-state", AgentId::MAIN);
+        store().open_turn(&agent, "a long task");
+        store().close_turn_stopped(&agent);
+        let (state, ok) = store().read(|s| {
+            let a = s.agent(&agent).unwrap();
+            (a.state, a.turns.last().and_then(|t| t.ok))
+        });
+        assert_eq!((state, state.key()), (State::Stopped, "stopped"));
+        assert_eq!(ok, Some(false), "the turn did not finish");
+        store().open_turn(&agent, "again");
+        assert_eq!(store().read(|s| s.agent(&agent).unwrap().state != State::Stopped), true);
     }
 
     /// The Note: a Stop of one turn keeps the agent, so it keeps its reach too. Releasing it left

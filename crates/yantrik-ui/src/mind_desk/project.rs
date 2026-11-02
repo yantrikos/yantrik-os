@@ -74,6 +74,8 @@ fn state_of(state: State) -> MindState {
         State::Idle => MindState::Idle,
         State::Done => MindState::Done,
         State::Failed => MindState::Failed,
+        // The wire has no word for it and a stopped agent runs nothing: idle, not a failure.
+        State::Stopped => MindState::Idle,
         State::HarnessGone => MindState::HarnessGone,
     }
 }

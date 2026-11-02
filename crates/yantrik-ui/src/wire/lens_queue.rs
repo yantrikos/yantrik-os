@@ -295,9 +295,10 @@ pub fn hold(ui: &App, text: &str, composer: &Composer) {
     publish(ui, replaced);
 }
 
-/// The × on the queued bubble: it is taken back and never sent.
-pub fn cancel(ui: &App) {
-    let Some(held) = QUEUE.with(|q| q.borrow_mut().cancel()) else { return };
+/// The × on the queued bubble, and the Stop: it is taken back and never sent. Whether there was
+/// one to take back.
+pub fn cancel(ui: &App) -> bool {
+    let Some(held) = QUEUE.with(|q| q.borrow_mut().cancel()) else { return false };
     if held.transcript == crate::streaming::transcript() {
         with_model(ui, |model| {
             if held.row + 1 == model.row_count() {
@@ -308,6 +309,7 @@ pub fn cancel(ui: &App) {
         });
     }
     publish(ui, false);
+    true
 }
 
 /// The queued message, if its mind has finished: its bubble becomes the person's ordinary one,

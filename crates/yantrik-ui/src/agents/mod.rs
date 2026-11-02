@@ -146,6 +146,10 @@ impl Agents {
         self.lock().close_turn(id, ok)
     }
 
+    pub fn close_turn_stopped(&self, id: &AgentId) {
+        self.lock().close_turn_stopped(id)
+    }
+
     pub fn set_state(&self, id: &AgentId, state: State) {
         self.lock().set_state(id, state)
     }

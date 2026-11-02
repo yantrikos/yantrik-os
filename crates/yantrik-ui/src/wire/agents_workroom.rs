@@ -655,6 +655,7 @@ pub fn state_of(a: &Agent, run: Option<u64>) -> (&'static str, &'static str) {
         State::Idle => ("idle", "Idle"),
         State::Done => ("done", "Finished"),
         State::Failed => ("failed", "Couldn't finish"),
+        State::Stopped => ("stopped", "Stopped"),
     };
     match turn {
         Some(t) if t.open() => live(a.state),
