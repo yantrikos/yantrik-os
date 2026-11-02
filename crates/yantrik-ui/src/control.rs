@@ -2306,10 +2306,10 @@ pub fn publish(
     // The chat in one read, for a client that is not the Lens: the Yantrik terminal. See
     // `control_chat`.
     let surface = crate::control_chat::actions(surface, ui);
-    // Which of the person's conversations a bridge is in, for the taint rule: taint_scope and
-    // taint_mark. Read and add only; the person's + in the Lens is the one thing that begins a
-    // scope. See `control_taint_scope` and `taint_scope`.
-    let surface = crate::control_taint_scope::actions(surface);
+    // Which of the person's conversations a bridge is in (taint_scope, taint_mark; read and add
+    // only: the person's + begins a scope, see `control_taint_scope`), and, beside them, the
+    // untainted read of the approvals-off test flag (`control_approvals_test_state`).
+    let surface = crate::control_approvals_test_state::actions(crate::control_taint_scope::actions(surface));
     // The workroom's own navigation: show_workroom. See `control_workroom`.
     let surface = crate::control_workroom::actions(surface, ui);
     // What the Mind desk around Mind View reads, and the two things it may ask (#1023): answered to the
