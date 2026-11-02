@@ -116,6 +116,17 @@ impl<A: Approver> MailPort for Approving<A> {
     }
 
     fn send(&self, account_id: &str, compose: &ComposeRequest) -> Result<(), ServiceError> {
+        // The service adds `signature` to the body as it sends, and the card shows the body: a
+        // signature would be text the person never saw. No tool sets one; one that does is refused
+        // here, and the answer says where to put it (#1026 review).
+        if compose.signature.is_some() {
+            return Err(ServiceError {
+                code: NOT_ALLOWED,
+                message: "A signature is added to the message as it is sent and the card does not show it, so nothing was sent. \
+                          Put the signature in the body, where the person reads it."
+                    .to_string(),
+            });
+        }
         // The address, for the card: the account's own, else its id.
         let from = self
             .inner
