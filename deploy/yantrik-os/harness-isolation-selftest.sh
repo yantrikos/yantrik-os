@@ -50,7 +50,7 @@ migrate_if_needed() { :; }
 elevate() { :; }
 reconcile_minds() { :; }; reconcile_mind_egress_units() { :; }; reconcile_mind_units() { :; }
 reconcile_egress() { :; }; reconcile_mind_egress() { :; }
-export HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harness" HI_USER=yk411m
+export HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harness" HI_USER=yk411m HI_GROUP=yk411g HI_STATE="$work/state"
 # shellcheck source=deploy/yantrik-os/harness-isolation.sh
 . "$here/harness-isolation.sh"
 
@@ -73,9 +73,28 @@ has "... a private mask for what it writes" "UMask=0077" "$live"
 has "... started by the launcher, not by a venv path that moves" "ExecStart=/var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run" "$live"
 has "the Mind cannot see the harnesses' directory" "InaccessiblePaths=-/var/lib/yantrik-mind/harness" "$(grep -v '^[[:space:]]*#' "$repo/config/systemd/yantrik-mind.service")"
 has "the unit is enabled for the system, not a login" "WantedBy=multi-user.target" "$live"
+has "the gateway has its own PID namespace (H1)" "PrivatePIDs=yes" "$live"
+block="$(sed -n '/^# sandbox:begin/,/^# sandbox:end/p' "$unit" | grep -v '^#' | grep -v '^$')"
+has "... in the sandbox block that every run of account code shares" "PrivatePIDs=yes" "$block"
+has "... with the mount half beside it" "TemporaryFileSystem=/var/lib/yantrik-mind:ro" "$block"
+lacks "... and none of the unit's own start-up lines in it" "ExecStart" "$block"
+has "a systemd without PrivatePIDs does not start it (fail closed)" "has no PrivatePIDs=, so it is not started" "$live"
+has "a home that is a link does not start it" "is not the account own plain directory" "$live"
+mind_live="$(grep -v '^[[:space:]]*#' "$repo/config/systemd/yantrik-mind.service")"
+lacks "the Mind's unit has no PrivatePIDs yet: its bundle must handle SIGTERM as PID 1 first" "PrivatePIDs" "$mind_live"
+has "... and says what lands it, and what an older Mind does" "waits out" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+has "the unit's comments no longer claim the Mind is kept out by mount namespaces alone" "can still read this unit's files and keys through /proc" "$(cat "$unit")"
 if command -v systemd-analyze >/dev/null 2>&1; then
   v="$(systemd-analyze verify --man=no "$unit" 2>&1 | grep -iE "unknown (key|section)|invalid|bad (unit|setting)|failed to parse" || true)"
-  is "systemd-analyze finds no unknown or bad setting in the unit" "" "$v"
+  sdv="$(systemd-analyze --version 2>/dev/null | head -n 1 | cut -d' ' -f2)"
+  if [ "${sdv:-0}" -lt 257 ] 2>/dev/null; then
+    # An older systemd IGNORES the line (this is the silent failure the unit's start-up check and
+    # the installer exist for): it must be the only thing it does not know.
+    unknown="$(printf '%s' "$v" | grep -o "Unknown key name '[A-Za-z]*'" | cut -d"'" -f2 | sort -u | paste -sd' ')"
+    is "systemd $sdv (older than 257) ignores PrivatePIDs= and nothing else in the unit" "PrivatePIDs" "$unknown"
+  else
+    is "systemd-analyze finds no unknown or bad setting in the unit" "" "$v"
+  fi
 fi
 
 up="$repo/deploy/yantrik-os/yantrik-update"
@@ -103,12 +122,17 @@ is "... and nothing was asked of sudo for it" "1" "$(wc -l < "$work/sudo.log" | 
 has "... it says what it does do" "model, status, --version" "$(cat "$work/shim.out")"
 
 echo "== A. what a person can ask for as the mind account"
+orig_migrated="$(declare -f hi_migrated)"
 hi_migrated() { return 0; }
 for bad in "sh" "-c" "gateway" "config" "chat" ""; do
   out="$( ( hi_run hermes $bad ) 2>&1 )"; rc=$?
   is "run hermes '$bad' is refused" "1" "$rc"
 done
-hi_migrated() { [ -e "$(hi_home "$1")/.yantrik-isolated" ]; }
+for extra in "model --anything" "model model" "status x" "--version -h" "model ; id"; do
+  out="$( ( hi_run hermes $extra ) 2>&1 )"; rc=$?
+  is "run hermes '$extra' is refused (the verb takes no arguments)" "1" "$rc"
+done
+eval "$orig_migrated"
 is "an unknown harness is refused" "1" "$( (hi_install nope >/dev/null 2>&1); echo $?)"
 
 echo "== A. what moves"
@@ -159,6 +183,25 @@ chmod -R a+rX "$work/opt" 2>/dev/null
 P="$work/home/yk411p"
 sudo_p() { setpriv --reuid="$(id -u yk411p)" --regid="$(id -g yk411p)" --clear-groups -- "$@"; }
 sudo_m() { setpriv --reuid="$(id -u yk411m)" --regid="$(id -g yk411m)" --clear-groups -- "$@"; }
+mkdir -p "$work/fakebin" "$work/log"
+cat > "$work/fakebin/systemd-run" <<'FAKE'
+#!/bin/bash
+# Stands in for systemd-run: records its arguments, then runs the command as the account named by
+# -p User= in the directory named by -p WorkingDirectory= (no sandbox: that is systemd's to give).
+printf '%s\n' "$@" >> "$FAKE_RUN_LOG"
+user= wd=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) case "$2" in User=*) user="${2#User=}" ;; WorkingDirectory=*) wd="${2#*=}" ;; esac; shift 2 ;;
+    --) shift; break ;;
+    *) shift ;;
+  esac
+done
+exec setpriv --reuid="$(id -u "$user")" --regid="$(id -g "$user")" --clear-groups -- env -i HOME="$wd" PATH=/usr/bin:/bin "$@"
+FAKE
+chmod 755 "$work/fakebin/systemd-run"
+export FAKE_RUN_LOG="$work/log/run.args" PATH="$work/fakebin:$PATH"
+
 sudo_p sh -c 'umask 077; mkdir -p "$1/.hermes/sessions" "$1/.hermes/hermes-agent" "$1/.hermes/plugins/yantrik" "$1/.local/share/yantrik/memory" "$1/.local/bin" "$1/.config/systemd/user"
   printf "model: x\n" > "$1/.hermes/config.yaml"
   printf "OPENAI_API_KEY=FAKE-KEY-yk411-not-a-secret\n" > "$1/.hermes/.env"
@@ -186,16 +229,38 @@ seen="$(hi_as_mind sh -c 'printf "%s|%s|%s|%s" "${LEAK_yk411:-none}" "$HOME" "$Y
 is "a clean environment: nothing of root's passes, the door and the account's home do" "none|$HI_BASE|$HI_DOOR|yk411m" "$seen"
 unset LEAK_yk411
 t0=$SECONDS
-out="$(hi_run_timed 2 yk411m "$work/mind" sh -c 'printf "line one[31m red
-"; sleep 60' 2>&1)"; rc=$?
+out="$(hi_run_timed 2 yk411m "$work/mind" sh -c 'printf "line one\033[31m red\n"; sleep 60' 2>&1)"; rc=$?
 is "a harness that will not stop is ended at its time limit" "yes" "$([ "$rc" != 0 ] && [ $((SECONDS - t0)) -lt 20 ] && echo yes || echo no)"
 has "... what it printed is relayed (to info)" "line one" "$(cat "$work/said")"
-lacks "... without terminal escapes" "$(printf '')" "$(cat "$work/said")"
+lacks "... without terminal escapes" "$(printf '\033')" "$(cat "$work/said")"
 is "it has no terminal of the caller's (own session)" "yes" "$(hi_as_mind sh -c 'ps -o sid= -p $$' | awk -v me="$(ps -o sid= -p $$ | tr -d ' ')" '{print ($1 != me) ? "yes" : "no"}')"
 
 echo "-- the copy"
 mkdir -p "$work/log"; : > "$work/log/systemctl"
-systemctl() { printf '%s\n' "$*" >> "$work/log/systemctl"; case "$*" in *--user*is-active*) [ -e "$work/log/user-active" ] ;; *) true ;; esac; }
+systemctl() { # a recorder; answers what the library asks of it
+  printf '%s\n' "$*" >> "$work/log/systemctl"
+  case "$*" in
+    --version) printf 'systemd %s (%s.8-1)\n' "${FAKE_SYSTEMD:-257}" "${FAKE_SYSTEMD:-257}" ;;
+    "show -p PrivatePIDs --value "*) printf '%s\n' "${FAKE_PRIVPIDS:-yes}" ;;
+    *--user*is-active*) [ -e "$work/log/user-active" ] ;;
+    *) true ;;
+  esac
+}
+echo "-- the harnesses' directory exists before the Mind is restarted (Blocker 2)"
+rm -rf "$HI_BASE"
+hi_mask_dir
+is "made by reconcile_minds' step, empty, the account's, 0700" "yk411m 700 0" "$(stat -c '%U %a' "$HI_BASE" | tr '\n' ' ')$(ls -A "$HI_BASE" | wc -l | tr -d ' ')"
+hi_mask_dir
+is "... and again changes nothing" "yk411m 700" "$(stat -c '%U %a' "$HI_BASE")"
+mv "$HI_BASE" "$HI_BASE.real"; ln -s "$HI_BASE.real" "$HI_BASE"
+no "... a link in its place is refused, not followed" hi_mask_dir
+rm -f "$HI_BASE"; mv "$HI_BASE.real" "$HI_BASE"
+for fn in cmd_reconcile cmd_migrate_minds cmd_apply; do
+  body="$(sed -n "/^$fn()/,/^}/p" "$up")"
+  a="$(printf '%s\n' "$body" | grep -n 'reconcile_minds' | head -1 | cut -d: -f1)"; b="$(printf '%s\n' "$body" | grep -n 'reconcile_mind_units' | head -1 | cut -d: -f1)"
+  is "$fn makes the directory (reconcile_minds) before it can restart the Mind (reconcile_mind_units)" "yes" "$([ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo yes || echo no)"
+done
+has "reconcile_minds is where the directory is made" "hi_mask_dir" "$(sed -n '/^reconcile_minds()/,/^}/p' "$up")"
 hi_ready hermes
 yes "the mind-side directory exists and is the account's" test "$(stat -c %U "$(hi_home hermes)")" = yk411m
 hi_copy_data hermes yk411p "$P" || echo "copy failed: $(cat "$work/said")"
@@ -226,6 +291,8 @@ hi_ready hermes
 installer_calls="$work/log/installer"; : > "$installer_calls"
 hi_run_installer() { # <name> <phase> <secs>: a stand-in that makes what the real one makes
   printf '%s\n' "$2" >> "$installer_calls"
+  printf 'installer %s\n' "$2" >> "$work/log/systemctl"
+  [ "${STAND_IN_KILL:-}" = "$2" ] && { kill -TERM $BASHPID; sleep 1; }
   [ "${STAND_IN_FAILS:-}" = "$2" ] && return 1
   if [ "$2" = setup ]; then
     sudo_m sh -c 'umask 077; mkdir -p "$1/.hermes/hermes-agent" "$1/.local/bin"; printf "#!/bin/sh\n" > "$1/.local/bin/hermes"; chmod 755 "$1/.local/bin/hermes"' sh "$M"
@@ -237,7 +304,8 @@ export STAND_IN_FAILS=setup
 ( hi_install hermes ) >/dev/null 2>&1; rc=$?
 is "a failing installer fails the install" "1" "$rc"
 is "... the person's Hermes was not moved or renamed" "yes" "$([ -f "$P/.hermes/config.yaml" ] && [ ! -e "$P/.hermes.yantrik-moved" ] && echo yes || echo no)"
-is "... it is not marked as moved" "no" "$([ -e "$M/.yantrik-isolated" ] && echo yes || echo no)"
+is "... it is not marked as moved" "no" "$(hi_migrated hermes && echo yes || echo no)"
+no "... and the unit was never enabled for boot" grep -q '^enable ' "$work/log/systemctl"
 yes "... the system unit was turned off" grep -q 'disable --now hermes-gateway.service' "$work/log/systemctl"
 yes "... the person's own gateway is running again" grep -q -e '--user -M yk411p@ start hermes-gateway.service' "$work/log/systemctl"
 yes "... what was half made is kept aside, not deleted" sh -c "ls -d '$M'.failed-* >/dev/null"
@@ -245,9 +313,42 @@ has "... and the reason is named" "its installer stopped" "$(cat "$work/said")"
 is "... and the person's copy is the same" "$before" "$(python3 -I -c "$HI_PY_TREE" digest "$P" .hermes "$(hi_code_dirs hermes)" "$(hi_person_extra hermes)")"
 
 STAND_IN_FAILS=prove
+: > "$work/log/systemctl"
 ( hi_install hermes ) >/dev/null 2>&1; rc=$?
 is "a Hermes that starts but fails its proofs is not committed" "1" "$rc"
+no "... and was never enabled for boot (enable waits for the proofs)" grep -q '^enable ' "$work/log/systemctl"
 is "... and the person's is still in place" "yes" "$([ -f "$P/.hermes/config.yaml" ] && echo yes || echo no)"
+
+echo "-- stopped half way, a PID namespace that is not there, a systemd that cannot (L1, fail closed)"
+: > "$work/log/systemctl"; : > "$installer_calls"
+STAND_IN_FAILS=; STAND_IN_KILL=setup
+( hi_install hermes ) >/dev/null 2>&1; rc=$?
+STAND_IN_KILL=
+is "a move that is stopped ends like a failure" "1" "$rc"
+yes "... the person's own gateway is running again" grep -q -e '--user -M yk411p@ start hermes-gateway.service' "$work/log/systemctl"
+yes "... the system unit is off" grep -q 'disable --now hermes-gateway.service' "$work/log/systemctl"
+no "... and was never enabled for boot" grep -q '^enable ' "$work/log/systemctl"
+has "... and says it was interrupted" "was interrupted" "$(cat "$work/said")"
+: > "$work/log/systemctl"
+FAKE_PRIVPIDS=no
+( hi_install hermes ) >/dev/null 2>&1; rc=$?
+FAKE_PRIVPIDS=yes
+is "a unit that runs without its own PID namespace is not accepted" "1" "$rc"
+has "... and says so" "PrivatePIDs is 'no'" "$(cat "$work/said")"
+no "... the proofs never ran on it" grep -q '^installer prove$' "$work/log/systemctl"
+: > "$work/log/systemctl"; : > "$installer_calls"
+FAKE_SYSTEMD=256
+( hi_install hermes ) >/dev/null 2>&1; rc=$?
+is "a systemd older than 257 refuses before anything changes" "1" "$rc"
+has "... and says why" "older than 257" "$(cat "$work/said")"
+is "... no installer ran" "0" "$(wc -l < "$installer_calls" | tr -d ' ')"
+no "... and the person's gateway was not even stopped" grep -q -e '--user -M yk411p@ stop' "$work/log/systemctl"
+: > "$FAKE_RUN_LOG"
+no "... nor does a task start" hi_task 5 0 hermes /bin/true
+is "... not even to try (systemd-run never called)" "0" "$(wc -c < "$FAKE_RUN_LOG" | tr -d ' ')"
+FAKE_SYSTEMD=257
+printf 'forged' > "$M/.yantrik-isolated"; chown yk411m "$M/.yantrik-isolated"
+no "a marker the harness can write does not make it moved (L5)" hi_migrated hermes
 
 STAND_IN_FAILS=
 : > "$work/log/systemctl"
@@ -256,7 +357,10 @@ is "the install that works succeeds" "0" "$rc"
 is "the phases ran in order, the unit between them" "setup prove" "$(grep -E '^(setup|prove)$' "$installer_calls" | tail -2 | tr '\n' ' ' | sed 's/ $//')"
 yes "the person's gateway was stopped before the copy" grep -q -e '--user -M yk411p@ stop hermes-gateway.service' "$work/log/systemctl"
 yes "the system unit was enabled and restarted" grep -q 'enable hermes-gateway.service' "$work/log/systemctl"
-yes "it is marked as moved, by the service account" test "$(stat -c %U "$M/.yantrik-isolated")" = yk411m
+yes "it is marked as moved, in root's own state file" test "$(stat -c %U "$HI_STATE/hermes.isolated")" = root
+no "... which the account cannot write" sudo_m sh -c "echo x > '$HI_STATE/hermes.isolated'"
+is "the unit was enabled only after the proofs passed" "yes" "$(awk '/^installer prove$/{p=NR} /^enable hermes-gateway.service$/{e=NR} END{print (p && e && p < e) ? "yes" : "no"}' "$work/log/systemctl")"
+has "the person is told their keys are still readable in the old copy" "API keys are still in it" "$(cat "$work/said")"
 is "the person's old copy is kept, whole, under its new name" "$hashes" "$(sudo_p sh -c 'cd "$1/.hermes.yantrik-moved" && sha256sum config.yaml .env state.db sessions/a.json' sh "$P")"
 no "the old ~/.hermes is gone from the person's home" test -e "$P/.hermes"
 yes "the Hermes memory file was kept beside it" sh -c "ls '$P'/.hermes.yantrik-moved/outside-home/hermes.db >/dev/null"
@@ -266,6 +370,65 @@ is "the old user unit is masked" "/dev/null" "$(readlink "$P/.config/systemd/use
 yes "... and the file itself is kept" test -f "$P/.hermes.yantrik-moved/hermes-gateway.service"
 yes "Settings reads it as installed" test -f "$P/.local/state/yantrik/harnesses/hermes/installed"
 no "the person's account cannot read what moved" sudo_p cat "$M/.hermes/.env"
+
+echo "-- code the account can write runs only in the unit's sandbox (M1, M2)"
+: > "$FAKE_RUN_LOG"
+hi_task 30 0 hermes /bin/sh -c 'id -un' >/dev/null 2>&1
+args="$(cat "$FAKE_RUN_LOG")"
+for want in --wait --collect --pipe User=yk411m Group=yk411g RuntimeMaxSec=30 PrivatePIDs=yes TemporaryFileSystem=/var/lib/yantrik-mind:ro; do
+  has "a task is a transient unit with $want" "$want" "$args"
+done
+lacks "... and has no terminal of the caller's" "--pty" "$args"
+passed="$(awk '/^-p$/{getline; print}' "$FAKE_RUN_LOG" | grep -vE '^(User|Group|WorkingDirectory|RuntimeMaxSec|TimeoutStopSec)=')"
+is "the sandbox it gets is exactly the gateway unit's block (one list, shared)" "$block" "$passed"
+: > "$FAKE_RUN_LOG"
+( hi_run hermes model ) >/dev/null 2>&1
+args="$(cat "$FAKE_RUN_LOG")"
+has "hermes model gets a pty of the unit's own (M2)" "--pty" "$args"
+lacks "... not the caller's pipe or terminal" "--pipe" "$args"
+has "... the account's launcher, with its one word" "$(hi_home hermes)/.local/bin/hermes" "$args"
+has "... and a time limit and a cgroup that is collected" "--collect" "$args"
+: > "$FAKE_RUN_LOG"
+echo 'id -un > "$HOME/refreshed"' > "$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"; chmod a+r "$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"
+( hi_refresh hermes ) >/dev/null 2>&1
+has "the plugin refresh runs in a task too" "refresh-plugins.sh" "$(cat "$FAKE_RUN_LOG")"
+: > "$FAKE_RUN_LOG"
+mv "$M" "$M.real"; ln -s "$M.real" "$M"
+no "a home that has become a link is refused before BindPaths could follow it" hi_task 5 0 hermes /bin/true
+no "... for the checked install too" hi_check_home hermes
+is "... and systemd-run was not called" "0" "$(wc -c < "$FAKE_RUN_LOG" | tr -d ' ')"
+rm -f "$M"; mv "$M.real" "$M"
+for f in "$here/harness-isolation.sh"; do
+  lacks "no account-writable code is run by hi_run_as any more (installer, refresh, model)" "hi_run_timed 600 \"\$HI_USER\"" "$(cat "$f")"
+done
+has "the account's own bin is not on the PATH of the fixed tools" 'PATH="/usr/local/bin:/usr/bin:/bin"' "$(cat "$here/harness-isolation.sh")"
+
+echo "-- Mind and harness under one uid: /proc (H1)"
+if unshare --mount --pid --fork --mount-proc true >/dev/null 2>&1; then
+  h1="$work/h1"; mkdir -p "$h1"; chown yk411m:yk411g "$h1"; chmod 700 "$h1"
+  sudo_m sh -c 'printf "FAKE-KEY-h1-secret\n" > "$1/secret"; chmod 600 "$1/secret"' sh "$h1"
+  # The "Mind": same uid, a file open, a token in its environment.
+  sudo_m env MIND_TOKEN=FAKE-KEY-h1-env sh -c 'exec 3< "$1/secret"; echo $$ > "$2"; exec sleep 100' sh "$h1" "$h1/pid" &
+  n=0; while [ ! -s "$h1/pid" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+  mindpid="$(cat "$h1/pid")"
+  cat > "$work/probe.sh" <<'PROBE'
+n=0
+cat "/proc/$1/root/$2/secret" 2>/dev/null | grep -q FAKE-KEY-h1-secret && n=$((n + 1))
+cat "/proc/$1/fd/3" 2>/dev/null | grep -q FAKE-KEY-h1-secret && n=$((n + 1))
+tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | grep -q FAKE-KEY-h1-env && n=$((n + 1))
+kill -0 "$1" 2>/dev/null && n=$((n + 1))
+echo "$n"
+PROBE
+  probe() { # [pid-namespace flags...]: reads that got through, from a Hermes-like unit (its own mounts hide the file)
+    unshare --mount "$@" sh -c 'mount -t tmpfs tmpfs "$3" && exec setpriv --reuid="$4" --regid="$5" --clear-groups -- sh "$1" "$2" "$3"' \
+      sh "$work/probe.sh" "$mindpid" "$h1" "$(id -u yk411m)" "$(id -g yk411m)" 2>/dev/null
+  }
+  is "control: with only a mount namespace, every route reads the Mind (root, fd, environ, signal)" "4" "$(probe)"
+  is "with a PID namespace too (PrivatePIDs=yes), no route reads or signals it" "0" "$(probe --pid --fork --mount-proc)"
+  kill "$mindpid" 2>/dev/null; wait 2>/dev/null
+else
+  echo "  skipped: cannot make namespaces here (unshare); the VM gate runs the real unit"
+fi
 
 echo "-- again, and an update on a machine that has moved"
 before_files="$(find "$P" -maxdepth 2 | sort | md5sum)"

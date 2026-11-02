@@ -6,8 +6,11 @@
 # next) used to be a `systemctl --user` unit of the person's, so its shell and file tools could read
 # everything the person can. It is now a system unit of the mind account, like yantrik-mind.service:
 #
-#   - its home is /var/lib/yantrik-mind/harness/<name>, which the person cannot open and the
-#     Mind's own unit cannot see (config/systemd/*.service hide the one from the other);
+#   - its home is /var/lib/yantrik-mind/harness/<name>, which the person cannot open. The Mind
+#     shares its uid, so the two are kept apart by mount AND PID namespaces together: the unit hides
+#     the Mind's files (TemporaryFileSystem) and PrivatePIDs=yes closes /proc/<pid>/{root,fd,environ}.
+#     The Mind's own unit gets the same line when its bundle handles SIGTERM as PID 1 (see its unit);
+#     until then the Mind can still read Hermes's keys;
 #   - it reaches the desktop only at the mind door (/run/yantrik-minds, YANTRIK_MIND_RUN), where
 #     every act is held to the shell's grades and approvals;
 #   - its installer is the same script the Install button always ran, run as the mind account with
@@ -15,8 +18,9 @@
 #     because everything in it is relative to $HOME; only the user unit is replaced.
 #
 # Root never works on a path someone else controls. The person's files are read as the person; the
-# mind account's are written as the mind account (setpriv, no new privileges, no terminal of the
-# caller's); root only starts units, and puts a few small files in the person's home as the person.
+# mind account's are written, by fixed system tools (hi_as_mind), as the mind account; anything the
+# account can write and root would run (the installer, the refresh, `hermes model`) runs only in a
+# transient unit with the gateway unit's own sandbox properties (hi_task), never outside it.
 #
 # A new harness is: one line in hi_known/hi_unit, an installer that understands
 # YANTRIK_HARNESS_ISOLATED (hermes.sh is the example), and its unit in config/systemd.
@@ -29,6 +33,13 @@ HI_BASE="${HI_BASE:-/var/lib/yantrik-mind/harness}"
 HI_DOOR="${HI_DOOR:-/run/yantrik-minds}"
 HI_PROXY="${HI_PROXY:-http://127.0.0.1:7450}"
 HI_UNIT_DIR="${HI_UNIT_DIR:-/etc/systemd/system}"
+HI_GROUP="${HI_GROUP:-yantrik-minds}"
+# Root's own record of what has moved. Not in the account's home, which the harness can write.
+HI_STATE="${HI_STATE:-/var/lib/yantrik-harness}"
+# PrivatePIDs= (the unit's PID namespace) is systemd 257's; an older systemd would ignore the line
+# in a unit, so nothing is installed or started without it.
+HI_MIN_SYSTEMD="${HI_MIN_SYSTEMD:-257}"
+HI_COPY_TIMEOUT="${HI_COPY_TIMEOUT:-1200}"
 # What a person who migrated keeps: their old Hermes, whole, renamed. Never deleted by this.
 HI_KEEP=".yantrik-moved"
 # The installer carries this word when it understands the two phases. An older installer (a rolled
@@ -56,7 +67,7 @@ hi_person_extra() { case "$1" in hermes) printf '%s' '.local/share/yantrik/memor
 # count and one hash over their names and contents. Links are listed and hashed by their target
 # text, never followed.
 HI_PY_TREE='
-import glob, hashlib, os, sys
+import glob, hashlib, os, stat, sys
 mode, root, top, skip, extra = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split(":"), sys.argv[5]
 skip = [s for s in skip if s]
 def skipped(rel):
@@ -88,9 +99,18 @@ for rel in found:
     if os.path.islink(full):
         digest.update(b"L" + os.readlink(full).encode("utf-8", "surrogateescape"))
     elif os.path.isfile(full):
-        with open(full, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                digest.update(block)
+        # Never blocks on a file swapped for a FIFO after the walk, and reads only regular files.
+        try:
+            fd = os.open(full, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except OSError:
+            digest.update(b"?")
+        else:
+            with os.fdopen(fd, "rb") as f:
+                if stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                    for block in iter(lambda: f.read(1 << 20), b""):
+                        digest.update(block)
+                else:
+                    digest.update(b"?")
     digest.update(b"\0")
 print(len(found), digest.hexdigest())
 '
@@ -104,7 +124,9 @@ hi_ids() { # <user>: "uid gid", refused for root and for a name that is not an a
   printf '%s %s' "$uid" "$gid"
 }
 
-# <user> <home> <command...>: the command as that account with a clean environment. No terminal of
+# <user> <home> <command...>: a FIXED SYSTEM TOOL as that account, clean environment, PATH without
+# the account's own bin (it could shadow tar or python). Never for code the account can write: that
+# is hi_task. No terminal of
 # the caller's (setsid; a controlling terminal could be written to with TIOCSTI after we are gone),
 # no supplementary groups, no new privileges. The mind's proxy variables are set for the mind.
 hi_run_as() {
@@ -112,7 +134,7 @@ hi_run_as() {
   ids="$(hi_ids "$user")" || { warn "no account $user"; return 1; }
   uid="${ids% *}"; gid="${ids#* }"
   local -a env_args=(HOME="$home" USER="$user" LOGNAME="$user" LANG=C.UTF-8
-    PATH="$home/.local/bin:/usr/local/bin:/usr/bin:/bin" TERM="${TERM:-dumb}")
+    PATH="/usr/local/bin:/usr/bin:/bin" TERM="${TERM:-dumb}")
   if [ "$user" = "$HI_USER" ]; then
     env_args+=(YANTRIK_MIND_RUN="$HI_DOOR" HTTPS_PROXY="$HI_PROXY" https_proxy="$HI_PROXY"
       HTTP_PROXY="$HI_PROXY" http_proxy="$HI_PROXY" ALL_PROXY="$HI_PROXY" all_proxy="$HI_PROXY"
@@ -134,13 +156,75 @@ hi_as_owner() { # <command...>
 # (the text is a program's, written to a terminal root owns).
 hi_relay() { tr -d '\000-\010\013-\037\177' | while IFS= read -r line; do info "$line"; done; }
 
-# <seconds> <user> <home> <command...>: run, relay its output, return its exit status. The time
-# limit ends in KILL, so an update or a button never waits on a harness that will not stop.
+# <seconds> <user> <home> <command...>: a fixed tool, output relayed, exit status returned, ended
+# by KILL at the limit.
 hi_run_timed() {
   local secs="$1" rc; shift
   HI_TIMEOUT="$secs" hi_run_as "$@" 2>&1 </dev/null | hi_relay
   rc=${PIPESTATUS[0]}
   return "$rc"
+}
+
+# ── Code the account can write: only ever inside the unit's own sandbox ────────────────
+
+hi_systemd_ok() { # systemd new enough for PrivatePIDs=
+  local v; v="$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \([0-9][0-9]*\).*/\1/p')"
+  [ "${v:-0}" -ge "$HI_MIN_SYSTEMD" ] 2>/dev/null
+}
+
+# The home must be the account's own plain directory, not a link someone put there: BindPaths= would
+# follow it.
+hi_check_home() { # <name>
+  local h; h="$(hi_home "$1")"
+  [ -d "$h" ] && [ ! -L "$h" ] && [ ! -L "$HI_BASE" ] && [ "$(stat -c %u "$h" 2>/dev/null)" = "$(id -u "$HI_USER" 2>/dev/null)" ] \
+    || { warn "$h is not the account's own directory (a link, or not its): refusing to run anything in it"; return 1; }
+}
+
+# The sandbox lines of the harness's unit (between its `# sandbox:begin` and `# sandbox:end`), as
+# -p arguments in HI_PROPS: one list, the unit's, shared with every run below, never a second copy.
+hi_sandbox_props() { # <name>
+  local f="$HI_UNIT_DIR/$(hi_unit "$1")" line in=0
+  HI_PROPS=()
+  [ -f "$f" ] || { warn "no $f"; return 1; }
+  while IFS= read -r line; do
+    case "$line" in
+      "# sandbox:begin"*) in=1 ;;
+      "# sandbox:end"*) in=0 ;;
+      ""|"#"*) ;;
+      *) [ "$in" = 1 ] && HI_PROPS+=(-p "$line") ;;
+    esac
+  done < "$f"
+  [ "${#HI_PROPS[@]}" -gt 0 ] || { warn "$f has no sandbox block"; return 1; }
+}
+
+# <seconds> <pty: 0|1> <name> <command...>: a transient unit of the account with the gateway's
+# sandbox (same mount view, PID namespace, no home, no Mind files) and its own cgroup, torn down
+# when the command ends or the limit does. A pty is the unit's own, so the account's code never holds
+# the caller's terminal. A systemd without PrivatePIDs refuses the property, and nothing runs.
+hi_task() {
+  local secs="$1" pty="$2" name="$3"; shift 3
+  hi_systemd_ok || { warn "systemd is older than $HI_MIN_SYSTEMD (no PrivatePIDs=): nothing was run"; return 1; }
+  hi_check_home "$name" && hi_sandbox_props "$name" || return 1
+  local -a mode=(--pipe)
+  [ "$pty" = 1 ] && mode=(--pty)
+  systemd-run --quiet --wait --collect "${mode[@]}" -p "User=$HI_USER" -p "Group=$HI_GROUP" \
+    -p "WorkingDirectory=$(hi_home "$name")" -p "RuntimeMaxSec=$secs" -p TimeoutStopSec=10 \
+    "${HI_PROPS[@]}" -- "$@"
+}
+hi_task_relay() { # <seconds> <name> <command...>: output relayed, no terminal
+  local secs="$1" name="$2" rc; shift 2
+  hi_task "$secs" 0 "$name" "$@" 2>&1 </dev/null | hi_relay
+  rc=${PIPESTATUS[0]}
+  return "$rc"
+}
+
+# The empty, private directory the Mind's unit masks (InaccessiblePaths=), made before that unit is
+# (re)started: a mask on a path that does not exist yet is skipped, and a Mind started then would
+# see the keys that land there. Made by the account, never through a link.
+hi_mask_dir() {
+  if [ -L "$HI_BASE" ]; then warn "$HI_BASE is a link; the harnesses' directory is not masked from the Mind"; return 1; fi
+  HI_TIMEOUT=60 hi_run_as "$HI_USER" / sh -c 'umask 077; mkdir -p "$1" && chmod 0700 "$1"' sh "$HI_BASE" \
+    || { warn "could not make $HI_BASE as $HI_USER"; return 1; }
 }
 
 # ── The person's side ───────────────────────────────────────────────────────────────────
@@ -160,7 +244,12 @@ hi_person_has() { # <name> <home>
   [ -d "$d" ] && [ ! -L "$d" ] && [ -f "$d/config.yaml" ]
 }
 
-hi_migrated() { [ -e "$(hi_home "$1")/.yantrik-isolated" ]; }
+hi_migrated() { [ -f "$HI_STATE/$1.isolated" ] && [ ! -L "$HI_STATE/$1.isolated" ]; }
+hi_mark_migrated() { # <name>: root's file, written whole
+  install -d -m 0755 -o root -g root "$HI_STATE" 2>/dev/null || [ -d "$HI_STATE" ] || return 1
+  printf 'isolated %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HI_STATE/$1.isolated.new" \
+    && chmod 0644 "$HI_STATE/$1.isolated.new" && mv -f "$HI_STATE/$1.isolated.new" "$HI_STATE/$1.isolated"
+}
 
 # The person's old gateway, off, for the person and for everyone the global enable reached, and
 # held off: a masked user unit cannot be started by `hermes gateway install` or by hand. The unit
@@ -199,7 +288,7 @@ hi_keep_person_copy() { # <name> <home>
       [ -e "$f" ] && mv "$f" "$keep.new/outside-home/"
     done
     mv "$keep.new" "$keep"
-  ' sh "$2" "$d" "$keep" && info "your Hermes, as it was, is kept in $keep (nothing deleted)" \
+  ' sh "$2" "$d" "$keep" && info "your Hermes, as it was, is kept in $keep (nothing deleted). Its API keys are still in it, readable by anything running as you; delete the folder when you no longer want that copy" \
     || warn "could not move $2/$d aside; it stays where it is"
 }
 
@@ -240,6 +329,7 @@ hi_mark_person_installed() { # <name> <home>
 # The account, the door, the egress table and the units: the mind's own reconcile steps, not a copy.
 hi_ready() { # <name>
   local unit; unit="$(hi_unit "$1")"
+  hi_systemd_ok || fail "this machine's systemd is older than $HI_MIN_SYSTEMD, which a harness needs to be kept apart from the Mind (PrivatePIDs=); $1 stays as it was"
   reconcile_minds
   reconcile_mind_egress_units
   reconcile_mind_units
@@ -248,8 +338,10 @@ hi_ready() { # <name>
   getent passwd "$HI_USER" >/dev/null 2>&1 || fail "there is no mind account ($HI_USER); nothing was changed"
   [ -f "$HI_UNIT_DIR/$unit" ] || fail "this build ships no $unit; nothing was changed"
   [ -d "$HI_DOOR" ] || fail "the mind door ($HI_DOOR) is not there; run: sudo yantrik-update reconcile"
+  hi_mask_dir || fail "could not make $HI_BASE as $HI_USER; nothing was changed"
   hi_as_mind sh -c 'umask 077; mkdir -p "$1"' sh "$(hi_home "$1")" \
     || fail "could not make $(hi_home "$1") as $HI_USER"
+  hi_check_home "$1" || fail "$(hi_home "$1") is not the account's own directory; nothing was changed"
 }
 
 # A directory the mind account made, put aside whole (kept, never deleted) so a retry starts clean.
@@ -266,13 +358,13 @@ hi_set_aside() { # <name> <why>
 hi_copy_data() { # <name> <owner> <home>
   local name="$1" skip extra top dest before after
   skip="$(hi_code_dirs "$name")"; extra="$(hi_person_extra "$name")"; top="$(hi_person_dir "$name")"; dest="$(hi_home "$name")"
-  before="$(hi_as_owner python3 -I -c "$HI_PY_TREE" digest "$3" "$top" "$skip" "$extra")" || return 1
+  before="$(HI_TIMEOUT=$HI_COPY_TIMEOUT hi_as_owner python3 -I -c "$HI_PY_TREE" digest "$3" "$top" "$skip" "$extra")" || return 1
   # The producer runs as the person and the consumer as the mind account; tar on the consumer side
   # refuses absolute names and `..`, and everything it makes is the mind account's.
-  { hi_as_owner sh -c 'cd "$1" && python3 -I -c "$2" list "$1" "$3" "$4" "$5" | tar --null --no-recursion -T - -cf -' \
+  { HI_TIMEOUT=$HI_COPY_TIMEOUT hi_as_owner sh -c 'cd "$1" && python3 -I -c "$2" list "$1" "$3" "$4" "$5" | tar --null --no-recursion -T - -cf -' \
       sh "$3" "$HI_PY_TREE" "$top" "$skip" "$extra" ; } \
-    | hi_as_mind sh -c 'umask 077; cd "$1" && tar -xf -' sh "$dest" || return 1
-  after="$(hi_as_mind python3 -I -c "$HI_PY_TREE" digest "$dest" "$top" "$skip" "$extra")" || return 1
+    | HI_TIMEOUT=$HI_COPY_TIMEOUT hi_as_mind sh -c 'umask 077; cd "$1" && tar -xf -' sh "$dest" || return 1
+  after="$(HI_TIMEOUT=$HI_COPY_TIMEOUT hi_as_mind python3 -I -c "$HI_PY_TREE" digest "$dest" "$top" "$skip" "$extra")" || return 1
   [ "$before" = "$after" ] || { warn "the copy of $name differs from its source (${before%% *} files, then ${after%% *})"; return 1; }
   info "${before%% *} files of your $name moved to its own account and counted twice"
 }
@@ -283,7 +375,7 @@ hi_has_installer() { # <name>: the shipped installer understands the two phases
 }
 
 hi_run_installer() { # <name> <setup|prove> <seconds>
-  hi_run_timed "$3" "$HI_USER" "$(hi_home "$1")" env "$HI_CAPABILITY=$2" sh "$(hi_installer "$1")" "$(hi_plugin_dir "$1")"
+  hi_task_relay "$3" "$1" /usr/bin/env "$HI_CAPABILITY=$2" /bin/sh "$(hi_installer "$1")" "$(hi_plugin_dir "$1")"
 }
 
 hi_unit_wait() { # <unit> <seconds>: active for two checks in a row
@@ -296,28 +388,34 @@ hi_unit_wait() { # <unit> <seconds>: active for two checks in a row
 }
 
 # A failed install puts the person's own Hermes back as it was: their gateway started again if it
-# was running, the mind account's half-made directory kept aside, the system unit off.
+# was running, the mind account's half-made directory kept aside, the system unit off (unless it
+# had already moved: then its working gateway is left alone).
 hi_abort() { # <name> <was-active: active|idle|none> <owner> <reason>
   local unit; unit="$(hi_unit "$1")"
+  trap - TERM INT HUP
   warn "$1 was not moved: $4"
-  systemctl disable --now "$unit" >/dev/null 2>&1 || true
-  hi_migrated "$1" || hi_set_aside "$1" failed
+  hi_migrated "$1" || { systemctl disable --now "$unit" >/dev/null 2>&1 || true; hi_set_aside "$1" failed; }
   if [ "$2" = active ]; then
     systemctl --user -M "$3@" start "$(hi_unit "$1")" >/dev/null 2>&1 \
       && info "your own $1 gateway is running again, as it was"
   fi
   fail "$1 is not isolated yet: $4"
 }
+# What a kill or a stop of the move does: the same as a failure, so no interrupted move leaves the
+# system gateway running beside the person's.
+HI_NOW=""
+hi_interrupted() { local n o w; read -r n o w <<< "$HI_NOW"; hi_abort "$n" "$w" "$o" "the move was interrupted"; }
 
-# The point of no return, all of it repeatable: the commit marker (written by the mind account),
-# then the person's old gateway off and masked, their copy kept, a `hermes` command that works, and
-# the row's installed marker. Any run after the first only repeats what is missing.
+# The point of no return, all of it repeatable: root's commit marker (outside anything the harness
+# can write), then the system unit enabled for boot, the person's old gateway off and masked, their
+# copy kept, a `hermes` command that works, and the row's installed marker. Any run after the first
+# only repeats what is missing.
 hi_commit() { # <name> <owner> <home>
-  local name="$1" dir; dir="$(hi_home "$1")"
-  hi_as_mind sh -c 'umask 077; printf "isolated %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$1/.yantrik-isolated"' sh "$dir" \
-    || fail "could not record that $name is isolated"
-  hi_finish "$name" "$2" "$3"
-  hi_mark_person_installed "$name" "$3"
+  hi_mark_migrated "$1" || fail "could not record that $1 is isolated"
+  trap - TERM INT HUP
+  systemctl enable "$(hi_unit "$1")" >/dev/null 2>&1 || warn "$(hi_unit "$1") could not be enabled for boot; sudo yantrik-update reconcile tries again"
+  hi_finish "$1" "$2" "$3"
+  hi_mark_person_installed "$1" "$3"
 }
 hi_finish() { # <name> <owner> <home>
   # The copy first: the unit file and the launcher are kept inside it.
@@ -329,9 +427,11 @@ hi_finish() { # <name> <owner> <home>
 # ── Commands ────────────────────────────────────────────────────────────────────────────
 
 # The Install button, and a machine whose Hermes is still the person's: do everything, in the order
-# that lets any failure leave the person's own Hermes as it was.
+# that lets any failure or interruption leave the person's own Hermes as it was. The unit is started
+# but not enabled until the proofs pass, so a move cut short never leaves two gateways for the
+# next boot.
 hi_install() { # <name>
-  local name="$1" unit who owner home was=none
+  local name="$1" unit who owner home was=none shown
   hi_known "$name" || fail "unknown harness '$name' (known here: hermes)"
   [ "$(id -u)" = 0 ] || fail "run as root"
   tree_is_roots || fail "this machine's tree is not root's yet; run: sudo yantrik-update migrate-ownership"
@@ -343,14 +443,21 @@ hi_install() { # <name>
   hi_ready "$name"
   if hi_person_has "$name" "$home" && ! hi_migrated "$name"; then
     was="$(hi_stop_person_unit "$name" "$owner" "$home")"
+    HI_NOW="$name $owner $was"
+    trap hi_interrupted TERM INT HUP
     hi_set_aside "$name" earlier
     hi_copy_data "$name" "$owner" "$home" || hi_abort "$name" "$was" "$owner" "its files could not be copied and counted"
   fi
+  HI_NOW="$name $owner $was"
+  trap hi_interrupted TERM INT HUP
   hi_run_installer "$name" setup 1500 || hi_abort "$name" "$was" "$owner" "its installer stopped (the lines above say why)"
   systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable "$unit" >/dev/null 2>&1 || hi_abort "$name" "$was" "$owner" "$unit could not be enabled"
   systemctl restart "$unit" || hi_abort "$name" "$was" "$owner" "$unit would not start (journalctl -u $unit)"
   hi_unit_wait "$unit" 60 || hi_abort "$name" "$was" "$owner" "$unit did not stay up (journalctl -u $unit)"
+  # The PID namespace is what keeps the Mind's and the harness's processes apart; a systemd that
+  # ignored the line would run the harness without it. Asked of systemd, not assumed.
+  shown="$(systemctl show -p PrivatePIDs --value "$unit" 2>/dev/null)"
+  [ "$shown" = yes ] || hi_abort "$name" "$was" "$owner" "$unit is running without a PID namespace of its own (PrivatePIDs is '${shown:-unknown}')"
   hi_run_installer "$name" prove 200 || hi_abort "$name" "$was" "$owner" "it started but did not pass its proofs"
   hi_commit "$name" "$owner" "$home"
   say "$name runs as the mind account now"
@@ -363,7 +470,7 @@ hi_install() { # <name>
 hi_refresh() { # <name>
   local script="$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"
   hi_has_installer "$1" && [ -f "$script" ] || return 0
-  hi_run_timed 600 "$HI_USER" "$(hi_home "$1")" sh "$script"     || warn "could not refresh $1's plugins; the ones in place are kept"
+  hi_task_relay 600 "$1" /bin/sh "$script" || warn "could not refresh $1's plugins; the ones in place are kept"
 }
 
 # Every known harness that is the person's, or already moved: moved, or finished and refreshed.
@@ -403,9 +510,11 @@ hi_run() { # <name> <args...>
   local name="${1:-}"; shift || true
   hi_known "$name" || fail "usage: yantrik-update harness run hermes model|status|--version"
   hi_migrated "$name" || fail "$name is not under the mind account here"
-  case "${1:-}" in model|status|--version) ;; *) fail "$name: only model, status and --version are run for you" ;; esac
+  # Exactly one word, and one of three: nothing after it reaches Hermes's argv.
+  [ "$#" = 1 ] && case "$1" in model|status|--version) true ;; *) false ;; esac \
+    || fail "$name: only model, status and --version, alone, are run for you"
   [ "$(id -u)" = 0 ] || fail "run as root"
-  hi_run_as "$HI_USER" "$(hi_home "$name")" "$(hi_home "$name")/.local/bin/$name" "$@"
+  hi_task 1800 1 "$name" "$(hi_home "$name")/.local/bin/$name" "$@"
 }
 
 cmd_harness() {

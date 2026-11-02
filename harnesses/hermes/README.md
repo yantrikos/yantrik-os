@@ -19,11 +19,23 @@ no approval card. Now:
   reaches the desktop only at the mind door (`YANTRIK_MIND_RUN=/run/yantrik-minds`), where every act
   is graded and asked about like any other mind's. The desktop's tools (`yos-mcp`) are passed that
   door by name in Hermes's config, because Hermes starts MCP servers with a cleaned environment.
-- **It cannot open the built-in Mind's files** either, and the Mind cannot open its: the two units
-  hide each other's directories (one account, until each harness has its own).
+- **The built-in Mind shares its uid**, so the two are kept apart by two namespaces together: the
+  unit hides the Mind's files (mount namespace), and `PrivatePIDs=yes` (systemd 257) hides the Mind's
+  processes, so `/proc/<pid>/root`, `/fd` and `/environ` cannot be walked into. A mount namespace
+  alone is not enough (measured). That is the harness unit's half. **The Mind's unit does not have
+  `PrivatePIDs` yet**, so until it does the Mind can still read Hermes's files through `/proc`: it
+  needs a Mind bundle that handles SIGTERM as PID 1 (E.SIGTERM1), and the line lands with the OS
+  release that requires it. A systemd older than 257 refuses to install or start Hermes (the unit
+  checks, and so does the installer, which also asks systemd for `PrivatePIDs` after the start).
+  Per-harness accounts remain the next step.
 - **Its keys** live in its own `~/.hermes/.env`, mode 0600, read by Hermes itself as that account.
-  They are never in a unit file, an `EnvironmentFile`, a command line or the journal.
-- **Its way out** is the same kernel-held egress table as the Mind's (`yantrik-mind-egress`).
+  They are never in a unit file, an `EnvironmentFile`, a command line or the journal. After a move,
+  **your old copy still has the same keys**, in `~/.hermes.yantrik-moved`, readable by anything
+  running as you; delete that folder when you no longer want that copy.
+- **Its way out** is the same kernel-held egress table as the Mind's (`yantrik-mind-egress`). The
+  table, the proxy's counts and the person's egress policy are the **account's**, shared by the Mind
+  and every harness: a destination in the counts may be either, and a rule you add for one opens it
+  for the other.
 
 What stops working, and why it is the right answer: Hermes's `terminal` in *your* home (it is not
 your account any more), and *Use Yantrik models* for Hermes (the gateway token it writes would go

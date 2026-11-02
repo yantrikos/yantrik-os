@@ -7,17 +7,34 @@
 # and approvals. It is the second tenant of the mind account, after yantrik-mind.service, and the
 # template for the rest (Pi, OpenClaw, DeepSeek): a harness `<name>` gets /var/lib/yantrik-mind/harness/<name>
 # as its HOME, a unit like this one, and `yantrik-update harness install <name>`
-# (deploy/yantrik-os/harness-isolation.sh).
+# (deploy/yantrik-os/harness-isolation.sh). A new harness copies THIS unit, sandbox block and checks included.
+#
+# What keeps it apart from the Mind, which shares its uid: two namespaces, together.
+#   - the mount namespace hides the Mind's files (TemporaryFileSystem on /var/lib/yantrik-mind, only
+#     harness/hermes bound back in);
+#   - the PID namespace (PrivatePIDs=yes, systemd 257) closes /proc/<pid>/root, /fd and /environ of
+#     the Mind's processes, which walk into the Mind's mount namespace and open files it holds.
+#     Without it the first is no separation at all (measured on staging).
+# The same must hold the other way, and does not yet: yantrik-mind.service has no PrivatePIDs, so the
+# Mind can still read this unit's files and keys through /proc until that unit gets the line (see the
+# note there). Nothing here claims otherwise.
+#
+# The sandbox block is the single list of properties for this unit AND for everything else that
+# runs as the account with code the account can write (the installer, the plugin refresh, `hermes
+# model`): harness-isolation.sh passes the same lines to `systemd-run`, so none of them runs
+# outside it.
 #
 # Installed by yantrik-update (hash-checked, root's) with the other mind units. Enabled by
 # `yantrik-update harness install hermes` (the Install button) or `migrate-harnesses` (a machine
 # whose Hermes still lives in a person's home), once Hermes is set up under the mind account and
-# has been seen to attach.
+# has been seen to attach and to pass its proofs.
 [Unit]
 Description=Hermes gateway, attached to the desktop as the mind account
 # The same kernel-held way out as the Mind (see yantrik-mind.service): the table holds the whole
 # account to the proxy, so Hermes's HTTP clients and anything it runs are counted and, once the
-# person turns it to enforce, held to their policy. Required, not wanted: no harness runs unguarded.
+# person turns it to enforce, held to their policy. Those counts, and that policy, are the
+# ACCOUNT's, not the Mind's: a rule the person adds for one opens it for the other. Required, not
+# wanted: no harness runs unguarded.
 After=network-online.target yantrik-egress.service yantrik-mind-egress.service
 Wants=network-online.target yantrik-egress.service
 Requires=yantrik-mind-egress.service
@@ -33,8 +50,30 @@ Type=simple
 User=yantrik-mind
 Group=yantrik-minds
 WorkingDirectory=/var/lib/yantrik-mind/harness/hermes
+# Never without the table that holds the account to the proxy: a hand `nft flush ruleset` leaves the
+# unit above active and the table gone.
+ExecStartPre=+/bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/dev/null 2>&1 || { echo "Hermes: the egress table (inet yantrik_mind_egress) is not loaded. Run: sudo yantrik-update mind-egress apply" >&2; exit 1; }'
+# Fail closed: a systemd older than 257 would ignore PrivatePIDs= below and run this unit with the
+# Mind's processes readable through /proc. Refuse to start instead.
+ExecStartPre=+/bin/sh -c 'v=$$(systemctl --version | head -n 1 | cut -d" " -f2); [ "$${v:-0}" -ge 257 ] || { echo "Hermes: systemd $${v:-?} has no PrivatePIDs=, so it is not started (needs 257)" >&2; exit 1; }'
+# BindPaths= follows a link: refuse a home that is one, or is not the account's own plain directory.
+ExecStartPre=+/bin/sh -c 'h=/var/lib/yantrik-mind/harness/hermes; [ -d "$$h" ] && [ ! -L "$$h" ] && [ ! -L /var/lib/yantrik-mind/harness ] && [ "$$(stat -c %%U "$$h")" = yantrik-mind ] || { echo "Hermes: $$h is not the account own plain directory; not started" >&2; exit 1; }'
+# The launcher, not a Python path: a newer Hermes rebuilds its venv as a new generation on an update.
+ExecStart=/var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run --replace
+StandardInput=null
+Restart=always
+RestartSec=5
+# Hermes asks to be restarted with 75 (gateway/restart.py).
+RestartForceExitStatus=75
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+# sandbox:begin
 # Hermes keeps its model, keys, sessions and memory in ~/.hermes, as it always has: now in the mind
-# account's home for it, where only that account (and root) can read them.
+# account's home for it, where only that account (and root) can read them. Its API keys are read by
+# Hermes itself from ~/.hermes/.env; no EnvironmentFile (systemd would read it as root through a
+# link the account controls), nothing on a command line, nothing in the journal.
 Environment=HOME=/var/lib/yantrik-mind/harness/hermes
 Environment=USER=yantrik-mind LOGNAME=yantrik-mind
 Environment=PATH=/var/lib/yantrik-mind/harness/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin
@@ -47,32 +86,10 @@ Environment=HTTPS_PROXY=http://127.0.0.1:7450 https_proxy=http://127.0.0.1:7450
 Environment=HTTP_PROXY=http://127.0.0.1:7450 http_proxy=http://127.0.0.1:7450
 Environment=ALL_PROXY=http://127.0.0.1:7450 all_proxy=http://127.0.0.1:7450
 Environment=NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1
-# No EnvironmentFile: systemd would read it as root, before dropping to the account, and follow a
-# link the account put in its own home to any file root can read. Hermes reads its own ~/.hermes/.env
-# itself, as the account, which is how its API keys reach it without passing through this unit, a
-# command line or the journal.
-# Never without the table that holds the account to the proxy: a hand `nft flush ruleset` leaves the
-# unit above active and the table gone.
-ExecStartPre=+/bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/dev/null 2>&1 || { echo "Hermes: the egress table (inet yantrik_mind_egress) is not loaded. Run: sudo yantrik-update mind-egress apply" >&2; exit 1; }'
-# The launcher, not a Python path: a newer Hermes rebuilds its venv as a new generation on an update.
-ExecStart=/var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run --replace
-StandardInput=null
-Restart=always
-RestartSec=5
-# Hermes asks to be restarted with 75 (gateway/restart.py).
-RestartForceExitStatus=75
-KillMode=mixed
-KillSignal=SIGTERM
-TimeoutStopSec=120
-
-# What Hermes, or a plugin or tool it was talked into running, can touch: its own home and the
-# door. Nothing of the person's, nothing of the system's to write.
 NoNewPrivileges=yes
 ProtectSystem=strict
-# The mind account's home also holds the Mind's memory, its settings and its keys, and a harness
-# runs as the same account (one uid for every mind, until each has its own). So the home is hidden
-# from this unit except for Hermes's own directory, which is bound back in: Hermes cannot open the
-# Mind's mind.db, its settings or its tokens. yantrik-mind.service hides harness/ the other way.
+# The mount namespace's half: the account's home also holds the Mind's memory, settings and keys, so
+# it is hidden from this unit except for Hermes's own directory, bound back in.
 TemporaryFileSystem=/var/lib/yantrik-mind:ro
 BindPaths=/var/lib/yantrik-mind/harness/hermes
 ReadWritePaths=/var/lib/yantrik-mind/harness/hermes
@@ -92,11 +109,18 @@ RestrictRealtime=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
-# The person's processes, and their command lines, are not Hermes's to see.
+# The PID namespace's half, and the one that makes the line above worth anything: the Mind's
+# processes (same uid) are not here to open through /proc/<pid>/root, /fd or /environ, or to
+# signal. The main process is PID 1 of its namespace, and a signal it has no handler for is ignored
+# there, so if Hermes (or its launcher, when it does not exec Hermes) does not handle SIGTERM, a stop
+# waits for TimeoutStopSec and then SIGKILLs. Not yet seen on a machine: the VM gate checks that it
+# stops in time and reaps its tool children.
+PrivatePIDs=yes
 ProtectProc=invisible
 ProcSubset=pid
 PrivateIPC=yes
 SystemCallArchitectures=native
+# sandbox:end
 
 [Install]
 WantedBy=multi-user.target

@@ -3115,6 +3115,10 @@ reconcile_minds() {
     info "created the mind account yantrik-mind"
   fi
   install -d -o yantrik-mind -g yantrik-minds -m 0750 /var/lib/yantrik-mind
+  # The harnesses' directory (empty, the account's, 0700), made HERE, before reconcile_mind_units
+  # restarts the Mind: its unit masks it with InaccessiblePaths=, which is skipped for a path that
+  # does not exist when the unit starts (#411).
+  if type hi_mask_dir >/dev/null 2>&1; then hi_mask_dir || warn "the harnesses' directory is not masked from the Mind"; fi
   conf=/etc/tmpfiles.d/yantrik-minds.conf
   want="# Yantrik OS (#411): the mind door, where minds (yantrik-mind) reach the desktop of $owner.
 d /run/yantrik-minds 2750 $owner yantrik-minds -"
