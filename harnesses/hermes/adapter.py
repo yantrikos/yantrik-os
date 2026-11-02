@@ -47,7 +47,9 @@ from gateway.platforms.base import (
 )
 from gateway.session import build_session_key
 
-from . import desktop
+from . import desktop, lens_bridge, lens_route, lens_tools
+from .question import Card as _Card, without_skip_hint as _without_skip_hint
+from .steering import PLATFORM_HINT
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +84,6 @@ ENDS_THE_RUN = {"stop", "new", "reset"}
 # How Hermes's "still working" heartbeat begins ("⏳ Working — 3 min — iteration 1/500, clarify").
 # It names the tool and the iteration budget, which are Hermes's internals, not the answer.
 STATUS_MARK = "⏳"
-# How Hermes marks the choice it recommends in a clarify's choices ("Sat 17 + Sun 18 (Recommended)").
-# The card marks it itself, so the label is shown without it.
-RECOMMENDED_MARK = re.compile(r"\s*\(recommended\)\s*", re.IGNORECASE)
 
 # How long a question may wait for the person before the turn stops waiting on it (#1070). Hermes
 # itself waits an hour, and a turn blocked on a question nobody saw was blocked until the gateway
@@ -102,12 +101,6 @@ LATE_HEADING = "While you were away, Hermes finished something in the background
 LATE_KEPT = 20
 LATE_CHARS = 4000
 
-# The card's own button for Hermes's skip. Hermes adds 'Reply "skip" to skip this question.' to
-# every question of a batch (gateway.clarify.skip_hint) and takes the word "skip" as SKIPPED, but
-# only from a typed reply: an answer from a card reaches resolve_gateway_clarify as it is. So on
-# a card the line promised what nothing did (VM 541, 14 Oct). It is taken off the prompt and the
-# card offers Skip, which, like a typed "skip", is answered with Hermes's SKIPPED.
-SKIP_LABEL = "Skip"
 
 
 def check_requirements() -> bool:
@@ -140,6 +133,17 @@ def _detail() -> str:
     return " · ".join(parts)
 
 
+# The bridge that carries the Lens conversation's token, shared by the proxy tools (which Hermes
+# loads once) and the adapter (which Hermes may build again on a reconnect). See lens_route.py.
+LENS = lens_bridge.LensBridge()
+_ADAPTERS: List["YantrikAdapter"] = []
+
+
+def lens_standing() -> Optional[lens_route.Standing]:
+    """What the connected adapter can vouch for now; None when there is none (then: not the Lens)."""
+    return _ADAPTERS[-1].standing() if _ADAPTERS else None
+
+
 class YantrikAdapter(BasePlatformAdapter):
     """The desktop's chat, as a Hermes platform."""
 
@@ -166,6 +170,9 @@ class YantrikAdapter(BasePlatformAdapter):
         self._cards: Dict[str, "_Card"] = {}
         # Questions no one answered in time, by the turn that asked: a second one ends the turn.
         self._unanswered: Dict[str, int] = {}
+        # The session key Hermes files the Lens conversation under: what this adapter computed for
+        # its one chat, the only key a call may carry to be the Lens's (`lens_route`).
+        self._lens_key = ""
         # What Hermes said with no conversation open (a background task's result, a scheduled job's):
         # the desktop's protocol has no way to say something unasked, so it is shown, labelled, at
         # the top of the next reply instead of being thrown away.
@@ -181,6 +188,8 @@ class YantrikAdapter(BasePlatformAdapter):
         # adapter without the keyword never connected at all. What a reconnect must not do is leave
         # the last connection's loops running beside the new ones: two pollers would each take
         # turns and two heartbeats would keep one session alive twice over.
+        _ADAPTERS[:] = [self]
+        LENS.stop()  # a reconnect starts with no token and no bridge: the next turn brings its own
         stale, self._tasks = self._tasks, []
         for task in stale:
             task.cancel()
@@ -208,6 +217,9 @@ class YantrikAdapter(BasePlatformAdapter):
             except desktop.HarnessError:
                 pass
         self._session = None
+        LENS.stop()
+        if self in _ADAPTERS:
+            _ADAPTERS.remove(self)
         self._mark_disconnected()
 
     async def _call(self, method: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
@@ -255,6 +267,7 @@ class YantrikAdapter(BasePlatformAdapter):
                     # failed on its side; attach again and carry on.
                     logger.warning("[yantrik] lost the desktop (%s); attaching again", exc)
                     self._session = None
+                    LENS.set_token(None)  # a token the desktop may no longer honour proves nothing
                     for turn in self._ledger.open_turns():
                         self._ledger.close(turn.turn_id)
                     await asyncio.sleep(RETRY_SECONDS)
@@ -320,13 +333,17 @@ class YantrikAdapter(BasePlatformAdapter):
     async def _on_turn(self, assignment: Dict[str, Any]) -> None:
         turn_id = str(assignment["turn_id"])
         text = str(assignment.get("text") or "")
+        # The turn's id travels with the message into Hermes's session context, which is how a tool
+        # call is later known to come from a turn that is still open (`lens_route`).
         source = self.build_source(
             chat_id=CHAT_ID,
             chat_name="Yantrik desktop",
             chat_type="dm",
             user_id=OWNER_ID,
             user_name=self._owner,
+            message_id=turn_id,
         )
+        LENS.set_token(assignment.get("agent_token"))
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -341,6 +358,7 @@ class YantrikAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
         turn.session_key = session_key
+        self._lens_key = session_key
 
         try:
             if session_key in self._active_sessions:
@@ -352,6 +370,14 @@ class YantrikAdapter(BasePlatformAdapter):
             await self._finish(turn_id, error=f"Hermes could not take this message: {exc}")
             return
         asyncio.create_task(self._watch_pickup(turn_id))
+
+    def standing(self) -> lens_route.Standing:
+        """What may be said of a tool call right now: the Lens's key, the turns open, the token."""
+        open_ids = {t.turn_id for t in self._ledger.open_turns()}
+        # A run that asked a question goes on in the turn that answered it, but Hermes still knows
+        # it by the turn that started it.
+        open_ids |= {origin for origin, carrier in self._carried.items() if carrier in open_ids}
+        return lens_route.Standing(self._lens_key, frozenset(open_ids), LENS.token_current and bool(self._session))
 
     async def _while_busy(self, event: MessageEvent, turn: desktop.Turn, session_key: str) -> None:
         """A message that arrived while Hermes is working on an earlier one."""
@@ -820,74 +846,6 @@ class YantrikAdapter(BasePlatformAdapter):
         return {"name": "Yantrik desktop", "type": "dm", "chat_id": chat_id}
 
 
-@dataclass
-class _Card:
-    """A question of Hermes's shown as a card: the turn that asked it, and its choices both ways."""
-
-    turn_id: str
-    session_key: str
-    # As Hermes wrote them, which is what its clarify is answered with.
-    choices: List[str]
-    # As the card shows them: without Hermes's "(Recommended)", which `recommended` marks instead.
-    labels: List[str]
-    recommended: Optional[int]
-    # Hermes said the question may be skipped: the card's last button is Skip.
-    skippable: bool = False
-
-    @staticmethod
-    def of(turn_id: str, session_key: str, choices: Optional[list], skippable: bool = False) -> "_Card":
-        written = [str(c) for c in (choices or [])]
-        labels, recommended = _labels(written)
-        if skippable and SKIP_LABEL not in labels:
-            labels = labels + [SKIP_LABEL]
-        return _Card(turn_id, session_key, written, labels, recommended, skippable)
-
-    def choice_for(self, answer: Any) -> str:
-        """The answer as Hermes knows it: a pressed button is its own choice; Skip, or the word
-        "skip" typed, is Hermes's SKIPPED; other words are words."""
-        said = str(answer or "")
-        if self.skippable and said.strip().casefold() == SKIP_LABEL.casefold() and SKIP_LABEL.casefold() not in (c.strip().casefold() for c in self.choices):
-            return _skipped()
-        if said in self.labels[: len(self.choices)]:
-            return self.choices[self.labels.index(said)]
-        return said
-
-
-def _skipped() -> str:
-    """Hermes's own answer for a skipped question; the word itself on a Hermes without one."""
-    try:
-        from tools.clarify_gateway import SKIPPED
-
-        return SKIPPED
-    except Exception:
-        return "skip"
-
-
-def _without_skip_hint(question: str) -> Tuple[str, bool]:
-    """The question without Hermes's skip line, and whether it had one. The line is Hermes's own
-    words in the person's language when Hermes can say them, else its English."""
-    hints = []
-    try:
-        from agent.i18n import t
-
-        hints.append(str(t("gateway.clarify.skip_hint")).strip())
-    except Exception:
-        pass
-    hints.append('Reply "skip" to skip this question.')
-    text = str(question or "")
-    for hint in hints:
-        if hint and text.rstrip().endswith(hint):
-            return text.rstrip()[: -len(hint)].rstrip(), True
-    return text, False
-
-
-def _labels(choices: List[str]) -> Tuple[List[str], Optional[int]]:
-    """The choices without Hermes's recommendation mark, and which one carried it (the first)."""
-    labels = [RECOMMENDED_MARK.sub(" ", c).strip() or c for c in choices]
-    marked = [i for i, c in enumerate(choices) if RECOMMENDED_MARK.search(c)]
-    return labels, (marked[0] if marked else None)
-
-
 def _command_of(text: str) -> str:
     """The slash command a message is, lower-cased and without its slash; empty for prose."""
     word = (text or "").strip().split(maxsplit=1)
@@ -927,32 +885,6 @@ def _approval_pending(session_key: str) -> bool:
         return False
 
 
-# What Hermes is told about this desktop (#1070). It steers three things the battery of 2 Nov found
-# Hermes getting wrong: reaching for the terminal and its approval cards when an app has the
-# action; answering "my weather" from memory; and promising to report back what it cannot.
-PLATFORM_HINT = (
-    "You are the mind answering the Yantrik OS desktop: the chat panel of the computer you are "
-    "running on, used by its owner. Markdown renders. Your tools act on this same machine.\n"
-    "The person's data lives in their own apps, and that is where to look. 'My weather', 'my "
-    "calendar', 'my notes', 'my mail', 'my files' mean the Weather, Calendar, Notes, Email and "
-    "Files apps on this machine, not your memory and not the web. Call os_apps first: it lists "
-    "every app, running or not, with what it is for (`for`), how it opens (`opens`) and the name "
-    "to describe it by (`describe_as`). Then os_describe that app to read it, and os_act to do "
-    "something in it. Memory can be out of date; the app is not. If the app cannot answer, say "
-    "that, and then look elsewhere.\n"
-    "Use the terminal only when no app has the action. A command raises a card the person must "
-    "answer, and they may be away. Never offer a way to run things that skips their approval.\n"
-    "You cannot speak unasked. A reply ends your turn, and what a background task finishes after "
-    "that is not shown until the person writes next. So never promise to 'report back' or 'let "
-    "you know': wait for the result inside this turn and give it, or say plainly that it will not "
-    "arrive by itself and what the person can do.\n"
-    "If you need an answer to go on, ask once, with choices when there are few, using clarify. If "
-    "you are told there was no answer, do not ask again: do what you can without it and say which "
-    "part you did not do. Long work is fine: the person sees your progress as you go and can send "
-    "/stop, or /approve and /deny when a command needs their permission."
-)
-
-
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
     # Every desktop turn arrives as the one user OWNER_ID, and only the machine's owner can reach the
@@ -963,6 +895,7 @@ def register(ctx) -> None:
     # The desktop has one conversation, so it is home. Without a home, the gateway opens the first
     # answer on a new machine with a paragraph asking the person to type /sethome.
     os.environ.setdefault("YANTRIK_HOME_CHANNEL", CHAT_ID)
+    lens_tools.install(ctx, lens_standing, LENS)
     ctx.register_platform(
         name=PLATFORM,
         label="Yantrik OS",

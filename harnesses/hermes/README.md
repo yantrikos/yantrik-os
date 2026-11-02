@@ -123,6 +123,31 @@ running or not, with `for`, `opens` and `describe_as`), then `os_describe` and `
 terminal is for when no app has the action, since each command is a card the person must answer, and
 it is never to offer a way past that approval.
 
+## The Lens conversation's own bridge (#1070)
+
+Hermes runs one `yos-mcp` for the whole gateway, with no token, so the desktop cannot tell the
+Lens's calls from cron's or a `/bg` task's and the person's + cannot clear its taint
+(`control_taint_scope.rs`, unchanged). The plugin runs a second `yos-mcp` that carries the Lens
+conversation's token, which arrives on every `harness.poll` and changes at each +. `lens_tools.py`
+offers the desktop's tools as proxies in the plugin toolset `yantrik_desk`. A call goes to the Lens
+bridge only when two ContextVars Hermes sets per message (not `os.environ`) prove it:
+
+- the session key is exactly the one the adapter filed the Lens chat under, and
+- the triggering message is a Lens turn that is open now (the adapter passes its turn id as the
+  message id), which a `/bg` task that outlives its turn is not.
+
+Anything else, anything unset or unreadable, a token that is not current, goes to the shared
+bridge. A rotated token ends the process that carried the old one and fails a call in flight; it
+is not run again on the other bridge. The token is in the child's environment only, scrubbed from
+everything the child returns, never logged; the child dies with the gateway (`stop()`, exit,
+`PR_SET_PDEATHSIG`).
+
+**Not yet switched on.** The proxies are registered but the platform does not list `yantrik_desk`,
+so the model still calls the shared bridge's own tools. Switching on means the platform must stop
+being offered those, or the model can skip the routing, and that is a change to
+`platform_toolsets` / `mcp_servers` in `hermes_config.py` that has to be checked against a running
+Hermes.
+
 ## Yantrik models
 
 Installing Hermes (the ISO, the installer, or **Settings → Minds → Install**) does this with no

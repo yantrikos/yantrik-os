@@ -83,6 +83,9 @@ def _install_fake_hermes():
             self._active_sessions = set()
             self.handled: List[Any] = []
 
+        def _mark_disconnected(self):
+            pass
+
         def build_source(self, **kw):
             return types.SimpleNamespace(**kw)
 
@@ -283,6 +286,45 @@ class BackgroundResultTests(AdapterCase):
             await self.adapter.send(adapter_mod.CHAT_ID, f"result {i} " + "x" * 10000)
         self.assertEqual(len(self.adapter._late), adapter_mod.LATE_KEPT)
         self.assertTrue(all(len(m) <= adapter_mod.LATE_CHARS for m in self.adapter._late))
+
+
+class LensProofTests(AdapterCase):
+    def tearDown(self):
+        adapter_mod.LENS.stop()
+        adapter_mod._ADAPTERS[:] = []
+        super().tearDown()
+
+    async def test_a_turn_carries_its_id_into_hermes_and_gives_the_lens_bridge_the_desktops_token(self):
+        await self.adapter._on_turn({"turn_id": "9", "text": "hi", "agent_token": "tok-lens-1"})
+        self.assertEqual(self.adapter.handled[0].source.message_id, "9")
+        self.assertTrue(adapter_mod.LENS.token_current)
+        adapter_mod._ADAPTERS[:] = [self.adapter]
+        standing = adapter_mod.lens_standing()
+        self.assertEqual(standing.lens_key, "session-1")
+        self.assertEqual(standing.open_ids, frozenset({"9"}))
+        self.assertTrue(standing.token_current)
+
+    async def test_a_turn_with_no_token_leaves_the_lens_bridge_without_one(self):
+        await self.adapter._on_turn({"turn_id": "9", "text": "hi"})
+        self.assertFalse(adapter_mod.LENS.token_current)
+        self.assertFalse(self.adapter.standing().token_current)
+
+    async def test_a_closed_turn_is_no_longer_the_lenss(self):
+        await self.adapter._on_turn({"turn_id": "9", "text": "hi", "agent_token": "tok-lens-1"})
+        await self.adapter._finish("9")
+        self.assertEqual(self.adapter.standing().open_ids, frozenset())
+
+    async def test_a_run_that_a_later_turn_carries_is_still_known_by_the_turn_that_started_it(self):
+        await self.adapter._on_turn({"turn_id": "9", "text": "hi", "agent_token": "tok-lens-1"})
+        self.adapter._ledger.open("10", adapter_mod.CHAT_ID, "Nov 12")
+        self.adapter._carried["9"] = "10"
+        await self.adapter._finish("9")
+        self.assertEqual(self.adapter.standing().open_ids, frozenset({"9", "10"}))
+
+    async def test_losing_the_desktop_or_disconnecting_drops_the_token_and_the_bridge(self):
+        await self.adapter._on_turn({"turn_id": "9", "text": "hi", "agent_token": "tok-lens-1"})
+        await self.adapter.disconnect()
+        self.assertFalse(adapter_mod.LENS.token_current)
 
 
 class SteeringTests(unittest.TestCase):
