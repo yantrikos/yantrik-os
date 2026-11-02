@@ -142,9 +142,9 @@ class Instance:
         """Why it did not start, in the browser's own last words."""
         try:
             with open(self.log, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                f.seek(max(0, f.tell() - 600))
-                tail = f.read().decode("utf-8", "replace").strip().splitlines()[-4:]
+                lines = f.read(40000).decode("utf-8", "replace").splitlines()
+            said = [l for l in lines if any(w in l for w in ("FATAL", "ERROR", "Check failed", "error", "Error"))]
+            tail = [l.strip()[:220] for l in (said or lines)[:4]]
         except OSError:
             tail = []
         self.stop()
