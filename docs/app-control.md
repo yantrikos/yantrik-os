@@ -112,6 +112,25 @@ The signatures-only answer trusts an app's action declarations (names, parameter
 to be static, as every first-party app's are; a third-party app that wrote state into them would not
 be caught.
 
+- **To look without tainting, pass `actions`** with the family word (`agent_`, `files_`): the prefix of
+  an action's name up to its first underscore, not an exact action name. An exact name is answered
+  with the family word to use instead.
+- **A tainted hand-off, command or new web address raises the card in every mode, full bypass
+  included.** It is the one named exception to `bypass_all` asking nothing, and the card is never
+  skipped: the bridge sends `tainted: true` on `request_approval` and the shell
+  (`taint_ask::settle`) turns any `Run` into an `Ask`, whatever a session or standing rule says. Plan
+  mode and the machine's ceiling still refuse first. If approvals are off for a test run
+  (`set_approvals_off_for_test`), or no card can be shown, the call is refused with that reason; it
+  is never run unasked. The grant the card mints is the store's: bound to the exact app, action and
+  arguments, spent once. An older shell that does not know `tainted` and answers `not_needed` is a
+  refusal at the bridge, not a go-ahead. Everything not tainted is decided as before, in every mode.
+- **`YOS_MCP_NO_TAINT=1` turns the taint off only on a machine that declares it holds no person's
+  data**: `/etc/yantrik/no-person-data`, a regular file owned by root and not group- or
+  world-writable, in a root-owned directory the same (checked without following symlinks). The
+  variable alone does nothing, so a mind that sets it on a person's machine gains nothing, and it is
+  never a setting. A missing or too-open marker leaves the taint on (fail safe). The live
+  instance's installer (`deploy/live/director/setup-director.sh`) writes it.
+
 Only the person's **+** in the Lens clears a scope, marks only add, an unreadable record is tainted,
 and no tool lets a mind clear its own taint. None of this is in the decision table
 (`mind_mode::decide`, `mind-mode-vectors.json`): it is the bridge's.

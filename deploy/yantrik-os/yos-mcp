@@ -269,10 +269,13 @@ OS_DESCRIBE_TAIL = (", or a service os_apps lists as answering. A Yantrik app th
                     "view. An app with a large family of related actions "
                     "lists that family as signatures and grades only — enough to see that an "
                     "action exists — and says so; pass that family's prefix as `actions` to get "
-                    "what each of them does. That answer holds the action signatures and "
-                    "nothing else, no state, so it is not a read of the person's data; "
-                    "describing an app without `actions` shows its state, and for an app "
-                    "that holds the person's data it counts as a private read.")
+                    "what each of them does. To find an action without reading state, pass "
+                    "`actions` with the family word (`agent_`, `files_`): a prefix of the "
+                    "names, up to the first underscore, not an exact action name. That answer "
+                    "holds the action signatures and nothing else, no state, so it is not a "
+                    "read of the person's data; describing an app without `actions` shows its "
+                    "state, and for an app that holds the person's data it counts as a "
+                    "private read.")
 SURFACE_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
@@ -1526,38 +1529,21 @@ def ambiguous(pair):
 # scope: a caller that can untaint itself is not constrained. A new conversation the person
 # starts is the person's decision rather than an agent's.
 #
-# What counts as a private read is as narrow as the data, and no narrower (#1062). `os_describe` is
-# the biggest case: most turns begin by describing an app to learn its actions, and a rule that
-# tainted every describe made "look this up on the web" fail after a harmless look. So a describe
-# taints unless one of two things is true, and both fail closed:
-#
-#   1. The answer holds no state. `os_describe {app, actions: "<prefix>"}` is asked as `yos describe
-#      --no-state`, which prints the action signatures alone behind a sentinel line. The bridge
-#      checks the ANSWER, not the request: the sentinel first and every other line indented (a
-#      summary, a `revision:` line and the state object all start in column zero). An older `yos`
-#      that ignores the flag prints the state, fails the check, and taints.
-#   2. The app is on `NO_PERSON_DATA`, an explicit list named here (empty today: see it), each entry
-#      checked against what the app's own describe holds. Anything not on it taints, new apps
-#      included.
-#
-# Not changed: a Mind that re-reads an app it just changed reads real state, so that read is
-# private if the app is. The shell, Calendar, Notes, Email, Files, Weather (it holds the person's
-# city), the terminals and the browser (its describe holds the page's title, host and tabs) are
-# all private and stay so.
+# What counts as a private read is as narrow as the data, and no narrower (#1062; docs/app-control.md).
+# A describe taints unless, failing closed: (1) its answer holds no state (`os_describe {app,
+# actions}` is `yos describe --no-state`: a sentinel line, then only indented lines, judged on the
+# ANSWER, so an older `yos` that prints state taints); or (2) the app is on `NO_PERSON_DATA`
+# (empty today, below). A re-read of an app a mind just changed is a read of real state. The shell,
+# Calendar, Notes, Email, Files, Weather, the terminals and the browser are private and stay so.
 PRIVATE_READS = {"os_describe", "os_screen", "os_perception", "web_listen",
                  # Another agent's session: what it read, its commands' output.
                  "read_agent"}
 OUTBOUND = {"web_type", "web_go"}
-# The apps whose describe holds nothing of the person's, by the name `surface_name` folds to. It is
-# EMPTY on purpose. mind-desk's describe holds none of the person's data (the Mind's state label, a
-# tool's name, counts, app names, a safety line, a model name: apps/mind-desk/src/describe.rs), but
-# it is only a name, and any app can declare the surface id `mind-desk` in its .desktop file; an
-# exemption by name would then free that app's state. Nothing reserves a name in the registry, so
-# there is no exemption. A name goes here only together with a way to know the app behind it is
-# the one that was read. Not exempt, with the reason: browser (title, host, tabs, URLs), system-monitor (process names and
-# the filter the person typed), containers, network (addresses), arcade, studio (the pictures'
-# prompts), and every app that holds a document, a note, a mail, an event, a file or a place.
-# Add an app here only after reading its describe, never because its name sounds harmless.
+# The apps whose describe holds nothing of the person's, by the name `surface_name` folds to. EMPTY on
+# purpose: any app can declare the surface id `mind-desk` in its .desktop file and nothing reserves a
+# name, so an exemption by name would free that app's state. A name goes here only with a way to know
+# the app behind it is the one that was read, and only after reading its describe (browser, system-monitor,
+# containers, network, arcade, studio and every app that holds a document, mail, event, file or place hold data).
 NO_PERSON_DATA = frozenset()
 # What `yos describe --no-state` prints first. Mirrors `SIGNATURES_ONLY` in `yos`, and the selftest
 # holds the two together.
@@ -1596,7 +1582,29 @@ SCREEN_READS = {("shell", "read_screen"), ("shell", "read_mind_view"),
 PRIVATE_ACT_SURFACES = {"calendar"}
 
 _SAW_PRIVATE = []          # what tainted this conversation, in order, for the refusal message
-TAINT_OFF = os.environ.get("YOS_MCP_NO_TAINT") == "1"
+# `YOS_MCP_NO_TAINT=1` turns the taint off only on a machine that declares it holds no person's data:
+# a marker file, root's, that no mind's account can write. The variable alone is not enough, since
+# anything that starts this bridge can set it. Missing, or not as strict as below: the taint stays on.
+TAINT_MARKER = "/etc/yantrik/no-person-data"
+
+
+def taint_off_declared(environ=None, marker=TAINT_MARKER, root=0):
+    """May the taint be off? Only if asked for AND the machine declares it (`root` is uid 0 here)."""
+    if (os.environ if environ is None else environ).get("YOS_MCP_NO_TAINT") != "1":
+        return False
+    try:
+        # lstat, never stat: a symlink is not the marker. The directory is held to the same bar.
+        for path, kind in ((os.path.dirname(marker), 0o040000), (marker, 0o100000)):
+            st = os.lstat(path)
+            if st.st_mode & 0o170000 != kind or st.st_uid != root or st.st_mode & 0o022:
+                raise OSError("%s is not a root-owned %s writable by root alone" % (path, "file" if kind == 0o100000 else "directory"))
+    except OSError as e:
+        log("YOS_MCP_NO_TAINT ignored, so the private-read taint stays on: %s" % e)
+        return False
+    return True
+
+
+TAINT_OFF = taint_off_declared()
 # The desktop's id for the conversation `_SAW_PRIVATE` belongs to. None until the desktop has
 # said, which is the process — the scope this bridge always had.
 _SCOPE = {"id": None}
@@ -1748,12 +1756,10 @@ def payload_in_url(url):
     return False
 
 
-# A hand-off carries free text to another mind: a new agent's task, a message to one, a role's
-# task, a message put into the Lens. The session on the other end has read nothing private itself, so its own bridge is clean
-# and would type whatever it was handed into any page. From a session that has read private
-# state, then, a hand-off is how the taint would be laundered, and it asks the person every time,
-# whatever the mode, as putting data into a page is refused whatever the mode (found reviewing the
-# taint rule's sinks, 2026-09-27). Delegation still works; it is just never silent.
+# A hand-off carries free text to another mind: a new agent's task, a message to one, a role's task, a
+# message put into the Lens. That session has read nothing private, so its own bridge is clean and
+# would type whatever it was handed into any page: from a tainted session a hand-off is how the taint
+# would be laundered, so it asks every time, whatever the mode (2026-09-27). Delegation still works.
 HANDOFFS = {("shell", "new_agent"), ("shell", "send_to_agent"), ("shell", "hand_off"),
             # The Lens, as if typed: the mind answering there may be another one, its session clean.
             ("shell", "send_message")}
@@ -1771,19 +1777,15 @@ def surface_name(app):
     return name[len("app-"):] if name.startswith("app-") else name
 
 
-# A command is the other way out. The taint refused a tainted session's `web_go` to a new
-# address, and the mind's next move was `run_command curl https://api.open-meteo.com/...?lat=...`,
-# which went to the person as an ordinary shell.agent_run card that said nothing about the taint;
-# in `auto` or `bypass` one "Allow for this session" on such a card would have let every later
-# command run unasked (E.CMP1 run 2, VM 541, 14 Oct 2026). A command line can carry anything off
-# this machine — curl, wget, nc, a DNS lookup, a git push — so matching on its text is no
-# defence: the session is the unit. From a session that has read private state, then, every
-# action that runs in a shell what it is given is asked about every time, whatever the mode, as a
-# hand-off is. Not refused: commands stay usable, and the person decides.
+# A command is the other way out. A tainted session's `web_go` was refused, and its next move was
+# `run_command curl https://api.open-meteo.com/...?lat=...`: an ordinary card that said nothing about
+# the taint, and in `auto` one "Allow for this session" would have let every later command run
+# unasked (E.CMP1 run 2, VM 541, 14 Oct 2026). A command line can carry anything off this machine,
+# so the session is the unit, not the text: every action that runs what it is given asks every time,
+# whatever the mode, as a hand-off does. Not refused: the person decides.
 #
-# Named here as well as read from the app's own sentence (`runs_anything`), so that an app which
-# stops saying it runs anything does not quietly take its terminal out of the rule. `terminal.run`
-# routed to the agent's own terminal arrives here already as `shell.agent_run`.
+# Named here as well as read from the app's own sentence (`runs_anything`), so an app that stops saying
+# it runs anything does not take its terminal out of the rule. A routed `terminal.run` is `shell.agent_run`.
 COMMANDS = {("terminal", "run"), ("terminal", "send_input"),
             ("shell", "agent_run"), ("shell", "agent_input")}
 
@@ -1901,11 +1903,9 @@ def carries_private(app, action, runs_anything=False, args=None):
         return ""
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
     if going:
-        # An access decision, not a dead end (#1062). The person's own request often names the
-        # address ("open wikipedia.org/wiki/Lake_Tahoe"), and a refusal left the mind nothing to do
-        # but say so. Where it has been it goes back to unasked; anywhere new, the person is shown
-        # the address, whole, and decides. Nothing here can tell an innocent address from one that
-        # carries what was read in its host or its path, which is why it is asked and not guessed.
+        # An access decision, not a dead end (#1062): where it has been it goes back unasked; anywhere
+        # new, the person is shown the address, whole, and decides. Nothing here can tell an innocent
+        # address from one carrying what was read in its host or path, so it is asked, not guessed.
         url = go_url(args or {})
         if not url or go_is_free(url):
             # No address named is not a question for the person: `taint_refusal` and the browser
@@ -1937,14 +1937,9 @@ def carries_private(app, action, runs_anything=False, args=None):
 
 
 def private_card_line(app, action, args=None):
-    """What the person's card says first, when the taint is why they are asked.
-
-    The card is where the person decides, so it names what this session read and why that
-    matters. It also says that what leaves cannot be undone, which is true, and which is the
-    sentence the shell reads (`approvals::unrecoverable`, over the caller's purpose as well as the
-    app's): it asks about it in `ask`, `auto` and `bypass` even where a session rule would have
-    answered, and offers no rule for it. Without that the shell would have answered `not_needed`
-    to a mode that runs the action anyway, and nobody would have been asked."""
+    """What the person's card says first, when the taint is why they are asked: what this session
+    read, why that matters, and that what leaves cannot be undone. That sentence is also what makes
+    a shell that predates `tainted` ask in `ask`, `auto` and `bypass`, and offer no session rule."""
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
     if is_go(app, action):
         # The whole address, exactly: an address can carry what was read, and the person is
@@ -2301,7 +2296,7 @@ def open_ended(purpose):
 
 
 def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool="os_act",
-           runs_anything=False, standing=()):
+           runs_anything=False, standing=(), tainted=False):
     """Run it, ask about it, or refuse it — the whole table, as one pure function.
 
     Returns `(verdict, detail)`:
@@ -2320,6 +2315,10 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     as `dangerous` does, and in no mode does a session rule cover it. See the 21 September entry
     in `design/mind-modes-2026-09-21.md`; the shell's `Modes::decide` takes the same flag in the
     same position.
+
+    `tainted` is a hand-off, command or new web address from a conversation that has read private
+    state: a `run` becomes `ask` in EVERY mode, full bypass included, whatever a rule covers. The
+    one named exception to `bypass_all` asking nothing. Refusals (plan, the ceiling) stand.
 
     `why` is written to be relayed to a person as it stands.
 
@@ -2422,10 +2421,8 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
         else:
             verdict, detail = "run", would_ask
     elif mode == "bypass_all":
-        # Full bypass: unchanged from what bypass used to be, and the one mode the app's own
-        # sentence does not touch. It does not ask, by definition and by what its confirmation
-        # says; a card after "asks nothing, not even those" would make that panel a lie. It is
-        # written down instead — `would_ask` is true here, so it lands in the audit.
+        # Full bypass: the one mode the app's own sentence does not touch. It does not ask, and
+        # says so, with ONE named exception: `tainted`, below. What runs is written down instead.
         verdict, detail = "run", would_ask
     elif mode == "auto":
         if rank >= LADDER.index("dangerous") or irreversible or opened:
@@ -2450,7 +2447,8 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     # decides, and then the harness may hold itself back further.
     if cap in LADDER and verdict == "run" and rank > LADDER.index(cap):
         return "ask", None
-    return verdict, detail
+    # Never unasked, in any mode: a card even where the mode, a rule or a standing rule says run.
+    return ("ask", None) if tainted and verdict == "run" else (verdict, detail)
 
 
 def decide_outcome(vector):
@@ -2560,17 +2558,18 @@ def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False)
     and this bridge's part is to carry the grant it was given. There is no action anywhere on
     this desktop that grants.
 
-    `must_ask` is the taint's: this call is never run unasked, so a desktop that answers
-    `not_needed` to it is a refusal here, not a go-ahead.
+    `must_ask` is the taint's: this call is never run unasked. The shell is told (`tainted`) and
+    raises the card in every mode, full bypass included; a desktop that still answers `not_needed`
+    (an older shell) or cannot show a card is a refusal here, never a go-ahead.
     """
-    request, err = shell_call("request_approval", {
+    request, err = shell_call("request_approval", dict({
         "app": app,
         "action": action,
         "grade": grade,
         "purpose": purpose,
         "args_json": args,
         "requester": requester,
-    })
+    }, **({"tainted": True} if must_ask else {})))
     if request is None and "REACH:" in (err or ""):
         # This agent was started as a catalog role, and the act is outside its reach: the shell
         # will not put that question in front of the person. Its own words, naming the role.
@@ -2582,6 +2581,13 @@ def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False)
             "the person could not be asked about opening this address, so nothing was opened: %s. "
             "Tell them what you wanted to open and let them decide; a shorter address may be one "
             "a card can show." % err), None
+    if request is None and must_ask:
+        # The reason is the shell's own: approvals off for a test run, no screen to show a card on.
+        return False, (
+            "the person could not be asked about %s.%s, and from a conversation that has read "
+            "private state it is never run unasked, so nothing was run: %s. Do not look for "
+            "another route to the same effect: tell them what you wanted to do and let them decide."
+            % (app, action, err)), None
     if request is None:
         return False, (
             "%s.%s is graded %s, above this session's %s ceiling, so it needs the person at the "
@@ -2589,16 +2595,16 @@ def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False)
             "was changed. Tell them what you were trying to do and let them decide."
             % (app, action, grade, CEILING, err)), None
 
-    # A hand-off or a command from a session that has read private state is never run unasked.
-    # Only full bypass answers `not_needed` to one: the card's own sentence asks in every other
-    # mode (see `private_card_line`). That mode raises no card by definition, so the answer is no.
+    # A hand-off, command or new address from a session that has read private state is never run
+    # unasked. A shell that knows `tainted` raises the card in every mode; one that answers
+    # `not_needed` anyway predates that, and the answer is no, not a go-ahead.
     if request.get("status") == "not_needed" and must_ask:
         return False, (
-            "the desktop's current mode (%s) puts no card in front of anybody, so the person could "
-            "not be asked about %s.%s — and from a conversation that has read private state it is never "
-            "run unasked. Nothing was run. Do not look for another route to the same effect: tell "
-            "the person what you wanted to do; they can switch the mode from the chip in the "
-            "status bar, or do this part themselves."
+            "the desktop (mode %s) raised no card, so the person could not be asked about %s.%s "
+            "— and from a conversation that has read private state it is never run unasked. "
+            "Nothing was run. Its shell predates the rule that asks in every mode; it needs an "
+            "update. Do not look for another route to the same effect: tell the person what you "
+            "wanted to do, or let them do this part themselves."
             % (request.get("mode", "full bypass"), app, action)), None
 
     # The desktop decided nobody needed asking. That is not a refusal and not a failure: it
@@ -2783,14 +2789,13 @@ def guard_act(args):
     cannot_undo = unrecoverable(purpose)
     runs_anything = open_ended(purpose)
     cap = CEILING if CEILING_SET else None
+    private = carries_private(app, action, runs_anything, args)
 
     # One call, one table — the harness's own cap included, so there is nothing here that the
     # vectors do not cover. See `decide`; `CEILING` is only a cap when somebody set it.
     verdict, detail = decide(level, app, action, cannot_undo, mode, rules, machine, cap=cap,
-                             runs_anything=runs_anything, standing=standing)
-    private = carries_private(app, action, runs_anything, args)
-    if private and verdict == "run":
-        verdict = "ask"
+                             runs_anything=runs_anything, standing=standing,
+                             tainted=bool(private))
 
     if verdict.startswith("refuse"):
         return join(unreadable, detail), None, None, None
@@ -2828,13 +2833,8 @@ def guard_act(args):
                    "card" % (app, action) if by_standing else ""))
         return None, join(unreadable, note), audit, None
 
-    # Why there is a card at all, when the mode the person chose would otherwise have run this.
-    #
-    # Without it the honest report a mind can make is "the desktop is in auto and it asked me
-    # anyway", which reads as a fault and is the shape of a thing somebody tries to work around.
-    # Asked of the table rather than restated here: run the same decision with the sentence
-    # taken away and see whether it would have gone through. One extra call to a pure function,
-    # and no second copy of the rule to drift.
+    # Why there is a card at all, when the mode the person chose would otherwise have run this: asked of
+    # the table (the same decision without the sentence), so a mind does not read it as a fault.
     asked_anyway = ""
     if cannot_undo and decide(level, app, action, False, mode, rules, machine, cap=cap)[0] == "run":
         asked_anyway = (

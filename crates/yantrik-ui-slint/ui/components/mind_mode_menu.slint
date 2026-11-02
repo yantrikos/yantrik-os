@@ -235,7 +235,7 @@ export component MindModeMenu inherits Rectangle {
             }
             ModeRow {
                 label: "Full bypass";
-                means: "Asks nothing, not even those.";
+                means: "Asks nothing; see the note below.";
                 selected: root.bypass-kind == "bypass_all";
                 danger: true;
                 chosen => { root.bypass-kind = "bypass_all"; }
@@ -247,9 +247,9 @@ export component MindModeMenu inherits Rectangle {
             // row lands on.
             Text {
                 height: 96px;
-                text: "Bypass still asks before anything an app marks as impossible to undo, such "
-                    + "as a purchase or a calendar delete, and once per session before running "
-                    + "commands. Full bypass asks nothing. Your ceiling (" + root.ceiling
+                text: "Bypass still asks before anything an app marks as impossible to undo, and once "
+                    + "per session before running commands. Full bypass asks nothing, except for "
+                    + "a command, hand-off or new address after a private read. Your ceiling (" + root.ceiling
                     + ") still holds.";
                 color: Theme.text-secondary;
                 font-size: Theme.fs-caption;

@@ -126,6 +126,11 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                                the caller`: nothing checks it, and it grants nothing. Beside it \
                                the card shows the program this machine worked out for itself \
                                from the socket, which is not taken from here"),
+            )
+            .arg(
+                Param::flag("tainted")
+                    .optional()
+                    .describe("true when the caller's conversation has read private state and this call is a hand-off, a command or a new web address: it is then asked about in every mode, full bypass included, and never run unasked. It can only add a card"),
             ),
             move |args| {
                 let app = required(args, "app")?;
@@ -133,6 +138,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 let grade = required(args, "grade")?;
                 let parsed = args_value(args.get("args_json"))?;
                 let purpose = text(args.get("purpose"));
+                let tainted = crate::taint_ask::flagged(args.get("tainted"));
                 let requester = {
                     let given = text(args.get("requester"));
                     // Unattributed is worse than wrong: the person is being asked to trust
@@ -141,18 +147,10 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     if given.is_empty() { "an unnamed caller".to_string() } else { given }
                 };
 
-                // Everything the decision table says, not only the plan-mode half of it.
-                //
-                // This used to consult `decide` and then act on the answer only when the mode
-                // was `plan`, which meant a caller that skipped the bridge could still get a
-                // card raised for an action graded ABOVE `tool_permission` — a question no
-                // answer could satisfy, because the app's own runtime refuses it whatever the
-                // person clicks. The rule in both design notes is that nothing above the machine
-                // ceiling is ever put in front of a person, and until now only the bridge kept
-                // it. The socket is reachable without the bridge, so the shell keeps it too.
-                //
-                // The grade is checked first, because the grade is the one thing the caller
-                // declares that the decision actually turns on.
+                // Everything the decision table says, not only the plan-mode half of it: a caller
+                // that skipped the bridge must not get a card for an action graded ABOVE
+                // `tool_permission`, which no answer could satisfy. The grade is checked first,
+                // because it is what the decision turns on and the one thing the caller declares.
                 let (grade, grade_note, published_purpose, naming, explained, params) =
                     match settle_grade(&app, &action, &grade, &parsed) {
                         Ok(settled) => settled,
@@ -215,7 +213,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // The mode and the machine's ceiling decide first: a refusal stands. Plan mode
                 // changes nothing from a phone either. Otherwise a held agent is always asked, where
                 // the mode or a desk session rule would have let it run.
-                let decision = match crate::mind_mode::decide(&grade, &app, &action, declared) {
+                let decision = crate::taint_ask::settle(match crate::mind_mode::decide(&grade, &app, &action, declared) {
                     refused @ crate::mind_mode::Decision::Refuse { .. } => refused,
                     _ if held_from_phone && crate::mind_mode::current().as_str() == "plan" => {
                         crate::mind_mode::Decision::Refuse {
@@ -226,7 +224,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     }
                     _ if held_from_phone => crate::mind_mode::Decision::Ask,
                     other => other,
-                };
+                }, tainted);
                 match decision {
                     // The same sentence the bridge relays, from the same function, so a mind
                     // that reached the shell directly and one that came through the bridge hear
@@ -470,7 +468,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new(
                 "set_mind_mode",
                 "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked), `bypass` (nothing is asked \
+                 loosest first: `bypass_all` (nothing is asked, except a command, hand-off or new web address after a private read), `bypass` (nothing is asked \
                  except before what an app marks as impossible to undo), `auto` (only \
                  destructive actions are asked about), `ask` (anything that matters is asked \
                  about), `plan` (read only — every change is refused). You can only move DOWN \
@@ -1556,7 +1554,7 @@ pub fn wire(ui: &App, bridge: std::sync::Arc<crate::bridge::CompanionBridge>) {
     });
 
     // Which bypass and for how long, both off the red confirmation: `bypass` still asks before
-    // what cannot be undone, `bypass_all` asks nothing. Anything else — a mode that is not a
+    // what cannot be undone, `bypass_all` asks nothing (bar a tainted call). Anything else — a mode that is not a
     // bypass, a duration that is not one of the three — is dropped, never read as a default.
     let bypass_ui = ui.as_weak();
     ui.on_mind_bypass_chosen(move |kind, duration| {
