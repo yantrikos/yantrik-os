@@ -98,9 +98,10 @@ NOT_ANSWERED = (
     "which part you did not do and that it was waiting on their answer."
 )
 # What a result that arrives with no conversation open is shown under, in the next reply.
-LATE_HEADING = "While you were away, Hermes finished something in the background:"
+LATE_HEADING = "While you were away, Hermes finished something in the background (kept in memory, so lost if the gateway restarts):"
 LATE_KEPT = 20
 LATE_CHARS = 4000
+LATE_CUT = "[…cut]"
 
 # The card's own button for Hermes's skip. Hermes adds 'Reply "skip" to skip this question.' to
 # every question of a batch (gateway.clarify.skip_hint) and takes the word "skip" as SKIPPED, but
@@ -108,6 +109,31 @@ LATE_CHARS = 4000
 # a card the line promised what nothing did (VM 541, 14 Oct). It is taken off the prompt and the
 # card offers Skip, which, like a typed "skip", is answered with Hermes's SKIPPED.
 SKIP_LABEL = "Skip"
+
+
+def _quoted(text: str) -> str:
+    """`text` as a block quote, line by line: nothing in it can start a fence, a rule, a fake turn or
+    a tool-call row of its own, whatever it holds."""
+    return "\n".join("> " + line if line else ">" for line in text.splitlines()) or ">"
+
+
+def _cut(text: str, limit: int = LATE_CHARS) -> str:
+    """At most `limit` characters, cut on a line boundary (a hard cut only for one very long line)."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    at = head.rfind("\n")
+    return (head[:at] if at > 0 else head).rstrip() + "\n" + LATE_CUT
+
+
+def _late_block(kept: List[Tuple[datetime, str]]) -> str:
+    """What was kept, as one block: when each arrived, and what it said, quoted."""
+    parts = [LATE_HEADING]
+    for when, text in kept:
+        parts.append(when.astimezone().strftime("%d %b %H:%M") + "\n" + _quoted(text))
+    parts.append("---")
+    return "\n\n".join(parts)
 
 
 def check_requirements() -> bool:
@@ -166,10 +192,12 @@ class YantrikAdapter(BasePlatformAdapter):
         self._cards: Dict[str, "_Card"] = {}
         # Questions no one answered in time, by the turn that asked: a second one ends the turn.
         self._unanswered: Dict[str, int] = {}
+        # The text-fallback question each session is waiting on: its clarify id, beside `_asked`.
+        self._asked_ids: Dict[str, str] = {}
         # What Hermes said with no conversation open (a background task's result, a scheduled job's):
         # the desktop's protocol has no way to say something unasked, so it is shown, labelled, at
         # the top of the next reply instead of being thrown away.
-        self._late: List[str] = []
+        self._late: List[Tuple[datetime, str]] = []
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
@@ -353,6 +381,12 @@ class YantrikAdapter(BasePlatformAdapter):
             return
         asyncio.create_task(self._watch_pickup(turn_id))
 
+    def _keep(self, content: str) -> None:
+        """Remember something Hermes said with no conversation open (bounded, dated)."""
+        if content.strip():
+            self._late.append((datetime.now(timezone.utc), _cut(content)))
+            del self._late[:-LATE_KEPT]
+
     async def _while_busy(self, event: MessageEvent, turn: desktop.Turn, session_key: str) -> None:
         """A message that arrived while Hermes is working on an earlier one."""
         from hermes_cli.commands import should_bypass_active_session
@@ -409,11 +443,16 @@ class YantrikAdapter(BasePlatformAdapter):
         """
         card = next((cid for cid, c in self._cards.items() if c.session_key == session_key), None)
         origin = None if card is not None else self._asked.pop(session_key, None)
+        asked_id = self._asked_ids.pop(session_key, None)
+        if origin is not None:
+            self._unanswered.pop(origin, None)  # an answer ends the run of misses
         await self.handle_message(event)
         if _question_pending(session_key):
             # Hermes kept the question: the reply was not one of its choices.
             if origin is not None:
                 self._asked[session_key] = origin
+                if asked_id:
+                    self._asked_ids[session_key] = asked_id
             await self._stream(turn, "That was not one of the choices. Send its number, or your own words.")
             await self._finish(turn.turn_id, why="the answer did not fit the question")
             return
@@ -432,6 +471,7 @@ class YantrikAdapter(BasePlatformAdapter):
 
     def _end_question(self, session_key: str) -> None:
         self._asked.pop(session_key, None)
+        self._asked_ids.pop(session_key, None)
         self._cards = {cid: c for cid, c in self._cards.items() if c.session_key != session_key}
         try:
             from tools import clarify_gateway
@@ -547,12 +587,15 @@ class YantrikAdapter(BasePlatformAdapter):
             # it is kept and shown at the top of the next reply, under a line that says when it
             # came (#1070). Not dropped, and not claimed to be on screen now.
             logger.info("[yantrik] nothing open on the desktop for a %d-character message; kept", len(content))
-            if content.strip():
-                self._late.append(content.strip()[:LATE_CHARS])
-                del self._late[:-LATE_KEPT]
+            self._keep(content)
             return SendResult(success=True)
         if self._late and not turn.said_anything:
-            content = "\n\n".join([LATE_HEADING, *self._late, "---", content])
+            # Its own message, ahead of the answer, so the answer's message id records only the
+            # answer and Hermes's later edits to it diff against what was streamed. Kept until it
+            # is known to be on screen.
+            _, delta = self._ledger.sent(turn, _late_block(self._late))
+            if not await self._stream(turn, delta):
+                return SendResult(success=False, error="the desktop closed this turn")
             self._late.clear()
         if "requires approval" in content or "/approve" in content:
             # Hermes is blocked until the person answers. Said in the log too, so a command waiting
@@ -650,11 +693,16 @@ class YantrikAdapter(BasePlatformAdapter):
                 "[yantrik] Hermes asked with nothing open on the desktop: %s", " ".join(text.split())[:300]
             )
             return SendResult(success=False, error="no open conversation turn on the desktop")
-        self._asked[session_key] = self._run_of(turn.turn_id)
+        origin = self._asked[session_key] = self._run_of(turn.turn_id)
+        self._asked_ids[session_key] = clarify_id
         message_id, delta = self._ledger.sent(turn, text)
         if not await self._stream(turn, delta):
             return SendResult(success=False, error="the desktop closed this turn")
         await self._finish(turn.turn_id, why="Hermes asked the person a question")
+        # The turn is over, but Hermes still waits (an hour, by itself) and the next message would be
+        # taken as the answer: the same timer as a card's.
+        self._tasks = [t for t in self._tasks if not t.done()]
+        self._tasks.append(asyncio.create_task(self._expire_text_question(session_key, origin, clarify_id)))
         return SendResult(success=True, message_id=message_id)
 
     async def _ask_card(
@@ -732,6 +780,33 @@ class YantrikAdapter(BasePlatformAdapter):
             # Hermes had already let go of it (its own timeout, a stop): nothing is waiting.
             self._end_question(card.session_key)
 
+    async def _expire_text_question(self, session_key: str, origin: str, clarify_id: str) -> None:
+        """A question asked as text that nobody answered: Hermes is told so and carries on (a second one
+        in the same run ends the run's wait), and a later message is a message again."""
+        try:
+            await asyncio.sleep(QUESTION_SECONDS)
+        except asyncio.CancelledError:
+            return
+        if self._asked.get(session_key) != origin or self._asked_ids.get(session_key) != clarify_id:
+            return  # answered, or the run ended
+        self._asked.pop(session_key, None)
+        self._asked_ids.pop(session_key, None)
+        minutes = max(1, round(QUESTION_SECONDS / 60))
+        misses = self._unanswered[origin] = self._unanswered.get(origin, 0) + 1
+        logger.info("[yantrik] run %s: no answer to the question it asked as text in %ss", origin, QUESTION_SECONDS)
+        if misses >= 2:
+            self._end_question(session_key)
+            return
+        try:
+            from tools import clarify_gateway
+
+            taken = clarify_gateway.resolve_gateway_clarify(clarify_id, NOT_ANSWERED.format(minutes=minutes))
+        except Exception:
+            logger.warning("[yantrik] could not tell Hermes its question went unanswered", exc_info=True)
+            taken = False
+        if not taken:
+            self._end_question(session_key)
+
     def _take_answers(self, answers: List[Dict[str, Any]]) -> None:
         """Answers to questions shown as cards, from a poll: each one lets Hermes's clarify go on.
 
@@ -745,6 +820,7 @@ class YantrikAdapter(BasePlatformAdapter):
                 logger.info("[yantrik] an answer came for a question no card is waiting on (%s)", clarify_id)
                 continue
             del self._cards[clarify_id]
+            self._unanswered.pop(card.turn_id, None)  # "twice" means twice in a row
             try:
                 from tools import clarify_gateway
 

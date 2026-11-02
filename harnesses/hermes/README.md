@@ -103,17 +103,25 @@ Hermes, which has no `clarify` gateway, is unchanged.
 
 A question nobody answers does not hold the reply (#1070). After five minutes
 (`YANTRIK_QUESTION_SECONDS`) Hermes is told there was no answer and goes on without it, the reply
-says so, and Hermes says which part it did not do. If its next question is left alone too, the
-reply ends there, with what it said, and the question is dropped.
+says so, and Hermes says which part it did not do. This holds for a question shown as a card and for
+one asked as text on a desktop without cards; on the text path the turn that asked it is already
+over, so nothing is said there, and the person's next message is a message again, not the answer.
+If the next question of the same run is also left alone (answering one in between starts the count
+again), Hermes is released from the wait. The run then goes on with no turn open, so what it
+produces from there is kept as a background result (below) and shown in the next reply.
 
 ## Results that arrive with no conversation open
 
 The desktop's protocol has no way to say something unasked, so a background task's result or a
-scheduled job's has nowhere to appear when nothing is open. The adapter keeps what arrives (the last
-20, 4,000 characters each) and shows it, under "While you were away, Hermes finished something in
-the background:", at the top of the next reply. It is not shown before then, and nothing shows the
-task as running meanwhile. So Hermes is told it cannot speak unasked and must not promise to "report
-back": it waits for the result inside the turn, or says plainly that it will not arrive by itself.
+scheduled job's has nowhere to appear when nothing is open. The adapter keeps what arrives (the
+last 20, cut on a line at 4,000 characters each) and shows it at the top of the next reply, as a
+message of its own ahead of the answer, under "While you were away, Hermes finished something in
+the background", each result with the time it arrived and quoted line by line (what a background
+task prints is not the reply and is not trusted as the interface). It is kept only in the
+gateway's memory: **a restart loses it**, and nothing shows the task as running meanwhile. If the
+desktop has closed the turn it was about to be shown in, it is kept for the next one. So Hermes is
+told it cannot speak unasked and must not promise to "report back": it waits for the result inside
+the turn, or says plainly that it will not arrive by itself.
 
 ## What Hermes is told about the desktop
 
