@@ -86,6 +86,9 @@ def _install_fake_hermes():
         def _mark_disconnected(self):
             pass
 
+        def _mark_connected(self):
+            pass
+
         def build_source(self, **kw):
             return types.SimpleNamespace(**kw)
 
@@ -132,15 +135,17 @@ def _load():
     return adapter, desktop
 
 
-adapter_mod = desktop_mod = None
+adapter_mod = desktop_mod = questions_mod = output_mod = None
 _SAVED: Dict[str, Any] = {}
 
 
 def setUpModule():
     """Hermes's names are faked for this file only: the contract test beside it wants the real ones."""
-    global adapter_mod, desktop_mod
+    global adapter_mod, desktop_mod, questions_mod, output_mod
     _SAVED.update(_install_fake_hermes())
     adapter_mod, desktop_mod = _load()
+    questions_mod = sys.modules["yantrik_fake_gateway_plugin.questions"]
+    output_mod = sys.modules["yantrik_fake_gateway_plugin.output"]
 
 
 def tearDownModule():
@@ -175,18 +180,21 @@ class FakeDesktop:
 class AdapterCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.fake = FakeDesktop()
-        self._saved = (desktop_mod.call, adapter_mod.QUESTION_SECONDS)
+        self._saved = (desktop_mod.call, questions_mod.QUESTION_SECONDS)
         desktop_mod.call = self.fake
-        adapter_mod.QUESTION_SECONDS = 0.05
+        questions_mod.QUESTION_SECONDS = 0.05
         CLARIFY.resolved.clear()
         CLARIFY.cleared.clear()
         CLARIFY.parked = True
         self.adapter = adapter_mod.YantrikAdapter(sys.modules["gateway.config"].PlatformConfig())
         self.adapter._session = "s1"
         self.adapter._address = "/nowhere"
+        # Hermes's session store: which session id the Lens chat's key holds now.
+        self.store_ids = {"session-1": "20261102_101500_a1b2c3"}
+        self.adapter._session_store = types.SimpleNamespace(peek_session_id=lambda key: self.store_ids.get(key))
 
     def tearDown(self):
-        desktop_mod.call, adapter_mod.QUESTION_SECONDS = self._saved
+        desktop_mod.call, questions_mod.QUESTION_SECONDS = self._saved
 
     def open_turn(self, turn_id="7"):
         turn = self.adapter._ledger.open(turn_id, adapter_mod.CHAT_ID, "Add a dentist appointment next Thursday")
@@ -269,7 +277,7 @@ class BackgroundResultTests(AdapterCase):
         turn = self.open_turn("8")
         await self.adapter.send(adapter_mod.CHAT_ID, "Here is your calendar.")
         said = self.fake.said()
-        self.assertIn(adapter_mod.LATE_HEADING, said)
+        self.assertIn(output_mod.LATE_HEADING, said)
         self.assertIn("Saturday: 14 / 9 degrees, dry.", said)
         self.assertLess(said.index("Saturday"), said.index("Here is your calendar."))
         await self.adapter.send(adapter_mod.CHAT_ID, "More.")
@@ -282,10 +290,10 @@ class BackgroundResultTests(AdapterCase):
         self.assertEqual(self.adapter._late, [])
 
     async def test_what_is_kept_is_bounded(self):
-        for i in range(adapter_mod.LATE_KEPT + 5):
+        for i in range(output_mod.LATE_KEPT + 5):
             await self.adapter.send(adapter_mod.CHAT_ID, f"result {i} " + "x" * 10000)
-        self.assertEqual(len(self.adapter._late), adapter_mod.LATE_KEPT)
-        self.assertTrue(all(len(m) <= adapter_mod.LATE_CHARS for m in self.adapter._late))
+        self.assertEqual(len(self.adapter._late), output_mod.LATE_KEPT)
+        self.assertTrue(all(len(m) <= output_mod.LATE_CHARS for m in self.adapter._late))
 
 
 class LensProofTests(AdapterCase):
@@ -301,8 +309,19 @@ class LensProofTests(AdapterCase):
         adapter_mod._ADAPTERS[:] = [self.adapter]
         standing = adapter_mod.lens_standing()
         self.assertEqual(standing.lens_key, "session-1")
+        self.assertEqual(standing.session_id, "20261102_101500_a1b2c3")
         self.assertEqual(standing.open_ids, frozenset({"9"}))
         self.assertTrue(standing.token_current)
+
+    async def test_the_lens_session_id_follows_the_store_so_a_new_conversation_is_not_the_old_one(self):
+        await self.adapter._on_turn({"turn_id": "9", "text": "hi", "agent_token": "tok-lens-1"})
+        self.store_ids["session-1"] = "20261102_103000_ffeedd"  # the person's +: Hermes begins a new session
+        self.assertEqual(self.adapter.standing().session_id, "20261102_103000_ffeedd")
+
+    async def test_a_store_that_cannot_say_leaves_no_call_proven(self):
+        await self.adapter._on_turn({"turn_id": "9", "text": "hi", "agent_token": "tok-lens-1"})
+        self.adapter._session_store = None
+        self.assertEqual(self.adapter.standing().session_id, "")
 
     async def test_a_turn_with_no_token_leaves_the_lens_bridge_without_one(self):
         await self.adapter._on_turn({"turn_id": "9", "text": "hi"})
@@ -325,6 +344,63 @@ class LensProofTests(AdapterCase):
         await self.adapter._on_turn({"turn_id": "9", "text": "hi", "agent_token": "tok-lens-1"})
         await self.adapter.disconnect()
         self.assertFalse(adapter_mod.LENS.token_current)
+
+
+class OfferTests(unittest.TestCase):
+    """The platform's list follows what this process registered, and is asked for as the gateway connects."""
+
+    def setUp(self):
+        self.tools = sys.modules["yantrik_fake_gateway_plugin.lens_tools"]
+        self._saved = list(self.tools.REGISTERED)
+        self.addCleanup(lambda: self.tools.REGISTERED.__setitem__(slice(None), self._saved))
+
+    def test_proxies_registered_means_the_list_is_turned_on(self):
+        self.tools.REGISTERED[:] = ["os_apps"]
+        asked = []
+        self.assertTrue(self.tools.offer_to_platform(lambda on: asked.append(on) or True))
+        self.assertEqual(asked, [True])
+
+    def test_none_registered_means_the_plain_list_is_put_back(self):
+        self.tools.REGISTERED[:] = []
+        asked = []
+        self.tools.offer_to_platform(lambda on: asked.append(on) or True)
+        self.assertEqual(asked, [False])
+
+    def test_a_failure_to_change_the_list_is_not_an_error_in_the_gateway(self):
+        def boom(on):
+            raise OSError("read-only")
+
+        self.assertFalse(self.tools.offer_to_platform(boom))
+
+    def test_plugin_load_alone_never_touches_the_list(self):
+        # Any `hermes` command loads plugins; a CLI run while an older gateway is still up (after an
+        # update, before its restart) must not name tools that gateway does not have.
+        asked = []
+        saved = self.tools.set_platform_list
+        self.tools.set_platform_list = lambda on: asked.append(on) or True
+        self.addCleanup(setattr, self.tools, "set_platform_list", saved)
+        ctx = types.SimpleNamespace(register_tool=lambda **kw: None)
+        self.tools.install(ctx, lambda: None, adapter_mod.LENS)
+        self.assertEqual(asked, [])
+
+
+class ConnectOffersTests(AdapterCase):
+    async def test_the_gateways_connect_asks_for_the_list_that_matches_what_it_registered(self):
+        tools = sys.modules["yantrik_fake_gateway_plugin.lens_tools"]
+        asked = []
+        saved = (tools.set_platform_list, list(tools.REGISTERED))
+        tools.set_platform_list = lambda on: asked.append(on) or True
+        tools.REGISTERED[:] = ["os_apps"]
+
+        def restore():
+            tools.set_platform_list = saved[0]
+            tools.REGISTERED[:] = saved[1]
+
+        self.addCleanup(restore)
+        self.addCleanup(adapter_mod._ADAPTERS.clear)
+        await self.adapter.connect()
+        self.assertEqual(asked, [True])
+        await self.adapter.disconnect()
 
 
 class SteeringTests(unittest.TestCase):

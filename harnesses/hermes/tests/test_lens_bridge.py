@@ -83,6 +83,7 @@ def setUpModule():
     sc = types.ModuleType("gateway.session_context")
     sc._SESSION_KEY = contextvars.ContextVar("key", default=object())
     sc._SESSION_MESSAGE_ID = contextvars.ContextVar("mid", default=object())
+    sc._SESSION_ID = contextvars.ContextVar("sid", default=object())
     gw = types.ModuleType("gateway")
     gw.session_context = sc
     mods["saved"] = {k: sys.modules.get(k) for k in ("gateway", "gateway.session_context")}
@@ -101,6 +102,8 @@ def tearDownModule():
 
 
 LENS_KEY = "agent:main:yantrik:dm:desktop"
+LENS_SESSION = "20261102_101500_a1b2c3"
+BG_SESSION = "bg_101730_d4e5f6"
 
 
 class Case(unittest.TestCase):
@@ -117,7 +120,7 @@ class Case(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
 
     def standing(self):
-        return mods["lens_route"].Standing(LENS_KEY, frozenset(self.open_ids), self.lens.token_current)
+        return mods["lens_route"].Standing(LENS_KEY, LENS_SESSION, frozenset(self.open_ids), self.lens.token_current)
 
     def shared_call(self, tool, args):
         text, is_error = self.shared.call(tool, args)
@@ -126,12 +129,13 @@ class Case(unittest.TestCase):
     def handler(self, tool):
         return mods["lens_tools"].make_handler(tool, self.lens, self.standing, self.shared_call)
 
-    def run_as(self, key, message_id, tool, args=None):
+    def run_as(self, key, message_id, tool, args=None, session_id=LENS_SESSION):
         """The handler as a worker thread of a turn with these session values would run it."""
         sc = mods["sc"]
         ctx = contextvars.copy_context()
         ctx.run(sc._SESSION_KEY.set, key)
         ctx.run(sc._SESSION_MESSAGE_ID.set, message_id)
+        ctx.run(sc._SESSION_ID.set, session_id)
         return ctx.run(self.handler(tool), args or {})
 
     def status(self, raw):
@@ -141,29 +145,37 @@ class Case(unittest.TestCase):
 class RouteTests(unittest.TestCase):
     def setUp(self):
         self.r = mods["lens_route"]
-        self.s = self.r.Standing(LENS_KEY, frozenset({"7", "8"}), True)
+        self.s = self.r.Standing(LENS_KEY, LENS_SESSION, frozenset({"7", "8"}), True)
 
     def test_a_call_from_an_open_lens_turn_with_a_current_token_is_the_lenss(self):
-        self.assertEqual(self.r.route(LENS_KEY, "7", self.s), self.r.LENS)
+        self.assertEqual(self.r.route(LENS_KEY, "7", LENS_SESSION, self.s), self.r.LENS)
 
     def test_everything_else_is_the_gateways(self):
+        S = self.r.Standing
         cases = {
-            "cron (another key)": ("cron:job-1", "7", self.s),
-            "another platform": ("agent:main:telegram:dm:42", "7", self.s),
-            "a /bg task after its turn closed (same key, message no longer open)": (LENS_KEY, "6", self.s),
-            "no message id": (LENS_KEY, "", self.s),
-            "a key that was never set (the sentinel object)": (object(), "7", self.s),
-            "a message id never set": (LENS_KEY, object(), self.s),
-            "nothing read at all": (None, None, self.s),
-            "no standing (no adapter connected)": (LENS_KEY, "7", None),
-            "token not current": (LENS_KEY, "7", self.r.Standing(LENS_KEY, frozenset({"7"}), False)),
-            "the adapter has not seen a Lens turn yet": (LENS_KEY, "7", self.r.Standing("", frozenset({"7"}), True)),
-            "a near-miss key": (LENS_KEY + "x", "7", self.s),
-            "an empty key": ("", "7", self.s),
+            "cron (another key)": ("cron:job-1", "7", LENS_SESSION, self.s),
+            "another platform": ("agent:main:telegram:dm:42", "7", LENS_SESSION, self.s),
+            "a /bg task after its turn closed (same key, message no longer open)": (LENS_KEY, "6", BG_SESSION, self.s),
+            # At Hermes 38d3dbc a /bg task runs under copy_context and never rebinds the session vars, so
+            # it carries the Lens's key AND the open turn's message id: only its agent's session id differs.
+            "a /bg task started in the turn that is still open": (LENS_KEY, "7", BG_SESSION, self.s),
+            "the Lens's session id from before the person's + (a stale conversation)": (LENS_KEY, "7", "20261102_090000_old", self.s),
+            "no session id": (LENS_KEY, "7", "", self.s),
+            "no message id": (LENS_KEY, "", LENS_SESSION, self.s),
+            "a key that was never set (the sentinel object)": (object(), "7", LENS_SESSION, self.s),
+            "a message id never set": (LENS_KEY, object(), LENS_SESSION, self.s),
+            "a session id never set": (LENS_KEY, "7", object(), self.s),
+            "nothing read at all": (None, None, None, self.s),
+            "no standing (no adapter connected)": (LENS_KEY, "7", LENS_SESSION, None),
+            "token not current": (LENS_KEY, "7", LENS_SESSION, S(LENS_KEY, LENS_SESSION, frozenset({"7"}), False)),
+            "the adapter has not seen a Lens turn yet": (LENS_KEY, "7", LENS_SESSION, S("", LENS_SESSION, frozenset({"7"}), True)),
+            "Hermes's store could not say which session is the Lens's": (LENS_KEY, "7", LENS_SESSION, S(LENS_KEY, "", frozenset({"7"}), True)),
+            "a near-miss key": (LENS_KEY + "x", "7", LENS_SESSION, self.s),
+            "an empty key": ("", "7", LENS_SESSION, self.s),
         }
-        for label, (key, message_id, standing) in cases.items():
+        for label, (key, message_id, session_id, standing) in cases.items():
             with self.subTest(label):
-                self.assertEqual(self.r.route(key, message_id, standing), self.r.SHARED)
+                self.assertEqual(self.r.route(key, message_id, session_id, standing), self.r.SHARED)
 
     def test_a_value_that_merely_compares_equal_is_not_the_lenss(self):
         class Equal:
@@ -173,9 +185,10 @@ class RouteTests(unittest.TestCase):
             def __hash__(self):
                 return hash("7")
 
-        for key, message_id in ((Equal(), "7"), (LENS_KEY, Equal())):
+        for key, message_id, session_id in ((Equal(), "7", LENS_SESSION), (LENS_KEY, Equal(), LENS_SESSION),
+                                            (LENS_KEY, "7", Equal())):
             with self.subTest(key=type(key).__name__):
-                self.assertEqual(self.r.route(key, message_id, self.s), self.r.SHARED)
+                self.assertEqual(self.r.route(key, message_id, session_id, self.s), self.r.SHARED)
 
     def test_a_standing_that_cannot_be_computed_is_the_gateways(self):
         def boom():
@@ -213,6 +226,23 @@ class RoutingThroughHandlersTests(Case):
         self.assertEqual(out["lens"]["pid"], out["lens2"]["pid"])
         self.assertFalse(out["cron"]["has_token"] or out["bg"]["has_token"])
         self.assertEqual(out["cron"]["pid"], out["bg"]["pid"], "both are the gateway's one bridge")
+
+    def test_a_bg_task_inside_an_open_lens_turn_is_the_gateways_even_with_the_lenss_key_and_message(self):
+        # The case the first two checks alone get wrong (Hermes 38d3dbc, run_turn.py, run.py): /bg inherits
+        # the turn's ContextVars through copy_context, so key and message id are the Lens's while the turn
+        # is open. Its agent is built with session_id=task_id.
+        self.lens.set_token("tok-lens-1")
+        bg = self.status(self.run_as(LENS_KEY, "7", "taint_status", session_id=BG_SESSION))
+        lens = self.status(self.run_as(LENS_KEY, "7", "taint_status"))
+        self.assertFalse(bg["has_token"])
+        self.assertTrue(lens["has_token"])
+        self.assertNotEqual(bg["pid"], lens["pid"])
+
+    def test_a_bg_task_that_read_private_state_cannot_taint_or_use_the_lens_conversation(self):
+        self.lens.set_token("tok-lens-1")
+        self.run_as(LENS_KEY, "7", "os_describe", session_id=BG_SESSION)
+        self.assertFalse(self.status(self.run_as(LENS_KEY, "7", "taint_status"))["tainted"],
+                         "its read went to the gateway's bridge, not the Lens conversation's")
 
     def test_before_any_token_everything_is_the_gateways(self):
         self.assertFalse(self.status(self.run_as(LENS_KEY, "7", "taint_status"))["has_token"])
@@ -291,6 +321,7 @@ class TokenTests(Case):
         ctx = contextvars.copy_context()
         ctx.run(mods["sc"]._SESSION_KEY.set, "cron:job")
         ctx.run(mods["sc"]._SESSION_MESSAGE_ID.set, "7")
+        ctx.run(mods["sc"]._SESSION_ID.set, LENS_SESSION)
         ctx.run(handler, {"q": 1})
         self.assertEqual(seen, [("os_apps", {"q": 1})])
         self.assertNotIn("tok-secret", json.dumps(seen))
@@ -308,6 +339,7 @@ class FailClosedTests(Case):
             ctx = contextvars.copy_context()
             ctx.run(mods["sc"]._SESSION_KEY.set, LENS_KEY)
             ctx.run(mods["sc"]._SESSION_MESSAGE_ID.set, "7")
+            ctx.run(mods["sc"]._SESSION_ID.set, LENS_SESSION)
             out.append(ctx.run(handler, {}))
 
         t = threading.Thread(target=call)
@@ -322,8 +354,8 @@ class FailClosedTests(Case):
     def test_a_plugin_restarted_mid_turn_has_no_token_until_the_desktop_gives_one(self):
         restarted = mods["lens_bridge"].LensBridge(self.command)
         self.addCleanup(restarted.stop)
-        standing = mods["lens_route"].Standing(LENS_KEY, frozenset({"7"}), restarted.token_current)
-        self.assertEqual(mods["lens_route"].route(LENS_KEY, "7", standing), mods["lens_route"].SHARED)
+        standing = mods["lens_route"].Standing(LENS_KEY, LENS_SESSION, frozenset({"7"}), restarted.token_current)
+        self.assertEqual(mods["lens_route"].route(LENS_KEY, "7", LENS_SESSION, standing), mods["lens_route"].SHARED)
 
     def test_a_dead_bridge_is_an_error_to_the_mind_not_a_call_made_elsewhere(self):
         self.lens.set_token("tok-1")
@@ -336,6 +368,7 @@ class FailClosedTests(Case):
         ctx = contextvars.copy_context()
         ctx.run(mods["sc"]._SESSION_KEY.set, LENS_KEY)
         ctx.run(mods["sc"]._SESSION_MESSAGE_ID.set, "7")
+        ctx.run(mods["sc"]._SESSION_ID.set, LENS_SESSION)
         raw = ctx.run(handler, {})
         self.assertEqual(seen, [])
         self.assertTrue("error" in json.loads(raw) or "result" in json.loads(raw))
@@ -412,6 +445,59 @@ class CleanupTests(Case):
             self.assertFalse(self._reaped(child), "the bridge outlived the gateway that started it")
         finally:
             parent.kill()
+
+
+class SharedPathTests(Case):
+    """A call that is not the Lens's reaches the gateway's bridge through Hermes's registry, under the
+    name Hermes gave it (at 38d3dbc: mcp__<server>__<tool>, tools/mcp_tool_schema.py)."""
+
+    def fake_registry(self, with_namer):
+        seen = []
+        tools = types.ModuleType("tools")
+        reg = types.ModuleType("tools.registry")
+        reg.registry = types.SimpleNamespace(dispatch=lambda name, args: seen.append((name, args)) or '{"result": "x"}')
+        saved = {k: sys.modules.get(k) for k in ("tools", "tools.registry", "tools.mcp_tool_schema")}
+        sys.modules.update({"tools": tools, "tools.registry": reg})
+        if with_namer:
+            namer = types.ModuleType("tools.mcp_tool_schema")
+            namer.mcp_prefixed_tool_name = lambda server, tool: "NAMED_%s_%s" % (server, tool)
+            sys.modules["tools.mcp_tool_schema"] = namer
+        else:
+            sys.modules.pop("tools.mcp_tool_schema", None)
+
+        def restore():
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+        self.addCleanup(restore)
+        return seen
+
+    def test_the_shared_name_is_the_one_hermes_gives_when_it_can_say(self):
+        self.fake_registry(True)
+        self.assertEqual(mods["lens_tools"].shared_name("os_apps"), "NAMED_yantrik_os_os_apps")
+
+    def test_without_hermess_namer_it_is_the_double_underscore_form_at_the_pin(self):
+        self.fake_registry(False)
+        self.assertEqual(mods["lens_tools"].shared_name("os_apps"), "mcp__yantrik_os__os_apps")
+
+    def test_a_cron_call_is_dispatched_to_the_registered_mcp_tool(self):
+        seen = self.fake_registry(False)
+        handler = mods["lens_tools"].make_handler("os_apps", self.lens, self.standing)  # the default shared path
+        ctx = contextvars.copy_context()
+        ctx.run(mods["sc"]._SESSION_KEY.set, "cron:job")
+        ctx.run(mods["sc"]._SESSION_MESSAGE_ID.set, "7")
+        ctx.run(mods["sc"]._SESSION_ID.set, "cron_session")
+        ctx.run(handler, {"q": 1})
+        self.assertEqual(seen, [("mcp__yantrik_os__os_apps", {"q": 1})])
+
+    def test_with_no_registry_the_answer_is_an_error_not_a_crash(self):
+        saved = sys.modules.get("tools.registry")
+        sys.modules["tools.registry"] = None  # an import of it fails
+        self.addCleanup(lambda: sys.modules.__setitem__("tools.registry", saved) if saved else sys.modules.pop("tools.registry", None))
+        self.assertIn("error", json.loads(mods["lens_tools"]._dispatch_shared("os_apps", {})))
 
 
 class InstallTests(Case):

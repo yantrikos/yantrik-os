@@ -53,11 +53,24 @@ if [ -f "$dest/plugin.yaml" ] && [ -f "$shipped/plugin.yaml" ]; then
     was=$(hermes_tree_hash "$dest")
     now=$(hermes_tree_hash "$shipped")
     if [ "$was" != "$now" ]; then
+        had_lens=0; [ -f "$dest/lens_tools.py" ] && had_lens=1
         new=$(hermes_staging yantrik)-new || fail "could not make ~/.hermes/.yantrik-staging"
         hermes_desktop_plugin_build "$shipped" "$new" \
             && hermes_swap_dir "$new" "$dest" \
             || { rm -rf "$new"; fail "could not refresh Hermes's desktop plugin; the earlier one is in place"; }
         changed="$changed yantrik"
+        # The Lens bridge's tool list (harnesses/hermes/README.md) is turned on by the plugin when a
+        # gateway starts with it, and must never outlive it: an earlier plugin (an OS rollback) has no
+        # proxies, and a platform list that names them and drops the shared tools would leave Hermes
+        # with no desktop tools at all. Hermes reads its config per message, so this takes effect at
+        # once, under the gateway that is still running. Turning it on again is the new plugin's, at
+        # its gateway's next start.
+        if [ "$had_lens" = 1 ] && [ ! -f "$shipped/lens_tools.py" ]; then
+            hp=$(python3 "$HARNESS_LIB/hermes_runtime.py" </dev/null) \
+                && "$hp" "$INSTALL_LIB/hermes_config.py" lens off - >/dev/null \
+                || fail "this build's Hermes plugin has no Lens bridge, but Hermes's platform list still names it; run: $INSTALL_LIB/hermes_config.py lens off -"
+            say "turned off the Lens bridge's tool list: this build's plugin has none"
+        fi
         say "refreshed Hermes's desktop plugin in ~/.hermes/plugins/yantrik (was $(echo "$was" | cut -c1-12), now $(echo "$now" | cut -c1-12))"
     fi
 fi

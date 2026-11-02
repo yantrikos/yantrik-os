@@ -31,11 +31,9 @@ import getpass
 import logging
 import os
 import sys
-import re
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -43,13 +41,14 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     ProcessingOutcome,
-    SendResult,
 )
 from gateway.session import build_session_key
 
 from . import desktop, lens_bridge, lens_route, lens_tools
-from .question import Card as _Card, without_skip_hint as _without_skip_hint
 from .steering import PLATFORM_HINT
+from .question import Card as _Card  # noqa: F401  (named in a type comment)
+from .output import CONFIRMED_BY_ASKING, OutputMixin  # noqa: F401
+from .questions import QuestionsMixin, _approval_pending, _question_pending
 
 logger = logging.getLogger(__name__)
 
@@ -75,31 +74,9 @@ HEARTBEAT_SECONDS = 20.0
 PICKUP_SECONDS = 180.0
 # How quiet a turn whose gateway session has ended must be before it is treated as abandoned.
 ABANDONED_QUIET_SECONDS = 90.0
-# The destructive commands the person has already confirmed by sending them from the desktop: the
-# Lens's new-conversation button sends /new, and a person typing /new or /reset there asked for it
-# in so many words. Hermes 0.21 registers both as "new". Anything else (/undo) is still asked.
-CONFIRMED_BY_ASKING = {"new", "reset"}
 # The commands that end the run in progress, and with it any question it is waiting on.
 ENDS_THE_RUN = {"stop", "new", "reset"}
-# How Hermes's "still working" heartbeat begins ("⏳ Working — 3 min — iteration 1/500, clarify").
-# It names the tool and the iteration budget, which are Hermes's internals, not the answer.
-STATUS_MARK = "⏳"
 
-# How long a question may wait for the person before the turn stops waiting on it (#1070). Hermes
-# itself waits an hour, and a turn blocked on a question nobody saw was blocked until the gateway
-# was restarted (battery of 2 Nov, tasks 3, 13 and 17). Long enough to read it and think; short
-# enough that "I asked and you were away" is what the person comes back to, not a frozen reply.
-QUESTION_SECONDS = float(os.environ.get("YANTRIK_QUESTION_SECONDS") or 300.0)
-# What Hermes is told when the question went unanswered: plain, and with a way on.
-NOT_ANSWERED = (
-    "The person did not answer within {minutes} minutes, so there is no answer. Do not ask the "
-    "same question again. Do the part of the task that does not depend on it, and say plainly "
-    "which part you did not do and that it was waiting on their answer."
-)
-# What a result that arrives with no conversation open is shown under, in the next reply.
-LATE_HEADING = "While you were away, Hermes finished something in the background:"
-LATE_KEPT = 20
-LATE_CHARS = 4000
 
 
 
@@ -144,7 +121,7 @@ def lens_standing() -> Optional[lens_route.Standing]:
     return _ADAPTERS[-1].standing() if _ADAPTERS else None
 
 
-class YantrikAdapter(BasePlatformAdapter):
+class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
     """The desktop's chat, as a Hermes platform."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
@@ -189,6 +166,7 @@ class YantrikAdapter(BasePlatformAdapter):
         # the last connection's loops running beside the new ones: two pollers would each take
         # turns and two heartbeats would keep one session alive twice over.
         _ADAPTERS[:] = [self]
+        await asyncio.to_thread(lens_tools.offer_to_platform)
         LENS.stop()  # a reconnect starts with no token and no bridge: the next turn brings its own
         stale, self._tasks = self._tasks, []
         for task in stale:
@@ -377,7 +355,16 @@ class YantrikAdapter(BasePlatformAdapter):
         # A run that asked a question goes on in the turn that answered it, but Hermes still knows
         # it by the turn that started it.
         open_ids |= {origin for origin, carrier in self._carried.items() if carrier in open_ids}
-        return lens_route.Standing(self._lens_key, frozenset(open_ids), LENS.token_current and bool(self._session))
+        return lens_route.Standing(
+            self._lens_key, self._lens_session_id(), frozenset(open_ids), LENS.token_current and bool(self._session))
+
+    def _lens_session_id(self) -> str:
+        """The session id Hermes's store holds for the Lens chat now (it changes at each /new), or "" when
+        it cannot be read: then no call is proven the Lens's."""
+        try:
+            return str(self._session_store.peek_session_id(self._lens_key) or "")
+        except Exception:
+            return ""
 
     async def _while_busy(self, event: MessageEvent, turn: desktop.Turn, session_key: str) -> None:
         """A message that arrived while Hermes is working on an earlier one."""
@@ -426,47 +413,7 @@ class YantrikAdapter(BasePlatformAdapter):
         await self._stream(turn, " ".join(lines))
         await self._finish(turn.turn_id, why="told the person Hermes is busy")
 
-    async def _answer_question(self, event: MessageEvent, turn: desktop.Turn, session_key: str) -> None:
-        """The person answered the question Hermes asked; this turn carries the rest of the run.
 
-        The gateway takes the answer inline and says nothing itself: the run that asked goes on,
-        and what it says next is the answer to this turn. So the turn is left open, and closed when
-        that run ends (`on_processing_complete`), as any turn is.
-        """
-        card = next((cid for cid, c in self._cards.items() if c.session_key == session_key), None)
-        origin = None if card is not None else self._asked.pop(session_key, None)
-        await self.handle_message(event)
-        if _question_pending(session_key):
-            # Hermes kept the question: the reply was not one of its choices.
-            if origin is not None:
-                self._asked[session_key] = origin
-            await self._stream(turn, "That was not one of the choices. Send its number, or your own words.")
-            await self._finish(turn.turn_id, why="the answer did not fit the question")
-            return
-        if card is not None:
-            # The question was a card, and the turn that asked it is still open: the run goes on
-            # there, not here. A desktop that sends typed words to the card does not reach this;
-            # one from before it does (or another of the person's platforms), and is told where.
-            self._cards.pop(card, None)
-            await self._stream(turn, "Sent to Hermes as the answer to its question. Its reply goes on above.")
-            await self._finish(turn.turn_id, why="answered a question shown as a card")
-            return
-        self._ledger.mark_started(turn.turn_id)
-        if origin is not None:
-            self._carried[origin] = turn.turn_id
-        logger.info("[yantrik] turn %s answered Hermes's question and carries its run", turn.turn_id)
-
-    def _end_question(self, session_key: str) -> None:
-        self._asked.pop(session_key, None)
-        self._cards = {cid: c for cid, c in self._cards.items() if c.session_key != session_key}
-        try:
-            from tools import clarify_gateway
-
-            ended = clarify_gateway.clear_session(session_key)
-        except Exception:
-            return
-        if ended:
-            logger.info("[yantrik] ended the question Hermes was waiting on")
 
     async def _watch_pickup(self, turn_id: str) -> None:
         await asyncio.sleep(PICKUP_SECONDS)
@@ -505,327 +452,19 @@ class YantrikAdapter(BasePlatformAdapter):
                 why="the gateway failed it",
             )
 
-    async def _finish(self, turn_id: str, error: Optional[str] = None, why: str = "answered") -> None:
-        """Close a turn on the desktop, exactly once.
-
-        A turn that already said something is completed even when the gateway reports a failure:
-        what was streamed stays on screen, and a failure would tell the person nothing was.
-        """
-        turn = self._ledger.close(turn_id)
-        if turn is None or not self._session:
-            return
-        # Which path closed a turn is the first question when an answer goes missing: everything
-        # the gateway says after a turn closes has nowhere to land.
-        logger.info(
-            "[yantrik] turn %s closed (%s) after %.0fs%s",
-            turn_id,
-            why,
-            time.monotonic() - turn.opened,
-            "" if turn.said_anything else ", having said nothing",
-        )
-        try:
-            if error and not turn.said_anything:
-                await self._call(
-                    desktop.FAIL,
-                    {"session": self._session, "turn_id": int(turn_id), "error": error},
-                )
-            else:
-                await self._call(desktop.COMPLETE, {"session": self._session, "turn_id": int(turn_id)})
-        except desktop.HarnessError as exc:
-            logger.info("[yantrik] turn %s was already gone on the desktop: %s", turn_id, exc)
 
     # ── Text out ───────────────────────────────────────────────────────────────────────────────
 
-    async def _stream(self, turn: desktop.Turn, delta: str) -> bool:
-        if not self._session:
-            return False
-        try:
-            await self._call(
-                desktop.CHUNK,
-                {"session": self._session, "turn_id": int(turn.turn_id), "delta": delta},
-            )
-            return True
-        except desktop.HarnessError as exc:
-            # The desktop no longer waits for this turn (it timed out, or the shell restarted).
-            logger.info("[yantrik] turn %s is closed on the desktop: %s", turn.turn_id, exc)
-            self._ledger.close(turn.turn_id)
-            return False
 
-    async def send(
-        self,
-        chat_id: str,
-        content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        turn = self._ledger.route(chat_id, self._carried.get(reply_to or "", reply_to))
-        if _is_status(content, metadata):
-            # Kept out of the answer, and given an id so Hermes edits it rather than sending anew.
-            # With no turn open (a question asked, its answer not yet sent) there is no one to tell.
-            if turn is None:
-                return SendResult(success=False, error="no open conversation turn on the desktop")
-            message_id = self._ledger.quiet(turn)
-            await self._status(turn, content)
-            return SendResult(success=True, message_id=message_id)
-        if turn is None:
-            # Something with no question to answer: a scheduled job's result, a background
-            # process finishing. The desktop protocol has no way to say something unasked yet, so
-            # it is kept and shown at the top of the next reply, under a line that says when it
-            # came (#1070). Not dropped, and not claimed to be on screen now.
-            logger.info("[yantrik] nothing open on the desktop for a %d-character message; kept", len(content))
-            if content.strip():
-                self._late.append(content.strip()[:LATE_CHARS])
-                del self._late[:-LATE_KEPT]
-            return SendResult(success=True)
-        if self._late and not turn.said_anything:
-            content = "\n\n".join([LATE_HEADING, *self._late, "---", content])
-            self._late.clear()
-        if "requires approval" in content or "/approve" in content:
-            # Hermes is blocked until the person answers. Said in the log too, so a command waiting
-            # on someone is visible to whoever is looking at the machine rather than only the chat.
-            logger.info("[yantrik] turn %s waits for the person: %s", turn.turn_id, " ".join(content.split())[:300])
-        message_id, delta = self._ledger.sent(turn, content)
-        if not await self._stream(turn, delta):
-            return SendResult(success=False, error="the desktop closed this turn")
-        return SendResult(success=True, message_id=message_id)
 
-    async def edit_message(
-        self,
-        chat_id: str,
-        message_id: str,
-        content: str,
-        *,
-        finalize: bool = False,
-    ) -> SendResult:
-        quiet = self._ledger.quiet_turn(message_id)
-        if quiet is not None:
-            await self._status(quiet, content)
-            return SendResult(success=True, message_id=message_id)
-        edited = self._ledger.edited(message_id, content)
-        if edited is None:
-            return SendResult(success=False, error="that turn is closed")
-        turn, delta = edited
-        if delta and not await self._stream(turn, delta):
-            return SendResult(success=False, error="the desktop closed this turn")
-        return SendResult(success=True, message_id=message_id)
 
-    async def _status(self, turn: desktop.Turn, content: str) -> None:
-        """Hermes's heartbeat, as what the desktop shows beside the answer: how long, nothing more."""
-        line = (content.strip().splitlines() or [""])[0].lstrip(STATUS_MARK).strip()
-        text = " — ".join(line.split(" — ")[:2])
-        if not self._session or not text:
-            return
-        try:
-            await self._call(
-                desktop.EVENT,
-                {"session": self._session, "turn_id": int(turn.turn_id), "event": {"kind": "status", "text": text}},
-            )
-        except desktop.HarnessError as exc:
-            # A desktop older than `harness.event`, or a turn it has closed. The heartbeat is not
-            # needed for anything; the adapter's own keeps the turn alive.
-            self._learn_events(exc)
-            logger.debug("[yantrik] turn %s status not shown: %s", turn.turn_id, exc)
-            return
-        self._events = True
 
-    def _learn_events(self, exc: Exception) -> None:
-        """Remember a desktop that does not know `harness.event`, so a question goes as text at once."""
-        if "unknown method" in str(exc).lower():
-            self._events = False
 
-    async def send_clarify(
-        self,
-        chat_id: str,
-        question: str,
-        choices: Optional[list],
-        clarify_id: str,
-        session_key: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Hermes asks the person something and waits for the answer (Hermes 0.21+).
 
-        On a desktop that takes `harness.event` the question is a card in the turn that asked it
-        (a `request` event, its choices as buttons and Hermes's recommended one marked), and the
-        turn stays open: the answer comes back on a poll (`_take_answers`) and the run's reply goes
-        on in the same bubble.
 
-        Otherwise (an older desktop, or one that refused the card) the question is the last thing
-        the asking turn says, and the turn is completed: the person's answer is the next message,
-        and the desktop sends it only once this turn is done. Kept open with no card, as the base
-        platform's plain `send` kept it, the answer queued behind it until Hermes's clarify timed
-        out an hour later (VM 541, 14 Oct 2026). A typed number or text resolves the question as it
-        does in the base, through the gateway's text intercept.
-        """
-        text = f"❓ {question}"
-        if choices:
-            numbered = [f"{i}. {choice}" for i, choice in enumerate(choices, start=1)]
-            text = "\n".join([text, "", *numbered, "", "Reply with the number, the option text, or your own answer."])
-            # Either way: a typed answer from a desktop that sends it as a message, or from another
-            # of the person's platforms, still reaches the question through the text intercept.
-            try:
-                from tools import clarify_gateway
 
-                clarify_gateway.mark_awaiting_text(clarify_id)
-            except Exception:
-                logger.warning("[yantrik] could not ready Hermes's question for a typed answer")
-        turn = self._ledger.route(chat_id, None)
-        if turn is not None and await self._ask_card(turn, question, choices, clarify_id, session_key):
-            return SendResult(success=True)
-        if turn is None:
-            logger.info(
-                "[yantrik] Hermes asked with nothing open on the desktop: %s", " ".join(text.split())[:300]
-            )
-            return SendResult(success=False, error="no open conversation turn on the desktop")
-        self._asked[session_key] = self._run_of(turn.turn_id)
-        message_id, delta = self._ledger.sent(turn, text)
-        if not await self._stream(turn, delta):
-            return SendResult(success=False, error="the desktop closed this turn")
-        await self._finish(turn.turn_id, why="Hermes asked the person a question")
-        return SendResult(success=True, message_id=message_id)
 
-    async def _ask_card(
-        self, turn: desktop.Turn, question: str, choices: Optional[list], clarify_id: str, session_key: str
-    ) -> bool:
-        """Show Hermes's question as a card in `turn`. False when the desktop did not take it."""
-        if self._events is False or not self._session:
-            return False
-        prompt, skippable = _without_skip_hint(question)
-        card = _Card.of(turn.turn_id, session_key, choices, skippable)
-        event: Dict[str, Any] = {"kind": "request", "request_id": clarify_id, "prompt": prompt}
-        if card.labels:
-            event["options"] = card.labels
-        if card.recommended is not None:
-            event["recommended"] = card.recommended
-        try:
-            reply = await self._call(
-                desktop.EVENT, {"session": self._session, "turn_id": int(turn.turn_id), "event": event}
-            )
-        except desktop.HarnessError as exc:
-            self._learn_events(exc)
-            logger.info("[yantrik] the desktop did not take Hermes's question as a card (%s); asking in text", exc)
-            return False
-        self._events = True
-        not_taken = isinstance(reply, dict) and (reply.get("refused") or reply.get("ignored") or reply.get("dropped"))
-        if not_taken:
-            # A desktop that keeps no runs refuses a question it could not route an answer back to.
-            logger.info("[yantrik] the desktop did not take Hermes's question as a card: %s; asking in text", not_taken)
-            return False
-        self._cards[clarify_id] = card
-        logger.info("[yantrik] turn %s: Hermes's question is a card, waiting for its answer", turn.turn_id)
-        self._tasks = [t for t in self._tasks if not t.done()]
-        self._tasks.append(asyncio.create_task(self._expire_card(clarify_id)))
-        return True
 
-    async def _expire_card(self, clarify_id: str) -> None:
-        """A question nobody answered must not hold the turn for as long as Hermes would wait.
-
-        The first time, Hermes is told there was no answer and carries on without it, and the
-        reply says so. A second question in the same turn that is also left alone ends the turn
-        there, with what it did say, and the question dropped.
-        """
-        try:
-            await asyncio.sleep(QUESTION_SECONDS)
-        except asyncio.CancelledError:
-            return
-        card = self._cards.pop(clarify_id, None)
-        if card is None:
-            return  # answered, or the run ended
-        minutes = max(1, round(QUESTION_SECONDS / 60))
-        turn = self._ledger.get(card.turn_id)
-        misses = self._unanswered[card.turn_id] = self._unanswered.get(card.turn_id, 0) + 1
-        logger.info("[yantrik] turn %s: no answer to question %s in %ss", card.turn_id, clarify_id, QUESTION_SECONDS)
-        if misses >= 2 or turn is None:
-            self._end_question(card.session_key)
-            if turn is not None:
-                note = (f"Hermes asked again and there was no answer in {minutes} minutes, so it stopped "
-                        "here. Ask again whenever you are ready.")
-                _, delta = self._ledger.sent(turn, note)
-                await self._stream(turn, delta)
-                await self._finish(card.turn_id, why="the question went unanswered twice")
-            return
-        note = (f"No answer to the question within {minutes} minutes. Hermes carries on without it "
-                "and will say what it could not do.")
-        _, delta = self._ledger.sent(turn, note)
-        await self._stream(turn, delta)
-        try:
-            from tools import clarify_gateway
-
-            taken = clarify_gateway.resolve_gateway_clarify(clarify_id, NOT_ANSWERED.format(minutes=minutes))
-        except Exception:
-            logger.warning("[yantrik] could not tell Hermes its question went unanswered", exc_info=True)
-            taken = False
-        if not taken:
-            # Hermes had already let go of it (its own timeout, a stop): nothing is waiting.
-            self._end_question(card.session_key)
-
-    def _take_answers(self, answers: List[Dict[str, Any]]) -> None:
-        """Answers to questions shown as cards, from a poll: each one lets Hermes's clarify go on.
-
-        The desktop sends an answer once, to the run that asked, and only for a question that run
-        asked; the turn is checked here as well, so an answer can never release another question.
-        """
-        for given in answers:
-            clarify_id = str(given.get("request_id") or "")
-            card = self._cards.get(clarify_id)
-            if card is None or str(given.get("turn_id")) != card.turn_id:
-                logger.info("[yantrik] an answer came for a question no card is waiting on (%s)", clarify_id)
-                continue
-            del self._cards[clarify_id]
-            try:
-                from tools import clarify_gateway
-
-                taken = clarify_gateway.resolve_gateway_clarify(clarify_id, card.choice_for(given.get("answer")))
-            except Exception:
-                logger.warning("[yantrik] could not hand Hermes the answer to its question", exc_info=True)
-                continue
-            if not taken:
-                # Hermes's own timeout let go of it first; the run went on without the answer.
-                logger.info("[yantrik] Hermes had stopped waiting for the answer to question %s", clarify_id)
-
-    def _run_of(self, turn_id: str) -> str:
-        """The turn that started the run `turn_id` carries: itself, unless it answered a question."""
-        return next((run for run, carrier in self._carried.items() if carrier == turn_id), turn_id)
-
-    async def send_slash_confirm(
-        self,
-        chat_id: str,
-        title: str,
-        message: str,
-        session_key: str,
-        confirm_id: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Hermes asks whether to go ahead with a destructive session command (Hermes 0.21+).
-
-        For /new the person has already answered: it only reaches Hermes from this platform
-        because they pressed the desktop's new-conversation button or typed it in the Lens. The
-        button throws the reply away by design, so asking again put the question where nobody saw
-        it, and the confirm left waiting held every turn after it — 38 minutes on VM 541 before
-        anyone noticed. So it is confirmed once here and the turn that asked gets Hermes's reply.
-        Anything else (/undo) returns not-supported, and Hermes asks the person in text as it
-        always did. Only this platform's confirms are answered: turning off
-        `approvals.destructive_slash_confirm` instead would stop Hermes asking on the person's
-        other platforms too.
-        """
-        not_here = SendResult(success=False, error="Not supported")
-        try:
-            from tools import slash_confirm
-        except Exception:
-            return not_here
-        pending = slash_confirm.get_pending(session_key) or {}
-        command = str(pending.get("command") or "")
-        if pending.get("confirm_id") != confirm_id or command not in CONFIRMED_BY_ASKING:
-            return not_here
-        turn = self._asking(chat_id)
-        reply = await slash_confirm.resolve(session_key, confirm_id, "once")
-        logger.info("[yantrik] /%s confirmed for the person, who sent it from the desktop", command)
-        if turn is not None:
-            # Hermes may answer with something other than text (an ephemeral reply), which
-            # `resolve` gives back as nothing; the turn still says what happened.
-            _, delta = self._ledger.sent(turn, reply or "Started a new conversation.")
-            await self._stream(turn, delta)
-            await self._finish(turn.turn_id, why=f"/{command} confirmed for the person")
-        return SendResult(success=True)
 
     def _asking(self, chat_id: str) -> Optional[desktop.Turn]:
         """The open turn that sent a /new or /reset, newest first; else the newest in the chat."""
@@ -852,37 +491,10 @@ def _command_of(text: str) -> str:
     return word[0][1:].lower() if word and word[0].startswith("/") else ""
 
 
-def _question_pending(session_key: str) -> bool:
-    """Whether Hermes asked the person something and is waiting for a plain-text answer."""
-    try:
-        from tools import clarify_gateway
-
-        try:
-            # A question with choices counts too, as it does for the gateway's own text intercept.
-            return clarify_gateway.get_pending_for_session(session_key, include_choice_prompts=True) is not None
-        except TypeError:
-            return clarify_gateway.get_pending_for_session(session_key) is not None
-    except Exception:
-        return False
 
 
-def _is_status(content: str, metadata: Optional[Dict[str, Any]]) -> bool:
-    """Whether a send is Hermes's "⏳ Working — 3 min" heartbeat rather than something to read.
-
-    Hermes marks every mid-turn status send `_interim_send`, approval prompts included, so the
-    mark alone is not enough; the heartbeat is the one of them that opens with the hourglass.
-    """
-    return bool((metadata or {}).get("_interim_send")) and content.lstrip().startswith(STATUS_MARK)
 
 
-def _approval_pending(session_key: str) -> bool:
-    try:
-        from tools import approval
-
-        with approval._lock:
-            return bool(approval._gateway_queues.get(session_key))
-    except Exception:
-        return False
 
 
 def register(ctx) -> None:

@@ -315,6 +315,108 @@ class HermesConfigTests(unittest.TestCase):
         self.assertLessEqual(set((self.read().get("agent") or {}).get("disabled_toolsets") or []), {"kanban"})
 
 
+    # ── the Lens bridge's tool list (#1070) ───────────────────────────────────────────────────
+
+    LENS_LIST = WANTED + ["yantrik_desk", "no_mcp"]
+
+    def test_the_plugin_turns_the_lens_list_on_and_off_and_nothing_else_changes(self):
+        self.write(LIVED_IN)
+        hermes_config.apply(self.path)
+        before = self.read()
+        self.assertTrue(hermes_config.set_lens(self.path, True))
+        self.assertEqual(self.read()["platform_toolsets"]["yantrik"], self.LENS_LIST)
+        after = self.read()
+        after["platform_toolsets"]["yantrik"] = WANTED
+        self.assertEqual(after, before, "only platform_toolsets.yantrik moved")
+        self.assertFalse(hermes_config.set_lens(self.path, True), "already so: not rewritten")
+        self.assertTrue(hermes_config.set_lens(self.path, False))
+        self.assertEqual(self.read()["platform_toolsets"]["yantrik"], WANTED)
+
+    def test_the_check_accepts_the_lens_list_and_requires_its_two_halves_together(self):
+        nl = chr(10)
+        servers = "mcp_servers:" + nl + "  yantrik_os: {command: /opt/yantrik/bin/yos-mcp, timeout: 300}" + nl
+
+        def config(names):
+            return "platform_toolsets:" + nl + "  yantrik: [%s]" % ", ".join(names) + nl + servers
+
+        ok, _, err = self.check(config(self.LENS_LIST), plugins=())
+        self.assertEqual(ok, 0, err)
+        code, _, err = self.check(config(WANTED + ["yantrik_desk"]), plugins=())
+        self.assertEqual(code, 1)
+        self.assertIn("without no_mcp", err)
+        self.assertIn("skip the routing", err)
+        code, _, err = self.check(config(WANTED + ["no_mcp"]), plugins=())
+        self.assertEqual(code, 1)
+        self.assertIn("without yantrik_desk", err)
+        self.assertIn("no desktop tools", err)
+
+    def test_an_install_or_update_always_writes_the_plain_list(self):
+        # So an OS rollback, or an install over a newer one, leaves a list the plugin it has can serve.
+        self.write(LIVED_IN)
+        hermes_config.apply(self.path)
+        hermes_config.set_lens(self.path, True)
+        hermes_config.apply(self.path)
+        self.assertEqual(self.read()["platform_toolsets"]["yantrik"], WANTED)
+
+    def test_lens_on_and_off_from_the_command_line(self):
+        self.write(LIVED_IN)
+        self.run_main("apply", self.path)
+        code, _, err = self.run_main("lens", "on", self.path)
+        self.assertEqual(code, 10, err)  # 10: it changed the file
+        self.assertEqual(self.run_main("lens", "on", self.path)[0], 0)
+        self.assertEqual(self.run_main("lens", "off", self.path)[0], 10)
+        self.assertEqual(self.read()["platform_toolsets"]["yantrik"], WANTED)
+
+    def test_a_lens_list_that_does_not_check_out_is_put_back(self):
+        # Hermes's resolver still offers the shared tools: not provably right, so the plain list.
+        self.write(LIVED_IN)
+        self.run_main("apply", self.path)
+
+        def leaky(config, platform):
+            return {"yantrik_desk", "yantrik_os", "skills"}
+
+        code, _, err = self.run_main("lens", "on", self.path, resolve=leaky)
+        self.assertEqual(code, 1)
+        self.assertIn("still offers it the shared yantrik_os tools", err)
+        self.assertEqual(self.read()["platform_toolsets"]["yantrik"], WANTED)
+
+    def test_hermess_own_resolver_gives_the_lens_the_proxies_and_telegram_and_cron_still_the_mcp_tools(self):
+        resolve = real_resolver()
+        if resolve is None:
+            self.skipTest("no Hermes to import")
+        from tools.registry import registry
+        from model_tools import get_tool_definitions
+
+        def schema(name):
+            return {"name": name, "description": "d", "parameters": {"type": "object", "properties": {}}}
+
+        for tool in ("os_apps", "os_act"):
+            registry.register(name="mcp__yantrik_os__" + tool, toolset="mcp-yantrik_os",
+                              schema=schema("mcp__yantrik_os__" + tool), handler=lambda a, **k: "{}")
+            registry.register(name=tool, toolset="yantrik_desk", schema=schema(tool), handler=lambda a, **k: "{}")
+        registry.register_toolset_alias("yantrik_os", "mcp-yantrik_os")
+
+        def offered(config, platform):
+            got = resolve(config, platform)
+            defs = get_tool_definitions(enabled_toolsets=sorted(got), quiet_mode=True)
+            return got, sorted(d["function"]["name"] for d in defs)
+
+        self.write(LIVED_IN)
+        hermes_config.apply(self.path)
+        hermes_config.set_lens(self.path, True)
+        config = self.read()
+        got, names = offered(config, "yantrik")
+        self.assertIn("yantrik_desk", got)
+        self.assertNotIn("yantrik_os", got)
+        self.assertIn("os_apps", names)
+        self.assertEqual([n for n in names if n.startswith("mcp__yantrik_os__")], [],
+                         "the Lens platform must not be offered the shared bridge's own tools")
+        for platform in ("telegram", "cron"):
+            _, others = offered(config, platform)
+            self.assertIn("mcp__yantrik_os__os_apps", others, platform)
+        # and the check agrees with Hermes, here
+        self.assertEqual(hermes_config.problems(self.path, resolve), [])
+
     # ── review round 4 ────────────────────────────────────────────────────────────────────────
 
     def test_the_desktops_mcp_server_must_be_the_desktops_own_or_the_check_fails(self):
