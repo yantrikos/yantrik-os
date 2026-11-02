@@ -416,6 +416,27 @@ class TestAddresses(Case):
         self.assertEqual(self.d.status(), {"open": False})
 
 
+class TestWhatTheRefusedIsToldIfOnlyUnproven(Case):
+    def test_a_program_that_could_not_be_confirmed_is_not_told_it_is_a_mind(self):
+        self.persons_browser()
+        self.guard.is_unproven = lambda: True
+        said = self.refused("go")
+        self.assertIn("could not be confirmed as yours", said)
+        self.assertIn("Open a new Terminal", said)
+        self.assertNotIn("A Mind does not use it", said)
+        self.assertEqual(self.opened, [])
+
+    def test_a_mind_is_still_told_the_mind_sentence(self):
+        self.persons_browser()
+        self.guard.is_unproven = lambda: False
+        self.assertIn("A Mind does not use it", self.refused("go"))
+
+    def test_unproven_is_not_asked_of_the_person_and_changes_nothing_on_mind_views_browser(self):
+        self.mind_view_browser()
+        self.guard.is_unproven = lambda: True
+        self.assert_allowed()
+
+
 class TestKernelsAndMappedAddresses(Case):
     def test_a_kernel_with_no_ipv6_table_still_finds_the_ipv4_browser(self):
         self.mind_view_browser(20)

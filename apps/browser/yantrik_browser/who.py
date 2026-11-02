@@ -115,24 +115,31 @@ def ask_shell(pid):
 _proven = {}
 
 
-def proves_person(pid, proc=PROC, ask=ask_shell, now=time.monotonic):
-    """True when the ancestry of `pid` proves the person (see the module). Never raises: anything
-    short of proof is False."""
+def classify(pid, proc=PROC, ask=ask_shell, now=time.monotonic):
+    """"person" when the ancestry of `pid` proves it (see the module); "mind" when it shows a
+    bridge or the shell names a mind; "unproven" when it could not be shown either way (a
+    Terminal left open across a shell restart, a broken chain, a shell that does not answer).
+    Never raises."""
     try:
         chain = chain_of(pid, proc)
         key = (pid, chain[0]["start"], proc)
         if any(m["declared"] or _runs_yos_mcp(m) for m in chain):
-            return False
+            return "mind"
         if gate.is_shell_binary(chain[0]["exe"]):
-            return False        # the desktop's own call is the companion's, and it waits on this very answer
+            return "mind"       # the desktop's own call is the companion's, and it waits on this very answer
         if not any(_anchored(m) for m in chain):
-            return False
+            return "unproven"
         if _proven.get(key, 0) <= now():
             answer = ask(pid)
-            if (not isinstance(answer, dict) or answer.get("known") is not True
-                    or answer.get("mind") is not False):
-                return False
+            if not isinstance(answer, dict) or answer.get("known") is not True:
+                return "unproven"
+            if answer.get("mind") is not False:
+                return "mind"
     except Unproven:
-        return False
+        return "unproven"
     _proven[key] = now() + REMEMBER
-    return True
+    return "person"
+
+
+def proves_person(pid, proc=PROC, ask=ask_shell, now=time.monotonic):
+    return classify(pid, proc, ask, now) == "person"

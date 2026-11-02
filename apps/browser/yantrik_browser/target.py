@@ -204,6 +204,14 @@ def caller_is_person():
             and not mind_door.is_mind(peer.uid) and who.proves_person(peer.pid))
 
 
+def caller_is_unproven():
+    """True for a call on the person's own uid, with no token, that the ancestry could not show to
+    be the person's or a mind's: it is refused as a Mind is, but not told it is one."""
+    peer = caller()
+    return (peer is not None and peer.uid == os.getuid() and not agent_token()
+            and not mind_door.is_mind(peer.uid) and who.classify(peer.pid) == "unproven")
+
+
 def cannot_tell(unidentified):
     return ("%s. Which browser is on the desktop's debugging port could not be established (%s), so "
             "it is not used: no page was opened, read or changed and no tab list is shown. Only "
@@ -217,6 +225,11 @@ NOT_MIND_VIEW = (
     "read or changed and no tab list is shown. Only the person can change this: they can close "
     "that browser, or do this part themselves. Trying again will not change it." % NOTHING)
 
+UNCONFIRMED = (
+    "%s. This program could not be confirmed as yours (a Terminal left open across a restart of the "
+    "desktop is one it cannot vouch for), so it was not given the browser: no page was opened, read "
+    "or changed. Open a new Terminal from the desktop and try again." % NOTHING)
+
 ANOTHER_ACCOUNT = (
     "%s. The browser on the desktop's debugging port belongs to another account, not to the "
     "person this runs for, so it is not used. Closing it lets the Browser open." % NOTHING)
@@ -228,29 +241,33 @@ IS_MIND_VIEW = (
     % NOTHING)
 
 
-def decide(listener, person):
+def decide(listener, person, unproven=False):
     """None when `person` (a bool) may use the browser `listener`, else the sentence refusing it."""
     if listener.uid != os.getuid():
         return ANOTHER_ACCOUNT
     if person:
         return IS_MIND_VIEW if listener.mind_view else None
-    return None if listener.mind_view else NOT_MIND_VIEW
+    if listener.mind_view:
+        return None
+    return UNCONFIRMED if unproven else NOT_MIND_VIEW
 
 
 class Guard:
     """Holds every use of a `cdp.Browser` to `decide`, for whoever is calling right now."""
 
-    def __init__(self, is_person=caller_is_person):
+    def __init__(self, is_person=caller_is_person, is_unproven=caller_is_unproven):
         self.is_person = is_person
+        self.is_unproven = is_unproven
 
     def admit(self, browser):
         """Before one action: raise `Declined` unless this caller may use the browser the port holds
         now. A connection to a listener that is no longer the one on the port is dropped. The next
         connection is judged before it is opened (`browser.vet`), and again once it is."""
         person = self.is_person()
+        unproven = not person and self.is_unproven()
 
         def vet(listener):
-            sentence = decide(listener, person)
+            sentence = decide(listener, person, unproven)
             if sentence:
                 raise Declined(sentence)
         browser.vet = vet

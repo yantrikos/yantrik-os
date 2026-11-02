@@ -152,6 +152,23 @@ class TestTheChain(Case):
         self.assertFalse(self.proves(300))
         self.assertEqual(self.asked, [])
 
+    def test_what_is_a_mind_and_what_is_only_unproven(self):
+        """Told apart so the person is not told they are a Mind."""
+        def kind(pid, answer=NOT_A_MIND):
+            who._proven.clear()
+            return who.classify(pid, proc=self.tree.root, ask=self.shell(answer))
+        pid = self.persons_terminal()
+        self.assertEqual(kind(pid), "person")
+        self.assertEqual(kind(pid, A_MIND), "mind")
+        self.assertEqual(kind(pid, {"known": False}), "unproven")
+        self.assertEqual(kind(pid, who.Unproven("down")), "unproven")
+        self.tree.add(300, 1, "/usr/bin/python3", ["python3", "yos"], start=3000)
+        self.tree.add(1, 0, "/sbin/init", start=1) if not os.path.exists(os.path.join(self.tree.root, "1")) else None
+        self.assertEqual(kind(300), "unproven", "a Terminal whose shell restarted")
+        with open(os.path.join(self.tree.root, str(pid), "environ"), "wb") as f:
+            f.write(b"YOS_VIA=yos-mcp")
+        self.assertEqual(kind(pid), "mind")
+
     def test_a_loop_with_equal_start_times_is_not_proof(self):
         self.tree.add(6000, 6001, "/x", start=5)
         self.tree.add(6001, 6000, "/x", start=5)

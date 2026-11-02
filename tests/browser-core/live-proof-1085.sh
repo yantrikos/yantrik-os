@@ -48,7 +48,9 @@ turn() {
   return 0
 }
 
-ASK='Use your web tools, in this order: web_go to about:blank, then web_tabs, then web_read. After each, tell me exactly what the tool answered, word for word. Do not use any other tool and do not try another way if one is refused.'
+# A real page, not about:blank: a Mind's own outbound check rejects an address that is not a web page.
+PAGE_URL=${PAGE_URL:-http://example.com/}
+ASK="Use your web tools, in this order: web_go to $PAGE_URL, then web_tabs, then web_read. After each, tell me exactly what the tool answered, word for word. Do not use any other tool and do not try another way if one is refused."
 
 command -v yos >/dev/null || { echo "FAIL  yos is not on PATH"; exit 1; }
 [ -z "$(listener_pid)" ] || { echo "FAIL  something already listens on $PORT; close every Chromium first"; exit 1; }
