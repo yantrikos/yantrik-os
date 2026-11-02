@@ -57,7 +57,7 @@ fn a_move_never_overwrites() {
     assert_eq!(std::fs::read_to_string(home.join("Desktop/trip-plan.md")).unwrap(), "plan");
     // The no-replace rename itself, not a check before a plain rename: a name that appears
     // after the plan was made is still not replaced.
-    let p = plan(&args(&home, "Documents", "Desktop"), &home, true).unwrap();
+    let p = plan(&args(&home, "Elsewhere", "Desktop"), &home, true).unwrap();
     std::fs::create_dir(&p.dst).unwrap();
     std::fs::write(p.dst.join("late"), "x").unwrap();
     assert!(perform(&p).unwrap_err().contains("already has"));
@@ -156,4 +156,53 @@ fn trashing_has_one_grade_for_both_actions() {
     let delete = &src[src.find("Action::new(\"files_delete\"").unwrap()..];
     assert!(delete[..delete.find("move |args|").unwrap()].contains(".risk(files_cursor::TRASH_GRADE)"));
     assert!(src.contains("if $name == \"files_trash_selected\" { spec.risk(files_cursor::TRASH_GRADE) }"));
+}
+
+#[test]
+fn nothing_is_moved_out_of_a_hidden_or_startup_place() {
+    let (_d, home) = home("hidden-source");
+    for f in [".config/x/f", ".local/bin/f", ".local/share/Trash/files/f", ".mozilla/firefox/p/key4.db"] {
+        let p = home.join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+        let err = plan(&args(&home, f, "Documents"), &home, true).expect_err(f);
+        assert!(!err.is_empty(), "{f}");
+        assert!(p.exists() && !home.join("Documents").join(p.file_name().unwrap()).exists(), "{f} moved");
+    }
+    // The rule is the hidden-place one, in its own words.
+    let err = plan(&args(&home, ".local/bin/f", "Documents"), &home, true).unwrap_err();
+    assert!(err.contains("hidden_place"), "{err}");
+}
+
+#[test]
+fn the_persons_own_folders_are_not_moved_by_a_mind() {
+    let (_d, home) = home("home-folders");
+    std::fs::create_dir_all(home.join("Archive")).unwrap();
+    for f in ["Desktop", "Documents", "Archive"] {
+        let err = plan(&args(&home, f, "Elsewhere"), &home, true).expect_err(f);
+        assert!(err.contains("one of the person's own folders"), "{f}: {err}");
+    }
+    // What is inside one moves, and an ordinary folder in the home moves.
+    plan(&args(&home, "Desktop/Trips", "Documents"), &home, true).unwrap();
+    plan(&args(&home, "Elsewhere", "Documents"), &home, true).unwrap();
+}
+
+#[test]
+fn nothing_is_moved_into_a_startup_place_or_a_tree_that_carries_one() {
+    let (_d, home) = home("hidden-dest");
+    for d in [".local/bin", "bin", ".hidden-but-plain", ".config", "Elsewhere/.git"] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    std::fs::write(home.join("Elsewhere/.git/config"), "[core]").unwrap();
+    symlink(home.join(".config"), home.join("lnk")).unwrap();
+    for to in [".local/bin", "bin", ".hidden-but-plain", "lnk"] {
+        let err = plan(&args(&home, "Desktop/trip-plan.md", to), &home, true).expect_err(to);
+        assert!(!err.is_empty(), "{to}");
+    }
+    // A folder holding a `.git/config` lands nowhere new: its tree carries a hidden place.
+    let err = plan(&args(&home, "Elsewhere", "Documents"), &home, true).unwrap_err();
+    assert!(err.contains("hidden_place"), "{err}");
+    // The checks are the ones that decide, not the filesystem: the same moves the person asks for
+    // themselves are not held to them.
+    plan(&args(&home, "Desktop/trip-plan.md", "bin"), &home, false).unwrap();
 }

@@ -55,6 +55,17 @@ fn no_dots(label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The folders the person's desktop and apps are built around, directly in the home: moving one
+/// takes the place away from everything that looks there.
+const HOME_FOLDERS: [&str; 9] =
+    ["Desktop", "Documents", "Downloads", "Music", "Pictures", "Public", "Templates", "Videos", "Archive"];
+
+fn is_a_home_folder(src: &Path, home: &Path) -> bool {
+    let real_home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    src.parent().is_some_and(|p| p == home || p == real_home)
+        && src.file_name().is_some_and(|n| HOME_FOLDERS.iter().any(|f| n.to_string_lossy().eq_ignore_ascii_case(f)))
+}
+
 /// Decide the move from `path` and `to_folder`, with `home` as the person's home. `for_mind`
 /// applies the Mind's rules (`control_files_mind`), which the person's own call is not held to.
 pub(crate) fn plan(args: &Value, home: &Path, for_mind: bool) -> Result<Plan, String> {
@@ -70,6 +81,11 @@ pub(crate) fn plan(args: &Value, home: &Path, for_mind: bool) -> Result<Plan, St
     no_dots(to)?;
     if for_mind {
         mind::entry_verdict(&parent, &name, home)?;
+        // The source must be somewhere the Mind could make it, as a rename's old name is: not in a
+        // hidden folder or a place programs read their settings or startup from (`~/.config`,
+        // `~/.local/bin`, Trash, a browser profile). Moving out of one is as much a change to it
+        // as moving in, and `files_rename` never allowed it.
+        mind::make_verdict(&parent, &name, home)?;
         mind::open_verdict(to, home)?;
         mind::make_verdict(to, &name, home)?;
     }
@@ -79,6 +95,12 @@ pub(crate) fn plan(args: &Value, home: &Path, for_mind: bool) -> Result<Plan, St
     let src = from_dir.join(&name);
     if std::fs::symlink_metadata(&src).is_err() {
         return Err(format!("nothing is at {}", src.display()));
+    }
+    if for_mind && is_a_home_folder(&src, home) {
+        return Err(format!(
+            "{} is one of the person's own folders; move what is in it, not the folder",
+            src.display()
+        ));
     }
     let into = crate::filebrowser::expand_home(to);
     let into = into.canonicalize().map_err(|_| mind::no_folder_at(to, home))?;
