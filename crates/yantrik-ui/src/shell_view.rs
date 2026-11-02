@@ -120,6 +120,7 @@ mod tests {
             ("control_installer_consent.rs", include_str!("control_installer_consent.rs")),
             ("control_installer_target.rs", include_str!("control_installer_target.rs")),
             ("control_levels.rs", include_str!("control_levels.rs")),
+            ("control_mail.rs", include_str!("control_mail.rs")),
             ("control_mind_desk.rs", include_str!("control_mind_desk.rs")),
             ("control_levels_actions.rs", include_str!("control_levels_actions.rs")),
             ("control_network.rs", include_str!("control_network.rs")),
