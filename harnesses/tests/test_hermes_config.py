@@ -331,6 +331,33 @@ class HermesConfigTests(unittest.TestCase):
         code, _, err = self.check("platform_toolsets:\n  yantrik: [yantrik_os]\n", plugins=())
         self.assertEqual(code, 1, "no server at all is no desktop tools")
 
+    def test_under_the_mind_account_the_desktops_server_is_handed_the_door_by_name(self):
+        # Hermes starts an MCP server with a cleaned environment, so yos-mcp would not find the
+        # mind door (#411) unless the config names it. That one variable, and nothing else.
+        from unittest import mock
+
+        base = "platform_toolsets:\n  yantrik: [yantrik_os]\nmcp_servers:\n  yantrik_os: %s\n"
+        with mock.patch.dict(os.environ, {"YANTRIK_MIND_RUN": "/run/yantrik-minds", "OPENAI_API_KEY": "FAKE-KEY-not-real"}):
+            self.write("model:\n  default: x\n")
+            hermes_config.apply(self.path)
+            self.assertEqual(self.read()["mcp_servers"]["yantrik_os"], {
+                "command": "/opt/yantrik/bin/yos-mcp", "timeout": 300, "env": {"YANTRIK_MIND_RUN": "/run/yantrik-minds"}})
+            self.assertNotIn("FAKE-KEY", Path(self.path).read_text(encoding="utf-8"), "no other variable is written")
+            self.assertEqual(hermes_config.problems(self.path, stand_in(())), [])
+            # A server without it fails the check there: it would have no desktop to talk to.
+            code, _, err = self.check(base % "{command: /opt/yantrik/bin/yos-mcp, timeout: 300}", plugins=())
+            self.assertEqual(code, 1)
+            self.assertIn("mcp_servers.yantrik_os", err)
+            # And one that names a different door is not the desktop's own either.
+            code, _, err = self.check(base % "{command: /opt/yantrik/bin/yos-mcp, timeout: 300, env: {YANTRIK_MIND_RUN: /tmp/x}}",
+                                      plugins=())
+            self.assertEqual(code, 1)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("YANTRIK_MIND_RUN", None)
+            hermes_config.apply(self.path)
+            self.assertEqual(self.read()["mcp_servers"]["yantrik_os"], {"command": "/opt/yantrik/bin/yos-mcp", "timeout": 300},
+                             "as the person, nothing is added")
+
     def test_a_gateway_start_puts_the_allowlist_and_the_mcp_server_back(self):
         # F1: widened after install (`hermes update`, a plugin, an edit).
         self.write(LIVED_IN)

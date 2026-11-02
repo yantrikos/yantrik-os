@@ -1,0 +1,102 @@
+# Hermes's gateway, running as the mind account (#411).
+#
+# Hermes used to run as the person, from its own `systemctl --user` unit, so its shell, its file
+# tools and anything a prompt talked it into could read the person's files and keys with no approval
+# card. As `yantrik-mind` it cannot open the person's home or runtime directory, and it reaches the
+# desktop only at the mind door (/run/yantrik-minds), where every act is held to the shell's grades
+# and approvals. It is the second tenant of the mind account, after yantrik-mind.service, and the
+# template for the rest (Pi, OpenClaw, DeepSeek): a harness `<name>` gets /var/lib/yantrik-mind/harness/<name>
+# as its HOME, a unit like this one, and `yantrik-update harness install <name>`
+# (deploy/yantrik-os/harness-isolation.sh).
+#
+# Installed by yantrik-update (hash-checked, root's) with the other mind units. Enabled by
+# `yantrik-update harness install hermes` (the Install button) or `migrate-harnesses` (a machine
+# whose Hermes still lives in a person's home), once Hermes is set up under the mind account and
+# has been seen to attach.
+[Unit]
+Description=Hermes gateway, attached to the desktop as the mind account
+# The same kernel-held way out as the Mind (see yantrik-mind.service): the table holds the whole
+# account to the proxy, so Hermes's HTTP clients and anything it runs are counted and, once the
+# person turns it to enforce, held to their policy. Required, not wanted: no harness runs unguarded.
+After=network-online.target yantrik-egress.service yantrik-mind-egress.service
+Wants=network-online.target yantrik-egress.service
+Requires=yantrik-mind-egress.service
+# Not in the installer's live session, and not before Hermes is set up (the installer made this file).
+ConditionKernelCommandLine=!yantrik.install=true
+ConditionPathExists=/var/lib/yantrik-mind/harness/hermes/.hermes/config.yaml
+# A start that keeps failing stops being retried after five in a minute.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=yantrik-mind
+Group=yantrik-minds
+WorkingDirectory=/var/lib/yantrik-mind/harness/hermes
+# Hermes keeps its model, keys, sessions and memory in ~/.hermes, as it always has: now in the mind
+# account's home for it, where only that account (and root) can read them.
+Environment=HOME=/var/lib/yantrik-mind/harness/hermes
+Environment=USER=yantrik-mind LOGNAME=yantrik-mind
+Environment=PATH=/var/lib/yantrik-mind/harness/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The door: the harness socket the gateway attaches at, and where `yos` and the desktop's tools
+# (yos-mcp, which Hermes starts with this passed on in its config) find the desktop.
+Environment=YANTRIK_MIND_RUN=/run/yantrik-minds
+# Out through the egress proxy, both spellings (curl reads only the lowercase http one). Loopback
+# goes direct.
+Environment=HTTPS_PROXY=http://127.0.0.1:7450 https_proxy=http://127.0.0.1:7450
+Environment=HTTP_PROXY=http://127.0.0.1:7450 http_proxy=http://127.0.0.1:7450
+Environment=ALL_PROXY=http://127.0.0.1:7450 all_proxy=http://127.0.0.1:7450
+Environment=NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1
+# No EnvironmentFile: systemd would read it as root, before dropping to the account, and follow a
+# link the account put in its own home to any file root can read. Hermes reads its own ~/.hermes/.env
+# itself, as the account, which is how its API keys reach it without passing through this unit, a
+# command line or the journal.
+# Never without the table that holds the account to the proxy: a hand `nft flush ruleset` leaves the
+# unit above active and the table gone.
+ExecStartPre=+/bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/dev/null 2>&1 || { echo "Hermes: the egress table (inet yantrik_mind_egress) is not loaded. Run: sudo yantrik-update mind-egress apply" >&2; exit 1; }'
+# The launcher, not a Python path: a newer Hermes rebuilds its venv as a new generation on an update.
+ExecStart=/var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run --replace
+StandardInput=null
+Restart=always
+RestartSec=5
+# Hermes asks to be restarted with 75 (gateway/restart.py).
+RestartForceExitStatus=75
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+# What Hermes, or a plugin or tool it was talked into running, can touch: its own home and the
+# door. Nothing of the person's, nothing of the system's to write.
+NoNewPrivileges=yes
+ProtectSystem=strict
+# The mind account's home also holds the Mind's memory, its settings and its keys, and a harness
+# runs as the same account (one uid for every mind, until each has its own). So the home is hidden
+# from this unit except for Hermes's own directory, which is bound back in: Hermes cannot open the
+# Mind's mind.db, its settings or its tokens. yantrik-mind.service hides harness/ the other way.
+TemporaryFileSystem=/var/lib/yantrik-mind:ro
+BindPaths=/var/lib/yantrik-mind/harness/hermes
+ReadWritePaths=/var/lib/yantrik-mind/harness/hermes
+ProtectHome=yes
+# The desktop's own log, memory and settings are the person's, not a harness's.
+InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yaml
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
+# The person's processes, and their command lines, are not Hermes's to see.
+ProtectProc=invisible
+ProcSubset=pid
+PrivateIPC=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

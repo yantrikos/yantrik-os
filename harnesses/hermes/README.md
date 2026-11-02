@@ -7,6 +7,44 @@ chat panel arrives as a message, and Hermes streams the answer back.
 Hermes keeps its model, endpoint, keys and memory in `~/.hermes`, as it always has. This plugin
 reads none of it except the model name, which it passes as the `detail` the picker shows.
 
+## Hermes runs as its own account, not as you (#411)
+
+On a machine with the OS's mind account (`yantrik-mind`), Hermes's gateway is the system service
+`hermes-gateway.service` (`config/systemd/hermes-gateway.service`), run as that account with its
+home in `/var/lib/yantrik-mind/harness/hermes`. Before, it was your user service, so its own
+`terminal` and file tools, and anything a prompt talked it into, could read your files and keys with
+no approval card. Now:
+
+- **It cannot open your home**, your runtime directory, your processes or your compositor. It
+  reaches the desktop only at the mind door (`YANTRIK_MIND_RUN=/run/yantrik-minds`), where every act
+  is graded and asked about like any other mind's. The desktop's tools (`yos-mcp`) are passed that
+  door by name in Hermes's config, because Hermes starts MCP servers with a cleaned environment.
+- **It cannot open the built-in Mind's files** either, and the Mind cannot open its: the two units
+  hide each other's directories (one account, until each harness has its own).
+- **Its keys** live in its own `~/.hermes/.env`, mode 0600, read by Hermes itself as that account.
+  They are never in a unit file, an `EnvironmentFile`, a command line or the journal.
+- **Its way out** is the same kernel-held egress table as the Mind's (`yantrik-mind-egress`).
+
+What stops working, and why it is the right answer: Hermes's `terminal` in *your* home (it is not
+your account any more), and *Use Yantrik models* for Hermes (the gateway token it writes would go
+into your home; for now Hermes keeps its own model: *Choose model* on its row). A task that needs a
+file of yours is done through the desktop's tools (`yos`/Files), with their approval cards, or not
+at all, and the answer says which.
+
+**Install** (the button, or `sudo yantrik-update harness install hermes`) sets Hermes up under that
+account with the same `hermes.sh`, run twice as the account (`YANTRIK_HARNESS_ISOLATED=setup`, then
+`=prove` once the service is up). **An update** moves a Hermes that was installed as you:
+`yantrik-update migrate-harnesses` (started in the background by `reconcile`) stops your gateway,
+copies your Hermes's data (config, `.env`, sessions, `state.db`, its YantrikDB file; not its code,
+which is reinstalled from the pinned commit) into the account's home, counts both sides, installs,
+starts the service, proves it, and only then masks your old user unit and renames `~/.hermes` to
+`~/.hermes.yantrik-moved`, with the old launcher and unit inside. Nothing is deleted; if any step
+fails, your own gateway is started again as it was and the half-made directory is kept aside. Your
+`hermes` command stays, and does `model`, `status` and `--version` against the account's Hermes.
+An OS rollback leaves the service and its files where they are (they are not in `/opt/yantrik`), so
+Hermes keeps working; it does not put `~/.hermes` back. To go back by hand: stop and disable
+`hermes-gateway.service`, move `~/.hermes.yantrik-moved` back to `~/.hermes`, unmask the user unit.
+
 ## Install
 
 **Settings → Minds** lists Hermes whether or not it is installed, says which part is

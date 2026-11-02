@@ -696,6 +696,12 @@ yos act shell use_harness id=hermes        # once it appears in the picker
 Hermes keeps its model, endpoint, keys and memory in `~/.hermes`, as it always has. The plugin
 reads none of it except the model name, which it passes as the `detail` the picker shows.
 
+On a machine with the mind account (`yantrik-mind`), Hermes's gateway runs as that account, as the
+system service `hermes-gateway`, with its `~/.hermes` in `/var/lib/yantrik-mind/harness/hermes` and
+the desktop at the mind door only (#411; `harnesses/hermes/README.md` has the details and what stops
+working). A new harness follows `config/systemd/hermes-gateway.service` and
+`deploy/yantrik-os/harness-isolation.sh`.
+
 **Give the desktop platform the desktop's tools, not Hermes's own.** Hermes arrives with a
 `terminal`, `file`, `code_execution`, `browser` and `web` toolset of its own. On this desktop
 they are a second, ungraded route to everything the apps already offer — and each `terminal`

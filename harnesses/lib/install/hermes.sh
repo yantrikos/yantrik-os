@@ -11,6 +11,15 @@
 #
 # Then the desktop plugin, copied into Hermes and enabled, and Hermes's gateway, which is what
 # loads the plugin and so what attaches to the desktop.
+#
+# Hermes runs as the mind account, not the person (#411). The button runs this as the person, who
+# cannot make a system service, so it hands over to `yantrik-update harness install hermes`, which
+# runs this same script twice as the mind account with its home (/var/lib/yantrik-mind/harness/
+# hermes), where every ~ above means that home:
+#   YANTRIK_HARNESS_ISOLATED=setup   everything up to, but not including, the gateway: root starts
+#                                    the system unit (config/systemd/hermes-gateway.service) next
+#   YANTRIK_HARNESS_ISOLATED=prove   the three proofs, once the gateway is up and attached
+# A machine with no mind account (a bare dev tree) keeps the old way, as the person.
 set -eu
 . "$(dirname "$0")/common.sh"
 . "$(dirname "$0")/hermes-launcher.sh"
@@ -19,6 +28,19 @@ set -eu
 [ $# -eq 1 ] || fail "usage: hermes.sh PLUGIN_DIR"
 plugin=$1
 [ -f "$plugin/plugin.yaml" ] || fail "no desktop plugin at $plugin"
+
+isolated=${YANTRIK_HARNESS_ISOLATED:-}
+if [ -z "$isolated" ] && [ "$(id -u)" != 0 ] && getent passwd yantrik-mind >/dev/null 2>&1 \
+        && [ -x /opt/yantrik/bin/yantrik-update ]; then
+    say "Hermes runs under its own account on this desktop, out of reach of your files"
+    sudo -n /opt/yantrik/bin/yantrik-update harness install hermes && exit 0
+    fail "could not set Hermes up under its own account; run once in a terminal: sudo yantrik-update harness install hermes"
+fi
+case "$isolated" in
+    ""|setup|prove) ;;
+    *) fail "YANTRIK_HARNESS_ISOLATED is '$isolated': setup or prove" ;;
+esac
+[ "$isolated" != prove ] || exec sh "$INSTALL_LIB/hermes-prove.sh"
 
 # The commit this was last tried against, on Hermes's main line, which is what Hermes's own
 # instructions install. The installer is fetched from that commit and told to check out that
@@ -93,7 +115,15 @@ say "giving Hermes's desktop platform the desktop's tools in $config"
     || fail "could not give Hermes's desktop platform the desktop's tools; config.yaml is as it was"
 
 # ── Model ──
-wire_model hermes
+# Under the mind account Hermes keeps its own model (`hermes model`, Choose model on its row): the
+# gateway token Use Yantrik models writes would be written into the person's home, which this
+# account cannot open, and the person's gateway would not know the one written here.
+if [ -n "$isolated" ]; then
+    rm -f "$(harness_state hermes)/model"
+    say "model: its own (Choose model on this row sets it; Use Yantrik models is not available for an isolated Hermes yet)"
+else
+    wire_model hermes
+fi
 
 # ── Memory: YantrikDB, from the image ──
 # Installed from the wheels at /opt/yantrik/memory (bake-memory.sh; there by image or by update),
@@ -196,6 +226,13 @@ gateway_install() {
     systemctl --user enable hermes-gateway >/dev/null 2>&1
 }
 hermes_check || { stop_gateway; fail "Hermes's desktop platform has more than the desktop's tools, and Hermes's gateway is stopped; see $config"; }
+
+# The gateway is a system service of the mind account, which root starts: not a user unit, and not
+# started here. The proofs run once it is up (YANTRIK_HARNESS_ISOLATED=prove).
+if [ "$isolated" = setup ]; then
+    say "Hermes is set up under its own account; its gateway service starts next"
+    exit 0
+fi
 
 gateway_install || { stop_gateway; fail "Hermes would not install its gateway service"; }
 systemctl --user restart hermes-gateway || { stop_gateway; fail "Hermes's gateway would not start"; }

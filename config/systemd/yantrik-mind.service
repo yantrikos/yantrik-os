@@ -88,6 +88,10 @@ ProtectHome=yes
 # they type to the built-in companion, data/ its memories, config.yaml their provider keys. Out of
 # this unit's sight even should a file in them come out readable (security review, 29 Sep 2026).
 InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yaml
+# The other harnesses that run as this account (hermes-gateway.service, #411) keep their keys and
+# sessions under harness/<name>: one uid, so the Mind is kept out of them the way they are kept out
+# of this unit's files, by the mount namespace.
+InaccessiblePaths=-/var/lib/yantrik-mind/harness
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

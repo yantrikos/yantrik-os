@@ -211,6 +211,9 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
   install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
     || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
+  # The harnesses that run as the mind account (#411), sourced by the updater: without it a build
+  # has no `yantrik-update harness` and Hermes would stay the person's.
+  install -m 0644 "$SCRIPT_DIR/harness-isolation.sh" "$ROOT/bin/harness-isolation.sh"     || fail "no harness-isolation.sh: the updater could not move a harness to the mind account"
   # The check the updater runs on the release manifest before it reads a field of it (#537),
   # and the public keys it trusts. Beside the updater, in the root-owned bin/ and share/, so
   # nothing the desktop's account can write decides who may sign an update. A build with no

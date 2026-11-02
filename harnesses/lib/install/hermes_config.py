@@ -55,6 +55,21 @@ YANTRIK_OS = "yantrik_os"
 # may hold a call for 270 seconds while a person answers a card (README.md, "an MCP client must
 # allow os_act up to 270 seconds").
 YANTRIK_OS_SERVER = {"command": "/opt/yantrik/bin/yos-mcp", "timeout": 300}
+
+
+def yantrik_os_server():
+    """The desktop's tools server as this process should have Hermes start it.
+
+    Hermes starts an MCP server with a cleaned environment (only what its config names, plus a few
+    basics), so under the mind account (#411) the server would not find the desktop: `yos-mcp` looks
+    for the mind door only through YANTRIK_MIND_RUN. When this process has it, the server is given
+    it by name. Never any other variable, and never a value from anywhere but this process.
+    """
+    server = dict(YANTRIK_OS_SERVER)
+    door = os.environ.get("YANTRIK_MIND_RUN", "").strip()
+    if door:
+        server["env"] = {"YANTRIK_MIND_RUN": door}
+    return server
 # A research sub-agent that may take 50 turns will take 50.
 DELEGATION_MAX_ITERATIONS = 25
 BACKUP_SUFFIX = ".before-yantrik-desktop"
@@ -174,7 +189,7 @@ def apply(path, plugin_toolsets=()):
     servers = _section(data, "mcp_servers", path)
     # Always this entry, whatever is there: a `yantrik_os` that runs another command is a "desktop
     # tools" server the platform's allowlist trusts by name. Only the person's other servers stay.
-    servers[YANTRIK_OS] = dict(YANTRIK_OS_SERVER)
+    servers[YANTRIK_OS] = yantrik_os_server()
     _section(data, "skills", path)["inline_shell"] = False
     _section(data, "delegation", path)["max_iterations"] = DELEGATION_MAX_ITERATIONS
     # No profile-building questions on the reply to the person's first request (the docstring).
@@ -297,7 +312,7 @@ def problems(path, resolve):
             wrong.append("platform_toolsets.%s lists %s, which the desktop platform may not have" % (PLATFORM, ", ".join(extra)))
     servers = data.get("mcp_servers")
     ours = servers.get(YANTRIK_OS) if isinstance(servers, dict) else None
-    if ours != YANTRIK_OS_SERVER:
+    if ours != yantrik_os_server():
         wrong.append(
             "mcp_servers.%s is not the desktop's own (command %s, timeout %d), so the desktop platform "
             "has no desktop tools or tools from somewhere else" % (YANTRIK_OS, YANTRIK_OS_SERVER["command"], YANTRIK_OS_SERVER["timeout"])

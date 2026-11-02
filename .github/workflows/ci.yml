@@ -328,6 +328,14 @@ jobs:
       - name: The image refuses a Mind without the capabilities this OS relies on
         run: bash deploy/yantrik-os/mind-capabilities-selftest.sh
 
+      # Hermes and the harnesses after it run as the mind account, not the person (#411). Part A
+      # reads what ships; part B makes two throwaway accounts, as root, and proves the service
+      # account cannot read, list or write the person's home, that what moves is counted twice and
+      # private, and that a failed install leaves the person's own Hermes as it was. systemd is a
+      # recorder in it; the real unit is held by a VM gate. Fake keys only.
+      - name: A harness running as the mind account cannot reach the person
+        run: sudo bash deploy/yantrik-os/harness-isolation-selftest.sh
+
       # The boot test's check that no real network address ships: config.yaml and update.conf
       # name no private address, the updater only ranges in CIDR and its marked selftest's made-up
       # fixtures, and nothing anywhere is on the developer's LAN. Held here against the updater in

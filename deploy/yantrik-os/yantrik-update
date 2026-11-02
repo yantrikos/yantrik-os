@@ -26,6 +26,8 @@
 #   yantrik-update package-list FILE                         the names in a package list, checked; what the image build installs
 #   yantrik-update migrate-minds                             move Yantrik Mind into its own account (#411), memory counted twice
 #   yantrik-update mind-egress apply                         hold the mind account to its egress proxy, in the kernel (root)
+#   yantrik-update harness install|restart|run|status hermes a harness as the mind account, not as the person (#411)
+#   yantrik-update migrate-harnesses                         move harnesses installed as the person to the mind account
 #   yantrik-update selftest                                  offline checks of the two above
 #
 # It reads its defaults from /opt/yantrik/update.conf (CHANNEL=, HOST=, SCHEME=) when present.
@@ -84,6 +86,11 @@ BACKUP_DIR="$PREFIX/backups"
 # The signed-manifest check (#537): its code beside this script, the public keys the bundle
 # ships (root's, like everything else root trusts), and the last serial accepted per channel.
 VERIFY="$(dirname "$SELF_PATH")/yantrik-update-verify"
+# Harnesses that run as the mind account instead of the person (#411): sourced beside this script,
+# root's like it. An updater without the file has no `harness` command and leaves harnesses alone.
+HARNESS_ISOLATION="$(dirname "$SELF_PATH")/harness-isolation.sh"
+# shellcheck source=deploy/yantrik-os/harness-isolation.sh
+[ -f "$HARNESS_ISOLATION" ] && . "$HARNESS_ISOLATION"
 UPDATE_KEYS_DIR="$SHARE_DIR/update-keys"
 UPDATE_STATE_DIR="$PREFIX/update-state"
 CONF="$PREFIX/update.conf"
@@ -874,6 +881,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_egress_seeds || true
     reconcile_hermes_launcher || true
     reconcile_harness_plugins || true
+    if type reconcile_harness_isolation >/dev/null 2>&1; then reconcile_harness_isolation || true; fi
     reconcile_mind_egress || true
     # Keys an earlier update left behind (#854); the running shell is this build.
     refresh_session_chrome || true
@@ -2409,7 +2417,7 @@ source_is_roots() {
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
 # from before a capability was required.
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] || [ "$1" = harness-isolation.sh ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -4665,6 +4673,7 @@ cmd_reconcile() {
   # launcher still pointing into /tmp (#712) would stop dead.
   reconcile_hermes_launcher
   reconcile_harness_plugins
+  if type reconcile_harness_isolation >/dev/null 2>&1; then reconcile_harness_isolation; fi
   # The keys (#854), here because this is what every updater runs on the new build, an old one's
   # apply included. This build's own apply says it does them itself, after the restart.
   if [ "${YANTRIK_APPLY_REFRESHES_KEYS:-}" != 1 ]; then
@@ -7144,6 +7153,8 @@ usage() {
     "  package-list FILE                         the package names in FILE, checked (the image build reads it)" \
     "  install-mind BUNDLE SHA256                put a Yantrik Mind bundle in place, and prove it attaches" \
     "  mind-egress apply                         hold the mind account to its egress proxy (root; its units run it)" \
+    "  harness install|restart|run|status NAME   a harness (hermes) as the mind account, not as you (#411)" \
+    "  migrate-harnesses                         move harnesses installed as you to the mind account, keeping your copy" \
     "  selftest                                  offline checks, no network" \
     "" \
     "check exits 0 up to date · 10 update available · 11 channel not published ·" \
@@ -7168,6 +7179,8 @@ case "$CMD" in
   migrate-minds) cmd_migrate_minds "$@" ;;
   install-mind) cmd_install_mind "$@" ;;
   mind-egress) cmd_mind_egress "$@" ;;
+  harness) type cmd_harness >/dev/null 2>&1 || fail "this updater has no harness-isolation.sh beside it"; cmd_harness "$@" ;;
+  migrate-harnesses) type cmd_migrate_harnesses >/dev/null 2>&1 || fail "this updater has no harness-isolation.sh beside it"; cmd_migrate_harnesses "$@" ;;
   migrate-ownership) cmd_migrate_ownership ;;
   selftest) cmd_selftest ;;
   # Printed from a function rather than `sed -n '20,30p' "$0"`, which quietly printed whatever
