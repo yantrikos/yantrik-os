@@ -224,7 +224,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     _ if held_from_phone => crate::mind_mode::Decision::Ask,
                     other => other,
                 };
-                let decision = crate::taint_ask::resolve(table, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &format!("{published_purpose} {purpose}"));
+                let decision = crate::taint_ask::resolve(table, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose);
                 match decision {
                     // The same sentence the bridge relays, from the same function, so a mind
                     // that reached the shell directly and one that came through the bridge hear
@@ -468,7 +468,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Action::new(
                 "set_mind_mode",
                 "Tighten what you may do on this desktop without being asked. Five modes, \
-                 loosest first: `bypass_all` (nothing is asked, except a command, hand-off or new web address after a private read), `bypass` (nothing is asked \
+                 loosest first: `bypass_all` (nothing is asked, except a connected mind's command, hand-off, new address or send after a private read), `bypass` (nothing is asked \
                  except before what an app marks as impossible to undo), `auto` (only \
                  destructive actions are asked about), `ask` (anything that matters is asked \
                  about), `plan` (read only — every change is refused). You can only move DOWN \

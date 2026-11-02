@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn request_approval_is_wired_to_resolve() {
         let source = include_str!("control_approvals.rs");
-        let wired = "crate::taint_ask::resolve(table, args.get(\"tainted\"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &format!(\"{published_purpose} {purpose}\"))";
+        let wired = "crate::taint_ask::resolve(table, args.get(\"tainted\"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &published_purpose)";
         let call = source.find(wired).expect("request_approval must call taint_ask::resolve as written here");
         let branch = source.find("match decision {").expect("the handler branches on the decision");
         assert!(call < branch, "the taint must be applied before the handler branches on the decision");

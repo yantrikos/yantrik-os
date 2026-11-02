@@ -29,7 +29,7 @@ const BEFORE: &[Golden] = &[
     Golden {
         name: "add",
         risk: "sensitive",
-        description: r#"Download a URL to this machine"#,
+        description: r#"Download a URL to this machine. It fetches the address in `url`."#,
         deferred: true,
         params: &[
             ("url", "string", true, r#"The http(s) URL to fetch"#),

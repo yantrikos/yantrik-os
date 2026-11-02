@@ -473,10 +473,12 @@ impl Action {
 
     /// The action as JSON Schema, so a caller can hand it to a model unmodified.
     pub fn schema(&self) -> serde_json::Value {
+        // Every address-named parameter is the one declared, and the declared one exists.
+        let declared = fetches_address(&self.description);
         debug_assert!(
-            fetches_address(&self.description).is_some()
-                || !self.params.iter().any(|p| ADDRESS_PARAMS.contains(&p.name.as_str())),
-            "`{}` takes an address ({:?}) and must say so with `.fetches_address(<param>)`",
+            self.params.iter().all(|p| !ADDRESS_PARAMS.contains(&p.name.as_str()) || declared.as_deref() == Some(p.name.as_str()))
+                && declared.as_deref().map_or(true, |d| self.params.iter().any(|p| p.name == d)),
+            "`{}` takes an address ({:?}) and must say so, for that parameter, with `.fetches_address(<param>)`",
             self.name,
             ADDRESS_PARAMS
         );
@@ -620,6 +622,19 @@ mod tests {
     #[should_panic(expected = "must say so")]
     fn an_undeclared_address_parameter_does_not_publish() {
         let _ = Action::new("fetch", "Get it").arg(Param::text("url")).schema();
+    }
+
+    /// Declaring one address parameter does not cover another, and a declaration must name a real one.
+    #[test]
+    #[should_panic(expected = "must say so")]
+    fn a_second_address_parameter_is_not_covered() {
+        let _ = Action::new("fetch", "Get it").fetches_address("url").arg(Param::text("url")).arg(Param::text("webhook")).schema();
+    }
+
+    #[test]
+    #[should_panic(expected = "must say so")]
+    fn a_declaration_must_name_a_real_parameter() {
+        let _ = Action::new("fetch", "Get it").fetches_address("nonexistent").arg(Param::text("url")).schema();
     }
 
     #[test]

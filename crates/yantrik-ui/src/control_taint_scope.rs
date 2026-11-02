@@ -162,7 +162,10 @@ mod tests {
         }
         assert_eq!(code.matches(".risk(\"safe\")").count(), 2);
         assert!(!code.contains("begin_by_person"), "nothing on the surface begins a scope");
-        assert_eq!(code.matches("Caller::Lens(").count(), 3, "one rule makes a caller the Lens's; two actions read it");
+        // One rule makes a caller the Lens's; the two actions and the approval's taint check read it.
+        assert_eq!(code.matches("Caller::Lens(").count(), 4, "one rule, three readers");
+        assert!(code.contains("Ok(Caller::Lens(harness)) => !taint_scope::current(&harness).read.is_empty()"), "the approval check only reads the record");
+        assert!(code.contains("fn caller_has_read_private"), "named, so a fifth reader is a decision");
         assert!(!code.contains("caller_identity::resolve"), "a process walk names the mind, not the session");
     }
 }

@@ -108,6 +108,7 @@ pub fn actions() -> Vec<(Action, Parse)> {
                  the job's id. Graded the same way as `generate`, because it sends the same prompt to \
                  the same backend.",
             )
+            .leaves_machine()
             .defers()
             .arg(arg(
                 "of",

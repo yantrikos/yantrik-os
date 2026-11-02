@@ -116,8 +116,10 @@ be caught.
   an action's name up to its first underscore, not an exact action name. An exact name is answered
   with the family word to use instead.
 - **A tainted hand-off, command, fetched address or send raises the card in every mode, full bypass
-  included.** It is the one named exception to `bypass_all` asking nothing, and the card is never
-  skipped: the bridge sends `tainted: true` on `request_approval` and the shell
+  included**, for a mind that reaches the desktop through the bridge. It is the one named exception to
+  `bypass_all` asking nothing, and the card is never skipped. **Not covered:** the built-in
+  companion's own mail send (`companion-tools/outward.rs`, gated by `gate::decide` alone), which
+  carries no taint, so in `bypass_all` it sends without a card; the mode panel says so. the bridge sends `tainted: true` on `request_approval` and the shell
   (`taint_ask::resolve`) turns any `Run` into an `Ask`, whatever a session or standing rule says.
   The shell honours the flag only for those classes (`taint_ask::is_sink`), and ORs in its own taint
   record for a caller it follows (a believed `<harness>:main` token); a tokenless bridge or a
@@ -133,8 +135,11 @@ be caught.
   what it is given. From a tainted conversation the first asks every time; the second is
   visited-or-ask like the browser's `go`, with the address shown whole in its one ASCII form. An
   action that takes an address parameter (`url`, `uri`, `link`, `href`, `webhook`, `endpoint`,
-  `address`) and does not declare `fetches_address` does not publish: `Action::schema` panics in a
-  debug build, which every test is. Free text that leaves the machine cannot be found by a
+  `address`) must declare `fetches_address` for that parameter: in a Rust app, `Action::schema`
+  panics in a debug build (every test) otherwise. That check is Rust and debug only, so the bridge
+  also treats an address-named parameter as a fetch at call time, from a tainted conversation, when
+  the action declares none (the Python SDK has no builder). Every check on a call's arguments reads
+  the one dict that is sent (`sent_args`); a declared fetch whose address is missing is refused. Free text that leaves the machine cannot be found by a
   parameter name, so `leaves_machine` is a declaration an author makes; the sweep of every app's
   actions is in #1080. Declared today: `download-manager.add`, `shell.report_problem`,
   `studio.generate`; hand-offs and commands keep their lists.

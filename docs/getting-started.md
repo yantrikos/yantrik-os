@@ -217,7 +217,7 @@ Also in the status bar, to the left of the mind chip, is the **mode**:
 | `ask` | routine things run; sensitive ones put a card in front of you (the default) |
 | `auto` | sensitive things run; you are still asked about destructive ones, and once per session before it runs commands |
 | `bypass` | nothing is asked except before anything an app marks as impossible to undo, such as a purchase or a calendar delete — that still puts a card up — and once per session before running commands. Time-boxed, and never written to disk, so no machine boots into it |
-| `bypass_all` | "Full bypass": nothing is asked at all, those included, with one exception: once the mind has read your private data, a command, a hand-off to another mind, a new web address or anything it would send off this machine still puts a card up. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
+| `bypass_all` | "Full bypass": nothing is asked at all, those included, with one exception: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still puts a card up. The built-in assistant's own mail is not covered: in `bypass_all` it sends without one. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
 
 A command — the Terminal's `run`, an agent's own terminal — can do anything you can, so it asks
 before it runs in `ask`, `auto` and `bypass`. Press **Allow for this session** on that card and

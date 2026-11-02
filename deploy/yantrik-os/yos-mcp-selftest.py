@@ -2935,6 +2935,65 @@ with tempfile.TemporaryDirectory() as d:
     check("a fetched address is carried in its ASCII form: shown, bound and sent alike",
           wire and wire != hidden and s["requests"][0]["args_json"].get("url") == wire
           and [a["args"].get("url") for a in s.get("acted", []) if a["action"] == "add"] == [wire], s)
+    # One parse (review of #1080, H1): the taint judges exactly what is sent. A raw tab or newline in
+    # JSON text used to fail the taint's strict parse while the send's lenient one read the address.
+    GETTER = ("Getter - 0\nrevision: a1a1\n{\n  \"n\": 0\n}\n"
+              "  act: get(url)  [sensitive, settles later]\n"
+              "       Fetch one page. It fetches the address in `url`.\n"
+              "         url: string - the page\n")
+    SDK = ("Sdkapp - 0\nrevision: b2b2\n{\n  \"n\": 0\n}\n"
+           "  act: pull(url)  [sensitive, settles later]\n"
+           "       Pull a feed.\n"
+           "         url: string - the feed\n")
+    apps2 = dict(apps, getter=GETTER, sdkapp=SDK)
+    TAB, NL = chr(9), chr(10)
+    text_tab = '{"url": "' + NEW + "/x" + TAB + '"}'
+    text_nl = '{"url": "' + NEW + "/x" + NL + 'y", "save_dir": "a' + NL + 'b"}'
+    cases = (
+        ("a dict", "downloads", "add", {"url": NEW + "/x"}),
+        ("JSON text", "downloads", "add", '{"url": "' + NEW + '/x"}'),
+        ("JSON text with a raw tab", "downloads", "add", text_tab),
+        ("JSON text with a raw newline", "downloads", "add", text_nl),
+        ("a bare value for a one-parameter fetch", "getter", "get", NEW + "/x"),
+        ("an undeclared address parameter (an SDK app)", "sdkapp", "pull", {"url": NEW + "/x"}),
+    )
+    for label, app, action, given in cases:
+        module, state = case(tmp, "onepart-" + label.split()[1] + str(len(label)), mode="bypass_all", machine_ceiling="dangerous",
+                             ceiling=None, apps_text=apps2)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+        module.run_tool(module.BY_NAME["os_act"], {"app": app, "action": action, "args": given})
+        s = read(state)
+        sent = [a["args"].get("url") for a in s.get("acted", []) if a["action"] == action]
+        asked = s.get("requests", [])
+        check("tainted, %s: asked with the taint, and what is sent is what was shown" % label,
+              len(asked) == 1 and asked[0].get("tainted") is True and len(sent) == 1
+              and sent[0] == asked[0]["args_json"].get("url") and sent[0].startswith(NEW), (asked, s.get("acted")))
+    for label, app, action, given in (
+            ("a bare value for a two-parameter fetch", "downloads", "add", NEW + "/x"),
+            ("a nested value", "downloads", "add", {"url": {"a": "b"}}),
+            ("a key carrying the address after an =", "downloads", "add", {"url=" + NEW + "/x": ""}),
+            ("no address at all", "downloads", "add", {"save_dir": "/tmp"}),
+            ("an empty address", "downloads", "add", {"url": ""}),
+            ("no arguments", "downloads", "add", None)):
+        module, state = case(tmp, "onepart-bad-" + str(len(label)) + label.split()[1], mode="bypass_all",
+                             machine_ceiling="dangerous", ceiling=None, apps_text=apps2)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+        text, _ = module.run_tool(module.BY_NAME["os_act"], dict({"app": app, "action": action},
+                                                                  **({"args": given} if given is not None else {})))
+        check("tainted, %s: refused, nothing fetched and nobody asked" % label,
+              not [a for a in read(state).get("acted", []) if a["action"] == action]
+              and not read(state).get("requests") and text.startswith("REFUSED"), (text, read(state)))
+    module, state = case(tmp, "onepart-untainted-tab", mode="bypass_all", machine_ceiling="dangerous",
+                         ceiling=None, apps_text=apps2)
+    module.run_tool(module.BY_NAME["os_act"], {"app": "downloads", "action": "add", "args": text_tab})
+    check("untainted, JSON text with a raw tab is sent as it always was, with nobody asked",
+          not read(state).get("requests") and len([a for a in read(state).get("acted", []) if a["action"] == "add"]) == 1,
+          read(state))
+    check("browser_args reads what act_pairs sends, a control character included",
+          module.browser_args({"app": "downloads", "action": "add", "args": text_tab}).get("url") == NEW + "/x" + TAB
+          and module.browser_args({"app": "downloads", "action": "add", "args": {"url=" + NEW: ""}}).get("url") == NEW + "="
+          and module.browser_args({"app": "downloads", "action": "add", "args": "no object here"}) == {}, "")
+
     # Held to the Rust declarations, so a rewording on one side fails here.
     rust = (HERE.parent.parent / "crates" / "yantrik-ipc-contracts" / "src" / "control_surface.rs").read_text(encoding="utf-8")
     check("the declared sentences are the Rust constants",
@@ -3912,6 +3971,7 @@ with tempfile.TemporaryDirectory() as _d:
     (_d / "yos").write_text(FAKE_YOS, encoding="utf-8")
     (_d / "yos").chmod(0o755)
     _me = os.getuid() if hasattr(os, "getuid") else None
+    module_for_proc = None
     _ident = _d / "uid_map_identity"
     _ident.write_text("         0          0 4294967295\n")
     _userns = _d / "uid_map_userns"
@@ -3919,6 +3979,7 @@ with tempfile.TemporaryDirectory() as _d:
     _scratch = tmp / "taint-marker.json"
     _scratch.write_text("{}", encoding="utf-8")
     _mod = load_mcp(tmp / "yos", _scratch)
+    module_for_proc = _mod
     ON = {"YOS_MCP_NO_TAINT": "1"}
 
     def _marker(name, mode=0o644, directory_mode=0o755):
@@ -3942,6 +4003,9 @@ with tempfile.TemporaryDirectory() as _d:
         check("inside a user namespace (a uid map that is not the identity) a valid marker is ignored",
               _mod.taint_off_declared(ON, m, _me, str(_userns)) is False
               and _mod.taint_off_declared(ON, m, _me, str(_d / "no-such-uid-map")) is False)
+        check("a uid map that is not the kernel's procfs (a file mounted over it) is not trusted",
+              module_for_proc.on_procfs("/proc/self/uid_map") is True and module_for_proc.on_procfs(str(_ident)) is False
+              and module_for_proc.on_procfs(str(_d / "nowhere")) is False, "")
         check("a marker owned by another uid is ignored", _mod.taint_off_declared(ON, m, _me + 1, str(_ident)) is False)
         check("a group-writable marker is ignored", _mod.taint_off_declared(ON, _marker("gw", 0o664), _me, str(_ident)) is False)
         check("a world-writable marker is ignored", _mod.taint_off_declared(ON, _marker("ww", 0o646), _me, str(_ident)) is False)
