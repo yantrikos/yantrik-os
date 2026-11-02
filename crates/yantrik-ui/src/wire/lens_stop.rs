@@ -273,7 +273,9 @@ mod tests {
     /// and the line says so. Read from the source, as the Lens queue lives in the window.
     #[test]
     fn stop_takes_back_the_message_queued_in_the_lens_and_says_so() {
-        let src = include_str!("lens_stop.rs");
+        let src = include_str!("lens_stop.rs").replace("
+", "
+");
         let press = src.split_once("pub fn press(").expect("press").1;
         let press = &press[..press.find("\n}\n").unwrap()];
         assert!(press.contains("lens_queue::cancel("), "press takes back the queued message");
