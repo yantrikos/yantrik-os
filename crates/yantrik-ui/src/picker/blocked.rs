@@ -46,7 +46,9 @@ impl Blocker {
     /// The header: the reason once, then its presses.
     pub fn rows(&self) -> Vec<ModelRow> {
         match self {
-            Blocker::PrivateMode => vec![ModelRow::banner("Private mode is on: only models on this machine or network can be used, and none is set up. (True because every listed model is then on a cloud account; a local one would be usable.)".into())],
+            // "none is set up" holds because this blocker only fires when every listed model is on
+            // a cloud account; a local one would be usable and there would be no header.
+            Blocker::PrivateMode => vec![ModelRow::banner("Private mode is on: only models on this machine or network can be used, and none is set up.".into())],
             Blocker::SharingOff { accounts, lane_missing } => {
                 let whom = match accounts.as_slice() {
                     [one] => one.clone(),
