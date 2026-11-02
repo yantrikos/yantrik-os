@@ -53,4 +53,7 @@ crates/yantrik-ui/src/control_files.rs files_list path crates/yantrik-ui/src/con
 crates/yantrik-ui/src/control_files.rs files_new_file path crates/yantrik-ui/src/control_files_mind.rs
 crates/yantrik-ui/src/control_files.rs files_new_folder path crates/yantrik-ui/src/control_files_mind.rs
 crates/yantrik-ui/src/control_files.rs files_rename path crates/yantrik-ui/src/control_files_mind.rs
+crates/yantrik-ui/src/control_files_move.rs files_move path crates/yantrik-ui/src/control_files_mind.rs
+crates/yantrik-ui/src/control_files_move.rs files_move to_folder crates/yantrik-ui/src/control_files_mind.rs
+crates/yantrik-ui/src/control_present.rs present_file path crates/yantrik-ui/src/control_files_mind.rs
 crates/yantrik-ui/src/control_files.rs files_stat path crates/yantrik-ui/src/control_files.rs

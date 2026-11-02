@@ -61,9 +61,12 @@ thread_local! {
 ///
 /// Critical stays until it is dismissed. A message that is worth interrupting Do Not Disturb for
 /// is worth being there when somebody comes back to the desk.
-fn lifetime(urgency: i32) -> Option<Duration> {
+fn lifetime(urgency: i32, id: &str) -> Option<Duration> {
     if urgency >= 2 {
         None
+    } else if id.starts_with(crate::control_present::TOAST) {
+        // "Show me": the person may be away from the desk when the page is done.
+        Some(Duration::from_secs(120))
     } else {
         Some(DEFAULT_LIFETIME)
     }
@@ -80,15 +83,43 @@ pub fn push(ui: &App, data: ToastData, urgency: i32) {
             0,
             Live {
                 data,
-                expires_at: lifetime(urgency).map(|d| Instant::now() + d),
+                expires_at: lifetime(urgency, &id).map(|d| Instant::now() + d),
             },
         );
         // A person who walks away should not come back to a thousand held toasts. Anything past
         // this is already in the notification centre, which is where a backlog belongs.
-        live.truncate(50);
+        evict_past(&mut live, 50);
     });
     republish(ui);
     ensure_sweeper(ui.as_weak());
+}
+
+/// Keep at most `max` toasts. The ones to go are, in order: a presentation card (a Mind's, which
+/// anyone can raise), then an ordinary toast the store keeps anyway, oldest first. A critical
+/// toast, and a `local:` one that is stored nowhere (an Undo), are the last to be let go: a Mind
+/// raising cards cannot push them off the screen (security review of #1081).
+fn evict_past(live: &mut Vec<Live>, max: usize) {
+    while live.len() > max {
+        let rank = |t: &Live| -> u8 {
+            if t.data.id.starts_with(crate::control_present::TOAST) {
+                0
+            } else if t.data.urgency < 2 && !t.data.id.starts_with("local:") {
+                1
+            } else if t.data.urgency < 2 {
+                2
+            } else {
+                3
+            }
+        };
+        let lowest = live.iter().map(rank).min().unwrap_or(0);
+        // The oldest of that rank is the last in the list (newest first).
+        match live.iter().rposition(|t| rank(t) == lowest) {
+            Some(i) => {
+                live.remove(i);
+            }
+            None => break,
+        }
+    }
 }
 
 /// Take one toast off the screen. The notification itself is untouched — dismissing the toast
@@ -204,6 +235,43 @@ pub(crate) fn brief(body: &str) -> String {
     let mut out = head[..cut].trim_end_matches(|c: char| c.is_whitespace() || c == ',' || c == ';').to_string();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod evict_tests {
+    use super::*;
+
+    fn toast(id: &str, urgency: i32) -> Live {
+        Live {
+            data: ToastData {
+                id: id.into(),
+                app_name: Default::default(),
+                summary: Default::default(),
+                body: Default::default(),
+                urgency,
+                icon_char: Default::default(),
+                actions: Default::default(),
+                thumbnail: Default::default(),
+                has_thumbnail: false,
+            },
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn a_flood_of_presentation_cards_never_pushes_another_toast_off() {
+        let mut live = vec![toast("local:bench-undo:1", 1), toast("n-1", 2), toast("n-2", 1)];
+        for i in 0..60 {
+            live.insert(0, toast(&format!("{}:{i}", crate::control_present::TOAST), 1));
+        }
+        evict_past(&mut live, 50);
+        assert_eq!(live.len(), 50);
+        for keep in ["local:bench-undo:1", "n-1", "n-2"] {
+            assert!(live.iter().any(|t| t.data.id == keep), "{keep} was pushed off");
+        }
+        // The newest cards are the ones kept.
+        assert!(live[0].data.id.ends_with(":59"));
+    }
 }
 
 #[cfg(test)]

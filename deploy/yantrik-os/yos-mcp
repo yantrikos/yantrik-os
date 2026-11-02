@@ -592,7 +592,9 @@ TOOLS = [
         "name": "web_go",
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
         "description": "Open a URL in the browser and wait for it to load; answers with what is "
-                       "on the new page. new_tab opens it beside the current one.",
+                       "on the new page. new_tab opens it beside the current one. A file:///home/... "
+                       "URL opens a page of your own from the person's home, to check what you "
+                       "built (reading it counts as reading private state).",
         "inputSchema": {"type": "object", "properties": {
             "url": {"type": "string"},
             "new_tab": {"type": "boolean"}}, "required": ["url"]},
@@ -1653,6 +1655,38 @@ def sync_scope():
         return
     result, _ = shell_call("taint_scope", {}, timeout=SCOPE_CALL_TIMEOUT)
     adopt_scope(result)
+
+
+def is_local_page(url):
+    """Is this address a file on this machine? Opening one reads it: whatever is in it is on this
+    machine, so the conversation has seen private state (#1068)."""
+    return isinstance(url, str) and url.strip().lower().startswith("file:")
+
+
+# What a page of the Mind's own turns into: a `file:` page can navigate itself to a blob or an
+# inline document, and what it then shows is still its own text. Read from the answer.
+LOCAL_ANSWER_PREFIXES = ("file:", "blob:null", "about:srcdoc", "data:")
+
+
+def answer_url_is_local(url):
+    return isinstance(url, str) and url.strip().lower().startswith(LOCAL_ANSWER_PREFIXES)
+
+
+def answer_shows_local_page(out):
+    """Does a browser answer come from a `file:` page? Read from the answer, not the request: a
+    `file:` tab can come from the person's own double-click, from history, or from a link on a
+    page, and whatever it holds is on this machine (#1068)."""
+    reply = result_object(out)
+
+    def walk(node, depth=0):
+        if depth > 6:
+            return False
+        if isinstance(node, dict):
+            return any((k == "url" and answer_url_is_local(v)) or walk(v, depth + 1) for k, v in node.items())
+        if isinstance(node, list):
+            return any(walk(v, depth + 1) for v in node[:200])
+        return False
+    return walk(reply)
 
 
 def saw_private(what):
@@ -3031,6 +3065,15 @@ def run_tool(tool, args, present=None):
     if tool["name"] in PRIVATE_READS and p.returncode == 0:
         # Recorded after the call, not before: a read that failed saw nothing.
         saw_private(tool["name"])
+    outbound_name, outbound_args = outbound_of(tool, args)
+    if p.returncode == 0 and tool["name"] == "os_act" and surface_name(app) in BROWSER_NAMES:
+        # Recorded after the call, as every read is: a page that was refused was not read. A local
+        # page is private the way os_screen is, so the taint rule closes new addresses after it.
+        # By the address asked for, and by the address the answer came from, on every browser act.
+        if outbound_name == "web_go" and is_local_page(outbound_args.get("url")):
+            saw_private("web_go.file")
+        elif answer_shows_local_page(out):
+            saw_private("browser.file")
     if tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) in PRIVATE_ACT_SURFACES:
         saw_private("%s.%s" % (surface_name(app), args.get("action")))
     if (tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) == "shell"

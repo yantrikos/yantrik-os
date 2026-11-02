@@ -294,7 +294,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
         .action(
             // Preserve the existing permission classification for automation callers.
             Action::new("files_delete", "Move a file or folder to recoverable Trash").defers()
-                .risk("dangerous")
+                .risk(files_cursor::TRASH_GRADE)
                 .arg(Param::text("name").describe("The name to delete, shown in the current listing (the person's form; a Mind gives `path`)").optional())
                 .arg(Param::text("path").describe("The entry to delete, e.g. /home/user/a/b.txt (a Mind's form, required of a Mind so the approval names the whole target; touches nobody's screen)").optional())
                 .arg(Param::text("parent").describe("The folder `name` is in (a Mind's form, with `name`)").optional()),
@@ -318,7 +318,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     let surface = surface.action(
         Action::new(
             "files_select",
-            "Select an entry by name; optionally extend selection",
+            "Select an entry by name; optionally extend selection (the person's screen only: a Mind moves files with files_move)",
         )
         .arg(Param::text("name"))
         .arg(Param::flag("extend").optional()),
@@ -375,7 +375,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     let surface = surface.action(
         Action::new(
             "files_list",
-            "What a folder holds: how many entries, the first few names (folders end in /). Reads              only; no screen moves. With no `path`, the folder you are in (a Mind's cursor, set by              files_go; the Files screen's folder for the person)",
+            "What a folder holds: how many entries, the first few names (folders end in /). Reads              only; no screen moves. What is on the desktop: this on the desktop folder, or `describe shell` desktop.items. With no `path`, the folder you are in (a Mind's cursor, set by              files_go; the Files screen's folder for the person)",
         )
         .risk("safe")
         .arg(Param::text("path").describe("An absolute directory path or ~/…").optional()),
@@ -437,11 +437,16 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             Ok(where_now(&ui))
         },
     );
+    // A move by explicit paths, for a Mind (and the person): `control_files_move`.
+    let surface = surface.action(crate::control_files_move::action(), crate::control_files_move::run);
+    let present = ui.as_weak();
+    let surface = surface.action(crate::control_present::action(), move |args| crate::control_present::run(&present, args));
     macro_rules! action {
         ($surface:ident,$name:literal,$description:literal,$callback:ident,$deferred:expr,$needs_ready:expr) => {
             let weak = ui.as_weak();
             let spec = Action::new($name, $description);
             let spec = if $deferred { spec.defers() } else { spec };
+            let spec = if $name == "files_trash_selected" { spec.risk(files_cursor::TRASH_GRADE) } else { spec };
             let $surface = $surface.action(spec, move |args| {
                 if let Some(answer) = files_cursor::intercept($name, args) {
                     return answer;
