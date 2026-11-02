@@ -14,8 +14,11 @@ To change the mark, change `build.py` and run two commands.
 | `yantrik-name.svg` | "YANTRIK OS" alone | boot, About and login, under or beside the mark |
 | `yantrik-wordmark.svg` | horizontal lockup: emblem + name | website header, README banners, the OG card |
 | `yantrik-lockup-stacked.svg` | stacked lockup: emblem over name | splash and print |
+| `yantrikdb-emblem.svg` | YantrikDB: the same Y over a disc of strata, 512 field | YantrikDB above 64 px: its GitHub avatar, README, site |
+| `yantrikdb-mark.svg` | YantrikDB at 64 px and below: disc, band, Y, bindu | YantrikDB favicons, tab bars, lists of minds |
+| `yantrikdb-wordmark.svg` | horizontal lockup: DB emblem + "YANTRIK DB" | YantrikDB's social preview and README banner |
 
-All six are generated — do not edit them by hand.
+All nine are generated — do not edit them by hand.
 
 ## What the mark is
 
@@ -44,6 +47,26 @@ correct lattice — are all in `build.py`.
 mind is thinking. A logo that animates is not a logo, it is a widget. The orb stays on the lock
 and onboarding screens; it is never the product mark.
 
+## The YantrikDB mark
+
+YantrikDB is the memory under the OS: one local file that consolidates many notes into one
+fact, notices contradictions, keeps every earlier belief, and is shared by every mind on the
+machine. Its mark says that in the emblem's own grammar. The OS sets the Y over a gear —
+mechanism. The DB sets the same Y over **strata** — memory.
+
+- **The Y, its channels and its bindu** are the OS's, number for number. The tips overhang the
+  band exactly as they overhang the gear, and the bindu is the spindle.
+- **The strata**: nine layers in the disc, a shade apart, with a gold hairline on every step.
+  They thin toward the rim: recent memory is dense, old memory has been consolidated. One
+  stratum is lit blue, with a brighter arc upper left, as the emblem's rim is.
+- **The band**: a machined gold ring at 176 — where the gear's teeth end — lit from the upper
+  left like the Y's bevels, with a dark edge so it holds on white.
+
+It is not a cylinder, a stack or a brain. Seen from above a database is a platter, and a platter
+of rings is a record; that is as literal as it gets. Because it carries its own ground it needs
+no tile: it is the only one of the two marks that stands alone on an avatar or a favicon.
+Three directions were drawn (`design/yantrikdb-mark-2026-11-01/`); Pranab chose this one.
+
 ## Sizes
 
 Two levels of one drawing, not two logos. Above 64 px the full emblem; at 64 px and below the
@@ -52,6 +75,11 @@ is the same Y, channels and bindu — only what is around them is left off. `Yan
 `crates/yantrik-ui-slint/ui/components/yantrik_mark.slint` makes that choice from its size.
 
 The core carries a 2-unit dark edge, so the gold holds on white (app stores, GitHub light mode).
+
+YantrikDB keeps the same two levels. Above 64 px, `yantrikdb-emblem.svg`. At 64 px and below,
+`yantrikdb-mark.svg`: the disc, the band and one stratum, with the channels at 16 units and the
+bindu at 33, wider than the OS core can afford, because here the disc gives them a ground. At
+16 px it is a navy coin with a gold rim and a gold Y in it.
 
 ## Colours
 
@@ -65,6 +93,7 @@ The core carries a 2-unit dark edge, so the gold holds on white (app stores, Git
 | pearl | `#FFFAE0` → `#EDB652` → `#B67523` |
 | gear | `#80643A` → `#35281B` |
 | instrument lines (gates, ring, lattice) | `#B88C49` `#AA8145` `#BD9658` |
+| strata (YantrikDB): bands, steps, band | `#0E1E34` / `#060F1C`, `#BD9658`, `#C18D43` (small: `#0C1930` disc, `#D5A54E` band) |
 | ground | `#05070d` (cards), `#09111F` (icon tile) |
 | dark edge, for white grounds | `#17202B` |
 
@@ -77,7 +106,7 @@ vendored in `fonts/` with its licence). 64-unit capitals, 4 units of tracking af
 34 units of ink between the K and the O so the category reads as a second word. The A loses its
 crossbar and stands over a small blue triangle: a Λ over a point, the yantra's triangle in the
 name. The name is outlines, never `<text>`, so it renders the same on every machine; the OS
-never sets it in a UI font.
+never sets it in a UI font. **YANTRIK DB** is set the same way, DB standing apart as OS does.
 
 ## Clear space and minimum size
 
@@ -107,6 +136,9 @@ What it writes, into this directory:
 | `og-image-1200x630.png` | the site's Open Graph and Twitter card |
 | `social-preview-1280x640.png` | GitHub's repo social preview |
 | `github-avatar-512.png` | the org avatar |
+| `yantrikdb-avatar-512.png` | YantrikDB's GitHub avatar |
+| `yantrikdb-social-preview-1280x640.png` | YantrikDB's repo social preview |
+| `yantrikdb-favicon-{16,32,48}.png`, `yantrikdb-mark.ico` | YantrikDB favicons, each rendered at its own size; committed |
 | `preview.png` | contact sheet: everything above in one picture, on dark and on white |
 
 ## Where it is used
