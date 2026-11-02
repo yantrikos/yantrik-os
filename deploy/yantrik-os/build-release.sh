@@ -214,6 +214,8 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   # The harnesses that run as the mind account (#411), sourced by the updater: without it a build
   # has no `yantrik-update harness` and Hermes would stay the person's.
   install -m 0644 "$SCRIPT_DIR/harness-isolation.sh" "$ROOT/bin/harness-isolation.sh"     || fail "no harness-isolation.sh: the updater could not move a harness to the mind account"
+  install -m 0644 "$SCRIPT_DIR/harness-sandbox.sh" "$ROOT/bin/harness-sandbox.sh" \
+    || fail "no harness-sandbox.sh: harness-isolation.sh sources it"
   # The check the updater runs on the release manifest before it reads a field of it (#537),
   # and the public keys it trusts. Beside the updater, in the root-owned bin/ and share/, so
   # nothing the desktop's account can write decides who may sign an update. A build with no

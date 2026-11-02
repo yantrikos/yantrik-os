@@ -22,18 +22,29 @@ no approval card. Now:
 - **The built-in Mind shares its uid**, so the two are kept apart by two namespaces together, and
   both units have both: a mount namespace that hides the other's files, and `PrivatePIDs=yes`
   (systemd 257), so `/proc/<pid>/root`, `/fd` and `/environ` of the other's processes cannot be
-  walked into and it cannot be signalled. A mount namespace alone is not enough (measured). A Mind
-  bundle that does not handle SIGTERM as PID 1 (before E.SIGTERM1) is killed rather than stopped:
-  on staging (systemd 257.8) `systemctl stop` of a no-handler PID 1 took 0.017 s and went straight
-  to SIGKILL, so the cost is an unclean SQLite close, not a slow stop (the gate measures it on the
-  OS's 257.13; `TimeoutStopSec=30` in its unit bounds it either way). A Mind always comes back.
-  The journal may print "Supervising process ... not our child" at each start; it is expected. A systemd older than 257 would ignore the line, so Hermes is not installed or
-  started there (the installer, the unit and every task check); the Mind's unit has no such gate,
-  because refusing to start would leave no Mind, and with no harness there is nothing to keep apart.
-  Still shared: abstract AF_UNIX sockets (no network namespace in either unit), and nothing but the
-  uid separates the two beyond the namespaces. Per-harness accounts remain the next step.
-  `hermes model` runs in a pty of its own unit, not your terminal, but its output reaches your
-  terminal as it is: a modified Hermes could send escape sequences (title, clipboard) while it runs.
+  walked into and it cannot be signalled. A mount namespace alone is not enough (measured by the
+  Mind's reviewer on staging).
+- **A stop is a kill under `PrivatePIDs`**, handler or not: measured by the Mind's reviewer on
+  staging (systemd 257.8, a container), `systemctl stop` took 0.02 s and went straight to SIGKILL,
+  and a SIGTERM handler did not run. The gate measures it on the OS's own systemd (257.13). The
+  Mind has no drain and no handler changes that; the cost is an unclean SQLite close, and it comes
+  back (`Restart=always`). Hermes has a drain: `ExecStop=` sends SIGTERM from outside the namespace
+  and waits for Hermes to finish its turn, then kills it itself after 100 s (below its
+  `TimeoutStopSec=120`, so a stop never ends on systemd's timeout). A restart therefore blocks for
+  at most about that long; `yantrik-update harness restart hermes` says so first. The journal's
+  "Supervising process ... which is not our child" at each start is the same fact, not noise.
+- **A systemd older than 257** would ignore the line, so Hermes is not installed or started there
+  (the installer, the unit and every task check). The Mind's unit has no such gate, because refusing
+  to start would leave no Mind, and with no harness there is nothing to keep apart.
+- **The `hermes model` pty** belongs to its own unit (not your terminal), but it is allocated in the
+  host's devpts and owned by the account, so the Mind could open it and read what you type;
+  `/dev/pts` is hidden from the Mind's unit (it is headless). Its output still reaches your terminal
+  as it is: a modified Hermes could send escape sequences (title, clipboard) while it runs.
+- **Still shared:** the network namespace, so loopback TCP/UDP and abstract AF_UNIX sockets: either
+  side could connect to a listener of the other. Nothing here makes Hermes listen, but a moved
+  `config.yaml` that enables a listening Hermes platform (an API server, a webhook) would let the
+  Mind drive it. No listener check is made: the Mind has the same uid, so its own listeners cannot
+  be told from Hermes's. Per-harness accounts remain the next step.
 - **Its keys** live in its own `~/.hermes/.env`, mode 0600, read by Hermes itself as that account.
   They are never in a unit file, an `EnvironmentFile`, a command line or the journal. After a move,
   **your old copy still has the same keys**, in `~/.hermes.yantrik-moved`, readable by anything
@@ -59,9 +70,18 @@ starts the service, proves it, and only then masks your old user unit and rename
 `~/.hermes.yantrik-moved`, with the old launcher and unit inside. Nothing is deleted; if any step
 fails, your own gateway is started again as it was and the half-made directory is kept aside. Your
 `hermes` command stays, and does `model`, `status` and `--version` against the account's Hermes.
-An OS rollback leaves the service and its files where they are (they are not in `/opt/yantrik`), so
-Hermes keeps working; it does not put `~/.hermes` back. To go back by hand: stop and disable
-`hermes-gateway.service`, move `~/.hermes.yantrik-moved` back to `~/.hermes`, unmask the user unit.
+**An OS rollback to a build from before this release is NOT safe for Hermes's keys.** The service and
+its files stay where they are (they are not in `/opt/yantrik`), but that build's Mind unit neither
+hides `/var/lib/yantrik-mind/harness` nor has a PID namespace, so that Mind can read Hermes's `.env`
+at rest, whatever Hermes does. Nothing but a separate uid prevents that. What the updater does: the
+next `reconcile` (it installs that older Mind unit, then this check runs in the same pass) stops and
+disables `hermes-gateway.service`, takes the "installed" mark off Hermes's row in Settings, and
+says so in its output; the gateway also refuses to start beside a Mind unit that does not isolate
+(its `ExecStartPre=`). Until that reconcile runs, nothing stops an already-running gateway. So after
+a rollback below this release: stop the gateway and **rotate Hermes's API keys**. After updating
+again, press Install. The rollback does not put `~/.hermes` back; to go back by hand, stop and
+disable `hermes-gateway.service`, move `~/.hermes.yantrik-moved` back to `~/.hermes`, unmask the user
+unit.
 
 ## Install
 

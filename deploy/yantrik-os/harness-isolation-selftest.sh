@@ -83,7 +83,14 @@ has "a home that is a link does not start it" "is not the account own plain dire
 mind_live="$(grep -v '^[[:space:]]*#' "$repo/config/systemd/yantrik-mind.service")"
 has "the Mind's unit has its own PID namespace too, so it holds both ways" "PrivatePIDs=yes" "$mind_live"
 has "... with its stop bounded" "TimeoutStopSec=30" "$mind_live"
-has "... and the unit says what an older Mind does, as measured" "0.017 s" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+has "... and the unit says what was measured, and where" "staging (systemd 257.8" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+lacks "... and does not suggest a handler would help" "E.SIGTERM1" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+lacks "... nor tell anyone not to chase the 'not our child' line" "do not chase" "$(cat "$repo/config/systemd/yantrik-mind.service" "$unit" "$repo/harnesses/hermes/README.md")"
+has "... the Mind's unit hides /dev/pts from the Mind (the hermes model pty), ignoring a missing path" "InaccessiblePaths=-/dev/pts" "$mind_live"
+has "the harness unit drains its main process from outside the namespace" "ExecStop=+/bin/sh -c" "$live"
+has "... through MAINPID, which systemd fills in" '${MAINPID}' "$live"
+has "... and /dev/shm is private and writable" "TemporaryFileSystem=/dev/shm:mode=1777" "$block"
+has "the gateway refuses to start beside a Mind unit that does not isolate (rollback)" "does not mask harness/ and have its own PID namespace" "$live"
 lacks "... and nowhere claims a stop waits out the timeout" "waits out" "$(cat "$repo/config/systemd/yantrik-mind.service" "$repo/config/systemd/hermes-gateway.service" "$repo/harnesses/hermes/README.md" "$here/harness-isolation.sh")"
 has "... and says the 'not our child' journal line is expected" "not our child" "$(cat "$repo/config/systemd/yantrik-mind.service")"
 lacks "... no TODO left" "TODO(#411)" "$(cat "$repo/config/systemd/yantrik-mind.service")"
@@ -114,6 +121,42 @@ has "the build ships the library in bin/" 'harness-isolation.sh" "$ROOT/bin/harn
 has "the installer knows both phases" "$HI_CAPABILITY" "$(cat "$repo/harnesses/lib/install/hermes.sh")"
 has "the installer hands the button over to the updater" "yantrik-update harness install hermes" "$(cat "$repo/harnesses/lib/install/hermes.sh")"
 is "a phase it does not know is refused" "yes" "$(HOME="$work" YANTRIK_HARNESS_ISOLATED=bogus sh "$repo/harnesses/lib/install/hermes.sh" "$repo/harnesses/hermes" 2>&1 | grep -q 'setup or prove' && echo yes || echo no)"
+
+
+echo "== A. the stop and the start of the gateway unit, run as written"
+stopline="$(grep '^ExecStop=+' "$unit" | sed 's/^ExecStop=+//')"
+has "the drain waits at most 100 s" "-lt 100" "$stopline"
+is "... less than TimeoutStopSec, so a stop never ends on systemd's own timeout" "yes" "$(t="$(sed -n 's/^TimeoutStopSec=//p' "$unit")"; [ 100 -lt "$t" ] && echo yes || echo no)"
+run_stop() { # <pid> <limit>: the unit's ExecStop= with systemd's substitutions made by hand
+  eval "$(printf '%s' "$stopline" | sed -e "s/\${MAINPID}/$1/" -e "s/-lt 100/-lt $2/" -e 's/\$\$/$/g')"
+}
+( sh -c 'trap "sleep 1; echo drained > \"$1\"; exit 0" TERM; while :; do sleep 0.2; done' sh "$work/drained" </dev/null >/dev/null 2>&1 & echo $! > "$work/stop.pid" )
+sleep 0.5; t0=$SECONDS; run_stop "$(cat "$work/stop.pid")" 100
+is "a main process that handles SIGTERM is waited for, and drains" "drained" "$(cat "$work/drained" 2>/dev/null)"
+is "... and is gone when the stop ends, well inside the limit" "yes" "$(! kill -0 "$(cat "$work/stop.pid")" 2>/dev/null && [ $((SECONDS - t0)) -lt 30 ] && echo yes || echo no)"
+( sh -c 'trap "" TERM; while :; do sleep 0.2; done' </dev/null >/dev/null 2>&1 & echo $! > "$work/stop.pid" )
+sleep 0.5; t0=$SECONDS; run_stop "$(cat "$work/stop.pid")" 2
+is "one that ignores it is killed by the script at its own limit (here shortened to 2), not by systemd" "yes" "$(sleep 0.3; ! kill -0 "$(cat "$work/stop.pid")" 2>/dev/null && [ $((SECONDS - t0)) -lt 30 ] && echo yes || echo no)"
+mkdir -p "$work/fakebin2"
+cat > "$work/fakebin2/systemctl" <<'FAKE'
+#!/bin/sh
+case "$*" in
+  "show -p InaccessiblePaths --value yantrik-mind.service") printf '%s\n' "${FAKE_MASK-/var/lib/yantrik-mind/harness}" ;;
+  "show -p PrivatePIDs --value yantrik-mind.service") printf '%s\n' "${FAKE_MIND_PIDS:-yes}" ;;
+  "show -p MainPID --value yantrik-mind.service") printf '%s\n' "${FAKE_MIND_MAINPID:-0}" ;;
+  "show -p DropInPaths --value hermes-gateway.service") printf '%s\n' "${FAKE_DROPIN:-}" ;;
+esac
+FAKE
+chmod 755 "$work/fakebin2/systemctl"
+preline="$(grep '^ExecStartPre=+.*u=yantrik-mind.service' "$unit" | sed -e 's/^ExecStartPre=+//' -e 's/\$\$/$/g')"
+gate() { # env assignments...: the unit's check against a Mind unit that answers as told; its exit status
+  ( env "$@" PATH="$work/fakebin2:$PATH" sh -c "$(printf '%s' "$preline" | sed -e "s/^\/bin\/sh -c '//" -e "s/'$//")" ) >/dev/null 2>&1
+}
+yes "the gateway starts beside a Mind unit that masks harness/ and has its own namespace (not running)" gate FAKE_MIND_MAINPID=0
+no "... not beside one that does not mask harness/ (a rollback below this release)" gate FAKE_MASK=
+no "... not beside one without PrivatePIDs" gate FAKE_MIND_PIDS=no
+no "... not beside a running Mind in PID 1's namespace" gate FAKE_MIND_MAINPID=$$
+no "... not with a drop-in on its own unit" gate FAKE_DROPIN=/etc/systemd/system/hermes-gateway.service.d/x.conf
 
 echo "== A. the person's hermes command"
 mkdir -p "$work/shimbin"
@@ -252,6 +295,11 @@ systemctl() { # a recorder; answers what the library asks of it
   printf '%s\n' "$*" >> "$work/log/systemctl"
   case "$*" in
     --version) printf 'systemd %s (%s.8-1)\n' "${FAKE_SYSTEMD:-257}" "${FAKE_SYSTEMD:-257}" ;;
+    "show -p InaccessiblePaths --value yantrik-mind.service") printf '%s\n' "${FAKE_MASK-$HI_BASE}" ;;
+    "show -p PrivatePIDs --value yantrik-mind.service") printf '%s\n' "${FAKE_MIND_PIDS:-yes}" ;;
+    "show -p MainPID --value yantrik-mind.service") printf '%s\n' "${FAKE_MIND_MAINPID:-0}" ;;
+    "is-active --quiet yantrik-mind.service") [ "${FAKE_MIND_ACTIVE:-0}" = 1 ] ;;
+    "show -p DropInPaths --value "*) printf '%s\n' "${FAKE_DROPIN:-}" ;;
     "show -p PrivatePIDs --value "*) printf '%s\n' "${FAKE_PRIVPIDS:-yes}" ;;
     "show -p MainPID --value "*) printf '%s\n' "${FAKE_MAINPID:-4242}" ;;
     *--user*is-active*) [ -e "$work/log/user-active" ] ;;
@@ -470,6 +518,59 @@ PROBE
 else
   echo "  skipped: cannot make namespaces here (unshare); the VM gate runs the real unit"
 fi
+
+echo "-- the hermes model pty is not the Mind's to open (M1)"
+if unshare --mount true >/dev/null 2>&1; then
+  python3 -c 'import os, pty, sys, time
+m, sl = pty.openpty(); n = os.ttyname(sl); os.chown(n, int(sys.argv[1]), -1); os.chmod(n, 0o620)
+open(sys.argv[2], "w").write(n); time.sleep(60)' "$(id -u yk411m)" "$work/pty.name" &
+  ptypid=$!; n=0; while [ ! -s "$work/pty.name" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+  ptyname="$(cat "$work/pty.name")"
+  open_pty() { setpriv --reuid="$(id -u yk411m)" --regid="$(id -g yk411m)" --clear-groups -- python3 -c 'import os, sys; os.close(os.open(sys.argv[1], os.O_RDWR | os.O_NOCTTY))' "$ptyname"; }
+  yes "control: the account can open a pty slave that is its own (this is the route)" open_pty
+  no "with /dev/pts hidden from the unit (emulating InaccessiblePaths=/dev/pts) it cannot" unshare --mount sh -c 'mount -t tmpfs -o mode=000 tmpfs /dev/pts && exec setpriv --reuid="$1" --regid="$2" --clear-groups -- python3 -c "import os, sys; os.close(os.open(sys.argv[1], os.O_RDWR | os.O_NOCTTY))" "$3"' sh "$(id -u yk411m)" "$(id -g yk411m)" "$ptyname"
+  kill "$ptypid" 2>/dev/null; wait "$ptypid" 2>/dev/null
+else
+  echo "  skipped: cannot make a mount namespace here"
+fi
+
+echo "-- a rollback to a build whose Mind unit does not isolate (M2, L7)"
+unset FAKE_MASK FAKE_MIND_PIDS FAKE_MIND_ACTIVE FAKE_MIND_MAINPID
+yes "the Mind's unit as this build ships it counts as isolating" hi_mind_isolated
+FAKE_MASK=;           no "... a unit that does not mask harness/ does not" hi_mind_isolated;  unset FAKE_MASK
+FAKE_MIND_PIDS=no;    no "... nor one without PrivatePIDs" hi_mind_isolated;  unset FAKE_MIND_PIDS
+FAKE_MIND_ACTIVE=1 FAKE_MIND_MAINPID=1; no "... nor a running Mind that is in PID 1's namespace (restart failed or cut short)" hi_mind_isolated
+FAKE_MIND_MAINPID=4242; yes "... a running Mind in a namespace of its own does" hi_mind_isolated;  unset FAKE_MIND_ACTIVE FAKE_MIND_MAINPID
+FAKE_MASK=; ( hi_ready hermes ) >/dev/null 2>&1; rc=$?; unset FAKE_MASK
+is "the install refuses against such a Mind" "1" "$rc"
+has "... and names why" "would be readable from it" "$(cat "$work/said")"
+: > "$work/log/systemctl"; : > "$installer_calls"
+FAKE_MASK=; ( hi_migrate_all ) >/dev/null 2>&1
+is "an update on a machine in that state runs no installer" "0" "$(wc -l < "$installer_calls" | tr -d ' ')"
+yes "... stops and disables the running gateway" grep -q 'disable --now hermes-gateway.service' "$work/log/systemctl"
+no "... and does not enable or refresh anything" grep -q '^enable ' "$work/log/systemctl"
+no "... the row no longer says Hermes is installed" test -e "$P/.local/state/yantrik/harnesses/hermes/installed"
+has "... and the updater says its keys must be rotated" "rotate them" "$(cat "$work/said")"
+unset FAKE_MASK
+hi_mark_person_installed hermes "$P"
+
+echo "-- the rest of the delta's lows"
+: > "$FAKE_RUN_LOG"
+FAKE_DROPIN=/etc/systemd/system/hermes-gateway.service.d/x.conf
+no "a drop-in anywhere (systemd's own list) refuses a task" hi_task 5 0 hermes /bin/true
+unset FAKE_DROPIN
+printf '\xc2\xc2\x9b\x9b\n' | hi_relay
+lacks "nested C1 bytes do not rebuild one after the strip" "$(printf '\xc2\x9b')" "$(tail -n 1 "$work/said")"
+( hi_restart hermes ) >/dev/null 2>&1
+has "a restart says the stop lets Hermes finish its turn first" "up to 100 s" "$(cat "$work/said")"
+: > "$work/log/systemctl"
+HI_NOW="hermes yk411p active"; saved_state="$HI_STATE"; HI_STATE="$work/state-is-a-file"; : > "$HI_STATE"
+( hi_commit hermes yk411p "$P" ) >/dev/null 2>&1; rc=$?
+HI_STATE="$saved_state"
+is "a marker that cannot be written ends like any other failure (L5)" "1" "$rc"
+yes "... the person's gateway is given back" grep -q -e '--user -M yk411p@ start hermes-gateway.service' "$work/log/systemctl"
+# (the abort set the working home aside, as it should when nothing committed: put it back for what follows)
+rm -rf "$M"; mv "$(ls -td "$M".failed-* | head -1)" "$M"
 
 echo "-- again, and an update on a machine that has moved"
 before_files="$(find "$P" -maxdepth 2 | sort | md5sum)"

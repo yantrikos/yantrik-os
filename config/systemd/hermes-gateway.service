@@ -15,8 +15,9 @@
 #   - the PID namespace (PrivatePIDs=yes, systemd 257) closes /proc/<pid>/root, /fd and /environ of
 #     the Mind's processes, which walk into the Mind's mount namespace and open files it holds.
 #     Without it the first is no separation at all (measured on staging).
-# The same line is on yantrik-mind.service, so it holds the other way too. (A Mind bundle that does
-# not handle SIGTERM as PID 1 is killed, not stopped: see that unit for what was measured.)
+# The same line is on yantrik-mind.service, so it holds the other way too. This unit is refused a
+# start unless that is so, as loaded and as running (the ExecStartPre= below), because a rollback to
+# a build from before this release brings back a Mind unit that does neither.
 #
 # The sandbox block is the single list of properties for this unit AND for everything else that
 # runs as the account with code the account can write (the installer, the plugin refresh, `hermes
@@ -57,6 +58,12 @@ ExecStartPre=+/bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/de
 ExecStartPre=+/bin/sh -c 'v=$$(systemctl --version | head -n 1 | cut -d" " -f2); [ "$${v:-0}" -ge 257 ] || { echo "Hermes: systemd $${v:-?} has no PrivatePIDs=, so it is not started (needs 257)" >&2; exit 1; }'
 # BindPaths= follows a link: refuse a home that is one, or is not the account's own plain directory.
 ExecStartPre=+/bin/sh -c 'h=/var/lib/yantrik-mind/harness/hermes; [ -d "$$h" ] && [ ! -L "$$h" ] && [ ! -L /var/lib/yantrik-mind/harness ] && [ "$$(stat -c %%U "$$h")" = yantrik-mind ] || { echo "Hermes: $$h is not the account own plain directory; not started" >&2; exit 1; }'
+# Hermes is not started beside a Mind that can reach it: the Mind's unit as loaded must mask
+# harness/ and have PrivatePIDs, its live main process (if any) must be in a PID namespace of its own
+# (not PID 1's), and this unit must have no drop-in. A rollback below this release brings back a
+# Mind unit that has neither, and then Hermes's keys at rest are readable by it whatever this unit
+# does, so this unit refuses to start (and the updater stops a running one at the next reconcile).
+ExecStartPre=+/bin/sh -c 'u=yantrik-mind.service; { systemctl show -p InaccessiblePaths --value $$u | grep -q /var/lib/yantrik-mind/harness && [ "$$(systemctl show -p PrivatePIDs --value $$u)" = yes ]; } || { echo "Hermes: the Mind unit does not mask harness/ and have its own PID namespace (as a build from before this release does); not started" >&2; exit 1; }; p=$$(systemctl show -p MainPID --value $$u); if [ "$${p:-0}" != 0 ]; then [ "$$(readlink /proc/$$p/ns/pid)" != "$$(readlink /proc/1/ns/pid)" ] || { echo "Hermes: the running Mind shares PID 1 namespace; not started" >&2; exit 1; }; fi; [ -z "$$(systemctl show -p DropInPaths --value hermes-gateway.service)" ] || { echo "Hermes: this unit has a drop-in; not started" >&2; exit 1; }'
 # The launcher, not a Python path: a newer Hermes rebuilds its venv as a new generation on an update.
 ExecStart=/var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run --replace
 StandardInput=null
@@ -66,6 +73,16 @@ RestartSec=5
 RestartForceExitStatus=75
 KillMode=mixed
 KillSignal=SIGTERM
+# Under PrivatePIDs systemd kills this unit's processes at once on a stop, handler or not (measured on
+# staging, systemd 257.8: 0.02 s, SIGKILL in the journal, the handler did not run), which would cut
+# every turn at every restart. So the stop is done from outside the namespace first: SIGTERM to the
+# main process, then wait for it to drain and exit, and SIGKILL it ourselves after 100 s. The limit is
+# below TimeoutStopSec on purpose: ExecStop= and the kill stage each get that timeout, so a script
+# that ran to it would cost up to twice as long, and a stop must never end on systemd's timeout.
+# `restart` therefore blocks for at most about 100 s plus the start; in the journal a stuck stop shows
+# as "Stopping Hermes gateway" with no "Stopped" until then, and `yantrik-update harness restart`
+# says so first. ${MAINPID} is filled in by systemd; $$ is a shell variable.
+ExecStop=+/bin/sh -c 'p=${MAINPID}; kill -TERM "$$p" 2>/dev/null || exit 0; n=0; while kill -0 "$$p" 2>/dev/null; do [ "$$n" -lt 100 ] || { kill -KILL "$$p" 2>/dev/null; break; }; sleep 1; n=$$((n+1)); done; exit 0'
 TimeoutStopSec=120
 
 # sandbox:begin
@@ -100,7 +117,7 @@ PrivateDevices=yes
 # /dev/shm stays the host's even with PrivateDevices, and one uid can read the other unit's segments in
 # it: a private tmpfs here. (Abstract AF_UNIX sockets are still shared: neither unit has its own
 # network namespace.)
-TemporaryFileSystem=/dev/shm
+TemporaryFileSystem=/dev/shm:mode=1777
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -114,12 +131,11 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
 # The PID namespace's half, and the one that makes the line above worth anything: the Mind's
 # processes (same uid) are not here to open through /proc/<pid>/root, /fd or /environ, or to
-# signal. The main process is PID 1 of its namespace, and a signal it has no handler for is ignored
-# there, so if Hermes (or its launcher, when it does not exec Hermes) does not handle SIGTERM, a stop
-# goes straight to SIGKILL (that is what a no-handler PID 1 did on staging, see yantrik-mind.service),
-# which skips Hermes's own drain of its turns. TimeoutStopSec bounds it. Not yet seen with Hermes: the
-# VM gate checks how it stops and that its tool children are reaped. The journal may print
-# "Supervising process ... not our child" at each start; it is expected with a PID namespace.
+# signal. The main process is PID 1 of its namespace. A stop from systemd kills it at once whether or
+# not it has a handler (see ExecStop= above for the drain); the same goes for its tool children,
+# which die with it. The journal prints "Supervising process ... which is not our child" at each
+# start: it is the same fact (systemd does not wait for what it did not start), not noise. Not yet
+# seen with Hermes: the VM gate checks the drain, the stop time and that the tool children are reaped.
 PrivatePIDs=yes
 ProtectProc=invisible
 ProcSubset=pid

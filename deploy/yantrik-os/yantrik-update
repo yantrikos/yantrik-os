@@ -2417,7 +2417,7 @@ source_is_roots() {
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
 # from before a capability was required.
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] || [ "$1" = harness-isolation.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] || [ "$1" = harness-isolation.sh ] || [ "$1" = harness-sandbox.sh ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says

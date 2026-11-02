@@ -94,6 +94,12 @@ InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yam
 # path that does not exist yet is skipped) and the PID namespace below, which closes
 # /proc/<pid>/root, /fd and /environ of the harness's processes (same uid). Neither alone is enough.
 InaccessiblePaths=-/var/lib/yantrik-mind/harness
+# The pty `hermes model` runs in is allocated in the host's devpts and owned by this uid, and
+# PrivateDevices would hand this unit the host's /dev/pts: it could read the keys the person types.
+# The Mind is headless (StandardInput=null) and its sandbox command needs no pty, so /dev/pts is
+# hidden from it. `-`: a missing path must never stop the Mind from starting. Gate bar: a code
+# sandbox run from the Mind still works with it.
+InaccessiblePaths=-/dev/pts
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
@@ -109,13 +115,14 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
 # This unit's own PID namespace (systemd 257), the other half of keeping the harnesses' keys out of
 # the Mind's reach (see above) and the Mind's out of theirs. The Mind is PID 1 there, and a signal
-# PID 1 has no handler for is ignored, so a Mind bundle without a SIGTERM handler (before E.SIGTERM1,
-# c61c83b) is not stopped by SIGTERM but killed: measured on staging (systemd 257.8), `systemctl
-# stop` of a no-handler PID 1 took 0.017 s and went straight to SIGKILL, so the cost is an unclean
-# SQLite close, not a slow stop. The gate measures it on the OS's own systemd (257.13). TimeoutStopSec
-# below is the bound on a stop whatever happens, and a Mind always comes back (Restart=always). The
-# journal may print "Supervising process ... not our child" at each start: it is expected with a PID
-# namespace (systemd sees the main process through its namespace); do not chase it.
+# PID 1 has no handler for is ignored. Under PrivatePIDs systemd does not wait for the Mind on a stop
+# at all: measured on staging (systemd 257.8, by the Mind's reviewer, a container), `systemctl stop`
+# of a PID 1 took 0.02 s and went straight to SIGKILL with or without a SIGTERM handler, and the
+# handler did not run. So every stop of the Mind is a kill, no handler in the bundle changes that,
+# and this unit has no drain: the cost is an unclean SQLite close. The gate measures it on the OS's
+# own systemd (257.13). TimeoutStopSec below bounds a stop whatever happens, and a Mind always comes
+# back (Restart=always). The journal prints "Supervising process ... which is not our child" at each
+# start: it is the same fact (systemd does not wait for what it did not start), not noise.
 # A systemd older than 257 ignores the line and the Mind runs as before;
 # that is safe because a harness cannot be installed or started there (harness-isolation.sh and the
 # harness unit both refuse), so there is nothing to keep apart. This unit therefore has no version
