@@ -17,6 +17,7 @@ every `file:` request of every page and frame, and a request outside what a Mind
 """
 
 import atexit
+import os
 import shutil
 import socket
 import subprocess
@@ -98,6 +99,7 @@ class Instance:
     def __init__(self):
         self.proc = None
         self.profile = None
+        self.log = None
         self.browser = None
 
     def alive(self):
@@ -113,8 +115,10 @@ class Instance:
             raise local_page.LocalRefused("there is no browser on this machine to look at a page with")
         self.profile = tempfile.mkdtemp(prefix="yantrik-render-")
         port = free_port()
-        self.proc = subprocess.Popen([path] + args_for(self.profile, port), stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.log = os.path.join(self.profile + ".log")
+        with open(self.log, "wb") as out:
+            self.proc = subprocess.Popen([path] + args_for(self.profile, port), stdin=subprocess.DEVNULL,
+                                         stdout=out, stderr=out)
         atexit.register(self.stop)
         address = "http://127.0.0.1:%d" % port
         deadline = time.monotonic() + START_LIMIT
@@ -127,14 +131,25 @@ class Instance:
             except OSError:
                 time.sleep(0.2)
         else:
-            self.stop()
-            raise local_page.LocalRefused("the browser for your own pages did not start")
+            raise self._failed()
         if self.proc.poll() is not None:
-            self.stop()
-            raise local_page.LocalRefused("the browser for your own pages did not start")
+            raise self._failed()
         self.browser = cdp.Browser(address)
         self.browser.guard = guard
         return self.browser
+
+    def _failed(self):
+        """Why it did not start, in the browser's own last words."""
+        try:
+            with open(self.log, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 600))
+                tail = f.read().decode("utf-8", "replace").strip().splitlines()[-4:]
+        except OSError:
+            tail = []
+        self.stop()
+        return local_page.LocalRefused("the browser for your own pages did not start" +
+                                       (": " + " | ".join(tail) if tail else ""))
 
     def stop(self):
         if self.browser is not None:
@@ -150,4 +165,8 @@ class Instance:
             self.proc = None
         if self.profile:
             shutil.rmtree(self.profile, ignore_errors=True)
+            try:
+                os.remove(self.profile + ".log")
+            except OSError:
+                pass
             self.profile = None
