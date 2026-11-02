@@ -153,6 +153,12 @@ env_line "$env_file" YANTRIKDB_MODE embedded
 env_line "$env_file" YANTRIKDB_DB_PATH "$(harness_memory_db hermes)"
 env_line "$env_file" YANTRIKDB_AGENT_NAME hermes
 memory_dir hermes
+# And its embedder, fetched now if it is not in the cache (a moved Hermes brings its own): a model the
+# memory engine downloads once from github.com, through the egress proxy under the mind account. A
+# failure is named here rather than as a failed "Can it remember?" later.
+say "making sure Hermes's memory can embed (it downloads its model once if it has none)"
+embedder=$(timeout 300 "$hermes_python" "$INSTALL_LIB/hermes_embedder.py" </dev/null 2>&1)     || fail "$(printf '%s' "$embedder" | tail -n 1) (the model comes from github.com/yantrikos/yantrikdb-models: if the egress policy blocks it, allow it once, then press Install again)"
+say "$embedder"
 
 # ── The desktop channel, paired with the owner only ──
 # Hermes reads a platform's gate from the profile's own .env, not from what a plugin put in its

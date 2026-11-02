@@ -341,7 +341,8 @@ class HermesConfigTests(unittest.TestCase):
             self.write("model:\n  default: x\n")
             hermes_config.apply(self.path)
             self.assertEqual(self.read()["mcp_servers"]["yantrik_os"], {
-                "command": "/opt/yantrik/bin/yos-mcp", "timeout": 300, "env": {"YANTRIK_MIND_RUN": "/run/yantrik-minds"}})
+                "command": "/opt/yantrik/bin/yos-mcp", "timeout": 300,
+                "env": {"YANTRIK_MIND_RUN": "/run/yantrik-minds", "YANTRIK_AGENT_TOKEN_SOCK": hermes_config.token_socket()}})
             self.assertNotIn("FAKE-KEY", Path(self.path).read_text(encoding="utf-8"), "no other variable is written")
             self.assertEqual(hermes_config.problems(self.path, stand_in(())), [])
             # A server without it fails the check there: it would have no desktop to talk to.
@@ -357,6 +358,18 @@ class HermesConfigTests(unittest.TestCase):
             hermes_config.apply(self.path)
             self.assertEqual(self.read()["mcp_servers"]["yantrik_os"], {"command": "/opt/yantrik/bin/yos-mcp", "timeout": 300},
                              "as the person, nothing is added")
+
+    def test_hermes_is_given_a_drain_so_a_restart_does_not_cut_its_turns(self):
+        # Hermes's default for agent.restart_drain_timeout is 0 (interrupt at once). The unit's
+        # TimeoutStopSec is Hermes's own formula for these two values; the selftest holds the pair.
+        self.write("model: x\nagent:\n  max_turns: 90\n")
+        hermes_config.apply(self.path)
+        agent = self.read()["agent"]
+        self.assertEqual(agent["restart_drain_timeout"], hermes_config.RESTART_DRAIN_SECONDS)
+        self.assertEqual(agent["cron_drain_timeout"], hermes_config.CRON_DRAIN_SECONDS)
+        self.assertEqual(agent["max_turns"], 90, "the person's other agent settings are kept")
+        drain, cron = hermes_config.RESTART_DRAIN_SECONDS, hermes_config.CRON_DRAIN_SECONDS
+        self.assertEqual(max(60, max(drain, cron + 10) + 30), 90, "TimeoutStopSec=90 in hermes-gateway.service")
 
     def test_a_gateway_start_puts_the_allowlist_and_the_mcp_server_back(self):
         # F1: widened after install (`hermes update`, a plugin, an edit).
@@ -465,7 +478,7 @@ class HermesConfigTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             code = hermes_config.main(["x", "apply", self.path], lambda: ["spotify_like"], lambda: stand_in())
         self.assertEqual(code, 0)
-        self.assertNotIn("agent", self.read())
+        self.assertNotIn("disabled_toolsets", self.read().get("agent", {}))
 
     def test_only_kanban_is_ever_turned_off_globally_anything_else_still_fails(self):
         # A terminal that an older Hermes added is a broken allowlist, not something to switch off for

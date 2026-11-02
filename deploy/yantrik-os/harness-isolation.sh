@@ -9,9 +9,9 @@
 #   - its home is /var/lib/yantrik-mind/harness/<name>, which the person cannot open. The Mind
 #     shares its uid, so the two are kept apart by mount AND PID namespaces together: the unit hides
 #     the Mind's files (TemporaryFileSystem) and PrivatePIDs=yes closes /proc/<pid>/{root,fd,environ}.
-#     Both units have the line, so it holds both ways. Under it a stop is a kill, handler or not
-#     (measured on staging, systemd 257.8; the units have the details): the Mind comes back with an
-#     unclean close, and Hermes gets a drain from outside (its ExecStop=). A systemd older than 257
+#     Both units have the line, so it holds both ways. What a stop does under it is measured in the
+#     units' comments (a handler is waited for on 257.13; the Mind, with none, takes its 30 s
+#     TimeoutStopSec), and Hermes drains itself (agent.restart_drain_timeout). A systemd older than 257
 #     would ignore the line, so no harness is installed or started on one (harness-sandbox.sh); the
 #     Mind's unit has no gate of its own, because refusing to start would be no Mind. A rollback to a
 #     build whose Mind unit has neither is caught too (hi_mind_isolated, hi_guard_mixed);
@@ -62,11 +62,15 @@ hi_installer() { printf '%s/share/harnesses/lib/install/%s.sh' "$PREFIX" "$1"; }
 hi_plugin_dir() { printf '%s/share/harnesses/%s' "$PREFIX" "$1"; }
 # What the person's home holds of a harness: the directory its code and data are in.
 hi_person_dir() { case "$1" in hermes) printf '.hermes' ;; esac; }
+# Every directory that moves (colon-separated): the harness's own, and the embedder model its memory
+# engine downloaded once and cached (a public model, copied so the account does not need the network
+# to remember: the proof "Can it remember?" failed without it on a real machine).
+hi_person_tops() { case "$1" in hermes) printf '.hermes:.cache/yantrikdb/models' ;; esac; }
 # The names that are Hermes's code, rebuilt by the installer from the pinned commit and the image's
 # wheels, with absolute paths inside that would not survive a move. Everything else in .hermes
 # (config, keys, state.db and its WAL, sessions, memories, skills, cron, third-party plugins) moves.
 hi_code_dirs() {
-  case "$1" in hermes) printf '%s' '.hermes/hermes-agent:.hermes/tools:.hermes/installs:.hermes/bin:.hermes/venv:.hermes/node_modules:.hermes/.cache:.hermes/.yantrik-staging:.hermes/plugins/yantrik:.hermes/plugins/yantrikdb' ;; esac
+  case "$1" in hermes) printf '%s' '.hermes/hermes-agent:.hermes/tools:.hermes/installs:.hermes/bin:.hermes/venv:.hermes/node_modules:.hermes/.cache:.hermes/.yantrik-staging:.hermes/plugins/yantrik:.hermes/plugins/yantrikdb:.hermes/gateway_state.json:.hermes/gateway.pid:.hermes/gateway.lock' ;; esac
 }
 # Files outside that directory the harness's own data lives in (globs, relative to the home).
 hi_person_extra() { case "$1" in hermes) printf '%s' '.local/share/yantrik/memory/hermes.db*' ;; esac; }
@@ -82,8 +86,9 @@ skip = [s for s in skip if s]
 def skipped(rel):
     return any(rel == s or rel.startswith(s + "/") for s in skip)
 found = []
-if top and os.path.isdir(os.path.join(root, top)) and not os.path.islink(os.path.join(root, top)):
-    for here, dirs, files in os.walk(os.path.join(root, top), followlinks=False):
+for one in filter(None, top.split(":")):
+  if os.path.isdir(os.path.join(root, one)) and not os.path.islink(os.path.join(root, one)):
+    for here, dirs, files in os.walk(os.path.join(root, one), followlinks=False):
         rel = os.path.relpath(here, root)
         dirs[:] = sorted(d for d in dirs if not skipped(os.path.join(rel, d)))
         for d in list(dirs):
@@ -295,9 +300,13 @@ hi_ready() { # <name>
 
 # A directory the mind account made, put aside whole (kept, never deleted) so a retry starts clean.
 hi_set_aside() { # <name> <why>
-  local home stamp; home="$(hi_home "$1")"; stamp="$(date +%Y%m%d-%H%M%S)-$RANDOM"
+  local home; home="$(hi_home "$1")"
   [ -n "$(hi_as_mind ls -A "$home" 2>/dev/null)" ] || return 0
-  hi_as_mind mv "$home" "$home.$2-$stamp" && info "kept the earlier $1 directory as $home.$2-$stamp"
+  # One slot, replaced by the next: a failed attempt is a full copy (gigabytes), and five of them
+  # filled a disk. What it holds is a copy the account made; the person's own is never touched.
+  hi_as_mind rm -rf "$home.failed.new" && hi_as_mind mv "$home" "$home.failed.new" \
+    && hi_as_mind rm -rf "$home.failed" && hi_as_mind mv "$home.failed.new" "$home.failed" \
+    && info "kept the last unfinished $1 directory as $home.failed ($2); an earlier one it replaced is gone. Your own files were not touched"
   hi_as_mind sh -c 'umask 077; mkdir -p "$1"' sh "$home"
 }
 
@@ -306,7 +315,7 @@ hi_set_aside() { # <name> <why>
 # touched; if the numbers differ, nothing is used.
 hi_copy_data() { # <name> <owner> <home>
   local name="$1" skip extra top dest before after
-  skip="$(hi_code_dirs "$name")"; extra="$(hi_person_extra "$name")"; top="$(hi_person_dir "$name")"; dest="$(hi_home "$name")"
+  skip="$(hi_code_dirs "$name")"; extra="$(hi_person_extra "$name")"; top="$(hi_person_tops "$name")"; dest="$(hi_home "$name")"
   before="$(HI_TIMEOUT=$HI_COPY_TIMEOUT hi_as_owner python3 -I -c "$HI_PY_TREE" digest "$3" "$top" "$skip" "$extra")" || return 1
   # The producer runs as the person and the consumer as the mind account; tar on the consumer side
   # refuses absolute names and `..`, and everything it makes is the mind account's.
@@ -469,7 +478,7 @@ hi_restart() { # <name>
   hi_known "$1" || fail "unknown harness '$1'"
   hi_migrated "$1" || fail "$1 is not under the mind account here; nothing to restart"
   [ "$(id -u)" = 0 ] || fail "run as root"
-  info "stopping lets Hermes finish its turn first (up to 100 s), then it is started again"
+  info "Hermes is stopped by letting its running turns finish, up to 60 s (scheduled jobs 50 s); a turn still running then is interrupted, and Hermes tells the person and marks the session to resume"
   systemctl restart "$(hi_unit "$1")" || fail "$(hi_unit "$1") would not restart (journalctl -u $(hi_unit "$1"))"
   info "$(hi_unit "$1") restarted"
 }

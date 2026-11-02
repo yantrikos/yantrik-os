@@ -57,23 +57,11 @@ export HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harnes
 echo "== A. what ships"
 unit="$repo/config/systemd/hermes-gateway.service"
 live="$(grep -v '^[[:space:]]*#' "$unit")"
-has "the gateway is a system unit of the mind account" "User=yantrik-mind" "$live"
-has "... in the minds' group" "Group=yantrik-minds" "$live"
-has "... with its home under the mind account's" "Environment=HOME=/var/lib/yantrik-mind/harness/hermes" "$live"
-has "... reaching the desktop at the mind door" "Environment=YANTRIK_MIND_RUN=/run/yantrik-minds" "$live"
-has "... held to the proxy by the kernel's table, required" "Requires=yantrik-mind-egress.service" "$live"
-has "... refusing to start without that table" "nft list table inet yantrik_mind_egress" "$live"
+for want in 'User=yantrik-mind' 'Group=yantrik-minds' 'Environment=HOME=/var/lib/yantrik-mind/harness/hermes' 'Environment=YANTRIK_MIND_RUN=/run/yantrik-minds' 'Requires=yantrik-mind-egress.service' 'nft list table inet yantrik_mind_egress' 'ProtectHome=yes' 'TemporaryFileSystem=/var/lib/yantrik-mind:ro' 'BindPaths=/var/lib/yantrik-mind/harness/hermes' 'NoNewPrivileges=yes' 'UMask=0077' 'WantedBy=multi-user.target' 'PrivatePIDs=yes'; do has "the gateway unit has $want" "$want" "$live"; done
 lacks "... reading no EnvironmentFile as root" "EnvironmentFile" "$live"
 lacks "... and nothing of a person's home named" "/home/" "$live"
-has "... with the person's home out of its sight" "ProtectHome=yes" "$live"
-has "... the Mind's own files out of its sight" "TemporaryFileSystem=/var/lib/yantrik-mind:ro" "$live"
-has "... only its own directory bound back in" "BindPaths=/var/lib/yantrik-mind/harness/hermes" "$live"
-has "... never gaining privileges" "NoNewPrivileges=yes" "$live"
-has "... a private mask for what it writes" "UMask=0077" "$live"
-has "... started by the launcher, not by a venv path that moves" "ExecStart=/var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run" "$live"
+has "... started by the launcher, not by a venv path that moves" ".local/bin/hermes gateway run" "$live"
 has "the Mind cannot see the harnesses' directory" "InaccessiblePaths=-/var/lib/yantrik-mind/harness" "$(grep -v '^[[:space:]]*#' "$repo/config/systemd/yantrik-mind.service")"
-has "the unit is enabled for the system, not a login" "WantedBy=multi-user.target" "$live"
-has "the gateway has its own PID namespace (H1)" "PrivatePIDs=yes" "$live"
 block="$(sed -n '/^# sandbox:begin/,/^# sandbox:end/p' "$unit" | grep -v '^#' | grep -v '^$')"
 has "... in the sandbox block that every run of account code shares" "PrivatePIDs=yes" "$block"
 has "... with the mount half beside it" "TemporaryFileSystem=/var/lib/yantrik-mind:ro" "$block"
@@ -84,11 +72,9 @@ mind_live="$(grep -v '^[[:space:]]*#' "$repo/config/systemd/yantrik-mind.service
 has "the Mind's unit has its own PID namespace too, so it holds both ways" "PrivatePIDs=yes" "$mind_live"
 has "... with its stop bounded" "TimeoutStopSec=30" "$mind_live"
 has "... and the unit says what was measured, and where" "staging (systemd 257.8" "$(cat "$repo/config/systemd/yantrik-mind.service")"
-lacks "... and does not suggest a handler would help" "E.SIGTERM1" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+has "... and says the cost of its stop is accepted until its bundle handles SIGTERM" "accepted until its bundle" "$(cat "$repo/config/systemd/yantrik-mind.service")"
 lacks "... nor tell anyone not to chase the 'not our child' line" "do not chase" "$(cat "$repo/config/systemd/yantrik-mind.service" "$unit" "$repo/harnesses/hermes/README.md")"
 has "... the Mind's unit hides /dev/pts from the Mind (the hermes model pty), ignoring a missing path" "InaccessiblePaths=-/dev/pts" "$mind_live"
-has "the harness unit drains its main process from outside the namespace" "ExecStop=+/bin/sh -c" "$live"
-has "... through MAINPID, which systemd fills in" '${MAINPID}' "$live"
 has "... and /dev/shm is private and writable" "TemporaryFileSystem=/dev/shm:mode=1777" "$block"
 has "the gateway refuses to start beside a Mind unit that does not isolate (rollback)" "does not mask harness/ and have its own PID namespace" "$live"
 lacks "... and nowhere claims a stop waits out the timeout" "waits out" "$(cat "$repo/config/systemd/yantrik-mind.service" "$repo/config/systemd/hermes-gateway.service" "$repo/harnesses/hermes/README.md" "$here/harness-isolation.sh")"
@@ -97,7 +83,6 @@ lacks "... no TODO left" "TODO(#411)" "$(cat "$repo/config/systemd/yantrik-mind.
 lacks "... and no version gate that could leave a machine without a Mind" "systemctl --version" "$mind_live"
 lacks "... and no start condition on the harness directory or anything of Hermes's" "harness/hermes" "$(printf '%s\n' "$mind_live" | grep -E '^(Condition|ExecStartPre|Requires|After)')"
 lacks "the harness unit's comments no longer say the Mind can read it" "can still read" "$(cat "$unit")"
-has "... /dev/shm is private to the harness" "TemporaryFileSystem=/dev/shm" "$block"
 if command -v systemd-analyze >/dev/null 2>&1; then
   v="$(systemd-analyze verify --man=no "$unit" 2>&1 | grep -iE "unknown (key|section)|invalid|bad (unit|setting)|failed to parse" || true)"
   sdv="$(systemd-analyze --version 2>/dev/null | head -n 1 | cut -d' ' -f2)"
@@ -122,21 +107,39 @@ has "the installer knows both phases" "$HI_CAPABILITY" "$(cat "$repo/harnesses/l
 has "the installer hands the button over to the updater" "yantrik-update harness install hermes" "$(cat "$repo/harnesses/lib/install/hermes.sh")"
 is "a phase it does not know is refused" "yes" "$(HOME="$work" YANTRIK_HARNESS_ISOLATED=bogus sh "$repo/harnesses/lib/install/hermes.sh" "$repo/harnesses/hermes" 2>&1 | grep -q 'setup or prove' && echo yes || echo no)"
 
-
-echo "== A. the stop and the start of the gateway unit, run as written"
-stopline="$(grep '^ExecStop=+' "$unit" | sed 's/^ExecStop=+//')"
-has "the drain waits at most 100 s" "-lt 100" "$stopline"
-is "... less than TimeoutStopSec, so a stop never ends on systemd's own timeout" "yes" "$(t="$(sed -n 's/^TimeoutStopSec=//p' "$unit")"; [ 100 -lt "$t" ] && echo yes || echo no)"
-run_stop() { # <pid> <limit>: the unit's ExecStop= with systemd's substitutions made by hand
-  eval "$(printf '%s' "$stopline" | sed -e "s/\${MAINPID}/$1/" -e "s/-lt 100/-lt $2/" -e 's/\$\$/$/g')"
-}
-( sh -c 'trap "sleep 1; echo drained > \"$1\"; exit 0" TERM; while :; do sleep 0.2; done' sh "$work/drained" </dev/null >/dev/null 2>&1 & echo $! > "$work/stop.pid" )
-sleep 0.5; t0=$SECONDS; run_stop "$(cat "$work/stop.pid")" 100
-is "a main process that handles SIGTERM is waited for, and drains" "drained" "$(cat "$work/drained" 2>/dev/null)"
-is "... and is gone when the stop ends, well inside the limit" "yes" "$(! kill -0 "$(cat "$work/stop.pid")" 2>/dev/null && [ $((SECONDS - t0)) -lt 30 ] && echo yes || echo no)"
-( sh -c 'trap "" TERM; while :; do sleep 0.2; done' </dev/null >/dev/null 2>&1 & echo $! > "$work/stop.pid" )
-sleep 0.5; t0=$SECONDS; run_stop "$(cat "$work/stop.pid")" 2
-is "one that ignores it is killed by the script at its own limit (here shortened to 2), not by systemd" "yes" "$(sleep 0.3; ! kill -0 "$(cat "$work/stop.pid")" 2>/dev/null && [ $((SECONDS - t0)) -lt 30 ] && echo yes || echo no)"
+echo "== A. the stop and the start of the gateway unit"
+lacks "no ExecStop= drain: its premise (a stop kills at once) was wrong on 257.13" "ExecStop" "$(grep -v '^[[:space:]]*#' "$unit")"
+tso="$(sed -n 's/^TimeoutStopSec=//p' "$unit")"
+rd="$(sed -n 's/^RESTART_DRAIN_SECONDS = //p' "$repo/harnesses/lib/install/hermes_config.py")"
+cd_="$(sed -n 's/^CRON_DRAIN_SECONDS = //p' "$repo/harnesses/lib/install/hermes_config.py")"
+want=$(( ( (rd > cd_ + 10 ? rd : cd_ + 10) + 30 ) > 60 ? ( (rd > cd_ + 10 ? rd : cd_ + 10) + 30 ) : 60 ))
+is "TimeoutStopSec is what Hermes's own resolve_systemd_timeout_stop_sec gives for the drains hermes_config sets" "$want" "$tso"
+has "the unit says what the drain keys are and what was measured" "restart_drain_timeout" "$(cat "$unit")"
+has "the gateway starts under the reaping init" "ExecStart=/opt/yantrik/bin/yantrik-init " "$live"
+has "Hermes is told its own home, so gateway_state.json never records another" "Environment=HERMES_HOME=/var/lib/yantrik-mind/harness/hermes/.hermes" "$block"
+has "hermes_config writes the drain keys" "agent[\"restart_drain_timeout\"]" "$(cat "$repo/harnesses/lib/install/hermes_config.py")"
+lacks "no comment says a stop is a kill with or without a handler any more" "with or without a SIGTERM handler" "$(cat "$unit" "$repo/config/systemd/yantrik-mind.service" "$repo/harnesses/hermes/README.md")"
+has "the Mind's measured stop on the VM is stated" "30.13" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+init="$here/yantrik-init"
+if unshare --pid --fork --mount-proc true >/dev/null 2>&1; then
+  zombies() { unshare --pid --fork --mount-proc "$@" 2>/dev/null; }
+  z="$(zombies python3 "$init" sh -c '(sleep 0.3 &) ; sleep 1.5; ps -eo stat= | grep -c "^Z"')"
+  is "yantrik-init as PID 1 reaps what its child orphans (no zombie)" "0" "$z"
+  z="$(zombies python3 -c 'import os,time
+if os.fork() == 0:
+    if os.fork() == 0:
+        time.sleep(0.2); os._exit(0)
+    os._exit(0)
+time.sleep(1.5)
+import subprocess; print(subprocess.run("ps -eo stat= | grep -c ^Z", shell=True, capture_output=True, text=True).stdout.strip())')"
+  is "control: a PID 1 that does not wait leaves the orphan a zombie (the test can see them)" "yes" "$([ "${z:-0}" -ge 1 ] 2>/dev/null && echo yes || echo no)"
+  zombies python3 "$init" sh -c 'exit 7'; is "it ends with its child's exit status" "7" "$?"
+  zombies python3 "$init" sh -c 'kill -TERM $$'; is "... and a signal as 128 plus it" "143" "$?"
+  r="$(zombies python3 "$init" sh -c 'trap "echo got-term; exit 0" TERM; kill -TERM 1 2>/dev/null; sleep 5 & wait' 2>&1 | head -1)"
+  is "SIGTERM sent to it is passed on to its child" "got-term" "$r"
+else
+  echo "  skipped: cannot make a PID namespace here"
+fi
 mkdir -p "$work/fakebin2"
 cat > "$work/fakebin2/systemctl" <<'FAKE'
 #!/bin/sh
@@ -227,6 +230,7 @@ mkdir -p "$work/home/yk411p"; chown yk411p "$work/home/yk411p"; chmod 700 "$work
 chown yk411m:yk411g "$work/mind"; chmod 750 "$work/mind"
 mkdir -p "$HI_UNIT_DIR" "$HI_DOOR" "$PREFIX/share/harnesses/lib/install" "$PREFIX/share/harnesses/hermes"
 cp "$unit" "$HI_UNIT_DIR/"
+mkdir -p "$BIN_DIR"; cp "$here/yantrik-init" "$BIN_DIR/yantrik-init"; chmod 755 "$BIN_DIR/yantrik-init"
 printf '# %s\n' "$HI_CAPABILITY" > "$PREFIX/share/harnesses/lib/install/hermes.sh"
 chmod -R a+rX "$work/opt" 2>/dev/null
 
@@ -263,11 +267,12 @@ sudo_p sh -c 'umask 077; mkdir -p "$1/.hermes/sessions" "$1/.hermes/hermes-agent
   head -c 4096 /dev/urandom > "$1/.hermes/state.db"; printf wal > "$1/.hermes/state.db-wal"
   printf s1 > "$1/.hermes/sessions/a.json"; printf code > "$1/.hermes/hermes-agent/run.py"
   printf mem > "$1/.local/share/yantrik/memory/hermes.db"
+  mkdir -p "$1/.cache/yantrikdb/models/potion-base-8M"; printf FAKE-MODEL > "$1/.cache/yantrikdb/models/potion-base-8M/model.safetensors"
+  printf "{\"hermes_home\": \"%s/.hermes\"}" "$1" > "$1/.hermes/gateway_state.json"
   printf "#!/bin/sh\necho old launcher\n" > "$1/.local/bin/hermes"; chmod 755 "$1/.local/bin/hermes"
   printf "[Service]\nExecStart=/bin/true\n" > "$1/.config/systemd/user/hermes-gateway.service"' sh "$P"
 before="$(python3 -I -c "$HI_PY_TREE" digest "$P" .hermes "$(hi_code_dirs hermes)" "$(hi_person_extra hermes)")"
 hashes="$(sudo_p sh -c 'cd "$1/.hermes" && sha256sum config.yaml .env state.db sessions/a.json' sh "$P")"
-
 echo "-- the service account cannot reach the person"
 no "it cannot read a file in the person's home" sudo_m cat "$P/notes.txt"
 no "... nor the person's keys" sudo_m cat "$P/.hermes/.env"
@@ -276,7 +281,6 @@ no "... nor write in it" sudo_m sh -c "echo x > '$P/planted'"
 yes "(the person can read their own file: the test is not vacuous)" sudo_p cat "$P/notes.txt"
 yes "(and the account can use its own home)" sudo_m sh -c "ls '$work/mind' >/dev/null"
 is "hi_as_mind sees the same refusal through the library" "1" "$(hi_as_mind cat "$P/notes.txt" >/dev/null 2>&1; echo $?)"
-
 echo "-- how the account is run"
 export LEAK_yk411="FAKE-KEY-yk411-env"
 seen="$(hi_as_mind sh -c 'printf "%s|%s|%s|%s" "${LEAK_yk411:-none}" "$HOME" "$YANTRIK_MIND_RUN" "$(id -un)"')"
@@ -288,7 +292,6 @@ is "a harness that will not stop is ended at its time limit" "yes" "$([ "$rc" !=
 has "... what it printed is relayed (to info)" "line one" "$(cat "$work/said")"
 lacks "... without terminal escapes" "$(printf '\033')" "$(cat "$work/said")"
 is "it has no terminal of the caller's (own session)" "yes" "$(hi_as_mind sh -c 'ps -o sid= -p $$' | awk -v me="$(ps -o sid= -p $$ | tr -d ' ')" '{print ($1 != me) ? "yes" : "no"}')"
-
 echo "-- the copy"
 mkdir -p "$work/log"; : > "$work/log/systemctl"
 systemctl() { # a recorder; answers what the library asks of it
@@ -334,19 +337,20 @@ no "... the person cannot read them in their new home" sudo_p cat "$M/.hermes/.e
 no "... nor list it" sudo_p ls "$M/.hermes"
 yes "... the service account can" sudo_m cat "$M/.hermes/.env"
 no "Hermes's code was not carried over" test -e "$M/.hermes/hermes-agent"
+is "the embedder model its memory cached is carried, so the account needs no download to remember" "FAKE-MODEL" "$(sudo_m cat "$M/.cache/yantrikdb/models/potion-base-8M/model.safetensors" 2>/dev/null)"
+no "a runtime state file that names the person's home is not carried (gateway_state.json)" test -e "$M/.hermes/gateway_state.json"
 is "the person's own copy is untouched" "$before" "$(python3 -I -c "$HI_PY_TREE" digest "$P" .hermes "$(hi_code_dirs hermes)" "$(hi_person_extra hermes)")"
 no "no key was ever said or logged" grep -rq FAKE-KEY "$work/said" "$work/log"
-
 echo "-- setting aside, and doing it again"
 hi_set_aside hermes earlier
-yes "a retry keeps the earlier directory, it does not delete it" sh -c "ls -d '$M'.earlier-* >/dev/null"
+yes "a retry keeps the unfinished directory, in one slot" test -d "$M.failed"
 yes "... and starts with an empty one" test -z "$(sudo_m ls -A "$M")"
 hi_copy_data hermes yk411p "$P" && yes "the copy can be made again" true
 hi_set_aside hermes earlier; hi_set_aside hermes earlier
-is "setting aside an empty directory is a no-op" "2" "$(ls -d "$M".earlier-* | wc -l | tr -d ' ')"
-
+is "setting aside again replaces the slot; an empty directory is a no-op: one copy, never a pile" "1" "$(ls -d "$M".failed* | wc -l | tr -d ' ')"
+has "... and the person is told what is kept and that their own files were not touched" "kept the last unfinished" "$(cat "$work/said")"
 echo "-- the whole install, with a stand-in installer"
-rm -rf "$M" "$M".earlier-*
+rm -rf "$M" "$M".failed "$M".failed.new
 hi_ready hermes
 installer_calls="$work/log/installer"; : > "$installer_calls"
 hi_run_installer() { # <name> <phase> <secs>: a stand-in that makes what the real one makes
@@ -368,7 +372,7 @@ is "... it is not marked as moved" "no" "$(hi_migrated hermes && echo yes || ech
 no "... and the unit was never enabled for boot" grep -q '^enable ' "$work/log/systemctl"
 yes "... the system unit was turned off" grep -q 'disable --now hermes-gateway.service' "$work/log/systemctl"
 yes "... the person's own gateway is running again" grep -q -e '--user -M yk411p@ start hermes-gateway.service' "$work/log/systemctl"
-yes "... what was half made is kept aside, not deleted" sh -c "ls -d '$M'.failed-* >/dev/null"
+yes "... what was half made is kept aside, in the one slot" test -d "$M.failed"
 has "... and the reason is named" "its installer stopped" "$(cat "$work/said")"
 is "... and the person's copy is the same" "$before" "$(python3 -I -c "$HI_PY_TREE" digest "$P" .hermes "$(hi_code_dirs hermes)" "$(hi_person_extra hermes)")"
 
@@ -378,7 +382,6 @@ STAND_IN_FAILS=prove
 is "a Hermes that starts but fails its proofs is not committed" "1" "$rc"
 no "... and was never enabled for boot (enable waits for the proofs)" grep -q '^enable ' "$work/log/systemctl"
 is "... and the person's is still in place" "yes" "$([ -f "$P/.hermes/config.yaml" ] && echo yes || echo no)"
-
 echo "-- stopped half way, a PID namespace that is not there, a systemd that cannot (L1, fail closed)"
 : > "$work/log/systemctl"; : > "$installer_calls"
 STAND_IN_FAILS=; STAND_IN_KILL=setup
@@ -438,7 +441,6 @@ is "the old user unit is masked" "/dev/null" "$(readlink "$P/.config/systemd/use
 yes "... and the file itself is kept" test -f "$P/.hermes.yantrik-moved/hermes-gateway.service"
 yes "Settings reads it as installed" test -f "$P/.local/state/yantrik/harnesses/hermes/installed"
 no "the person's account cannot read what moved" sudo_p cat "$M/.hermes/.env"
-
 echo "-- code the account can write runs only in the unit's sandbox (M1, M2)"
 : > "$FAKE_RUN_LOG"
 hi_task 30 0 hermes /bin/sh -c 'id -un' >/dev/null 2>&1
@@ -455,6 +457,7 @@ args="$(cat "$FAKE_RUN_LOG")"
 has "hermes model gets a pty of the unit's own (M2)" "--pty" "$args"
 lacks "... not the caller's pipe or terminal" "--pipe" "$args"
 has "... the account's launcher, with its one word" "$(hi_home hermes)/.local/bin/hermes" "$args"
+has "... and every task runs under the reaping init, not as a bare PID 1" "$BIN_DIR/yantrik-init" "$args"
 has "... and a time limit and a cgroup that is collected" "--collect" "$args"
 : > "$FAKE_RUN_LOG"
 echo 'id -un > "$HOME/refreshed"' > "$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"; chmod a+r "$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"
@@ -491,7 +494,6 @@ lacks "output relayed to the person has the UTF-8 C1 controls stripped too" "$(p
 ( hi_abort hermes active yk411p "late" ) >/dev/null 2>&1
 no "an abort after the commit does not start the person's gateway beside the moved one (L1)" grep -q -e '--user -M yk411p@ start' "$work/log/systemctl"
 no "... nor turn the working system unit off" grep -q 'disable --now' "$work/log/systemctl"
-
 echo "-- Mind and harness under one uid: /proc (H1)"
 if unshare --mount --pid --fork --mount-proc true >/dev/null 2>&1; then
   h1="$work/h1"; mkdir -p "$h1"; chown yk411m:yk411g "$h1"; chmod 700 "$h1"
@@ -518,7 +520,6 @@ PROBE
 else
   echo "  skipped: cannot make namespaces here (unshare); the VM gate runs the real unit"
 fi
-
 echo "-- the hermes model pty is not the Mind's to open (M1)"
 if unshare --mount true >/dev/null 2>&1; then
   python3 -c 'import os, pty, sys, time
@@ -533,7 +534,6 @@ open(sys.argv[2], "w").write(n); time.sleep(60)' "$(id -u yk411m)" "$work/pty.na
 else
   echo "  skipped: cannot make a mount namespace here"
 fi
-
 echo "-- a rollback to a build whose Mind unit does not isolate (M2, L7)"
 unset FAKE_MASK FAKE_MIND_PIDS FAKE_MIND_ACTIVE FAKE_MIND_MAINPID
 yes "the Mind's unit as this build ships it counts as isolating" hi_mind_isolated
@@ -553,7 +553,6 @@ no "... the row no longer says Hermes is installed" test -e "$P/.local/state/yan
 has "... and the updater says its keys must be rotated" "rotate them" "$(cat "$work/said")"
 unset FAKE_MASK
 hi_mark_person_installed hermes "$P"
-
 echo "-- the rest of the delta's lows"
 : > "$FAKE_RUN_LOG"
 FAKE_DROPIN=/etc/systemd/system/hermes-gateway.service.d/x.conf
@@ -562,7 +561,8 @@ unset FAKE_DROPIN
 printf '\xc2\xc2\x9b\x9b\n' | hi_relay
 lacks "nested C1 bytes do not rebuild one after the strip" "$(printf '\xc2\x9b')" "$(tail -n 1 "$work/said")"
 ( hi_restart hermes ) >/dev/null 2>&1
-has "a restart says the stop lets Hermes finish its turn first" "up to 100 s" "$(cat "$work/said")"
+has "a restart says what a stop does: running turns finish, up to 60 s" "up to 60 s" "$(cat "$work/said")"
+has "... and what happens to one still running then" "interrupted" "$(cat "$work/said")"
 : > "$work/log/systemctl"
 HI_NOW="hermes yk411p active"; saved_state="$HI_STATE"; HI_STATE="$work/state-is-a-file"; : > "$HI_STATE"
 ( hi_commit hermes yk411p "$P" ) >/dev/null 2>&1; rc=$?
@@ -570,8 +570,7 @@ HI_STATE="$saved_state"
 is "a marker that cannot be written ends like any other failure (L5)" "1" "$rc"
 yes "... the person's gateway is given back" grep -q -e '--user -M yk411p@ start hermes-gateway.service' "$work/log/systemctl"
 # (the abort set the working home aside, as it should when nothing committed: put it back for what follows)
-rm -rf "$M"; mv "$(ls -td "$M".failed-* | head -1)" "$M"
-
+rm -rf "$M"; mv "$M.failed" "$M"
 echo "-- again, and an update on a machine that has moved"
 before_files="$(find "$P" -maxdepth 2 | sort | md5sum)"
 ( hi_finish hermes yk411p "$P" ) >/dev/null 2>&1; ( hi_finish hermes yk411p "$P" ) >/dev/null 2>&1

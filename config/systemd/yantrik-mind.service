@@ -115,14 +115,18 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
 # This unit's own PID namespace (systemd 257), the other half of keeping the harnesses' keys out of
 # the Mind's reach (see above) and the Mind's out of theirs. The Mind is PID 1 there, and a signal
-# PID 1 has no handler for is ignored. Under PrivatePIDs systemd does not wait for the Mind on a stop
-# at all: measured on staging (systemd 257.8, by the Mind's reviewer, a container), `systemctl stop`
-# of a PID 1 took 0.02 s and went straight to SIGKILL with or without a SIGTERM handler, and the
-# handler did not run. So every stop of the Mind is a kill, no handler in the bundle changes that,
-# and this unit has no drain: the cost is an unclean SQLite close. The gate measures it on the OS's
-# own systemd (257.13). TimeoutStopSec below bounds a stop whatever happens, and a Mind always comes
-# back (Restart=always). The journal prints "Supervising process ... which is not our child" at each
-# start: it is the same fact (systemd does not wait for what it did not start), not noise.
+# PID 1 has no handler for is ignored. What a stop of the Mind does, from what was measured and where:
+#   - staging (systemd 257.8, a container, the Mind's reviewer): `systemctl stop` of a PID 1 with no
+#     SIGTERM handler took 0.02 s, with SIGKILL in the journal and no handler run;
+#   - the VM (systemd 257.13, the gate's test units): a PID 1 with a SIGTERM handler ran it and the
+#     stop took 3.04 s; one with no handler took 0.023 s, SIGKILL in the journal;
+#   - the VM, the Mind itself (no SIGTERM handler yet): three stops took 30.13, 30.24 and 30.20 s,
+#     i.e. TimeoutStopSec, then SIGKILL ("State 'stop-sigterm' timed out"). A SIGTERM sent to it by
+#     hand was ignored for 20 s.
+# So today a stop of the Mind costs the 30 s below and an unclean SQLite close (the WAL survives);
+# that is accepted until its bundle handles SIGTERM (E.SIGTERM1), which cleans nothing up and so
+# needs no drain here either. The journal prints "Supervising process ... which is not our child"
+# at each start (seen on staging and on the VM).
 # A systemd older than 257 ignores the line and the Mind runs as before;
 # that is safe because a harness cannot be installed or started there (harness-isolation.sh and the
 # harness unit both refuse), so there is nothing to keep apart. This unit therefore has no version

@@ -428,6 +428,10 @@ jobs:
       # over is closed exactly once, however the mind behind it behaves.
       - name: The attachable harnesses close every turn exactly once
         run: python3 -m unittest discover -s harnesses/tests -v
+      # The Hermes plugin's own pieces that need no Hermes: where it finds the desktop at the mind door,
+      # and how it hands the tools bridge its agent token without an environment (#411).
+      - name: Hermes's plugin finds the mind door and hands over its token
+        run: python3 -m unittest discover -s harnesses/hermes/tests -v
 
       # The arena runs on the desktop, but the record of what it added itself does not need one:
       # the reset deletes through the calendar only those ids, so a gate never shows the person

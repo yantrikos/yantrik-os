@@ -68,10 +68,26 @@ def yantrik_os_server():
     server = dict(YANTRIK_OS_SERVER)
     door = os.environ.get("YANTRIK_MIND_RUN", "").strip()
     if door:
-        server["env"] = {"YANTRIK_MIND_RUN": door}
+        # And where to ask for its agent token: a path, not a secret. The desktop refuses a mind's
+        # acts without a token, Hermes starts the bridge with nothing but this environment, and a
+        # token in an environment would stay readable in /proc: the plugin answers it on this socket
+        # (harnesses/hermes/bridge_token.py, the same path).
+        server["env"] = {"YANTRIK_MIND_RUN": door, "YANTRIK_AGENT_TOKEN_SOCK": token_socket()}
     return server
+
+
+def token_socket():
+    """The plugin's token service (bridge_token.socket_path): in Hermes's home."""
+    home = os.environ.get("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+    return os.path.join(home, "yantrik-bridge.sock")
 # A research sub-agent that may take 50 turns will take 50.
 DELEGATION_MAX_ITERATIONS = 25
+# How long Hermes's gateway lets running turns finish when it is stopped (agent.restart_drain_timeout;
+# its default is 0, interrupt at once) and a scheduled job (agent.cron_drain_timeout; default 30).
+# hermes-gateway.service's TimeoutStopSec is what Hermes's own resolve_systemd_timeout_stop_sec gives
+# for these: max(60, max(60, 50 + 10) + 30) = 90. Change one, change the other.
+RESTART_DRAIN_SECONDS = 60
+CRON_DRAIN_SECONDS = 50
 BACKUP_SUFFIX = ".before-yantrik-desktop"
 # Hermes's first-conversation offer to build a profile of the person (agent/onboarding.py's
 # profile_build_mode): "off" never offers; Hermes's default, "ask", does.
@@ -192,6 +208,9 @@ def apply(path, plugin_toolsets=()):
     servers[YANTRIK_OS] = yantrik_os_server()
     _section(data, "skills", path)["inline_shell"] = False
     _section(data, "delegation", path)["max_iterations"] = DELEGATION_MAX_ITERATIONS
+    agent = _section(data, "agent", path)
+    agent["restart_drain_timeout"] = RESTART_DRAIN_SECONDS
+    agent["cron_drain_timeout"] = CRON_DRAIN_SECONDS
     # No profile-building questions on the reply to the person's first request (the docstring).
     _section(data, "onboarding", path)["profile_build"] = PROFILE_BUILD
 

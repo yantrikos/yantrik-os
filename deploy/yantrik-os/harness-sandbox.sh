@@ -74,6 +74,9 @@ hi_sandbox_props() { # <name>
 # the caller's terminal. A systemd without PrivatePIDs refuses the property, and nothing runs.
 hi_task() {
   local secs="$1" pty="$2" name="$3"; shift 3
+  # Under yantrik-init: the command is PID 1 of the task's namespace otherwise, with nothing to reap
+  # its orphans and Hermes warning about it on every run.
+  [ -x "$BIN_DIR/yantrik-init" ] || { warn "no $BIN_DIR/yantrik-init: nothing was run"; return 1; }
   hi_systemd_ok || { warn "systemd is older than $HI_MIN_SYSTEMD (no PrivatePIDs=): nothing was run"; return 1; }
   hi_check_home "$name" && hi_sandbox_props "$name" || return 1
   # The kernel's way-out table is what holds this account to the proxy; the gateway unit will not
@@ -86,7 +89,7 @@ hi_task() {
   systemd-run --quiet --wait --collect "${mode[@]}" -p "User=$HI_USER" -p "Group=$HI_GROUP" \
     -p After=yantrik-mind-egress.service -p Requires=yantrik-mind-egress.service \
     -p "WorkingDirectory=$(hi_home "$name")" -p "RuntimeMaxSec=$secs" -p TimeoutStopSec=10 \
-    "${HI_PROPS[@]}" -- "$@"
+    "${HI_PROPS[@]}" -- "$BIN_DIR/yantrik-init" "$@"
 }
 hi_task_relay() { # <seconds> <name> <command...>: output relayed, no terminal
   local secs="$1" name="$2" rc; shift 2

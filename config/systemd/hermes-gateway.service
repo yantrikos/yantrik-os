@@ -65,7 +65,10 @@ ExecStartPre=+/bin/sh -c 'h=/var/lib/yantrik-mind/harness/hermes; [ -d "$$h" ] &
 # does, so this unit refuses to start (and the updater stops a running one at the next reconcile).
 ExecStartPre=+/bin/sh -c 'u=yantrik-mind.service; { systemctl show -p InaccessiblePaths --value $$u | grep -q /var/lib/yantrik-mind/harness && [ "$$(systemctl show -p PrivatePIDs --value $$u)" = yes ]; } || { echo "Hermes: the Mind unit does not mask harness/ and have its own PID namespace (as a build from before this release does); not started" >&2; exit 1; }; p=$$(systemctl show -p MainPID --value $$u); if [ "$${p:-0}" != 0 ]; then [ "$$(readlink /proc/$$p/ns/pid)" != "$$(readlink /proc/1/ns/pid)" ] || { echo "Hermes: the running Mind shares PID 1 namespace; not started" >&2; exit 1; }; fi; [ -z "$$(systemctl show -p DropInPaths --value hermes-gateway.service)" ] || { echo "Hermes: this unit has a drop-in; not started" >&2; exit 1; }'
 # The launcher, not a Python path: a newer Hermes rebuilds its venv as a new generation on an update.
-ExecStart=/var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run --replace
+# Under yantrik-init, which is PID 1 of this unit's namespace and reaps what Hermes's tools orphan
+# (otherwise they stay zombies, and Hermes warns about it on every start), passes SIGTERM and
+# SIGUSR1 on to Hermes, and ends with it.
+ExecStart=/opt/yantrik/bin/yantrik-init /var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run --replace
 StandardInput=null
 Restart=always
 RestartSec=5
@@ -73,17 +76,17 @@ RestartSec=5
 RestartForceExitStatus=75
 KillMode=mixed
 KillSignal=SIGTERM
-# Under PrivatePIDs systemd kills this unit's processes at once on a stop, handler or not (measured on
-# staging, systemd 257.8: 0.02 s, SIGKILL in the journal, the handler did not run), which would cut
-# every turn at every restart. So the stop is done from outside the namespace first: SIGTERM to the
-# main process, then wait for it to drain and exit, and SIGKILL it ourselves after 100 s. The limit is
-# below TimeoutStopSec on purpose: ExecStop= and the kill stage each get that timeout, so a script
-# that ran to it would cost up to twice as long, and a stop must never end on systemd's timeout.
-# `restart` therefore blocks for at most about 100 s plus the start; in the journal a stuck stop shows
-# as "Stopping Hermes gateway" with no "Stopped" until then, and `yantrik-update harness restart`
-# says so first. ${MAINPID} is filled in by systemd; $$ is a shell variable.
-ExecStop=+/bin/sh -c 'p=${MAINPID}; kill -TERM "$$p" 2>/dev/null || exit 0; n=0; while kill -0 "$$p" 2>/dev/null; do [ "$$n" -lt 100 ] || { kill -KILL "$$p" 2>/dev/null; break; }; sleep 1; n=$$((n+1)); done; exit 0'
-TimeoutStopSec=120
+# A stop is SIGTERM to the main process, then the kill after TimeoutStopSec. Hermes handles SIGTERM
+# and drains on its own (gateway/restart.py): agent.restart_drain_timeout is how long it lets running
+# turns finish, and agent.cron_drain_timeout how long it lets a scheduled job finish. Its default for
+# the first is 0 (interrupt at once), so hermes_config.py sets 60 and 50, and this timeout is what
+# Hermes's own resolve_systemd_timeout_stop_sec(60, 50) gives: max(60, max(60, 50 + 10) + 30) = 90,
+# the drain plus Hermes's 30 s headroom for what it does after (interrupt, kill children, disconnect).
+# A turn still running when the drain ends is interrupted by Hermes, which tells the person and marks
+# the session to resume (its own comment in gateway/restart.py). Measured on the VM (systemd 257.13,
+# a test unit with this PID namespace and a SIGTERM handler that took 3 s): the handler ran and the
+# stop took 3.04 s, so a stop under PrivatePIDs does wait for a handler.
+TimeoutStopSec=90
 
 # sandbox:begin
 # Hermes keeps its model, keys, sessions and memory in ~/.hermes, as it always has: now in the mind
@@ -91,6 +94,9 @@ TimeoutStopSec=120
 # Hermes itself from ~/.hermes/.env; no EnvironmentFile (systemd would read it as root through a
 # link the account controls), nothing on a command line, nothing in the journal.
 Environment=HOME=/var/lib/yantrik-mind/harness/hermes
+# Named, so that what Hermes records of itself (gateway_state.json) is this path and never one it
+# read out of a file copied from a person's home.
+Environment=HERMES_HOME=/var/lib/yantrik-mind/harness/hermes/.hermes
 Environment=USER=yantrik-mind LOGNAME=yantrik-mind
 Environment=PATH=/var/lib/yantrik-mind/harness/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin
 # The door: the harness socket the gateway attaches at, and where `yos` and the desktop's tools
@@ -131,11 +137,11 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
 # The PID namespace's half, and the one that makes the line above worth anything: the Mind's
 # processes (same uid) are not here to open through /proc/<pid>/root, /fd or /environ, or to
-# signal. The main process is PID 1 of its namespace. A stop from systemd kills it at once whether or
-# not it has a handler (see ExecStop= above for the drain); the same goes for its tool children,
-# which die with it. The journal prints "Supervising process ... which is not our child" at each
-# start: it is the same fact (systemd does not wait for what it did not start), not noise. Not yet
-# seen with Hermes: the VM gate checks the drain, the stop time and that the tool children are reaped.
+# signal. The main process is PID 1 of its namespace. The journal prints "Supervising process ...
+# which is not our child" at each start (seen on staging and on the VM); the stop measurement above
+# is what to go by for how it ends. Its tool children are reaped by yantrik-init (the selftest runs it
+# in a PID namespace against an orphan and a PID 1 that does not reap); on the machine that is for the
+# gate to see.
 PrivatePIDs=yes
 ProtectProc=invisible
 ProcSubset=pid

@@ -24,15 +24,23 @@ no approval card. Now:
   (systemd 257), so `/proc/<pid>/root`, `/fd` and `/environ` of the other's processes cannot be
   walked into and it cannot be signalled. A mount namespace alone is not enough (measured by the
   Mind's reviewer on staging).
-- **A stop is a kill under `PrivatePIDs`**, handler or not: measured by the Mind's reviewer on
-  staging (systemd 257.8, a container), `systemctl stop` took 0.02 s and went straight to SIGKILL,
-  and a SIGTERM handler did not run. The gate measures it on the OS's own systemd (257.13). The
-  Mind has no drain and no handler changes that; the cost is an unclean SQLite close, and it comes
-  back (`Restart=always`). Hermes has a drain: `ExecStop=` sends SIGTERM from outside the namespace
-  and waits for Hermes to finish its turn, then kills it itself after 100 s (below its
-  `TimeoutStopSec=120`, so a stop never ends on systemd's timeout). A restart therefore blocks for
-  at most about that long; `yantrik-update harness restart hermes` says so first. The journal's
-  "Supervising process ... which is not our child" at each start is the same fact, not noise.
+- **How a stop ends**, from what was measured and where. On the VM (systemd 257.13), in a unit with
+  `PrivatePIDs`: a process with a SIGTERM handler ran it and the stop took 3.04 s; one with none took
+  0.023 s and was killed; and the Mind itself, which has no handler yet, took 30.13, 30.24 and
+  30.20 s, i.e. its `TimeoutStopSec=30`, then SIGKILL (a SIGTERM sent to it by hand was ignored for 20
+  s). On staging (systemd 257.8, a container, the Mind's reviewer) a no-handler PID 1 took 0.02 s. So
+  the Mind's stop costs 30 s and an unclean SQLite close (the WAL survives) until its bundle handles
+  SIGTERM, which is accepted. Hermes handles SIGTERM and drains on its own: `hermes_config.py` sets
+  `agent.restart_drain_timeout` to 60 s (Hermes's default is 0, which cut every turn at every
+  restart) and `agent.cron_drain_timeout` to 50 s, and the unit's `TimeoutStopSec=90` is what Hermes's
+  own `resolve_systemd_timeout_stop_sec` gives for them (the drain plus its 30 s headroom). A turn
+  still running when the drain ends is interrupted by Hermes, which tells the person and marks the
+  session to resume. `yantrik-update harness restart hermes` says this first. The journal's
+  "Supervising process ... which is not our child" at each start is seen on both.
+- **Reaping.** In its own PID namespace Hermes would be PID 1, with nothing above it to `wait()` for
+  what its tools orphan (Hermes warns about it on every run). The unit, and every task that runs
+  Hermes, start it under `yantrik-init` (`/opt/yantrik/bin`), a small PID 1 that reaps, passes
+  SIGTERM, SIGHUP, SIGUSR1 and SIGUSR2 on, and ends with Hermes.
 - **A systemd older than 257** would ignore the line, so Hermes is not installed or started there
   (the installer, the unit and every task check). The Mind's unit has no such gate, because refusing
   to start would leave no Mind, and with no harness there is nothing to keep apart.
@@ -49,6 +57,16 @@ no approval card. Now:
   They are never in a unit file, an `EnvironmentFile`, a command line or the journal. After a move,
   **your old copy still has the same keys**, in `~/.hermes.yantrik-moved`, readable by anything
   running as you; delete that folder when you no longer want that copy.
+- **Its tools** (`yos-mcp`, started by Hermes's own MCP client) are refused by the desktop without an
+  agent token when they come from the mind account. The attach asks for a second agent,
+  `hermes:gateway` (`gateway: true`), and the plugin answers its token to the bridge on a unix socket
+  in Hermes's home (`bridge_token.py`; only a process of the account that descends from the gateway
+  is answered), because a token in the bridge's environment would stay readable in `/proc` and Hermes
+  gives its MCP children nothing but an environment. `yos-mcp` reads it once into memory, drops the
+  variable, becomes non-dumpable, and hands it to each short-lived `yos` it runs through a pipe, never
+  an environment or a command line. It is the gateway's background work, not the person's chat: its
+  approval cards say "Hermes (background)" and the Lens's + does not clear its taint. It lives as long
+  as the attach.
 - **Its way out** is the same kernel-held egress table as the Mind's (`yantrik-mind-egress`). The
   table, the proxy's counts and the person's egress policy are the **account's**, shared by the Mind
   and every harness: a destination in the counts may be either, and a rule you add for one opens it
