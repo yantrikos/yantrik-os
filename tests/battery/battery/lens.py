@@ -65,7 +65,7 @@ def run_turn(m, adapter, prompt, fresh=True, timeout=600, stop_after=None, log=p
             if not rec["clicked"] and rec["attempts"] < 8:
                 time.sleep(1.5)  # let the card finish appearing before looking for its buttons
                 rec["attempts"] += 1
-                rec["clicked"] = ui.decline_card(m, card["id"])  # the card is gone: NOT yet proof of a denial
+                rec["clicked"] = ui.decline_card(m, card["id"], notes=rec.setdefault("click_notes", []))  # gone: NOT yet proof of a denial
         if st["approvals"]:
             continue
         el = time.time() - t0

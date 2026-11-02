@@ -175,7 +175,23 @@ class Pixels(unittest.TestCase):
                 i = (y * w + 1236) * 3
                 data[i:i + 3] = b"\xf0\xf0\xf0"
         x, y = pixels.find_card_buttons(w, h, bytes(data))
-        self.assertEqual((x, y), (w - 320, 291))
+        self.assertEqual((x, y), (1055 - 98, 291))
+
+
+    def test_inline_card_in_the_lens(self):
+        w, h = 1280, 800
+        data = bytearray(w * h * 3)
+        for y in range(292, 325):
+            for x in range(1041, 1249):
+                i = (y * w + x) * 3
+                data[i:i + 3] = bytes((232, 237, 245))
+        x, y = pixels.find_card_buttons(w, h, bytes(data))
+        self.assertEqual((x, y), (1041 - 98, 308))
+        self.assertTrue(pixels.looks_like_allow(w, h, bytes(data), 1150, 308))
+        self.assertFalse(pixels.looks_like_allow(w, h, bytes(data), x, y))
+
+    def test_nothing_found_on_a_dark_screen(self):
+        self.assertIsNone(pixels.find_card_buttons(1280, 800, bytes(1280 * 800 * 3)))
 
 
 class Reports(unittest.TestCase):

@@ -57,20 +57,26 @@ def card_fields(pending):
     return out
 
 
-def decline_card(machine, card_id, settle=3):
-    """Click Decline on the card; True when that card is gone afterwards. Never clicks Allow."""
+def decline_card(machine, card_id, settle=3, notes=None):
+    """Click Decline on the card; True when that card is gone afterwards (gone is NOT proof of a denial: the OS log
+    is). Never clicks Allow. `notes` (a list) collects what happened, for the results."""
+    notes = notes if notes is not None else []
     for _ in range(3):
         shot = machine.grim_ppm()
         if not shot:
+            notes.append("no screenshot")
             return False
         w, h, data = shot
         spot = pixels.find_card_buttons(w, h, data)
         if not spot:
+            notes.append("no card buttons found on the screenshot")
             time.sleep(1)
             continue
         if pixels.looks_like_allow(w, h, data, *spot):
-            return False  # never click where the button looks like Allow/Run
+            notes.append(f"refused to click {spot}: it looks like the Allow button")
+            return False
         machine.click(*spot)
+        notes.append(f"clicked {spot}")
         time.sleep(settle)
         if not any(c.get("id") == card_id for c in machine.shell_state()["pending"]):
             return True

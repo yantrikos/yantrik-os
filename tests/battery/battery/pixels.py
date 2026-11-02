@@ -39,40 +39,48 @@ def _button_pixel(p):
     return (p[0] > 225 and p[1] > 225 and p[2] > 225) or (p[0] > 200 and p[1] < 110 and p[2] < 110)
 
 
-def _longest_run(w, h, data, x, pred, y0=40, y1=None):
-    best, run, start = (0, 0), 0, 0
-    y1 = min(h, y1 or h)
-    for y in range(y0, y1 + 1):
-        if y < y1 and pred(_px(data, w, x, y)):
-            if run == 0:
-                start = y
+def _row_span(w, data, y, x0, x1, min_run=20):
+    """(left, right) of the solid light/red parts of row y between x0 and x1, counting only runs of at least
+    `min_run` pixels so glyphs (the Decline label, the Allow label's edges) do not widen or split the span."""
+    left = right = None
+    run = 0
+    for x in range(x0, min(x1, w - 1) + 2):
+        if x <= min(x1, w - 1) and _button_pixel(_px(data, w, x, y)):
             run += 1
         else:
-            if run > best[0]:
-                best = (run, start)
+            if run >= min_run:
+                if left is None:
+                    left = x - run
+                right = x - 1
             run = 0
-    return best
-
-
-def _border(p):
-    """The card's amber outline."""
-    return p[0] > 200 and 150 < p[1] < 200 and 80 < p[2] < 130
+    return left, right
 
 
 def find_card_buttons(w: int, h: int, data: bytes):
     """(decline_x, y) of an approval card's Decline button, or None.
 
-    The card sits at the top right with an amber outline. Its vertical extent is found from that outline (its
-    right edge, 17 px in from the screen edge at 1280 wide); inside it, the Allow/Run button is the tallest
-    solid light or red run in a column near the card's right edge, with no text on it; Decline sits level with
-    it, about a quarter of the screen width to the left. Card heights differ, so the row is found, not assumed."""
-    run, top = _longest_run(w, h, data, w - int(w * 0.0133), _border)
-    if run < 60:
+    A card is shown two ways (an overlay at the top right, or inline in the Lens panel), so the card is not
+    assumed to be anywhere: the Allow/Run button is found, a wide solid light or red band (at least 12% of the
+    screen wide and 18 px tall) in the right 40% of the screen with no text across its edge, and Decline is the
+    button level with it, immediately to its left (about 98 px left of the Allow button's left edge at 1280 wide,
+    scaled with the width). Returns the first such band from the top."""
+    x0, x1 = int(w * 0.6), w - 1
+    min_w = int(w * 0.12)
+    band_top, band = None, []
+    for y in range(40, min(h, 780)):
+        left, right = _row_span(w, data, y, x0, x1)
+        if left is not None and right - left >= min_w:
+            if band_top is None:
+                band_top = y
+            band.append((right - left, left))
+        else:
+            if band_top is not None and len(band) >= 18:
+                break
+            band_top, band = None, []
+    if band_top is None or len(band) < 18:
         return None
-    n, start = _longest_run(w, h, data, w - int(w * 0.035), _button_pixel, y0=top, y1=top + run)
-    if n < 18:
-        return None
-    return w - int(w * 0.25), start + n // 2
+    left = min(b[1] for b in band)
+    return left - int(w * 0.0766), band_top + len(band) // 2
 
 
 def looks_like_allow(w: int, h: int, data: bytes, x: int, y: int) -> bool:
@@ -80,4 +88,4 @@ def looks_like_allow(w: int, h: int, data: bytes, x: int, y: int) -> bool:
     button is dark with a thin outline, so a click that would land on a solid light/red area is refused."""
     pts = [(x + dx, y + dy) for dx in (-30, 0, 30) for dy in (-6, 0, 6)]
     solid = sum(1 for px, py in pts if 0 <= px < w and 0 <= py < h and _button_pixel(_px(data, w, px, py)))
-    return solid >= 3
+    return solid >= 7
