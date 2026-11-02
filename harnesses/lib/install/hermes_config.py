@@ -51,9 +51,24 @@ PLATFORM = "yantrik"
 # What harnesses/hermes/README.md asks for: all the desktop platform may have, and what it is given.
 ALLOWED = ["skills", "todo", "memory", "session_search", "clarify", "delegation", "yantrik_os"]
 YANTRIK_OS = "yantrik_os"
+# The Lens bridge (#1070, harnesses/hermes/lens_tools.py). The plugin registers the desktop's tools
+# as proxies in the toolset below that choose a bridge per call; for the platform to be offered
+# THOSE and not the shared bridge's own copies, its list also carries Hermes's `no_mcp` sentinel,
+# which drops MCP servers for this platform only (tools_config._merge_mcp_servers). `yantrik_os`
+# stays in `mcp_servers`, so Hermes still connects it and the proxies' shared path still works,
+# and Telegram, cron and the CLI resolve their own lists and keep their MCP tools.
+#
+# The two travel together or not at all: `yantrik_desk` alone offers the model both, and skips the
+# routing; `no_mcp` alone offers it no desktop tools. And only the plugin turns them on, at the
+# moment it has registered the proxies in the gateway that is starting (`lens on`); `apply` always
+# writes the plain list, so an install, an update or a rollback leaves a Hermes that works with
+# whichever plugin it has.
+LENS_TOOLSET = "yantrik_desk"
+NO_MCP = "no_mcp"
 # The desktop's tools, as an MCP server, when the person has not configured it already. The bridge
 # may hold a call for 270 seconds while a person answers a card (README.md, "an MCP client must
 # allow os_act up to 270 seconds").
+ALLOWED_WITH_LENS = ALLOWED + [LENS_TOOLSET, NO_MCP]
 YANTRIK_OS_SERVER = {"command": "/opt/yantrik/bin/yos-mcp", "timeout": 300}
 # A research sub-agent that may take 50 turns will take 50.
 DELEGATION_MAX_ITERATIONS = 25
@@ -187,6 +202,21 @@ def apply(path, plugin_toolsets=()):
 MEMORY = {"provider": "yantrikdb", "memory_enabled": False, "user_profile_enabled": False}
 
 
+def set_lens(path, on):
+    """The platform's list with the Lens bridge's proxies and `no_mcp` (on), or the plain allowlist.
+
+    Touches only `platform_toolsets.yantrik`. Idempotent: a file already in the state asked for is
+    not rewritten."""
+    data, text = _read(path)
+    platforms = _section(data, "platform_toolsets", path)
+    want = list(ALLOWED_WITH_LENS if on else ALLOWED)
+    if platforms.get(PLATFORM) == want:
+        return False
+    platforms[PLATFORM] = want
+    _write(path, data, text)
+    return True
+
+
 def memory(path):
     """YantrikDB as Hermes's one memory in the file at `path`; Hermes's own files off."""
     data, text = _read(path)
@@ -256,7 +286,7 @@ def hold_off_older_hermes(path, resolve):
     turned off. Nothing else is ever added there: any other extra stays a problem for `check`."""
     data, text = _read(path)
     try:
-        extra = {str(t) for t in resolve(data, PLATFORM)} - set(ALLOWED)
+        extra = {str(t) for t in resolve(data, PLATFORM)} - set(ALLOWED_WITH_LENS)
     except Exception as exc:
         raise ConfigError("Hermes could not resolve the desktop platform's toolsets: %s" % exc)
     off = [t for t in OFF_ON_OLDER_HERMES if t in extra]
@@ -292,9 +322,15 @@ def problems(path, resolve):
     if listed is None:
         wrong.append("platform_toolsets.%s is not set, so the desktop platform gets every toolset Hermes has" % PLATFORM)
     else:
-        extra = [t for t in listed if t not in ALLOWED]
+        extra = [t for t in listed if t not in ALLOWED_WITH_LENS]
         if extra:
             wrong.append("platform_toolsets.%s lists %s, which the desktop platform may not have" % (PLATFORM, ", ".join(extra)))
+        if (LENS_TOOLSET in listed) != (NO_MCP in listed):
+            wrong.append(
+                "platform_toolsets.%s lists %s without %s, so the model would be offered %s"
+                % (PLATFORM, *((LENS_TOOLSET, NO_MCP, "both the routed desktop tools and the shared bridge's own, which skip the routing")
+                               if LENS_TOOLSET in listed else
+                               (NO_MCP, LENS_TOOLSET, "no desktop tools at all"))))
     servers = data.get("mcp_servers")
     ours = servers.get(YANTRIK_OS) if isinstance(servers, dict) else None
     if ours != YANTRIK_OS_SERVER:
@@ -312,9 +348,11 @@ def problems(path, resolve):
         raise
     except Exception as exc:
         raise ConfigError("Hermes could not resolve the desktop platform's toolsets: %s" % exc)
-    extra = sorted(effective - set(ALLOWED))
+    extra = sorted(effective - set(ALLOWED_WITH_LENS))
     if extra:
         wrong.append("Hermes resolves the desktop platform to %s as well, which it may not have" % ", ".join(extra))
+    if listed is not None and NO_MCP in listed and YANTRIK_OS in effective:
+        wrong.append("platform_toolsets.%s lists %s, yet Hermes still offers it the shared %s tools" % (PLATFORM, NO_MCP, YANTRIK_OS))
     return wrong
 
 
@@ -348,8 +386,26 @@ def main(argv, plugin_toolsets=hermes_plugin_toolsets, resolver=hermes_resolver)
             print(exc, file=sys.stderr)
             return 1
         return 0
+    if len(argv) == 4 and argv[1] == "lens" and argv[2] in ("on", "off"):
+        # Run by the plugin as the gateway starts, with Hermes's own Python: `lens on` once the
+        # proxies are registered, `lens off` when they could not be.
+        try:
+            path = argv[3]
+            if path == "-":  # the file Hermes itself reads, asked of Hermes (no `hermes` command to wait on)
+                from hermes_cli.config import get_config_path
+                path = str(get_config_path())
+            changed = set_lens(path, argv[2] == "on")
+            wrong = problems(path, resolver())
+        except (ConfigError, OSError) as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        for line in wrong:
+            print(line, file=sys.stderr)
+        if wrong and argv[2] == "on":
+            set_lens(path, False)  # not provably right: back to the list that always works
+        return 1 if wrong else (0 if not changed else 10)
     if len(argv) != 3 or argv[1] not in ("apply", "check", "memory"):
-        print("usage: hermes_config.py apply|check|memory CONFIG, or manifest SRC DEST", file=sys.stderr)
+        print("usage: hermes_config.py apply|check|memory CONFIG, lens on|off CONFIG, or manifest SRC DEST", file=sys.stderr)
         return 2
     path = argv[2]
     if argv[1] == "memory":

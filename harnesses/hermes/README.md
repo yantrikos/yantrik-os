@@ -123,6 +123,43 @@ running or not, with `for`, `opens` and `describe_as`), then `os_describe` and `
 terminal is for when no app has the action, since each command is a card the person must answer, and
 it is never to offer a way past that approval.
 
+## The Lens conversation's own bridge (#1070)
+
+Hermes runs one `yos-mcp` for the whole gateway, with no token, so the desktop cannot tell the
+Lens's calls from cron's or a `/bg` task's and the person's + cannot clear its taint
+(`control_taint_scope.rs`, unchanged). The plugin runs a second `yos-mcp` that carries the Lens
+conversation's token, which arrives on every `harness.poll` and changes at each +. `lens_tools.py`
+offers the desktop's tools as proxies in the plugin toolset `yantrik_desk`. A call goes to the Lens
+bridge only when three ContextVars Hermes sets (not `os.environ`) prove it:
+
+- the session key is exactly the one the adapter filed the Lens chat under,
+- the triggering message is a Lens turn that is open now (the adapter passes its turn id as the
+  message id), and
+- the agent's session id is the one Hermes's session store holds for that key right now.
+
+The third is what tells a `/bg` task apart: at the pinned Hermes it runs under `copy_context` and
+never rebinds the session vars, so it carries the Lens's key and the open turn's message id, but its
+agent is built with `session_id=task_id` (`bg_...`). A delegated child has a session of its own too.
+
+Anything else, anything unset or unreadable, a token that is not current, goes to the shared
+bridge. A rotated token ends the process that carried the old one and fails a call in flight; it
+is not run again on the other bridge. The token is in the child's environment only, scrubbed from
+everything the child returns, never logged; the child dies with the gateway (`stop()`, exit,
+`PR_SET_PDEATHSIG`).
+
+**How the model is given the proxies and not the shared tools.** When the gateway connects, with
+the proxies registered in that process, the plugin runs `hermes_config.py lens on -` (one copy of
+the logic, in the image). It sets `platform_toolsets.yantrik` to the plain list plus `yantrik_desk`
+and Hermes's `no_mcp` sentinel, which drops MCP servers for this platform only
+(`tools_config._merge_mcp_servers`). `yantrik_os` stays in `mcp_servers`, so Hermes still connects
+it and the proxies' shared path (`mcp__yantrik_os__<tool>` in Hermes's registry) works; Telegram,
+cron and the CLI resolve their own lists and keep their MCP tools. The two entries travel together
+(`hermes_config.py check` fails on one without the other), and only the gateway's connect turns
+them on: any `hermes` command loads plugins, and one run while an older gateway is still up must
+not name tools that gateway lacks. An install or `apply` always writes the plain list, and
+`refresh-plugins.sh` turns the Lens list off when it swaps in a plugin that has no `lens_tools.py`
+(an OS rollback), so Hermes always has a list its plugin can serve.
+
 ## Yantrik models
 
 Installing Hermes (the ISO, the installer, or **Settings → Minds → Install**) does this with no
