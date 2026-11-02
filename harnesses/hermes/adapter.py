@@ -86,6 +86,22 @@ STATUS_MARK = "⏳"
 # The card marks it itself, so the label is shown without it.
 RECOMMENDED_MARK = re.compile(r"\s*\(recommended\)\s*", re.IGNORECASE)
 
+# How long a question may wait for the person before the turn stops waiting on it (#1070). Hermes
+# itself waits an hour, and a turn blocked on a question nobody saw was blocked until the gateway
+# was restarted (battery of 2 Nov, tasks 3, 13 and 17). Long enough to read it and think; short
+# enough that "I asked and you were away" is what the person comes back to, not a frozen reply.
+QUESTION_SECONDS = float(os.environ.get("YANTRIK_QUESTION_SECONDS") or 300.0)
+# What Hermes is told when the question went unanswered: plain, and with a way on.
+NOT_ANSWERED = (
+    "The person did not answer within {minutes} minutes, so there is no answer. Do not ask the "
+    "same question again. Do the part of the task that does not depend on it, and say plainly "
+    "which part you did not do and that it was waiting on their answer."
+)
+# What a result that arrives with no conversation open is shown under, in the next reply.
+LATE_HEADING = "While you were away, Hermes finished something in the background:"
+LATE_KEPT = 20
+LATE_CHARS = 4000
+
 # The card's own button for Hermes's skip. Hermes adds 'Reply "skip" to skip this question.' to
 # every question of a batch (gateway.clarify.skip_hint) and takes the word "skip" as SKIPPED, but
 # only from a typed reply: an answer from a card reaches resolve_gateway_clarify as it is. So on
@@ -148,6 +164,12 @@ class YantrikAdapter(BasePlatformAdapter):
         self._events: Optional[bool] = None
         # Questions shown as cards, by Hermes's clarify id. The answer arrives on a later poll.
         self._cards: Dict[str, "_Card"] = {}
+        # Questions no one answered in time, by the turn that asked: a second one ends the turn.
+        self._unanswered: Dict[str, int] = {}
+        # What Hermes said with no conversation open (a background task's result, a scheduled job's):
+        # the desktop's protocol has no way to say something unasked, so it is shown, labelled, at
+        # the top of the next reply instead of being thrown away.
+        self._late: List[str] = []
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
@@ -443,6 +465,8 @@ class YantrikAdapter(BasePlatformAdapter):
         self._asked = {k: v for k, v in self._asked.items() if v != event.message_id}
         # A card still waiting when its run ends will not be answered by it; the desktop closes it.
         self._cards = {cid: c for cid, c in self._cards.items() if c.turn_id not in (turn_id, event.message_id)}
+        self._unanswered.pop(turn_id, None)
+        self._unanswered.pop(event.message_id, None)
         if outcome == ProcessingOutcome.SUCCESS:
             await self._finish(turn_id, why="the gateway finished it")
         elif outcome == ProcessingOutcome.CANCELLED:
@@ -519,9 +543,17 @@ class YantrikAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=message_id)
         if turn is None:
             # Something with no question to answer: a scheduled job's result, a background
-            # process finishing. The desktop protocol has no way to say something unasked yet.
-            logger.info("[yantrik] nothing open on the desktop for a %d-character message", len(content))
-            return SendResult(success=False, error="no open conversation turn on the desktop")
+            # process finishing. The desktop protocol has no way to say something unasked yet, so
+            # it is kept and shown at the top of the next reply, under a line that says when it
+            # came (#1070). Not dropped, and not claimed to be on screen now.
+            logger.info("[yantrik] nothing open on the desktop for a %d-character message; kept", len(content))
+            if content.strip():
+                self._late.append(content.strip()[:LATE_CHARS])
+                del self._late[:-LATE_KEPT]
+            return SendResult(success=True)
+        if self._late and not turn.said_anything:
+            content = "\n\n".join([LATE_HEADING, *self._late, "---", content])
+            self._late.clear()
         if "requires approval" in content or "/approve" in content:
             # Hermes is blocked until the person answers. Said in the log too, so a command waiting
             # on someone is visible to whoever is looking at the machine rather than only the chat.
@@ -654,7 +686,51 @@ class YantrikAdapter(BasePlatformAdapter):
             return False
         self._cards[clarify_id] = card
         logger.info("[yantrik] turn %s: Hermes's question is a card, waiting for its answer", turn.turn_id)
+        self._tasks = [t for t in self._tasks if not t.done()]
+        self._tasks.append(asyncio.create_task(self._expire_card(clarify_id)))
         return True
+
+    async def _expire_card(self, clarify_id: str) -> None:
+        """A question nobody answered must not hold the turn for as long as Hermes would wait.
+
+        The first time, Hermes is told there was no answer and carries on without it, and the
+        reply says so. A second question in the same turn that is also left alone ends the turn
+        there, with what it did say, and the question dropped.
+        """
+        try:
+            await asyncio.sleep(QUESTION_SECONDS)
+        except asyncio.CancelledError:
+            return
+        card = self._cards.pop(clarify_id, None)
+        if card is None:
+            return  # answered, or the run ended
+        minutes = max(1, round(QUESTION_SECONDS / 60))
+        turn = self._ledger.get(card.turn_id)
+        misses = self._unanswered[card.turn_id] = self._unanswered.get(card.turn_id, 0) + 1
+        logger.info("[yantrik] turn %s: no answer to question %s in %ss", card.turn_id, clarify_id, QUESTION_SECONDS)
+        if misses >= 2 or turn is None:
+            self._end_question(card.session_key)
+            if turn is not None:
+                note = (f"Hermes asked again and there was no answer in {minutes} minutes, so it stopped "
+                        "here. Ask again whenever you are ready.")
+                _, delta = self._ledger.sent(turn, note)
+                await self._stream(turn, delta)
+                await self._finish(card.turn_id, why="the question went unanswered twice")
+            return
+        note = (f"No answer to the question within {minutes} minutes. Hermes carries on without it "
+                "and will say what it could not do.")
+        _, delta = self._ledger.sent(turn, note)
+        await self._stream(turn, delta)
+        try:
+            from tools import clarify_gateway
+
+            taken = clarify_gateway.resolve_gateway_clarify(clarify_id, NOT_ANSWERED.format(minutes=minutes))
+        except Exception:
+            logger.warning("[yantrik] could not tell Hermes its question went unanswered", exc_info=True)
+            taken = False
+        if not taken:
+            # Hermes had already let go of it (its own timeout, a stop): nothing is waiting.
+            self._end_question(card.session_key)
 
     def _take_answers(self, answers: List[Dict[str, Any]]) -> None:
         """Answers to questions shown as cards, from a poll: each one lets Hermes's clarify go on.
@@ -851,6 +927,32 @@ def _approval_pending(session_key: str) -> bool:
         return False
 
 
+# What Hermes is told about this desktop (#1070). It steers three things the battery of 2 Nov found
+# Hermes getting wrong: reaching for the terminal and its approval cards when an app has the
+# action; answering "my weather" from memory; and promising to report back what it cannot.
+PLATFORM_HINT = (
+    "You are the mind answering the Yantrik OS desktop: the chat panel of the computer you are "
+    "running on, used by its owner. Markdown renders. Your tools act on this same machine.\n"
+    "The person's data lives in their own apps, and that is where to look. 'My weather', 'my "
+    "calendar', 'my notes', 'my mail', 'my files' mean the Weather, Calendar, Notes, Email and "
+    "Files apps on this machine, not your memory and not the web. Call os_apps first: it lists "
+    "every app, running or not, with what it is for (`for`), how it opens (`opens`) and the name "
+    "to describe it by (`describe_as`). Then os_describe that app to read it, and os_act to do "
+    "something in it. Memory can be out of date; the app is not. If the app cannot answer, say "
+    "that, and then look elsewhere.\n"
+    "Use the terminal only when no app has the action. A command raises a card the person must "
+    "answer, and they may be away. Never offer a way to run things that skips their approval.\n"
+    "You cannot speak unasked. A reply ends your turn, and what a background task finishes after "
+    "that is not shown until the person writes next. So never promise to 'report back' or 'let "
+    "you know': wait for the result inside this turn and give it, or say plainly that it will not "
+    "arrive by itself and what the person can do.\n"
+    "If you need an answer to go on, ask once, with choices when there are few, using clarify. If "
+    "you are told there was no answer, do not ask again: do what you can without it and say which "
+    "part you did not do. Long work is fine: the person sees your progress as you go and can send "
+    "/stop, or /approve and /deny when a command needs their permission."
+)
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
     # Every desktop turn arrives as the one user OWNER_ID, and only the machine's owner can reach the
@@ -875,12 +977,5 @@ def register(ctx) -> None:
         max_message_length=MAX_MESSAGE_LENGTH,
         emoji="🖥️",
         pii_safe=True,
-        platform_hint=(
-            "You are the mind answering the Yantrik OS desktop: the chat panel of the computer "
-            "you are running on, used by its owner. Markdown renders. Your tools act on this same "
-            "machine. The yantrik_os MCP tools read and drive the desktop's own apps (notes, "
-            "files, calendar, email, the shell); prefer them for anything a person would do in "
-            "those apps. Long work is fine: the person sees your progress as you go and can send "
-            "/stop, or /approve and /deny when a command needs their permission."
-        ),
+        platform_hint=PLATFORM_HINT,
     )

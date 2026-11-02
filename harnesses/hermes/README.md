@@ -101,6 +101,28 @@ message is the answer: a number, the choice's words or your own; Hermes's work g
 to it. Hermes's "⏳ Working — N min" line is shown as the reply's status, not in its text. An older
 Hermes, which has no `clarify` gateway, is unchanged.
 
+A question nobody answers does not hold the reply (#1070). After five minutes
+(`YANTRIK_QUESTION_SECONDS`) Hermes is told there was no answer and goes on without it, the reply
+says so, and Hermes says which part it did not do. If its next question is left alone too, the
+reply ends there, with what it said, and the question is dropped.
+
+## Results that arrive with no conversation open
+
+The desktop's protocol has no way to say something unasked, so a background task's result or a
+scheduled job's has nowhere to appear when nothing is open. The adapter keeps what arrives (the last
+20, 4,000 characters each) and shows it, under "While you were away, Hermes finished something in
+the background:", at the top of the next reply. It is not shown before then, and nothing shows the
+task as running meanwhile. So Hermes is told it cannot speak unasked and must not promise to "report
+back": it waits for the result inside the turn, or says plainly that it will not arrive by itself.
+
+## What Hermes is told about the desktop
+
+The platform hint sends Hermes to the person's own apps first. "My weather", "my calendar", "my
+notes" mean those apps on this machine, not its memory or the web; it calls `os_apps` (every app,
+running or not, with `for`, `opens` and `describe_as`), then `os_describe` and `os_act`. The
+terminal is for when no app has the action, since each command is a card the person must answer, and
+it is never to offer a way past that approval.
+
 ## Yantrik models
 
 Installing Hermes (the ISO, the installer, or **Settings → Minds → Install**) does this with no
