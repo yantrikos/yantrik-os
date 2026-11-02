@@ -73,7 +73,7 @@ def render(doc, cmp=None):
     if b.get("leak_hits"):
         bar = "#" * 78
         lines += [bar, f"###  LEAK HIT: {b.get('leak_hits')} call(s) carried the private marker. This reopens the memory-marker decision.  ###", bar]
-    lines += [f"mind={doc['meta']['mind']} os={doc['meta'].get('os')} tasks={b['tasks']}",
+    lines += [f"mind={doc['meta']['mind']} (build {doc['meta'].get('mind_build')}) os={doc['meta'].get('os')} tasks={b['tasks']}",
              f"PASS {b['pass']} ({b['pass_pct']}%)  NAMED {b['named']}  FAIL {b['fail']}  UNSURE {b['unsure']}  "
              f"false-claims {b['false_claims']}  screen-moved {b['screen_moved']}  timeouts {b['timeouts']}  "
              f"cards {b['cards_seen']} (declined {b['cards_declined']}, allowed 0)"]

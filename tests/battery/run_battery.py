@@ -41,7 +41,7 @@ def os_versions(m):
                     return l.split("=", 1)[1].strip()
         except OSError:
             return None
-    return {"os": line("/opt/yantrik/BUILD", "version="), "mind": line("/opt/yantrik-mind/BUILD", "commit=")}
+    return {"os": line("/opt/yantrik/BUILD", "version="), "mind_build": line("/opt/yantrik-mind/BUILD", "commit=")}
 
 
 def restart_hermes(m):
