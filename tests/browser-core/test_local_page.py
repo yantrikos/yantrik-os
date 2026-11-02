@@ -203,6 +203,7 @@ class TestLocalPage(unittest.TestCase):
         self.assertIn("--host-resolver-rules=MAP * ~NOTFOUND", args)
         self.assertIn("--proxy-bypass-list=<-loopback>", args)
         self.assertIn("--block-new-web-contents", args)
+        self.assertIn("--webrtc-ip-handling-policy=disable_non_proxied_udp", args)
         self.assertIn("--remote-debugging-port=40123", args)
         self.assertIn("--remote-debugging-address=127.0.0.1", args)
         self.assertNotIn("--remote-debugging-port=9222", args)
@@ -314,6 +315,38 @@ class TestRenderInstanceLive(unittest.TestCase):
         import time
         time.sleep(1.5)
         self.assertEqual(self.hits, [], "a page of a Mind reached the network")
+
+    def test_a_page_sends_no_udp_by_webrtc(self):
+        import socket
+        import time
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.bind(("127.0.0.1", 0))
+        udp.settimeout(0.3)
+        port = udp.getsockname()[1]
+        with open(os.path.join(self.tmp, "Sites/rtc.html"), "w") as f:
+            f.write("<html><title>RTC</title><script>const p=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:%d'},"
+                    "{urls:'turn:127.0.0.1:%d?transport=udp',username:'EXFIL-hunter2',credential:'x'}]});"
+                    "p.createDataChannel('d');p.createOffer().then(o=>p.setLocalDescription(o));</script></html>" % (port, port))
+        self.d.go(self.url("Sites/rtc.html"))
+        got = []
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            try:
+                got.append(udp.recvfrom(2048))
+            except socket.timeout:
+                pass
+        udp.close()
+        self.assertEqual(got, [], "WebRTC reached out past the proxy")
+
+    def test_a_download_a_page_starts_lands_nowhere(self):
+        import time
+        home_downloads = os.path.join(os.path.expanduser("~"), "Downloads", "evil-render.desktop")
+        with open(os.path.join(self.tmp, "Sites/dl.html"), "w") as f:
+            f.write("<html><title>DL</title><body><a id=a download='evil-render.desktop' href='data:text/plain,x'>x</a>"
+                    "<script>document.getElementById('a').click()</script></body></html>")
+        self.d.go(self.url("Sites/dl.html"))
+        time.sleep(1.5)
+        self.assertFalse(os.path.exists(home_downloads), "a page wrote a file into Downloads")
 
     def test_a_page_that_steers_to_a_protected_file_reads_back_nothing(self):
         try:

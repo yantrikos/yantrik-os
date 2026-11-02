@@ -1664,6 +1664,8 @@ with tempfile.TemporaryDirectory() as d:
                              '  "text": "see file:///x"', "}"])
     check("an answer from a file: page is read as one", module.answer_shows_local_page(answer("file:///home/p/Sites/a.html")))
     check("an answer from a web page is not", not module.answer_shows_local_page(answer("https://example.com/")))
+    check("nor is a blob: page a file: page turned into read as anything but local",
+          module.answer_shows_local_page(answer("blob:null/1a2b")) and module.answer_shows_local_page(answer("about:srcdoc")))
     check("nor one that names no address", not module.answer_shows_local_page("nothing"))
 
     # 15g. After a `web_go` of a file: page taints, `present_file` still raises its card: it

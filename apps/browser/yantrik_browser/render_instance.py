@@ -9,6 +9,7 @@ both. So a `file:` address from a Mind never goes there. It goes to this instanc
     is not there, loopback included (`--proxy-bypass-list=<-loopback>`) - the desktop's own debug
     port is on loopback - and `Fetch` fails whatever is not a local file the Mind may read
     (`guard`, below). A page's script cannot reach the person's browser or the network;
+  - no UDP of its own (WebRTC), no download (`Browser.setDownloadBehavior`), and
   - no second window or tab a page opens for itself (`--block-new-web-contents`);
   - its debug port is its own, on loopback, chosen free, and allows no web origin but itself.
 
@@ -72,6 +73,9 @@ def args_for(profile, port, extra=()):
         "--host-resolver-rules=MAP * ~NOTFOUND",
         "--proxy-server=socks5://127.0.0.1:9",
         "--proxy-bypass-list=<-loopback>",
+        # WebRTC sends UDP (STUN, TURN) straight out, past the proxy and past `Fetch`: to any address a
+        # page names, loopback included. Only traffic that goes through the (dead) proxy is allowed.
+        "--webrtc-ip-handling-policy=disable_non_proxied_udp",
         "about:blank",
     ]
 

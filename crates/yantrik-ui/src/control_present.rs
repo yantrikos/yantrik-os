@@ -45,8 +45,9 @@ use crate::{App, ToastActionData, ToastData};
 /// The id every presentation's toast starts with. `local:` keeps it out of the notification store.
 pub const TOAST: &str = "local:present-file";
 
-/// How many presentation cards stay up and openable; the oldest is taken down for a new one.
-const KEPT: usize = 4;
+/// How many presentation cards stay up and openable; the oldest is taken down for a new one. Fewer
+/// than the toasts that are visible at once (`wire::toast`), so a Mind cannot fill every slot.
+const KEPT: usize = 2;
 
 /// How long a name or title may be on the card before it is cut (the extension is kept).
 const SHOWN: usize = 60;
@@ -60,12 +61,16 @@ pub(crate) enum Opens {
     App(String),
 }
 
+/// How the file looked when offered: size, modification time, inode, and the time of its last
+/// change of any kind (which a restored mtime does not hide).
+type Seen = (u64, i64, u64, i64);
+
 /// What was offered: the real path, how the file looked then, and what a press does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Offered {
     id: String,
     real: PathBuf,
-    seen: (u64, i64, u64),
+    seen: Seen,
     opens: Opens,
 }
 
@@ -94,19 +99,12 @@ pub(crate) struct Offer {
     /// The real file's name (a link followed), clean.
     pub name: String,
     pub opens: Opens,
-    pub seen: (u64, i64, u64),
+    pub seen: Seen,
 }
 
-/// A character that can make a name say what it is not: controls (a new line on the card),
-/// direction overrides (`gpj.html` shown as `html.jpg`), zero-width and line separators.
-fn deceptive(c: char) -> bool {
-    c.is_control()
-        || matches!(c, '\u{00AD}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202F}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
-}
-
-/// Text for the card with those characters taken out.
+/// Text for the card with control, direction, zero-width and line-separating characters taken out.
 pub(crate) fn clean(text: &str) -> String {
-    text.chars().filter(|c| !deceptive(*c)).collect()
+    mind::plain(text)
 }
 
 /// A name for the card: cut at [`SHOWN`] characters with an ellipsis, the extension kept.
@@ -120,9 +118,9 @@ pub(crate) fn shown(name: &str) -> String {
     format!("{stem}…{ext}")
 }
 
-fn fingerprint(real: &Path) -> Result<(u64, i64, u64), String> {
+fn fingerprint(real: &Path) -> Result<Seen, String> {
     let m = std::fs::metadata(real).map_err(|e| format!("{} cannot be read: {e}", real.display()))?;
-    Ok((m.len(), m.mtime() * 1_000_000_000 + m.mtime_nsec(), m.ino()))
+    Ok((m.len(), m.mtime() * 1_000_000_000 + m.mtime_nsec(), m.ino(), m.ctime() * 1_000_000_000 + m.ctime_nsec()))
 }
 
 /// Decide the offer from `args`, with `home` as the person's home.
@@ -152,6 +150,15 @@ pub(crate) fn plan(args: &Value, home: &Path) -> Result<Offer, String> {
     }
     let opens = match crate::mime_dispatch::classify(&real_name) {
         FileAction::Browser => Opens::Apart,
+        // Sound and video play in mpv, which reads a playlist or an edit list out of the file's
+        // content and fetches what it names, whatever the extension says: the press would make
+        // network requests. Not offered, as the apps the person chose are not.
+        FileAction::MediaPlayer => {
+            return Err(format!(
+                "{real_name} would play in the media player, which can fetch what a playlist inside the file names; \
+                 present_file does not offer sound or video; tell the person where the file is instead"
+            ))
+        }
         FileAction::DesktopApp(id) => {
             return Err(format!(
                 "a file like {real_name} opens in {}, an app the person chose, and present_file does not \

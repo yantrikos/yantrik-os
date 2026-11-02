@@ -1663,6 +1663,15 @@ def is_local_page(url):
     return isinstance(url, str) and url.strip().lower().startswith("file:")
 
 
+# What a page of the Mind's own turns into: a `file:` page can navigate itself to a blob or an
+# inline document, and what it then shows is still its own text. Read from the answer.
+LOCAL_ANSWER_PREFIXES = ("file:", "blob:null", "about:srcdoc", "data:")
+
+
+def answer_url_is_local(url):
+    return isinstance(url, str) and url.strip().lower().startswith(LOCAL_ANSWER_PREFIXES)
+
+
 def answer_shows_local_page(out):
     """Does a browser answer come from a `file:` page? Read from the answer, not the request: a
     `file:` tab can come from the person's own double-click, from history, or from a link on a
@@ -1673,7 +1682,7 @@ def answer_shows_local_page(out):
         if depth > 6:
             return False
         if isinstance(node, dict):
-            return any((k == "url" and is_local_page(v)) or walk(v, depth + 1) for k, v in node.items())
+            return any((k == "url" and answer_url_is_local(v)) or walk(v, depth + 1) for k, v in node.items())
         if isinstance(node, list):
             return any(walk(v, depth + 1) for v in node[:200])
         return False

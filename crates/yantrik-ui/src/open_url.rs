@@ -35,7 +35,7 @@ pub fn open(url: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("the browser could not be opened: {e}"))?;
-    bring_forward(before, child);
+    bring_forward(before, child, None);
     Ok(())
 }
 
@@ -56,7 +56,7 @@ pub fn open_apart(url: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("the browser could not be opened: {e}"))?;
-    bring_forward(before, child);
+    bring_forward(before, child, None);
     Ok(())
 }
 
@@ -72,19 +72,52 @@ pub fn open_file_offline(path: &Path) -> Result<(), String> {
     if !browser.contains("chrom") {
         return Err(format!("{browser} cannot open a page with no network, and this page is not opened with one"));
     }
-    let profile = yantrik_ml::private_dir::state_dir("presented-files")
-        .map_err(|e| format!("no private profile for the browser: {e}"))?;
+    // A profile made for this press and removed when the browser exits: nothing a page stores
+    // (localStorage, IndexedDB, history) reaches the next page, and a download it starts lands in
+    // the profile, not in the person's Downloads.
+    let profile = fresh_profile()?;
     let program = crate::wire::dock::find_program(browser).ok_or("there is no browser on this machine")?;
     let before = foreign_windows();
-    let child = Command::new(program)
+    let child = match Command::new(program)
         .args(offline_args(&profile, &file_url(path)))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("the browser could not be opened: {e}"))?;
-    bring_forward(before, child);
+    {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&profile);
+            return Err(format!("the browser could not be opened: {e}"));
+        }
+    };
+    bring_forward(before, child, Some(profile));
     Ok(())
+}
+
+/// A browser profile for one press, private to the person (0700), with downloads pointed inside it.
+fn fresh_profile() -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("yantrik-presented-{}-{nanos}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .recursive(true)
+        .create(dir.join("Default"))
+        .map_err(|e| format!("no private profile for the browser: {e}"))?;
+    std::fs::write(dir.join("Default/Preferences"), download_preferences(&dir))
+        .map_err(|e| format!("no private profile for the browser: {e}"))?;
+    Ok(dir)
+}
+
+/// The profile's first preferences: downloads go inside the profile, without asking.
+pub(crate) fn download_preferences(profile: &Path) -> String {
+    let downloads = profile.join("downloads").display().to_string();
+    serde_json::json!({
+        "download": { "default_directory": downloads, "prompt_for_download": false },
+        "savefile": { "default_directory": downloads },
+    })
+    .to_string()
 }
 
 /// The arguments for [`open_file_offline`]: [`apart_args`]'s, plus no network.
@@ -97,6 +130,8 @@ pub(crate) fn offline_args(profile: &Path, url: &str) -> Vec<String> {
         "--host-resolver-rules=MAP * ~NOTFOUND".into(),
         "--proxy-server=socks5://127.0.0.1:9".into(),
         "--proxy-bypass-list=<-loopback>".into(),
+        // WebRTC sends UDP past the proxy, to any address a page names; only proxied traffic is allowed.
+        "--webrtc-ip-handling-policy=disable_non_proxied_udp".into(),
         format!("--user-data-dir={}", profile.display()),
         "--new-window".into(),
         url.into(),
@@ -174,7 +209,7 @@ fn arrived(before: &[(String, String)], now: &[(String, String)]) -> Option<Stri
 }
 
 /// Wait, off the caller's thread, for the page's window, bring it forward, then reap the opener.
-fn bring_forward(before: Vec<(String, String)>, mut child: std::process::Child) {
+fn bring_forward(before: Vec<(String, String)>, mut child: std::process::Child, remove_after: Option<std::path::PathBuf>) {
     let _ = std::thread::Builder::new().name("open-url".into()).spawn(move || {
         let deadline = Instant::now() + ARRIVAL;
         let mut presented = false;
@@ -191,6 +226,9 @@ fn bring_forward(before: Vec<(String, String)>, mut child: std::process::Child) 
         // xdg-open, or a browser this started, may stay until the browser exits: waiting costs a
         // thread here, never a zombie.
         let _ = child.wait();
+        if let Some(dir) = remove_after {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     });
 }
 
@@ -233,9 +271,26 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.contains("--host-resolver-rules=MAP * ~NOTFOUND"), "{joined}");
         assert!(joined.contains("--proxy-server=") && joined.contains("--proxy-bypass-list=<-loopback>"), "{joined}");
+        assert!(joined.contains("--webrtc-ip-handling-policy=disable_non_proxied_udp"), "WebRTC UDP goes past the proxy: {joined}");
         assert!(joined.contains("--user-data-dir=/home/p/.local/state/yantrik/presented-files"), "{joined}");
         assert!(!joined.contains("remote-debugging") && !joined.contains("9222"), "{joined}");
         assert_eq!(args.last().unwrap(), "file:///home/p/Sites/index.html");
+    }
+
+    /// Each press gets a profile of its own, private, with downloads inside it, removed at the end.
+    #[test]
+    fn each_press_gets_a_fresh_private_profile_with_downloads_inside_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let (a, b) = (fresh_profile().unwrap(), fresh_profile().unwrap());
+        assert_ne!(a, b, "never reused");
+        assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o700);
+        let prefs: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(a.join("Default/Preferences")).unwrap()).unwrap();
+        assert_eq!(prefs["download"]["default_directory"], a.join("downloads").display().to_string());
+        assert_eq!(prefs["download"]["prompt_for_download"], false);
+        let body = include_str!("open_url.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(body.contains("bring_forward(before, child, Some(profile))"), "removed when the browser exits");
+        assert!(!body.contains("presented-files"), "no fixed profile shared between presses");
+        let _ = (std::fs::remove_dir_all(a), std::fs::remove_dir_all(b));
     }
 
     #[test]

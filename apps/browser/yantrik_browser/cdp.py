@@ -117,6 +117,10 @@ class Browser:
         self.call("Target.setDiscoverTargets", {"discover": True})
         for info in self.call("Target.getTargets").get("targetInfos", []):
             self._saw_target(info)
+        if self.guard:
+            # A page of a Mind's must not write a file anywhere: not into ~/Downloads, which the
+            # file tools' name and place checks never see.
+            self.call("Browser.setDownloadBehavior", {"behavior": "deny"})
 
     def close(self):
         with self.cond:
