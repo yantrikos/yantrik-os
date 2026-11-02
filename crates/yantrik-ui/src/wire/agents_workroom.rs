@@ -643,9 +643,8 @@ pub fn group_calls(items: Vec<AgentItemData>, open: &HashSet<String>) -> Vec<Age
     out
 }
 
-/// One run's state in the screen's vocabulary — Working · Needs you · Finished · Stopped ·
-/// Couldn't finish · Connection lost — as `(key, label)`. A run of a chat is judged by its own
-/// turn, not by the conversation, which may already be on to the next request.
+/// One run's state in the screen's vocabulary (Working · Needs you · Finished · Stopped · Couldn't finish ·
+/// Connection lost) as `(key, label)`; a chat run is judged by its own turn, not the conversation.
 pub fn state_of(a: &Agent, run: Option<u64>) -> (&'static str, &'static str) {
     let turn = run.and_then(|n| a.turns.iter().find(|t| t.n == n));
     let live = |state: State| match state {
@@ -655,7 +654,7 @@ pub fn state_of(a: &Agent, run: Option<u64>) -> (&'static str, &'static str) {
         State::Idle => ("idle", "Idle"),
         State::Done => ("done", "Finished"),
         State::Failed => ("failed", "Couldn't finish"),
-        State::Stopped => ("stopped", "Stopped"),
+        State::Stopping => ("working", "Stopping"), State::Stopped => ("stopped", "Stopped"), State::StoppedWaiting => ("stopped", "Stopped waiting"),
     };
     match turn {
         Some(t) if t.open() => live(a.state),

@@ -143,7 +143,7 @@ fn a_command_line_put_where_a_name_goes_is_not_shown_as_a_tool() {
 /// safe by a pattern, only left out.
 #[test]
 fn what_a_mind_says_it_is_doing_is_never_on_the_wire() {
-    for state in [State::Thinking, State::RunningTool, State::WaitingForYou, State::Idle, State::Done, State::Failed, State::Stopped, State::HarnessGone] {
+    for state in [State::Thinking, State::RunningTool, State::WaitingForYou, State::Idle, State::Done, State::Failed, State::Stopping, State::Stopped, State::StoppedWaiting, State::HarnessGone] {
         for said in [
             "Shaping the last ascent.",
             "Emailing sam.patel@example.com the biopsy results",

@@ -13,6 +13,9 @@ const QUESTION_CHARS: usize = yantrik_harness::redact::QUESTION_CHARS;
 /// What the Lens's composer says Enter will do (`lens_queue`): send, queue for the busy mind, or
 /// answer its question, which is shown above the box. Set only where it changed.
 pub fn publish(ui: &App) {
+    if let Some(host) = super::harness::host() {
+        crate::agents::stopped::settle(host);
+    }
     let composer = Composer::active();
     let g = ui.global::<AgentsState>();
     let mode = composer.mode().word();

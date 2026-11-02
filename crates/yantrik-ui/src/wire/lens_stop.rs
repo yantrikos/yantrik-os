@@ -30,8 +30,8 @@ const STOPPED_LINE: &str = concat!(
     "were stopped too."
 );
 
-/// Added when a message the person had queued in the Lens behind the turn was taken back with it.
-const QUEUED_LINE: &str = " The message you had queued was taken back, not sent.";
+/// Added when a message the person had queued in the Lens behind the turn went with it.
+const QUEUED_LINE: &str = " The message you had queued was not sent.";
 
 /// A second Stop while the first waits for the mind to hear it.
 const ALREADY_LINE: &str =
@@ -88,7 +88,11 @@ pub fn seen(turn: Option<u64>) {
 /// the answer when the store shows no turn open either.
 fn stop_now(host: &Host, agent: &AgentId, observed: Option<u64>) -> Outcome {
     if let Some(turn) = observed {
+        // Asked before the drop: which of them the harness holds, for the host to say later
+        // whether it heard (`agents/stopped.rs`).
+        let handed = host.flights_up_to(agent, turn);
         if launch::stop_turn(host, agent, turn).stopped {
+            crate::agents::stopped::note(agent, handed);
             super::lens_queue::close_questions(agent, Question::STOPPED_BY_YOU);
             return Outcome::Stopped;
         }
@@ -115,7 +119,9 @@ pub fn press(ui_weak: &slint::Weak<App>, observed: Option<u64>, typed: Option<&s
         Some(host) => stop_now(host, &crate::agents::feed::main_agent(&host.active_id()), observed),
         None => Outcome::Nothing,
     };
-    let queued = ui_weak.upgrade().is_some_and(|ui| super::lens_queue::cancel(&ui));
+    let queued = ui_weak.upgrade().zip(super::harness::host()).is_some_and(|(ui, host)| {
+        super::lens_queue::take_back(&ui, &crate::agents::feed::main_agent(&host.active_id()))
+    });
     streaming::say(ui_weak, typed, "desktop", &outcome.line(queued));
     if let Some(ui) = ui_weak.upgrade() {
         super::lens_composer::publish(&ui);
@@ -269,25 +275,47 @@ mod tests {
         assert!(said.starts_with("Already stopping"), "{said}");
     }
 
-    /// Stop means stop: the message queued in the Lens behind the turn is taken back with it,
-    /// and the line says so. Read from the source, as the Lens queue lives in the window.
+    /// Stop means stop, for the mind being stopped and only that one: the message queued behind
+    /// its turn is taken back (and so never due), one queued behind another mind is kept. The line
+    /// says "not sent", not that the words came back.
     #[test]
-    fn stop_takes_back_the_message_queued_in_the_lens_and_says_so() {
-        let src = include_str!("lens_stop.rs").replace("
-", "
-");
-        let press = src.split_once("pub fn press(").expect("press").1;
-        let press = &press[..press.find("\n}\n").unwrap()];
-        assert!(press.contains("lens_queue::cancel("), "press takes back the queued message");
-        assert!(press.contains("outcome.line(queued)"), "and says so");
+    fn stop_takes_back_only_the_stopped_minds_queued_message_and_the_line_says_not_sent() {
+        use crate::wire::lens_queue::Queue;
+        let hermes = AgentId::new("hermes", AgentId::MAIN);
+        let mind = AgentId::new("mind", AgentId::MAIN);
+
+        let mut queue = Queue::default();
+        queue.hold("After that, tell me PINEAPPLE.", &mind, "Mind", 7, || 3);
+        assert!(queue.cancel_for(&hermes).is_none(), "queued behind another mind: kept");
+        assert_eq!(queue.due(|_| false, 7).map(|q| q.text), Some("After that, tell me PINEAPPLE.".to_string()), "still due");
+
+        queue.hold("After that, tell me PINEAPPLE.", &mind, "Mind", 7, || 3);
+        let taken = queue.cancel_for(&mind).expect("held for the mind being stopped");
+        assert_eq!(taken.text, "After that, tell me PINEAPPLE.");
+        assert_eq!(queue.due(|_| false, 7), None, "never sent when the turn ends");
+        assert!(queue.cancel_for(&mind).is_none(), "and nothing the second time");
+
         let said = Outcome::Stopped.line(true);
-        assert!(said.starts_with(STOPPED_LINE) && said.ends_with("taken back, not sent."), "{said}");
-        assert_eq!(Outcome::Nothing.line(false), NOTHING_LINE);
+        assert!(said.starts_with(STOPPED_LINE) && said.ends_with("was not sent."), "{said}");
+        assert!(!said.contains("taken back"), "does not read as returned: {said}");
+        assert_eq!(Outcome::Stopped.line(false), STOPPED_LINE, "no queued message: the line is unchanged");
     }
 
-    /// The agent reads `stopped`, not `failed`, after a Stop; the next turn works as for any agent.
+    /// A message typed after the press: while the turn the Stop dropped still reads working it is
+    /// queued and sent when it closes; once the store has closed it, it is an ordinary message.
+    /// Either way it is not lost, and not taken for a second Stop.
     #[test]
-    fn the_agent_reads_stopped_after_a_stop() {
+    fn a_message_typed_after_the_press_is_queued_or_sent_never_lost() {
+        use crate::wire::lens_queue::{Composer, Enter};
+        let agent = AgentId::new("hermes", AgentId::MAIN);
+        let base = Composer { agent: Some(agent), stopping: true, ..Composer::default() };
+        assert_eq!(Composer { working: true, ..base.clone() }.enter("and Austin?"), Enter::Queue);
+        assert_eq!(base.enter("and Austin?"), Enter::Send);
+    }
+
+    /// The agent reads `stopping` after a Stop, never `failed`; the next turn works as for any agent.
+    #[test]
+    fn the_agent_reads_stopping_after_a_stop_until_the_harness_is_heard() {
         use crate::agents::State;
         let agent = AgentId::new("stop-state", AgentId::MAIN);
         store().open_turn(&agent, "a long task");
@@ -296,10 +324,10 @@ mod tests {
             let a = s.agent(&agent).unwrap();
             (a.state, a.turns.last().and_then(|t| t.ok))
         });
-        assert_eq!((state, state.key()), (State::Stopped, "stopped"));
+        assert_eq!((state, state.key()), (State::Stopping, "stopping"), "not at rest until the harness is heard");
         assert_eq!(ok, Some(false), "the turn did not finish");
         store().open_turn(&agent, "again");
-        assert_eq!(store().read(|s| s.agent(&agent).unwrap().state != State::Stopped), true);
+        assert_ne!(store().read(|s| s.agent(&agent).unwrap().state), State::Stopping);
     }
 
     /// The Note: a Stop of one turn keeps the agent, so it keeps its reach too. Releasing it left

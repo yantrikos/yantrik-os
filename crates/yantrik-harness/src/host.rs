@@ -62,7 +62,7 @@ use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
 mod erase;
 mod notice;
-mod stop;
+pub mod stop;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.

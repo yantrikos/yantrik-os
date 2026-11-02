@@ -37,6 +37,8 @@ pub mod launch;
 pub mod model;
 pub mod progress;
 pub mod reaches;
+pub mod state;
+pub mod stopped;
 pub mod store;
 
 use std::path::PathBuf;

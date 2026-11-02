@@ -12,6 +12,18 @@ use super::{Attached, Host, RunState, Waiting, INTERRUPTED_TO_TELL, STOPPED};
 use crate::Chunk;
 use crate::event::AgentId;
 
+/// Whether the harness has heard that a turn was dropped ([`Host::stop_heard`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Heard {
+    /// It called on the turn and was told, or it closed the turn: it knows.
+    Yes,
+    /// Not yet, and the grace for it has not passed.
+    Waiting,
+    /// The grace passed (or the harness is gone) without a call: the desktop does not know whether
+    /// it stopped.
+    Unknown,
+}
+
 impl Host {
     /// Interrupt what `agent` is doing, without ending it (#234): the turn in flight in its
     /// conversation is cancelled (the harness hears on its next poll, the listener is settled, the
@@ -48,6 +60,51 @@ impl Host {
         let flying = harness.in_flight.iter().filter(|(_, f)| f.conversation == conversation && f.tx.is_some()).map(|(id, _)| *id);
         let waiting = harness.queued.iter().filter(|w| w.assignment.conversation == conversation).map(|w| w.assignment.turn_id);
         flying.chain(waiting).max()
+    }
+
+    /// The turns of `agent` the harness holds, in flight and waited on, up to `upto`: what a
+    /// [`Host::stop_turn`] with that bound will hand a `dropped` to. Ask before stopping.
+    pub fn flights_up_to(&self, agent: &AgentId, upto: u64) -> Vec<u64> {
+        let mut state = self.lock();
+        self.reap(&mut state);
+        let Some(harness) = state.attached.get(agent.harness()) else { return Vec::new() };
+        let mut turns: Vec<u64> = harness
+            .in_flight
+            .iter()
+            .filter(|(id, f)| f.conversation == agent.conversation() && f.tx.is_some() && **id <= upto)
+            .map(|(id, _)| *id)
+            .collect();
+        turns.sort_unstable();
+        turns
+    }
+
+    /// Whether the harness has heard that `turns` of `agent` were dropped: it called on each
+    /// (and was answered `dropped`) or closed it. A harness that streams does so within a
+    /// heartbeat; one that does not may never, and after [`STOP_GRACE`] the desktop stops waiting
+    /// for it without knowing either way. No turns (what was stopped never reached the harness):
+    /// there is nothing to hear.
+    pub fn stop_heard(&self, agent: &AgentId, turns: &[u64]) -> Heard {
+        let mut state = self.lock();
+        self.reap(&mut state);
+        let Some(harness) = state.attached.get(agent.harness()) else {
+            return if turns.is_empty() { Heard::Yes } else { Heard::Unknown };
+        };
+        let mut all = Heard::Yes;
+        for turn in turns {
+            let one = match harness.in_flight.get(turn) {
+                Some(f) if f.drop_logged => Heard::Yes,
+                Some(f) if f.holds_conversation() => Heard::Waiting,
+                Some(_) => Heard::Unknown,
+                None if harness.finished.contains(turn) => Heard::Yes,
+                None => Heard::Unknown,
+            };
+            all = match (all, one) {
+                (Heard::Waiting, _) | (_, Heard::Waiting) => Heard::Waiting,
+                (Heard::Unknown, _) | (_, Heard::Unknown) => Heard::Unknown,
+                _ => Heard::Yes,
+            };
+        }
+        all
     }
 
     /// Whether a turn of `agent` was dropped but its harness has not closed it yet, so the
@@ -219,5 +276,27 @@ mod tests {
         assert_eq!(host.live_turn(&agent), Some(seen + 1), "the turn after the one seen is untouched");
         let told = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
         assert_eq!(told["cancelled"], json!([first]), "the one in flight is cancelled");
+    }
+
+    /// The host says whether the harness heard a Stop: not yet, then yes once it calls on the
+    /// dropped turn (the heartbeat answered `dropped`); a harness that never calls is `Unknown`
+    /// after the grace, and a Stop of what it never collected has nothing to hear.
+    #[test]
+    fn the_host_says_when_the_harness_heard_a_stop() {
+        let (host, session, agent) = attached();
+        let _answer = host.send_to(&agent, Turn::new("tidy the photos")).unwrap();
+        let turn_id = host.handle(protocol::POLL, &json!({ "session": session })).unwrap()["turn_id"].as_u64().unwrap();
+        let handed = host.flights_up_to(&agent, turn_id);
+        assert_eq!(handed, vec![turn_id]);
+        assert_eq!(host.flights_up_to(&agent, turn_id - 1), Vec::<u64>::new(), "the bound is respected");
+
+        assert!(host.stop_turn(&agent, turn_id));
+        assert_eq!(host.stop_heard(&agent, &handed), Heard::Waiting, "dropped, and the harness has not called");
+        assert_eq!(beat(&host, &session, turn_id), json!({ "dropped": true }));
+        assert_eq!(host.stop_heard(&agent, &handed), Heard::Yes, "it called and was told");
+        assert_eq!(host.stop_heard(&agent, &[]), Heard::Yes, "nothing handed to the harness: nothing to hear");
+        host.handle(protocol::COMPLETE, &json!({ "session": session, "turn_id": turn_id })).unwrap();
+        assert_eq!(host.stop_heard(&agent, &handed), Heard::Yes, "closed: heard");
+        assert_eq!(host.stop_heard(&agent, &[turn_id + 50]), Heard::Unknown, "a turn the host never saw closed");
     }
 }

@@ -226,6 +226,16 @@ impl Queue {
         self.held.take()
     }
 
+    /// Take back the message held for `agent` and no other: a Stop of one mind leaves a message
+    /// queued behind another alone.
+    pub fn cancel_for(&mut self, agent: &AgentId) -> Option<Queued> {
+        if self.held.as_ref().is_some_and(|h| &h.agent == agent) {
+            self.held.take()
+        } else {
+            None
+        }
+    }
+
     /// The message to send now that its mind is no longer `working`, taken out so it is sent once.
     /// One whose conversation was emptied since (New chat) is let go, unsent.
     pub fn due(&mut self, working: impl Fn(&AgentId) -> bool, transcript: u64) -> Option<Queued> {
@@ -295,10 +305,21 @@ pub fn hold(ui: &App, text: &str, composer: &Composer) {
     publish(ui, replaced);
 }
 
-/// The × on the queued bubble, and the Stop: it is taken back and never sent. Whether there was
-/// one to take back.
-pub fn cancel(ui: &App) -> bool {
-    let Some(held) = QUEUE.with(|q| q.borrow_mut().cancel()) else { return false };
+/// The × on the queued bubble: it is taken back and never sent.
+pub fn cancel(ui: &App) {
+    let held = QUEUE.with(|q| q.borrow_mut().cancel());
+    withdraw(ui, held);
+}
+
+/// The Stop of `agent`: the message queued for it is taken back and never sent. Whether there was
+/// one. The words are not put back in the composer; the bubble is withdrawn.
+pub fn take_back(ui: &App, agent: &AgentId) -> bool {
+    let held = QUEUE.with(|q| q.borrow_mut().cancel_for(agent));
+    withdraw(ui, held)
+}
+
+fn withdraw(ui: &App, held: Option<Queued>) -> bool {
+    let Some(held) = held else { return false };
     if held.transcript == crate::streaming::transcript() {
         with_model(ui, |model| {
             if held.row + 1 == model.row_count() {

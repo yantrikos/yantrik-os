@@ -39,67 +39,7 @@ pub const TEXT_HEAD: usize = 32 * 1024;
 pub const TERMINAL_ROWS: u16 = 24;
 pub const TERMINAL_COLS: u16 = 120;
 
-/// What an agent is doing, as the list and the tabs read it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum State {
-    /// A turn is open and the mind is producing text or thinking.
-    Thinking,
-    /// A turn is open and at least one call is running.
-    RunningTool,
-    /// The agent cannot go on until the person answers something: an approval, a password.
-    WaitingForYou,
-    /// Known, and nothing is running: not started yet, or picked up again after a restart.
-    Idle,
-    /// Its last turn finished.
-    Done,
-    /// Its last turn failed.
-    Failed,
-    /// Its last turn was stopped by the person (the Lens's Stop). Not a failure: the agent stays,
-    /// and takes the next turn.
-    Stopped,
-    /// The harness that ran it stopped polling (design: "When a harness dies").
-    HarnessGone,
-}
-
-impl State {
-    pub fn key(self) -> &'static str {
-        match self {
-            State::Thinking => "thinking",
-            State::RunningTool => "running_tool",
-            State::WaitingForYou => "waiting_for_you",
-            State::Idle => "idle",
-            State::Done => "done",
-            State::Failed => "failed",
-            State::Stopped => "stopped",
-            State::HarnessGone => "harness_gone",
-        }
-    }
-
-    /// How the list says it.
-    pub fn label(self) -> &'static str {
-        match self {
-            State::Thinking => "thinking",
-            State::RunningTool => "running a tool",
-            State::WaitingForYou => "waiting for you",
-            State::Idle => "idle",
-            State::Done => "done",
-            State::Failed => "failed",
-            State::Stopped => "stopped",
-            State::HarnessGone => "harness gone",
-        }
-    }
-
-    /// Doing something right now — the states a Close has to ask about.
-    pub fn working(self) -> bool {
-        matches!(self, State::Thinking | State::RunningTool | State::WaitingForYou)
-    }
-
-    /// Still able to move on its own or on the next prompt: the Active tab.
-    pub fn live(self) -> bool {
-        self.working() || matches!(self, State::Idle | State::Stopped)
-    }
-}
+pub use super::state::State;
 
 /// The four views over the one list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
