@@ -6,7 +6,10 @@
 //! ends a running turn on the person's word ends in [`Host::drop_turn`]: the Lens's Stop, a word
 //! to a stuck task, and [`Host::stop_agent`], which the Mind desk's stop runs.
 
-use super::{Attached, Host, RunState, INTERRUPTED_TO_TELL, STOPPED};
+use std::collections::VecDeque;
+
+use super::{Attached, Host, RunState, Waiting, INTERRUPTED_TO_TELL, STOPPED};
+use crate::Chunk;
 use crate::event::AgentId;
 
 impl Host {
@@ -19,26 +22,32 @@ impl Host {
         self.drop_turn(agent, INTERRUPTED_TO_TELL, None)
     }
 
-    /// Stop the turn in flight for `agent` and nothing else (#1058): the person pressed Stop in the
-    /// Lens. Like [`Host::interrupt`] the agent, its conversation and its token stay; unlike it,
-    /// the reader is told the turn was [`STOPPED`]. The harness learns on its next call on the
-    /// turn, which for a streaming turn is its next heartbeat: that call is answered
-    /// `{"dropped": true}`. `false` when it had nothing in flight.
+    /// Stop the turns of `agent` the person could see and nothing else (#1058): the person pressed
+    /// Stop in the Lens. Like [`Host::interrupt`] the agent, its conversation and its token stay;
+    /// unlike it, the reader is told the turn was [`STOPPED`]. The harness learns on its next call
+    /// on a turn it has taken, which for a streaming turn is its next heartbeat: that call is
+    /// answered `{"dropped": true}`. A turn the harness has not collected yet is failed and taken
+    /// off the queue, so the harness's next poll never hands it over.
     ///
-    /// `turn` is the turn the person saw running ([`Host::live_turn`]): only that one is dropped,
-    /// so a Stop pressed over a turn that has just ended cannot land on the queued turn that
-    /// started in its place. `false` then too.
-    pub fn stop_turn(&self, agent: &AgentId, turn: u64) -> bool {
-        self.drop_turn(agent, STOPPED, Some(turn))
+    /// `upto` is the newest turn the person saw ([`Host::live_turn`]). Every turn of the
+    /// conversation up to it is dropped, whether in flight or still queued: a conversation can have
+    /// two (a word sent to a working agent), and the person cannot tell which one Stop is for.
+    /// A turn newer than `upto` is left alone, so a Stop pressed over a turn that has just ended
+    /// cannot land on the one that started in its place. `false` when nothing was dropped.
+    pub fn stop_turn(&self, agent: &AgentId, upto: u64) -> bool {
+        self.drop_turn(agent, STOPPED, Some(upto))
     }
 
-    /// The id of the turn `agent` has in flight and is still waiting on, if any: what a Stop
-    /// pressed now is for ([`Host::stop_turn`]).
+    /// The id of the newest turn of `agent` that is still waited on, in flight or queued for the
+    /// harness to collect: what a Stop pressed now is for ([`Host::stop_turn`]).
     pub fn live_turn(&self, agent: &AgentId) -> Option<u64> {
         let mut state = self.lock();
         self.reap(&mut state);
         let harness = state.attached.get(agent.harness())?;
-        harness.in_flight.iter().find(|(_, f)| f.conversation == agent.conversation() && f.tx.is_some()).map(|(id, _)| *id)
+        let conversation = agent.conversation();
+        let flying = harness.in_flight.iter().filter(|(_, f)| f.conversation == conversation && f.tx.is_some()).map(|(id, _)| *id);
+        let waiting = harness.queued.iter().filter(|w| w.assignment.conversation == conversation).map(|w| w.assignment.turn_id);
+        flying.chain(waiting).max()
     }
 
     /// Whether a turn of `agent` was dropped but its harness has not closed it yet, so the
@@ -55,24 +64,36 @@ impl Host {
     }
 
     /// The one way a running turn is dropped: settle it for the reader with `failure`, and queue
-    /// the harness's cancel.
-    fn drop_turn(&self, agent: &AgentId, failure: &str, only: Option<u64>) -> bool {
+    /// the harness's cancel. With `upto`, the turns not yet collected are failed too.
+    fn drop_turn(&self, agent: &AgentId, failure: &str, upto: Option<u64>) -> bool {
         let mut state = self.lock();
         self.reap(&mut state);
         let Some(harness) = state.attached.get_mut(agent.harness()) else { return false };
-        let cancelled = Self::drop_flights(harness, agent.conversation(), failure, only);
+        let conversation = agent.conversation();
+        let mut dropped = false;
+        if let Some(upto) = upto {
+            let (theirs, others): (VecDeque<Waiting>, VecDeque<Waiting>) = std::mem::take(&mut harness.queued)
+                .into_iter()
+                .partition(|w| w.assignment.conversation == conversation && w.assignment.turn_id <= upto);
+            harness.queued = others;
+            for waiting in theirs {
+                let _ = waiting.tx.send(Chunk::Failed(failure.to_string()));
+                dropped = true;
+            }
+        }
+        let cancelled = Self::drop_flights(harness, conversation, failure, upto);
         drop(state);
         self.end_runs(&cancelled, RunState::Cancelled);
-        !cancelled.is_empty()
+        dropped || !cancelled.is_empty()
     }
 
     /// Abandon every turn in flight in `conversation` with `failure` and tell the harness to
-    /// cancel them (only turn `only`, when given); returns their ids. Also what
+    /// cancel them (only those up to turn `upto`, when given); returns their ids. Also what
     /// [`Host::stop_agent`] does to the turns it stops.
-    pub(super) fn drop_flights(harness: &mut Attached, conversation: &str, failure: &str, only: Option<u64>) -> Vec<u64> {
+    pub(super) fn drop_flights(harness: &mut Attached, conversation: &str, failure: &str, upto: Option<u64>) -> Vec<u64> {
         let mut cancelled = Vec::new();
         for (turn_id, flight) in harness.in_flight.iter_mut() {
-            if flight.conversation == conversation && flight.tx.is_some() && only.map_or(true, |id| id == *turn_id) {
+            if flight.conversation == conversation && flight.tx.is_some() && upto.map_or(true, |id| *turn_id <= id) {
                 flight.abandon(Some(failure.to_string()));
                 harness.cancelled.push(*turn_id);
                 cancelled.push(*turn_id);
@@ -160,8 +181,43 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(host.live_turn(&agent), Some(second));
 
-        assert!(!host.stop_turn(&agent, first), "the turn the person saw is gone");
+        assert!(!host.stop_turn(&agent, first), "the turn the person saw is gone; the newer one is not theirs");
         assert_eq!(host.live_turn(&agent), Some(second), "the new turn runs on");
         assert!(host.stop_turn(&agent, second));
+    }
+
+    /// A turn the harness has not collected yet is stopped too: failed for the reader and taken
+    /// off the queue, so the next poll does not hand it over (the "delete the old backups" case).
+    #[test]
+    fn a_stop_before_the_harness_polls_fails_the_queued_turn_and_it_is_never_handed_over() {
+        let (host, session, agent) = attached();
+        let answer = host.send_to(&agent, Turn::new("delete the old backups")).unwrap();
+        let queued = host.live_turn(&agent).expect("a queued turn is a turn the person can see");
+
+        assert!(host.stop_turn(&agent, queued));
+        assert_eq!(answer.iter().last(), Some(Chunk::Failed(STOPPED.into())), "the reader is told it stopped");
+        assert_eq!(host.live_turn(&agent), None);
+        let polled = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
+        assert!(polled.get("turn_id").map_or(true, |v| v.is_null()), "nothing is handed to the harness: {polled}");
+        assert!(!host.stop_turn(&agent, queued), "a second Stop has nothing left");
+    }
+
+    /// Two turns of one conversation (a word to a working agent): Stop drops both the person
+    /// could see, newest id first or not, and leaves a later one.
+    #[test]
+    fn a_stop_drops_every_turn_up_to_the_newest_seen_and_leaves_a_later_one() {
+        let (host, session, agent) = attached();
+        let _one = host.send_to(&agent, Turn::new("one")).unwrap();
+        let first = host.handle(protocol::POLL, &json!({ "session": session })).unwrap()["turn_id"].as_u64().unwrap();
+        let two = host.send_to(&agent, Turn::new("two")).unwrap();
+        let seen = host.live_turn(&agent).unwrap();
+        assert!(seen > first, "the queued turn is the newest");
+        let _three = host.send_to(&agent, Turn::new("three")).unwrap();
+
+        assert!(host.stop_turn(&agent, seen));
+        assert_eq!(two.iter().last(), Some(Chunk::Failed(STOPPED.into())));
+        assert_eq!(host.live_turn(&agent), Some(seen + 1), "the turn after the one seen is untouched");
+        let told = host.handle(protocol::POLL, &json!({ "session": session })).unwrap();
+        assert_eq!(told["cancelled"], json!([first]), "the one in flight is cancelled");
     }
 }

@@ -308,9 +308,9 @@ fn withdraw(agent: &AgentId) -> usize {
 
 /// The Lens's Stop (#1058): the running turn is dropped, so the harness's next heartbeat is
 /// answered "dropped", and the commands it started are killed. The agent and its conversation
-/// stay, unlike [`stop_on`]: the person stopped a turn, not the mind. `turn` is the one the person
-/// saw running; if it has ended since, nothing is stopped (`stopped` is false) and the turn that
-/// replaced it is left alone.
+/// stay, unlike [`stop_on`]: the person stopped a turn, not the mind. `turn` is the newest one the
+/// person saw; every turn up to it is stopped, in flight or still queued for the harness, and a
+/// newer one is left alone (`stopped` is false when nothing was).
 pub fn stop_turn(host: &Host, agent: &AgentId, turn: u64) -> Stopped {
     // The turn is dropped first, and only if it is still the one the person saw is anything else
     // done: the commands and cards belong to whatever runs now.
