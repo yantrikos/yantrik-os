@@ -61,9 +61,12 @@ thread_local! {
 ///
 /// Critical stays until it is dismissed. A message that is worth interrupting Do Not Disturb for
 /// is worth being there when somebody comes back to the desk.
-fn lifetime(urgency: i32) -> Option<Duration> {
+fn lifetime(urgency: i32, id: &str) -> Option<Duration> {
     if urgency >= 2 {
         None
+    } else if id.starts_with(crate::control_present::TOAST) {
+        // "Show me": the person may be away from the desk when the page is done.
+        Some(Duration::from_secs(120))
     } else {
         Some(DEFAULT_LIFETIME)
     }
@@ -80,7 +83,7 @@ pub fn push(ui: &App, data: ToastData, urgency: i32) {
             0,
             Live {
                 data,
-                expires_at: lifetime(urgency).map(|d| Instant::now() + d),
+                expires_at: lifetime(urgency, &id).map(|d| Instant::now() + d),
             },
         );
         // A person who walks away should not come back to a thousand held toasts. Anything past

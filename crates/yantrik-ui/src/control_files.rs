@@ -439,6 +439,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
     );
     // A move by explicit paths, for a Mind (and the person): `control_files_move`.
     let surface = surface.action(crate::control_files_move::action(), crate::control_files_move::run);
+    let present = ui.as_weak();
+    let surface = surface.action(crate::control_present::action(), move |args| crate::control_present::run(&present, args));
     macro_rules! action {
         ($surface:ident,$name:literal,$description:literal,$callback:ident,$deferred:expr,$needs_ready:expr) => {
             let weak = ui.as_weak();

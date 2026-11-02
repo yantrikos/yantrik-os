@@ -592,7 +592,9 @@ TOOLS = [
         "name": "web_go",
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
         "description": "Open a URL in the browser and wait for it to load; answers with what is "
-                       "on the new page. new_tab opens it beside the current one.",
+                       "on the new page. new_tab opens it beside the current one. A file:///home/... "
+                       "URL opens a page of your own from the person's home, to check what you "
+                       "built (reading it counts as reading private state).",
         "inputSchema": {"type": "object", "properties": {
             "url": {"type": "string"},
             "new_tab": {"type": "boolean"}}, "required": ["url"]},
@@ -1653,6 +1655,12 @@ def sync_scope():
         return
     result, _ = shell_call("taint_scope", {}, timeout=SCOPE_CALL_TIMEOUT)
     adopt_scope(result)
+
+
+def is_local_page(url):
+    """Is this address a file on this machine? Opening one reads it: whatever is in it is on this
+    machine, so the conversation has seen private state (#1068)."""
+    return isinstance(url, str) and url.strip().lower().startswith("file:")
 
 
 def saw_private(what):
@@ -3031,6 +3039,11 @@ def run_tool(tool, args, present=None):
     if tool["name"] in PRIVATE_READS and p.returncode == 0:
         # Recorded after the call, not before: a read that failed saw nothing.
         saw_private(tool["name"])
+    outbound_name, outbound_args = outbound_of(tool, args)
+    if outbound_name == "web_go" and p.returncode == 0 and is_local_page(outbound_args.get("url")):
+        # Recorded after the call, as every read is: a page that was refused was not read. A local
+        # page is private the way os_screen is, so the taint rule closes new addresses after it.
+        saw_private("web_go.file")
     if tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) in PRIVATE_ACT_SURFACES:
         saw_private("%s.%s" % (surface_name(app), args.get("action")))
     if (tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) == "shell"

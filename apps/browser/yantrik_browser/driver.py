@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.parse
 
-from . import cdp, commit, hands, judgement
+from . import cdp, commit, hands, judgement, local_page
 
 NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
 ACT_LIMIT = 4.0           # seconds a click or a key is given
@@ -103,7 +103,29 @@ class Driver:
 
     # ── plumbing ──
 
+    def _allow_file(self, url):
+        try:
+            return local_page.check(url)
+        except local_page.LocalRefused as e:
+            raise Refused(str(e)) from None
+
     def _tab(self, tab=None):
+        t = self._tab_unchecked(tab)
+        if local_page.is_file_url(getattr(t, "url", "")):
+            # The page is a file: the Mind's own, or one a link on it led to. Held to the roots
+            # wherever it is now; one outside them is left and nothing of it is read.
+            try:
+                local_page.check(t.url)
+            except local_page.LocalRefused as e:
+                try:
+                    self._call("Page.navigate", {"url": "about:blank"}, t)
+                except Refused:
+                    pass
+                raise Refused("this tab had gone to a file a Mind may not read, and was taken off "
+                              "it: %s" % e) from None
+        return t
+
+    def _tab_unchecked(self, tab=None):
         try:
             return self.browser.tab(tab)
         except cdp.BrowserClosed:
@@ -310,11 +332,15 @@ class Driver:
         url = str(url or "").strip()
         if not url:
             raise Refused("go needs a url")
-        if "://" not in url and not url.startswith(("about:", "chrome:")):
+        if "://" not in url and not url.startswith(("about:", "chrome:", "file:")):
             url = "https://" + url
         scheme = urllib.parse.urlsplit(url).scheme.lower()
-        if scheme not in ("http", "https", "about"):
-            raise Refused("go opens web pages (http, https); `%s:` is not one" % scheme)
+        if scheme == "file":
+            # A Mind's own page, from the folders a Mind may read (#1068).
+            self._allow_file(url)
+        elif scheme not in ("http", "https", "about"):
+            raise Refused("go opens web pages (http, https) and your own files (file:///home/...); "
+                          "`%s:` is not one" % scheme)
         with self.held():
             if new_tab:
                 self._tab(None)

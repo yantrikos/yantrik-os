@@ -316,6 +316,13 @@ fn wire_toasts(ui: &App) {
             }
             return;
         }
+        // "<Mind> made index.html - Open": the shell's own, never stored (control_present).
+        if id.starts_with(crate::control_present::TOAST) {
+            if let Some(ui) = weak.upgrade() {
+                crate::control_present::press(&ui, &id, &action_id);
+            }
+            return;
+        }
         // "<Harness> now uses your model · Undo": the shell's own, never stored.
         if let Some(harness) = id.strip_prefix(crate::wire::harness_provider::WIRED_TOAST) {
             if action_id == "undo" {

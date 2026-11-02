@@ -1618,6 +1618,24 @@ with tempfile.TemporaryDirectory() as d:
     check("the bridge folds names the way yos does",
           [module.surface_name(n) for n in ("App Shell", "container_manager", "app-notes", " Weather ")]
           == ["shell", "container-manager", "notes", "weather"])
+    # 15d''. Reading a page of the Mind's own from disk is a private read (#1068): what is in a
+    # local file is on this machine, so the next thing typed into a page is refused. A web page
+    # taints nothing by being opened.
+    module, state = case(tmp, "taint-file-page", mode="auto", machine_ceiling="dangerous",
+                         ceiling=None)
+    module.run_tool(module.BY_NAME["web_go"], {"url": "https://example.com/"})
+    text, _ = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "hello"})
+    check("opening a web page does not taint the session", not text.startswith("REFUSED"), text)
+    module, state = case(tmp, "taint-file-page2", mode="auto", machine_ceiling="dangerous",
+                         ceiling=None)
+    text, is_error = module.run_tool(module.BY_NAME["web_go"], {"url": "file:///home/p/Sites/index.html"})
+    check("web_go takes a file: address", not text.startswith("REFUSED"), text)
+    check("and reading it is recorded as a private read", module._SAW_PRIVATE == ["web_go.file"],
+          module._SAW_PRIVATE)
+    text, _ = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "what I read"})
+    check("after it, typing into a page is refused, naming the read",
+          text.startswith("REFUSED") and "web_go.file" in text, text)
+
     # 15d'. A calendar read is the person's data, whether it is the Calendar window or, since a
     # mind reaches calendar-service at its door (16 Oct 2026, VM 541, #411), the service: an
     # os_act on it taints the session the way os_describe does, and a refused one does not.

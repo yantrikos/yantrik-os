@@ -70,10 +70,12 @@ def _refusal(asked, answer):
                                   "not a path it may use"))
 
 
-def may_read_file(asked, stat=None):
+def may_read_file(asked, stat=None, anyone=False):
     """Refuse (`Refusal`) an agent's read of anything but a file in the person's home, outside its
-    protected places. The person is not asked. `stat` stands in for the shell in a test."""
-    if not agent_is_calling():
+    protected places. The person is not asked, unless `anyone`: for a caller that is a mind's by
+    construction (the companion's own browser), where the call carries no token to tell it by.
+    `stat` stands in for the shell in a test."""
+    if not anyone and not agent_is_calling():
         return
     asked = asked.strip() if isinstance(asked, str) else ""
     answer = (stat or shell_stat)(asked)

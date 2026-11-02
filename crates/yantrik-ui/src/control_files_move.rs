@@ -48,7 +48,7 @@ pub(crate) struct Plan {
     pub dst: PathBuf,
 }
 
-fn no_dots(label: &str) -> Result<(), String> {
+pub(crate) fn no_dots(label: &str) -> Result<(), String> {
     if Path::new(label).components().any(|c| c == Component::ParentDir) {
         return Err(format!("`{label}` has `..` in it; give the path without it"));
     }
