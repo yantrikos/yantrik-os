@@ -291,14 +291,30 @@ fn stop_one(host: &Host, agent: &AgentId) -> Stopped {
 
 /// Everything a stop does, but the note.
 fn halt(host: &Host, agent: &AgentId) -> Stopped {
+    halt_with(host, agent, |host| host.stop_agent(agent))
+}
+
+/// A stop with the host's part given: `drop` ends the turn (and, for [`stop_on`], the agent).
+/// The rest is the same for every stop: the agent's commands are killed, its reach released and
+/// the cards it was waiting on taken back.
+fn halt_with(host: &Host, agent: &AgentId, drop: impl FnOnce(&Host) -> bool) -> Stopped {
     let killed = crate::control_agent_terminal::jobs().kill_agent(agent);
-    let stopped = host.stop_agent(agent);
+    let stopped = drop(host);
     // Stopped, it acts no more; its token names nothing now either.
     super::reaches::release(agent);
     // A card for work that is no longer happening is refused, never granted. The approval store's
     // own tick redraws the Lens, and the pane with it.
     let approvals = crate::approvals::withdraw_for_agent(&agent.0).len();
     Stopped { stopped, commands: killed.len(), approvals, children: Vec::new() }
+}
+
+/// The Lens's Stop (#1058): the running turn is dropped, so the harness's next heartbeat is
+/// answered "dropped", and the commands it started are killed. The agent and its conversation
+/// stay, unlike [`stop_on`]: the person stopped a turn, not the mind.
+pub fn stop_turn(host: &Host, agent: &AgentId) -> Stopped {
+    let stopped = halt_with(host, agent, |host| host.stop_turn(agent));
+    super::store().note(agent, "Stop asked from the Lens.");
+    stopped
 }
 
 /// Whether an agent can still be spoken to: its harness attached, and — for a harness with

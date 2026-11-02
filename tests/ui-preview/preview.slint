@@ -369,6 +369,8 @@ export component LensAnswerProbe inherits Window {
     default-font-family: Theme.font-ui;
     background: Theme.bg-deep;
     in property <[MessageData]> messages;
+    // The Stop control (#1058): "" none, "running", "stopping".
+    in property <string> turn: "";
     IntentLens {
         width: 100%;
         height: 100%;
@@ -376,6 +378,7 @@ export component LensAnswerProbe inherits Window {
         chat-mode: true;
         mind-name: "pi";
         messages: root.messages;
+        turn: root.turn;
     }
 }
 

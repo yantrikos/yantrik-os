@@ -58,6 +58,8 @@ pub struct Composer {
     pub mind: String,
     /// It has a turn open.
     pub working: bool,
+    /// The person's Stop dropped its turn, and its harness has not closed it yet (#1058).
+    pub stopping: bool,
     /// The newest question its run waits on.
     pub asking: Option<Asking>,
 }
@@ -74,6 +76,7 @@ impl Composer {
                 agent: Some(agent.clone()),
                 mind: a.meta.mind.clone(),
                 working: a.open_turn().is_some(),
+                stopping: false,
                 asking: a.waiting_questions().last().map(|q| Asking {
                     agent: a.meta.id.0.clone(),
                     request: q.request.clone(),
@@ -88,7 +91,20 @@ impl Composer {
         let Some(host) = crate::wire::harness::host() else { return Composer::default() };
         let active = host.active_id();
         let mind = host.list().into_iter().find(|e| e.id == active).map(|e| e.name).unwrap_or_else(|| active.clone());
-        Composer::of(&crate::agents::feed::main_agent(&active), &mind)
+        let agent = crate::agents::feed::main_agent(&active);
+        Composer { stopping: host.stopping(&agent), ..Composer::of(&agent, &mind) }
+    }
+
+    /// What the Stop control shows: "" when no turn is running, "running" for the button, and
+    /// "stopping" from the press until the harness closes the turn.
+    pub fn turn_word(&self) -> &'static str {
+        if self.stopping {
+            "stopping"
+        } else if self.working {
+            "running"
+        } else {
+            ""
+        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -115,6 +131,10 @@ impl Composer {
         if text.trim_start().starts_with('/') {
             return Enter::Send;
         }
+        // A bare "stop" while a turn is in flight is the Stop control, said in words (#1058).
+        if (self.working || self.stopping) && is_bare_stop(text) {
+            return Enter::Stop;
+        }
         match (self.mode(), &self.asking) {
             (Mode::Answer, Some(asking)) => Enter::Answer(asking.clone()),
             (Mode::Queue, _) => Enter::Queue,
@@ -128,6 +148,15 @@ pub enum Enter {
     Send,
     Queue,
     Answer(Asking),
+    /// The person's Stop, typed: consumed here, never sent or queued as a turn.
+    Stop,
+}
+
+/// Whether `text` is nothing but a stop: "stop", "stop.", "stop!" or "cancel", in any case. Words
+/// after it ("stop the music") make it an ordinary message.
+pub fn is_bare_stop(text: &str) -> bool {
+    let word = text.trim().trim_end_matches(['.', '!']).trim_end().to_lowercase();
+    matches!(word.as_str(), "stop" | "cancel")
 }
 
 /// Why a command closes the questions the run waits on, when it ends the run: `/stop`, or a new
@@ -305,6 +334,7 @@ mod tests {
             agent: Some(AgentId::new("hermes", AgentId::MAIN)),
             mind: "Hermes Agent".into(),
             working,
+            stopping: false,
             asking: asking.then(|| Asking {
                 agent: "hermes:main".into(),
                 request: "c1".into(),
@@ -384,5 +414,51 @@ mod tests {
         queue.hold("and Austin?", &agent, "Hermes Agent", 7, || 5);
         assert_eq!(queue.due(|_| false, 8), None, "its conversation is gone");
         assert!(queue.held().is_none());
+    }
+
+    #[test]
+    fn a_bare_stop_while_a_turn_runs_is_the_stop_control_and_is_consumed_in_every_mode() {
+        for word in ["stop", "Stop.", " STOP! ", "cancel", "Cancel.", "stop!!"] {
+            for composer in [hermes(true, false), hermes(true, true), Composer { stopping: true, ..hermes(false, false) }] {
+                assert_eq!(composer.enter(word), Enter::Stop, "{word:?} in {:?}", composer.mode());
+            }
+        }
+    }
+
+    #[test]
+    fn other_words_mid_turn_are_held_as_before() {
+        for word in ["stop the music", "please stop", "don't stop", "stopwatch", "cancel my 3pm", ""] {
+            assert_eq!(hermes(true, false).enter(word), Enter::Queue, "{word:?}");
+        }
+        assert!(matches!(hermes(true, true).enter("stop the music"), Enter::Answer(_)));
+    }
+
+    #[test]
+    fn stop_with_no_turn_in_flight_is_a_normal_message() {
+        assert_eq!(hermes(false, false).enter("stop"), Enter::Send);
+        assert_eq!(hermes(false, false).enter("cancel."), Enter::Send);
+    }
+
+    #[test]
+    fn the_stop_control_shows_running_then_stopping_and_nothing_when_idle() {
+        assert_eq!(hermes(false, false).turn_word(), "");
+        assert_eq!(hermes(true, false).turn_word(), "running");
+        assert_eq!(Composer { stopping: true, ..hermes(true, false) }.turn_word(), "stopping", "pressed, not yet closed");
+        assert_eq!(Composer { stopping: true, ..hermes(false, false) }.turn_word(), "stopping");
+    }
+
+    /// The consume rule, read from the source: the Stop arm of `submit` hands the word to the
+    /// stop and to nothing else, so it is never sent as a turn and never queued to be.
+    #[test]
+    fn a_typed_stop_is_never_delivered_as_a_turn_or_queued() {
+        let chat = include_str!("chat.rs");
+        let submit = chat.split_once("fn submit(").expect("submit").1;
+        let submit = &submit[..submit.find("
+}
+").unwrap()];
+        let arm = submit.split_once("Enter::Stop =>").expect("submit handles Enter::Stop").1;
+        let arm = arm.lines().next().unwrap();
+        assert!(arm.contains("lens_stop::press("), "{arm}");
+        assert!(!arm.contains("dispatch(") && !arm.contains("hold(") && !arm.contains("send"), "{arm}");
     }
 }

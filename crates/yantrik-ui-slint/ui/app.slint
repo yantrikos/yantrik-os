@@ -225,6 +225,9 @@ export component App inherits Window {
     callback lens-new-chat();
     // The × on a message queued while the mind works (wire/lens_queue.rs).
     callback lens-cancel-queued();
+    // The Lens's Stop: drops the running turn (wire/lens_stop.rs).
+    callback lens-stop-turn();
+    in property <string> lens-turn: "";
 
     // ── The vault, and the one way a passphrase gets into this machine ──
     //
@@ -1817,6 +1820,8 @@ export component App inherits Window {
             lens-queued-mind: AgentsState.lens-queued-mind;
             lens-queued-note: AgentsState.lens-queued-note;
             lens-cancel-queued => { root.lens-cancel-queued(); }
+            lens-turn: root.lens-turn;
+            lens-stop-turn => { root.lens-stop-turn(); }
             lens-mode-label: root.mind-mode-label;
             lens-identity: AgentsState.lens-identity;
             // The same choice the status bar chip opens; it changes nothing by itself.

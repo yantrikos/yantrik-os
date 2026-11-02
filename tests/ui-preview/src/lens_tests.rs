@@ -179,3 +179,30 @@ pub fn run_lens(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
     save(&render(w, width, height), output, width, height)?;
     Ok(())
 }
+
+/// The Lens with a turn running (#1058): the Stop control in the composer's row, then the same
+/// Lens after Stop is pressed, saying "Stopping…". `output` is the first still; the second is
+/// beside it with `-stopping` before the extension.
+pub fn run_stop(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (width, height) = (1280u32, 800u32);
+    let ui = LensAnswerProbe::new()?;
+    ui.show()?;
+    w.set_size(slint::PhysicalSize::new(width, height));
+    let question = MessageData {
+        role: "user".into(),
+        content: "Go through the invoices folder and total what I owe this month".into(),
+        is_streaming: false,
+        blocks: ModelRc::new(VecModel::from(Vec::<ContentBlock>::new())),
+        run: "".into(),
+        mind: Default::default(),
+        model: Default::default(),
+    };
+    ui.set_messages(ModelRc::new(VecModel::from(vec![question, turn(calls())])));
+    ui.set_turn("running".into());
+    render(w, width, height);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    save(&render(w, width, height), output, width, height)?;
+    ui.set_turn("stopping".into());
+    save(&render(w, width, height), &output.replace(".png", "-stopping.png"), width, height)?;
+    Ok(())
+}
