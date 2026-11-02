@@ -43,7 +43,9 @@ pub(crate) fn action() -> Action {
         if from.trim().is_empty() || to.trim().is_empty() {
             String::new()
         } else {
-            format!("Moves {} into {}", from.trim(), to.trim())
+            // The destination first, and each value quoted: the shell cuts a card's sentence at
+            // 600 characters, and what falls off must not be the part that says where it goes.
+            format!("Moves into \"{}\": \"{}\"", to.trim(), from.trim())
         }
     })
     .arg(Param::text("path").describe("The file or folder to move, e.g. ~/Desktop/trip-plan.md"))
@@ -81,7 +83,18 @@ pub(crate) fn plan(args: &Value, home: &Path, for_mind: bool) -> Result<Plan, St
     plan_checked(args, home, for_mind).map_err(mind::in_words)
 }
 
+/// The longest path the approval card can show whole beside another (it is cut at 600 characters).
+const CARD_PART: usize = 250;
+
 fn plan_checked(args: &Value, home: &Path, for_mind: bool) -> Result<Plan, String> {
+    for (key, what) in [("path", "the path"), ("to_folder", "the folder")] {
+        let long = text(args, key).chars().count();
+        if for_mind && long > CARD_PART {
+            return Err(format!(
+                "{what} is {long} characters, more than the approval card can show whole ({CARD_PART}); give a shorter path"
+            ));
+        }
+    }
     let (parent, name) = entry_in(args)?;
     crate::fileops::name(&name)?;
     let to = text(args, "to_folder");

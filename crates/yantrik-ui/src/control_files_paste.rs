@@ -28,8 +28,8 @@ pub fn paste_verdict(sources: &[PathBuf], dest_label: &str, home: &Path) -> Resu
         let Some(name) = src.file_name() else {
             return Err(format!("{shown} has no name to paste under"));
         };
-        home_paths::may_create(&dest.join(name).to_string_lossy(), home)?;
-        home_paths::may_land(src, &real_dest.join(name), home)?;
+        home_paths::may_create(&dest.join(name).to_string_lossy(), home).map_err(crate::control_files_mind::in_words)?;
+        home_paths::may_land(src, &real_dest.join(name), home).map_err(crate::control_files_mind::in_words)?;
     }
     Ok(())
 }
@@ -93,7 +93,7 @@ mod tests {
         std::fs::create_dir_all(home.join("backup/.config/autostart")).unwrap();
         std::fs::write(home.join("backup/.config/autostart/run.desktop"), "x").unwrap();
         let label = home.join("Documents");
-        refused_because(paste_verdict(&[home.join("backup")], label.to_str().unwrap(), &home), " is hidden_place");
+        refused_because(paste_verdict(&[home.join("backup")], label.to_str().unwrap(), &home), " is a hidden place, or one that programs start from");
     }
 
     #[test]
