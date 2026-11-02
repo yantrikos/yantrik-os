@@ -269,7 +269,10 @@ OS_DESCRIBE_TAIL = (", or a service os_apps lists as answering. A Yantrik app th
                     "view. An app with a large family of related actions "
                     "lists that family as signatures and grades only — enough to see that an "
                     "action exists — and says so; pass that family's prefix as `actions` to get "
-                    "what each of them does.")
+                    "what each of them does. That answer holds the action signatures and "
+                    "nothing else, no state, so it is not a read of the person's data; "
+                    "describing an app without `actions` shows its state, and for an app "
+                    "that holds the person's data it counts as a private read.")
 SURFACE_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
@@ -405,11 +408,17 @@ TOOLS = [
                        "os_act on shell with open_app opens an app, and os_describe on shell "
                        "shows windows, files and the conversation. Use the names exactly as "
                        "listed — an app is sometimes opened under one name and described "
-                       "under another, and the listing says which. A service is read the same "
+                       "under another, and the listing says which. A section lists "
+                       "every app on this machine, running or not, with what it is for (`for`), "
+                       "how it opens (`opens`) and the name to describe it by (`describe_as`): "
+                       "it holds nothing of the person's, so reading it is free. A service is read the same "
                        "way as an app: os_describe system-monitor for CPU and memory, "
                        "os_describe weather for local conditions.",
         "inputSchema": {"type": "object", "properties": {}},
-        "argv": lambda a: ["ls"],
+        # `--catalog` adds every app the machine has — `for`, `opens`, `describe_as` — from the same
+        # list as `describe shell` > `state.apps`. It holds no state and no person data, and a
+        # call to it is not a private read (#1062).
+        "argv": lambda a: ["ls", "--catalog"],
         "timeout": 15,
     },
     {
@@ -447,8 +456,11 @@ TOOLS = [
         #
         # This is the READER's form. Nothing the bridge parses for itself asks for it — see the
         # note on `action_detail`.
+        #
+        # With `actions` it is also `--no-state`: signatures alone, no summary and no state, so
+        # that the answer can be one that taints nothing (#1062; `describe_taint`).
         "argv": lambda a: ["describe", a["app"], "--fold"] + (
-            ["--actions", str(a["actions"])] if a.get("actions") else []),
+            ["--no-state", "--actions", str(a["actions"])] if a.get("actions") else []),
         "timeout": 20,
     },
     {
@@ -1513,10 +1525,59 @@ def ambiguous(pair):
 # There is still deliberately NO tool to clear the taint, and no action a mind can call starts a
 # scope: a caller that can untaint itself is not constrained. A new conversation the person
 # starts is the person's decision rather than an agent's.
+#
+# What counts as a private read is as narrow as the data, and no narrower (#1062). `os_describe` is
+# the biggest case: most turns begin by describing an app to learn its actions, and a rule that
+# tainted every describe made "look this up on the web" fail after a harmless look. So a describe
+# taints unless one of two things is true, and both fail closed:
+#
+#   1. The answer holds no state. `os_describe {app, actions: "<prefix>"}` is asked as `yos describe
+#      --no-state`, which prints the action signatures alone behind a sentinel line. The bridge
+#      checks the ANSWER, not the request: the sentinel first and every other line indented (a
+#      summary, a `revision:` line and the state object all start in column zero). An older `yos`
+#      that ignores the flag prints the state, fails the check, and taints.
+#   2. The app is on `NO_PERSON_DATA`, a short list named here, each entry checked against what the
+#      app's own describe holds. Anything not on it taints, new apps included.
+#
+# Not changed: a Mind that re-reads an app it just changed reads real state, so that read is
+# private if the app is. The shell, Calendar, Notes, Email, Files, Weather (it holds the person's
+# city), the terminals and the browser (its describe holds the page's title, host and tabs) are
+# all private and stay so.
 PRIVATE_READS = {"os_describe", "os_screen", "os_perception", "web_listen",
                  # Another agent's session: what it read, its commands' output.
                  "read_agent"}
 OUTBOUND = {"web_type", "web_go"}
+# The apps whose describe holds nothing of the person's, by the name `surface_name` folds to. Each
+# was read against the app's own describe, and the reason is the app's:
+#   mind-desk  the bars around Mind View: its describe is the Mind's state label, the tool's NAME
+#              (a name that is not a plain name is shown as "a tool"), call counts and elapsed
+#              time, the names of the apps open in Mind View, a safety line and the model's name
+#              (apps/mind-desk/src/describe.rs, words.rs). "Never what a Mind said it is doing."
+# Not on it, with the reason: browser (title, host, tabs, URLs), system-monitor (process names and
+# the filter the person typed), containers, network (addresses), arcade, studio (the pictures'
+# prompts), and every app that holds a document, a note, a mail, an event, a file or a place.
+# Add an app here only after reading its describe, never because its name sounds harmless.
+NO_PERSON_DATA = frozenset({"mind-desk"})
+# What `yos describe --no-state` prints first. Mirrors `SIGNATURES_ONLY` in `yos`, and the selftest
+# holds the two together.
+SIGNATURES_ONLY = "(action signatures only: this answer holds no state)"
+
+
+def signatures_only(raw):
+    """Is this describe answer nothing but action signatures? Read from the answer itself.
+
+    The sentinel first, then only indented lines. Split on every separator Python knows, as `yos`
+    escapes them in what it prints, so a line that would start a line of its own is one."""
+    lines = str(raw or "").strip().splitlines()
+    return bool(lines) and lines[0] == SIGNATURES_ONLY and all(
+        not line.strip() or line.startswith(" ") for line in lines[1:])
+
+
+def describe_is_private(args, raw):
+    """Did this successful os_describe read private state? True unless it can be shown it did not."""
+    if signatures_only(raw):
+        return False
+    return surface_name(args.get("app")) not in NO_PERSON_DATA
 # Reads a mind makes through os_act, because they are the shell's actions: a display's text, read
 # from its pixels (#257). Private the way os_screen is — everything on the display is in them.
 # A picture of a display holds even more than its text (design/capture-2026-10-15.md), so the two
@@ -1726,14 +1787,60 @@ COMMANDS = {("terminal", "run"), ("terminal", "send_input"),
             ("shell", "agent_run"), ("shell", "agent_input")}
 
 
-def carries_private(app, action, runs_anything=False):
-    """Why this hand-off or command must be asked about, from a tainted conversation. "" = no."""
-    if TAINT_OFF or not ((app, action) in HANDOFFS or (app, action) in COMMANDS or runs_anything):
+def is_go(app, action):
+    """Is this the browser's `go` — what `web_go` is, as an act on the browser's surface?"""
+    return surface_name(app) in BROWSER_NAMES and action == "go"
+
+
+def go_url(args):
+    """The address a `go` was asked to open, as the call spelled it. "" when it named none."""
+    url = browser_args(args).get("url")
+    return url if isinstance(url, str) else ""
+
+
+def go_is_free(url):
+    """May a tainted conversation open this address without asking? Only one it has already been
+    to, with nothing in it that carries data: the rule `taint_refusal` always had."""
+    return visited_form(url) in _VISITED and not payload_in_url(url)
+
+
+def shown_url(url):
+    """An address as the person's card spells it: exactly as given, whole. One with a space, a
+    control character or a line break in it is written as the quoted text it is, so it cannot
+    start a line of its own on the card or pass for a sentence of ours."""
+    return url if url.isprintable() and not any(c.isspace() for c in url) else json.dumps(url, ensure_ascii=False)
+
+
+def carries_private(app, action, runs_anything=False, args=None):
+    """Why this hand-off, command or address must be asked about, from a tainted conversation.
+    "" = no."""
+    going = is_go(app, action)
+    if TAINT_OFF or not ((app, action) in HANDOFFS or (app, action) in COMMANDS or runs_anything
+                         or going):
         return ""
     sync_scope()
     if not _SAW_PRIVATE:
         return ""
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
+    if going:
+        # An access decision, not a dead end (#1062). The person's own request often names the
+        # address ("open wikipedia.org/wiki/Lake_Tahoe"), and a refusal left the mind nothing to do
+        # but say so. Where it has been it goes back to unasked; anywhere new, the person is shown
+        # the address, whole, and decides. Nothing here can tell an innocent address from one that
+        # carries what was read in its host or its path, which is why it is asked and not guessed.
+        url = go_url(args or {})
+        if not url or go_is_free(url):
+            # No address named is not a question for the person: `taint_refusal` and the browser
+            # answer it.
+            return ""
+        return ("This conversation has already read private state (%s), and any address it has not "
+                "been to can carry that out of this machine in its host, its path or its query: "
+                "nothing here can tell an innocent address from one carrying a secret. Opening %s "
+                "is asked about every time, whatever the mode and whatever this conversation was "
+                "allowed before: not a fault, and not something to route around. If the person "
+                "says no, or does not answer, nothing is opened; do not look for another route "
+                "to the same address — a command, a script, a sub-agent or typing it into a page "
+                "is the same route." % (saw, shown_url(url)))
     if (app, action) in HANDOFFS:
         return ("This conversation has already read private state (%s), and %s.%s carries text to "
                 "another mind whose own session has read nothing private and so could put it "
@@ -1751,7 +1858,7 @@ def carries_private(app, action, runs_anything=False):
     return ""
 
 
-def private_card_line(app, action):
+def private_card_line(app, action, args=None):
     """What the person's card says first, when the taint is why they are asked.
 
     The card is where the person decides, so it names what this session read and why that
@@ -1761,6 +1868,14 @@ def private_card_line(app, action):
     answered, and offers no rule for it. Without that the shell would have answered `not_needed`
     to a mode that runs the action anyway, and nobody would have been asked."""
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
+    if is_go(app, action):
+        # The whole address, exactly: an address can carry what was read, and the person is
+        # deciding about that address and no other. The shell draws a value this long whole or
+        # does not ask (`approval_bounds`), never clipped.
+        return ("Opens %s. This conversation has already read private state (%s), and an address "
+                "can carry it out in its host, its path or its query, so you are asked whatever "
+                "the mode. What leaves cannot be undone. %s"
+                % (shown_url(go_url(args or {})), saw, fresh_card_line()))
     if (app, action) in HANDOFFS:
         return ("Carries what this conversation has read (%s). Once it is handed on, that cannot be "
                 "undone. %s" % (saw, fresh_card_line()))
@@ -1799,7 +1914,13 @@ def taint_refusal(name, args):
         return None
     sync_scope()
     if name == "web_go":
-        where = visited_form(args.get("url", ""))
+        raw = args.get("url", "")
+        approved, _LOCAL.go_approved = getattr(_LOCAL, "go_approved", None), None
+        if _SAW_PRIVATE and isinstance(raw, str) and approved and approved == raw:
+            # The person was shown this exact address, in full, and allowed it: `guard_act` set
+            # this for this call alone and it is spent here, so it is no leave for the next one.
+            return None
+        where = visited_form(raw)
         if not _SAW_PRIVATE:
             _VISITED.add(where)
             return None
@@ -1812,12 +1933,13 @@ def taint_refusal(name, args):
     elif not _SAW_PRIVATE:
         return None
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
-    what = "type into a page" if name == "web_type" else "open an address it has not been to (any new address can carry data out, in its host or its path)"
+    what = "type into a page" if name == "web_type" else "open an address it has not been to (any new address can carry data out, in its host or its path) without the person's allow"
     return ("this conversation has already read private state (%s), so it will not %s. "
             "Whatever is on this machine could be carried out that way, and nothing here "
-            "can tell an innocent string from a secret. A person has to do this part, or "
-            "%s. Tell the person exactly that; do not tell them a new chat will clear it "
-            "in any other way." % (saw, what, clean_scope()))
+            "can tell an innocent string from a secret. This is not a fault, and not something "
+            "to route around. A person has to do this part, or %s. Tell the person exactly "
+            "that; do not tell them a new chat will clear it in any other way."
+            % (saw, what, clean_scope()))
 
 
 
@@ -2375,6 +2497,13 @@ def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False)
         # This agent was started as a catalog role, and the act is outside its reach: the shell
         # will not put that question in front of the person. Its own words, naming the role.
         return False, re.sub(r"^yos: ", "", err.strip()), None
+    if request is None and must_ask and surface_name(app) in BROWSER_NAMES and action == "go":
+        # Not a grade above a ceiling: the person was never shown the address. Usually it is too
+        # long for a card to show whole, which the shell will not clip (`approval_bounds`).
+        return False, (
+            "the person could not be asked about opening this address, so nothing was opened: %s. "
+            "Tell them what you wanted to open and let them decide; a shorter address may be one "
+            "a card can show." % err), None
     if request is None:
         return False, (
             "%s.%s is graded %s, above this session's %s ceiling, so it needs the person at the "
@@ -2581,7 +2710,7 @@ def guard_act(args):
     # vectors do not cover. See `decide`; `CEILING` is only a cap when somebody set it.
     verdict, detail = decide(level, app, action, cannot_undo, mode, rules, machine, cap=cap,
                              runs_anything=runs_anything, standing=standing)
-    private = carries_private(app, action, runs_anything)
+    private = carries_private(app, action, runs_anything, args)
     if private and verdict == "run":
         verdict = "ask"
 
@@ -2639,9 +2768,13 @@ def guard_act(args):
 
     asked_anyway = join(asked_anyway, private)
     # The card says it too: the person is deciding whether what this session read goes on.
-    card_purpose = join(private_card_line(app, action), purpose) if private else purpose
+    card_purpose = join(private_card_line(app, action, args), purpose) if private else purpose
     allowed, message, grant = ask_the_person(
         app, action, level, card_purpose, bound, requester_name(state), must_ask=bool(private))
+    if allowed and private and is_go(app, action):
+        # Bound to this address, for this call: the grant itself is the shell's, bound to the exact
+        # arguments and spent once, and this is the bridge's own matching half (`taint_refusal`).
+        _LOCAL.go_approved = go_url(args)
     if allowed:
         return None, join(unreadable, join(asked_anyway, message)), None, grant
     return join(unreadable, join(asked_anyway, message)), None, None, None
@@ -2860,6 +2993,7 @@ def run_tool(tool, args, present=None):
     server away from itself.
     """
     _LOCAL.start_deadline = None
+    _LOCAL.go_approved = None
     if "browser_action" in tool:
         # Every web tool is an act on the browser's surface (#477): made there, through os_act.
         return run_browser_tool(tool, args)
@@ -3028,8 +3162,10 @@ def run_tool(tool, args, present=None):
         # Not for a command in the agent's own terminal: it is drawn in the agent's pane, and
         # raising a window for it — the Terminal's, or anyone's — is what that pane replaces.
         follow(app)
-    if tool["name"] in PRIVATE_READS and p.returncode == 0:
-        # Recorded after the call, not before: a read that failed saw nothing.
+    if (tool["name"] in PRIVATE_READS and p.returncode == 0
+            and not (tool["name"] == "os_describe" and not describe_is_private(args, p.stdout))):
+        # Recorded after the call, not before: a read that failed saw nothing. A describe whose
+        # answer holds no state, or of an app that holds none of the person's, is not a read of it.
         saw_private(tool["name"])
     if tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) in PRIVATE_ACT_SURFACES:
         saw_private("%s.%s" % (surface_name(app), args.get("action")))
