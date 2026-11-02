@@ -3202,8 +3202,13 @@ reconcile_mind_socket() { # <owner>
   systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
 }
 
-# The browsers' DevTools ports. The desktop's Browser listens on 127.0.0.1:9222 and the
-# companion's on 9223-9322. Loopback TCP has no owner: until this, every account on the machine —
+# The browsers' DevTools ports. The desktop's Browser, Mind View's browser and the companion's
+# default browser all start on 127.0.0.1:9222, so whichever starts first holds it; only the
+# companion's other identities use 9223-9322. This guard is by account, not by browser: it does
+# not say which browser is on 9222, and a Mind's web tools reach whatever is there through the
+# surface below. The browser surface now refuses a Mind unless the browser on the port has Mind
+# View's profile (#1085, a stopgap); the straight fix, a port and a profile of its own for each
+# browser, follows. Loopback TCP has no owner: until this, every account on the machine —
 # a system service, a container runtime, the mind account — could open those ports and drive the
 # person's logged-in browser, read its cookies and submit its forms, without meeting any gate.
 # Now only root and the person connect. Minds reach the browser the way they reach every other

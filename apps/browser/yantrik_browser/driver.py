@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.parse
 
-from . import cdp, commit, hands, judgement
+from . import cdp, commit, hands, judgement, target
 
 NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
 ACT_LIMIT = 4.0           # seconds a click or a key is given
@@ -76,8 +76,10 @@ def commitment_of(element):
 
 
 class Driver:
-    def __init__(self, browser=None, judge=None):
+    def __init__(self, browser=None, judge=None, guard=None):
         self.browser = browser or cdp.Browser()
+        # Always on (target.py); a test with a browser of its own passes target.Open().
+        self.guard = guard or target.Guard()
         # The person's decision model, asked when the words say nothing (judgement.py). `False`
         # turns it off (tests of the words alone); None is the shell's `decide`.
         self.judge = None if judge is False else (judge or judgement.Judgement())
@@ -94,6 +96,13 @@ class Driver:
                 if not driver.lock.acquire(timeout=wait):
                     raise Refused("the browser is busy with another action (a page may be slow to "
                                   "answer); try again in a few seconds")
+                try:
+                    driver.guard.admit(driver.browser)
+                except BaseException as e:
+                    driver.lock.release()
+                    if isinstance(e, target.Declined):
+                        raise PageRefused(str(e)) from None
+                    raise
                 return driver
 
             def __exit__(self, *exc):
@@ -112,6 +121,8 @@ class Driver:
                           "it: act shell open_app name=browser — then read.") from None
         except cdp.CdpError as e:
             raise Refused(str(e)) from None
+        except target.Declined as e:
+            raise PageRefused(str(e)) from None
 
     def _run(self, tab, fn, *args):
         try:
@@ -206,8 +217,12 @@ class Driver:
         """The view: whether the browser is open, its tabs, and the one actions go to. It never
         waits behind an act for long: while one runs it answers with what it last knew."""
         if not self.lock.acquire(timeout=1.0):
-            return dict(self.last_status, busy=True)
+            return dict(self.last_status, busy=True) if self.guard.is_person() else {"busy": True}
         try:
+            try:
+                self.guard.admit(self.browser)
+            except target.Declined as e:
+                return {"open": False, "refused": str(e)}
             return self._status()
         finally:
             self.lock.release()
@@ -219,6 +234,8 @@ class Driver:
             except (cdp.BrowserClosed, cdp.CdpError):
                 self.browser.close()
                 return {"open": False}
+            except target.Declined as e:
+                return {"open": False, "refused": str(e)}
             pages = self.browser.pages()
             active = self.browser.active if self.browser.active in pages else (pages[0] if pages else None)
             if active is not None and active.session:
@@ -279,7 +296,10 @@ class Driver:
             return got
 
     def tabs(self):
-        return self.status()
+        shown = self.status()
+        if shown.get("refused"):
+            raise PageRefused(shown["refused"])
+        return shown
 
     def wait(self, text=None, seconds=5.0, tab=None):
         """Wait for words, or for the page to settle. The browser is held for one look at a time,

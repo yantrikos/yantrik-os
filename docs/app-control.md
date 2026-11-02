@@ -723,8 +723,22 @@ framework opens there at all any more; see the last section.)
   `open_app`'s also carries `app`: the opened app's own summary (`state`) and its actions with the
   arguments each takes (`actions`, e.g. `new {text?}`, `save_as {path}`), so the next call can act.
 - `open_url` and `launch_browser` open the companion's own browser in Mind View, or are refused.
-  A browser on the default debugging port that is not the companion's (the person's own) is not
-  attached to.
+  The companion's own `browser_*` tools do not attach to a browser on the default debugging port
+  when some process on the machine was started with that port and a profile other than the
+  companion's. That reads command lines, not who owns the port, and it fails open when `/proc`
+  cannot be read; it is not what keeps a Mind off the person's browser (#1085).
+- The Mind View browser and the person's Browser both start with `--remote-debugging-port=9222`, so
+  whichever started first holds the port, and the browser surface (`web_*`, `act browser`) drives
+  whatever answers on 127.0.0.1:9222. That is the person's own signed-in Chromium when their
+  Browser started first. A stopgap (#1085) holds every call to the browser actually on the port:
+  the process listening there is found from the machine (socket table, then the process holding the
+  socket, its account and its `--user-data-dir`), and a Mind, or any caller not shown to be the
+  person, is refused every action, reads included and no tab list shown, unless that is the Mind
+  View profile (`yantrik/mind-view-browser/chromium`); a browser this cannot identify is refused to
+  everyone. The person's own calls are refused when the port holds Mind View's browser. The
+  refusal says `Nothing was done` and names what the person can do. The port is still shared: the
+  fix that follows gives each browser its own port and explicit profile, and starts no second
+  Chromium on an occupied port.
 - `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
   and colours only (no screen clears, no carriage returns, no titles), capped per command; the
   answer and the Agents screen keep the full output.

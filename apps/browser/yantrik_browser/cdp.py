@@ -16,6 +16,8 @@ import time
 import urllib.error
 import urllib.request
 
+from . import target
+
 DEFAULT_ADDRESS = "http://127.0.0.1:9222"
 WORLD = "yantrik-browser"
 CALL_TIMEOUT = 20.0
@@ -59,7 +61,10 @@ class Tab:
 
 
 class Browser:
-    def __init__(self, address=None):
+    def __init__(self, address=None, identify=None):
+        self.identify = identify or target.identify   # which listener answers on the port (target.py)
+        self.vet = None                        # asked about the listener before a connection is opened
+        self.bound = None                      # the listener the open connection was made to
         self.address = (address or os.environ.get("YANTRIK_BROWSER_CDP") or DEFAULT_ADDRESS).rstrip("/")
         self.ws = None
         self.lock = threading.Lock()          # one writer
@@ -83,10 +88,29 @@ class Browser:
         except (urllib.error.URLError, OSError, ValueError):
             raise BrowserClosed() from None
 
+    def who(self):
+        """The listener on the port now. `target.NoListener` when no browser is open; a browser that
+        cannot be established is `target.Declined`, so nothing goes to it."""
+        try:
+            return self.identify(self.address)
+        except target.NoListener:
+            raise
+        except target.Unidentified as e:
+            raise target.Declined(target.cannot_tell(e)) from None
+
     def connect(self):
-        """Connect if not connected. Raises BrowserClosed when no browser answers."""
+        """Connect if not connected. Raises BrowserClosed when no browser answers, and
+        `target.Declined` when the listener on the port is not one the caller may use (`vet`), or
+        is not the same one after the connection opened as before: the connection is made to the
+        listener that was judged, or not kept."""
         if self.alive:
             return
+        try:
+            before = self.who()
+        except target.NoListener:
+            raise BrowserClosed() from None
+        if self.vet is not None:
+            self.vet(before)
         try:
             from websocket import create_connection
         except ImportError:
@@ -98,10 +122,20 @@ class Browser:
         # debugging address and nothing wider.
         self.close()
         ws = create_connection(url, origin=self.address, timeout=None, suppress_origin=False)
+        try:
+            after = self.who()
+        except Exception:  # noqa: BLE001
+            ws.close()
+            raise
+        if after != before:
+            ws.close()
+            raise target.Declined(target.cannot_tell(target.Unidentified(
+                "the browser on the port changed while it was being connected to")))
         with self.cond:
             self.generation += 1
             generation = self.generation
             self.ws = ws
+            self.bound = before
             self.alive = True
             self.replies.clear()
             self.abandoned.clear()
@@ -118,6 +152,7 @@ class Browser:
     def close(self):
         with self.cond:
             self.alive = False
+            self.bound = None
             ws, self.ws = self.ws, None
             self.cond.notify_all()
         try:

@@ -25,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 sys.path[:0] = [os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk", "python")]
 
-from yantrik_browser import cdp, commit, driver as drv  # noqa: E402
+from yantrik_browser import cdp, commit, driver as drv, target  # noqa: E402
 
 
 def free_port():
@@ -108,7 +108,7 @@ class Bench:
             cls.log.close()
             shutil.rmtree(cls.tmp, ignore_errors=True)
             raise
-        cls.d = drv.Driver(browser, judge=False)
+        cls.d = drv.Driver(browser, judge=False, guard=target.Open())
 
     @classmethod
     def stop(cls):
@@ -462,7 +462,7 @@ class ModelJudges(unittest.TestCase):
             answer = {"type": "noul", "yes": 0.92} if charged else {"type": "abstain", "reason": "could not tell"}
             return {"result": {"result": {"answers": {"commit": answer},
                                           "by": {"provider": "kev", "model": "kev-latest"}}}}
-        cls.d = drv.Driver(Bench.d.browser, judge=judgement.Judgement(ask=fake))
+        cls.d = drv.Driver(Bench.d.browser, judge=judgement.Judgement(ask=fake), guard=target.Open())
 
     def ref(self, name):
         for e in self.d.read(all=True)["elements"]:
@@ -488,7 +488,7 @@ class ModelJudges(unittest.TestCase):
     def test_the_model_cannot_take_away_a_card_the_words_raise(self):
         from yantrik_browser import judgement
         no = lambda state: {"result": {"result": {"answers": {"commit": {"type": "noul", "yes": 0.0}}, "by": {}}}}
-        d = drv.Driver(Bench.d.browser, judge=judgement.Judgement(ask=no))
+        d = drv.Driver(Bench.d.browser, judge=judgement.Judgement(ask=no), guard=target.Open())
         d.go(self.site + "/pages/shop.html")
         place = next(e["ref"] for e in d.read(all=True)["elements"] if e.get("name") == "Place order")
         with self.assertRaises(drv.PageRefused):
@@ -505,7 +505,7 @@ class ModelJudges(unittest.TestCase):
 
         def down(state):
             raise ConnectionError("no shell")
-        d = drv.Driver(Bench.d.browser, judge=judgement.Judgement(ask=down))
+        d = drv.Driver(Bench.d.browser, judge=judgement.Judgement(ask=down), guard=target.Open())
         d.go(self.site + "/pages/tricky.html")
         d.click(next(e["ref"] for e in d.read(all=True)["elements"] if e.get("name") == "Next chapter"))
         self.assertIn("NEXT CHAPTER", d.text()["text"])

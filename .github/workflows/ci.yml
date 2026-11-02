@@ -453,6 +453,8 @@ jobs:
         run: |
           sudo apt-get install -y -qq python3-websocket >/dev/null
           python3 tests/browser-core/test_live.py
+          python3 -m unittest discover -s tests/browser-core -p 'test_target.py'
+          python3 tests/browser-core/test_target_live.py
 
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the

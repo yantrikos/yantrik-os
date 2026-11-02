@@ -976,10 +976,15 @@ class Surface:
             # Under Private mode as it is once the work is done, not as it was when it started.
             private = privacy.is_private()
             withheld = private and not _vouched(peer, self.app_id)
+
+            def view():
+                # Read as the caller it is for, on the thread that reads it, as the handler's own
+                # view was: a view that tells callers apart (the browser's) must not see nobody.
+                with _Scope(peer, token):
+                    return self._published(private)
             try:
                 with _HeldFaults(peer, self.app_id, withheld, own_words=True):
-                    summary, state, revision = self._turn(
-                        lambda: self._published(private), timeout)
+                    summary, state, revision = self._turn(view, timeout)
             except wire.RpcError:
                 if private:
                     summary, state, revision = self._private_of({})
