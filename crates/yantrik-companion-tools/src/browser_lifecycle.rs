@@ -101,7 +101,11 @@ fn rss_mb(pid: u32) -> u64 {
 fn mine() -> Vec<Mine> {
     procs::mind_side_family()
         .into_iter()
-        .map(|p| Mine { pid: p.pid, kind: kind_of(&p.cmdline), rss_mb: rss_mb(p.pid) })
+        .map(|p| {
+            // Only the kind of helper (`--type=renderer`), never whose it is: that was decided by the profile.
+            let line = std::fs::read(format!("/proc/{}/cmdline", p.pid)).unwrap_or_default();
+            Mine { pid: p.pid, kind: kind_of(&line), rss_mb: rss_mb(p.pid) }
+        })
         .collect()
 }
 

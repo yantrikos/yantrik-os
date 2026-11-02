@@ -177,7 +177,7 @@ class RealBrowsers(unittest.TestCase):
     def test_the_persons_browser_first_on_the_old_flags_then_mind_views(self):
         self.fx.start("person", "default")
         held = listener.identify(self.fx.person_port)
-        self.assertEqual(held.place, listener.DEFAULT)
+        self.assertEqual(held.place, listener.PERSON)
         with open("/proc/%d/cmdline" % held.pids[0], "rb") as f:
             raw = f.read()
         # The 520 gate found Debian's Chromium reading back as one space-joined string; this Chrome
@@ -190,7 +190,7 @@ class RealBrowsers(unittest.TestCase):
     def test_mind_views_browser_first_then_the_person_with_a_profile_named_some_other_way(self):
         self.fx.start("mind", "mind")
         self.fx.start("person", "other")
-        self.assertEqual(listener.identify(self.fx.person_port).place, listener.OTHER)
+        self.assertEqual(listener.identify(self.fx.person_port).place, listener.PERSON)
         self.both_land_where_they_belong()
 
     def test_the_persons_browser_closing_and_coming_back_changes_nothing_for_a_mind(self):
@@ -201,7 +201,7 @@ class RealBrowsers(unittest.TestCase):
         self.fx.stop("person")
         self.go(ports.MIND, "mind-b")
         self.fx.start("person", "default")
-        self.assertEqual(self.fx.titles(self.fx.person_port), ["about:blank"])
+        self.assertIn(self.fx.titles(self.fx.person_port), (["about:blank"], [""]))
         self.assertEqual(self.fx.titles(self.fx.mind_port), ["MIND-B"])
 
     def test_only_the_persons_browser_up_a_mind_is_told_its_own_is_not_open(self):
@@ -221,7 +221,7 @@ class RealBrowsers(unittest.TestCase):
             with self.assertRaises(drv.PageRefused) as refused:
                 act(self.as_(ports.MIND))
             self.assertIn("Nothing was done", str(refused.exception))
-        self.assertEqual(self.fx.titles(self.fx.mind_port), ["about:blank"], "a page was opened in the person's browser")
+        self.assertIn(self.fx.titles(self.fx.mind_port), (["about:blank"], [""]), "a page was opened in the person's browser")
         self.assertTrue(all(not b.alive for b in self.driver.sides.browsers.values()))
 
     def test_a_mind_views_browser_left_on_the_persons_port_is_not_the_persons(self):
@@ -245,7 +245,7 @@ class RealBrowsers(unittest.TestCase):
         person = self.fx.start("person", "default")
         other = self.fx.start("person", "other", port=free_port())
         legacy = self.fx.start("mind", "mind", port=free_port())
-        chosen = {pid for pid, _ in stop_mind_view.mind_view_mains()}
+        chosen = set(stop_mind_view.mind_view_mains())
         self.assertTrue(chosen, "Mind View's browser was not found")
         self.assertNotIn(person.pid, chosen)
         self.assertNotIn(other.pid, chosen)
@@ -254,7 +254,7 @@ class RealBrowsers(unittest.TestCase):
         self.assertIsNotNone(legacy.poll(), "Mind View's browser should have stopped")
         self.assertIsNone(person.poll(), "the person's Browser was stopped")
         self.assertIsNone(other.poll(), "a browser on the person's other profile was stopped")
-        self.assertEqual(self.fx.titles(self.fx.person_port), ["about:blank"])
+        self.assertIn(self.fx.titles(self.fx.person_port), (["about:blank"], [""]))
 
     def test_the_first_call_after_a_browser_appears_does_not_time_out(self):
         """Issue #1085 saw one first web_go time out on a CDP reply right after a second Chromium

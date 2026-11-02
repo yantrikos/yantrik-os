@@ -1,15 +1,15 @@
 """Which browser holds a loopback port, from facts a page cannot influence: the kernel's table of
-listening sockets, the processes holding that socket, their account, and the profile each was
-started with. The port is never asked who it is.
+listening sockets, the processes holding that socket, their account, and which profile each
+process OWNS: the pid its `SingletonLock` names, or a `LOCK` file it holds open. The port is never
+asked who it is.
 
-The Rust side (yantrik-browser-ports, `listener` and `cmdline`) does the same for the companion's
-tools, Arcade and the shell; this is the browser service's.
+Nothing here reads a command line. A real Chromium's /proc/<pid>/cmdline has come in several
+shapes (NUL separated; one space-joined string; that with a trailing NUL, the one that got Mind
+View's own browser refused on 520), a process can retitle itself, and a URL can carry
+`--user-data-dir=`: text proves nothing either way. The files a process holds are what it cannot
+fake (the 520 gate, on #1088, whose target.py this follows).
 
-A Chromium main process rewrites its own /proc/<pid>/cmdline into ONE space-joined string, with
-no NUL between the words (found on 520, #1088). Splitting on NUL and looking for an argument that
-is exactly `--user-data-dir=...` finds nothing, and takes every Chromium for the one on the
-default profile. A command line is read both ways here; a profile path with a space in it is not
-read back whole from the joined form, so `has_profile` compares the whole expected path instead.
+The Rust side (yantrik-browser-ports) does the same for the companion's tools, Arcade and the shell.
 """
 
 import os
@@ -18,10 +18,8 @@ from collections import namedtuple
 
 from . import ports
 
-PROFILE = "--user-data-dir="
-DEBUGGING_PORT = "--remote-debugging-port="
+PERSON, MIND_VIEW, IDENTITY = "person", "mind-view", "identity"
 
-DEFAULT, MIND_VIEW, IDENTITY, OTHER = "default", "mind-view", "identity", "other"
 
 class Listener(namedtuple("Listener", "port uid inode pids place")):
     @property
@@ -39,70 +37,55 @@ class Unidentified(Exception):
         self.nobody, self.transient = nobody, transient
 
 
-def words(raw):
-    """(the words up to a bare `--`, whether the line was NUL separated)."""
-    text = raw.decode("utf-8", "replace")
-    nul = b"\0" in raw
-    parts = [w for w in (text.split("\0") if nul else text.split(" ")) if w]
-    out = []
-    for w in parts:
-        if w == "--":
-            break
-        out.append(w)
-    return out, nul
+def lock_pid(profile):
+    """The pid a profile's SingletonLock names (Chromium writes a link to `host-pid`), or None."""
+    try:
+        return int(os.readlink(os.path.join(profile, "SingletonLock")).rpartition("-")[2])
+    except (OSError, ValueError):
+        return None
 
 
-def values(raw, flag):
-    """Every value `flag` was given, in order; `-flag=` counts too."""
-    single = flag[1:]
-    out = []
-    for w in words(raw)[0]:
-        for spelled in (flag, single):
-            if w.startswith(spelled):
-                out.append(w[len(spelled):])
-                break
-    return out
-
-
-def has_profile(raw, directory):
-    """Whether the line names `directory` as its one profile: the whole path, however the line
-    was written, and no other --user-data-dir beside it."""
-    if len(values(raw, PROFILE)) != 1:
-        return False
-    want = PROFILE + directory
-    ws, nul = words(raw)
-    if nul:
-        return any(w in (want, want[1:]) for w in ws)
-    text = raw.decode("utf-8", "replace")
-    at = text.find(want)
-    while at != -1:
-        end = at + len(want)
-        if (at == 0 or text[at - 1] == " ") and (end == len(text) or text[end] == " "):
+def owns(proc, pid, profile):
+    """Whether process `pid` owns `profile`: its SingletonLock names it, or it holds one of the
+    profile's LOCK files open. Raises Unidentified when the files it holds cannot be read."""
+    if lock_pid(profile) == pid:
+        return True
+    real = os.path.realpath(profile)
+    fds = os.path.join(proc, str(pid), "fd")
+    try:
+        names = os.listdir(fds)
+    except OSError as e:
+        raise Unidentified("the files process %d holds could not be read (%s)" % (pid, e), transient=True) from None
+    for name in names:
+        try:
+            held = os.readlink(os.path.join(fds, name))
+        except OSError:
+            continue
+        if held.endswith(" (deleted)"):
+            held = held[:-len(" (deleted)")]
+        if os.path.basename(held) == "LOCK" and os.path.realpath(held).startswith(real + os.sep):
             return True
-        at = text.find(want, at + 1)
     return False
 
 
-def serves_port(raw, port):
-    return str(port) in values(raw, DEBUGGING_PORT)
+def mind_profiles(environ=None):
+    """[(directory, place)] of the profiles that make a browser a mind's."""
+    out = [(ports.mind_view_profile(environ), MIND_VIEW)]
+    root = ports.identities_root(environ)
+    try:
+        out += [(os.path.join(root, n), IDENTITY) for n in sorted(os.listdir(root))
+                if os.path.isdir(os.path.join(root, n))]
+    except OSError:
+        pass
+    return out
 
 
-def is_main(raw):
-    return not any(t.startswith("--type=") for t in raw.decode("utf-8", "replace").replace("\0", " ").split(" "))
-
-
-def place_of(raw, environ=None):
-    """Whose profile a command line names, or None when it names it twice or with nothing."""
-    found = values(raw, PROFILE)
-    if not found:
-        return DEFAULT
-    if len(found) != 1 or not found[0]:
-        return None
-    if has_profile(raw, ports.mind_view_profile(environ)):
-        return MIND_VIEW
-    if found[0].startswith(ports.identities_root(environ) + "/"):
-        return IDENTITY
-    return OTHER
+def place_of_pid(proc, pid, environ=None):
+    """MIND_VIEW, IDENTITY, or PERSON (it owns no mind's profile)."""
+    for directory, place in mind_profiles(environ):
+        if owns(proc, pid, directory):
+            return place
+    return PERSON
 
 
 def is_mind_side(place):
@@ -166,17 +149,9 @@ def _identify(port, proc, environ):
     if not pids:
         raise Unidentified("the process holding it cannot be seen", transient=True)
     pids.sort()
-    place = None
+    place = PERSON
     for pid in pids:
-        try:
-            with open(os.path.join(proc, str(pid), "cmdline"), "rb") as f:
-                raw = f.read()
-        except OSError as e:
-            raise Unidentified("process %d's command line is unreadable (%s)" % (pid, e), transient=True) from None
-        here = place_of(raw, environ)
-        if here is None:
-            raise Unidentified("process %d names its profile more than once" % pid)
-        if place is not None and place != here:
-            raise Unidentified("the processes holding it disagree about whose it is")
-        place = here
+        here = place_of_pid(proc, pid, environ)
+        if is_mind_side(here):
+            place = here
     return Listener(port, uid, inode, tuple(pids), place)

@@ -3,9 +3,11 @@
 
     python3 tests/browser-core/test_listener.py
 
-Linux only. The fake /proc here is what the real one looks like, including the thing a NUL-split
-parser missed on 520: Chromium's main process reads back as ONE space-joined string. The same
-reading is held against a real Chromium in test_ports_live.py.
+Linux only. A browser is a mind's by the profile it OWNS (the pid its SingletonLock names, or a LOCK
+file it holds open), never by its command line. The fixtures here give the command line every shape
+a real Chromium's has had, including the one that got Mind View's own browser refused on 520 (one
+space-joined string with a trailing NUL), and a process that rewrites its argv to claim a profile it
+does not own. The same reading is held against real Chromiums in test_ports_live.py.
 """
 
 import os
@@ -20,23 +22,19 @@ sys.path[:0] = [os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk",
 
 from yantrik_browser import listener, ports, stop_mind_view  # noqa: E402
 
-ENV = {"HOME": "/home/p"}
-MIND_VIEW = ports.mind_view_profile(ENV)
-PERSON = "/home/p/.config/chromium"
-
-
-def nul(*args):
-    return ("\0".join(args) + "\0").encode()
-
-
-def joined(*args):
-    return " ".join(args).encode()
-
 
 class FakeProc:
+    """A /proc, and the data home whose profiles the processes in it own or do not."""
+
     def __init__(self):
         self.root = tempfile.mkdtemp(prefix="yb-fakeproc-")
-        os.makedirs(os.path.join(self.root, "net"))
+        self.env = {"HOME": self.root, "XDG_DATA_HOME": os.path.join(self.root, "data")}
+        self.proc = os.path.join(self.root, "proc")
+        os.makedirs(os.path.join(self.proc, "net"))
+        self.mind_view = ports.mind_view_profile(self.env)
+        self.identities = ports.identities_root(self.env)
+        os.makedirs(self.mind_view)
+        os.makedirs(self.identities)
         self.rows = []
         self.write_table()
 
@@ -45,7 +43,7 @@ class FakeProc:
         for i, (local, uid, inode) in enumerate(self.rows):
             lines.append("   %d: %s 00000000:0000 0A 00000000:00000000 00:00000000 00000000  %d        0 %d 1 0"
                          % (i, local, uid, inode))
-        with open(os.path.join(self.root, "net", "tcp"), "w") as f:
+        with open(os.path.join(self.proc, "net", "tcp"), "w") as f:
             f.write("\n".join(lines) + "\n")
 
     def listen(self, port, uid, inode, local="0100007F"):
@@ -53,7 +51,7 @@ class FakeProc:
         self.write_table()
 
     def process(self, pid, cmdline, inode=None, environ=None):
-        d = os.path.join(self.root, str(pid))
+        d = os.path.join(self.proc, str(pid))
         os.makedirs(os.path.join(d, "fd"), exist_ok=True)
         if inode is not None:
             link = os.path.join(d, "fd", "7")
@@ -66,119 +64,149 @@ class FakeProc:
             with open(os.path.join(d, "environ"), "wb") as f:
                 f.write(("\0".join("%s=%s" % kv for kv in environ.items()) + "\0").encode())
 
+    def takes(self, profile, pid):
+        """`pid` takes `profile` as Chromium does: a SingletonLock link naming it."""
+        lock = os.path.join(profile, "SingletonLock")
+        if os.path.islink(lock):
+            os.unlink(lock)
+        os.symlink("host-%d" % pid, lock)
+
+    def holds_lock(self, pid, profile):
+        """`pid` holds a LOCK file under `profile` open."""
+        f = os.path.join(profile, "Local Storage", "LOCK")
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        open(f, "w").close()
+        os.makedirs(os.path.join(self.proc, str(pid), "fd"), exist_ok=True)
+        os.symlink(f, os.path.join(self.proc, str(pid), "fd", "9"))
+
     def close(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
 
+def shapes(profile):
+    """Every shape a real Chromium's /proc/<pid>/cmdline has been seen in. The third is what a
+    packaged Chromium showed on 520: ONE space-joined string, and a trailing NUL."""
+    words = ["/usr/lib/chromium/chromium", "--remote-debugging-port=9223", "--user-data-dir=" + profile, "about:blank"]
+    return [("\0".join(words) + "\0").encode(), " ".join(words).encode(), (" ".join(words) + "\0").encode()]
+
+
 class Identify(unittest.TestCase):
     def setUp(self):
-        self.proc = FakeProc()
-        self.addCleanup(self.proc.close)
+        self.p = FakeProc()
+        self.addCleanup(self.p.close)
 
     def who(self, port):
-        return listener.identify(port, self.proc.root, ENV)
+        return listener.identify(port, self.p.proc, self.p.env)
 
-    def test_mind_views_browser_is_known_whichever_way_the_command_line_is_written(self):
-        for form in (nul, joined):
-            proc = FakeProc()
-            self.addCleanup(proc.close)
-            proc.listen(9223, 1000, 11)
-            proc.process(41, form("/usr/lib/chromium/chromium", "--remote-debugging-port=9223",
-                                  "--user-data-dir=" + MIND_VIEW, "about:blank"), inode=11)
-            held = listener.identify(9223, proc.root, ENV)
-            self.assertEqual((held.place, held.uid, held.pids), (listener.MIND_VIEW, 1000, (41,)), form.__name__)
+    def test_mind_views_browser_is_known_by_what_it_owns_whatever_shape_its_command_line_has(self):
+        for n, line in enumerate(shapes(self.p.mind_view)):
+            p = FakeProc()
+            self.addCleanup(p.close)
+            p.listen(9223, 1000, 11)
+            p.process(41, line, inode=11)
+            p.takes(p.mind_view, 41)
+            held = listener.identify(9223, p.proc, p.env)
+            self.assertEqual((held.place, held.uid, held.pids), (listener.MIND_VIEW, 1000, (41,)), "shape %d" % n)
 
-    def test_no_flag_is_the_default_profile_which_is_the_persons(self):
-        self.proc.listen(9222, 1000, 5)
-        self.proc.process(9, joined("chromium", "--remote-debugging-port=9222"), inode=5)
-        self.assertEqual(self.who(9222).place, listener.DEFAULT)
+    def test_a_browser_whose_command_line_says_nothing_is_still_told_by_its_files(self):
+        self.p.listen(9223, 1000, 5)
+        self.p.process(9, b"chromium\0", inode=5)
+        self.p.holds_lock(9, self.p.mind_view)
+        self.assertEqual(self.who(9223).place, listener.MIND_VIEW)
 
-    def test_the_persons_profile_spelled_out_is_not_mind_views(self):
-        self.proc.listen(9222, 1000, 5)
-        self.proc.process(9, joined("chromium", "--user-data-dir=" + PERSON), inode=5)
-        held = self.who(9222)
-        self.assertEqual(held.place, listener.OTHER)
-        self.assertFalse(listener.is_mind_side(held.place))
+    def test_arguments_prove_nothing_either_way(self):
+        """A process that rewrites its argv to claim Mind View's profile owns nothing, so it is not
+        a mind's; the browser that owns it is, whatever its argv says."""
+        self.p.listen(9222, 1000, 77)
+        for line in shapes(self.p.mind_view):
+            self.p.process(9, line, inode=77)
+            self.assertEqual(self.who(9222).place, listener.PERSON)
+        owner = FakeProc()
+        self.addCleanup(owner.close)
+        owner.listen(9223, 1000, 5)
+        owner.process(9, b"chromium --user-data-dir=/home/p/.config/chromium", inode=5)
+        owner.takes(owner.mind_view, 9)
+        self.assertEqual(listener.identify(9223, owner.proc, owner.env).place, listener.MIND_VIEW)
 
-    def test_a_prefix_of_mind_views_path_is_not_mind_views(self):
-        self.proc.listen(9223, 1000, 5)
-        self.proc.process(9, joined("chromium", "--user-data-dir=" + MIND_VIEW + "-copy"), inode=5)
-        self.assertEqual(self.who(9223).place, listener.OTHER)
+    def test_a_real_process_whose_argv_claims_mind_views_profile(self):
+        """A live process (`exec -a`) whose real /proc/<pid>/cmdline names Mind View's profile:
+        the person's while it owns nothing, Mind View's once the profile's lock names it."""
+        import subprocess
+        import time
+        claim = "chromium --user-data-dir=" + self.p.mind_view
+        proc = subprocess.Popen(["bash", "-c", 'exec -a "$0" sleep 30', claim])
+        self.addCleanup(proc.kill)
+        time.sleep(0.5)
+        with open("/proc/%d/cmdline" % proc.pid, "rb") as f:
+            self.assertIn(self.p.mind_view.encode(), f.read(), "the claim is really in its argv")
+        self.assertEqual(listener.place_of_pid("/proc", proc.pid, self.p.env), listener.PERSON)
+        self.p.takes(self.p.mind_view, proc.pid)
+        self.assertEqual(listener.place_of_pid("/proc", proc.pid, self.p.env), listener.MIND_VIEW)
 
-    def test_a_flag_given_twice_or_empty_is_refused_not_guessed(self):
-        self.proc.listen(9223, 1000, 5)
-        for line in (joined("chromium", "--user-data-dir=/a", "--user-data-dir=" + MIND_VIEW),
-                     nul("chromium", "--user-data-dir=")):
-            self.proc.process(9, line, inode=5)
-            with self.assertRaises(listener.Unidentified):
-                self.who(9223)
+    def test_a_stale_lock_on_a_process_that_is_not_the_holder_changes_nothing(self):
+        self.p.listen(9222, 1000, 5)
+        self.p.process(9, b"chromium", inode=5)
+        self.p.takes(self.p.mind_view, 4242)          # some other pid, not the holder
+        self.assertEqual(self.who(9222).place, listener.PERSON)
 
-    def test_nobody_two_sockets_unseen_and_disagreeing_holders_are_all_refusals(self):
+    def test_a_companion_identity_is_a_minds_too(self):
+        work = os.path.join(self.p.identities, "work")
+        os.makedirs(work)
+        self.p.listen(9230, 1000, 3)
+        self.p.process(3, b"chromium", inode=3)
+        self.p.takes(work, 3)
+        self.assertEqual(self.who(9230).place, listener.IDENTITY)
+
+    def test_nobody_two_sockets_and_unseen_holders_are_refusals(self):
         with self.assertRaises(listener.Unidentified) as nobody:
             self.who(9999)
         self.assertTrue(nobody.exception.nobody)
-        self.proc.listen(9223, 1000, 1)
+        self.p.listen(9223, 1000, 1)
         with self.assertRaises(listener.Unidentified) as unseen:      # listening, holder not visible
             self.who(9223)
         self.assertFalse(unseen.exception.nobody)
-        self.proc.listen(9223, 1000, 2)                                # a second socket
-        with self.assertRaises(listener.Unidentified):
-            self.who(9223)
-        proc = FakeProc()
-        self.addCleanup(proc.close)
-        proc.listen(9223, 1000, 1)
-        proc.process(1, joined("chromium", "--user-data-dir=" + MIND_VIEW), inode=1)
-        proc.process(2, joined("chromium"), inode=1)
-        with self.assertRaises(listener.Unidentified) as split:
-            listener.identify(9223, proc.root, ENV)
-        self.assertIn("disagree", str(split.exception))
 
-    def test_two_sockets_on_one_port_are_refused_even_when_both_look_like_mind_views(self):
-        self.proc.listen(9223, 1000, 1)
-        self.proc.listen(9223, 1000, 2)
+    def test_two_sockets_on_one_port_are_refused_even_when_both_own_mind_views_profile(self):
+        self.p.listen(9223, 1000, 1)
+        self.p.listen(9223, 1000, 2)
         for pid, inode in ((1, 1), (2, 2)):
-            self.proc.process(pid, joined("chromium", "--user-data-dir=" + MIND_VIEW), inode=inode)
+            self.p.process(pid, b"chromium", inode=inode)
+        self.p.takes(self.p.mind_view, 1)
         with self.assertRaises(listener.Unidentified) as two:
             self.who(9223)
         self.assertIn("two different sockets", str(two.exception))
 
     def test_the_exact_address_beats_a_wildcard_one_as_the_kernel_does(self):
-        self.proc.listen(9223, 1000, 1, local="00000000")
-        self.proc.listen(9223, 1000, 2)
-        self.proc.process(1, joined("chromium"), inode=1)
-        self.proc.process(2, joined("chromium", "--user-data-dir=" + MIND_VIEW), inode=2)
+        self.p.listen(9223, 1000, 1, local="00000000")
+        self.p.listen(9223, 1000, 2)
+        self.p.process(1, b"chromium", inode=1)
+        self.p.process(2, b"chromium", inode=2)
+        self.p.takes(self.p.mind_view, 2)
         self.assertEqual(self.who(9223).place, listener.MIND_VIEW)
-
-    def test_a_companion_identity_is_a_minds_too(self):
-        self.proc.listen(9230, 1000, 3)
-        self.proc.process(3, joined("chromium", "--user-data-dir=" + ports.identities_root(ENV) + "/work"), inode=3)
-        self.assertEqual(self.who(9230).place, listener.IDENTITY)
 
 
 class StopMindView(unittest.TestCase):
     """The update's step: Mind View's browsers stop, the person's never do."""
 
-    def test_only_mind_views_main_processes_are_chosen(self):
-        proc = FakeProc()
-        self.addCleanup(proc.close)
-        env = {"HOME": "/home/p"}
-        proc.process(10, joined("chromium", "--remote-debugging-port=9222"), environ=env)                        # the person's, old flags
-        proc.process(11, joined("chromium", "--remote-debugging-port=9222", "--user-data-dir=" + PERSON), environ=env)  # the person's, new flags
-        proc.process(12, joined("chromium", "--type=renderer", "--user-data-dir=" + MIND_VIEW), environ=env)    # a helper
-        proc.process(20, joined("chromium", "--remote-debugging-port=9222", "--user-data-dir=" + MIND_VIEW), environ=env)  # legacy Mind View
-        proc.process(21, joined("chromium", "--remote-debugging-port=9223", "--user-data-dir=" + MIND_VIEW), environ=env)  # current Mind View
-        proc.process(30, nul("vim", "x"), environ=env)
-        chosen = sorted(pid for pid, _ in stop_mind_view.mind_view_mains(proc.root))
-        self.assertEqual(chosen, [20, 21])
+    def test_only_the_process_the_profile_names_is_chosen(self):
+        p = FakeProc()
+        self.addCleanup(p.close)
+        env = p.env
+        for pid in (10, 11, 12, 20, 21):
+            p.process(pid, b"chromium --user-data-dir=" + p.mind_view.encode(), environ=env)   # all CLAIM it
+        p.takes(p.mind_view, 20)                       # only 20 owns it
+        self.assertEqual(sorted(stop_mind_view.mind_view_mains(p.proc)), [20])
 
     def test_each_process_is_read_in_its_own_environment(self):
-        proc = FakeProc()
-        self.addCleanup(proc.close)
-        other = ports.mind_view_profile({"HOME": "/home/q", "XDG_DATA_HOME": "/data/q"})
-        proc.process(40, joined("chromium", "--user-data-dir=" + other), environ={"HOME": "/home/q", "XDG_DATA_HOME": "/data/q"})
-        # The same path under an environment that would not give it is not Mind View's.
-        proc.process(41, joined("chromium", "--user-data-dir=" + other), environ={"HOME": "/home/p"})
-        self.assertEqual([pid for pid, _ in stop_mind_view.mind_view_mains(proc.root)], [40])
+        p = FakeProc()
+        self.addCleanup(p.close)
+        other_env = {"HOME": "/home/q", "XDG_DATA_HOME": os.path.join(p.root, "q-data")}
+        other = ports.mind_view_profile(other_env)
+        os.makedirs(other)
+        p.process(40, b"chromium", environ=other_env)
+        p.process(41, b"chromium", environ=p.env)
+        p.takes(other, 40)
+        self.assertEqual(stop_mind_view.mind_view_mains(p.proc), [40])
 
 
 if __name__ == "__main__":

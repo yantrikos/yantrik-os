@@ -14,9 +14,8 @@
 //! sent to its port by who it is; the port is then checked by what holds it (`listener`), never
 //! by who answers first.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-pub mod cmdline;
 pub mod listener;
 pub mod procs;
 
@@ -111,50 +110,85 @@ pub fn launch_flags(side: Side) -> Vec<String> {
     flags
 }
 
-/// Whose profile a browser was started with.
+/// Whose browser a process is, by what it owns and never by what its arguments say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
-    /// No `--user-data-dir`: the browser's default profile, which is the person's.
-    PersonDefault,
-    /// Mind View's profile.
+    /// It owns Mind View's profile.
     MindView,
-    /// One of the companion's other identities.
+    /// It owns one of the companion's identity profiles.
     Identity,
-    /// A profile named some other way: the person's (their default spelled out) or a throwaway.
-    Other,
+    /// It owns neither: the person's, or nobody's we know.
+    Person,
 }
 
 impl Place {
-    /// Whether this is a browser of a mind, by its profile.
+    /// Whether this is a browser of a mind.
     pub fn is_mind_side(self) -> bool {
         matches!(self, Place::MindView | Place::Identity)
     }
 }
 
-/// Whose profile a command line (a `/proc/<pid>/cmdline`, either way written) names. None when
-/// it names its profile twice or with nothing: not guessed at.
-pub fn place_of(raw: &[u8]) -> Option<Place> {
-    use cmdline::Profile;
-    match cmdline::profile(raw) {
-        Profile::Unclear => None,
-        Profile::Default => Some(Place::PersonDefault),
-        Profile::Named(first_word) => {
-            let root = identities_root();
-            Some(if cmdline::has_profile(raw, &mind_view_profile()) {
-                Place::MindView
-            } else if first_word.starts_with(&format!("{}/", root.display())) {
-                Place::Identity
-            } else {
-                Place::Other
-            })
+/// The profile directories that make a browser a mind's.
+#[derive(Clone, Debug)]
+pub struct Profiles {
+    pub mind_view: PathBuf,
+    pub identities: PathBuf,
+}
+
+impl Profiles {
+    pub fn current() -> Profiles {
+        Profiles { mind_view: mind_view_profile(), identities: identities_root() }
+    }
+
+    /// Every directory that is a mind's profile now.
+    fn dirs(&self) -> Vec<(PathBuf, Place)> {
+        let mut out = vec![(self.mind_view.clone(), Place::MindView)];
+        if let Ok(entries) = std::fs::read_dir(&self.identities) {
+            out.extend(entries.flatten().filter(|e| e.path().is_dir()).map(|e| (e.path(), Place::Identity)));
+        }
+        out
+    }
+}
+
+/// The pid a profile's `SingletonLock` names. Chromium writes it (a link to `host-pid`) when it
+/// takes the profile; nothing in a command line does.
+pub fn lock_pid(profile: &Path) -> Option<u32> {
+    let link = std::fs::read_link(profile.join("SingletonLock")).ok()?;
+    link.to_str()?.rsplit('-').next()?.parse().ok()
+}
+
+/// Whether process `pid` owns `profile`: its `SingletonLock` names it, or it holds one of the
+/// profile's `LOCK` files open (an exclusive lock on a database in it). Errs when the files the
+/// process holds cannot be read.
+pub fn owns(proc: &Path, pid: u32, profile: &Path) -> Result<bool, String> {
+    if lock_pid(profile) == Some(pid) {
+        return Ok(true);
+    }
+    let real = std::fs::canonicalize(profile).unwrap_or_else(|_| profile.to_path_buf());
+    let fds = std::fs::read_dir(proc.join(pid.to_string()).join("fd"))
+        .map_err(|e| format!("the files process {pid} holds could not be read ({e})"))?;
+    Ok(fds.flatten().any(|fd| {
+        let Ok(held) = std::fs::read_link(fd.path()) else { return false };
+        let held = held.to_string_lossy().trim_end_matches(" (deleted)").to_string();
+        let held = PathBuf::from(held);
+        held.file_name().is_some_and(|n| n == "LOCK")
+            && std::fs::canonicalize(&held).unwrap_or(held).starts_with(&real)
+    }))
+}
+
+/// Whose browser process `pid` is, in `proc` (a `/proc`).
+pub fn place_in(proc: &Path, profiles: &Profiles, pid: u32) -> Result<Place, String> {
+    for (dir, place) in profiles.dirs() {
+        if owns(proc, pid, &dir)? {
+            return Ok(place);
         }
     }
+    Ok(Place::Person)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn the_ports_are_the_decided_ones() {
@@ -190,12 +224,18 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_is_told_by_its_whole_path() {
-        let line = |dir: &std::path::Path| format!("chromium --user-data-dir={} about:blank", dir.display()).into_bytes();
-        assert_eq!(place_of(b"chromium --remote-debugging-port=9222"), Some(Place::PersonDefault));
-        assert_eq!(place_of(&line(&mind_view_profile())), Some(Place::MindView));
-        assert_eq!(place_of(&line(&identities_root().join("work"))), Some(Place::Identity));
-        assert_eq!(place_of(&line(Path::new("/home/p/.config/chromium"))), Some(Place::Other));
-        assert_eq!(place_of(b"chromium --user-data-dir=/a --user-data-dir=/b"), None);
+    fn a_lock_names_its_pid_and_nothing_else_does() {
+        let dir = std::env::temp_dir().join(format!("yb-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(lock_pid(&dir), None);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("my-host-4242", dir.join("SingletonLock")).unwrap();
+            assert_eq!(lock_pid(&dir), Some(4242));
+            assert_eq!(owns(Path::new("/nonexistent"), 4242, &dir), Ok(true));
+            assert!(owns(Path::new("/nonexistent"), 4243, &dir).is_err(), "the files of a process nobody can see");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

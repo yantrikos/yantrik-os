@@ -56,8 +56,9 @@ MV_PROFILE=$DATA/$MV_PROFILE_TAIL
 
 # ── the machine ──
 listener_pid() { ss -ltnpH "sport = :$1" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1; }
-cmdline() { tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null; }
-profile_of() { cmdline "$1" | grep -o -- '--user-data-dir=[^ ]*' | head -1; }
+# A browser is Mind View's by the profile it OWNS: the pid Chromium wrote into the profile's SingletonLock.
+# Never by its command line, whose shape varies (one space-joined string, a trailing NUL) and proves nothing.
+owns_mind_view() { [ "$(readlink "$MV_PROFILE/SingletonLock" 2>/dev/null | sed 's/.*-//')" = "$1" ]; }
 tabs_of() { curl -s --max-time 3 "http://127.0.0.1:$1/json/list" | python3 -c '
 import json, sys
 print(json.dumps(sorted((t["url"], t["title"]) for t in json.load(sys.stdin) if t["type"] == "page")))' 2>/dev/null; }
@@ -104,11 +105,11 @@ person_go() { yos act browser go "url=$SITE/$1.html" 2>&1; }
 
 # The person's Browser, opened the way the dock opens it.
 open_persons() { yos act shell open_app name=browser >/dev/null 2>&1; wait_port "$PERSON" || return 1; sleep 3; }
-persons_flags_ok() { # no --user-data-dir (their own default profile), the person's port
-  local p; p=$(listener_pid "$PERSON"); [ -n "$p" ] && [ -z "$(profile_of "$p")" ]
+persons_flags_ok() { # the person's port is held by a browser that does not own Mind View's profile
+  local p; p=$(listener_pid "$PERSON"); [ -n "$p" ] && ! owns_mind_view "$p"
 }
 mind_view_holds() { # the browser on $MIND is Mind View's: its profile, and this account's
-  local p; p=$(listener_pid "$MIND"); [ -n "$p" ] && profile_of "$p" | grep -q -- "$MV_PROFILE_TAIL"
+  local p; p=$(listener_pid "$MIND"); [ -n "$p" ] && owns_mind_view "$p"
 }
 # Mind View's browser as an OLD build started it: on the person's port, Mind View's profile.
 start_legacy_mind_view() {
@@ -126,13 +127,13 @@ settle() { # <label> <transcript> : the mind's page is in Mind View's browser, t
   check "$label: Mind View's browser has Mind View's profile" mind_view_holds
   check "$label: and the mind's page is not in the person's browser" bash -c '! tabs_of "$1" | grep -q THROWAWAY-PAGE-A' _ "$PERSON"
 }
-export -f tabs_of listener_pid profile_of cmdline mind_view_holds 2>/dev/null
-export MIND PERSON MV_PROFILE_TAIL
+export -f tabs_of listener_pid owns_mind_view mind_view_holds 2>/dev/null
+export MIND PERSON MV_PROFILE_TAIL MV_PROFILE
 
 echo "== A. the person's Browser first, then a real mind turn"
 open_persons || { echo "FAIL  the person's Browser did not open its debugging port"; exit 1; }
 person_go b >/dev/null
-check "A: the person's Browser is on the default profile (no --user-data-dir)" persons_flags_ok
+check "A: the person's Browser owns no mind's profile" persons_flags_ok
 BEFORE=$(tabs_of "$PERSON"); echo "the person's tabs: $BEFORE"
 mind_turn a "$W/a.txt"; wait_port "$MIND"
 settle A "$W/a.txt"
@@ -146,7 +147,7 @@ mind_turn a "$W/b1.txt"; wait_port "$MIND" || fail "B: no browser came up for th
 settle B "$W/b1.txt"
 open_persons || { echo "FAIL  the person's Browser did not open its debugging port beside Mind View's"; exit 1; }
 check "B: two browsers, two ports, two processes" bash -c '[ "$(listener_pid "$1")" != "$(listener_pid "$2")" ]' _ "$PERSON" "$MIND"
-check "B: the person's is on the default profile" persons_flags_ok
+check "B: the person's owns no mind's profile" persons_flags_ok
 person_go b >/dev/null
 check "B: the person's own go lands in THEIR window, not the mind's" bash -c 'tabs_of "$1" | grep -q THROWAWAY-PAGE-B && ! tabs_of "$2" | grep -q THROWAWAY-PAGE-B' _ "$PERSON" "$MIND"
 mind_turn a "$W/b2.txt"
@@ -165,7 +166,7 @@ echo "== D. an update: the old build left Mind View's browser on the person's po
 # The person's Browser on the old flags: a browser of their own on a different port is not the person's
 # port, so the realistic state is built in two steps: Mind View's old browser, the update step, then theirs.
 start_legacy_mind_view || { echo "FAIL  could not start the legacy Mind View browser"; exit 1; }
-check "D: the legacy Mind View browser holds the person's port" bash -c 'profile_of "$(listener_pid "$1")" | grep -q -- "$2"' _ "$PERSON" "$MV_PROFILE_TAIL"
+check "D: the legacy Mind View browser holds the person's port" bash -c 'owns_mind_view "$(listener_pid "$1")"' _ "$PERSON"
 check "D: the person's own act is refused, not sent to it" bash -c 'yos act browser tabs 2>&1 | grep -q "Mind View"'
 OLD_PID=$(listener_pid "$PERSON")
 if [ -f "$STOP" ]; then python3 "$STOP" >/dev/null 2>&1; else fail "D: the update's step $STOP is not shipped"; fi

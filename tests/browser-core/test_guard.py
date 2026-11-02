@@ -95,11 +95,11 @@ class WhoIsCalling(unittest.TestCase):
 class Vetting(unittest.TestCase):
     def test_each_side_accepts_its_own_browser(self):
         self.assertIsNotNone(guard.Guard(identify=everywhere(listener.MIND_VIEW), uid=ME).vet(ports.MIND))
-        for place in (listener.DEFAULT, listener.OTHER):     # the person's, either way it was started
+        for place in (listener.PERSON,):     # the person's, either way it was started
             self.assertIsNotNone(guard.Guard(identify=everywhere(place), uid=ME).vet(ports.PERSON), place)
 
     def test_a_mind_is_refused_whatever_else_holds_its_port(self):
-        for place in (listener.DEFAULT, listener.OTHER, listener.IDENTITY):
+        for place in (listener.PERSON, listener.IDENTITY):
             with self.assertRaises(guard.Denied) as refused:
                 guard.Guard(identify=everywhere(place), uid=ME).vet(ports.MIND)
             text = str(refused.exception)
@@ -137,7 +137,7 @@ class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
         self.addCleanup(patch.stop)
 
     def test_a_mind_gets_mind_views_port_and_the_person_theirs(self):
-        table = {ports.PERSON_PORT: listener.DEFAULT, ports.MIND_VIEW_PORT: listener.MIND_VIEW}
+        table = {ports.PERSON_PORT: listener.PERSON, ports.MIND_VIEW_PORT: listener.MIND_VIEW}
         for side, port in ((ports.MIND, 9223), (ports.PERSON, 9222)):
             d = driver_for(lambda p, t=table: listener.Listener(p, ME, 1, (1,), t[p]), side)
             with mock.patch.object(cdp.Browser, "connect", lambda self: None):
@@ -145,14 +145,14 @@ class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
                     self.assertEqual(d.browser.address, "http://127.0.0.1:%d" % port, side)
 
     def test_a_mind_never_gets_the_persons_port_even_when_mind_views_browser_is_closed(self):
-        d = driver_for(holding(**{str(ports.PERSON_PORT): listener.DEFAULT}), ports.MIND)
+        d = driver_for(holding(**{str(ports.PERSON_PORT): listener.PERSON}), ports.MIND)
         with d.held():
             self.assertEqual(d.browser.address, "http://127.0.0.1:9223")
             self.assertTrue(d.browser.check is not None)
 
     def test_a_refused_call_opens_nothing_and_says_so(self):
         # The person's Browser is on Mind View's port: a mind's every action is refused.
-        d = driver_for(everywhere(listener.DEFAULT), ports.MIND)
+        d = driver_for(everywhere(listener.PERSON), ports.MIND)
         for act in (lambda: d.go("https://example.com/"), lambda: d.read(), lambda: d.tabs(), lambda: d.text(),
                     lambda: d.click("e1"), lambda: d.close_tab("x")):
             with self.assertRaises(drv.PageRefused) as refused:
@@ -160,7 +160,7 @@ class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
             self.assertTrue(str(refused.exception).startswith("PAGE: Nothing was done."), refused.exception)
 
     def test_status_of_a_refused_mind_shows_nothing_and_the_person_is_not_shown_the_minds(self):
-        d = driver_for(everywhere(listener.DEFAULT), ports.MIND)
+        d = driver_for(everywhere(listener.PERSON), ports.MIND)
         d.sides.last[ports.PERSON] = {"open": True, "tabs": [{"tab": "aa", "title": "bank", "url": "https://bank.example/", "active": True}]}
         out = d.status()
         self.assertFalse(out["open"])
@@ -208,7 +208,7 @@ class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
         answers.append(listener.Listener(9223, ME, 2, (2,), listener.MIND_VIEW))
         with self.assertRaises(cdp.BrowserClosed):
             check()
-        answers.append(listener.Listener(9223, ME, 1, (1,), listener.DEFAULT))
+        answers.append(listener.Listener(9223, ME, 1, (1,), listener.PERSON))
         with self.assertRaises(guard.Denied):
             check()
 

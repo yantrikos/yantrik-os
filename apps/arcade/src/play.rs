@@ -360,13 +360,12 @@ mod tests {
     fn a_game_is_opened_only_in_the_browser_of_whose_arcade_it_is() {
         // A mind's Arcade: Mind View's browser, and nothing else.
         assert!(vet(Side::MindView, held(Place::MindView, 1000), 1000).is_ok());
-        for place in [Place::PersonDefault, Place::Other, Place::Identity] {
+        for place in [Place::Person, Place::Identity] {
             let why = vet(Side::MindView, held(place, 1000), 1000).unwrap_err();
             assert!(why.contains("not Mind View's own"), "{place:?}: {why}");
         }
         // The person's Arcade: their Browser, and never a mind's.
-        assert!(vet(Side::Person, held(Place::PersonDefault, 1000), 1000).is_ok());
-        assert!(vet(Side::Person, held(Place::Other, 1000), 1000).is_ok());
+        assert!(vet(Side::Person, held(Place::Person, 1000), 1000).is_ok());
         assert!(vet(Side::Person, held(Place::MindView, 1000), 1000).unwrap_err().contains("a mind's browser"));
         // Nothing yet is the caller's to start; another account's, or unclear, is refused.
         assert!(vet(Side::Person, Err(listener::Why::Nobody), 1000).is_ok());
