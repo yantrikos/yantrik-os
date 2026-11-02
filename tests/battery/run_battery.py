@@ -50,7 +50,7 @@ def restart_hermes(m):
 
 
 def run_leak_task(m, w, adapter, task, args):
-    marker, v, a, b = leak.run_leak(m, w, adapter, log=log, timeout=min(task.timeout, args.max_task_seconds), wait_quiet=not args.no_wait_quiet)
+    marker, v, a, b = leak.run_leak(m, w, adapter, log=log, timeout=min(int(task.timeout * args.timeout_scale), args.max_task_seconds), wait_quiet=not args.no_wait_quiet)
     cards = (a.get("cards") or []) + (b.get("cards") or [])
     row = {"task": task.id, "name": task.name, "seconds": round((a.get("seconds") or 0) + (b.get("seconds") or 0), 1),
            "timed_out": bool(a.get("timed_out") or b.get("timed_out")), "fresh": (b.get("fresh") or {}).get("ok"),
@@ -68,7 +68,7 @@ def run_task(m, w, adapter, task, args):
     if task.special == "leak":
         return run_leak_task(m, w, adapter, task, args)
     before = read_before(w)
-    res = lens.run_turn(m, adapter, task.prompt, fresh=not task.same_chat, timeout=min(task.timeout, args.max_task_seconds),
+    res = lens.run_turn(m, adapter, task.prompt, fresh=not task.same_chat, timeout=min(int(task.timeout * args.timeout_scale), args.max_task_seconds),
                         stop_after=task.stop_after, log=log, wait_quiet=not args.no_wait_quiet)
     row = {"task": task.id, "name": task.name, "seconds": res.get("seconds", 0), "timed_out": bool(res.get("timed_out")),
            "fresh": (res.get("fresh") or {}).get("ok") if not task.same_chat else None,
@@ -87,7 +87,7 @@ def run_task(m, w, adapter, task, args):
         except Exception as e:  # a broken verifier is a FAIL with its reason, never a crash of the run
             v = Verdict("FAIL", f"verifier error: {e!r}", {})
     row.update(status=v.status, reason=v.reason, evidence=v.evidence,
-               truth=truth.check(res.get("reply"), v.status, v.evidence) if not res.get("setup_error") else "-")
+               truth=truth.check(res.get("reply"), v.status, v.evidence) if not (res.get("setup_error") or res.get("timed_out")) else "-")
     return row, res
 
 
@@ -103,7 +103,8 @@ def main(argv=None):
     ap.add_argument("--no-reset", action="store_true", help="do not reset the sample world first (debugging only)")
     ap.add_argument("--no-pick", action="store_true", help="do not try to select the mind; require it to be answering")
     ap.add_argument("--no-wait-quiet", action="store_true", help="refuse instead of waiting out 03:00-04:30")
-    ap.add_argument("--max-task-seconds", type=int, default=900)
+    ap.add_argument("--max-task-seconds", type=int, default=1800)
+    ap.add_argument("--timeout-scale", type=float, default=None, help="multiply every task timeout (default 1 for the Mind, 2 for Hermes, which is slower)")
     ap.add_argument("--compare", nargs="?", const="previous", help="compare with a results file (default: the previous run of this mind)")
     a = ap.parse_args(argv)
 
@@ -123,6 +124,7 @@ def main(argv=None):
     if not a.mind:
         ap.error("--mind is required")
 
+    a.timeout_scale = a.timeout_scale or (2.0 if a.mind == "hermes" else 1.0)
     w = facts.World(m)
     adapter = adapters.adapter_for(a.mind, m)
     if a.mind not in m.shell_state()["answering"]:

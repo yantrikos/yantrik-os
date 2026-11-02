@@ -102,6 +102,15 @@ class HermesAdapter:
         finished = bool(conv) and not conv[-1].get("streaming") and st["status"] == "idle"
         return finished and self.running_delegations(since_epoch) == 0 and time.time() - self.last_write() > 30
 
+    def final_reply(self, since_epoch):
+        """The last assistant message that made no tool call: Hermes's own answer, without its tool chatter."""
+        try:
+            r = self._db().execute("select content from messages where timestamp>=? and role='assistant' and (tool_calls is null or tool_calls='') order by id desc limit 1",
+                                   (since_epoch,)).fetchone()
+            return r[0] if r else None
+        except sqlite3.Error:
+            return None
+
     def asked_clarify(self, since_epoch):
         try:
             r = self._db().execute("select tool_calls from messages where timestamp>=? and role='assistant' and tool_calls like '%clarify%' limit 1",

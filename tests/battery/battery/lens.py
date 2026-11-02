@@ -85,7 +85,7 @@ def run_turn(m, adapter, prompt, fresh=True, timeout=600, stop_after=None, log=p
     res["timed_out"] = not finished
     res["screen_after"] = {k: v for k, v in m.shell_state().items() if k in ("screen", "in_front", "windows", "dnd")}
     res["cards"] = list(seen.values())
-    res["reply"] = last_assistant_text(m)
+    res["reply"] = (adapter.final_reply(t0) if hasattr(adapter, "final_reply") else None) or last_assistant_text(m)
     res["trace"] = adapter.trace(t0)
     res["t0"] = t0
     if stop_after:
