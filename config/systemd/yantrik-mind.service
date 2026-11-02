@@ -89,19 +89,10 @@ ProtectHome=yes
 # this unit's sight even should a file in them come out readable (security review, 29 Sep 2026).
 InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yaml
 # The other harnesses that run as this account (hermes-gateway.service, #411) keep their keys and
-# sessions under harness/<name>. The mount namespace hides them from this unit's direct paths, and
-# yantrik-update makes the (empty, private) directory before this unit starts, because a mask on a
-# path that does not exist yet is skipped. That is HALF of the separation: one uid means each can
-# still open the other's files through /proc/<pid>/root, /fd and /environ, and the harness unit has
-# PrivatePIDs=yes to close that from its side. THIS unit does not, so a harness can be read from here
-# until it does.
-#
-# TODO(#411): add `PrivatePIDs=yes` below, together with the Mind bundle that handles SIGTERM as
-# PID 1 of a PID namespace (E.SIGTERM1, yantrik-mind c61c83b and later). The unit is PID 1 there, and
-# a signal with no handler is ignored by PID 1, so with an older Mind `systemctl stop` waits out
-# TimeoutStopSec and then SIGKILLs it (slow, and an unclean SQLite close). So the line lands in the
-# same OS release that adds that capability to mind-capabilities.sh (the image and install-mind then
-# refuse a Mind without it), not before. Not added here.
+# sessions under harness/<name>. Two things keep them out of this unit, together: this mount mask
+# (yantrik-update makes the empty, private directory before this unit starts, because a mask on a
+# path that does not exist yet is skipped) and the PID namespace below, which closes
+# /proc/<pid>/root, /fd and /environ of the harness's processes (same uid). Neither alone is enough.
 InaccessiblePaths=-/var/lib/yantrik-mind/harness
 PrivateTmp=yes
 PrivateDevices=yes
@@ -116,6 +107,21 @@ RestrictRealtime=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
+# This unit's own PID namespace (systemd 257), the other half of keeping the harnesses' keys out of
+# the Mind's reach (see above) and the Mind's out of theirs. The Mind is PID 1 there, and a signal
+# PID 1 has no handler for is ignored, so a Mind bundle without a SIGTERM handler (before E.SIGTERM1,
+# c61c83b) is not stopped by SIGTERM but killed: measured on staging (systemd 257.8), `systemctl
+# stop` of a no-handler PID 1 took 0.017 s and went straight to SIGKILL, so the cost is an unclean
+# SQLite close, not a slow stop. The gate measures it on the OS's own systemd (257.13). TimeoutStopSec
+# below is the bound on a stop whatever happens, and a Mind always comes back (Restart=always). The
+# journal may print "Supervising process ... not our child" at each start: it is expected with a PID
+# namespace (systemd sees the main process through its namespace); do not chase it.
+# A systemd older than 257 ignores the line and the Mind runs as before;
+# that is safe because a harness cannot be installed or started there (harness-isolation.sh and the
+# harness unit both refuse), so there is nothing to keep apart. This unit therefore has no version
+# gate of its own: a gate that refused to start would be a machine without a Mind.
+PrivatePIDs=yes
+TimeoutStopSec=30
 # The person's processes, and their command lines, are not the mind's to see.
 ProtectProc=invisible
 ProcSubset=pid

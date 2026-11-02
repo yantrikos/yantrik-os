@@ -50,7 +50,7 @@ migrate_if_needed() { :; }
 elevate() { :; }
 reconcile_minds() { :; }; reconcile_mind_egress_units() { :; }; reconcile_mind_units() { :; }
 reconcile_egress() { :; }; reconcile_mind_egress() { :; }
-export HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harness" HI_USER=yk411m HI_GROUP=yk411g HI_STATE="$work/state"
+export HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harness" HI_USER=yk411m HI_GROUP=yk411g HI_STATE="$work/state" HI_LOCK="$work/lock" HI_PROC="$work/proc"
 # shellcheck source=deploy/yantrik-os/harness-isolation.sh
 . "$here/harness-isolation.sh"
 
@@ -81,9 +81,16 @@ lacks "... and none of the unit's own start-up lines in it" "ExecStart" "$block"
 has "a systemd without PrivatePIDs does not start it (fail closed)" "has no PrivatePIDs=, so it is not started" "$live"
 has "a home that is a link does not start it" "is not the account own plain directory" "$live"
 mind_live="$(grep -v '^[[:space:]]*#' "$repo/config/systemd/yantrik-mind.service")"
-lacks "the Mind's unit has no PrivatePIDs yet: its bundle must handle SIGTERM as PID 1 first" "PrivatePIDs" "$mind_live"
-has "... and says what lands it, and what an older Mind does" "waits out" "$(cat "$repo/config/systemd/yantrik-mind.service")"
-has "the unit's comments no longer claim the Mind is kept out by mount namespaces alone" "can still read this unit's files and keys through /proc" "$(cat "$unit")"
+has "the Mind's unit has its own PID namespace too, so it holds both ways" "PrivatePIDs=yes" "$mind_live"
+has "... with its stop bounded" "TimeoutStopSec=30" "$mind_live"
+has "... and the unit says what an older Mind does, as measured" "0.017 s" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+lacks "... and nowhere claims a stop waits out the timeout" "waits out" "$(cat "$repo/config/systemd/yantrik-mind.service" "$repo/config/systemd/hermes-gateway.service" "$repo/harnesses/hermes/README.md" "$here/harness-isolation.sh")"
+has "... and says the 'not our child' journal line is expected" "not our child" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+lacks "... no TODO left" "TODO(#411)" "$(cat "$repo/config/systemd/yantrik-mind.service")"
+lacks "... and no version gate that could leave a machine without a Mind" "systemctl --version" "$mind_live"
+lacks "... and no start condition on the harness directory or anything of Hermes's" "harness/hermes" "$(printf '%s\n' "$mind_live" | grep -E '^(Condition|ExecStartPre|Requires|After)')"
+lacks "the harness unit's comments no longer say the Mind can read it" "can still read" "$(cat "$unit")"
+has "... /dev/shm is private to the harness" "TemporaryFileSystem=/dev/shm" "$block"
 if command -v systemd-analyze >/dev/null 2>&1; then
   v="$(systemd-analyze verify --man=no "$unit" 2>&1 | grep -iE "unknown (key|section)|invalid|bad (unit|setting)|failed to parse" || true)"
   sdv="$(systemd-analyze --version 2>/dev/null | head -n 1 | cut -d' ' -f2)"
@@ -200,6 +207,10 @@ done
 exec setpriv --reuid="$(id -u "$user")" --regid="$(id -g "$user")" --clear-groups -- env -i HOME="$wd" PATH=/usr/bin:/bin "$@"
 FAKE
 chmod 755 "$work/fakebin/systemd-run"
+printf '#!/bin/sh\n[ "${FAKE_NFT:-ok}" = ok ]\n' > "$work/fakebin/nft"; chmod 755 "$work/fakebin/nft"
+# /proc as the check reads it: PID 1 in the host's PID namespace, the unit's main process in another.
+mkdir -p "$work/proc/1/ns" "$work/proc/4242/ns"
+ln -s 'pid:[4026531836]' "$work/proc/1/ns/pid"; ln -s 'pid:[4026539999]' "$work/proc/4242/ns/pid"
 export FAKE_RUN_LOG="$work/log/run.args" PATH="$work/fakebin:$PATH"
 
 sudo_p sh -c 'umask 077; mkdir -p "$1/.hermes/sessions" "$1/.hermes/hermes-agent" "$1/.hermes/plugins/yantrik" "$1/.local/share/yantrik/memory" "$1/.local/bin" "$1/.config/systemd/user"
@@ -242,6 +253,7 @@ systemctl() { # a recorder; answers what the library asks of it
   case "$*" in
     --version) printf 'systemd %s (%s.8-1)\n' "${FAKE_SYSTEMD:-257}" "${FAKE_SYSTEMD:-257}" ;;
     "show -p PrivatePIDs --value "*) printf '%s\n' "${FAKE_PRIVPIDS:-yes}" ;;
+    "show -p MainPID --value "*) printf '%s\n' "${FAKE_MAINPID:-4242}" ;;
     *--user*is-active*) [ -e "$work/log/user-active" ] ;;
     *) true ;;
   esac
@@ -336,6 +348,13 @@ FAKE_PRIVPIDS=yes
 is "a unit that runs without its own PID namespace is not accepted" "1" "$rc"
 has "... and says so" "PrivatePIDs is 'no'" "$(cat "$work/said")"
 no "... the proofs never ran on it" grep -q '^installer prove$' "$work/log/systemctl"
+: > "$work/log/systemctl"
+FAKE_MAINPID=1
+( hi_install hermes ) >/dev/null 2>&1; rc=$?
+FAKE_MAINPID=4242
+is "a main process in PID 1's namespace is not accepted, whatever systemd reports (L3)" "1" "$rc"
+has "... and says so" "shares PID 1's PID namespace" "$(cat "$work/said")"
+no "... the proofs never ran on it" grep -q '^installer prove$' "$work/log/systemctl"
 : > "$work/log/systemctl"; : > "$installer_calls"
 FAKE_SYSTEMD=256
 ( hi_install hermes ) >/dev/null 2>&1; rc=$?
@@ -356,6 +375,7 @@ STAND_IN_FAILS=
 is "the install that works succeeds" "0" "$rc"
 is "the phases ran in order, the unit between them" "setup prove" "$(grep -E '^(setup|prove)$' "$installer_calls" | tail -2 | tr '\n' ' ' | sed 's/ $//')"
 yes "the person's gateway was stopped before the copy" grep -q -e '--user -M yk411p@ stop hermes-gateway.service' "$work/log/systemctl"
+is "... and stopped again when it is disabled, not only disabled (L1)" "2" "$(grep -c -e '--user -M yk411p@ stop hermes-gateway.service' "$work/log/systemctl")"
 yes "the system unit was enabled and restarted" grep -q 'enable hermes-gateway.service' "$work/log/systemctl"
 yes "it is marked as moved, in root's own state file" test "$(stat -c %U "$HI_STATE/hermes.isolated")" = root
 no "... which the account cannot write" sudo_m sh -c "echo x > '$HI_STATE/hermes.isolated'"
@@ -375,11 +395,11 @@ echo "-- code the account can write runs only in the unit's sandbox (M1, M2)"
 : > "$FAKE_RUN_LOG"
 hi_task 30 0 hermes /bin/sh -c 'id -un' >/dev/null 2>&1
 args="$(cat "$FAKE_RUN_LOG")"
-for want in --wait --collect --pipe User=yk411m Group=yk411g RuntimeMaxSec=30 PrivatePIDs=yes TemporaryFileSystem=/var/lib/yantrik-mind:ro; do
+for want in --wait --collect --pipe User=yk411m Group=yk411g RuntimeMaxSec=30 PrivatePIDs=yes TemporaryFileSystem=/var/lib/yantrik-mind:ro After=yantrik-mind-egress.service Requires=yantrik-mind-egress.service; do
   has "a task is a transient unit with $want" "$want" "$args"
 done
 lacks "... and has no terminal of the caller's" "--pty" "$args"
-passed="$(awk '/^-p$/{getline; print}' "$FAKE_RUN_LOG" | grep -vE '^(User|Group|WorkingDirectory|RuntimeMaxSec|TimeoutStopSec)=')"
+passed="$(awk '/^-p$/{getline; print}' "$FAKE_RUN_LOG" | grep -vE '^(User|Group|WorkingDirectory|RuntimeMaxSec|TimeoutStopSec|After|Requires)=')"
 is "the sandbox it gets is exactly the gateway unit's block (one list, shared)" "$block" "$passed"
 : > "$FAKE_RUN_LOG"
 ( hi_run hermes model ) >/dev/null 2>&1
@@ -402,6 +422,27 @@ for f in "$here/harness-isolation.sh"; do
   lacks "no account-writable code is run by hi_run_as any more (installer, refresh, model)" "hi_run_timed 600 \"\$HI_USER\"" "$(cat "$f")"
 done
 has "the account's own bin is not on the PATH of the fixed tools" 'PATH="/usr/local/bin:/usr/bin:/bin"' "$(cat "$here/harness-isolation.sh")"
+
+: > "$FAKE_RUN_LOG"
+export FAKE_NFT=fail
+no "a task does not run when the egress table is not loaded (L2)" hi_task 5 0 hermes /bin/true
+export FAKE_NFT=ok
+is "... systemd-run was not called" "0" "$(wc -c < "$FAKE_RUN_LOG" | tr -d ' ')"
+mkdir -p "$HI_UNIT_DIR/hermes-gateway.service.d"; printf '[Service]\nUser=root\n' > "$HI_UNIT_DIR/hermes-gateway.service.d/x.conf"
+no "a drop-in on the unit refuses the task (one list or none)" hi_task 5 0 hermes /bin/true
+rm -rf "$HI_UNIT_DIR/hermes-gateway.service.d"
+yes "... and without it the task runs" hi_task 5 0 hermes /bin/true
+( exec 8>"$HI_LOCK"; flock -n 8; sleep 6 ) &
+holder=$!; sleep 1
+no "a second move is refused while one runs" bash -c "$(declare -p HI_LOCK HI_STATE HI_UNIT_DIR HI_BASE HI_USER HI_GROUP HI_DOOR HI_PROC PREFIX BIN_DIR work; declare -f); hi_install hermes"
+has "... and says another is running" "another harness move is running" "$(cat "$work/said")"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+printf '\xc2\x9b31m\xc2\x85x\n' | hi_relay
+lacks "output relayed to the person has the UTF-8 C1 controls stripped too" "$(printf '\xc2\x9b')" "$(tail -n 1 "$work/said")"
+: > "$work/log/systemctl"
+( hi_abort hermes active yk411p "late" ) >/dev/null 2>&1
+no "an abort after the commit does not start the person's gateway beside the moved one (L1)" grep -q -e '--user -M yk411p@ start' "$work/log/systemctl"
+no "... nor turn the working system unit off" grep -q 'disable --now' "$work/log/systemctl"
 
 echo "-- Mind and harness under one uid: /proc (H1)"
 if unshare --mount --pid --fork --mount-proc true >/dev/null 2>&1; then
@@ -440,7 +481,7 @@ chmod a+r "$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"
 ( hi_migrate_all ) >/dev/null 2>&1
 is "an update on a moved machine runs no installer" "0" "$(wc -l < "$installer_calls" | tr -d ' ')"
 is "... its plugins are refreshed, as the service account, in its own home" "yk411m" "$(cat "$M/refreshed" 2>/dev/null)"
-is "... and does not stop or restart the gateway" "no" "$(grep -qE 'restart|stop' "$work/log/systemctl" && echo yes || echo no)"
+is "... and does not stop or restart the gateway" "no" "$(grep -qE '^(restart|stop|disable) ' "$work/log/systemctl" && echo yes || echo no)"
 ( hi_install hermes ) >/dev/null 2>&1
 is "pressing Install again works, and copies nothing from the person's home" "0" "$?"
 is "... the kept copy was not copied over the live one" "yes" "$(sudo_m test -f "$M/.hermes/.env" && echo yes || echo no)"

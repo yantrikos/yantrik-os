@@ -15,9 +15,8 @@
 #   - the PID namespace (PrivatePIDs=yes, systemd 257) closes /proc/<pid>/root, /fd and /environ of
 #     the Mind's processes, which walk into the Mind's mount namespace and open files it holds.
 #     Without it the first is no separation at all (measured on staging).
-# The same must hold the other way, and does not yet: yantrik-mind.service has no PrivatePIDs, so the
-# Mind can still read this unit's files and keys through /proc until that unit gets the line (see the
-# note there). Nothing here claims otherwise.
+# The same line is on yantrik-mind.service, so it holds the other way too. (A Mind bundle that does
+# not handle SIGTERM as PID 1 is killed, not stopped: see that unit for what was measured.)
 #
 # The sandbox block is the single list of properties for this unit AND for everything else that
 # runs as the account with code the account can write (the installer, the plugin refresh, `hermes
@@ -98,6 +97,10 @@ ProtectHome=yes
 InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yaml
 PrivateTmp=yes
 PrivateDevices=yes
+# /dev/shm stays the host's even with PrivateDevices, and one uid can read the other unit's segments in
+# it: a private tmpfs here. (Abstract AF_UNIX sockets are still shared: neither unit has its own
+# network namespace.)
+TemporaryFileSystem=/dev/shm
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -113,8 +116,10 @@ UMask=0077
 # processes (same uid) are not here to open through /proc/<pid>/root, /fd or /environ, or to
 # signal. The main process is PID 1 of its namespace, and a signal it has no handler for is ignored
 # there, so if Hermes (or its launcher, when it does not exec Hermes) does not handle SIGTERM, a stop
-# waits for TimeoutStopSec and then SIGKILLs. Not yet seen on a machine: the VM gate checks that it
-# stops in time and reaps its tool children.
+# goes straight to SIGKILL (that is what a no-handler PID 1 did on staging, see yantrik-mind.service),
+# which skips Hermes's own drain of its turns. TimeoutStopSec bounds it. Not yet seen with Hermes: the
+# VM gate checks how it stops and that its tool children are reaped. The journal may print
+# "Supervising process ... not our child" at each start; it is expected with a PID namespace.
 PrivatePIDs=yes
 ProtectProc=invisible
 ProcSubset=pid

@@ -19,15 +19,21 @@ no approval card. Now:
   reaches the desktop only at the mind door (`YANTRIK_MIND_RUN=/run/yantrik-minds`), where every act
   is graded and asked about like any other mind's. The desktop's tools (`yos-mcp`) are passed that
   door by name in Hermes's config, because Hermes starts MCP servers with a cleaned environment.
-- **The built-in Mind shares its uid**, so the two are kept apart by two namespaces together: the
-  unit hides the Mind's files (mount namespace), and `PrivatePIDs=yes` (systemd 257) hides the Mind's
-  processes, so `/proc/<pid>/root`, `/fd` and `/environ` cannot be walked into. A mount namespace
-  alone is not enough (measured). That is the harness unit's half. **The Mind's unit does not have
-  `PrivatePIDs` yet**, so until it does the Mind can still read Hermes's files through `/proc`: it
-  needs a Mind bundle that handles SIGTERM as PID 1 (E.SIGTERM1), and the line lands with the OS
-  release that requires it. A systemd older than 257 refuses to install or start Hermes (the unit
-  checks, and so does the installer, which also asks systemd for `PrivatePIDs` after the start).
-  Per-harness accounts remain the next step.
+- **The built-in Mind shares its uid**, so the two are kept apart by two namespaces together, and
+  both units have both: a mount namespace that hides the other's files, and `PrivatePIDs=yes`
+  (systemd 257), so `/proc/<pid>/root`, `/fd` and `/environ` of the other's processes cannot be
+  walked into and it cannot be signalled. A mount namespace alone is not enough (measured). A Mind
+  bundle that does not handle SIGTERM as PID 1 (before E.SIGTERM1) is killed rather than stopped:
+  on staging (systemd 257.8) `systemctl stop` of a no-handler PID 1 took 0.017 s and went straight
+  to SIGKILL, so the cost is an unclean SQLite close, not a slow stop (the gate measures it on the
+  OS's 257.13; `TimeoutStopSec=30` in its unit bounds it either way). A Mind always comes back.
+  The journal may print "Supervising process ... not our child" at each start; it is expected. A systemd older than 257 would ignore the line, so Hermes is not installed or
+  started there (the installer, the unit and every task check); the Mind's unit has no such gate,
+  because refusing to start would leave no Mind, and with no harness there is nothing to keep apart.
+  Still shared: abstract AF_UNIX sockets (no network namespace in either unit), and nothing but the
+  uid separates the two beyond the namespaces. Per-harness accounts remain the next step.
+  `hermes model` runs in a pty of its own unit, not your terminal, but its output reaches your
+  terminal as it is: a modified Hermes could send escape sequences (title, clipboard) while it runs.
 - **Its keys** live in its own `~/.hermes/.env`, mode 0600, read by Hermes itself as that account.
   They are never in a unit file, an `EnvironmentFile`, a command line or the journal. After a move,
   **your old copy still has the same keys**, in `~/.hermes.yantrik-moved`, readable by anything

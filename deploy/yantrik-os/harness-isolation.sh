@@ -9,8 +9,10 @@
 #   - its home is /var/lib/yantrik-mind/harness/<name>, which the person cannot open. The Mind
 #     shares its uid, so the two are kept apart by mount AND PID namespaces together: the unit hides
 #     the Mind's files (TemporaryFileSystem) and PrivatePIDs=yes closes /proc/<pid>/{root,fd,environ}.
-#     The Mind's own unit gets the same line when its bundle handles SIGTERM as PID 1 (see its unit);
-#     until then the Mind can still read Hermes's keys;
+#     Both units have the line, so it holds both ways. A Mind bundle that does not handle SIGTERM as
+#     PID 1 is killed rather than stopped (0.017 s to SIGKILL on staging's systemd 257.8; the unit
+#     has the details): an unclean close, never a Mind that does not come back. A systemd older than 257 would ignore the line, so no harness is installed or started on
+#     one (below); the Mind's unit has no gate of its own, because refusing to start would be no Mind;
 #   - it reaches the desktop only at the mind door (/run/yantrik-minds, YANTRIK_MIND_RUN), where
 #     every act is held to the shell's grades and approvals;
 #   - its installer is the same script the Install button always ran, run as the mind account with
@@ -40,6 +42,8 @@ HI_STATE="${HI_STATE:-/var/lib/yantrik-harness}"
 # in a unit, so nothing is installed or started without it.
 HI_MIN_SYSTEMD="${HI_MIN_SYSTEMD:-257}"
 HI_COPY_TIMEOUT="${HI_COPY_TIMEOUT:-1200}"
+HI_LOCK="${HI_LOCK:-/run/yantrik-harness.lock}"
+HI_PROC="${HI_PROC:-/proc}"
 # What a person who migrated keeps: their old Hermes, whole, renamed. Never deleted by this.
 HI_KEEP=".yantrik-moved"
 # The installer carries this word when it understands the two phases. An older installer (a rolled
@@ -143,7 +147,7 @@ hi_run_as() {
   local -a limit=()
   [ -z "${HI_TIMEOUT:-}" ] || limit=("$(command -v timeout)" -k 10 "$HI_TIMEOUT")
   ( cd "$home" 2>/dev/null || cd / ; exec setsid -w "${limit[@]}" "$(command -v setpriv)" --reuid="$uid" --regid="$gid" \
-      --clear-groups --no-new-privs -- env -i "${env_args[@]}" "$@" ) 9>&-
+      --clear-groups --no-new-privs -- env -i "${env_args[@]}" "$@" ) 8>&- 9>&-
 }
 hi_as_mind() { hi_run_as "$HI_USER" "$HI_BASE" "$@"; }
 hi_as_owner() { # <command...>
@@ -154,7 +158,7 @@ hi_as_owner() { # <command...>
 
 # What a script says, one line each, for a person's row or a terminal: control characters dropped
 # (the text is a program's, written to a terminal root owns).
-hi_relay() { tr -d '\000-\010\013-\037\177' | while IFS= read -r line; do info "$line"; done; }
+hi_relay() { tr -d '\000-\010\013-\037\177' | LC_ALL=C sed 's/\xc2[\x80-\x9f]//g' | while IFS= read -r line; do info "$line"; done; }
 
 # <seconds> <user> <home> <command...>: a fixed tool, output relayed, exit status returned, ended
 # by KILL at the limit.
@@ -172,6 +176,16 @@ hi_systemd_ok() { # systemd new enough for PrivatePIDs=
   [ "${v:-0}" -ge "$HI_MIN_SYSTEMD" ] 2>/dev/null
 }
 
+# Is the unit's main process really in a PID namespace of its own? Asked of the kernel, not of the
+# unit's settings: the namespace links of that process and of PID 1 must differ.
+hi_pid_ns_private() { # <unit>
+  local pid mine one
+  pid="$(systemctl show -p MainPID --value "$1" 2>/dev/null)"
+  case "$pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  mine="$(readlink "$HI_PROC/$pid/ns/pid" 2>/dev/null)"; one="$(readlink "$HI_PROC/1/ns/pid" 2>/dev/null)"
+  [ -n "$mine" ] && [ -n "$one" ] && [ "$mine" != "$one" ]
+}
+
 # The home must be the account's own plain directory, not a link someone put there: BindPaths= would
 # follow it.
 hi_check_home() { # <name>
@@ -186,6 +200,11 @@ hi_sandbox_props() { # <name>
   local f="$HI_UNIT_DIR/$(hi_unit "$1")" line in=0
   HI_PROPS=()
   [ -f "$f" ] || { warn "no $f"; return 1; }
+  # A drop-in would change the gateway and not the tasks (or the reverse): one list or none.
+  if [ -n "$(find "$f.d" "/run/systemd/system/$(hi_unit "$1").d" -maxdepth 1 -name '*.conf' 2>/dev/null | head -n 1)" ]; then
+    warn "$(hi_unit "$1") has a drop-in; the sandbox is one list, so nothing was run. Remove it."
+    return 1
+  fi
   while IFS= read -r line; do
     case "$line" in
       "# sandbox:begin"*) in=1 ;;
@@ -205,9 +224,15 @@ hi_task() {
   local secs="$1" pty="$2" name="$3"; shift 3
   hi_systemd_ok || { warn "systemd is older than $HI_MIN_SYSTEMD (no PrivatePIDs=): nothing was run"; return 1; }
   hi_check_home "$name" && hi_sandbox_props "$name" || return 1
+  # The kernel's way-out table is what holds this account to the proxy; the gateway unit will not
+  # start without it, and neither does a task (the unit's Requires=/ExecStartPre= are outside the
+  # block, so they are repeated here).
+  nft list table inet yantrik_mind_egress >/dev/null 2>&1 \
+    || { warn "the egress table (inet yantrik_mind_egress) is not loaded: nothing was run. Run: sudo yantrik-update mind-egress apply"; return 1; }
   local -a mode=(--pipe)
   [ "$pty" = 1 ] && mode=(--pty)
   systemd-run --quiet --wait --collect "${mode[@]}" -p "User=$HI_USER" -p "Group=$HI_GROUP" \
+    -p After=yantrik-mind-egress.service -p Requires=yantrik-mind-egress.service \
     -p "WorkingDirectory=$(hi_home "$name")" -p "RuntimeMaxSec=$secs" -p TimeoutStopSec=10 \
     "${HI_PROPS[@]}" -- "$@"
 }
@@ -262,6 +287,7 @@ hi_stop_person_unit() { # <name> <owner> <home>: succeeds with "active" or "idle
 }
 hi_disable_person_unit() { # <name> <owner> <home>
   local unit file; unit="$(hi_unit "$1")"; file="$3/.config/systemd/user/$unit"
+  systemctl --user -M "$2@" stop "$unit" >/dev/null 2>&1 || true
   systemctl --user -M "$2@" disable "$unit" >/dev/null 2>&1 || true
   systemctl --global disable "$unit" >/dev/null 2>&1 || true
   if [ -e "$file" ] && [ ! -L "$file" ]; then
@@ -395,7 +421,9 @@ hi_abort() { # <name> <was-active: active|idle|none> <owner> <reason>
   trap - TERM INT HUP
   warn "$1 was not moved: $4"
   hi_migrated "$1" || { systemctl disable --now "$unit" >/dev/null 2>&1 || true; hi_set_aside "$1" failed; }
-  if [ "$2" = active ]; then
+  # Only a move that did not commit gives the person's gateway back: after the marker the system
+  # one is the gateway, and two would share the platform's tokens.
+  if [ "$2" = active ] && ! hi_migrated "$1"; then
     systemctl --user -M "$3@" start "$(hi_unit "$1")" >/dev/null 2>&1 \
       && info "your own $1 gateway is running again, as it was"
   fi
@@ -411,8 +439,8 @@ hi_interrupted() { local n o w; read -r n o w <<< "$HI_NOW"; hi_abort "$n" "$w" 
 # copy kept, a `hermes` command that works, and the row's installed marker. Any run after the first
 # only repeats what is missing.
 hi_commit() { # <name> <owner> <home>
-  hi_mark_migrated "$1" || fail "could not record that $1 is isolated"
   trap - TERM INT HUP
+  hi_mark_migrated "$1" || fail "could not record that $1 is isolated"
   systemctl enable "$(hi_unit "$1")" >/dev/null 2>&1 || warn "$(hi_unit "$1") could not be enabled for boot; sudo yantrik-update reconcile tries again"
   hi_finish "$1" "$2" "$3"
   hi_mark_person_installed "$1" "$3"
@@ -435,6 +463,8 @@ hi_install() { # <name>
   hi_known "$name" || fail "unknown harness '$name' (known here: hermes)"
   [ "$(id -u)" = 0 ] || fail "run as root"
   tree_is_roots || fail "this machine's tree is not root's yet; run: sudo yantrik-update migrate-ownership"
+  # One move at a time: the button and the detached update-time move would interleave otherwise.
+  [ -n "${HI_LOCKED:-}" ] || { exec 8>"$HI_LOCK" && flock -n 8 && HI_LOCKED=1; }     || fail "another harness move is running (journalctl -u yantrik-harness-migrate); try again when it ends"
   hi_has_installer "$name" || fail "this build's $name installer does not know the mind account yet; nothing was changed"
   unit="$(hi_unit "$name")"
   who="$(hi_owner_home)" || fail "cannot tell whose desktop this is; nothing was changed"
@@ -458,6 +488,7 @@ hi_install() { # <name>
   # ignored the line would run the harness without it. Asked of systemd, not assumed.
   shown="$(systemctl show -p PrivatePIDs --value "$unit" 2>/dev/null)"
   [ "$shown" = yes ] || hi_abort "$name" "$was" "$owner" "$unit is running without a PID namespace of its own (PrivatePIDs is '${shown:-unknown}')"
+  hi_pid_ns_private "$unit" || hi_abort "$name" "$was" "$owner" "$unit's main process shares PID 1's PID namespace"
   hi_run_installer "$name" prove 200 || hi_abort "$name" "$was" "$owner" "it started but did not pass its proofs"
   hi_commit "$name" "$owner" "$home"
   say "$name runs as the mind account now"
