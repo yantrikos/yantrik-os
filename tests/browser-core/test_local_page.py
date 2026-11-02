@@ -305,8 +305,8 @@ class TestRenderInstanceLive(unittest.TestCase):
         return "file://%s/%s" % (self.tmp, rel)
 
     def test_a_mind_page_loads_in_its_own_browser(self):
-        got = self.d.go(self.url("Sites/index.html"))
-        self.assertIn("hello from a mind", str(got))
+        self.d.go(self.url("Sites/index.html"))
+        self.assertIn("hello from a mind", str(self.d.text()))
         self.assertIsNot(self.d.browser, self.d.main_browser)
 
     def test_a_page_reaches_no_network_not_even_loopback(self):
