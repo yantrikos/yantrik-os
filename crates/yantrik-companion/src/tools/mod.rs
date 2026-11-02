@@ -12,6 +12,8 @@ pub mod email;
 pub mod mcp;
 pub mod memory;
 pub mod open_loops;
+#[cfg(test)]
+mod outward_pin;
 pub mod recipe;
 pub mod scheduler;
 pub mod spawn_agents;

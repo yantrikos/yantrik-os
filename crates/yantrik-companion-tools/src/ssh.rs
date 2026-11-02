@@ -287,7 +287,9 @@ impl Tool for SshRunTool {
             return format!("Error: blocked — {reason}");
         }
 
-        match std::process::Command::new("ssh")
+        crate::outward::acting(
+            &crate::outward::OutwardAct { tool: "ssh_run", to: host, what: command, more: "" },
+            || match std::process::Command::new("ssh")
             .args([
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=5",
@@ -323,7 +325,7 @@ impl Tool for SshRunTool {
                 }
             }
             Err(e) => format!("Error running ssh: {e}"),
-        }
+        })
     }
 }
 
@@ -337,5 +339,48 @@ mod tests {
         assert!(validate_host("-L8080:localhost:80").is_err());
         assert!(validate_host("-v").is_err());
         assert!(validate_host("build-box.lan").is_ok());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod outward_tests {
+    //! `ssh_run` runs a command on another machine as the person (#1054): it asks first, with the
+    //! host and the whole command, and a no runs nothing.
+    use super::*;
+    use crate::outward_testing::{actions, first_card, installed, shown, with_ctx};
+
+    const ARGS: &str = r#"{"host":"box.example.com","command":"systemctl restart nginx; echo done"}"#;
+
+    #[test]
+    fn a_command_on_another_host_raises_a_card_with_the_host_and_the_whole_command_and_a_no_runs_nothing() {
+        let (_shell, heard) = installed("ssh-no", "pending", "denied");
+        let said = with_ctx(|ctx| SshRunTool.execute(ctx, &serde_json::from_str(ARGS).unwrap()));
+
+        assert!(said.contains("said no") && said.contains("Nothing was done"), "{said}");
+        let card = first_card(&heard);
+        assert_eq!(card["action"], "outward_act");
+        assert_eq!(card["grade"], "sensitive");
+        assert_eq!(card["args_json"]["tool"], "ssh_run");
+        assert_eq!(shown(&card, "to"), "box.example.com");
+        assert_eq!(shown(&card, "what"), "systemctl restart nginx; echo done");
+        assert!(!actions(&heard).contains(&"consume_approval".to_string()));
+        assert!(!said.contains("Error running ssh"), "ssh was run after a no: {said}");
+    }
+
+    #[test]
+    fn silence_runs_nothing_either() {
+        let (_shell, heard) = installed("ssh-silent", "pending", "pending");
+        let said = with_ctx(|ctx| SshRunTool.execute(ctx, &serde_json::from_str(ARGS).unwrap()));
+        assert!(said.contains("Nobody answered") && said.to_lowercase().contains("nothing was done"), "{said}");
+        assert_eq!(actions(&heard).iter().filter(|a| *a == "request_approval").count(), 1);
+    }
+
+    #[test]
+    fn an_allow_is_spent_once_and_then_the_command_runs() {
+        let (_shell, heard) = installed("ssh-yes", "pending", "granted");
+        // The host does not exist, so ssh itself fails; that it was reached at all is the point.
+        let said = with_ctx(|ctx| SshRunTool.execute(ctx, &serde_json::from_str(r#"{"host":"nobody.invalid","command":"true"}"#).unwrap()));
+        assert!(!said.contains("Nobody answered") && !said.contains("said no"), "{said}");
+        assert_eq!(actions(&heard).iter().filter(|a| *a == "consume_approval").count(), 1);
     }
 }

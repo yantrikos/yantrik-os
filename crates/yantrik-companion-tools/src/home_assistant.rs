@@ -159,7 +159,14 @@ impl Tool for HaCallServiceTool {
         };
 
         let path = format!("/api/services/{}/{}", domain, service);
-        ha_curl(&self.base_url, &self.token, "POST", &path, Some(&body))
+        // A call that changes the home (a lock, a light, a heater) on the person's behalf: asked
+        // about first, with the exact service and the exact body it will be sent with (#1054).
+        let to = format!("Home Assistant at {} entity {entity_id}", self.base_url);
+        let what = format!("{domain}.{service} {body}");
+        crate::outward::acting(
+            &crate::outward::OutwardAct { tool: "ha_call_service", to: &to, what: &what, more: "" },
+            || ha_curl(&self.base_url, &self.token, "POST", &path, Some(&body)),
+        )
     }
 }
 
@@ -229,5 +236,41 @@ impl Tool for HaListEntitiesTool {
             Ok(_) => response, // Return raw if not array
             Err(_) => response, // Return raw on parse error
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod outward_tests {
+    //! `ha_call_service` changes the home on the person's behalf (#1054): it asks first, with the
+    //! exact service and body, and a no calls nothing.
+    use super::*;
+    use crate::outward_testing::{actions, first_card, installed, shown, with_ctx};
+
+    fn tool() -> HaCallServiceTool {
+        // A port nothing listens on: were the call made, the answer would say it failed to connect.
+        HaCallServiceTool { base_url: "http://127.0.0.1:9".into(), token: "fake-token-not-a-secret".into() }
+    }
+
+    const ARGS: &str = r#"{"domain":"lock","service":"unlock","entity_id":"lock.front_door"}"#;
+
+    #[test]
+    fn unlocking_a_door_raises_a_card_with_the_service_and_the_entity_and_a_no_calls_nothing() {
+        let (_shell, heard) = installed("ha-no", "pending", "denied");
+        let said = with_ctx(|ctx| tool().execute(ctx, &serde_json::from_str(ARGS).unwrap()));
+
+        assert!(said.contains("said no") && said.contains("Nothing was done"), "{said}");
+        let card = first_card(&heard);
+        assert_eq!(card["args_json"]["tool"], "ha_call_service");
+        assert!(shown(&card, "to").contains("lock.front_door"), "{card}");
+        assert!(shown(&card, "what").starts_with("lock.unlock "), "{card}");
+        assert!(!actions(&heard).contains(&"consume_approval".to_string()));
+    }
+
+    #[test]
+    fn an_allow_is_spent_once_and_then_the_call_is_made() {
+        let (_shell, heard) = installed("ha-yes", "pending", "granted");
+        let said = with_ctx(|ctx| tool().execute(ctx, &serde_json::from_str(ARGS).unwrap()));
+        assert!(!said.contains("said no") && !said.contains("Nobody answered"), "{said}");
+        assert_eq!(actions(&heard).iter().filter(|a| *a == "consume_approval").count(), 1);
     }
 }

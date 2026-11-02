@@ -1007,6 +1007,13 @@ impl Tool for BrowserClickTool {
             Err(e) => return format!("Error: {e}"),
         };
 
+        // A control that acts (a button, anything in a form) is asked about first (#1054).
+        let pick = format!("document.querySelector('{}')", sel.replace('\'', "\\'"));
+        let permit = match crate::browser_outward::before_press(&mut |js| eval_js(&mut ws, js), &pick, "browser_click") {
+            Ok(p) => p,
+            Err(refusal) => return refusal,
+        };
+
         let js = format!(
             r#"(() => {{
                 const el = document.querySelector('{}');
@@ -1018,10 +1025,12 @@ impl Tool for BrowserClickTool {
             sel.replace('\'', "\\'"),
         );
 
-        match eval_js(&mut ws, &js) {
+        let out = match eval_js(&mut ws, &js) {
             Ok(result) => result,
             Err(e) => format!("Click error: {e}"),
-        }
+        };
+        permit.finish(crate::outward::outcome_ok(&out));
+        out
     }
 }
 
@@ -1088,6 +1097,15 @@ impl Tool for BrowserTypeTool {
         } else {
             ""
         };
+        // Typing that submits sends the text out: asked about first (#1054). Typing alone does not.
+        let permit = if submit {
+            match crate::browser_outward::before_submit(&mut |js| eval_js(&mut ws, js), "browser_type", selector, text) {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            }
+        } else {
+            crate::outward::Permit::asked()
+        };
 
         let js = format!(
             r#"(() => {{
@@ -1106,7 +1124,7 @@ impl Tool for BrowserTypeTool {
             submit_js,
         );
 
-        match eval_js(&mut ws, &js) {
+        let out = match eval_js(&mut ws, &js) {
             Ok(result) => {
                 if submit {
                     // Wait a moment for form submission
@@ -1115,7 +1133,9 @@ impl Tool for BrowserTypeTool {
                 result
             }
             Err(e) => format!("Type error: {e}"),
-        }
+        };
+        permit.finish(crate::outward::outcome_ok(&out));
+        out
     }
 }
 
@@ -1877,6 +1897,13 @@ impl Tool for BrowserClickElementTool {
             Err(e) => return format!("Error: {e}"),
         };
 
+        // A control that acts (a button, anything in a form) is asked about first (#1054).
+        let pick = format!("(window.__yantrik_elements || [])[{}]", num - 1);
+        let permit = match crate::browser_outward::before_press(&mut |js| eval_js(&mut ws, js), &pick, "browser_click_element") {
+            Ok(p) => p,
+            Err(refusal) => return refusal,
+        };
+
         let js = format!(
             r#"(() => {{
                 const els = window.__yantrik_elements;
@@ -1894,14 +1921,16 @@ impl Tool for BrowserClickElementTool {
             num = num,
         );
 
-        match eval_js(&mut ws, &js) {
+        let out = match eval_js(&mut ws, &js) {
             Ok(result) => {
                 // Wait briefly for any navigation or DOM changes
                 std::thread::sleep(Duration::from_millis(500));
                 result
             }
             Err(e) => format!("Click error: {e}"),
-        }
+        };
+        permit.finish(crate::outward::outcome_ok(&out));
+        out
     }
 }
 
@@ -1966,6 +1995,16 @@ impl Tool for BrowserTypeElementTool {
         } else {
             ""
         };
+        // Typing that submits sends the text out: asked about first (#1054). Typing alone does not.
+        let permit = if submit {
+            let target = format!("element {num} from the last snapshot");
+            match crate::browser_outward::before_submit(&mut |js| eval_js(&mut ws, js), "browser_type_element", &target, text) {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            }
+        } else {
+            crate::outward::Permit::asked()
+        };
 
         let js = format!(
             r#"(() => {{
@@ -2002,10 +2041,12 @@ impl Tool for BrowserTypeElementTool {
             submit_js = submit_js,
         );
 
-        match eval_js(&mut ws, &js) {
+        let out = match eval_js(&mut ws, &js) {
             Ok(result) => result,
             Err(e) => format!("Type error: {e}"),
-        }
+        };
+        permit.finish(crate::outward::outcome_ok(&out));
+        out
     }
 }
 
@@ -2258,6 +2299,13 @@ impl Tool for BrowserClickXYTool {
 
         let click_count = if double_click { 2 } else { 1 };
 
+        // A control that acts (a button, anything in a form) is asked about first (#1054).
+        let pick = format!("document.elementFromPoint({x}, {y})");
+        let permit = match crate::browser_outward::before_press(&mut |js| eval_js(&mut ws, js), &pick, "browser_click_xy") {
+            Ok(p) => p,
+            Err(refusal) => return refusal,
+        };
+
         // CDP Input.dispatchMouseEvent: move → press → release
         // This triggers real browser-level mouse events that work with any framework.
         if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
@@ -2301,6 +2349,7 @@ impl Tool for BrowserClickXYTool {
             }})()"
         )).unwrap_or_else(|_| "unknown".to_string());
 
+        permit.finish(true);
         format!("Clicked at ({}, {}) — {}", x as i64, y as i64, what)
     }
 }
@@ -2356,6 +2405,17 @@ impl Tool for BrowserTypeXYTool {
         let (mut ws, _tab) = match connect_first_tab() {
             Ok(v) => v,
             Err(e) => return format!("Error: {e}"),
+        };
+
+        // Typing that submits sends the text out: asked about first (#1054). Typing alone does not.
+        let permit = if submit {
+            let target = format!("the field at ({}, {})", x as i64, y as i64);
+            match crate::browser_outward::before_submit(&mut |js| eval_js(&mut ws, js), "browser_type_xy", &target, text) {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            }
+        } else {
+            crate::outward::Permit::asked()
         };
 
         // 1. Click at coordinates to focus the field
@@ -2420,6 +2480,7 @@ impl Tool for BrowserTypeXYTool {
             std::thread::sleep(Duration::from_millis(500));
         }
 
+        permit.finish(true);
         let preview = if text.len() > 50 { &text[..text.floor_char_boundary(50)] } else { text };
         format!("Typed at ({}, {}): \"{}\"", x as i64, y as i64, preview)
     }
@@ -2688,6 +2749,24 @@ impl Tool for BrowserLoginTool {
             );
         }
 
+        // Signing in hands the person's saved credential to a site and acts as them there: asked
+        // about first, with the site and the account (never the password) (#1054). Filling the
+        // form without submitting it is not asked about.
+        let permit = if should_submit {
+            let what = format!("sign in to {service} as {} with the saved password", entry.username);
+            match crate::outward::ask_person_before_acting(&crate::outward::OutwardAct {
+                tool: "browser_login",
+                to: page_origin,
+                what: &what,
+                more: "",
+            }) {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            }
+        } else {
+            crate::outward::Permit::asked()
+        };
+
         if form["has_user_field"].as_bool().unwrap_or(false) {
             if let Err(e) = focus_login_field(&mut ws, "user") {
                 return format!("Error: {e}");
@@ -2733,6 +2812,7 @@ impl Tool for BrowserLoginTool {
         // log. The username is shown because knowing which account was used is the point; the
         // password appears nowhere in this function's output, by construction.
         let now = eval_js(&mut ws, "location.href").unwrap_or_default();
+        permit.finish(true);
         format!(
             "Signed in to {service} as {} on {page_origin}.{} Now at {now}. \
              Check the page to confirm — a wrong password looks like a page that did not change.",

@@ -207,14 +207,42 @@ impl Tool for WindowActionTool {
                 .to_string();
         }
 
-        match call(
-            "a11y.act",
-            serde_json::json!({ "element": element, "action": action }),
-        ) {
-            Ok(v) => format!("Did `{}` on {element}.", v["did"].as_str().unwrap_or(action)),
-            // The service's refusals already name what was wrong and list the real actions, so
-            // they are passed through rather than wrapped.
-            Err(e) => e,
-        }
+        // A press or a keystroke in another program's window, which may be the Send or Buy
+        // button of a site or an app the person is signed in to: asked about first (#1054). The
+        // element is the id `describe_window` gave, with the action to take on it.
+        let to = format!("an element in another program's window ({element})");
+        crate::outward::acting(
+            &crate::outward::OutwardAct { tool: "window_action", to: &to, what: action, more: "" },
+            || match call(
+                "a11y.act",
+                serde_json::json!({ "element": element, "action": action }),
+            ) {
+                Ok(v) => format!("Did `{}` on {element}.", v["did"].as_str().unwrap_or(action)),
+                // The service's refusals already name what was wrong and list the real actions, so
+                // they are passed through rather than wrapped.
+                Err(e) => e,
+            },
+        )
+    }
+}
+
+#[cfg(all(test, unix))]
+mod outward_tests {
+    //! `window_action` presses a control in another program's window, which may be a Send or Buy
+    //! button (#1054): it asks first, and a no presses nothing.
+    use super::*;
+    use crate::outward_testing::{actions, first_card, installed, shown, with_ctx};
+
+    #[test]
+    fn a_press_in_another_window_raises_a_card_and_a_no_presses_nothing() {
+        let (_shell, heard) = installed("win-no", "pending", "denied");
+        let said = with_ctx(|ctx| WindowActionTool.execute(ctx, &serde_json::json!({ "element": "w3/e17", "action": "Click" })));
+
+        assert!(said.contains("said no") && said.contains("Nothing was done"), "{said}");
+        let card = first_card(&heard);
+        assert_eq!(card["args_json"]["tool"], "window_action");
+        assert!(shown(&card, "to").contains("w3/e17"));
+        assert_eq!(shown(&card, "what"), "Click");
+        assert!(!actions(&heard).contains(&"consume_approval".to_string()));
     }
 }

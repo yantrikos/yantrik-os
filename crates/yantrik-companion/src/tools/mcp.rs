@@ -77,6 +77,21 @@ impl Tool for McpProxyTool {
         }
 
         // ── Execute the MCP tool call ──
+        // Another party's tool, called in the person's name and possibly acting on an account or
+        // a service of theirs: asked about first, with the server, the tool and its arguments
+        // whole (#1054). Whether it only reads is the server's word, which is not enough to skip.
+        let to = format!("MCP server {} ({})", self.server_id, self.mcp_tool_name);
+        let what = args.to_string();
+        yantrik_companion_tools::outward::acting(
+            &yantrik_companion_tools::outward::OutwardAct { tool: self.tool_name, to: &to, what: &what, more: "" },
+            || self.call(args),
+        )
+    }
+}
+
+impl McpProxyTool {
+    /// The call itself, after the request was scanned and the person said yes.
+    fn call(&self, args: &Value) -> String {
         let mut conn = match self.connection.lock() {
             Ok(c) => c,
             Err(e) => return format!("Error: MCP connection lock poisoned: {e}"),
@@ -211,4 +226,71 @@ pub fn list_mcp_tools_summary(reg: &ToolRegistry, max_permission: PermissionLeve
         .filter(|m| m.category == "mcp")
         .map(|m| format!("{}: {}", m.name, m.description))
         .collect()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    //! An MCP tool is another party's tool called in the person's name (#1054): it asks first,
+    //! with the server, the tool and its whole arguments, and a no calls nothing.
+    use super::*;
+    use yantrik_companion_tools::outward_testing::{actions, first_card, installed, shown, with_ctx};
+
+    /// A server that answers the handshake and every `tools/call` with "done", and leaves a file
+    /// behind when a call reaches it.
+    fn server(marker: &std::path::Path) -> McpConnection {
+        let script = r#"
+            while IFS= read -r line; do
+              id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+              case "$line" in
+                *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"serverInfo":{"name":"t"}}}\n' "$id" ;;
+                *'"tools/call"'*) : > "$MARK"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"done"}]}}\n' "$id" ;;
+              esac
+            done"#;
+        let env = std::collections::HashMap::from([("MARK".to_string(), marker.to_string_lossy().to_string())]);
+        McpConnection::start("sh", &["-c".to_string(), script.to_string()], &env, None).expect("the fake server starts")
+    }
+
+    fn proxy(marker: &std::path::Path) -> McpProxyTool {
+        McpProxyTool {
+            tool_name: "mcp__fake_post",
+            mcp_tool_name: "post".to_string(),
+            server_id: "fake".to_string(),
+            tool_description: "posts",
+            input_schema: serde_json::json!({}),
+            connection: std::sync::Arc::new(Mutex::new(server(marker))),
+        }
+    }
+
+    fn marker(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("yantrik-mcp-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn a_call_raises_a_card_with_the_server_the_tool_and_the_arguments_and_a_no_calls_nothing() {
+        let (_shell, heard) = installed("mcp-no", "pending", "denied");
+        let mark = marker("no");
+        let said = with_ctx(|ctx| proxy(&mark).execute(ctx, &serde_json::json!({ "channel": "#general", "text": "hi; everyone" })));
+
+        assert!(said.contains("said no") && said.contains("Nothing was done"), "{said}");
+        assert!(!mark.exists(), "the server was called after a no");
+        let card = first_card(&heard);
+        assert_eq!(card["args_json"]["tool"], "mcp__fake_post");
+        assert_eq!(shown(&card, "to"), "MCP server fake (post)");
+        assert_eq!(shown(&card, "what"), r##"{"channel":"#general","text":"hi; everyone"}"##);
+        assert!(!actions(&heard).contains(&"consume_approval".to_string()));
+    }
+
+    #[test]
+    fn an_allow_is_spent_once_and_the_call_is_made_once() {
+        let (_shell, heard) = installed("mcp-yes", "pending", "granted");
+        let mark = marker("yes");
+        let said = with_ctx(|ctx| proxy(&mark).execute(ctx, &serde_json::json!({ "text": "hi" })));
+
+        assert_eq!(said, "done");
+        assert!(mark.exists());
+        assert_eq!(actions(&heard).iter().filter(|a| *a == "consume_approval").count(), 1);
+        let _ = std::fs::remove_file(&mark);
+    }
 }

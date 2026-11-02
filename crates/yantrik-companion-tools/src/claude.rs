@@ -114,7 +114,12 @@ impl Tool for ClaudeCodeTool {
             .and_then(|v| v.as_str())
             .unwrap_or("/home/yantrik");
 
-        run_claude_code(task, cwd)
+        // An agent that sends the task to Anthropic under the person's sign-in and may then run
+        // commands and write files on this machine: asked about first, with the whole task (#1054).
+        crate::outward::acting(
+            &crate::outward::OutwardAct { tool: "claude_code", to: "Claude Code under the person's sign-in", what: task, more: cwd },
+            || run_claude_code(task, cwd),
+        )
     }
 }
 
@@ -197,5 +202,26 @@ fn run_claude_code(task: &str, cwd: &str) -> String {
         Err(e) => {
             format!("Failed to run claude CLI: {}", e)
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod outward_tests {
+    //! `claude_code` hands a task to an agent that may run commands and write files as the person
+    //! (#1054): it asks first, with the whole task, and a no starts nothing.
+    use super::*;
+    use crate::outward_testing::{actions, first_card, installed, shown, with_ctx};
+
+    #[test]
+    fn a_task_for_claude_code_raises_a_card_with_the_whole_task_and_a_no_starts_nothing() {
+        let (_shell, heard) = installed("claude-no", "pending", "denied");
+        let said = with_ctx(|ctx| ClaudeCodeTool.execute(ctx, &serde_json::json!({ "task": "delete the build; then push", "working_directory": "/tmp" })));
+
+        assert!(said.contains("said no") && said.contains("Nothing was done"), "{said}");
+        let card = first_card(&heard);
+        assert_eq!(card["args_json"]["tool"], "claude_code");
+        assert_eq!(shown(&card, "what"), "delete the build; then push");
+        assert_eq!(shown(&card, "more"), "/tmp");
+        assert!(!actions(&heard).contains(&"consume_approval".to_string()));
     }
 }

@@ -17,6 +17,7 @@ pub mod archive;
 pub mod artifacts;
 pub mod bluetooth;
 pub mod browser;
+pub mod browser_outward;
 pub mod browser_lifecycle;
 pub mod calculator;
 pub mod canvas;
@@ -44,6 +45,8 @@ pub mod memory_hygiene;
 pub mod network;
 pub mod networking;
 pub mod outward;
+#[cfg(all(unix, any(test, feature = "test-support")))]
+pub mod outward_testing;
 pub mod package;
 pub mod pipe;
 /// What run_command may run, without a shell (#445).

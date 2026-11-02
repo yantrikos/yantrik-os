@@ -59,17 +59,59 @@ impl Tool for WhatsAppSendTool {
             return "Error: no recipient specified and no default recipient configured".to_string();
         }
 
-        let config = crate::config::WhatsAppConfig {
-            enabled: true,
-            phone_number_id: Some(self.phone_number_id.clone()),
-            access_token: Some(self.access_token.clone()),
-            recipient: Some(to.to_string()),
-            verify_token: None,
-        };
+        // A message to a phone number, in the person's name: asked about first, whole (#1054).
+        yantrik_companion_tools::outward::acting(
+            &yantrik_companion_tools::outward::OutwardAct { tool: "whatsapp_send", to, what: text, more: "" },
+            || {
+                let config = crate::config::WhatsAppConfig {
+                    enabled: true,
+                    phone_number_id: Some(self.phone_number_id.clone()),
+                    access_token: Some(self.access_token.clone()),
+                    recipient: Some(to.to_string()),
+                    verify_token: None,
+                };
+                match crate::whatsapp::send_message(&config, to, text) {
+                    Ok(()) => format!("WhatsApp message sent to {to}."),
+                    Err(e) => format!("Failed to send WhatsApp message: {e}"),
+                }
+            },
+        )
+    }
+}
 
-        match crate::whatsapp::send_message(&config, to, text) {
-            Ok(()) => format!("WhatsApp message sent to {to}."),
-            Err(e) => format!("Failed to send WhatsApp message: {e}"),
+#[cfg(all(test, unix))]
+mod tests {
+    //! `whatsapp_send` messages a phone number in the person's name (#1054): it asks first, with
+    //! the number and the whole text, and a no sends nothing.
+    use super::*;
+    use yantrik_companion_tools::outward_testing::{actions, first_card, installed, shown, with_ctx};
+
+    fn tool() -> WhatsAppSendTool {
+        WhatsAppSendTool {
+            phone_number_id: "1".into(),
+            access_token: "fake-token-not-a-secret".into(),
+            default_recipient: "+15550100".into(),
         }
+    }
+
+    #[test]
+    fn a_message_raises_a_card_with_the_number_and_the_whole_text_and_a_no_sends_nothing() {
+        let (_shell, heard) = installed("wa-no", "pending", "denied");
+        let said = with_ctx(|ctx| tool().execute(ctx, &serde_json::json!({ "text": "Pay me; now", "to": "+15550123" })));
+
+        assert!(said.contains("said no") && said.contains("Nothing was done"), "{said}");
+        assert!(!said.contains("WhatsApp message sent") && !said.contains("Failed to send"), "a send was attempted: {said}");
+        let card = first_card(&heard);
+        assert_eq!(card["args_json"]["tool"], "whatsapp_send");
+        assert_eq!(shown(&card, "to"), "+15550123");
+        assert_eq!(shown(&card, "what"), "Pay me; now");
+        assert!(!actions(&heard).contains(&"consume_approval".to_string()));
+    }
+
+    #[test]
+    fn the_default_recipient_is_on_the_card_when_none_is_named() {
+        let (_shell, heard) = installed("wa-default", "pending", "denied");
+        with_ctx(|ctx| tool().execute(ctx, &serde_json::json!({ "text": "hi" })));
+        assert_eq!(shown(&first_card(&heard), "to"), "+15550100");
     }
 }
