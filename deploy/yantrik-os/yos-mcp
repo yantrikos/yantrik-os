@@ -139,7 +139,101 @@ _CLIENT = {}
 # rather than being typed into the person's Terminal, and the first-class command tools below are
 # offered. Without one, nothing here changes.
 AGENT_TOKEN_ENV = "YANTRIK_AGENT_TOKEN"
-AGENT_TOKEN = os.environ.get(AGENT_TOKEN_ENV, "").strip()
+# Two ways to be handed the token that keep it out of this process's ENVIRONMENT (which
+# /proc/<pid>/environ keeps for the life of the process, whatever is done to os.environ):
+# a pipe's file descriptor, for a harness that starts this bridge itself, and the path of a unix
+# socket that answers one token and closes, for a harness whose runtime starts the bridge (Hermes
+# starts its MCP servers itself and passes them nothing but an environment). Either is read once
+# into memory, the variable is dropped, and the process is made non-dumpable, so nothing of the
+# same user can read it back out of /proc/<pid>/{environ,mem}. The plain variable still works.
+AGENT_TOKEN_FD_ENV = "YANTRIK_AGENT_TOKEN_FD"
+AGENT_TOKEN_SOCK_ENV = "YANTRIK_AGENT_TOKEN_SOCK"
+TOKEN_MOST = 512
+
+
+def make_undumpable():
+    """prctl(PR_SET_DUMPABLE, 0): /proc/<pid>/{environ,mem,fd} of this process are root's alone, and
+    ptrace needs a capability. The one helper for it on this side; harnesses/hermes/bridge_token.py
+    is the one on the starting side."""
+    try:
+        import ctypes
+
+        ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)
+    except Exception:
+        pass
+
+
+def _read_all(read, limit=TOKEN_MOST):
+    chunks, size = [], 0
+    while size <= limit:
+        chunk = read(256)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    return b"".join(chunks)[:limit].decode("utf-8", "replace").strip()
+
+
+def take_agent_token(environ=None):
+    """The agent token this bridge was started with, or "". Reads it from the descriptor or the
+    socket if one is named, else from the plain variable; drops all three variables; and makes the
+    process non-dumpable whenever there is a token. A source that is named and cannot be read gives
+    no token at all (the bridge then acts as no agent and the desktop refuses a mind's acts), never
+    a guess."""
+    global _TOKEN_SOCK
+    environ = os.environ if environ is None else environ
+    token = ""
+    fd = environ.pop(AGENT_TOKEN_FD_ENV, "").strip()
+    sock = environ.pop(AGENT_TOKEN_SOCK_ENV, "").strip()
+    plain = environ.pop(AGENT_TOKEN_ENV, "").strip()
+    try:
+        if fd:
+            number = int(fd)
+            try:
+                token = _read_all(lambda n: os.read(number, n))
+            finally:
+                os.close(number)
+        elif sock:
+            # Kept (a path is not a secret) so the token can be asked for again: the harness that
+            # serves it may not have one yet when this starts (its runtime starts bridges before it
+            # has attached), and gets a new one each time it attaches.
+            _TOKEN_SOCK = sock
+            token = fetch_token(sock)
+        else:
+            token = plain
+    except (OSError, ValueError):
+        token = ""
+    if token or sock:
+        make_undumpable()
+    return token
+
+
+_TOKEN_SOCK = ""
+
+
+def fetch_token(sock):
+    """What the harness's token service answers on `sock`, or "" (it has none, or is not there)."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(2.0)
+            conn.connect(sock)
+            return _read_all(conn.recv)
+    except (OSError, ValueError):
+        return ""
+
+
+def refresh_agent_token():
+    """Ask the token service again, when one was named: before the tools are listed and before each
+    call. The token it answers is the live one; none means the attach is gone, and this bridge then
+    acts as no agent (the desktop refuses a mind's acts) rather than with a token nothing holds."""
+    global AGENT_TOKEN
+    if _TOKEN_SOCK:
+        AGENT_TOKEN = fetch_token(_TOKEN_SOCK)
+
+
+AGENT_TOKEN = take_agent_token()
 
 
 def scrub(text):
@@ -168,11 +262,31 @@ def yos_env():
         env["YOS_START_DEADLINE"] = repr(deadline)
     else:
         env.pop("YOS_START_DEADLINE", None)
-    if AGENT_TOKEN:
-        env[AGENT_TOKEN_ENV] = AGENT_TOKEN
-    else:
-        env.pop(AGENT_TOKEN_ENV, None)
+    # Never the token: a child of this bridge is handed it through a pipe (`run_yos`), so it is in
+    # no environment, this process's or a child's.
+    for name in (AGENT_TOKEN_ENV, AGENT_TOKEN_FD_ENV, AGENT_TOKEN_SOCK_ENV):
+        env.pop(name, None)
     return env
+
+
+def run_yos(argv, timeout, **kw):
+    """`subprocess.run` for a `yos` of this bridge's, handing it the agent token (when there is one)
+    through a pipe's descriptor named by YANTRIK_AGENT_TOKEN_FD, which `yos` reads once and closes.
+    Not through the environment: /proc/<pid>/environ of the child would keep it."""
+    env = yos_env()
+    if not AGENT_TOKEN:
+        return subprocess.run(argv, timeout=timeout, env=env, **kw)
+    read_end, write_end = os.pipe()
+    try:
+        os.write(write_end, AGENT_TOKEN.encode("utf-8"))
+        os.close(write_end)
+        write_end = -1
+        env[AGENT_TOKEN_FD_ENV] = str(read_end)
+        return subprocess.run(argv, timeout=timeout, env=env, pass_fds=(read_end,), **kw)
+    finally:
+        os.close(read_end)
+        if write_end >= 0:
+            os.close(write_end)
 
 
 def reach_file():
@@ -980,6 +1094,7 @@ AGENT_WAITING = {"agent_run", "agent_job"}
 
 def offered():
     """The tools this bridge offers: the desktop's, and an agent's own when it runs as one."""
+    refresh_agent_token()
     return TOOLS + (AGENT_TOOLS if AGENT_TOKEN else [])
 
 
@@ -1252,6 +1367,7 @@ def outbound_of(tool, args):
 
 def call_tool(tool, args):
     """Any tool this bridge offers. Returns (text, is_error, meta)."""
+    refresh_agent_token()
     if tool["name"] in AGENT_BY_NAME:
         return run_agent_tool(tool, args)
     if "browser_action" in tool:
@@ -1352,8 +1468,7 @@ def yos(args, timeout):
         # JSON-RPC stream, and a `yos` that inherited it could read a request meant for the
         # bridge — bytes that are then simply gone. Nothing `yos` does today reads stdin; this
         # is so that nothing it does later can.
-        return subprocess.run([YOS] + list(args), capture_output=True, text=True,
-                              timeout=timeout, env=yos_env(), stdin=subprocess.DEVNULL)
+        return run_yos([YOS] + list(args), timeout, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
 
@@ -2774,6 +2889,10 @@ def in_process(argv):
     with _YOS_LOCK:
         _CAPTURE.out, _CAPTURE.err = [], []
         code = 0
+        # This process's own memory is the only place the token goes for a call made in it (the
+        # process is non-dumpable); dropped when the call ends.
+        if AGENT_TOKEN:
+            os.environ[AGENT_TOKEN_ENV] = AGENT_TOKEN
         try:
             command(list(argv[1:]))
         except SystemExit as e:
@@ -2781,6 +2900,8 @@ def in_process(argv):
         except Exception as e:  # noqa: BLE001 — a crash in yos is its failure, not this bridge's
             code = 1
             _CAPTURE.err.append("yos: %s: %s\n" % (type(e).__name__, e))
+        finally:
+            os.environ.pop(AGENT_TOKEN_ENV, None)
         return _Ran(code, "".join(_CAPTURE.out), "".join(_CAPTURE.err))
 
 
@@ -2963,9 +3084,8 @@ def run_tool(tool, args, present=None):
         # stdin closed to the child, for the reason in `yos`: this process's stdin belongs to
         # the client's JSON-RPC stream and nothing else may read from it. The environment is
         # `yos_env`'s: the desktop's session, and the agent token when this bridge has one.
-        p = (in_process(argv[1:]) if tool["name"] in IN_PROCESS else None) or subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, env=yos_env(),
-            stdin=subprocess.DEVNULL)
+        p = (in_process(argv[1:]) if tool["name"] in IN_PROCESS else None) or run_yos(
+            argv, timeout, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         note = join(note, report_unasked(audit, "timed out"))
         return (prefix(note, "timed out after %ss — the desktop did not answer. It may be busy "
