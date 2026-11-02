@@ -34,14 +34,32 @@ pub fn reading(heard: Heard) -> Option<State> {
     }
 }
 
-/// Settle every agent that reads `stopping`. Called on the Agents tick.
+/// Settle every agent whose Stop is not settled: `stopping` goes to `stopped` once the harness
+/// closed the turn (the Lens's "Stopping..." ends at the same moment), to `stopped waiting` once
+/// the grace passed without it; and `stopped waiting` is upgraded if the harness closes the turn
+/// after all. An agent with a command the shell still runs for it stays `stopping`: it is not at
+/// rest. Called on the Agents tick.
 pub fn settle(host: &Host) {
-    let stopping: Vec<AgentId> = super::store().read(|s| s.agents().iter().filter(|a| a.state == State::Stopping).map(|a| a.meta.id.clone()).collect());
-    for agent in stopping {
+    settle_with(|agent, turns| host.stop_heard(agent, turns));
+}
+
+fn settle_with(heard_of: impl Fn(&AgentId, &[u64]) -> Heard) {
+    let unsettled: Vec<(AgentId, State, bool)> = super::store().read(|s| {
+        s.agents()
+            .iter()
+            .filter(|a| matches!(a.state, State::Stopping | State::StoppedWaiting))
+            .map(|a| (a.meta.id.clone(), a.state, a.cards().any(|c| c.running())))
+            .collect()
+    });
+    for (agent, state, running) in unsettled {
         // No record of the Stop (a restart): the desktop cannot know.
-        let heard = turns_of(&agent).map_or(Heard::Unknown, |turns| host.stop_heard(&agent, &turns));
-        if let Some(state) = reading(heard) {
-            super::store().set_state(&agent, state);
+        let heard = turns_of(&agent).map_or(Heard::Unknown, |turns| heard_of(&agent, &turns));
+        let next = match (reading(heard), running) {
+            (Some(State::Stopped), true) => None,
+            (next, _) => next,
+        };
+        if let Some(next) = next.filter(|n| *n != state) {
+            super::store().set_state(&agent, next);
         }
     }
 }
@@ -60,9 +78,60 @@ mod tests {
         assert_eq!(reading(Heard::Unknown), Some(State::StoppedWaiting));
         use yantrik_ipc_contracts::mind_desk::MindState;
         assert_eq!(mind_wire_state(State::Stopped), MindState::Idle);
+        assert_eq!(mind_wire_state(State::StoppedWaiting), MindState::Thinking, "not a failure the person did not cause");
         for unconfirmed in [State::Stopping, State::StoppedWaiting] {
             assert_ne!(mind_wire_state(unconfirmed), MindState::Idle, "{unconfirmed:?}");
         }
         assert_eq!(State::StoppedWaiting.label(), "stopped waiting");
+    }
+
+    fn stopped_agent(name: &str) -> AgentId {
+        let agent = AgentId::new(name, AgentId::MAIN);
+        super::super::store().open_turn(&agent, "browse five sites");
+        super::super::store().close_turn_stopped(&agent);
+        assert_eq!(state_of(&agent), State::Stopping);
+        agent
+    }
+
+    fn state_of(agent: &AgentId) -> State {
+        super::super::store().read(|s| s.agent(agent).unwrap().state)
+    }
+
+    /// The path that matters for Hermes: after the grace, with the flight still open, the agent
+    /// reads `stopped waiting`; if the harness closes the turn later it is upgraded to `stopped`;
+    /// and a restart (no record of the Stop) reads `stopped waiting`, never at rest.
+    #[test]
+    fn settle_reads_stopped_waiting_after_the_grace_and_upgrades_when_the_harness_closes() {
+        let agent = stopped_agent("settle-grace");
+        note(&agent, vec![7]);
+        settle_with(|_, _| Heard::Waiting);
+        assert_eq!(state_of(&agent), State::Stopping, "within the grace: still stopping, as the Lens says");
+        settle_with(|_, _| Heard::Unknown);
+        assert_eq!(state_of(&agent), State::StoppedWaiting, "grace over, flight open");
+        settle_with(|_, _| Heard::Unknown);
+        assert_eq!(state_of(&agent), State::StoppedWaiting, "and it stays so");
+        settle_with(|_, _| Heard::Yes);
+        assert_eq!(state_of(&agent), State::Stopped, "the harness closed the turn after all");
+
+        let restarted = stopped_agent("settle-restart");
+        settle_with(|_, _| panic!("no record of the Stop: the host is not asked"));
+        assert_eq!(state_of(&restarted), State::StoppedWaiting);
+    }
+
+    /// A stopped turn whose shell command still runs is not at rest, whatever the harness heard.
+    #[test]
+    fn a_stopped_agent_with_a_command_still_running_is_not_at_rest() {
+        let agent = AgentId::new("settle-busy", AgentId::MAIN);
+        let store = super::super::store();
+        store.open_turn(&agent, "run the build");
+        let start = crate::agents::Event::ToolStart { call: "c1".into(), name: "os_act".into(), target: "terminal.run".into(), args: serde_json::Value::Null };
+        store.event(&agent, &start, crate::agents::Provenance::Reported);
+        store.close_turn_stopped(&agent);
+        note(&agent, vec![9]);
+        settle_with(|_, _| Heard::Yes);
+        assert_eq!(state_of(&agent), State::Stopping, "the command runs on: not Stopped, so not idle on the wire");
+        store.event(&agent, &crate::agents::Event::ToolEnd { call: "c1".into(), ok: true, summary: "done".into(), exit_code: Some(0) }, crate::agents::Provenance::Reported);
+        settle_with(|_, _| Heard::Yes);
+        assert_eq!(state_of(&agent), State::Stopped, "at rest once the command ended");
     }
 }

@@ -78,11 +78,13 @@ impl Host {
         turns
     }
 
-    /// Whether the harness has heard that `turns` of `agent` were dropped: it called on each
-    /// (and was answered `dropped`) or closed it. A harness that streams does so within a
-    /// heartbeat; one that does not may never, and after [`STOP_GRACE`] the desktop stops waiting
-    /// for it without knowing either way. No turns (what was stopped never reached the harness):
-    /// there is nothing to hear.
+    /// Whether the harness has closed `turns` of `agent` after they were dropped: the one word
+    /// that it has stopped. Being answered `dropped` is not that (the harness still holds the
+    /// conversation, and [`Host::stopping`] stays true, until it closes the turn), so the Lens and
+    /// the agent's state change together. A harness that streams closes within a heartbeat or two;
+    /// one that does not may never, and after [`STOP_GRACE`] the desktop stops waiting for it
+    /// without knowing either way (the turn may still be closed later: ask again). No turns (what
+    /// was stopped never reached the harness): there is nothing to hear.
     pub fn stop_heard(&self, agent: &AgentId, turns: &[u64]) -> Heard {
         let mut state = self.lock();
         self.reap(&mut state);
@@ -92,7 +94,6 @@ impl Host {
         let mut all = Heard::Yes;
         for turn in turns {
             let one = match harness.in_flight.get(turn) {
-                Some(f) if f.drop_logged => Heard::Yes,
                 Some(f) if f.holds_conversation() => Heard::Waiting,
                 Some(_) => Heard::Unknown,
                 None if harness.finished.contains(turn) => Heard::Yes,
@@ -293,10 +294,39 @@ mod tests {
         assert!(host.stop_turn(&agent, turn_id));
         assert_eq!(host.stop_heard(&agent, &handed), Heard::Waiting, "dropped, and the harness has not called");
         assert_eq!(beat(&host, &session, turn_id), json!({ "dropped": true }));
-        assert_eq!(host.stop_heard(&agent, &handed), Heard::Yes, "it called and was told");
+        assert_eq!(host.stop_heard(&agent, &handed), Heard::Waiting, "told dropped, but it has not closed the turn: the Lens still says stopping");
+        assert!(host.stopping(&agent));
         assert_eq!(host.stop_heard(&agent, &[]), Heard::Yes, "nothing handed to the harness: nothing to hear");
         host.handle(protocol::COMPLETE, &json!({ "session": session, "turn_id": turn_id })).unwrap();
         assert_eq!(host.stop_heard(&agent, &handed), Heard::Yes, "closed: heard");
         assert_eq!(host.stop_heard(&agent, &[turn_id + 50]), Heard::Unknown, "a turn the host never saw closed");
+    }
+
+    /// After the grace, with the flight still open (a harness that never closes it), the host
+    /// does not know: `Unknown`, and the Lens stops saying "Stopping...". If the harness closes
+    /// the turn later, it is `Yes` after all.
+    #[test]
+    fn after_the_grace_with_the_flight_still_open_the_host_does_not_know_until_it_closes() {
+        use std::time::{Duration, Instant};
+
+        use super::super::STOP_GRACE;
+        let (host, session, agent) = attached();
+        let _answer = host.send_to(&agent, Turn::new("browse five sites")).unwrap();
+        let turn_id = host.handle(protocol::POLL, &json!({ "session": session })).unwrap()["turn_id"].as_u64().unwrap();
+        assert!(host.stop_turn(&agent, turn_id));
+        assert_eq!(host.stop_heard(&agent, &[turn_id]), Heard::Waiting);
+        assert!(host.stopping(&agent));
+
+        // The desktop stopped waiting longer ago than the grace.
+        {
+            let mut state = host.lock();
+            let flight = state.attached.get_mut("pi").unwrap().in_flight.get_mut(&turn_id).unwrap();
+            flight.abandoned = Instant::now().checked_sub(STOP_GRACE + Duration::from_secs(1));
+        }
+        assert_eq!(host.stop_heard(&agent, &[turn_id]), Heard::Unknown, "grace over, flight still open");
+        assert!(!host.stopping(&agent), "and the Lens agrees: no longer 'Stopping...'");
+
+        host.handle(protocol::COMPLETE, &json!({ "session": session, "turn_id": turn_id })).unwrap();
+        assert_eq!(host.stop_heard(&agent, &[turn_id]), Heard::Yes, "it closed the turn after all");
     }
 }

@@ -21,11 +21,12 @@ pub enum State {
     /// The person stopped its turn and the harness has not yet said it heard: it may still be
     /// working. Settled to one of the next two by the host's word (`agents/stopped.rs`).
     Stopping,
-    /// The person stopped its turn and the harness confirmed it heard (it called on the dropped
-    /// turn, or closed it). At rest; the agent stays and takes the next turn.
+    /// The person stopped its turn and the harness closed it: the one word that it stopped. At
+    /// rest; the agent stays and takes the next turn.
     Stopped,
-    /// The person stopped its turn, and the harness never said it heard it (it does not
-    /// heartbeat, or is gone): the desktop stopped waiting, and does not know it stopped.
+    /// The person stopped its turn, and the harness has not closed it within the grace (it does
+    /// not heartbeat, or is gone): the desktop stopped waiting, and does not know it stopped.
+    /// Upgraded to `Stopped` if the harness closes the turn later.
     StoppedWaiting,
     /// The harness that ran it stopped polling (design: "When a harness dies").
     HarnessGone,

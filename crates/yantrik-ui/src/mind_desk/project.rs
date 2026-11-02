@@ -74,12 +74,11 @@ pub(crate) fn state_of(state: State) -> MindState {
         State::Idle => MindState::Idle,
         State::Done => MindState::Done,
         State::Failed => MindState::Failed,
-        // The wire has no word for these. Only an agent whose harness confirmed it heard the Stop
-        // is at rest (idle). One that may still be working reads as working; one the desktop
-        // stopped waiting for without knowing reads as not finished, never idle.
-        State::Stopping => MindState::Thinking,
+        // The wire has no word for these. Only an agent whose harness closed the stopped turn is
+        // at rest (idle). One that may still be working, or that the desktop stopped waiting for
+        // without knowing, reads as working: never idle, and not a failure the person did not cause.
+        State::Stopping | State::StoppedWaiting => MindState::Thinking,
         State::Stopped => MindState::Idle,
-        State::StoppedWaiting => MindState::Failed,
         State::HarnessGone => MindState::HarnessGone,
     }
 }
