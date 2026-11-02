@@ -72,22 +72,35 @@ pub fn actions(heard: &Arc<Mutex<Vec<serde_json::Value>>>) -> Vec<String> {
 static OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static SERIAL: Mutex<()> = Mutex::new(());
 
-/// While this lives, [`crate::outward`] asks the fake shell in `desk` instead of the session's,
-/// and no other test can install one: tools reach the shell through the session desk, which
-/// nothing else lets a test redirect.
+/// While this lives, [`crate::outward`] asks the fake shell in `desk` instead of the session's, and
+/// no other test thread can install one: tools reach the shell through the session desk, which
+/// nothing else lets a test redirect. A test may install several in turn (a later one replaces an
+/// earlier one that is still in scope).
 pub struct Installed {
-    _serial: std::sync::MutexGuard<'static, ()>,
+    _serial: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+thread_local! {
+    /// How many fake shells this thread has installed and not dropped.
+    static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Drop for Installed {
     fn drop(&mut self) {
-        *OVERRIDE.lock().unwrap() = None;
+        let left = HELD.with(|h| {
+            h.set(h.get() - 1);
+            h.get()
+        });
+        if left == 0 {
+            *OVERRIDE.lock().unwrap() = None;
+        }
     }
 }
 
 /// Point the session desk at `desk`'s directory (see [`Installed`]).
 pub fn install(desk: &Desk) -> Installed {
-    let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let serial = if HELD.with(|h| h.get()) == 0 { Some(SERIAL.lock().unwrap_or_else(|e| e.into_inner())) } else { None };
+    HELD.with(|h| h.set(h.get() + 1));
     *OVERRIDE.lock().unwrap() = desk.dir.clone();
     Installed { _serial: serial }
 }

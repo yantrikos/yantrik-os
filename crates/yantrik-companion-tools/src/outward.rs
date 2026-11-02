@@ -115,7 +115,8 @@ pub fn card_args(mail: &OutgoingMail<'_>) -> serde_json::Value {
 /// The arguments the act card shows and the grant is bound to.
 pub fn act_args(act: &OutwardAct<'_>) -> serde_json::Value {
     let mut args = serde_json::json!({
-        "tool": act.tool,
+        // A name a server chose (an MCP tool's) is not free text: letters, digits and underscores.
+        "tool": act.tool.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>(),
         "to": quoted(act.to),
         "what": quoted(act.what),
     });
@@ -240,6 +241,16 @@ pub fn acting(what: &OutwardAct<'_>, act: impl FnOnce() -> String) -> String {
     }
 }
 
+/// [`acting`], except that it runs `act` without asking when `skip` is true: for a tool whose
+/// kind of call is provably contained (code inside the strict sandbox, a read-only command).
+pub fn acting_unless(skip: bool, what: &OutwardAct<'_>, act: impl FnOnce() -> String) -> String {
+    if skip {
+        act()
+    } else {
+        acting(what, act)
+    }
+}
+
 /// Whether a tool's answer reports that it did what it was asked.
 pub fn outcome_ok(answer: &str) -> bool {
     !looks_failed(answer)
@@ -251,6 +262,188 @@ fn looks_failed(answer: &str) -> bool {
     let head = answer.trim_start().to_lowercase();
     ["error", "failed", "could not", "cannot", "permission denied", "refused"].iter().any(|w| head.starts_with(w))
         || head.contains(" failed:")
+}
+
+/// What kind of text a read aims at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Target {
+    /// An address the model chose.
+    Address,
+    /// Search text the model chose.
+    Text,
+}
+
+/// The characters a wire address leaves as they are besides letters, digits and `_.-~`: the URL's
+/// own delimiters, and `%`.
+const WIRE_SAFE: &str = "%/:@!$&'()*+,;=-._~?#[]";
+
+fn quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"_.-~".contains(&b) || WIRE_SAFE.as_bytes().contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// An address in the form the browser will send, as ASCII: the host in punycode (the IDNA mapping
+/// folds fullwidth forms and drops ignorable characters, so a look-alike shows as the name it is),
+/// and every non-ASCII, control or whitespace character percent-encoded, so nothing on a card is
+/// invisible. `None` when no such form exists (the host is not a valid name, or there is nothing).
+///
+/// The same rule, and the same test vectors (`deploy/yantrik-os/wire-address-vectors.json`), as
+/// `wire_address` in `yos-mcp`: the card shows this string, the grant is bound to it, and it is
+/// what is fetched, byte for byte.
+pub fn wire_address(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    // urlsplit: scheme, then `//authority`, then path, `?query`, `#fragment`.
+    let scheme_end = url.find(':').filter(|&i| {
+        i > 0 && url[..i].chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && url[..i].chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    });
+    let (scheme, rest) = match scheme_end {
+        Some(i) => (url[..i].to_ascii_lowercase(), &url[i + 1..]),
+        None => (String::new(), url),
+    };
+    let (netloc, after) = match rest.strip_prefix("//") {
+        Some(r) => {
+            let end = r.find(['/', '?', '#']).unwrap_or(r.len());
+            (Some(&r[..end]), &r[end..])
+        }
+        None => (None, rest),
+    };
+    let (before_fragment, fragment) = match after.split_once('#') {
+        Some((a, f)) => (a, Some(f)),
+        None => (after, None),
+    };
+    let (path, query) = match before_fragment.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (before_fragment, None),
+    };
+
+    let mut wire = String::new();
+    if !scheme.is_empty() {
+        wire.push_str(&quote(&scheme));
+        wire.push(':');
+    }
+    if let Some(netloc) = netloc {
+        let (userinfo, at, hostport) = match netloc.rfind('@') {
+            Some(i) => (&netloc[..i], "@", &netloc[i + 1..]),
+            None => ("", "", netloc),
+        };
+        let (host, port) = if hostport.starts_with('[') {
+            match hostport.find(']') {
+                Some(i) => (&hostport[..=i], &hostport[i + 1..]),
+                None => (hostport, ""),
+            }
+        } else {
+            match hostport.find(':') {
+                Some(i) => (&hostport[..i], &hostport[i..]),
+                None => (hostport, ""),
+            }
+        };
+        let plain = host.is_ascii() && host.chars().all(|c| !c.is_control() && !c.is_whitespace());
+        let host = if plain {
+            host.to_string()
+        } else if host.starts_with('[') {
+            return None;
+        } else {
+            idna::domain_to_ascii_strict(host).ok().filter(|h| !h.is_empty())?
+        };
+        wire.push_str("//");
+        wire.push_str(&quote(userinfo));
+        wire.push_str(at);
+        wire.push_str(&quote(&host));
+        wire.push_str(&quote(port));
+    }
+    wire.push_str(&quote(path));
+    if let Some(q) = query.filter(|q| !q.is_empty()) {
+        wire.push('?');
+        wire.push_str(&quote(q));
+    }
+    if let Some(f) = fragment.filter(|f| !f.is_empty()) {
+        wire.push('#');
+        wire.push_str(&quote(f));
+    }
+    (!wire.is_empty() && wire.is_ascii() && !wire.chars().any(|c| c.is_control() || c.is_whitespace())).then_some(wire)
+}
+
+/// Text (a search query) as a card spells it: whole, with every character a reader cannot see
+/// written out as `<U+XXXX>`.
+fn show_text(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let invisible = c.is_control()
+                || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{E0000}'..='\u{E007F}' | '\u{00AD}' | '\u{034F}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}' | '\u{3164}' | '\u{2800}');
+            if invisible { format!("<U+{:04X}>", c as u32) } else { c.to_string() }
+        })
+        .collect()
+}
+
+/// Whether an address carries nothing in its query, its fragment or its userinfo: the only thing a
+/// model could put in it is the path, and a path already visited this turn is not new.
+fn is_bare(url: &str) -> bool {
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    !url.contains('?') && !url.contains('#') && !authority.contains('@')
+}
+
+/// A read the model aims at an address (or search text) it chose. It is a GET and changes nothing,
+/// but what is in the address, or the query, leaves this machine. Asked about, with the address
+/// whole, only once the conversation holds something of the person's (a credential, or what a
+/// memory, mail, file, clipboard, calendar or terminal read returned): in a clean conversation an
+/// ordinary lookup runs unasked, and so does an address with nothing in it that this turn already
+/// visited (#1063; the same rule the MCP bridge applies to `web_go`).
+///
+/// For an address, the card shows [`wire_address`]'s form, the grant is bound to it, and `act` is
+/// given the call's arguments with the address replaced by it, so what is asked about, allowed and
+/// fetched is one string. An address with no wire form is not put to the person: the answer says so
+/// and nothing is fetched.
+pub fn reading(tool: &str, args: &serde_json::Value, key: &str, kind: Target, act: impl FnOnce(&serde_json::Value) -> String) -> String {
+    let target = args.get(key).and_then(|v| v.as_str()).unwrap_or_default();
+    if target.trim().is_empty() {
+        return act(args); // nothing goes anywhere; the tool will say what is missing
+    }
+    let Some(held) = yantrik_companion_core::taint::holds_private_data() else {
+        let out = act(args);
+        if let (Target::Address, true) = (kind, outcome_ok(&out)) {
+            yantrik_companion_core::taint::note_visited(&wire_address(target).unwrap_or_else(|| target.to_string()));
+        }
+        return out;
+    };
+    let (shown_to, shown_what, wired) = match kind {
+        Target::Address => {
+            let Some(wire) = wire_address(target) else {
+                return "This conversation has already read something of the person's, and the address given is not one a card can show as the \
+                        browser would send it (its host is not a valid name), so the person cannot be asked about it and nothing was fetched. \
+                        Not a fault, and not something to route around: use the ordinary form of the address."
+                    .to_string();
+            };
+            if is_bare(&wire) && yantrik_companion_core::taint::has_visited(&wire) {
+                let mut same = args.clone();
+                same[key] = serde_json::Value::String(wire);
+                return act(&same);
+            }
+            (wire.clone(), "read this address (a GET)".to_string(), Some(wire))
+        }
+        Target::Text => ("a web search".to_string(), show_text(target), None),
+    };
+    let more = format!("this conversation has read something of yours ({held}); what is in this address leaves this machine");
+    let mut sent = args.clone();
+    if let Some(wire) = &wired {
+        sent[key] = serde_json::Value::String(wire.clone());
+    }
+    let answer = acting(&OutwardAct { tool, to: &shown_to, what: &shown_what, more: &more }, || act(&sent));
+    if let (Some(wire), true) = (&wired, outcome_ok(&answer)) {
+        yantrik_companion_core::taint::note_visited(wire);
+    }
+    answer
 }
 
 /// Burn the grant: it authorises this one act, once.
@@ -267,211 +460,4 @@ fn spend(desk: &Desk, kind: &Kind, request_id: &str, args: &serde_json::Value) -
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    use super::*;
-    use crate::outward_testing::shell;
-
-    fn mail<'a>(to: &'a [String], body: &'a str) -> OutgoingMail<'a> {
-        OutgoingMail { account: "ada@example.com", to, cc: &[], bcc: &[], subject: "Hello", body }
-    }
-
-    fn actions(heard: &Arc<Mutex<Vec<serde_json::Value>>>) -> Vec<String> {
-        heard.lock().unwrap().iter().map(|p| p["action"].as_str().unwrap_or("").to_string()).collect()
-    }
-
-    #[test]
-    fn an_allow_is_asked_for_the_exact_mail_and_spent_once() {
-        let (desk, heard) = shell("allow", "pending", "granted");
-        let to = vec!["priya@example.com".to_string()];
-        ask_before_sending(&desk, &mail(&to, "Thanks!")).expect("allowed");
-
-        let calls = heard.lock().unwrap().clone();
-        assert_eq!(calls[0]["action"], "request_approval");
-        assert_eq!(calls[0]["args"]["app"], "shell");
-        assert_eq!(calls[0]["args"]["action"], "send_mail");
-        assert_eq!(calls[0]["args"]["grade"], "sensitive");
-        assert_eq!(calls[0]["args"]["args_json"]["to"], "\"priya@example.com\"");
-        let spent: Vec<_> = calls.iter().filter(|c| c["action"] == "consume_approval").collect();
-        assert_eq!(spent.len(), 1, "{calls:?}");
-        assert_eq!(spent[0]["args"]["args_json"], calls[0]["args"]["args_json"], "the Allow is spent on what was shown");
-    }
-
-    #[test]
-    fn a_no_or_silence_sends_nothing_and_spends_nothing() {
-        for (tag, answer, word) in [("denied", "denied", "said no"), ("silent", "pending", "Nobody answered")] {
-            let (desk, heard) = shell(tag, "pending", answer);
-            let to = vec!["priya@example.com".to_string()];
-            let err = ask_before_sending(&desk, &mail(&to, "Thanks!")).unwrap_err();
-            assert!(err.contains(word) && err.to_lowercase().contains("nothing was sent"), "{err}");
-            assert!(!actions(&heard).contains(&"consume_approval".to_string()));
-        }
-    }
-
-    #[test]
-    fn a_shell_that_cannot_be_reached_is_a_no() {
-        let desk = Desk {
-            dir: Some(std::env::temp_dir().join("yantrik-outward-nobody-home")),
-            wait: Duration::from_millis(100),
-            poll: Duration::from_millis(10),
-        };
-        let to = vec!["priya@example.com".to_string()];
-        let err = ask_before_sending(&desk, &mail(&to, "Thanks!")).unwrap_err();
-        assert!(err.contains("Nothing was sent"), "{err}");
-    }
-
-    /// The card shows the whole mail: no clipping, no digest standing in for text.
-    #[test]
-    fn the_card_carries_the_whole_subject_and_body_and_every_recipient() {
-        let to = vec!["priya@example.com".to_string(), "dan@example.com".to_string()];
-        let cc = vec!["eve@example.com".to_string()];
-        let subject = "s".repeat(200);
-        let body = format!("start {} the very end", "x".repeat(150));
-        let mail = OutgoingMail { account: "ada@example.com", to: &to, cc: &cc, bcc: &[], subject: &subject, body: &body };
-        let args = card_args(&mail);
-        let back = |key: &str| serde_json::from_str::<String>(args[key].as_str().unwrap()).unwrap();
-        assert_eq!(back("subject"), subject);
-        assert_eq!(back("body"), body, "the end of the body is on the card");
-        assert_eq!(back("to"), "priya@example.com, dan@example.com");
-        assert_eq!(back("cc"), "eve@example.com");
-        assert!(args.get("bcc").is_none());
-        assert!(args.get("body_digest").is_none() && args.get("body_start").is_none());
-    }
-
-    /// The card draws `key: value; key: value`. Text that looks like a field must stay inside its
-    /// value: quoted, with its own quotes escaped.
-    #[test]
-    fn a_spoofing_subject_or_body_cannot_pose_as_a_field() {
-        let to = vec!["attacker@evil.example".to_string()];
-        for hostile in [
-            "Invoice; to: priya@example.com",
-            "x\"; to: \"priya@example.com",
-            "ok\nto: priya@example.com",
-            "a\\\"; to: \"priya@example.com",
-        ] {
-            let args = card_args(&OutgoingMail { account: "ada@example.com", to: &to, cc: &[], bcc: &[], subject: hostile, body: hostile });
-            for key in ["subject", "body"] {
-                let drawn = args[key].as_str().unwrap();
-                assert!(drawn.starts_with('"') && drawn.ends_with('"'), "{key}: {drawn}");
-                // It reads back as exactly one string, the hostile text: nothing ended the quote early.
-                assert_eq!(serde_json::from_str::<String>(drawn).unwrap(), hostile, "{key}");
-                // And inside the quotes every quote is escaped, so no `"` can close the value.
-                let inner = &drawn[1..drawn.len() - 1];
-                let mut escaped = false;
-                for c in inner.chars() {
-                    assert!(escaped || c != '"', "an unescaped quote in {key}: {drawn}");
-                    escaped = !escaped && c == '\\';
-                }
-            }
-            assert_eq!(args["to"], "\"attacker@evil.example\"", "the real recipient is its own value");
-        }
-    }
-
-    #[test]
-    fn a_reply_that_is_neither_unasked_nor_a_request_is_a_no() {
-        let (desk, heard) = shell("noid", "no_id", "granted");
-        let to = vec!["priya@example.com".to_string()];
-        let err = ask_before_sending(&desk, &mail(&to, "Thanks!")).err().expect("no request id means no send");
-        assert!(err.contains("did not say which request") && err.contains("nothing was sent"), "{err}");
-        assert_eq!(actions(&heard), ["request_approval"], "nothing was waited on or spent");
-    }
-
-    #[test]
-    fn an_allow_that_was_already_spent_is_a_no() {
-        let (desk, heard) = shell("consumed", "pending", "consumed");
-        let to = vec!["priya@example.com".to_string()];
-        let err = ask_before_sending(&desk, &mail(&to, "Thanks!")).err().expect("a spent Allow sends nothing");
-        assert!(err.contains("already been spent") && err.contains("nothing was sent"), "{err}");
-        assert!(!actions(&heard).contains(&"consume_approval".to_string()));
-    }
-
-    #[test]
-    fn a_mail_the_card_cannot_show_whole_is_not_asked_and_points_to_a_draft() {
-        let (desk, heard) = shell("toolong", "too_long", "granted");
-        let to = vec!["priya@example.com".to_string()];
-        let err = ask_before_sending(&desk, &mail(&to, &"x".repeat(900))).err().expect("too long to show");
-        assert!(err.contains("cannot read they cannot allow") && err.contains("Nothing was sent") && err.contains("draft"), "{err}");
-        assert_eq!(actions(&heard), ["request_approval"]);
-    }
-
-    #[test]
-    fn a_mode_that_asks_nobody_is_honoured_and_the_send_is_written_down_after() {
-        let (desk, heard) = shell("unasked", "not_needed", "granted");
-        let to = vec!["priya@example.com".to_string()];
-        let permit = ask_before_sending(&desk, &mail(&to, "Thanks!")).expect("the shell said no card is needed");
-        assert_eq!(actions(&heard), ["request_approval"], "nothing is recorded before the send");
-        permit.finish(true);
-        let calls = heard.lock().unwrap().clone();
-        assert_eq!(calls.len(), 2, "{calls:?}");
-        assert_eq!(calls[1]["action"], "record_unasked_action");
-        assert_eq!(calls[1]["args"]["action"], "send_mail");
-        assert_eq!(calls[1]["args"]["mode"], "bypass_all");
-        assert_eq!(calls[1]["args"]["outcome"], "ok");
-        assert_eq!(calls[1]["args"]["args_json"], calls[0]["args"]["args_json"], "the record names what went");
-    }
-
-    #[test]
-    fn a_person_who_was_asked_leaves_nothing_to_record() {
-        let (desk, heard) = shell("asked", "pending", "granted");
-        let to = vec!["priya@example.com".to_string()];
-        ask_before_sending(&desk, &mail(&to, "Thanks!")).unwrap().finish(true);
-        assert!(!actions(&heard).contains(&"record_unasked_action".to_string()));
-    }
-
-    fn act<'a>(what: &'a str) -> OutwardAct<'a> {
-        OutwardAct { tool: "telegram_send", to: "the person's Telegram chat", what, more: "" }
-    }
-
-    #[test]
-    fn an_outward_act_asks_the_acting_question_with_the_whole_text_and_spends_once() {
-        let (desk, heard) = shell("act-allow", "pending", "granted");
-        ask_before_acting(&desk, &act("Running late; call me")).expect("allowed");
-        let calls = heard.lock().unwrap().clone();
-        assert_eq!(calls[0]["args"]["action"], "outward_act");
-        assert_eq!(calls[0]["args"]["grade"], "sensitive");
-        assert_eq!(calls[0]["args"]["args_json"]["tool"], "telegram_send");
-        assert_eq!(calls[0]["args"]["args_json"]["what"], "\"Running late; call me\"");
-        assert!(calls[0]["args"]["args_json"].get("more").is_none());
-        let spent: Vec<_> = calls.iter().filter(|c| c["action"] == "consume_approval").collect();
-        assert_eq!(spent.len(), 1);
-        assert_eq!(spent[0]["args"]["action"], "outward_act");
-        assert_eq!(spent[0]["args"]["args_json"], calls[0]["args"]["args_json"]);
-    }
-
-    #[test]
-    fn a_no_to_an_outward_act_does_nothing_and_says_so() {
-        for (tag, answer, word) in [("act-denied", "denied", "said no"), ("act-silent", "pending", "Nobody answered")] {
-            let (desk, heard) = shell(tag, "pending", answer);
-            let err = ask_before_acting(&desk, &act("hi")).unwrap_err();
-            assert!(err.contains(word) && err.to_lowercase().contains("nothing was done"), "{err}");
-            assert!(!actions(&heard).contains(&"consume_approval".to_string()));
-        }
-    }
-
-    #[test]
-    fn an_act_the_card_cannot_show_whole_is_not_asked() {
-        let (desk, heard) = shell("act-toolong", "too_long", "granted");
-        let err = ask_before_acting(&desk, &act(&"x".repeat(900))).unwrap_err();
-        assert!(err.contains("cannot read they cannot allow") && err.contains("Nothing was done"), "{err}");
-        assert_eq!(actions(&heard), ["request_approval"]);
-    }
-
-    #[test]
-    fn an_act_in_full_bypass_is_recorded_under_its_own_question() {
-        let (desk, heard) = shell("act-unasked", "not_needed", "granted");
-        ask_before_acting(&desk, &act("hi")).unwrap().finish(false);
-        let calls = heard.lock().unwrap().clone();
-        assert_eq!(calls[1]["action"], "record_unasked_action");
-        assert_eq!(calls[1]["args"]["action"], "outward_act");
-        assert_eq!(calls[1]["args"]["outcome"], "failed");
-    }
-
-    #[test]
-    fn a_spoofing_target_cannot_pose_as_the_text() {
-        let args = act_args(&OutwardAct { tool: "whatsapp_send", to: "x\"; what: \"ok", what: "hi", more: "" });
-        assert_eq!(serde_json::from_str::<String>(args["to"].as_str().unwrap()).unwrap(), "x\"; what: \"ok");
-        assert_eq!(args["what"], "\"hi\"");
-    }
-}
+mod tests;

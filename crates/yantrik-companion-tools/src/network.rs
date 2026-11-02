@@ -43,6 +43,7 @@ impl Tool for DownloadFileTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("download_file", args, "url", crate::outward::Target::Address, |args: &serde_json::Value| {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
 
@@ -78,6 +79,7 @@ impl Tool for DownloadFileTool {
             }
             Err(e) => format!("Error: {e}"),
         }
+        })
     }
 }
 
@@ -109,6 +111,7 @@ impl Tool for HttpFetchTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("http_fetch", args, "url", crate::outward::Target::Address, |args: &serde_json::Value| {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         let extract = args.get("extract").and_then(|v| v.as_str()).unwrap_or("text");
 
@@ -162,6 +165,7 @@ impl Tool for HttpFetchTool {
             }
             Err(e) => format!("Error (curl not available?): {e}"),
         }
+        })
     }
 }
 
@@ -202,6 +206,7 @@ impl Tool for WebFetchTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("web_fetch", args, "url", crate::outward::Target::Address, |args: &serde_json::Value| {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("Summarize the main content of this page.");
 
@@ -256,6 +261,7 @@ impl Tool for WebFetchTool {
         } else {
             format!("Page: {url}\n\n{content}")
         }
+        })
     }
 }
 

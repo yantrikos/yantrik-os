@@ -123,15 +123,45 @@ impl Tool for ClaudeCodeTool {
     }
 }
 
+/// Every built-in tool Claude Code has that reads, writes, runs or fetches. `claude_think` is an
+/// answer and nothing else, so none of them is available to it, whatever the person has allowed
+/// for their own work in `~/.claude/settings.json` (#1063: print mode still loads those rules).
+const THINK_DISALLOWED: &str = "Bash Edit MultiEdit Write NotebookEdit Read Glob Grep LS WebFetch WebSearch Task TodoWrite";
+
+/// The arguments of a `claude_think` call: print mode, no tools, no MCP servers (an empty config,
+/// and only that one), and the prompt after `--` so one beginning with `-` cannot add options.
+fn think_args(prompt: &str) -> Vec<String> {
+    [
+        "-p",
+        "--no-input",
+        "--disallowedTools",
+        THINK_DISALLOWED,
+        "--strict-mcp-config",
+        "--mcp-config",
+        r#"{"mcpServers":{}}"#,
+        "--",
+        prompt,
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .collect()
+}
+
+/// A directory of the call's own with nothing in it, so no project settings or MCP file is found.
+fn empty_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("yantrik-claude-think-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Run claude CLI in print mode (text response only, no tools).
 fn run_claude(prompt: &str, _verbose: bool) -> String {
     // Options first, then `--`, then the prompt: `-p` is print mode and the prompt is a positional
     // argument, so a prompt beginning with `-` would otherwise be parsed as more options.
     let result = std::process::Command::new("claude")
-        .arg("-p")
-        .arg("--no-input")
-        .arg("--")
-        .arg(prompt)
+        .args(think_args(prompt))
+        // An empty directory of its own: no project settings, no `.mcp.json`, nothing to read.
+        .current_dir(empty_dir())
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -223,5 +253,23 @@ mod outward_tests {
         assert_eq!(shown(&card, "what"), "delete the build; then push");
         assert_eq!(shown(&card, "more"), "/tmp");
         assert!(!actions(&heard).contains(&"consume_approval".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod think_tests {
+    use super::*;
+
+    #[test]
+    fn a_think_call_has_no_tools_no_mcp_servers_and_the_prompt_after_the_separator() {
+        let args = think_args("--dangerously-skip-permissions; summarise this");
+        let at = |flag: &str| args.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag} missing: {args:?}"));
+        for tool in ["Bash", "Write", "WebFetch", "Read", "Task"] {
+            assert!(args[at("--disallowedTools") + 1].split(' ').any(|t| t == tool), "{tool} is not disallowed");
+        }
+        assert!(at("--strict-mcp-config") < at("--"));
+        assert_eq!(args[at("--mcp-config") + 1], r#"{"mcpServers":{}}"#);
+        assert_eq!(args[at("--") + 1], "--dangerously-skip-permissions; summarise this");
+        assert_eq!(args.len(), at("--") + 2, "nothing after the prompt");
     }
 }

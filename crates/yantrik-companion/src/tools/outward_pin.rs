@@ -24,6 +24,12 @@ enum Gate {
     /// It asks through `outward` (`acting`, `ask_person_before_acting`) or through the browser
     /// helpers that do (`before_press`, `before_submit`).
     Acts,
+    /// It runs code or a command on this machine and asks unless it is provably contained (the
+    /// strict sandbox, a read-only command): `acting_unless`.
+    Contained,
+    /// It reads from an address the model chose and asks once the conversation holds something of
+    /// the person's: `reading`.
+    Reads,
     /// It sends mail through `smtp_client::send_email`, which asks first (`email::smtp_client`).
     Mail,
     /// It acts through an app's own action, and `act_asking` raises the shell's card when the
@@ -56,6 +62,21 @@ const OUTWARD: &[(&str, Gate)] = &[
     ("ha_call_service", Gate::Acts),
     ("claude_code", Gate::Acts),
     ("?McpProxyTool", Gate::Acts),
+    // Code and commands that can send anything anywhere unless the sandbox is strict.
+    ("run_background", Gate::Contained),
+    ("code_execute", Gate::Contained),
+    ("script_run", Gate::Contained),
+    // Reads aimed at an address (or a search) the model chose: asked about once the conversation
+    // holds something of the person's, because the address can carry it.
+    ("browse", Gate::Reads),
+    ("open_url", Gate::Reads),
+    ("launch_browser", Gate::Reads),
+    ("browser_search", Gate::Reads),
+    ("web_search", Gate::Reads),
+    ("web_fetch", Gate::Reads),
+    ("http_fetch", Gate::Reads),
+    ("download_file", Gate::Reads),
+    ("git_clone", Gate::Reads),
     // An app's own actions: the app and the shell decide.
     ("app_action", Gate::App),
 ];
@@ -108,16 +129,8 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
         &["brain_status", "check_bond", "create_inside_joke", "forget_memory", "forget_topic", "form_opinion", "introspect", "memory_stats", "purge_system_noise", "recall", "relate_entities", "remember", "resolve_conflicts", "review_memories", "save_user_fact", "set_reminder", "update_memory"],
     ),
     (
-        "navigates to a page: a GET",
-        &["browse"],
-    ),
-    (
         "reads or navigates (a GET); the pressing and submitting tools are listed as outward",
         &["browser_cleanup", "browser_read", "browser_screenshot", "browser_scroll", "browser_see", "browser_snapshot", "browser_status", "browser_tabs"],
-    ),
-    (
-        "a search page: a GET",
-        &["browser_search"],
     ),
     (
         "the local calendar service; no invitation leaves the machine",
@@ -136,7 +149,7 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
         &["check_background_task", "list_background_tasks", "stop_background_task"],
     ),
     (
-        "asks the person's own Claude sign-in for an answer; no effect in the world",
+        "an answer from the person's own Claude sign-in, run with every tool and MCP server disabled in an empty directory (`claude_think`)",
         &["claude_think"],
     ),
     (
@@ -146,10 +159,6 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
     (
         "this desktop's window manager",
         &["close_window", "focus_context", "focus_window", "list_windows"],
-    ),
-    (
-        "runs code on this machine",
-        &["code_execute"],
     ),
     (
         "connects an account in the person's own browser consent; syncing only reads",
@@ -200,10 +209,6 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
         &["docker_images", "docker_logs", "docker_ps", "docker_start", "docker_stop"],
     ),
     (
-        "GET requests that only read (fetch, download to disk)",
-        &["download_file", "http_fetch", "web_fetch"],
-    ),
-    (
         "diagrams on this machine",
         &["edit_diagram", "generate_diagram"],
     ),
@@ -229,7 +234,7 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
     ),
     (
         "repositories on this machine (clone fetches, nothing is pushed)",
-        &["git_branch", "git_clone", "git_commit", "git_diff", "git_diff_file", "git_log", "git_show", "git_stash", "git_status"],
+        &["git_branch", "git_commit", "git_diff", "git_diff_file", "git_log", "git_show", "git_stash", "git_status"],
     ),
     (
         "reads public profile data (GET)",
@@ -240,20 +245,12 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
         &["ha_get_state", "ha_list_entities"],
     ),
     (
-        "opens a browser for the person to look at",
-        &["launch_browser"],
-    ),
-    (
         "this desktop: clipboard, files, commands and the browser opened for the person to look at",
         &["list_files", "read_clipboard", "read_file", "write_clipboard"],
     ),
     (
         "this machine's own network settings and probes",
         &["network_diagnose", "network_dns", "network_dns_set", "network_interfaces", "network_ping", "network_ports", "network_traceroute", "network_vpn_status"],
-    ),
-    (
-        "opens a page for the person to look at: a GET",
-        &["open_url"],
     ),
     (
         "packages on this machine",
@@ -265,15 +262,11 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
     ),
     (
         "a command on this machine",
-        &["run_background", "run_command"],
+        &["run_command"],
     ),
     (
         "scripts on this machine",
         &["script_delete", "script_list", "script_patch", "script_read", "script_write"],
-    ),
-    (
-        "runs a script on this machine",
-        &["script_run"],
     ),
     (
         "reads the companion's own history; sends nothing",
@@ -302,10 +295,6 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
     (
         "the local credential vault: reads and writes on this machine",
         &["vault_delete", "vault_generate_password", "vault_get", "vault_list", "vault_set_pin", "vault_store"],
-    ),
-    (
-        "a search query: a GET",
-        &["web_search"],
     ),
     (
         "this machine's own Wi-Fi",
@@ -387,6 +376,17 @@ fn defined_tools() -> Vec<Defined> {
     out
 }
 
+/// The code without its line comments: a gate named in a comment is not a gate.
+fn without_comments(text: &str) -> String {
+    text.lines()
+        .map(|line| match line.find("//") {
+            Some(at) if !line[..at].ends_with(':') => &line[..at],
+            _ => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn is_listed_outward(name: &str) -> bool {
     OUTWARD.iter().any(|(n, _)| *n == name)
 }
@@ -439,37 +439,45 @@ fn every_outward_tool_calls_its_gate() {
     for (name, gate) in OUTWARD {
         let tool = defined.iter().find(|t| t.name == *name).unwrap_or_else(|| panic!("`{name}` is not defined"));
         let needles: &[&str] = match gate {
-            Gate::Acts => &[
-                "outward::acting(",
-                "ask_person_before_acting(",
-                "browser_outward::before_press(",
-                "browser_outward::before_submit(",
-            ],
+            Gate::Acts => &["outward::acting(", "ask_person_before_acting(", "ask_before_press(", "ask_before_typing("],
+            Gate::Contained => &["outward::acting_unless("],
+            Gate::Reads => &["outward::reading("],
             Gate::Mail => &["smtp_client::send_email(", "smtp_client::send_email_to_each("],
             Gate::App => &["act_asking("],
         };
         assert!(
-            needles.iter().any(|n| tool.body.contains(n)),
+            needles.iter().any(|n| without_comments(&tool.body).contains(n)),
             "`{name}` acts outward and does not call its gate ({gate:?}: one of {needles:?}) in {}",
             tool.file.display()
         );
     }
 }
 
-/// The submit-typing tools ask only when they submit, and the press tools only when the control
-/// acts: the gate is not skipped by a flag the model can choose.
+/// Every browser tool that can act asks before it makes the act, on every path (#1063, H1:
+/// `browser_type_xy` once clicked wherever it was pointed whenever `submit` was false).
 #[test]
 fn the_browser_tools_ask_before_the_act_not_after() {
     let defined = defined_tools();
     for name in ["browser_click", "browser_click_element", "browser_click_xy", "browser_type", "browser_type_element", "browser_type_xy"] {
         let tool = defined.iter().find(|t| t.name == name).unwrap();
-        let asked = tool.body.find("browser_outward::before_").unwrap_or_else(|| panic!("{name} does not ask"));
-        let acted = ["eval_js(&mut ws, &js)", "Input.dispatchMouseEvent", "Input.insertText"]
+        let code = without_comments(&tool.body);
+        let asked = ["ask_before_press(", "ask_before_typing("]
             .iter()
-            .filter_map(|n| tool.body.find(n))
+            .filter_map(|n| code.find(n))
+            .min()
+            .unwrap_or_else(|| panic!("{name} does not ask"));
+        // The first thing in the tool that touches the page's controls other than to describe them.
+        let acted = ["pressing.press(", "type_and_submit(", "Input.dispatchMouseEvent", "Input.insertText", "eval_js(&mut ws, &js)"]
+            .iter()
+            .filter_map(|n| code.find(n))
             .min()
             .expect("it acts");
         assert!(asked < acted, "{name} acts before it asks");
+        // The tools that click a point or an element ask on every path, not only when `submit` is
+        // set: typing at a point clicks it first.
+        if name == "browser_type_xy" || name.starts_with("browser_click") {
+            assert!(!code[asked.saturating_sub(120)..asked].contains("if submit"), "{name}: the ask depends on `submit`");
+        }
     }
 }
 

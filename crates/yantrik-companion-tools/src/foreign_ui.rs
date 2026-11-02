@@ -160,6 +160,39 @@ impl Tool for DescribeWindowTool {
 
 // ── Doing something in one ──
 
+/// What the person is told an element is: its role and name, and the window and program it is in,
+/// found by asking the accessibility service which window holds it. The id alone (`w3/e17`) tells
+/// them nothing. If the service cannot say, the id is all there is, and it is given as it is.
+fn element_words(element: &str) -> String {
+    let windows = call("a11y.windows", serde_json::json!({})).unwrap_or_default();
+    find_element_words(&windows, |window| call("a11y.describe", serde_json::json!({ "window": window })).ok(), element)
+        .unwrap_or_else(|| format!("an element in another program's window ({element})"))
+}
+
+/// [`element_words`] over the service's answers, which a test supplies.
+fn find_element_words(
+    windows: &serde_json::Value,
+    describe: impl Fn(&str) -> Option<serde_json::Value>,
+    element: &str,
+) -> Option<String> {
+    for window in windows.get("windows")?.as_array()?.iter().take(16) {
+        let id = window["id"].as_str()?;
+        let Some(described) = describe(id) else { continue };
+        let Some(found) = described.get("elements").and_then(|e| e.as_array()).and_then(|all| all.iter().find(|e| e["id"] == element)) else {
+            continue;
+        };
+        let name = found["name"].as_str().filter(|n| !n.is_empty()).or_else(|| found["text"].as_str()).unwrap_or("");
+        return Some(format!(
+            "{} {:?} in {} \u{2014} {:?} ({element})",
+            found["role"].as_str().unwrap_or("element"),
+            name,
+            window["app"].as_str().unwrap_or("another program"),
+            window["title"].as_str().unwrap_or(""),
+        ));
+    }
+    None
+}
+
 pub struct WindowActionTool;
 
 impl Tool for WindowActionTool {
@@ -210,7 +243,7 @@ impl Tool for WindowActionTool {
         // A press or a keystroke in another program's window, which may be the Send or Buy
         // button of a site or an app the person is signed in to: asked about first (#1054). The
         // element is the id `describe_window` gave, with the action to take on it.
-        let to = format!("an element in another program's window ({element})");
+        let to = element_words(element);
         crate::outward::acting(
             &crate::outward::OutwardAct { tool: "window_action", to: &to, what: action, more: "" },
             || match call(
@@ -244,5 +277,25 @@ mod outward_tests {
         assert!(shown(&card, "to").contains("w3/e17"));
         assert_eq!(shown(&card, "what"), "Click");
         assert!(!actions(&heard).contains(&"consume_approval".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod element_tests {
+    use super::*;
+
+    #[test]
+    fn an_element_is_named_by_its_role_its_name_and_the_window_that_holds_it() {
+        let windows = serde_json::json!({ "windows": [
+            { "id": "w1", "app": "firefox", "title": "Inbox", "role": "frame", "pid": 1 },
+            { "id": "w2", "app": "soffice", "title": "Invoice.odt", "role": "frame", "pid": 2 } ] });
+        let describe = |window: &str| match window {
+            "w1" => Some(serde_json::json!({ "elements": [{ "id": "w1/e1", "role": "button", "name": "Cancel" }] })),
+            "w2" => Some(serde_json::json!({ "elements": [{ "id": "w2/e9", "role": "button", "name": "Send", "actions": ["press"] }] })),
+            _ => None,
+        };
+        let said = find_element_words(&windows, describe, "w2/e9").unwrap();
+        assert!(said.contains("button \"Send\"") && said.contains("soffice") && said.contains("Invoice.odt") && said.contains("w2/e9"), "{said}");
+        assert!(find_element_words(&windows, describe, "w9/e1").is_none(), "an element nobody holds is named by its id alone");
     }
 }

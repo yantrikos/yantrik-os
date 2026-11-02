@@ -115,6 +115,9 @@ fn classify(name: &str, category: &str) -> Sensitivity {
         name,
         "run_command"
             | "script_run"
+            | "run_background"
+            | "code_execute"
+            | "claude_code"
             | "ssh_run"
             | "send_email"
             | "browser_type"
@@ -133,6 +136,18 @@ fn classify(name: &str, category: &str) -> Sensitivity {
     Sensitivity::Ordinary
 }
 
+/// Whether a tool reads something of the person's: their memory, mail, files, clipboard, calendar
+/// or terminal. After one of these, a read the model aims at an address it chose can carry what it
+/// read in the address itself, and is asked about (`outward::reading`).
+pub fn reads_private(name: &str, category: &str) -> bool {
+    matches!(
+        category,
+        "memory" | "memory_hygiene" | "knowledge" | "life_management" | "life_assistant" | "email" | "calendar" | "clipboard" | "vault"
+            | "files" | "terminal" | "project" | "workspace" | "vision"
+    ) && !matches!(name, "remember" | "save_user_fact" | "set_reminder")
+        || matches!(name, "read_file" | "list_files" | "read_clipboard" | "recall" | "describe_window" | "list_readable_windows")
+}
+
 /// Whether this tool hands a secret back to its caller.
 ///
 /// Used by the audit log, which records what every tool returned: for these it must record that
@@ -147,6 +162,14 @@ struct Turn {
     /// that does not say what caused it is indistinguishable from a bug, and gets worked around.
     untrusted_from: Option<String>,
     secret_from: Option<String>,
+    /// The tool that first put something of the person's into the conversation: their memory, mail,
+    /// files, clipboard, calendar or terminal ([`reads_private`]). Separate from `secret_from`
+    /// (credentials) because it does not stop a tool running; it decides whether a read aimed at an
+    /// address the model chose is asked about (#1063).
+    private_from: Option<String>,
+    /// Addresses this turn has already read from, so an address that carries nothing in its query
+    /// and was already visited is not asked about again.
+    visited: Vec<String>,
     /// The turn was asked for by a program on the companion's socket (`mark_outside`).
     outside_from: Option<String>,
 }
@@ -379,6 +402,33 @@ fn remember(turn: &mut Turn, name: &str, category: &str) {
         }
         _ => {}
     }
+    if turn.private_from.is_none() && reads_private(name, category) {
+        turn.private_from = Some(name.to_string());
+        tracing::debug!(tool = name, "conversation now holds something of the person's");
+    }
+}
+
+/// What the conversation holds of the person's that an address could carry out, if anything: the
+/// first credential or private read, named. `None` in a clean conversation, and when no turn has
+/// begun on this thread (background work reads nothing the person said).
+pub fn holds_private_data() -> Option<String> {
+    TURN.with(|cell| cell.borrow().as_ref().and_then(|t| t.secret_from.clone().or_else(|| t.private_from.clone())))
+}
+
+/// Whether this turn has already read from `address`.
+pub fn has_visited(address: &str) -> bool {
+    TURN.with(|cell| cell.borrow().as_ref().is_some_and(|t| t.visited.iter().any(|v| v == address)))
+}
+
+/// Remember that this turn read from `address`.
+pub fn note_visited(address: &str) {
+    TURN.with(|cell| {
+        if let Some(turn) = cell.borrow_mut().as_mut() {
+            if !turn.visited.iter().any(|v| v == address) {
+                turn.visited.push(address.to_string());
+            }
+        }
+    });
 }
 
 /// What this turn has taken in, for a caller that wants to show it.
@@ -589,5 +639,47 @@ mod tests {
         remember(&mut turn, n, c);
         let (n, c) = effective("app_action", "app", &serde_json::json!({"app": "browser", "action": "go"}));
         assert!(check_against(&turn, n, c).is_err());
+    }
+
+    #[test]
+    fn a_clean_conversation_holds_nothing_and_a_private_read_marks_it() {
+        fresh();
+        assert_eq!(holds_private_data(), None);
+        note("browse", "browser"); // someone else's page: not the person's data
+        assert_eq!(holds_private_data(), None);
+        note("recall", "memory");
+        assert_eq!(holds_private_data().as_deref(), Some("recall"));
+        fresh();
+        note("email_read", "email");
+        assert_eq!(holds_private_data().as_deref(), Some("email_read"));
+        fresh();
+        note("vault_get", "vault");
+        assert_eq!(holds_private_data().as_deref(), Some("vault_get"));
+        end_turn();
+        assert_eq!(holds_private_data(), None, "no turn, nothing held");
+    }
+
+    #[test]
+    fn writing_to_memory_is_not_reading_it_and_visited_addresses_are_kept_per_turn() {
+        fresh();
+        note("remember", "memory");
+        assert_eq!(holds_private_data(), None);
+        assert!(!has_visited("https://example.com/a"));
+        note_visited("https://example.com/a");
+        assert!(has_visited("https://example.com/a"));
+        fresh();
+        assert!(!has_visited("https://example.com/a"), "a new turn forgets");
+    }
+
+    /// #1063: code and commands that can send anything anywhere count as outbound, so the
+    /// trifecta refusal covers them as it covers `run_command`.
+    #[test]
+    fn a_background_command_code_and_an_agent_are_outbound_tools() {
+        fresh();
+        note("browse", "browser");
+        note("vault_get", "vault");
+        for (tool, category) in [("run_background", "background_tasks"), ("code_execute", "coder"), ("claude_code", "ai"), ("script_run", "coder")] {
+            assert!(check(tool, category).is_err(), "{tool} ran with a credential and untrusted content in the turn");
+        }
     }
 }

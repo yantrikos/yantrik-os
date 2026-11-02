@@ -1,0 +1,30 @@
+{
+  "_about": "Vectors for any card that shows an address: wire_address in yantrik-companion-tools/src/outward.rs and in deploy/yantrik-os/yos-mcp (#1065). Same rule: one ASCII string with the host in punycode and every non-ASCII, control or whitespace character percent-encoded; None when the host is not a valid name. 'unchanged' addresses come back as they went in; 'escaped' ones come back as plain printable ASCII without whitespace that holds a '%'; 'punycode' ones hold 'xn--' and nothing non-ASCII; 'none' ones have no wire form.",
+  "unchanged": [
+    "https://lake-tahoe.example/wiki/Lake_Tahoe",
+    "https://lake-tahoe.example/wiki/Lake_Tahoe?d=1&e=%20x#frag",
+    "http://localhost:8080/a/b?c=d",
+    "https://user:pw@example.com:8443/p"
+  ],
+  "escaped": [
+    "https://lake-tahoe.example/wiki/Lake_Tahoe\ufe00\ufe01\ufe02\ufe03\ufe04",
+    "https://lake-tahoe.example/wiki/L\udb40\udd00\udb40\udd23",
+    "https://lake-tahoe.example/wiki/Lake\u3164",
+    "https://lake-tahoe.example/wiki/La\u200bke",
+    "https://lake-tahoe.example/wiki/\u202eekaL",
+    "https://lake-tahoe.example/wiki/La\u034fke",
+    "https://lake-tahoe.example/wiki/\u2800",
+    "https://lake-tahoe.example/wiki/a b\"c",
+    "https://lake-tahoe.example/w?q=\ufe0f#\u3164",
+    "https://lake-tahoe.example/a\tb\nc"
+  ],
+  "punycode": [
+    "https://en.wikipedi\u0430.org/wiki/Lake_Tahoe",
+    "https://b\u00fccher.example/"
+  ],
+  "none": [
+    "https://\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9.example/",
+    "",
+    "   "
+  ]
+}
