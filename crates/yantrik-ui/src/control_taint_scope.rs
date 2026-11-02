@@ -97,6 +97,16 @@ const AN_AGENTS_OWN: &str = "This agent's conversation is its own, not one the p
 /// A bridge with no token: one process serving every session of its gateway.
 const A_SHARED_BRIDGE: &str = "This bridge carries no agent token, so the desktop cannot tell which of the mind's sessions a call comes from: the Lens conversation, a scheduled job, a background task or another chat. The person's + in the Lens does not clear it, so its taint lasts as long as the bridge runs.";
 
+/// Has the shell's own record of the caller's conversation got a private read in it? Only for a
+/// caller the shell follows (a believed `<harness>:main` token); any other caller, a tokenless
+/// bridge included, is one it cannot place, so this is false and the bridge's flag is all there is.
+pub(crate) fn caller_has_read_private() -> bool {
+    match callers_conversation() {
+        Ok(Caller::Lens(harness)) => !taint_scope::current(&harness).read.is_empty(),
+        _ => false,
+    }
+}
+
 /// The caller's conversation, from what the desktop itself can establish; an error when a token
 /// is presented and not believed.
 fn callers_conversation() -> Result<Caller, String> {

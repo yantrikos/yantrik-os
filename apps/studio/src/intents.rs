@@ -71,6 +71,7 @@ pub fn actions() -> Vec<(Action, Parse)> {
                  may charge for each picture; graded `standard` on a ComfyUI server on your own network \
                  and on `fake`, the placeholder backend, where the prompt never leaves the building.",
             )
+            .leaves_machine()
             .defers()
             .arg(arg(
                 "prompt",

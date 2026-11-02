@@ -130,7 +130,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
             .arg(
                 Param::flag("tainted")
                     .optional()
-                    .describe("true when the caller's conversation has read private state and this call is a hand-off, a command or a new web address: it is then asked about in every mode, full bypass included, and never run unasked. It can only add a card"),
+                    .describe("true when the caller's conversation has read private state and this call is a hand-off, a command, an address to fetch or something that may leave the machine: it is then asked about in every mode, full bypass included, and never run unasked. The shell adds its own record for a caller it follows. Ignored for any other action; it can only add a card"),
             ),
             move |args| {
                 let app = required(args, "app")?;
@@ -138,7 +138,6 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 let grade = required(args, "grade")?;
                 let parsed = args_value(args.get("args_json"))?;
                 let purpose = text(args.get("purpose"));
-                let tainted = crate::taint_ask::flagged(args.get("tainted"));
                 let requester = {
                     let given = text(args.get("requester"));
                     // Unattributed is worse than wrong: the person is being asked to trust
@@ -213,7 +212,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // The mode and the machine's ceiling decide first: a refusal stands. Plan mode
                 // changes nothing from a phone either. Otherwise a held agent is always asked, where
                 // the mode or a desk session rule would have let it run.
-                let decision = crate::taint_ask::settle(match crate::mind_mode::decide(&grade, &app, &action, declared) {
+                let table = match crate::mind_mode::decide(&grade, &app, &action, declared) {
                     refused @ crate::mind_mode::Decision::Refuse { .. } => refused,
                     _ if held_from_phone && crate::mind_mode::current().as_str() == "plan" => {
                         crate::mind_mode::Decision::Refuse {
@@ -224,7 +223,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                     }
                     _ if held_from_phone => crate::mind_mode::Decision::Ask,
                     other => other,
-                }, tainted);
+                };
+                let decision = crate::taint_ask::resolve(table, args.get("tainted"), crate::control_taint_scope::caller_has_read_private(), &app, &action, &format!("{published_purpose} {purpose}"));
                 match decision {
                     // The same sentence the bridge relays, from the same function, so a mind
                     // that reached the shell directly and one that came through the bridge hear

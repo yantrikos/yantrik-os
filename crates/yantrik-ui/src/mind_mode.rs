@@ -208,7 +208,7 @@ impl Mode {
             Mode::Ask => "It asks you before anything that could matter.",
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
             Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete, and once per session before running commands.",
-            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. The one exception: once the mind has read your private data, a command, a hand-off to another mind or a new web address still asks.",
+            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. The one exception: once the mind has read your private data, a command, a hand-off to another mind, a new web address or anything it would send off this machine still asks.",
         }
     }
 

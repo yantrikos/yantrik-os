@@ -115,20 +115,37 @@ be caught.
 - **To look without tainting, pass `actions`** with the family word (`agent_`, `files_`): the prefix of
   an action's name up to its first underscore, not an exact action name. An exact name is answered
   with the family word to use instead.
-- **A tainted hand-off, command or new web address raises the card in every mode, full bypass
+- **A tainted hand-off, command, fetched address or send raises the card in every mode, full bypass
   included.** It is the one named exception to `bypass_all` asking nothing, and the card is never
   skipped: the bridge sends `tainted: true` on `request_approval` and the shell
-  (`taint_ask::settle`) turns any `Run` into an `Ask`, whatever a session or standing rule says. Plan
+  (`taint_ask::resolve`) turns any `Run` into an `Ask`, whatever a session or standing rule says.
+  The shell honours the flag only for those classes (`taint_ask::is_sink`), and ORs in its own taint
+  record for a caller it follows (a believed `<harness>:main` token); a tokenless bridge or a
+  sub-agent is one it cannot place, so those get the card only from the bridge's flag. Plan
   mode and the machine's ceiling still refuse first. If approvals are off for a test run
   (`set_approvals_off_for_test`), or no card can be shown, the call is refused with that reason; it
   is never run unasked. The grant the card mints is the store's: bound to the exact app, action and
   arguments, spent once. An older shell that does not know `tainted` and answers `not_needed` is a
   refusal at the bridge, not a go-ahead. Everything not tainted is decided as before, in every mode.
+- **A sink is declared on the action, not named in the bridge.** An action says in its published
+  purpose `.leaves_machine()` ("What it is given may leave this machine.") or
+  `.fetches_address("url")` ("It fetches the address in `url`."), as `.open_ended()` says it runs
+  what it is given. From a tainted conversation the first asks every time; the second is
+  visited-or-ask like the browser's `go`, with the address shown whole in its one ASCII form. An
+  action that takes an address parameter (`url`, `uri`, `link`, `href`, `webhook`, `endpoint`,
+  `address`) and does not declare `fetches_address` does not publish: `Action::schema` panics in a
+  debug build, which every test is. Free text that leaves the machine cannot be found by a
+  parameter name, so `leaves_machine` is a declaration an author makes; the sweep of every app's
+  actions is in #1080. Declared today: `download-manager.add`, `shell.report_problem`,
+  `studio.generate`; hand-offs and commands keep their lists.
 - **`YOS_MCP_NO_TAINT=1` turns the taint off only on a machine that declares it holds no person's
   data**: `/etc/yantrik/no-person-data`, a regular file owned by root and not group- or
   world-writable, in a root-owned directory the same (checked without following symlinks). The
   variable alone does nothing, so a mind that sets it on a person's machine gains nothing, and it is
-  never a setting. A missing or too-open marker leaves the taint on (fail safe). The live
+  never a setting. A missing or too-open marker leaves the taint on (fail safe). A process in a user
+  namespace (its uid map is not the identity) is refused, since it can mount a `/etc` of its own; a
+  process that overmounts `/proc/self/uid_map` as well cannot be told apart in-process, and what
+  protects the machine is that the bridge a harness launches runs outside any mind's namespace. The live
   instance's installer (`deploy/live/director/setup-director.sh`) writes it.
 
 Only the person's **+** in the Lens clears a scope, marks only add, an unreadable record is tainted,
