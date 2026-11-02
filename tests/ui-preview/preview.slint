@@ -1056,6 +1056,8 @@ export component PickerProbe inherits Window {
     in-out property <string> chosen-mind;
     in-out property <string> chosen-model;
     in-out property <string> chosen-effort;
+    // The fix id a press of a disabled row or of the menu header's action carried.
+    in-out property <string> fixed-reason;
     in-out property <int> opened-count;
     out property <length> picker-x: picker.x;
     out property <length> picker-y: picker.y;
@@ -1083,6 +1085,7 @@ export component PickerProbe inherits Window {
         choose-mind(id) => { root.chosen-mind = id; }
         choose-model(id) => { root.chosen-model = id; }
         choose-effort(e) => { root.chosen-effort = e; }
+        fix-model(r) => { root.fixed-reason = r; }
         opened(w) => { root.opened-count += 1; }
     }
 }

@@ -36,6 +36,10 @@ SPLASH_EMBLEM_SIZE = 132
 ICON_SVG = HERE / "yantrik-icon.svg"           # the app icon (hicolor 'yantrik')
 WORDMARK_SVG = HERE / "yantrik-wordmark.svg"   # the horizontal lockup
 
+DB_EMBLEM_SVG = HERE / "yantrikdb-emblem.svg"      # YantrikDB: the Y over strata
+DB_MARK_SVG = HERE / "yantrikdb-mark.svg"          # YantrikDB at 64 px and below: favicons
+DB_WORDMARK_SVG = HERE / "yantrikdb-wordmark.svg"  # its horizontal lockup
+
 FONT_DIR = HERE / "fonts"
 BARLOW_SEMIBOLD = FONT_DIR / "Barlow-SemiBold.ttf"          # 600 — contact-sheet labels
 BARLOW_LIGHT = FONT_DIR / "Barlow-Light.ttf"                # 300 — the tagline
@@ -46,6 +50,7 @@ INK_SECONDARY = "#c0c8d6"
 GROUND = "#05070d"
 
 TAGLINE = "Your computer. More capable."
+DB_TAGLINE = "Local memory for every mind."
 
 ICON_PNG_SIZES = (16, 32, 48, 64, 128, 256, 512, 1024)
 ICO_SIZES = (16, 32, 48)
@@ -232,29 +237,31 @@ def canvas(width: int, height: int, body: str, ground: str | None = None) -> str
 # The composed cards
 # ───────────────────────────────────────────────────────────────────────────────────────
 
-def card(width: int, height: int, tagline_size: float, wordmark_fraction: float) -> str:
-    """Ground, wordmark centred, tagline under it. The OG card and the social preview."""
-    _body, ww, wh, _vx, _vy = _inner(WORDMARK_SVG)
+def card(width: int, height: int, tagline_size: float, wordmark_fraction: float,
+         wordmark_svg: Path = WORDMARK_SVG, tagline: str = TAGLINE) -> str:
+    """Ground, wordmark centred, tagline under it. The OG card and the social previews."""
+    _body, ww, wh, _vx, _vy = _inner(wordmark_svg)
     scale = (width * wordmark_fraction) / ww
     w, h = ww * scale, wh * scale
 
     gap = height * 0.085
-    tag_w, tag_cap = text_metrics(TAGLINE, BARLOW_LIGHT, tagline_size)
+    tag_w, tag_cap = text_metrics(tagline, BARLOW_LIGHT, tagline_size)
 
     block_h = h + gap + tag_cap
     top = (height - block_h) / 2
-    wordmark = place(WORDMARK_SVG, (width - w) / 2, top, scale)
-    tag_g, _ = text_group(TAGLINE, BARLOW_LIGHT, tagline_size,
+    wordmark = place(wordmark_svg, (width - w) / 2, top, scale)
+    tag_g, _ = text_group(tagline, BARLOW_LIGHT, tagline_size,
                           (width - tag_w) / 2, top + h + gap + tag_cap, INK_SECONDARY)
     return canvas(width, height, wordmark + tag_g, GROUND)
 
 
-def avatar(size: int) -> str:
+def avatar(size: int, emblem_svg: Path = EMBLEM_SVG, fill: float = 0.92) -> str:
     """The full emblem on the ground. Square; GitHub crops it to a circle, and the emblem's
-    gates sit inside that circle."""
-    _b, w, _h, _x, _y = _inner(EMBLEM_SVG)
-    mark = size * 0.92
-    return canvas(size, size, place(EMBLEM_SVG, (size - mark) / 2, (size - mark) / 2, mark / w),
+    gates sit inside that circle. The DB emblem's band is at 176 where the OS ring is at 196,
+    so it is placed at 1.02 to fill the circle as the OS does at 0.92."""
+    _b, w, _h, _x, _y = _inner(emblem_svg)
+    mark = size * fill
+    return canvas(size, size, place(emblem_svg, (size - mark) / 2, (size - mark) / 2, mark / w),
                   GROUND)
 
 
@@ -303,8 +310,29 @@ def render_all(backend: Backend) -> list[tuple[Path, str]]:
     backend.render(avatar(512), out, 512, 512)
     made.append((out, "github-avatar"))
 
-    # The .ico, with each size rendered from the SVG at that size rather than downsampled
-    # from one big one. A 16px favicon that was resampled from 256px is mud.
+    made.append((ico(backend, mark_svg, HERE / "yantrik-mark.ico"), "favicon.ico"))
+
+    # YantrikDB: its avatar, its social preview, and favicons from its own small drawing.
+    out = HERE / "yantrikdb-avatar-512.png"
+    backend.render(avatar(512, DB_EMBLEM_SVG, 1.02), out, 512, 512)
+    made.append((out, "yantrikdb avatar"))
+
+    out = HERE / "yantrikdb-social-preview-1280x640.png"
+    backend.render(card(1280, 640, 36, 0.56, DB_WORDMARK_SVG, DB_TAGLINE), out, 1280, 640)
+    made.append((out, "yantrikdb social-preview"))
+
+    db_mark_svg = DB_MARK_SVG.read_text(encoding="utf-8")
+    for n in ICO_SIZES:
+        out = HERE / f"yantrikdb-favicon-{n}.png"
+        backend.render(db_mark_svg, out, n, n)
+        made.append((out, f"yantrikdb favicon {n}"))
+    made.append((ico(backend, db_mark_svg, HERE / "yantrikdb-mark.ico"), "yantrikdb favicon.ico"))
+    return made
+
+
+def ico(backend: Backend, mark_svg: str, out: Path) -> Path:
+    """The .ico, with each size rendered from the SVG at that size rather than downsampled
+    from one big one. A 16px favicon that was resampled from 256px is mud."""
     from PIL import Image
     frames = []
     for n in ICO_SIZES:
@@ -312,14 +340,12 @@ def render_all(backend: Backend) -> list[tuple[Path, str]]:
         backend.render(mark_svg, tmp, n, n)
         frames.append(Image.open(tmp).convert("RGBA"))
         tmp.unlink(missing_ok=True)
-    ico = HERE / "yantrik-mark.ico"
     base, rest = frames[-1], frames[:-1]
     try:
-        base.save(ico, format="ICO", sizes=[(n, n) for n in ICO_SIZES], append_images=rest)
+        base.save(out, format="ICO", sizes=[(n, n) for n in ICO_SIZES], append_images=rest)
     except TypeError:                                   # older Pillow
-        base.save(ico, format="ICO", sizes=[(n, n) for n in ICO_SIZES])
-    made.append((ico, "favicon.ico"))
-    return made
+        base.save(out, format="ICO", sizes=[(n, n) for n in ICO_SIZES])
+    return out
 
 
 def verify(made: list[tuple[Path, str]]) -> bool:
@@ -382,8 +408,10 @@ def contact_sheet(made: list[tuple[Path, str]]) -> Path:
             else:
                 tiles.append((label, f"{im.size[0]}x{im.size[1]}", im.convert("RGBA").copy()))
 
-    icons = [t for t in tiles if t[0].startswith("icon ") or t[0] == "favicon.ico"]
-    wide = [t for t in tiles if not (t[0].startswith("icon ") or t[0] == "favicon.ico")]
+    def small(label: str) -> bool:
+        return label.startswith(("icon ", "yantrikdb favicon")) or label == "favicon.ico"
+    icons = [t for t in tiles if small(t[0])]
+    wide = [t for t in tiles if not small(t[0])]
 
     def ladder(ground) -> Image.Image:
         """Every icon, at actual pixels up to 128, wrapped, on one ground."""

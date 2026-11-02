@@ -222,16 +222,10 @@ pub fn requester_now() -> Requester {
 /// with no attached mind, the person - which no such rule may read as anyone's. Read where
 /// [`requester_now`] is.
 pub fn mind_id_now() -> Option<String> {
-    if let Some(agent) = crate::control_agent_terminal::calling_agent() {
-        return agent.ok().map(|id| format!("agent:{}", id.0));
-    }
-    let caller = yantrik_app_runtime::control::caller();
-    let pid = caller.as_ref().and_then(|c| u32::try_from(c.pid).ok()).filter(|p| *p > 0)?;
-    if pid == std::process::id() {
-        return Some("companion".to_string());
-    }
-    crate::caller_identity::resolve(pid as i32).attached_mind.map(|mind| format!("mind:{mind}"))
+    identity_now().map(|who| who.key())
 }
+
+pub use crate::mind_identity::{identity_now, Identity};
 
 /// The agent calling now, as the person reads it, when a token the shell believed came with the
 /// call: its role and mind ("Reviewer on pi"), or its mind, or its id. [`requester_now`] calls
@@ -712,28 +706,6 @@ pub fn app_named(want: &str) -> Option<String> {
     (found.len() == 1).then(|| found.remove(0))
 }
 
-/// Ask an app drawing in Mind View to close, as its × does: on Mind View's own display, so an app
-/// with unsaved work can still put up its dialog. Returns the name it was asked by.
-pub fn close_app(app_id: &str) -> Result<String, String> {
-    let display = with_state(|s| s.nested.as_ref().map(|n| n.seat.wayland.clone()))
-        .ok_or_else(|| "Mind View is not running, so nothing is drawn there to close".to_string())?;
-    let title = crate::windows::app_display_name(app_id);
-    let args = ["toplevel".to_string(), "close".to_string(), format!("title:{title}")];
-    let (answer, wait) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .name("yos-wlrctl-mind-view".to_string())
-        .spawn(move || {
-            let _ = answer.send(Command::new("wlrctl").args(&args).env("WAYLAND_DISPLAY", &display).status());
-        })
-        .map_err(|_| "could not start a thread to talk to Mind View's compositor".to_string())?;
-    match wait.recv_timeout(Duration::from_secs(2)) {
-        Ok(Ok(status)) if status.success() => Ok(title),
-        Ok(Ok(_)) => Err(format!("Mind View's compositor has no window called `{title}` to close")),
-        Ok(Err(e)) => Err(format!("could not run wlrctl: {e}")),
-        Err(_) => Err("Mind View's compositor did not answer within 2 s".to_string()),
-    }
-}
-
 /// Forget an app that has exited.
 pub fn mark_exited(pid: u32) {
     with_state(|s| s.apps.retain(|(p, _)| *p != pid));
@@ -772,9 +744,7 @@ pub fn nested_window_lines() -> Option<Vec<String>> {
         .name("yos-wlrctl-mind-view-list".to_string())
         .spawn(move || {
             let _ = answer.send(
-                Command::new("wlrctl")
-                    .args(["toplevel", "list"])
-                    .env("WAYLAND_DISPLAY", &display)
+                crate::mind_view_close::wlrctl(&display, &["toplevel".to_string(), "list".to_string()])
                     .stderr(Stdio::null())
                     .output(),
             );

@@ -500,6 +500,30 @@ def closed_text(name, surface, legacy_suffix=""):
             "described or acted on: ask again in a moment." % (name, purpose))
 
 
+# The screens the shell draws itself (`SCREENS` in crates/yantrik-ui/src/control.rs, which a test
+# there reads this list against). They have no socket of their own and never will: they are part of
+# the shell, so "not running ... open it first" is wrong for every one of them, and the open it
+# advised switches the person's screen (#1033).
+SHELL_SCREENS = (
+    "desktop", "bond", "personality", "memory", "settings", "files", "notifications", "system",
+    "about", "packages", "devices", "permissions", "problems", "agents", "recipes", "launchpad",
+)
+
+
+def shell_screen_text(name):
+    """What is said of a name that is one of the shell's own screens, or None for any other."""
+    key = fold_name(name)
+    if key not in SHELL_SCREENS:
+        return None
+    if key == "files":
+        return ("files is part of the shell, not an app that starts or stops: describe it with "
+                "`os_describe shell` (the Files screen is in its answer) and drive it with the "
+                "shell's files_* actions, which take a path and never move the person's screen.")
+    return ("%s is a screen of the shell itself, not an app that starts or stops: describe it with "
+            "`os_describe shell` and drive it with the shell's own actions. It is never opened "
+            "for you; the person's view is theirs." % key)
+
+
 def request(name, method, params=None, timeout=40, waited=False):
     """One JSON-RPC round trip. One line in, one line out.
 
@@ -518,6 +542,9 @@ def request(name, method, params=None, timeout=40, waited=False):
         start_framework_app(name, method, (params or {}).get("agent_token"))
     candidates = socket_candidates(name)
     if not candidates:
+        in_shell = shell_screen_text(name)
+        if in_shell:
+            raise Unreachable(in_shell)
         surface = declared_surface(name)
         if surface:
             if not waited and still_starting(name, surface):
