@@ -1805,11 +1805,88 @@ def go_is_free(url):
     return visited_form(url) in _VISITED and not payload_in_url(url)
 
 
+# ── The one form of an address a person is shown and a browser is sent (#1062) ──────────────
+#
+# SHARED: any card in this bridge that shows the person an address they are deciding about uses
+# `wire_address` to make it and `shown_url` to word it, and navigates to what `wire_address`
+# returned, never to the text it was given. An address as typed can hold characters nobody can see
+# (variation selectors, fillers, zero-width and bidi characters: a card draws them as nothing) and
+# the browser percent-encodes them into the request, so a card that showed the typed form let a
+# secret ride in what looked like a plain address (security review of #1065, M1). A host in
+# Unicode can pass for another (a Cyrillic `а` for the Latin one), which the ASCII form shows as
+# `xn--…` (L1).
+#
+# What it returns is ASCII, printable, with no whitespace: the host in punycode (IDNA), and every
+# other non-ASCII, control, whitespace or otherwise unsafe character percent-encoded as UTF-8
+# bytes; `%` and the URL's own delimiters are left as written. The card shows that form, the grant
+# is bound to it, and it is what `yos act browser go` is given, so the three are byte-identical.
+# None when no such form exists (a host that is not valid IDNA): then the person is not asked.
+_WIRE_SAFE = "%/:@!$&'()*+,;=-._~?#[]"
+
+
+def wire_address(url):
+    """`url` in the form the browser will send, as ASCII; None when it has none."""
+    from urllib.parse import quote, urlsplit
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        userinfo, at, hostport = parts.netloc.rpartition("@")
+        if hostport.startswith("["):
+            host, bracket, port = hostport.partition("]")
+            host, port = host + bracket, port
+        else:
+            host, colon, port = hostport.partition(":")
+            port = colon + port
+        if not host.isascii() or any(not c.isprintable() or c.isspace() for c in host):
+            if host.startswith("["):
+                return None
+            # The IDNA codec applies nameprep (fullwidth forms fold, ignorable characters drop)
+            # and punycodes each label; a label it cannot make is not a host.
+            host = host.encode("idna").decode("ascii")
+        netloc = quote(userinfo, safe=_WIRE_SAFE) + at + quote(host, safe=_WIRE_SAFE) + quote(port, safe=_WIRE_SAFE)
+        rest = url.strip()[len(parts.scheme) + 1:] if parts.scheme else url.strip()
+        wire = "".join((
+            quote(parts.scheme, safe=_WIRE_SAFE) + ":" if parts.scheme else "",
+            "//" + netloc if (parts.netloc or rest.startswith("//")) else "",
+            quote(parts.path, safe=_WIRE_SAFE),
+            "?" + quote(parts.query, safe=_WIRE_SAFE) if parts.query else "",
+            "#" + quote(parts.fragment, safe=_WIRE_SAFE) if parts.fragment else ""))
+    except (UnicodeError, ValueError):
+        return None
+    return wire if wire and wire.isascii() and wire.isprintable() and not any(c.isspace() for c in wire) else None
+
+
 def shown_url(url):
-    """An address as the person's card spells it: exactly as given, whole. One with a space, a
-    control character or a line break in it is written as the quoted text it is, so it cannot
-    start a line of its own on the card or pass for a sentence of ours."""
-    return url if url.isprintable() and not any(c.isspace() for c in url) else json.dumps(url, ensure_ascii=False)
+    """An address as the person's card spells it, whole. Callers pass `wire_address`'s form, which
+    is plain ASCII; anything else (it should not happen) is written as quoted, escaped text so it
+    cannot start a line of its own on the card or pass for a sentence of ours."""
+    return url if url.isascii() and url.isprintable() and not any(c.isspace() for c in url) else json.dumps(url)
+
+
+def address_for_card(args):
+    """For an os_act `go` from a tainted conversation: the call with its address replaced by
+    `wire_address`'s form, so that what is asked about, bound and opened are one string.
+
+    Returns `(args, refusal)`. An untainted conversation, or a call that names no address, is
+    returned as it is. A refusal is for an address with no wire form: it is not put to the person,
+    as a card could not show them what would be sent."""
+    if TAINT_OFF or not is_go(args.get("app"), args.get("action")):
+        return args, None
+    sync_scope()
+    url = go_url(args)
+    if not _SAW_PRIVATE or not url:
+        return args, None
+    wire = wire_address(url)
+    if wire is None:
+        return args, ("this conversation has already read private state, and the address given is "
+                      "not one a card can show as the browser would send it (its host is not a "
+                      "valid name), so the person cannot be asked about it and nothing was opened. "
+                      "Not a fault, and not something to route around: use the ordinary form of "
+                      "the address.")
+    inner = dict(browser_args(args))
+    inner["url"] = wire
+    return dict(args, args=inner), None
 
 
 def carries_private(app, action, runs_anything=False, args=None):
@@ -3041,6 +3118,9 @@ def run_tool(tool, args, present=None):
             present = present or routed_text
         agent_call = agent_call or (str(args.get("app")) in ("shell", "app-shell")
                                     and args.get("action", "").startswith("agent_"))
+        args, refusal = address_for_card(args)
+        if refusal is not None:
+            return policy_answer(refusal), False
         refusal, note, audit, grant = guard_act(args)
         if isinstance(refusal, StartAnswer):
             return str(refusal), refusal.failed

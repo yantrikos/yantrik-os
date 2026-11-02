@@ -99,10 +99,18 @@ actions, so what counts as a private read is as narrow as the data and no narrow
   app is.
 - **A tainted `web_go` is an access decision, not a dead end.** It raises the person's card, showing
   the exact, whole address (the shell draws it whole or does not ask), asked whatever the mode, with
-  no "allow for this session". Allow opens that address once: the grant is bound to its exact
+  no "allow for this session". The address on the card is the form the browser will send, made by
+  `wire_address` in `yos-mcp` (the one shared function for any card that shows an address; word it
+  with `shown_url`): the host in punycode, every non-ASCII, control or whitespace character
+  percent-encoded, so nothing on the card is invisible and a look-alike host shows as `xn--…`. A
+  host with no valid name is not put to the person at all. Allow opens that address once: the grant is bound to its exact
   arguments and spent by the browser's own dispatch. No answer, or no, opens nothing. Typing into a
   page (`web_type`) stays refused, and an address the session has already been to, with nothing in
   its query, fragment or userinfo, still opens unasked.
+
+The signatures-only answer trusts an app's action declarations (names, parameter text, enum values)
+to be static, as every first-party app's are; a third-party app that wrote state into them would not
+be caught.
 
 Only the person's **+** in the Lens clears a scope, marks only add, an unreadable record is tainted,
 and no tool lets a mind clear its own taint. None of this is in the decision table
