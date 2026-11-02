@@ -78,7 +78,9 @@ actions, so what counts as a private read is as narrow as the data and no narrow
   machine, running or not, as one JSON object per line: `name`, `for` (what it is for), `opens` (how
   it opens) and `describe_as` (the name to describe it by), from the same list as `describe shell` >
   `state.apps`. Only those four keys, as text, cut at 300 characters; nothing of any app's state.
-  (The "Open now" lines above it still show each running app's one-line summary, as they always did.)
+  The "Open now" lines name the running apps and nothing more: an app's one-line summary is its
+  state (a page's title and host, a note's title), so `os_apps` leaves it out and a mind that wants
+  it uses `os_describe`, which taints. A person's own `yos ls` still shows the summaries.
 - **A describe whose answer holds no state is not a private read.** `os_describe {app, actions:
   "<prefix>"}` runs `yos describe --no-state`, which prints the action signatures behind a sentinel
   line (`(action signatures only: this answer holds no state)`) and nothing else: no summary, no
@@ -87,9 +89,10 @@ actions, so what counts as a private read is as narrow as the data and no narrow
   object (`{` in column zero) never are. A `yos` that does not know the flag prints the state, fails
   the check, and taints.
 - **A describe of an app on the bridge's `NO_PERSON_DATA` list is not a private read.** The list is
-  explicit and short (today: `mind-desk`, whose describe is the Mind's state label, a tool's name,
-  counts, the names of the apps open in Mind View, a safety line and a model name). An app is added
-  only after reading its describe. Every other app taints, **including one nobody has classified**:
+  explicit, and **empty today**: `mind-desk`'s describe holds none of the person's data, but any app
+  can declare the surface id `mind-desk` in its `.desktop` file and nothing reserves the name, so an
+  exemption by name would free that app's state. Every app taints, **including one nobody has
+  classified**:
   Calendar, Notes, Email, Files, Weather (it holds the person's city), the shell, the terminals, and
   the browser (its describe holds the page's title, host and tabs).
 - **Reading back an app a mind just changed is a read of its real state**, so it is private if the

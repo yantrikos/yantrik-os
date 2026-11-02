@@ -1113,7 +1113,10 @@ def cmd_ls(argv):
             if not _answers(path):
                 stale.append(name)
             elif name.startswith("app-"):
-                apps.append((name[4:], _one_line(path)))
+                # Names only for a mind (`--catalog`, what os_apps asks for): a summary is the app's
+                # state in one line (a page's title and host, a note's title), and os_apps is a read
+                # that never taints (#1062). `os_describe` is the read that does.
+                apps.append((name[4:], "" if "--catalog" in argv else _one_line(path)))
             else:
                 services.append((name, path))
 

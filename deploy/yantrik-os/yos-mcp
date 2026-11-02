@@ -1536,8 +1536,9 @@ def ambiguous(pair):
 #      checks the ANSWER, not the request: the sentinel first and every other line indented (a
 #      summary, a `revision:` line and the state object all start in column zero). An older `yos`
 #      that ignores the flag prints the state, fails the check, and taints.
-#   2. The app is on `NO_PERSON_DATA`, a short list named here, each entry checked against what the
-#      app's own describe holds. Anything not on it taints, new apps included.
+#   2. The app is on `NO_PERSON_DATA`, an explicit list named here (empty today: see it), each entry
+#      checked against what the app's own describe holds. Anything not on it taints, new apps
+#      included.
 #
 # Not changed: a Mind that re-reads an app it just changed reads real state, so that read is
 # private if the app is. The shell, Calendar, Notes, Email, Files, Weather (it holds the person's
@@ -1547,17 +1548,17 @@ PRIVATE_READS = {"os_describe", "os_screen", "os_perception", "web_listen",
                  # Another agent's session: what it read, its commands' output.
                  "read_agent"}
 OUTBOUND = {"web_type", "web_go"}
-# The apps whose describe holds nothing of the person's, by the name `surface_name` folds to. Each
-# was read against the app's own describe, and the reason is the app's:
-#   mind-desk  the bars around Mind View: its describe is the Mind's state label, the tool's NAME
-#              (a name that is not a plain name is shown as "a tool"), call counts and elapsed
-#              time, the names of the apps open in Mind View, a safety line and the model's name
-#              (apps/mind-desk/src/describe.rs, words.rs). "Never what a Mind said it is doing."
-# Not on it, with the reason: browser (title, host, tabs, URLs), system-monitor (process names and
+# The apps whose describe holds nothing of the person's, by the name `surface_name` folds to. It is
+# EMPTY on purpose. mind-desk's describe holds none of the person's data (the Mind's state label, a
+# tool's name, counts, app names, a safety line, a model name: apps/mind-desk/src/describe.rs), but
+# it is only a name, and any app can declare the surface id `mind-desk` in its .desktop file; an
+# exemption by name would then free that app's state. Nothing reserves a name in the registry, so
+# there is no exemption. A name goes here only together with a way to know the app behind it is
+# the one that was read. Not exempt, with the reason: browser (title, host, tabs, URLs), system-monitor (process names and
 # the filter the person typed), containers, network (addresses), arcade, studio (the pictures'
 # prompts), and every app that holds a document, a note, a mail, an event, a file or a place.
 # Add an app here only after reading its describe, never because its name sounds harmless.
-NO_PERSON_DATA = frozenset({"mind-desk"})
+NO_PERSON_DATA = frozenset()
 # What `yos describe --no-state` prints first. Mirrors `SIGNATURES_ONLY` in `yos`, and the selftest
 # holds the two together.
 SIGNATURES_ONLY = "(action signatures only: this answer holds no state)"

@@ -3107,8 +3107,8 @@ with tempfile.TemporaryDirectory() as d:
 
     # New apps taint by default: the allow-list is the only way out, it is short, and it is
     # named. Every app this repo declares, but the ones on it, taints.
-    check("the apps that skip the taint are an explicit, small list: mind-desk and nothing else",
-          module.NO_PERSON_DATA == frozenset({"mind-desk"}), module.NO_PERSON_DATA)
+    check("no app is exempt by name: any app can declare any surface id, so a name proves nothing",
+          module.NO_PERSON_DATA == frozenset(), module.NO_PERSON_DATA)
     check("Calendar, Notes, Email, Files, Weather, the shell, the terminal and the browser are not on it",
           not ({"calendar", "notes", "email", "files", "weather", "shell", "terminal", "browser"}
                & set(module.NO_PERSON_DATA)), module.NO_PERSON_DATA)
@@ -3116,8 +3116,9 @@ with tempfile.TemporaryDirectory() as d:
         module, state = case(tmp, "describe-free", mode="auto", machine_ceiling="dangerous",
                              ceiling=None, apps_text=generic)
         text, _ = module.run_tool(module.BY_NAME["os_describe"], {"app": spelling})
-        check("describing %r (an app that holds none of the person's data) taints nothing, and still shows its state"
-              % spelling, not tainted(module) and "Dallas" in text, (module._SAW_PRIVATE, text))
+        check("describing %r taints: an app that declares that surface id is not thereby harmless"
+              % spelling, tainted(module) and "Dallas" in text and refused_to_type(module),
+              (module._SAW_PRIVATE, text))
 
     # A Mind re-reading an app it just changed reads real state: private if the app is.
     module, state = case(tmp, "describe-readback", mode="auto", machine_ceiling="dangerous", ceiling=None)
@@ -3382,7 +3383,7 @@ with tempfile.TemporaryDirectory() as d:
     ]
     listeners = [
         serve(runtime / "yantrik" / "app-notes.sock", lambda asked: {"result": {
-            "app": "notes", "summary": "Notes - Dentist 10:00", "revision": "r1",
+            "app": "notes", "summary": "Notes - Dentist 10:00 sk-live-4eC39HqLyjWDarjtT1zdp7dc", "revision": "r1",
             "state": {"titles": ["Dentist 10:00"], "city": "Dallas"}, "actions": NOTES_ACTIONS}}),
     ]
     saved_env = {k: os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "XDG_DATA_DIRS", "XDG_DATA_HOME")}
@@ -3392,9 +3393,13 @@ with tempfile.TemporaryDirectory() as d:
         module = load_mcp(HERE / "yos", tmp / "real-yos-2.json")
         listing, listing_failed = module.run_tool(module.BY_NAME["os_apps"], {})
         check("os_apps, through the real yos, answers and is not a private read, though a running "
-              "app's summary is listed", not listing_failed and not module._SAW_PRIVATE, (listing, module._SAW_PRIVATE))
-        check("os_apps, through the real yos, still lists a running app's summary as it did",
-              "Notes - Dentist 10:00" in listing, listing)
+              "app is open", not listing_failed and not module._SAW_PRIVATE, (listing, module._SAW_PRIVATE))
+        check("os_apps lists a running app by name only: its summary, with a secret-shaped string in it, "
+              "is not in the answer", "Dentist" not in listing and "sk-live" not in listing
+              and any(l.split()[:1] == ["notes"] for l in listing.splitlines()), listing)
+        person, _ = module.yos(["ls"], 15), None
+        check("a person's own `yos ls` (no --catalog) still shows the summary",
+              "Notes - Dentist 10:00" in (person.stdout or ""), person.stdout)
         rows = [json.loads(l) for l in listing.splitlines() if l.startswith("    {")]
         check("it lists every app on the machine, not running ones included, with for, opens and describe_as",
               {r["name"] for r in rows} >= {"notes", "weather", "mind-desk"}
