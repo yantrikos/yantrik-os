@@ -272,10 +272,8 @@ pub fn route_now(app_id: &str) -> Route {
         Requester::Person => return desktop,
         Requester::Mind(who) => who,
     };
-    route(
-        who,
-        crate::running::is_running(app_id) && !is_mind_view_app(app_id),
-    )
+    // A mind's browser is Mind View's own, never the person's: theirs being open changes nothing (#1085).
+    route(who, crate::running::is_running(app_id) && !is_mind_view_app(app_id) && app_id != "browser")
 }
 
 /// [`route_now`] once the facts are in: a mind asked, and whether the app is already open on the
@@ -434,6 +432,8 @@ fn keep_recorded(display: &str) -> Result<(), String> {
 /// tracks or can reach. VM 520 had two. Called once as the shell starts, and again before a Mind
 /// View is started.
 pub fn stop_left_behind() {
+    // Mind View's browsers an earlier build left on the person's port (#1085).
+    yantrik_browser_ports::procs::stop_mind_view_off_port();
     let script = yantrik_ipc_transport::server::socket_dir().join(SEAT_SCRIPT);
     for pid in left_behind(Path::new("/proc"), &script, std::process::id()) {
         tracing::info!(pid, "stopping a Mind View an earlier shell left running");

@@ -65,6 +65,7 @@ mod bench;
 mod window_name;
 mod power_status;
 mod control_network;
+mod control_caller_class;
 mod control_wifi_reconnect;
 mod control_mail;
 mod control_power;

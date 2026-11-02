@@ -1,0 +1,10 @@
+[package]
+name = "yantrik-browser-ports"
+version = "0.1.0"
+edition = "2021"
+description = "Which DevTools port and profile each of the desktop's browsers uses, and how to tell which browser holds a port"
+build = "build.rs"
+
+# No dependencies: the shell, the companion's tools and Arcade all use it, and so does the
+# Python side, which reads the same browsers.conf this crate's build.rs does.
+[dependencies]

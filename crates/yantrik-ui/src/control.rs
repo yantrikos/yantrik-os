@@ -2254,10 +2254,8 @@ pub fn publish(
             },
         );
 
-    // The installer and the updater keep their actions in their own modules: they are the
-    // riskiest things the shell can be asked to do (one erases a disk, the other replaces every
-    // binary and restarts) and they deserve to be read together, not buried at the end of a file
-    // about status bars.
+    // The installer and the updater keep their actions in their own modules: the riskiest things the
+    // shell can be asked to do (one erases a disk, the other replaces every binary) are read together.
     let surface = crate::control_installer::actions(surface, ui);
     let surface = crate::control_update::actions(surface, ui);
     let surface = crate::control_files::actions(surface, ui);
@@ -2293,6 +2291,8 @@ pub fn publish(
     // agent_input, agent_kill. The agent comes from its token, never an argument. See
     // `control_agent_terminal` and design/agents-workspace-2026-09-23.md, decision 3.
     let surface = crate::control_agent_terminal::actions(surface);
+    // Whether a pid is the person's or a mind's, for the browser service's choice of browser.
+    let surface = crate::control_caller_class::actions(surface);
     // A recipe's question answered, and a recipe paused, resumed or cancelled — answer_recipe,
     // pause_recipe, resume_recipe, cancel_recipe. See `control_recipes`.
     let surface = crate::control_recipes::actions(surface, ctx.bridge.handle());

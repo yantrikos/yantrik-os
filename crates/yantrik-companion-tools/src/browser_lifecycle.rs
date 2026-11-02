@@ -11,7 +11,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
+use yantrik_browser_ports::procs;
 
+use super::browser_side;
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
 /// Default limits — tuned for a 4GB Alpine VM running Yantrik OS.
@@ -68,117 +70,63 @@ fn now_secs() -> f64 {
         .as_secs_f64()
 }
 
-/// Count chromium processes using `pgrep`.
-/// Returns (total_count, renderer_count, gpu_count, main_count).
+/// A process of a mind's browser: what kind it is and what it holds.
+struct Mine {
+    pid: u32,
+    kind: String,
+    rss_mb: u64,
+}
+
+/// `--type=renderer` and the like out of a command line, `main` for the browser process itself.
+fn kind_of(cmdline: &[u8]) -> String {
+    let text = String::from_utf8_lossy(cmdline);
+    text.split(['\0', ' '])
+        .find_map(|t| t.strip_prefix("--type="))
+        .map(|t| t.trim_end_matches("-process").to_string())
+        .unwrap_or_else(|| "main".to_string())
+}
+
+fn rss_mb(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("VmRSS:").and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())))
+        .map_or(0, |kb| kb / 1024)
+}
+
+/// The processes of the browsers that are a mind's (Mind View's, and the companion's
+/// identities), run by this account. The person's Browser is a Chromium too, and these used to
+/// be `pgrep chromium`: its renderers were counted, trimmed when there were "too many" (an
+/// ordinary browser has more than ten processes), and `browser_cleanup force` killed it by name
+/// (#1085).
+fn mine() -> Vec<Mine> {
+    procs::mind_side_family()
+        .into_iter()
+        .map(|p| Mine { pid: p.pid, kind: kind_of(&p.cmdline), rss_mb: rss_mb(p.pid) })
+        .collect()
+}
+
+/// Returns (total_count, renderer_count, gpu_count, main_count) of a mind's browser processes.
 fn count_chromium_processes() -> (u64, u64, u64, u64) {
-    // Total chromium processes
-    let total = Command::new("pgrep")
-        .args(["-c", "chromium"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()
-            } else {
-                Some(0)
-            }
-        })
-        .unwrap_or(0);
-
-    // Count by type using pgrep + grep on /proc/PID/cmdline
-    let renderer = Command::new("sh")
-        .args(["-c", "pgrep -a chromium 2>/dev/null | grep -c '\\-\\-type=renderer' || echo 0"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
-        .unwrap_or(0);
-
-    let gpu = Command::new("sh")
-        .args(["-c", "pgrep -a chromium 2>/dev/null | grep -c '\\-\\-type=gpu' || echo 0"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
-        .unwrap_or(0);
-
-    let main = total.saturating_sub(renderer).saturating_sub(gpu);
-
-    (total, renderer, gpu, main)
+    let all = mine();
+    let of = |kind: &str| all.iter().filter(|m| m.kind == kind).count() as u64;
+    let (renderer, gpu) = (of("renderer"), of("gpu"));
+    let total = all.len() as u64;
+    (total, renderer, gpu, total.saturating_sub(renderer).saturating_sub(gpu))
 }
 
-/// Get total memory usage of all chromium processes in MB.
-/// Reads VmRSS from /proc/PID/status for each chromium PID.
+/// Total memory usage of a mind's browser processes in MB.
 fn chromium_memory_mb() -> u64 {
-    let output = Command::new("sh")
-        .args(["-c", r#"
-            total=0
-            for pid in $(pgrep chromium 2>/dev/null); do
-                rss=$(grep '^VmRSS:' /proc/$pid/status 2>/dev/null | awk '{print $2}')
-                if [ -n "$rss" ]; then
-                    total=$((total + rss))
-                fi
-            done
-            echo $((total / 1024))
-        "#])
-        .output();
-
-    output
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
-        .unwrap_or(0)
+    mine().iter().map(|m| m.rss_mb).sum()
 }
 
-/// Get per-process memory info for chromium processes.
-/// Returns Vec of (pid, type, rss_mb).
+/// Per-process memory info for a mind's browser processes: (pid, type, rss_mb).
 fn chromium_process_details() -> Vec<(u32, String, u64)> {
-    let output = Command::new("sh")
-        .args(["-c", r#"
-            for pid in $(pgrep chromium 2>/dev/null); do
-                cmdline=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')
-                rss=$(grep '^VmRSS:' /proc/$pid/status 2>/dev/null | awk '{print $2}')
-                if [ -n "$rss" ]; then
-                    rss_mb=$((rss / 1024))
-                    if echo "$cmdline" | grep -q '\-\-type=renderer'; then
-                        echo "$pid renderer $rss_mb"
-                    elif echo "$cmdline" | grep -q '\-\-type=gpu'; then
-                        echo "$pid gpu $rss_mb"
-                    elif echo "$cmdline" | grep -q '\-\-type=zygote'; then
-                        echo "$pid zygote $rss_mb"
-                    elif echo "$cmdline" | grep -q '\-\-type=utility'; then
-                        echo "$pid utility $rss_mb"
-                    else
-                        echo "$pid main $rss_mb"
-                    fi
-                fi
-            done
-        "#])
-        .output();
-
-    let mut procs = Vec::new();
-    if let Ok(o) = output {
-        for line in String::from_utf8_lossy(&o.stdout).lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                if let (Ok(pid), Ok(rss)) = (parts[0].parse::<u32>(), parts[2].parse::<u64>()) {
-                    procs.push((pid, parts[1].to_string(), rss));
-                }
-            }
-        }
-    }
-    procs
+    mine().into_iter().map(|m| (m.pid, m.kind, m.rss_mb)).collect()
 }
 
 /// Kill specific PIDs via `kill`.
 fn kill_pids(pids: &[u32], signal: &str) -> u32 {
-    let mut killed = 0;
-    for pid in pids {
-        let result = Command::new("kill")
-            .args([signal, &pid.to_string()])
-            .output();
-        if result.map(|o| o.status.success()).unwrap_or(false) {
-            killed += 1;
-        }
-    }
-    killed
+    procs::signal(pids, signal) as u32
 }
 
 /// Kill renderer processes that exceed the limit, keeping the newest ones.
@@ -225,24 +173,10 @@ fn kill_excess_renderers(max_renderers: usize) -> (u32, u64) {
     (killed, freed_mb)
 }
 
-/// Fetch open tabs from Chromium CDP /json endpoint (mirrors browser.rs get_tabs).
+/// Mind View's browser's open tabs, once its port is shown to be Mind View's (browser_side).
 fn get_cdp_tabs() -> Result<Vec<TabSession>, String> {
-    let url = "http://127.0.0.1:9222/json";
-    let output = Command::new("curl")
-        .args(["-s", "--max-time", "3", &url])
-        .output()
-        .map_err(|e| format!("Cannot reach browser (curl): {e}"))?;
-
-    if !output.status.success() {
-        return Err("Browser not reachable on port 9222.".to_string());
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout);
-    let tabs: Vec<Value> = serde_json::from_str(&body)
-        .map_err(|e| format!("Bad CDP response: {e}"))?;
-
     let now = now_secs();
-    Ok(tabs
+    Ok(browser_side::targets()?
         .iter()
         .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
         .map(|t| TabSession {
@@ -255,19 +189,9 @@ fn get_cdp_tabs() -> Result<Vec<TabSession>, String> {
         .collect())
 }
 
-/// Close a CDP tab by its target ID.
+/// Close one of Mind View's browser's tabs by its target ID.
 fn close_cdp_tab(tab_id: &str) -> Result<(), String> {
-    let url = format!("http://127.0.0.1:9222/json/close/{}", tab_id);
-    let output = Command::new("curl")
-        .args(["-s", "--max-time", "3", &url])
-        .output()
-        .map_err(|e| format!("Failed to close tab: {e}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err("Close request failed".to_string())
-    }
+    browser_side::close_target(tab_id)
 }
 
 // ── Public watchdog functions (not tools — called from companion/browser.rs) ──
@@ -374,41 +298,29 @@ pub fn watchdog_check() -> Option<String> {
     }
 }
 
-/// Kill ALL browser processes. Nuclear option for full cleanup.
+/// Kill all of a mind's browser processes. Nuclear option for full cleanup. Never the person's
+/// Browser: only browsers on Mind View's profile or the companion's identities (#1085).
 ///
 /// Sends SIGTERM first, waits 2 seconds, then SIGKILL any survivors.
 /// Returns a summary string with counts.
 pub fn kill_all_browsers() -> String {
-    // Count before
-    let (before, _, _, _) = count_chromium_processes();
-    if before == 0 {
+    let pids: Vec<u32> = mine().iter().map(|m| m.pid).collect();
+    if pids.is_empty() {
         return "No Chromium processes running.".to_string();
     }
-
-    // SIGTERM all chromium
-    let _ = Command::new("pkill")
-        .args(["-15", "chromium"])
-        .output();
-
-    // Wait 2 seconds for graceful shutdown
+    kill_pids(&pids, "-15");
     std::thread::sleep(std::time::Duration::from_secs(2));
-
-    // Check survivors
-    let (survivors, _, _, _) = count_chromium_processes();
-    if survivors > 0 {
-        // SIGKILL survivors
-        let _ = Command::new("pkill")
-            .args(["-9", "chromium"])
-            .output();
+    let survivors: Vec<u32> = mine().iter().map(|m| m.pid).filter(|p| pids.contains(p)).collect();
+    if !survivors.is_empty() {
+        kill_pids(&survivors, "-9");
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-
-    let (after, _, _, _) = count_chromium_processes();
-    let killed = before.saturating_sub(after);
-
+    let after = mine().iter().filter(|m| pids.contains(&m.pid)).count();
     format!(
-        "Killed {killed} Chromium processes (was: {before}, now: {after}).{}",
-        if survivors > 0 { " Force-killed survivors." } else { "" }
+        "Killed {} Chromium processes (was: {}, now: {after}).{}",
+        pids.len().saturating_sub(after),
+        pids.len(),
+        if survivors.is_empty() { "" } else { " Force-killed survivors." }
     )
 }
 
@@ -631,4 +543,28 @@ impl Tool for BrowserStatusTool {
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(BrowserCleanupTool));
     reg.register(Box::new(BrowserStatusTool));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_process_is_told_by_its_type_flag_in_either_command_line_form() {
+        assert_eq!(kind_of(b"/usr/lib/chromium/chromium --type=renderer --lang=en"), "renderer");
+        assert_eq!(kind_of(b"chromium\0--type=gpu-process\0--x\0"), "gpu");
+        assert_eq!(kind_of(b"chromium --remote-debugging-port=9223"), "main");
+    }
+
+    /// The watchdog and `browser_cleanup` count, trim and kill a mind's browsers; the person's
+    /// Browser is the same program and is not among them (#1085).
+    #[test]
+    fn this_module_names_no_browser_by_its_program() {
+        let src = include_str!("browser_lifecycle.rs");
+        let src = &src[..src.find("#[cfg(test)]").unwrap()];
+        for banned in ["pgrep", "pkill"] {
+            assert!(!src.contains(&format!("\"{banned}\"")), "{banned} names Chromium, whoever's it is");
+        }
+        assert!(!src.contains("9222"), "the person's port");
+    }
 }

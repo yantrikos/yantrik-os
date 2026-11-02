@@ -1365,9 +1365,13 @@ session_runtime_dir() {
   printf '/run/user/%s' "$uid"
 }
 
+# Mind View's browsers stop (the mind reopens them), so each build starts its own on its own port.
+stop_mind_view_browsers() { python3 "$PREFIX/share/browser/yantrik_browser/stop_mind_view.py" >/dev/null 2>&1 || true; }
+
 restart_and_verify() {
   local backup="$1"
   say "Restarting the shell"
+  stop_mind_view_browsers
 
   # Ask the session manager to restart the session, rather than respawning the shell by hand.
   #
@@ -1492,6 +1496,7 @@ no shell running. Start one with: $BIN_DIR/yantrik-ui $PREFIX/config.yaml"
 # Copy a backup's binaries back over the live ones, and restore its build marker.
 restore_backup() {
   local backup="$1"
+  stop_mind_view_browsers
   [ -d "$backup/bin" ] || { warn "backup $backup has no bin/ — cannot restore"; return 1; }
   # Binaries go back only from a backup nobody but root could have written: `sudo yantrik-update
   # rollback` needs no password, so a backup the desktop's account could edit (every backup taken
@@ -3202,20 +3207,16 @@ reconcile_mind_socket() { # <owner>
   systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
 }
 
-# The browsers' DevTools ports. The desktop's Browser listens on 127.0.0.1:9222 and the
-# companion's on 9223-9322. Loopback TCP has no owner: until this, every account on the machine —
-# a system service, a container runtime, the mind account — could open those ports and drive the
-# person's logged-in browser, read its cookies and submit its forms, without meeting any gate.
-# Now only root and the person connect. Minds reach the browser the way they reach every other
-# app: through its surface at the mind door (app-browser, apps/browser, #477), which the person's
-# own session serves and which holds the one DevTools connection. Everyone else is reset.
-#
-# And the other direction: while a browser is closed its port is free, and any account could
-# listen there and be taken for it — by `browser_login`, which types a vault password into
-# whatever answers, and by every page read a mind is handed. Only root and the person run
-# browsers, so a DevTools port answering from any other account has its data dropped: the
-# handshake may complete, but not one byte of a reply reaches the client. Written by this
-# updater's own code, not from a file in the bundle; the uids go in as numbers.
+# The browsers' DevTools ports: the person's Browser on 127.0.0.1:9222, Mind View's browser (what
+# every mind's web tools drive) on 9223, the companion's other identities on 9224-9322. Loopback
+# TCP has no owner: until this, every account on the machine could open those ports and drive the
+# person's logged-in browser, read its cookies, submit its forms, past every gate. Now only root
+# and the person connect, by account alone: both browsers run as the person, so this cannot tell
+# them apart. The browser service does (#477, #1085): a mind goes to 9223, the person's own `yos
+# web` to 9222, and a port is used only while a browser on the right profile holds it. And the
+# other direction: a closed browser's port is free, and any account could listen there and be
+# taken for it (`browser_login` types a vault password into whatever answers), so a DevTools
+# port answering from any other account has its data dropped. Written by this updater's own code.
 DEVTOOLS_GUARD=/etc/yantrik/devtools-guard.nft
 DEVTOOLS_UNIT=/etc/systemd/system/yantrik-devtools-guard.service
 
@@ -3224,8 +3225,7 @@ devtools_guard_text() {
 # Yantrik OS: the browsers' DevTools ports (9222-9322 on loopback) and the VNC ports (5900-5909,
 # wayvnc's, which ask no password on loopback) are opened and answered by root and $1 only: either
 # is the whole desktop to whoever reaches it, past the mind door, the cards and Private mode.
-# Minds use the browser's surface at the mind door. Made by yantrik-update; edits here are put
-# back at the next update.
+# Made by yantrik-update; edits here are put back at the next update.
 table inet yantrik_devtools
 delete table inet yantrik_devtools
 table inet yantrik_devtools {

@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.parse
 
-from . import cdp, commit, hands, judgement
+from . import cdp, commit, guard, hands, judgement, sides
 
 NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
 ACT_LIMIT = 4.0           # seconds a click or a key is given
@@ -76,13 +76,19 @@ def commitment_of(element):
 
 
 class Driver:
-    def __init__(self, browser=None, judge=None):
-        self.browser = browser or cdp.Browser()
+    """The browser surface's actions. `browser` is the one this call drives: a mind's, Mind View's;
+    the person's own, theirs (guard.py, sides.py)."""
+
+    def __init__(self, browser=None, judge=None, guard_=None):
+        self.sides = sides.Sides(browser, guard_)
         # The person's decision model, asked when the words say nothing (judgement.py). `False`
         # turns it off (tests of the words alone); None is the shell's `decide`.
         self.judge = None if judge is False else (judge or judgement.Judgement())
         self.lock = threading.RLock()
-        self.last_status = {"open": False}
+
+    @property
+    def browser(self):
+        return self.sides.current
 
     def held(self, wait=BUSY_WAIT):
         """The driver, for one action: waited for up to `wait` seconds, then refused as busy. A
@@ -94,6 +100,11 @@ class Driver:
                 if not driver.lock.acquire(timeout=wait):
                     raise Refused("the browser is busy with another action (a page may be slow to "
                                   "answer); try again in a few seconds")
+                try:
+                    driver.sides.bind()
+                except BaseException as e:
+                    driver.lock.release()
+                    raise (PageRefused(str(e)) if isinstance(e, guard.Denied) else e) from None
                 return driver
 
             def __exit__(self, *exc):
@@ -112,6 +123,8 @@ class Driver:
                           "it: act shell open_app name=browser — then read.") from None
         except cdp.CdpError as e:
             raise Refused(str(e)) from None
+        except guard.Denied as e:
+            raise PageRefused(str(e)) from None
 
     def _run(self, tab, fn, *args):
         try:
@@ -203,38 +216,43 @@ class Driver:
     # ── reading ──
 
     def status(self):
-        """The view: whether the browser is open, its tabs, and the one actions go to. It never
-        waits behind an act for long: while one runs it answers with what it last knew."""
+        """The view: whether the browser is open, its tabs, and the one actions go to, for the
+        caller's own browser. It never waits behind an act for long: while one runs it answers
+        with what that browser last showed (the caller's side, never the other's). A browser the
+        caller may not use is `open: false` with the sentence in `refused`."""
         if not self.lock.acquire(timeout=1.0):
-            return dict(self.last_status, busy=True)
+            return dict(self.sides.last[self.sides.side()], busy=True)
         try:
-            return self._status()
+            try:
+                side = self.sides.bind()
+                return self._status(side)
+            except guard.Denied as e:
+                return {"open": False, "refused": str(e)}
         finally:
             self.lock.release()
 
-    def _status(self):
-        if True:
+    def _status(self, side):
+        try:
+            self.browser.connect()
+        except (cdp.BrowserClosed, cdp.CdpError):
+            self.browser.close()
+            return {"open": False}
+        pages = self.browser.pages()
+        active = self.browser.active if self.browser.active in pages else (pages[0] if pages else None)
+        if active is not None and active.session:
+            # The target list's title arrives a moment after the page has it; ask the page.
             try:
-                self.browser.connect()
-            except (cdp.BrowserClosed, cdp.CdpError):
-                self.browser.close()
-                return {"open": False}
-            pages = self.browser.pages()
-            active = self.browser.active if self.browser.active in pages else (pages[0] if pages else None)
-            if active is not None and active.session:
-                # The target list's title arrives a moment after the page has it; ask the page.
-                try:
-                    here = self.browser.run(active, "where", timeout=3)
-                    active.url, active.title = here.get("url", active.url), here.get("title", active.title)
-                except (cdp.CdpError, cdp.BrowserClosed):
-                    pass
-            self.last_status = {
-                "open": True,
-                "tabs": [{"tab": short(t.id), "title": str(t.title)[:100], "url": str(t.url)[:200],
-                          "active": t is active} for t in pages],
-                "dialog": active.dialog if active else None,
-            }
-            return self.last_status
+                here = self.browser.run(active, "where", timeout=3)
+                active.url, active.title = here.get("url", active.url), here.get("title", active.title)
+            except (cdp.CdpError, cdp.BrowserClosed):
+                pass
+        self.sides.last[side] = {
+            "open": True,
+            "tabs": [{"tab": short(t.id), "title": str(t.title)[:100], "url": str(t.url)[:200],
+                      "active": t is active} for t in pages],
+            "dialog": active.dialog if active else None,
+        }
+        return self.sides.last[side]
 
     def _marked(self, page):
         """A reading with every control that reads as a commitment marked: the reader learns
@@ -279,7 +297,10 @@ class Driver:
             return got
 
     def tabs(self):
-        return self.status()
+        out = self.status()
+        if out.get("refused"):
+            raise PageRefused(out["refused"])
+        return out
 
     def wait(self, text=None, seconds=5.0, tab=None):
         """Wait for words, or for the page to settle. The browser is held for one look at a time,

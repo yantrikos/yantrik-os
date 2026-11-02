@@ -135,6 +135,27 @@ class TestTheAppThread(support.MachineCase):
         self.assertTrue(all(where), where)
         self.assertEqual(out["result"], {"caller": True}, "no socket, so no peer")
 
+    def test_the_view_read_after_the_work_knows_who_the_caller_is(self):
+        """A view that tells callers apart (the browser's) is read again after `Later`'s work, and
+        must see the caller it is for — on the app's thread, not as nobody."""
+        from yantrik_surface import PeerCred
+        s = MainLoopSurface("main")
+        seen = []
+
+        @s.view
+        def state():
+            seen.append(caller())
+            return {}
+
+        @s.action("slow")
+        def slow() -> dict:
+            """Slow."""
+            return Later(lambda: {"done": True})
+
+        peer = PeerCred(1, 2, 3)
+        s.act({"action": "slow"}, peer)
+        self.assertTrue(seen and all(p == peer for p in seen), seen)
+
     def test_a_refusal_raised_on_the_app_thread_crosses_back(self):
         s = MainLoopSurface("main")
 

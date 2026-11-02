@@ -1,11 +1,17 @@
 //! Playing a game: hand the built file to the desktop's Browser, do not become one.
 //!
 //! The charter says `play` reuses the browser route, and that is what this does. The
-//! shell's Browser launch already carries `--remote-debugging-port=9222`, so Arcade
+//! shell's Browser launch already carries the debugging port, so Arcade
 //! asks the shell to open the Browser like any other caller, waits for the debugging
 //! port to answer, and opens the game in a new tab over plain DevTools HTTP. No
 //! second browser stack, no window of its own, and the person can see the game in the
 //! same Browser they already use — with its tab bar, its zoom, its everything.
+//!
+//! Whose Browser is decided by who the copy of Arcade is drawn for (#1085). The person's own
+//! Arcade opens the game in the person's Browser. One a mind opened (Mind View) opens it in Mind
+//! View's browser and never the person's: a game is a page a mind may have written, and a
+//! `file://` page in the person's signed-in profile can navigate itself to their signed-in sites.
+//! Either way the port is first shown to be held by that browser, by its profile.
 //!
 //! Opening the tab is not the same as the game drawing. On a desktop whose Browser has
 //! no WebGL context at all, the HUD renders over a white rectangle and nothing else
@@ -21,9 +27,41 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use yantrik_browser_ports::{listener, Place, Side};
+
 use crate::verify;
 
-const DEBUGGER: &str = "http://127.0.0.1:9222";
+/// Whose Browser this copy of Arcade plays in.
+fn side() -> Side {
+    if yantrik_app::for_mind::from_env() { Side::MindView } else { Side::Person }
+}
+
+fn debugger(side: Side) -> String {
+    format!("http://127.0.0.1:{}", side.port())
+}
+
+/// Whether what holds `side`'s port may be played in: nothing yet (the caller starts or waits for
+/// it), or a browser of that side run by this account. Anything else, or anything that cannot be
+/// established, is refused with the reason.
+pub(crate) fn vet(side: Side, held: Result<listener::Listener, listener::Why>, own: u32) -> Result<(), String> {
+    let port = side.port();
+    match held {
+        Err(listener::Why::Nobody) => Ok(()),
+        Err(listener::Why::Unclear(why)) => Err(format!("what holds the debugging port {port} could not be established ({why}), so no game was opened there")),
+        Ok(l) if l.uid != own => Err(format!("the debugging port {port} is held by another account, so no game was opened there")),
+        Ok(l) if side == Side::MindView && l.place != Place::MindView => Err(format!(
+            "the debugging port {port} is held by a browser that is not Mind View's own, so no game was opened there"
+        )),
+        Ok(l) if side == Side::Person && l.place.is_mind_side() => Err(format!(
+            "the debugging port {port} is held by a mind's browser, not your Browser; close it and open your Browser again"
+        )),
+        Ok(_) => Ok(()),
+    }
+}
+
+fn vet_now(side: Side) -> Result<(), String> {
+    vet(side, listener::identify(side.port()), listener::own_uid())
+}
 
 /// How long the opened tab gets to report its first frame. The verifier allows the
 /// same for a headless boot; a desktop Browser with a GPU is well under it, and a
@@ -213,24 +251,34 @@ pub fn verdict(name: &str, seen: &Seen, fallback: Option<&Result<PathBuf, String
 pub fn play(html: &Path, fallback_shot: &Path) -> Result<String, String> {
     let abs = std::fs::canonicalize(html)
         .map_err(|e| format!("cannot read {}: {e}", html.display()))?;
-    if !debugger_alive(DEBUGGER) {
+    let side = side();
+    let base = debugger(side);
+    vet_now(side)?;
+    if !debugger_alive(&base) {
+        if side == Side::MindView {
+            // Opening Mind View's browser is the mind's own `open_app browser`; asking the shell
+            // from here would open the person's Browser.
+            return Err("Mind View's browser is not open; open it first (open_app name=browser)".into());
+        }
         ask_shell_for_browser()?;
     }
     // The Browser may already have been up (port alive immediately) or may be
     // starting now; either way, wait for the port to answer.
     let deadline = Instant::now() + Duration::from_secs(12);
-    while !debugger_alive(DEBUGGER) {
+    while !debugger_alive(&base) {
         if Instant::now() > deadline {
-            return Err(
-                "the Browser did not open its debugging port (127.0.0.1:9222) within 12 s; \
-                 the desktop's Browser route is supposed to carry --remote-debugging-port=9222"
-                    .into(),
-            );
+            return Err(format!(
+                "the Browser did not open its debugging port ({base}) within 12 s; \
+                 the desktop's Browser route is supposed to carry --remote-debugging-port={}",
+                side.port()
+            ));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    // Again just before the tab is opened: what holds the port is what was checked.
+    vet_now(side)?;
     let url = file_url(&abs);
-    let tab = open_tab(DEBUGGER, &url)?;
+    let tab = open_tab(&base, &url)?;
     let name = abs.file_name().and_then(|n| n.to_str()).unwrap_or("the game");
     let Some(ws_url) = tab.ws_url else {
         // Every Chromium names the socket in its /json/new answer; one that does not
@@ -301,6 +349,35 @@ mod tests {
         let request_line = server.join().unwrap();
         assert!(request_line.starts_with("PUT "), "newer Chromes require PUT: {request_line}");
         assert!(request_line.contains("/json/new?file:///tmp/game/index.html"), "{request_line}");
+    }
+
+    fn held(place: Place, uid: u32) -> Result<listener::Listener, listener::Why> {
+        Ok(listener::Listener { port: 9223, uid, inode: 1, pids: vec![1], place })
+    }
+
+    /// The bug: `play` opened a game, which a mind may have written, in whatever held 9222.
+    #[test]
+    fn a_game_is_opened_only_in_the_browser_of_whose_arcade_it_is() {
+        // A mind's Arcade: Mind View's browser, and nothing else.
+        assert!(vet(Side::MindView, held(Place::MindView, 1000), 1000).is_ok());
+        for place in [Place::PersonDefault, Place::Other, Place::Identity] {
+            let why = vet(Side::MindView, held(place, 1000), 1000).unwrap_err();
+            assert!(why.contains("not Mind View's own"), "{place:?}: {why}");
+        }
+        // The person's Arcade: their Browser, and never a mind's.
+        assert!(vet(Side::Person, held(Place::PersonDefault, 1000), 1000).is_ok());
+        assert!(vet(Side::Person, held(Place::Other, 1000), 1000).is_ok());
+        assert!(vet(Side::Person, held(Place::MindView, 1000), 1000).unwrap_err().contains("a mind's browser"));
+        // Nothing yet is the caller's to start; another account's, or unclear, is refused.
+        assert!(vet(Side::Person, Err(listener::Why::Nobody), 1000).is_ok());
+        assert!(vet(Side::MindView, held(Place::MindView, 1001), 1000).is_err());
+        assert!(vet(Side::MindView, Err(listener::Why::Unclear("x".into())), 1000).is_err());
+    }
+
+    #[test]
+    fn the_ports_are_the_decided_ones_and_the_debugger_is_loopback() {
+        assert_eq!(debugger(Side::Person), "http://127.0.0.1:9222");
+        assert_eq!(debugger(Side::MindView), "http://127.0.0.1:9223");
     }
 
     #[test]
