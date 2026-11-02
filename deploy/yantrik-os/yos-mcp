@@ -158,6 +158,9 @@ def yos_env():
     as a token.
     """
     env = dict(os.environ)
+    # Declared on every yos this bridge runs, for surfaces that must not take it for the person
+    # (the browser's, #1085). It only ever refuses: a process that lacks it proves nothing.
+    env["YOS_VIA"] = "yos-mcp"
     # A mind at the mind door (#411) has no session of its own to point at: yos finds everything
     # through YANTRIK_MIND_RUN, and the person's runtime directory is not its to open.
     if not env.get("YANTRIK_MIND_RUN", "").strip():

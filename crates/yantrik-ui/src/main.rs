@@ -111,6 +111,9 @@ mod control_recipes;
 mod control_agents;
 mod control_workroom;
 mod control_mind_desk;
+// Whether a pid is a mind's, by the shell's process walk (`caller_kind`), for surfaces that serve the
+// person and the minds differently.
+mod control_caller_kind;
 // The chat in one read, for the Yantrik terminal (`chat_view`).
 mod control_chat;
 // Which of the person's conversations a bridge's private reads count against (`taint_scope`,

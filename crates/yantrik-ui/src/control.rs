@@ -2310,6 +2310,9 @@ pub fn publish(
     // taint_mark. Read and add only; the person's + in the Lens is the one thing that begins a
     // scope. See `control_taint_scope` and `taint_scope`.
     let surface = crate::control_taint_scope::actions(surface);
+    // Whether a pid is a mind's, by the process walk: caller_kind. For a surface that serves the
+    // person and the minds differently (#1085). See `control_caller_kind`.
+    let surface = crate::control_caller_kind::actions(surface);
     // The workroom's own navigation: show_workroom. See `control_workroom`.
     let surface = crate::control_workroom::actions(surface, ui);
     // What the Mind desk around Mind View reads, and the two things it may ask (#1023): answered to the

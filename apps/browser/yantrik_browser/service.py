@@ -35,6 +35,8 @@ def build(driver=None, **surface_options):
         s = d.status()
         if s.get("refused"):
             return "Browser — " + s["refused"]
+        if s.get("busy") and not s.get("open"):
+            return "Browser — busy"
         if not s.get("open"):
             return "Browser — not open"
         tabs = s.get("tabs") or []

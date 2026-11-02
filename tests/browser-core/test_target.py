@@ -79,7 +79,7 @@ class FakeProc:
         self.write_tables()
 
     def identify(self, address):
-        return target.identify(address, proc=self.root)
+        return target.identify(address, proc=self.root, mind_profile=self.mind_view)
 
 
 class FakeWs:
@@ -145,7 +145,7 @@ class Case(unittest.TestCase):
             self.addCleanup(p.stop)
         self.browser = cdp.Browser(ADDRESS, identify=self.proc.identify)
         self.addCleanup(self.browser.close)
-        self.guard = target.Guard(is_person=lambda: self.person, profile=lambda: self.proc.mind_view)
+        self.guard = target.Guard(is_person=lambda: self.person)
         self.d = drv.Driver(self.browser, judge=False, guard=self.guard)
 
     def create_connection(self, url, **kw):
@@ -153,14 +153,23 @@ class Case(unittest.TestCase):
         self.opened.append(ws)
         return ws
 
-    # the browsers
-    def persons_browser(self, pid=10, **kw):
-        return self.proc.listener(pid, ["/usr/bin/chromium", "--remote-debugging-port=9222",
-                                        "--user-data-dir=" + self.proc.persons], **kw)
+    # the browsers. What they were started with is whatever the argv says; what they own is the
+    # profile their SingletonLock names (or the LOCK file they hold).
+    def owns(self, pid, profile):
+        lock = os.path.join(profile, "SingletonLock")
+        if os.path.lexists(lock):
+            os.remove(lock)
+        os.symlink("somehost-%d" % pid, lock)
 
-    def mind_view_browser(self, pid=20, **kw):
-        return self.proc.listener(pid, ["/usr/bin/chromium", "--remote-debugging-port=9222",
-                                        "--user-data-dir=" + self.proc.mind_view], **kw)
+    def persons_browser(self, pid=10, argv=None, **kw):
+        inode = self.proc.listener(pid, argv or ["/usr/bin/chromium", "--remote-debugging-port=9222"], **kw)
+        self.owns(pid, self.proc.persons)
+        return inode
+
+    def mind_view_browser(self, pid=20, argv=None, **kw):
+        inode = self.proc.listener(pid, argv or ["/usr/bin/chromium", "--remote-debugging-port=9222"], **kw)
+        self.owns(pid, self.proc.mind_view)
+        return inode
 
     # what a caller is let do
     def refused(self, action, fn=None):
@@ -193,7 +202,7 @@ class TestOtherBrowsers(Case):
 
     def test_a_browser_with_no_user_data_dir_is_the_persons_default_profile(self):
         self.proc.listener(10, ["/usr/bin/chromium", "--remote-debugging-address=127.0.0.1",
-                                "--remote-debugging-port=9222"])
+                                "--remote-debugging-port=9222"])       # owns no profile of Mind View's
         self.assert_every_action_refused()
         self.person = True
         self.assert_allowed()
@@ -234,31 +243,12 @@ class TestUnidentifiable(Case):
         self.proc.listener(10, ["x"], holds=False)
         self.both_refused()
 
-    def test_a_command_line_that_cannot_be_read(self):
-        self.persons_browser()
-        os.remove(os.path.join(self.proc.root, "10", "cmdline"))
-        self.both_refused()
-
-    def test_the_flag_given_twice_differently(self):
-        self.proc.listener(10, ["chromium", "--user-data-dir=" + self.proc.mind_view,
-                                "--user-data-dir=" + self.proc.persons])
-        self.both_refused()
-
-    def test_the_flag_given_without_a_path(self):
-        self.proc.listener(10, ["chromium", "--user-data-dir"])
-        self.both_refused()
-        self.proc.clear()
-        self.proc.listener(10, ["chromium", "--user-data-dir="])
-        self.both_refused()
-
-    def test_a_relative_path_with_no_working_directory_to_resolve_it(self):
-        self.proc.listener(10, ["chromium", "--user-data-dir=chromium"])
-        os.remove(os.path.join(self.proc.root, "10", "cwd"))
-        self.both_refused()
-
-    def test_two_processes_sharing_the_socket_that_disagree_about_the_profile(self):
-        inode = self.mind_view_browser(10)
-        self.proc.process(11, ["chromium", "--user-data-dir=" + self.proc.persons], inode=inode)
+    @unittest.skipIf(os.getuid() == 0, "root reads everything")
+    def test_a_process_whose_files_cannot_be_listed(self):
+        self.mind_view_browser()
+        fds = os.path.join(self.proc.root, "20", "fd")
+        os.chmod(fds, 0)
+        self.addCleanup(os.chmod, fds, 0o700)
         self.both_refused()
 
     def test_two_sockets_on_the_port(self):
@@ -272,16 +262,26 @@ class TestUnidentifiable(Case):
         self.both_refused()
 
     def test_a_table_that_cannot_be_read(self):
-        os.remove(os.path.join(self.proc.root, "net", "tcp"))
         self.persons_browser()
-        os.remove(os.path.join(self.proc.root, "net", "tcp6"))
+        with open(os.path.join(self.proc.root, "net", "tcp"), "w"):
+            pass
+        os.chmod(os.path.join(self.proc.root, "net", "tcp"), 0)
+        self.addCleanup(os.chmod, os.path.join(self.proc.root, "net", "tcp"), 0o600)
+        if os.getuid() == 0:
+            self.skipTest("root reads everything")
         self.both_refused()
 
 
-class TestWhatTheFlagMeans(Case):
-    def mind_may_use(self, argv, cwd=None):
+class TestWhatMakesAProcessMindViews(Case):
+    """Not its arguments: the profile's SingletonLock names it, or it holds one of its LOCK files."""
+
+    def mind_may_use(self, build):
         self.proc.clear()
-        self.proc.listener(10, argv, cwd=cwd)
+        for d in (self.proc.mind_view, self.proc.persons):
+            for name in os.listdir(d):
+                path = os.path.join(d, name)
+                os.remove(path) if not os.path.isdir(path) or os.path.islink(path) else shutil.rmtree(path)
+        build()
         try:
             self.d.tabs()
             return True
@@ -290,49 +290,96 @@ class TestWhatTheFlagMeans(Case):
         finally:
             self.browser.close()
 
-    def test_a_relative_path_is_taken_from_the_working_directory(self):
-        base = os.path.dirname(self.proc.mind_view)
-        self.assertTrue(self.mind_may_use(["chromium", "--user-data-dir=chromium"], cwd=base))
-        self.assertFalse(self.mind_may_use(["chromium", "--user-data-dir=chromium"], cwd=self.proc.home))
-        self.assertFalse(self.mind_may_use(["chromium", "--user-data-dir=../../../../.config/chromium"], cwd=base))
+    def hold(self, pid, path):
+        """The process holds `path` open (a file made there if it is not)."""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "a").close()
+        os.symlink(path, os.path.join(self.proc.root, str(pid), "fd", "9"))
 
-    def test_dots_and_links_are_resolved_before_comparing(self):
-        mv = self.proc.mind_view
-        link = os.path.join(self.proc.tmp.name, "looks-harmless")
-        os.symlink(mv, link)
-        self.assertTrue(self.mind_may_use(["chromium", "--user-data-dir=" + link]))
-        # a path that spells Mind View's but goes somewhere else; and the reverse, a link to the person's
-        self.assertFalse(self.mind_may_use(["chromium", "--user-data-dir=" + mv + "/../../../../.config/chromium"]))
-        evil = os.path.join(self.proc.tmp.name, "evil")
-        os.symlink(self.proc.persons, evil)
-        self.assertFalse(self.mind_may_use(["chromium", "--user-data-dir=" + evil]))
+    def test_the_singleton_lock_naming_the_listener_is_enough(self):
+        self.assertTrue(self.mind_may_use(lambda: self.mind_view_browser(20)))
 
-    def test_the_mind_view_profile_itself_may_be_reached_through_a_link(self):
+    def test_a_lock_file_held_open_under_the_profile_is_enough(self):
+        def build():
+            self.proc.listener(20, ["chromium"])
+            self.hold(20, os.path.join(self.proc.mind_view, "Default", "shared_proto_db", "metadata", "LOCK"))
+        self.assertTrue(self.mind_may_use(build))
+
+    def test_a_cookie_database_held_open_is_not_enough(self):
+        def build():
+            self.proc.listener(20, ["chromium"])
+            self.hold(20, os.path.join(self.proc.mind_view, "Default", "Cookies"))
+        self.assertFalse(self.mind_may_use(build))
+
+    def test_a_lock_file_in_another_profile_is_not_enough(self):
+        def build():
+            self.proc.listener(20, ["chromium"])
+            self.hold(20, os.path.join(self.proc.persons, "Default", "LOCK"))
+        self.assertFalse(self.mind_may_use(build))
+
+    def test_a_singleton_lock_naming_another_process_is_not_enough(self):
+        def build():
+            self.proc.listener(20, ["chromium"])
+            self.owns(21, self.proc.mind_view)
+        self.assertFalse(self.mind_may_use(build))
+
+    def test_a_lock_file_outside_any_profile_named_lock_is_not_enough(self):
+        def build():
+            self.proc.listener(20, ["chromium"])
+            self.hold(20, os.path.join(self.proc.tmp.name, "elsewhere", "LOCK"))
+        self.assertFalse(self.mind_may_use(build))
+
+    def test_a_link_to_the_profile_that_holds_the_lock_is_the_profile(self):
         link = os.path.join(self.proc.tmp.name, "mv-link")
         os.symlink(self.proc.mind_view, link)
-        self.guard.profile = lambda: link
-        self.assertTrue(self.mind_may_use(["chromium", "--user-data-dir=" + self.proc.mind_view]))
-        self.guard.profile = lambda: self.proc.mind_view
+        self.browser.identify = lambda address: target.identify(address, proc=self.proc.root, mind_profile=link)
+        self.assertTrue(self.mind_may_use(lambda: self.mind_view_browser(20)))
 
-    def test_only_the_exact_directory_counts(self):
-        mv = self.proc.mind_view
-        self.assertFalse(self.mind_may_use(["chromium", "--user-data-dir=" + os.path.dirname(mv)]))
-        os.makedirs(os.path.join(mv, "Default"), exist_ok=True)
-        self.assertFalse(self.mind_may_use(["chromium", "--user-data-dir=" + os.path.join(mv, "Default")]))
+    def test_a_lock_file_is_found_when_the_profile_is_named_by_a_link(self):
+        link = os.path.join(self.proc.tmp.name, "mv-link")
+        os.symlink(self.proc.mind_view, link)
+        self.browser.identify = lambda address: target.identify(address, proc=self.proc.root, mind_profile=link)
 
-    def test_the_flag_twice_with_one_value_is_that_value_and_the_single_dash_form_is_read(self):
-        mv = self.proc.mind_view
-        self.assertTrue(self.mind_may_use(["chromium", "--user-data-dir=" + mv, "--user-data-dir=" + mv]))
-        self.assertTrue(self.mind_may_use(["chromium", "-user-data-dir=" + mv]))
+        def build():
+            self.proc.listener(20, ["chromium"])
+            self.hold(20, os.path.join(self.proc.mind_view, "Default", "x", "LOCK"))
+        self.assertTrue(self.mind_may_use(build))
 
-    def test_after_a_bare_double_dash_it_is_not_a_flag(self):
-        self.assertFalse(self.mind_may_use(["chromium", "--", "--user-data-dir=" + self.proc.mind_view]))
+    def test_any_process_sharing_the_socket_may_be_the_one_that_owns_the_profile(self):
+        for owner, other in ((21, 22), (22, 21)):
+            def build():
+                inode = self.proc.listener(owner, ["chromium"])
+                self.proc.process(other, ["chromium"], inode=inode)
+                self.owns(owner, self.proc.mind_view)
+            self.assertTrue(self.mind_may_use(build), owner)
 
-    def test_a_flag_that_only_looks_like_the_flag_is_not_it(self):
-        mv = self.proc.mind_view
-        self.assertFalse(self.mind_may_use(["chromium", "--user-data-dir-extra=" + mv]))
-        self.assertTrue(self.mind_may_use(["chromium", "--user-data-dir=" + mv, "--user-data-dir-extra=/x"]))
-        self.assertFalse(self.mind_may_use(["chromium", "--not-user-data-dir=" + mv]))
+    def test_a_lock_file_reached_through_dots_and_links_is_resolved(self):
+        def build():
+            self.proc.listener(20, ["chromium"])
+            self.hold(20, os.path.join(self.proc.persons, "Default", "LOCK"))
+            os.remove(os.path.join(self.proc.root, "20", "fd", "9"))
+            sneaky = os.path.join(self.proc.mind_view, "..", "..", "..", "..", ".config", "chromium", "Default", "LOCK")
+            os.symlink(sneaky, os.path.join(self.proc.root, "20", "fd", "9"))
+        self.assertFalse(self.mind_may_use(build))
+
+    def test_the_arguments_prove_nothing_either_way(self):
+        mv, theirs = self.proc.mind_view, self.proc.persons
+        spoofs = [
+            ["chromium", "--user-data-dir=" + mv],                              # the flag, on the person's
+            ["chromium", "-user-data-dir=" + mv, "--remote-debugging-port=9222"],
+            ["chromium", "https://x.example/?a=--user-data-dir=" + mv],         # inside a URL
+            ["chromium --user-data-dir=%s --remote-debugging-port=9222" % mv],  # one rewritten string
+            ["chromium", "--", "--user-data-dir=" + mv],
+            ["chromium", "--user-data-dir=" + theirs, "--user-data-dir=" + mv],
+        ]
+        for argv in spoofs:
+            self.assertFalse(self.mind_may_use(lambda: self.persons_browser(20, argv)), argv)
+        honest_but_rewritten = [
+            ["chromium --remote-debugging-port=9222 --user-data-dir=%s about:blank" % mv],  # as Chromium leaves it
+            ["chromium"], ["chromium", "--user-data-dir=" + theirs],                       # the arguments claim otherwise
+        ]
+        for argv in honest_but_rewritten:
+            self.assertTrue(self.mind_may_use(lambda: self.mind_view_browser(20, argv)), argv)
 
 
 class TestAddresses(Case):
@@ -367,6 +414,23 @@ class TestAddresses(Case):
     def test_a_listener_that_is_not_listening_is_not_a_browser(self):
         self.proc.listener(10, ["chromium"], state="01")
         self.assertEqual(self.d.status(), {"open": False})
+
+
+class TestKernelsAndMappedAddresses(Case):
+    def test_a_kernel_with_no_ipv6_table_still_finds_the_ipv4_browser(self):
+        self.mind_view_browser(20)
+        os.remove(os.path.join(self.proc.root, "net", "tcp6"))
+        self.assert_allowed()
+
+    def test_a_missing_ipv4_table_is_not_guessed_at(self):
+        self.mind_view_browser(20)
+        os.remove(os.path.join(self.proc.root, "net", "tcp"))
+        self.assert_every_action_refused()
+
+    def test_an_ipv4_mapped_loopback_listener_is_the_exact_address(self):
+        self.persons_browser(10, addr="0" * 16 + "FFFF0000" + "0100007F", table="tcp6")
+        self.mind_view_browser(20, addr="00000000")      # a wildcard would lose to it
+        self.assert_every_action_refused()
 
 
 class TestTheTargetChanges(Case):
@@ -456,13 +520,11 @@ class TestTheTargetChanges(Case):
 
 
 class TestWhoIsAMind(unittest.TestCase):
-    def verdict(self, peer, token=None, is_mind=False):
-        with mock.patch.object(target, "caller", lambda: peer), \
-             mock.patch.object(target, "agent_token", lambda: token), \
-             mock.patch.object(target.mind_door, "is_mind", lambda uid: is_mind):
+    def verdict(self, peer, token=None, is_mind=False, proven=True):
+        with mock.patch.object(target, "caller", lambda: peer),              mock.patch.object(target, "agent_token", lambda: token),              mock.patch.object(target.mind_door, "is_mind", lambda uid: is_mind),              mock.patch.object(target.who, "proves_person", lambda pid: proven):
             return target.caller_is_person()
 
-    def test_only_the_persons_own_untokened_call_is_the_person(self):
+    def test_only_the_persons_own_untokened_call_with_a_proving_ancestry_is_the_person(self):
         from yantrik_surface import PeerCred
         self.assertTrue(self.verdict(PeerCred(1, ME, ME)))
 
@@ -473,6 +535,10 @@ class TestWhoIsAMind(unittest.TestCase):
         self.assertFalse(self.verdict(PeerCred(1, ME + 1, ME)))
         self.assertFalse(self.verdict(PeerCred(1, ME + 1, ME), is_mind=True))
         self.assertFalse(self.verdict(PeerCred(1, ME, ME), is_mind=True))
+
+    def test_a_tokenless_caller_on_the_persons_uid_whose_ancestry_does_not_prove_it_is_a_mind(self):
+        from yantrik_surface import PeerCred
+        self.assertFalse(self.verdict(PeerCred(1, ME, ME), proven=False))
 
 
 class TestViews(Case):
@@ -490,6 +556,15 @@ class TestViews(Case):
             t.start()
             t.join(5)
         self.assertEqual(seen, [{"busy": True}])
+
+    def test_a_busy_browser_is_busy_not_closed(self):
+        self.mind_view_browser(10)
+        with self.d.lock:
+            seen = []
+            t = threading.Thread(target=lambda: seen.append(service.build(self.d)[0].snapshot()[0]))
+            t.start()
+            t.join(5)
+        self.assertEqual(seen, ["Browser — busy"])
 
     def test_the_person_is_told_when_the_browser_they_reach_is_mind_views(self):
         self.mind_view_browser(10)
@@ -519,9 +594,9 @@ class TestARealListener(unittest.TestCase):
             got = target.identify("http://127.0.0.1:%d" % port)
         self.assertEqual(got.pids, (os.getpid(),))
         self.assertEqual(got.uid, ME)
-        self.assertIsNone(got.profile)          # a test runner is started with no --user-data-dir
-        self.assertIsNotNone(target.decide(got, False, "/x"))
-        self.assertIsNone(target.decide(got, True, "/x"))
+        self.assertFalse(got.mind_view)
+        self.assertIsNotNone(target.decide(got, False))
+        self.assertIsNone(target.decide(got, True))
 
 
 if __name__ == "__main__":
