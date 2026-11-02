@@ -124,13 +124,13 @@ mod tests {
         let agent = AgentId::new("settle-busy", AgentId::MAIN);
         let store = super::super::store();
         store.open_turn(&agent, "run the build");
-        let start = crate::agents::Event::ToolStart { call: "c1".into(), name: "os_act".into(), target: "terminal.run".into(), args: serde_json::Value::Null };
-        store.event(&agent, &start, crate::agents::Provenance::Reported);
+        // A command the shell owns (verified): it outlives the turn that was stopped.
+        store.command_started(&agent, "j1", "make", "/tmp");
         store.close_turn_stopped(&agent);
         note(&agent, vec![9]);
         settle_with(|_, _| Heard::Yes);
         assert_eq!(state_of(&agent), State::Stopping, "the command runs on: not Stopped, so not idle on the wire");
-        store.event(&agent, &crate::agents::Event::ToolEnd { call: "c1".into(), ok: true, summary: "done".into(), exit_code: Some(0) }, crate::agents::Provenance::Reported);
+        store.command_finished(&agent, "j1", "make", Some(0), false);
         settle_with(|_, _| Heard::Yes);
         assert_eq!(state_of(&agent), State::Stopped, "at rest once the command ended");
     }
