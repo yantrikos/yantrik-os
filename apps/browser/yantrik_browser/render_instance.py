@@ -1,8 +1,8 @@
 """A browser of its own for the pages a Mind made: headless, a throwaway profile, no network.
 
-A Mind that builds a page has to look at it (#1068). That page is the Mind's own code, and in the
-desktop's browser (the one on :9222, the person's profile) it would run with the person's cookies
-and network. So a `file:` address from a Mind never goes there. It goes to this instance:
+A Mind that builds a page has to look at it (#1068). That page is the Mind's own code, and in a
+browser with a profile and a network (the one on :9222, whichever profile it has) it would run with
+both. So a `file:` address from a Mind never goes there. It goes to this instance:
 
   - headless, with a profile made for this run and removed when it ends: no cookies, no sign-ins;
   - no network: names do not resolve (`--host-resolver-rules`), every request goes to a proxy that
@@ -54,9 +54,10 @@ def free_port():
         return s.getsockname()[1]
 
 
-def args_for(profile, port):
-    """The browser's arguments. Pure, so a test can read them."""
-    return [
+def args_for(profile, port, extra=()):
+    """The browser's arguments. Pure, so a test can read them. `extra` is for a test machine (a CI
+    container with no usable sandbox); the desktop passes none, and the sandbox stays on."""
+    return list(extra) + [
         "--headless=new",
         "--disable-gpu",
         "--no-first-run",
@@ -96,7 +97,8 @@ def guard(url, stat=None):
 class Instance:
     """The render browser: started on first use, stopped when this process ends."""
 
-    def __init__(self):
+    def __init__(self, extra_args=()):
+        self.extra_args = tuple(extra_args)
         self.proc = None
         self.profile = None
         self.log = None
@@ -117,7 +119,7 @@ class Instance:
         port = free_port()
         self.log = os.path.join(self.profile + ".log")
         with open(self.log, "wb") as out:
-            self.proc = subprocess.Popen([path] + args_for(self.profile, port), stdin=subprocess.DEVNULL,
+            self.proc = subprocess.Popen([path] + args_for(self.profile, port, self.extra_args), stdin=subprocess.DEVNULL,
                                          stdout=out, stderr=out)
         atexit.register(self.stop)
         address = "http://127.0.0.1:%d" % port

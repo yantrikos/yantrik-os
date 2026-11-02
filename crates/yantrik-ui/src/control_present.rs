@@ -13,7 +13,7 @@
 //! - **The press is consent to view, not to run.** A page, a picture-with-script (SVG) or a PDF
 //!   opens in a browser apart and offline (`open_url::open_file_offline`): its own profile, none
 //!   of the person's sign-ins, no network, no debugging port. A Mind's HTML is the Mind's code;
-//!   in the person's own browser it would run with their cookies and network, and a taint's
+//!   in a browser with a profile and a network it would run with both, and a taint's
 //!   outbound gate would mean nothing. The card says so, and the answer tells the Mind what will
 //!   not load. Other types open as a double-click in Files opens them (`wire::open_with::launch`).
 //!   A type whose handler is an installed app of the person's choosing is not offered.

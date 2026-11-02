@@ -724,19 +724,17 @@ framework opens there at all any more; see the last section.)
   arguments each takes (`actions`, e.g. `new {text?}`, `save_as {path}`), so the next call can act.
 - `open_url` and `launch_browser` open the companion's own browser in Mind View, or are refused.
   A browser on the default debugging port that is not the companion's (the person's own) is not
-  attached to by them.
-- The browser surface's web actions (`web_go`, `web_read`, ...) drive whatever answers on the
-  default debugging port, 127.0.0.1:9222: the desktop's Chromium, the person's profile (accepted
-  since #480). A Mind's own `file:` page is the exception: `go` of a `file:` address (in the
-  person's home, outside protected places, `..` refused, checked through the shell's `files_stat`)
-  goes to a render instance of the browser app's own - headless, a throwaway profile, no network
-  (names do not resolve, every request goes to a proxy that is not there, loopback included), no
-  second window - and never to the 9222 browser, because that page is the Mind's code. Every request
-  of that instance is judged before it is made (`Fetch`): a local file the Mind may read, or
-  something inline, and nothing else. The address an action lands on is checked again before
-  anything is read back (`tabs` names a file a Mind may not read only as that). Reading a `file:`
-  page, by the address asked for or the address the answer came from, is a private read for the
-  taint rule.
+  attached to.
+- A Mind's own `file:` page never goes to the browser on the default debugging port, whichever
+  profile that is, because the page is the Mind's code. `go` of a `file:` address (in the person's
+  home, outside protected places, `..` refused, checked through the shell's `files_stat`) goes to a
+  render instance of the browser app's own: headless, a throwaway profile, no network (names do not
+  resolve, every request goes to a proxy that is not there, loopback included), no second window.
+  Every request of that instance is judged before it is made (`Fetch`): a local file the Mind may
+  read, or something inline, and nothing else. The address an action lands on is checked again
+  before anything is read back (`tabs` names a file a Mind may not read only as that). Reading a
+  `file:` page, by the address asked for or the address the answer came from, in any browser the
+  surface drives, is a private read for the taint rule.
 - `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
   and colours only (no screen clears, no carriage returns, no titles), capped per command; the
   answer and the Agents screen keep the full output.

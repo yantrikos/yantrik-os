@@ -297,6 +297,8 @@ class TestRenderInstanceLive(unittest.TestCase):
 
     def setUp(self):
         self.d = drv.Driver(cdp.Browser("http://127.0.0.1:1"), judge=False)
+        # A CI container has no usable sandbox; the desktop's instance keeps it on.
+        self.d.instance = render_instance.Instance(extra_args=("--no-sandbox",))
         self.addCleanup(self.d.instance.stop)
 
     def url(self, rel):

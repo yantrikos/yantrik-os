@@ -78,7 +78,7 @@ def commitment_of(element):
 class Driver:
     def __init__(self, browser=None, judge=None):
         self.browser = browser or cdp.Browser()
-        # The desktop's browser (the person's profile) and, for a Mind's own `file:` pages, a
+        # The browser on the default debugging port and, for a Mind's own `file:` pages, a
         # render instance of its own (render_instance.py). `browser` is the side actions go to.
         self.main_browser = self.browser
         self.instance = render_instance.Instance()
@@ -108,7 +108,7 @@ class Driver:
     # ── plumbing ──
 
     def _use(self, render):
-        """Point actions at the render instance (a Mind's own page) or the desktop's browser."""
+        """Point actions at the render instance (a Mind's own page) or the browser on the debugging port."""
         if not render:
             self.browser = self.main_browser
             return
@@ -119,8 +119,8 @@ class Driver:
 
     def _vet(self, t):
         """Refuse a tab that shows a file a Mind may not read, before anything is read from it. In
-        the render instance the tab is also taken off it; the desktop's browser is the person's, so
-        its tab is left as it is and only this action is refused."""
+        the render instance the tab is also taken off it; the other browser is not this surface's
+        to steer, so its tab is left as it is and only this action is refused."""
         if not local_page.is_file_url(getattr(t, "url", "")):
             return
         try:
@@ -385,7 +385,7 @@ class Driver:
             raise Refused("go opens web pages (http, https) and your own files (file:///home/...); "
                           "`%s:` is not one" % scheme)
         with self.held():
-            # A Mind's own page goes to the render instance, anything else to the desktop's browser.
+            # A Mind's own page goes to the render instance, anything else to the debugging-port browser.
             self._use(scheme == "file")
             if new_tab:
                 self._tab(None)
