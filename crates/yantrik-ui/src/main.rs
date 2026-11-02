@@ -116,6 +116,8 @@ mod control_chat;
 // Which of the person's conversations a bridge's private reads count against (`taint_scope`,
 // `taint_mark`), for yos-mcp's taint rule.
 mod control_taint_scope;
+// `approvals_test_state`: the one flag of the approvals-off test mode, readable without a taint.
+mod control_approvals_test_state;
 mod jobs;
 mod cards;
 mod card_watch;

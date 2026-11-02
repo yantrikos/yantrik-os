@@ -54,12 +54,16 @@ enum Event {
         bool,
         Option<String>,
         Result<(Vec<Item>, String, String), String>,
+        // The folder's stamp, taken before it was read: where the watch starts from.
+        Option<super::files_watch::Stamp>,
     ),
     Preview(u64, String, FileDetailData, String),
     Progress(String, f32),
     // Message, what was created (name, is a folder), undo ids, moved paths, remaining trash.
     Done(String, Option<(String, bool)>, Vec<String>, Vec<PathBuf>, Option<Vec<String>>),
     Notice(String),
+    // The open folder changed on disk, made from outside the window (`files_watch`).
+    Changed(String),
 }
 #[derive(Clone)]
 struct Sink {
@@ -95,6 +99,11 @@ struct Browser {
     preview: u64,
     listing_cancel: Option<Arc<AtomicBool>>,
     job_cancel: Option<Arc<AtomicBool>>,
+    // The generation of the listing a quiet refresh asked for. The rows selected when that listing
+    // lands (not when it began, so a click in between is kept) are selected again afterwards.
+    restore: Option<u64>,
+    // A change was seen while a listing or job was running, or a quiet refresh was already running.
+    dirty: bool,
     sink: Sink,
 }
 type State = Rc<RefCell<Browser>>;
@@ -192,6 +201,38 @@ impl Browser {
         ui.set_file_ai_summary("".into());
         self.preview += 1;
     }
+    // A quiet refresh begins: listed again with no spinner.
+    fn quiet_refresh(&mut self, ui: &App) {
+        self.restore = Some(self.generation + 1);
+        self.refresh(ui);
+    }
+    // After a quiet refresh: the rows that were selected, by name, are selected again, once and
+    // together - not row by row, each starting a preview - and a summary the person was reading
+    // stays while the same rows are still there.
+    fn reselect(&mut self, ui: &App, names: &[String], summary: slint::SharedString, detail: FileDetailData) {
+        let picked: BTreeSet<usize> =
+            (0..self.visible.len()).filter(|i| names.contains(&self.visible[*i].entry.name)).collect();
+        let Some(&first) = picked.iter().next() else { return };
+        self.selected = picked;
+        self.anchor = first;
+        for &i in &self.selected {
+            if let Some(mut row) = self.model.row_data(i) {
+                row.selected = true;
+                self.model.set_row_data(i, row);
+            }
+        }
+        ui.set_file_selected_index(first as i32);
+        ui.set_file_selection_count(self.selected.len() as i32);
+        let rows: Vec<&fsview::DirEntry> = self.selected.iter().filter_map(|i| self.visible.get(*i)).map(|i| &i.entry).collect();
+        ui.set_file_selection_size_text(fsview::selection_text(&rows, self.hidden).into());
+        if self.selected.len() == names.len() {
+            ui.set_file_ai_summary(summary);
+            ui.set_file_detail_data(detail);
+        }
+        if ui.get_file_detail_panel_visible() {
+            self.preview_item(ui, first, false);
+        }
+    }
     fn select(&mut self, ui: &App, index: usize, ctrl: bool, shift: bool) {
         if index >= self.visible.len() {
             return;
@@ -286,11 +327,14 @@ impl Browser {
         self.generation += 1;
         let generation = self.generation;
         self.preview += 1;
-        ui.set_file_browser_loading(true);
+        if self.restore != Some(generation) {
+            ui.set_file_browser_loading(true);
+        }
         let sink = self.sink.clone();
         std::thread::spawn(move || {
             // Set when the folder asked for had gone and a parent was listed instead.
             let mut landed: Option<String> = None;
+            let mut stamp = None;
             let result = (|| {
                 let root = fileops::trash_root();
                 let (items, space, badge) = if trash {
@@ -354,6 +398,8 @@ impl Browser {
                         }
                         Err(e) => return Err(files_gone::open_failure(&path, &e)),
                     };
+                    // Before the folder is read, so a change that lands while it is read is seen.
+                    stamp = super::files_watch::stamp(&dir);
                     let path = landed.as_deref().unwrap_or(&path);
                     if cancel.load(Ordering::Acquire) {
                         return Err("Canceled".into());
@@ -387,7 +433,7 @@ impl Browser {
                 None => (path, None),
             };
             if !cancel.load(Ordering::Acquire) {
-                sink.send(Event::Listed(generation, path, trash, record, note, result));
+                sink.send(Event::Listed(generation, path, trash, record, note, result, stamp));
             }
         });
     }
@@ -793,17 +839,24 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         preview: 0,
         listing_cancel: None,
         job_cancel: None,
+        restore: None,
+        dirty: false,
         sink,
     }));
     BROWSER.with(|b| *b.borrow_mut() = Rc::downgrade(&state));
+    {
+        let sink = state.borrow().sink.clone();
+        super::files_watch::start(move |path| sink.send(Event::Changed(path)));
+    }
     macro_rules! bind {($callback:ident, |$u:ident,$s:ident $(,$arg:ident)*| $body:block)=>{{let weak=ui.as_weak();let state=state.clone();ui.$callback(move|$($arg),*|{if let Some($u)=weak.upgrade(){let mut $s=state.borrow_mut();$body}});}};}
     bind!(on_file_worker_event, |u, s| {
         while let Ok(event) = receiver.try_recv() {
             match event {
-                Event::Listed(generation, path, trash, record, note, result) => {
+                Event::Listed(generation, path, trash, record, note, result, stamp) => {
                     if generation != s.generation {
                         continue;
                     }
+                    let quiet = s.restore.take() == Some(generation);
                     u.set_file_browser_loading(false);
                     match result {
                         Ok((items, space, badge)) => {
@@ -844,14 +897,34 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                             if trash {
                                 u.set_file_trash_count(items.len() as i32);
                             }
+                            // What is selected and being read now, before the repaint clears it.
+                            let kept = quiet.then(|| {
+                                let names: Vec<String> =
+                                    s.selected.iter().filter_map(|i| s.visible.get(*i)).map(|i| i.entry.name.clone()).collect();
+                                (names, u.get_file_ai_summary(), u.get_file_detail_data())
+                            });
                             s.all = items;
                             s.paint(&u);
+                            if let Some((names, summary, detail)) = kept {
+                                s.reselect(&u, &names, summary, detail);
+                            }
+                            // The watch follows the folder now shown, from the stamp taken before it was read.
+                            super::files_watch::watch((!trash).then(|| fsview::expand_home(&path)), stamp);
                             s.tabs_ui(&u);
                             if let Some(note) = note {
                                 set_notice(&u, &note, None);
                             }
                         }
-                        Err(e) => set_notice(&u, &e, None),
+                        Err(e) => {
+                            // A listing that failed leaves the window where it was: keep watching that.
+                            let shown = (!s.trash).then(|| fsview::expand_home(&s.tabs[s.active].path));
+                            super::files_watch::watch(shown, None);
+                            set_notice(&u, &e, None)
+                        }
+                    }
+                    // A change that was seen while this ran: once more, now.
+                    if std::mem::take(&mut s.dirty) && s.job_cancel.is_none() && !u.get_file_browser_loading() {
+                        s.quiet_refresh(&u);
                     }
                 }
                 Event::Preview(generation, name, detail, content) => {
@@ -886,9 +959,22 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     }
                     u.set_file_has_clipboard(s.clipboard.is_some());
                     u.set_file_can_undo(!s.undo.is_empty());
+                    s.dirty = false;
                     s.refresh(&u);
                 }
                 Event::Notice(text) => set_notice(&u, &text, None),
+                Event::Changed(path) => {
+                    // Only the folder on screen; quietly (no spinner, the same rows selected); and,
+                    // when a listing or a job is running, afterwards.
+                    use super::files_watch::{decide, Decision};
+                    let open = fsview::expand_home(&s.tabs[s.active].path);
+                    let in_flight = s.restore == Some(s.generation);
+                    match decide(&open, std::path::Path::new(&path), s.trash, s.job_cancel.is_some(), u.get_file_browser_loading(), in_flight) {
+                        Decision::Ignore => {}
+                        Decision::Defer => s.dirty = true,
+                        Decision::Now => s.quiet_refresh(&u),
+                    }
+                }
             }
         }
     });

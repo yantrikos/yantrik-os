@@ -199,6 +199,8 @@ SHELL_ACTIONS = """  act: open_app(name)  [standard, settles later]
   act: read_mind_view(region?)  [safe, settles on return]
        Read the text on Mind View from its pixels.
          region?: string - x,y,w,h
+  act: approvals_test_state()  [safe, settles on return]
+       Whether a test run has turned the person's approval cards off.
   act: send_message(text)  [standard, settles later]
        Ask the desktop something, as if typed into the Lens.
   act: agent_run(command, cwd?, wait?)  [sensitive, settles later]
@@ -1587,6 +1589,20 @@ with tempfile.TemporaryDirectory() as d:
     text, is_error = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "what I read"})
     check("after os_act shell read_mind_view it is, naming the read",
           text.startswith("REFUSED") and "shell.read_mind_view" in text, text)
+    # The one flag of the approvals-off test mode has an action of its own so that a test run can
+    # read it without describing the shell: it holds nothing of the person's, so it never taints.
+    module, state = case(tmp, "taint-approvals-test-state", mode="auto", machine_ceiling="dangerous",
+                         ceiling=None)
+    text, is_error = act(module, "shell", "approvals_test_state", {})
+    check("os_act shell approvals_test_state is answered", not is_error, text)
+    text, is_error = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "hello"})
+    check("and reading it does not taint: typing into a page is not refused",
+          not text.startswith("REFUSED") and "already read private state" not in text, text)
+    check("it is in neither the private reads nor the screen reads",
+          "approvals_test_state" not in module.PRIVATE_READS
+          and ("shell", "approvals_test_state") not in module.SCREEN_READS
+          and "shell" not in module.PRIVATE_ACT_SURFACES,
+          (module.PRIVATE_READS, module.SCREEN_READS))
     # Any spelling yos reaches the shell by is the shell to the taint (security review, #257).
     for spelling in ("App Shell", " app_shell", "SHELL", "app-shell"):
         module, state = case(tmp, "taint-spelling", mode="auto", machine_ceiling="dangerous",

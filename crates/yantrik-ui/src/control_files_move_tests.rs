@@ -171,7 +171,7 @@ fn nothing_is_moved_out_of_a_hidden_or_startup_place() {
     }
     // The rule is the hidden-place one, in its own words.
     let err = plan(&args(&home, ".local/bin/f", "Documents"), &home, true).unwrap_err();
-    assert!(err.contains("hidden_place"), "{err}");
+    assert!(err.contains("hidden place") && !err.contains("hidden_place"), "{err}");
 }
 
 #[test]
@@ -201,8 +201,58 @@ fn nothing_is_moved_into_a_startup_place_or_a_tree_that_carries_one() {
     }
     // A folder holding a `.git/config` lands nowhere new: its tree carries a hidden place.
     let err = plan(&args(&home, "Elsewhere", "Documents"), &home, true).unwrap_err();
-    assert!(err.contains("hidden_place"), "{err}");
+    assert!(err.contains("hidden place") && !err.contains("hidden_place"), "{err}");
     // The checks are the ones that decide, not the filesystem: the same moves the person asks for
     // themselves are not held to them.
     plan(&args(&home, "Desktop/trip-plan.md", "bin"), &home, false).unwrap();
+}
+
+#[test]
+fn the_card_says_where_it_moves_first_quoted_whole_and_clean() {
+    let said = (action().explainer.expect("a move explains itself")).sentence(&json!({
+        "path": "~/Desktop/trip\u{202e}gpj.md\n",
+        "to_folder": "~/Desktop/Trips",
+    }));
+    assert_eq!(said, "Moves into \"~/Desktop/Trips\": \"~/Desktop/tripgpj.md\"");
+    // Quoted, so a path that reads like a sentence cannot blur the boundary.
+    let said = (action().explainer.unwrap()).sentence(&json!({ "path": "~/a into ~/Documents/b", "to_folder": "~/x" }));
+    assert_eq!(said, "Moves into \"~/x\": \"~/a into ~/Documents/b\"");
+    assert_eq!((action().explainer.unwrap()).sentence(&json!({})), "", "nothing to say, no line");
+}
+
+/// The card the person reads is what the shell makes of the sentence (it cuts at 600 characters):
+/// however long the source path is, the destination is on the card. Through the real store.
+#[test]
+fn a_very_long_source_cannot_push_the_destination_off_the_card() {
+    use crate::approvals::{Store, Verified};
+    let to = "~/Documents/Trips";
+    let long = format!("~/{}/a.md", "deep/".repeat(140));
+    assert!(long.len() > 650);
+    let args = json!({ "path": long, "to_folder": to });
+    let sentence = (action().explainer.unwrap()).sentence(&args);
+    let mut store = Store::new();
+    let now = std::time::Instant::now();
+    store
+        .request("mind:test", Verified::default(), "shell", "files_move", args.clone(), "sensitive", "Move", "", &sentence, now, "12:00")
+        .unwrap();
+    let card = &store.pending(now)[0];
+    assert!(card.explained.contains(&format!("\"{to}\"")), "the destination is on the card: {}", card.explained);
+    assert!(card.explained.chars().count() <= 700, "{}", card.explained.chars().count());
+    // And a path too long for the card to show whole is refused when it comes to be moved.
+    let (_d, home) = home("long");
+    let err = plan(&args, &home, true).unwrap_err();
+    assert!(err.contains("more than the approval card can show whole"), "{err}");
+}
+
+#[test]
+fn refusals_never_show_the_rules_internal_labels() {
+    let (_d, home) = home("words");
+    std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+    std::fs::write(home.join(".local/bin/f"), "x").unwrap();
+    let err = plan(&args(&home, ".local/bin/f", "Documents"), &home, true).unwrap_err();
+    assert!(err.contains("hidden place") && !err.contains("hidden_place") && !err.contains("hard_link"), "{err}");
+    std::fs::write(home.join("Desktop/two"), "x").unwrap();
+    std::fs::hard_link(home.join("Desktop/two"), home.join("Desktop/two-again")).unwrap();
+    let err = plan(&args(&home, "Desktop/two", "Documents"), &home, true).unwrap_err();
+    assert!(err.contains("more than one name") && !err.contains("hard_link"), "{err}");
 }
