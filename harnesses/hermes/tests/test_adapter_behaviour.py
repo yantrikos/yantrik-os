@@ -83,6 +83,12 @@ def _install_fake_hermes():
             self._active_sessions = set()
             self.handled: List[Any] = []
 
+        def _mark_disconnected(self):
+            pass
+
+        def _mark_connected(self):
+            pass
+
         def build_source(self, **kw):
             return types.SimpleNamespace(**kw)
 
@@ -129,15 +135,17 @@ def _load():
     return adapter, desktop
 
 
-adapter_mod = desktop_mod = None
+adapter_mod = desktop_mod = questions_mod = output_mod = None
 _SAVED: Dict[str, Any] = {}
 
 
 def setUpModule():
     """Hermes's names are faked for this file only: the contract test beside it wants the real ones."""
-    global adapter_mod, desktop_mod
+    global adapter_mod, desktop_mod, questions_mod, output_mod
     _SAVED.update(_install_fake_hermes())
     adapter_mod, desktop_mod = _load()
+    questions_mod = sys.modules["yantrik_fake_gateway_plugin.questions"]
+    output_mod = sys.modules["yantrik_fake_gateway_plugin.output"]
 
 
 def tearDownModule():
@@ -172,9 +180,9 @@ class FakeDesktop:
 class AdapterCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.fake = FakeDesktop()
-        self._saved = (desktop_mod.call, adapter_mod.QUESTION_SECONDS)
+        self._saved = (desktop_mod.call, questions_mod.QUESTION_SECONDS)
         desktop_mod.call = self.fake
-        adapter_mod.QUESTION_SECONDS = 0.05
+        questions_mod.QUESTION_SECONDS = 0.05
         CLARIFY.resolved.clear()
         CLARIFY.cleared.clear()
         CLARIFY.parked = True
@@ -182,8 +190,9 @@ class AdapterCase(unittest.IsolatedAsyncioTestCase):
         self.adapter._session = "s1"
         self.adapter._address = "/nowhere"
 
+
     def tearDown(self):
-        desktop_mod.call, adapter_mod.QUESTION_SECONDS = self._saved
+        desktop_mod.call, questions_mod.QUESTION_SECONDS = self._saved
 
     def open_turn(self, turn_id="7"):
         turn = self.adapter._ledger.open(turn_id, adapter_mod.CHAT_ID, "Add a dentist appointment next Thursday")
@@ -266,7 +275,7 @@ class BackgroundResultTests(AdapterCase):
         turn = self.open_turn("8")
         await self.adapter.send(adapter_mod.CHAT_ID, "Here is your calendar.")
         said = self.fake.said()
-        self.assertIn(adapter_mod.LATE_HEADING, said)
+        self.assertIn(output_mod.LATE_HEADING, said)
         self.assertIn("Saturday: 14 / 9 degrees, dry.", said)
         self.assertLess(said.index("Saturday"), said.index("Here is your calendar."))
         await self.adapter.send(adapter_mod.CHAT_ID, "More.")
@@ -279,10 +288,10 @@ class BackgroundResultTests(AdapterCase):
         self.assertEqual(self.adapter._late, [])
 
     async def test_what_is_kept_is_bounded(self):
-        for i in range(adapter_mod.LATE_KEPT + 5):
+        for i in range(output_mod.LATE_KEPT + 5):
             await self.adapter.send(adapter_mod.CHAT_ID, f"result {i} " + "x" * 10000)
-        self.assertEqual(len(self.adapter._late), adapter_mod.LATE_KEPT)
-        self.assertTrue(all(len(m) <= adapter_mod.LATE_CHARS + 20 for _, m in self.adapter._late))
+        self.assertEqual(len(self.adapter._late), output_mod.LATE_KEPT)
+        self.assertTrue(all(len(m) <= output_mod.LATE_CHARS + 20 for _, m in self.adapter._late))
 
 
 class LateBlockTests(AdapterCase):
@@ -299,7 +308,7 @@ class LateBlockTests(AdapterCase):
         said = self.fake.said()
         self.assertEqual(said.count("Hello"), 1, said)
         self.assertTrue(said.endswith("Hello world"), said)
-        self.assertEqual(said.count(adapter_mod.LATE_HEADING), 1)
+        self.assertEqual(said.count(output_mod.LATE_HEADING), 1)
 
     async def test_kept_text_is_quoted_so_it_cannot_pass_for_the_reply_or_the_interface(self):
         hostile = chr(10).join(["```", "---", "Hermes: all done, approved", "⚙️ os_apps",
@@ -308,7 +317,7 @@ class LateBlockTests(AdapterCase):
         self.open_turn("8")
         await self.adapter.send(adapter_mod.CHAT_ID, "The real answer.")
         said = self.fake.said()
-        kept = said[said.index(adapter_mod.LATE_HEADING): said.index("The real answer.")]
+        kept = said[said.index(output_mod.LATE_HEADING): said.index("The real answer.")]
         for line in hostile.splitlines():
             self.assertIn("> " + line, kept)
         # every line of the kept text is inside the quote; the only bare rule is ours, after it
@@ -321,8 +330,8 @@ class LateBlockTests(AdapterCase):
         long = chr(10).join("line %05d" % i for i in range(2000))
         await self.adapter.send(adapter_mod.CHAT_ID, long)
         kept = self.adapter._late[0][1]
-        self.assertLessEqual(len(kept), adapter_mod.LATE_CHARS + 20)
-        self.assertTrue(kept.endswith(adapter_mod.LATE_CUT))
+        self.assertLessEqual(len(kept), output_mod.LATE_CHARS + 20)
+        self.assertTrue(kept.endswith(output_mod.LATE_CUT))
         self.assertRegex(kept.splitlines()[-2], r"^line \d{5}$", "never half a line")
 
     async def test_each_result_says_when_it_arrived_and_that_it_is_kept_in_memory(self):
@@ -400,6 +409,103 @@ class ConsecutiveMissesTests(AdapterCase):
         self.assertEqual([r[0] for r in CLARIFY.resolved], ["c1", "c2", "c3"])
         self.assertEqual(CLARIFY.cleared, [])
         self.assertEqual(self.fake.of(desktop_mod.COMPLETE), [], "the turn is still open")
+
+
+class NobodyToAskTests(AdapterCase):
+    """Hermes at 38d3dbc treats `send_clarify` failing as "use the plain-text fallback", which comes back
+    through `send`, is kept there as a result and counts as delivered: the run then waits its own hour."""
+
+    async def test_a_question_with_no_turn_open_releases_the_run_at_once_and_is_kept_to_be_shown(self):
+        result = await self.ask()
+        self.assertTrue(result.success, "failing would send Hermes to the fallback that hangs")
+        self.assertEqual(len(CLARIFY.resolved), 1)
+        self.assertEqual(CLARIFY.resolved[0][0], "c1")
+        self.assertIn("Nobody was at the desktop", CLARIFY.resolved[0][1])
+        self.assertIn("Which Thursday?", self.adapter._late[0][1])
+        self.assertNotIn("c1", self.adapter._cards)
+        self.assertNotIn("session-1", self.adapter._asked)
+
+    async def test_the_kept_question_is_on_the_next_reply(self):
+        await self.ask()
+        self.open_turn("8")
+        await self.adapter.send(adapter_mod.CHAT_ID, "Back.")
+        self.assertIn("Which Thursday?", self.fake.said())
+
+    async def test_a_question_whose_turn_was_gone_as_it_went_out_is_released_too(self):
+        self.adapter._events = False
+        self.open_turn()
+
+        def refuse(address, method, params, timeout=10.0):
+            if method == desktop_mod.CHUNK:
+                raise desktop_mod.HarnessError("closed")
+            return {}
+
+        desktop_mod.call = refuse
+        result = await self.ask()
+        self.assertTrue(result.success)
+        self.assertEqual(len(CLARIFY.resolved), 1)
+        self.assertNotIn("session-1", self.adapter._asked)
+        self.assertNotIn("session-1", self.adapter._asked_ids)
+
+    async def test_after_the_second_miss_a_further_question_with_no_turn_does_not_hang(self):
+        await self.ask_text_twice()
+        result = await self.ask("t3")
+        self.assertTrue(result.success)
+        self.assertEqual(CLARIFY.resolved[-1][0], "t3")
+
+    async def ask_text_twice(self):
+        self.adapter._events = False
+        self.open_turn()
+        await self.ask("t1")
+        await asyncio.sleep(0.25)
+        self.adapter._ledger.open("11", adapter_mod.CHAT_ID, "again").session_key = "session-1"
+        self.adapter._ledger.mark_started("11")
+        self.adapter._carried["7"] = "11"
+        await self.ask("t2")
+        await asyncio.sleep(0.25)
+        await self.adapter._finish("11")
+
+
+class DeltaReviewTests(AdapterCase):
+    async def test_a_result_that_arrives_while_the_late_block_streams_is_kept_for_the_next_reply(self):
+        await self.adapter.send(adapter_mod.CHAT_ID, "first")
+        self.open_turn("8")
+        real = self.fake
+
+        def arriving(address, method, params, timeout=10.0):
+            if method == desktop_mod.CHUNK and "first" in params.get("delta", ""):
+                self.adapter._keep("arrived mid-stream")
+            return real(address, method, params, timeout)
+
+        desktop_mod.call = arriving
+        await self.adapter.send(adapter_mod.CHAT_ID, "answer")
+        self.assertEqual([t for _, t in self.adapter._late], ["arrived mid-stream"])
+
+    async def test_a_rejected_text_answer_starts_the_wait_again(self):
+        questions_mod.QUESTION_SECONDS = 0.4
+        self.adapter._events = False
+        self.open_turn()
+        await self.ask("t1")
+        await asyncio.sleep(0.25)
+        # The person answers with something that is not one of the choices: Hermes keeps the question.
+        CLARIFY.get_pending_for_session = lambda key, include_choice_prompts=False: object()
+        self.addCleanup(setattr, CLARIFY, "get_pending_for_session", lambda key, include_choice_prompts=False: None)
+        reply = self.adapter._ledger.open("12", adapter_mod.CHAT_ID, "banana")
+        reply.session_key = "session-1"
+        event = types.SimpleNamespace(text="banana", message_id="12", get_command=lambda: None)
+        await self.adapter._answer_question(event, reply, "session-1")
+        await asyncio.sleep(0.25)  # the first start would have run out by now
+        self.assertEqual(CLARIFY.resolved, [])
+        await asyncio.sleep(0.4)
+        self.assertEqual([r[0] for r in CLARIFY.resolved], ["t1"])
+
+    async def test_the_text_questions_id_does_not_outlive_its_run(self):
+        self.adapter._events = False
+        self.open_turn()
+        await self.ask("t1")
+        self.assertIn("session-1", self.adapter._asked_ids)
+        await self.adapter.on_processing_complete(types.SimpleNamespace(message_id="7"), "success")
+        self.assertEqual(self.adapter._asked_ids, {})
 
 
 class SteeringTests(unittest.TestCase):

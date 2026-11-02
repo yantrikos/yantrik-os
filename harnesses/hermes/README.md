@@ -110,6 +110,11 @@ If the next question of the same run is also left alone (answering one in betwee
 again), Hermes is released from the wait. The run then goes on with no turn open, so what it
 produces from there is kept as a background result (below) and shown in the next reply.
 
+A question Hermes asks when no turn is open to ask it in (after that release, say) is not left
+waiting either. Hermes reads a failed send as "use the plain-text fallback", which would be kept as
+a result and counted as delivered, and the run would wait its own hour. So the question is kept for
+the next reply and the run is told at once that nobody was there to ask.
+
 ## Results that arrive with no conversation open
 
 The desktop's protocol has no way to say something unasked, so a background task's result or a
