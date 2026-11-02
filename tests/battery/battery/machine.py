@@ -5,11 +5,12 @@ Everything the battery does to the desktop goes through this class, so the unit 
 import datetime
 import json
 import os
+import re
+import stat
 import subprocess
 import time
 
-MARKER = "/etc/yantrik/test-machine"
-MARKER_TEXT = "yantrik-test-machine"
+MARKER = "/etc/yantrik/no-person-data"   # the same marker as #1080 (taint_off_declared): one file, one check
 QUIET_START = (3, 0)
 QUIET_END = (4, 30)
 
@@ -22,6 +23,16 @@ def in_quiet_window(now: datetime.datetime) -> bool:
     """03:00-04:30 in the machine's own clock (the VMs run on America/Chicago)."""
     t = (now.hour, now.minute)
     return QUIET_START <= t < QUIET_END
+
+
+def overlaps_quiet(now: datetime.datetime, seconds: int) -> bool:
+    """Would a turn started `now` that runs up to `seconds` touch the quiet window?"""
+    t = now
+    while t < now + datetime.timedelta(seconds=seconds):
+        if in_quiet_window(t):
+            return True
+        t += datetime.timedelta(minutes=5)
+    return in_quiet_window(now + datetime.timedelta(seconds=seconds))
 
 
 def seconds_to_quiet_end(now: datetime.datetime) -> int:
@@ -58,16 +69,35 @@ class Machine:
         self.home = info.pw_dir
 
     # -- guard ---------------------------------------------------------------------------------
-    def assert_test_machine(self):
+    TEST_ACCOUNT = re.compile(r"^(tester|test[\w-]*|e2e[\w-]*)$")
+
+    def assert_test_machine(self, allow_user=False):
+        """Refuse unless this machine declares it holds no person's data, and the account is a test account.
+
+        The marker is read the way #1080 reads it: a regular file (lstat, not a link), owned by root, not group-
+        or world-writable, in a directory that is root's and not writable by others. The account named by --user
+        must look like a test account unless --allow-user is given. Checked once here, with the descriptor held
+        open and fstat'd, so the file cannot change between the check and the use."""
         try:
-            st = os.stat(self.marker)
-            text = open(self.marker).read()
+            fd = os.open(self.marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except OSError:
-            raise NotATestMachine(f"{self.marker} is missing: this is not marked as a test machine, refusing to run")
-        if st.st_uid != 0 or st.st_mode & 0o022 or MARKER_TEXT not in text:
-            raise NotATestMachine(f"{self.marker} must be root's, not group/world writable, and contain '{MARKER_TEXT}'")
+            raise NotATestMachine(f"{self.marker} is missing or is a link: this machine does not declare that it holds no person's data")
+        try:
+            st = os.fstat(fd)
+            dst = os.stat(os.path.dirname(self.marker))
+        finally:
+            os.close(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022 or dst.st_uid != 0 or dst.st_mode & 0o022:
+            raise NotATestMachine(f"{self.marker} (and its directory) must be root's regular file, not group/world writable")
         if os.path.exists("/run/live"):
             raise NotATestMachine("this is a live session")
+        if not allow_user and not self.TEST_ACCOUNT.match(self.user):
+            raise NotATestMachine(f"--user {self.user!r} is not a named test account (tester, test*, e2e*); pass --allow-user to override")
+
+    def require_root(self):
+        """Runs that read the mind's journal need root; as the person it comes back empty and tests would pass blind."""
+        if os.geteuid() != 0:
+            raise NotATestMachine("run as root: the mind's journal and the OS log are not readable as the person")
 
     # -- running things ------------------------------------------------------------------------
     def env(self):

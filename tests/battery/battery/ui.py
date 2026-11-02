@@ -68,6 +68,8 @@ def decline_card(machine, card_id, settle=3):
         if not spot:
             time.sleep(1)
             continue
+        if pixels.looks_like_allow(w, h, data, *spot):
+            return False  # never click where the button looks like Allow/Run
         machine.click(*spot)
         time.sleep(settle)
         if not any(c.get("id") == card_id for c in machine.shell_state()["pending"]):
@@ -84,6 +86,8 @@ def pick_mind(machine, want, names):
     if want in machine.shell_state()["answering"]:
         return True, "already answering"
     for attempt in range(8):
+        if machine.shell_state()["pending"]:
+            return False, "an approval card is up; not clicking the picker blind"
         ensure_lens_open(machine)
         shot = machine.grim_ppm()
         if not shot:

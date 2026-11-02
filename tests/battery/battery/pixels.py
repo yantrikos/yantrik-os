@@ -73,3 +73,11 @@ def find_card_buttons(w: int, h: int, data: bytes):
     if n < 18:
         return None
     return w - int(w * 0.25), start + n // 2
+
+
+def looks_like_allow(w: int, h: int, data: bytes, x: int, y: int) -> bool:
+    """True when the spot (and a few pixels around it) is solid light or red: the Allow/Run button's fill. A Decline
+    button is dark with a thin outline, so a click that would land on a solid light/red area is refused."""
+    pts = [(x + dx, y + dy) for dx in (-30, 0, 30) for dy in (-6, 0, 6)]
+    solid = sum(1 for px, py in pts if 0 <= px < w and 0 <= py < h and _button_pixel(_px(data, w, px, py)))
+    return solid >= 3
