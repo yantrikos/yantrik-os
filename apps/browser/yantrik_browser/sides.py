@@ -31,9 +31,10 @@ class Sides:
     def side(self):
         return self.guard.side() if self.guard is not None else ports.MIND
 
-    def bind(self):
+    def bind(self, start=False):
         """Choose this call's browser and check what holds its port. Raises guard.Denied when it
-        may not be used. Returns the side."""
+        may not be used. With `start`, a mind whose browser is not open gets Mind View's started
+        (the first web call on a cold start carries on rather than failing). Returns the side."""
         if self.guard is None:
             self._here.browser = self.fixed
             return ports.MIND
@@ -44,6 +45,12 @@ class Sides:
         except guard.Denied:
             browser.close()
             raise
+        if held is None and start and side == ports.MIND:
+            try:
+                held = self.guard.start_mind_browser()
+            except guard.Denied:
+                browser.close()
+                raise
         if held is None or (browser.alive and self.bound.get(side) != held.key):
             # Nothing there, or not what the connection was made to: that connection is over.
             browser.close()

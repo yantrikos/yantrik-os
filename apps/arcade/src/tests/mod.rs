@@ -80,7 +80,7 @@ impl Fake {
 }
 
 impl Slow for Fake {
-    fn run(&self, verb: Verb, _: &Library, slug: &str, _: &Path) -> Result<String, String> {
+    fn run(&self, verb: Verb, _: &Library, slug: &str, _: &Path, _: bool) -> Result<String, String> {
         self.calls.lock().unwrap().push((verb, slug.to_string()));
         self.verdict.lock().unwrap().clone()
     }

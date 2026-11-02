@@ -31,9 +31,42 @@ use yantrik_browser_ports::{listener, Place, Side};
 
 use crate::verify;
 
-/// Whose Browser this copy of Arcade plays in.
-fn side() -> Side {
-    if yantrik_app::for_mind::from_env() { Side::MindView } else { Side::Person }
+/// Whose Browser a play opens in: the asker's, never the Arcade's. A mind's `play` reaches the
+/// person's running Arcade (a copy drawn for a mind is a different process, and `open_app arcade`
+/// is refused), so who runs the Arcade says nothing; who asked does.
+fn side(by_mind: bool) -> Side {
+    if by_mind || yantrik_app::for_mind::from_env() { Side::MindView } else { Side::Person }
+}
+
+/// Whether the call being handled is a mind's, from where it is known (inside the handler): a
+/// token, the mind account, no caller at all, another account, or a caller the shell does not call
+/// the person. Fails towards a mind: the person's Browser is for a caller shown to be the person.
+pub fn caller_is_mind() -> bool {
+    use yantrik_app::control::{agent_token, caller};
+    let peer = caller().map(|c| (c.pid, c.uid));
+    mind_by(agent_token().is_some(), peer, listener::own_uid(), yantrik_ipc_transport::mind_door::is_mind, |pid| {
+        let client = yantrik_ipc_transport::SyncRpcClient::for_service(&yantrik_app::control::service_id_for("shell"))
+            .with_timeout(Duration::from_secs(3));
+        let params = serde_json::json!({ "action": "caller_class", "args": { "pid": pid } });
+        let reply = client.call("app.act", params).ok()?;
+        reply["result"]["class"].as_str().map(str::to_string)
+    })
+}
+
+/// [`caller_is_mind`] with the facts given.
+pub(crate) fn mind_by(
+    token: bool,
+    peer: Option<(i32, u32)>,
+    own: u32,
+    is_mind_account: impl Fn(u32) -> bool,
+    ask_shell: impl FnOnce(i32) -> Option<String>,
+) -> bool {
+    match peer {
+        _ if token => true,
+        None => true,
+        Some((_, uid)) if uid != own || is_mind_account(uid) => true,
+        Some((pid, _)) => ask_shell(pid).as_deref() != Some("person"),
+    }
 }
 
 fn debugger(side: Side) -> String {
@@ -248,10 +281,10 @@ pub fn verdict(name: &str, seen: &Seen, fallback: Option<&Result<PathBuf, String
 /// come up, its debugging port is not the one the route promises, or the tab opened
 /// and drew nothing. `fallback_shot` is where the headless screenshot goes in that
 /// last case.
-pub fn play(html: &Path, fallback_shot: &Path) -> Result<String, String> {
+pub fn play(html: &Path, fallback_shot: &Path, by_mind: bool) -> Result<String, String> {
     let abs = std::fs::canonicalize(html)
         .map_err(|e| format!("cannot read {}: {e}", html.display()))?;
-    let side = side();
+    let side = side(by_mind);
     let base = debugger(side);
     vet_now(side)?;
     if !debugger_alive(&base) {
@@ -371,6 +404,24 @@ mod tests {
         assert!(vet(Side::Person, Err(listener::Why::Nobody), 1000).is_ok());
         assert!(vet(Side::MindView, held(Place::MindView, 1001), 1000).is_err());
         assert!(vet(Side::MindView, Err(listener::Why::Unclear("x".into())), 1000).is_err());
+    }
+
+    /// The 520 failure: a mind's play reached the person's running Arcade and opened in the person's
+    /// Browser. Who asked decides, not whose Arcade it is.
+    #[test]
+    fn a_play_is_opened_in_the_askers_browser_not_the_arcades() {
+        assert_eq!(side(true), Side::MindView, "a mind's play, in the person's own Arcade");
+        assert_eq!(side(false), Side::Person);
+        let no = |_: u32| false;
+        let person = |_: i32| Some("person".to_string());
+        assert!(!mind_by(false, Some((7, 1000)), 1000, no, person), "the shell calls it the person");
+        assert!(mind_by(true, Some((7, 1000)), 1000, no, person), "a token");
+        assert!(mind_by(false, None, 1000, no, person), "no caller at all");
+        assert!(mind_by(false, Some((7, 1001)), 1000, no, person), "another account");
+        assert!(mind_by(false, Some((7, 1000)), 1000, |u| u == 1000, person), "the mind account");
+        for answer in [Some("mind".to_string()), None, Some("".to_string()), Some("Person".to_string())] {
+            assert!(mind_by(false, Some((7, 1000)), 1000, no, |_| answer.clone()), "{answer:?}: Hermes, or a shell that cannot say");
+        }
     }
 
     #[test]

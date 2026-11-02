@@ -31,6 +31,11 @@ pub const WITHIN: Duration = Duration::from_secs(14);
 /// The request an intent's arguments make, or the sentence the surface has always refused with.
 fn request(verb: Verb, a: &Args<'_>) -> Result<Command, Refused> {
     Request::from_args(verb, a.raw())
+        .map(|mut request| {
+            // Only a play needs it (the browser it opens in), and asking the shell costs a round trip.
+            request.by_mind = verb == Verb::Play && crate::play::caller_is_mind();
+            request
+        })
         .map(Command::Run)
         .map_err(|sentence| Refused::new("missing_argument", sentence))
 }

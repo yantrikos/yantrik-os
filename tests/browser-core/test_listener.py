@@ -28,7 +28,7 @@ class FakeProc:
 
     def __init__(self):
         self.root = tempfile.mkdtemp(prefix="yb-fakeproc-")
-        self.env = {"HOME": self.root, "XDG_DATA_HOME": os.path.join(self.root, "data")}
+        self.env = {"HOME": self.root}
         self.proc = os.path.join(self.root, "proc")
         os.makedirs(os.path.join(self.proc, "net"))
         self.mind_view = ports.mind_view_profile(self.env)
@@ -176,6 +176,15 @@ class Identify(unittest.TestCase):
             self.who(9223)
         self.assertIn("two different sockets", str(two.exception))
 
+    def test_a_browser_on_ipv6_loopback_alone_is_seen_as_that(self):
+        table = os.path.join(self.p.proc, "net", "tcp6")
+        with open(table, "w") as f:
+            f.write("  sl  local_address rem_address st\n   0: %s:2406 00000000000000000000000000000000:0000 0A 0:0 0:0 0 1000 0 9 1 0\n"
+                    % listener.LOOPBACK6)
+        self.assertTrue(listener.on_old_address(9222, self.p.proc))
+        self.assertFalse(listener.on_old_address(9223, self.p.proc))
+        self.assertFalse(listener.on_old_address(9222, os.path.join(self.p.root, "nowhere")))
+
     def test_the_exact_address_beats_a_wildcard_one_as_the_kernel_does(self):
         self.p.listen(9223, 1000, 1, local="00000000")
         self.p.listen(9223, 1000, 2)
@@ -191,22 +200,39 @@ class StopMindView(unittest.TestCase):
     def test_only_the_process_the_profile_names_is_chosen(self):
         p = FakeProc()
         self.addCleanup(p.close)
-        env = p.env
         for pid in (10, 11, 12, 20, 21):
-            p.process(pid, b"chromium --user-data-dir=" + p.mind_view.encode(), environ=env)   # all CLAIM it
+            p.process(pid, b"chromium --user-data-dir=" + p.mind_view.encode())     # all CLAIM it
         p.takes(p.mind_view, 20)                       # only 20 owns it
-        self.assertEqual(sorted(stop_mind_view.mind_view_mains(p.proc)), [20])
+        self.assertEqual(stop_mind_view.mind_view_mains(p.proc, homes=[p.root]), [20])
 
-    def test_each_process_is_read_in_its_own_environment(self):
+    def test_a_browser_whose_environment_was_overwritten_is_still_found(self):
+        """520: a real Chromium rewrites its environ area, and one started with a small environment
+        had no HOME left in it. Nothing here reads it."""
         p = FakeProc()
         self.addCleanup(p.close)
-        other_env = {"HOME": "/home/q", "XDG_DATA_HOME": os.path.join(p.root, "q-data")}
-        other = ports.mind_view_profile(other_env)
-        os.makedirs(other)
-        p.process(40, b"chromium", environ=other_env)
-        p.process(41, b"chromium", environ=p.env)
-        p.takes(other, 40)
-        self.assertEqual(stop_mind_view.mind_view_mains(p.proc), [40])
+        p.process(30, b"chromium")
+        with open(os.path.join(p.proc, "30", "environ"), "wb") as f:
+            f.write(b"s --ozone-platform=wayland --no-first-run\0")
+        p.takes(p.mind_view, 30)
+        self.assertEqual(stop_mind_view.mind_view_mains(p.proc, homes=[p.root]), [30])
+
+    def test_found_by_the_files_it_holds_when_the_home_is_not_one_it_knows(self):
+        p = FakeProc()
+        self.addCleanup(p.close)
+        p.process(40, b"chromium")
+        p.holds_lock(40, p.mind_view)
+        p.takes(p.mind_view, 40)
+        self.assertEqual(stop_mind_view.mind_view_mains(p.proc, homes=[]), [40])
+
+    def test_the_persons_browser_is_never_found(self):
+        p = FakeProc()
+        self.addCleanup(p.close)
+        person = os.path.join(p.root, ".config", "chromium")
+        os.makedirs(person)
+        p.process(50, b"chromium --user-data-dir=" + p.mind_view.encode())
+        p.holds_lock(50, person)
+        p.takes(person, 50)
+        self.assertEqual(stop_mind_view.mind_view_mains(p.proc, homes=[p.root]), [])
 
 
 if __name__ == "__main__":

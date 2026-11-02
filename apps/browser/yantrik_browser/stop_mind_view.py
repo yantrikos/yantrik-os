@@ -22,28 +22,44 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from yantrik_browser import listener, ports  # noqa: E402
 
 
-def environ_of(pid, proc):
-    """A process's environment as `name -> value`: what decides where its profile lives."""
-    try:
-        with open(os.path.join(proc, str(pid), "environ"), "rb") as f:
-            pairs = f.read().split(b"\0")
-    except OSError:
-        return {}
-    out = {}
-    for pair in pairs:
-        name, _, value = pair.decode("utf-8", "replace").partition("=")
-        if name in ("HOME", "XDG_DATA_HOME"):
-            out[name] = value
-    return out
-
-
-def mind_view_mains(proc="/proc"):
-    """[pid] of the main processes of the browsers that own Mind View's profile."""
-    found = []
+def candidate_profiles(proc, homes):
+    """Where Mind View's profile may be, found without trusting any process's environment (a
+    Chromium overwrites its own, and a browser started with a small one has no HOME in it):
+    under each account's home, and wherever a process holds a LOCK file inside a directory laid
+    out as Mind View's profile is."""
+    tail = "/" + ports.MIND_VIEW_PROFILE + "/"
+    found = {os.path.join(home, ".local", "share", *ports.MIND_VIEW_PROFILE.split("/")) for home in homes}
     for name in os.listdir(proc):
-        if name.isdigit() and listener.lock_pid(ports.mind_view_profile(environ_of(name, proc))) == int(name):
-            found.append(int(name))
-    return found
+        fds = os.path.join(proc, name, "fd")
+        try:
+            held = [os.readlink(os.path.join(fds, fd)) for fd in os.listdir(fds)]
+        except OSError:
+            continue
+        for path in held:
+            at = path.find(tail)
+            if at != -1:
+                found.add(path[:at + len(tail) - 1])
+    return sorted(found)
+
+
+def all_homes():
+    try:
+        import pwd
+        return [e.pw_dir for e in pwd.getpwall() if os.path.isabs(e.pw_dir)]
+    except ImportError:
+        return []
+
+
+def mind_view_mains(proc="/proc", homes=None):
+    """[pid] of the main processes of the browsers that own Mind View's profile: the pid each
+    candidate profile's SingletonLock names, if it is running. Never by a command line or an
+    environment, which a browser rewrites and which prove nothing."""
+    pids = set()
+    for directory in candidate_profiles(proc, all_homes() if homes is None else homes):
+        pid = listener.lock_pid(directory)
+        if pid and os.path.isdir(os.path.join(proc, str(pid))):
+            pids.add(pid)
+    return sorted(pids)
 
 
 def main(argv):

@@ -127,6 +127,75 @@ class Vetting(unittest.TestCase):
             self.assertIn("could not be established", str(refused.exception))
 
 
+class FirstCallAndOldAddress(unittest.TestCase):
+    """A mind's first web call starts Mind View's browser; a person's browser on an old address is
+    not "not open"."""
+
+    def setUp(self):
+        patch = mock.patch.object(cdp.Browser, "connect", lambda self: None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def driver(self, side, listening, starter, old=False):
+        def identify(port):
+            if not listening[0] or port != ports.MIND_VIEW_PORT:
+                raise listener.Unidentified("nothing is listening there", nobody=True)
+            return listener.Listener(port, ME, 1, (1,), listener.MIND_VIEW)
+        g = guard.Guard(identify=identify, uid=ME, side_of=lambda: side, starter=starter, old_address=lambda p: old)
+        return drv.Driver(judge=False, guard_=g)
+
+    def test_the_first_call_starts_mind_views_browser_once(self):
+        up, calls = [False], []
+
+        def starter():
+            calls.append(1)
+            up[0] = True
+        d = self.driver(ports.MIND, up, starter)
+        with d.held():
+            self.assertEqual(d.browser.address, "http://127.0.0.1:9223")
+        with d.held():
+            pass
+        self.assertEqual(calls, [1])
+
+    def test_it_cannot_be_started_and_the_sentence_is_the_shells_reason(self):
+        def cannot():
+            raise guard.Starting("the setting is off")
+        d = self.driver(ports.MIND, [False], cannot)
+        with self.assertRaises(drv.PageRefused) as refused:
+            with d.held():
+                pass
+        self.assertIn("could not be started: the setting is off", str(refused.exception))
+
+    def test_a_browser_asked_for_that_never_opens_its_port_is_said_so(self):
+        d = self.driver(ports.MIND, [False], lambda: None)
+        with mock.patch.object(guard.time, "sleep", lambda s: None):
+            with mock.patch.object(guard.time, "monotonic", side_effect=[0, 0, 100, 100]):
+                with self.assertRaises(drv.PageRefused) as refused:
+                    with d.held():
+                        pass
+        self.assertIn("did not open its debugging port", str(refused.exception))
+
+    def test_the_person_and_a_status_look_start_nothing(self):
+        def never():
+            raise AssertionError("started a browser")
+        with self.driver(ports.PERSON, [False], never).held():
+            pass                                  # no browser of theirs is opened for them
+        self.driver(ports.MIND, [False], never).status()      # a look starts nothing
+
+    def test_a_persons_browser_on_the_old_address_is_not_called_closed(self):
+        d = self.driver(ports.PERSON, [False], None, old=True)
+        for act in (lambda: d.read(), lambda: d.tabs()):
+            with self.assertRaises(drv.PageRefused) as refused:
+                act()
+            self.assertIn("old address ([::1])", str(refused.exception))
+            self.assertIn("Close it and open it again", str(refused.exception))
+            self.assertNotIn("not open", str(refused.exception))
+        # A mind's side is not told about the person's browser at all.
+        d = self.driver(ports.MIND, [True], None, old=True)
+        with d.held():
+            pass
+
+
 class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
     """The port choice per caller, with the person's Browser open on its port in every case."""
 
@@ -146,9 +215,10 @@ class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
 
     def test_a_mind_never_gets_the_persons_port_even_when_mind_views_browser_is_closed(self):
         d = driver_for(holding(**{str(ports.PERSON_PORT): listener.PERSON}), ports.MIND)
-        with d.held():
-            self.assertEqual(d.browser.address, "http://127.0.0.1:9223")
-            self.assertTrue(d.browser.check is not None)
+        with self.assertRaises(drv.PageRefused):          # it tries to start Mind View's own, and cannot here
+            with d.held():
+                pass
+        self.assertEqual(d.browser.address, "http://127.0.0.1:9223", "never the person's port")
 
     def test_a_refused_call_opens_nothing_and_says_so(self):
         # The person's Browser is on Mind View's port: a mind's every action is refused.

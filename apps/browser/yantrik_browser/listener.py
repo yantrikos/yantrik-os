@@ -103,6 +103,21 @@ def _rows(table, port):
                 continue
 
 
+LOOPBACK6 = "00000000000000000000000001000000"
+
+
+def on_old_address(port, proc="/proc"):
+    """Whether something listens on [::1]:`port` and nothing on 127.0.0.1: where a browser an older
+    build started (without `--remote-debugging-address`) ends up when the IPv4 port is taken."""
+    try:
+        with open(os.path.join(proc, "net", "tcp6"), encoding="ascii", errors="replace") as f:
+            table = f.read()
+    except OSError:
+        return False
+    suffix = ":%04X" % port
+    return any(r[0] == LOOPBACK6 + suffix for r in _rows(table, port))
+
+
 def identify(port, proc="/proc", environ=None, tries=3, pause=0.1):
     """Who holds 127.0.0.1:`port`. Raises Unidentified, `nobody` set when nothing listens. A
     reading that failed only because /proc was momentarily unreadable is taken again, briefly."""

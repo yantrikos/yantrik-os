@@ -30,6 +30,21 @@ pub fn class_of(pid: i64) -> &'static str {
 }
 
 pub fn actions(surface: ControlSurface) -> ControlSurface {
+    // The browser service starts Mind View's browser for a mind whose web call finds none: the
+    // service is not the mind, so `open_app` would be routed as the person's.
+    let surface = surface.action(
+        Action::new(
+            "open_mind_browser",
+            "Start Mind View's own browser (never the person's Browser) for a mind's web tools, and              say why when it cannot. For the desktop's own services",
+        )
+        .risk("safe"),
+        |_args| {
+            let work = || crate::wire::browser_launch::open_in_mind_view().map(|()| serde_json::json!({ "started": true }));
+            yantrik_app_runtime::control::answer_later(work)
+                .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
+                .or_else(|work| work())
+        },
+    );
     surface.action(
         Action::new(
             "caller_class",

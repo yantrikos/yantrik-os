@@ -55,6 +55,20 @@ pub fn mind_view_args(program: &Path, args: &[&str]) -> Vec<String> {
     out
 }
 
+/// Open Mind View's browser for a mind that needs one (its first web call, with none open): the
+/// nested desktop started if it is not, the browser in it, on its port and profile. Runs where it
+/// may take a while (off the UI thread). Says why when it cannot, in words the mind can pass on.
+pub fn open_in_mind_view() -> Result<(), String> {
+    if !crate::wire::settings::minds_open_in_mind_view() {
+        return Err("the setting \"minds open apps in Mind View\" is off, so a mind has no browser of its own".into());
+    }
+    let (bin, args) = super::dock::find_browser().ok_or("there is no web browser on this machine")?;
+    let seat = crate::mind_view::ensure().map_err(|why| format!("Mind View is not available ({why})"))?;
+    preflight(Side::MindView)?;
+    super::dock::launch("browser", bin, args, None, None, Some(&seat), false);
+    Ok(())
+}
+
 /// Before a browser starts: Mind View's browsers an earlier build left on the person's port are
 /// stopped (they would keep the person's own Browser from having it), and a browser for Mind View
 /// is not started on a port something else holds. No second Chromium on an occupied port.

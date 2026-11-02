@@ -258,7 +258,7 @@ fn start_worker(m: &mut Model, fx: &mut Fx, browse: Browse) -> u64 {
     let (slow, library) = (m.slow.clone(), m.library.clone());
     fx.spawn_or(Command::VerdictLost { job }, move |_| Command::Verdict {
         job,
-        result: slow.run(browse.verb, &library, &browse.slug, &browse.html),
+        result: slow.run(browse.verb, &library, &browse.slug, &browse.html, browse.by_mind),
     });
     job
 }

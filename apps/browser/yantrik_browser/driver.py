@@ -101,7 +101,7 @@ class Driver:
                     raise Refused("the browser is busy with another action (a page may be slow to "
                                   "answer); try again in a few seconds")
                 try:
-                    driver.sides.bind()
+                    driver.sides.bind(start=True)
                 except BaseException as e:
                     driver.lock.release()
                     raise (PageRefused(str(e)) if isinstance(e, guard.Denied) else e) from None

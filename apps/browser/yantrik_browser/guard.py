@@ -12,6 +12,7 @@ never sent to a browser it was not meant for, and a refusal says what is true.
 """
 
 import os
+import time
 
 from yantrik_surface import PeerRefused, agent_token, call_once, caller
 from yantrik_surface import gate, mind_door, reach, wire
@@ -19,10 +20,29 @@ from yantrik_surface import gate, mind_door, reach, wire
 from . import listener, ports
 
 SHELL_ASKED = 3.0
+START_WAIT = 30.0        # seconds Mind View's browser is given to open its port once asked for
 
 
 class Denied(Exception):
     """The call may not use what holds the port. The sentence is the caller's to read."""
+
+
+class Starting(Exception):
+    """The shell could not start Mind View's browser; the message is why."""
+
+
+def shell_open_mind_browser():
+    """Ask the shell to start Mind View's browser (its own action: `open_app` would be routed as
+    the person's, since the caller here is this service). Raises Starting with the shell's reason."""
+    try:
+        reply = call_once(wire.default_socket_path(gate.SHELL), "app.act",
+                          {"action": "open_mind_browser", "args": {}},
+                          timeout=START_WAIT, peer_rule=gate.must_be_the_shell)
+        reach._act_result(reply)  # noqa: SLF001
+    except reach.Unanswered as e:
+        raise Starting(str(e)) from None
+    except (PeerRefused, OSError, ConnectionError, ValueError) as e:
+        raise Starting("the desktop did not answer (%s)" % e) from None
 
 
 def is_bridge_ancestor(pid, proc="/proc"):
@@ -81,7 +101,9 @@ class Guard:
     """Decides, and checks, which browser a call uses. The parts that read the machine are
     arguments, so a test can stand in for them."""
 
-    def __init__(self, identify=None, uid=None, side_of=None):
+    def __init__(self, identify=None, uid=None, side_of=None, starter=None, old_address=None):
+        self.starter = starter or shell_open_mind_browser
+        self.old_address = old_address or listener.on_old_address
         self.identify = identify or listener.identify
         self.uid = uid if uid is not None else os.getuid()
         self.side_of = side_of or side_of_caller
@@ -97,6 +119,11 @@ class Guard:
             held = self.identify(port)
         except listener.Unidentified as e:
             if e.nobody:
+                if side == ports.PERSON and self.old_address(port):
+                    raise Denied(
+                        "Nothing was done. Your Browser is open, but on an old address ([::1]) that an "
+                        "earlier version gave it, so it cannot be reached from here. Close it and open "
+                        "it again.") from None
                 return None
             raise Denied(self._unclear(side, port, str(e))) from None
         if held.uid != self.uid:
@@ -115,6 +142,24 @@ class Guard:
                 "browser (left running by an earlier version), not by your Browser. Close Mind "
                 "View's browser or restart the desktop, then open your Browser again." % port)
         return held
+
+    def start_mind_browser(self, wait=START_WAIT):
+        """Mind View's browser was wanted and is not open: ask the shell for it and wait for its port.
+        Returns the listener, or raises Denied saying what is true."""
+        try:
+            self.starter()
+        except Starting as e:
+            raise Denied("Mind View's browser is not open and could not be started: %s. Nothing was "
+                         "done; the person's Browser is a different one and is not yours to use." % e) from None
+        deadline = time.monotonic() + wait
+        while True:
+            held = self.vet(ports.MIND)
+            if held is not None:
+                return held
+            if time.monotonic() > deadline:
+                raise Denied("Mind View's browser was asked to open but did not open its debugging port "
+                             "within %d s. Nothing was done." % wait)
+            time.sleep(0.3)
 
     @staticmethod
     def _unclear(side, port, why):

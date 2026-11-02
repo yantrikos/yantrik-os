@@ -146,7 +146,14 @@ class RealBrowsers(unittest.TestCase):
         self.fx = Fixture()
         self.addCleanup(self.fx.close)
         self.caller = {"side": ports.MIND}
-        self.driver = drv.Driver(judge=False, guard_=guard.Guard(side_of=lambda: self.caller["side"]))
+        self.starts = []
+
+        def start_mind_view():           # what the shell's open_mind_browser does, for this test
+            self.starts.append(1)
+            self.fx.start("mind", "mind")
+        self.starter = start_mind_view
+        self.driver = drv.Driver(judge=False, guard_=guard.Guard(
+            side_of=lambda: self.caller["side"], starter=lambda: self.starter()))
         self.addCleanup(lambda: [b.close() for b in self.driver.sides.browsers.values()])
 
     def as_(self, side):
@@ -204,15 +211,37 @@ class RealBrowsers(unittest.TestCase):
         self.assertIn(self.fx.titles(self.fx.person_port), (["about:blank"], [""]))
         self.assertEqual(self.fx.titles(self.fx.mind_port), ["MIND-B"])
 
-    def test_only_the_persons_browser_up_a_mind_is_told_its_own_is_not_open(self):
+    def test_a_minds_first_web_call_starts_mind_views_browser_and_carries_on(self):
+        """On a cold start, and with only the person's Browser open, the first call used to fail
+        "the browser is not open"; it now starts Mind View's own browser and goes on."""
         self.fx.start("person", "default")
         self.go(ports.PERSON, "person-a")
-        with self.assertRaises(drv.Refused) as closed:
-            self.as_(ports.MIND).read()
-        self.assertIn("not open", str(closed.exception))
-        self.assertFalse(str(closed.exception).startswith("PAGE: Nothing was done"))
-        self.assertFalse(self.as_(ports.MIND).status()["open"])
+        self.assertFalse(self.as_(ports.MIND).status()["open"], "a status look starts nothing")
+        self.assertEqual(self.starts, [])
+        self.go(ports.MIND, "mind-a")                      # the FIRST web call
+        self.assertEqual(self.starts, [1])
+        self.assertEqual(self.fx.titles(self.fx.mind_port), ["MIND-A"])
         self.assertEqual(self.fx.titles(self.fx.person_port), ["PERSON-A"], "the person's tab was touched")
+        self.go(ports.MIND, "mind-b")
+        self.assertEqual(self.starts, [1], "a browser already open is not started again")
+
+    def test_when_it_cannot_be_started_the_mind_is_told_what_is_true(self):
+        def cannot():
+            raise guard.Starting("Mind View is not available (no Xwayland)")
+        self.starter = cannot
+        self.fx.start("person", "default")
+        with self.assertRaises(drv.PageRefused) as refused:
+            self.as_(ports.MIND).go(self.fx.site + "/mind-a.html")
+        text = str(refused.exception)
+        self.assertIn("could not be started: Mind View is not available", text)
+        self.assertIn("not yours to use", text)
+        self.assertNotIn("MIND-A", self.fx.titles(self.fx.person_port))
+
+    def test_the_person_is_never_given_a_browser_they_did_not_open(self):
+        with self.assertRaises(drv.Refused) as closed:
+            self.as_(ports.PERSON).read()
+        self.assertEqual(self.starts, [])
+        self.assertIn("not open", str(closed.exception))
 
     def test_the_persons_browser_on_mind_views_port_is_never_used_by_a_mind(self):
         """The old order that put a mind in the person's browser: theirs holds the port."""

@@ -1236,7 +1236,7 @@ fn launch_command(
 }
 
 /// Start one app, on the person's desktop or on `seat`.
-fn launch(
+pub(super) fn launch(
     app_id: &str,
     bin: &str,
     args: &[&str],

@@ -66,6 +66,9 @@ pub struct Request {
     pub verb: Verb,
     pub spec: String,
     pub game: String,
+    /// Whether a mind (not the person) asked, decided where the caller is known: the intent's
+    /// handler. A `play` is opened in the browser of whoever asked, not of whoever runs this Arcade.
+    pub by_mind: bool,
 }
 
 impl Request {
@@ -85,16 +88,16 @@ impl Request {
         const GAME: &str = "the title or slug of the game, as `describe` lists under `games`";
         let none = String::new();
         Ok(match verb {
-            Verb::NewCharacter => Request { verb, spec: required("spec", "the character JSON to save")?, game: none },
-            Verb::NewGame => Request { verb, spec: required("spec", "the game JSON to save")?, game: none },
+            Verb::NewCharacter => Request { verb, spec: required("spec", "the character JSON to save")?, game: none, by_mind: false },
+            Verb::NewGame => Request { verb, spec: required("spec", "the game JSON to save")?, game: none, by_mind: false },
             Verb::UpdateGame => {
-                Request { verb, spec: required("spec", "the game JSON that replaces the saved one")?, game: text("game") }
+                Request { verb, spec: required("spec", "the game JSON that replaces the saved one")?, game: text("game"), by_mind: false }
             }
             Verb::UpdateCharacter => {
-                Request { verb, spec: required("spec", "the character JSON that replaces the saved one")?, game: none }
+                Request { verb, spec: required("spec", "the character JSON that replaces the saved one")?, game: none, by_mind: false }
             }
             Verb::Build | Verb::Play | Verb::Verify | Verb::Screenshot | Verb::Delete => {
-                Request { verb, spec: none, game: required("game", GAME)? }
+                Request { verb, spec: none, game: required("game", GAME)?, by_mind: false }
             }
         })
     }
@@ -113,6 +116,7 @@ pub struct Browse {
     pub verb: Verb,
     pub slug: String,
     pub html: std::path::PathBuf,
+    pub by_mind: bool,
 }
 
 /// What a command on the lane came to.
