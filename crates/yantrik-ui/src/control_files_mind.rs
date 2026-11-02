@@ -181,6 +181,26 @@ pub fn may_show_trash() -> Result<(), String> {
     Ok(())
 }
 
+/// A refusal in the person's words. The shared rules (`home_paths`) end their sentences with the
+/// name of the rule that fired - `hidden_place`, `hard_link` - which is a label for the code and
+/// the tests, not something to put in front of a person.
+pub fn in_words(sentence: String) -> String {
+    sentence
+        .replace(" is hidden_place", " is a hidden place, or one that programs start from")
+        .replace(" is hard_link", " has more than one name (a hard link)")
+}
+
+/// Text to show on a card: control, direction, zero-width and line-separating characters taken out,
+/// so a name cannot start a line of its own or read as another name.
+pub fn plain(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !(c.is_control()
+                || matches!(c, '\u{00AD}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202F}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'))
+        })
+        .collect()
+}
+
 /// Whether what Files shows is hidden from this caller, and why.
 ///
 /// Runs on the UI thread, inside `describe shell`: a describe answers from the live view-model

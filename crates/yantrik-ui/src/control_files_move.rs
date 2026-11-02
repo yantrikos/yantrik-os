@@ -37,6 +37,15 @@ pub(crate) fn action() -> Action {
     )
     .defers()
     .risk("sensitive")
+    // The card says what moves and where, whole: a person cannot judge a move they cannot see.
+    .explain(|args| {
+        let (from, to) = (mind::plain(text(args, "path")), mind::plain(text(args, "to_folder")));
+        if from.trim().is_empty() || to.trim().is_empty() {
+            String::new()
+        } else {
+            format!("Moves {} into {}", from.trim(), to.trim())
+        }
+    })
     .arg(Param::text("path").describe("The file or folder to move, e.g. ~/Desktop/trip-plan.md"))
     .arg(Param::text("to_folder").describe("The folder to move it into, e.g. ~/Desktop/Trips; it must exist"))
 }
@@ -69,6 +78,10 @@ fn is_a_home_folder(src: &Path, home: &Path) -> bool {
 /// Decide the move from `path` and `to_folder`, with `home` as the person's home. `for_mind`
 /// applies the Mind's rules (`control_files_mind`), which the person's own call is not held to.
 pub(crate) fn plan(args: &Value, home: &Path, for_mind: bool) -> Result<Plan, String> {
+    plan_checked(args, home, for_mind).map_err(mind::in_words)
+}
+
+fn plan_checked(args: &Value, home: &Path, for_mind: bool) -> Result<Plan, String> {
     let (parent, name) = entry_in(args)?;
     crate::fileops::name(&name)?;
     let to = text(args, "to_folder");

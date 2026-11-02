@@ -60,6 +60,8 @@ enum Event {
     // Message, what was created (name, is a folder), undo ids, moved paths, remaining trash.
     Done(String, Option<(String, bool)>, Vec<String>, Vec<PathBuf>, Option<Vec<String>>),
     Notice(String),
+    // The open folder changed on disk, made from outside the window (`files_watch`).
+    Changed(String),
 }
 #[derive(Clone)]
 struct Sink {
@@ -95,6 +97,9 @@ struct Browser {
     preview: u64,
     listing_cancel: Option<Arc<AtomicBool>>,
     job_cancel: Option<Arc<AtomicBool>>,
+    // The listing a quiet refresh asked for (its generation) and the names that were selected
+    // when it began, to select again once that listing lands - and only that one.
+    restore: Option<(u64, Vec<String>)>,
     sink: Sink,
 }
 type State = Rc<RefCell<Browser>>;
@@ -192,6 +197,18 @@ impl Browser {
         ui.set_file_ai_summary("".into());
         self.preview += 1;
     }
+    // After a quiet refresh: the rows that were selected, by name, are selected again.
+    fn reselect(&mut self, ui: &App) {
+        let Some((generation, names)) = self.restore.take() else { return };
+        if generation != self.generation {
+            return;
+        }
+        let indexes: Vec<usize> =
+            (0..self.visible.len()).filter(|i| names.contains(&self.visible[*i].entry.name)).collect();
+        for (n, i) in indexes.into_iter().enumerate() {
+            self.select(ui, i, n > 0, false);
+        }
+    }
     fn select(&mut self, ui: &App, index: usize, ctrl: bool, shift: bool) {
         if index >= self.visible.len() {
             return;
@@ -286,7 +303,10 @@ impl Browser {
         self.generation += 1;
         let generation = self.generation;
         self.preview += 1;
-        ui.set_file_browser_loading(true);
+        super::files_watch::watch((!trash).then(|| fsview::expand_home(&path)));
+        if !matches!(&self.restore, Some((g, _)) if *g == generation) {
+            ui.set_file_browser_loading(true);
+        }
         let sink = self.sink.clone();
         std::thread::spawn(move || {
             // Set when the folder asked for had gone and a parent was listed instead.
@@ -793,9 +813,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         preview: 0,
         listing_cancel: None,
         job_cancel: None,
+        restore: None,
         sink,
     }));
     BROWSER.with(|b| *b.borrow_mut() = Rc::downgrade(&state));
+    {
+        let sink = state.borrow().sink.clone();
+        super::files_watch::start(move |path| sink.send(Event::Changed(path)));
+    }
     macro_rules! bind {($callback:ident, |$u:ident,$s:ident $(,$arg:ident)*| $body:block)=>{{let weak=ui.as_weak();let state=state.clone();ui.$callback(move|$($arg),*|{if let Some($u)=weak.upgrade(){let mut $s=state.borrow_mut();$body}});}};}
     bind!(on_file_worker_event, |u, s| {
         while let Ok(event) = receiver.try_recv() {
@@ -846,6 +871,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                             }
                             s.all = items;
                             s.paint(&u);
+                            s.reselect(&u);
                             s.tabs_ui(&u);
                             if let Some(note) = note {
                                 set_notice(&u, &note, None);
@@ -889,6 +915,19 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     s.refresh(&u);
                 }
                 Event::Notice(text) => set_notice(&u, &text, None),
+                Event::Changed(path) => {
+                    // Only the folder still open, only when nothing else is going on, and quietly:
+                    // no spinner, and the same rows selected again afterwards.
+                    let open = fsview::expand_home(&s.tabs[s.active].path);
+                    if !s.trash
+                        && open == std::path::Path::new(&path)
+                        && s.job_cancel.is_none()
+                        && !u.get_file_browser_loading()
+                    {
+                        s.restore = Some((s.generation + 1, s.selected.iter().filter_map(|i| s.visible.get(*i)).map(|i| i.entry.name.clone()).collect()));
+                        s.refresh(&u);
+                    }
+                }
             }
         }
     });

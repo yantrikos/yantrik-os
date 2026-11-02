@@ -171,7 +171,7 @@ fn nothing_is_moved_out_of_a_hidden_or_startup_place() {
     }
     // The rule is the hidden-place one, in its own words.
     let err = plan(&args(&home, ".local/bin/f", "Documents"), &home, true).unwrap_err();
-    assert!(err.contains("hidden_place"), "{err}");
+    assert!(err.contains("hidden place") && !err.contains("hidden_place"), "{err}");
 }
 
 #[test]
@@ -201,8 +201,34 @@ fn nothing_is_moved_into_a_startup_place_or_a_tree_that_carries_one() {
     }
     // A folder holding a `.git/config` lands nowhere new: its tree carries a hidden place.
     let err = plan(&args(&home, "Elsewhere", "Documents"), &home, true).unwrap_err();
-    assert!(err.contains("hidden_place"), "{err}");
+    assert!(err.contains("hidden place") && !err.contains("hidden_place"), "{err}");
     // The checks are the ones that decide, not the filesystem: the same moves the person asks for
     // themselves are not held to them.
     plan(&args(&home, "Desktop/trip-plan.md", "bin"), &home, false).unwrap();
+}
+
+#[test]
+fn the_card_says_what_moves_and_where_whole_and_clean() {
+    let said = (action().explainer.expect("a move explains itself")).sentence(&json!({
+        "path": "~/Desktop/trip\u{202e}gpj.md\n",
+        "to_folder": "~/Desktop/Trips",
+    }));
+    assert_eq!(said, "Moves ~/Desktop/tripgpj.md into ~/Desktop/Trips");
+    let long = format!("~/{}/a.md", "deep/".repeat(40));
+    let said = (action().explainer.unwrap()).sentence(&json!({ "path": long, "to_folder": "~/x" }));
+    assert!(said.contains(&long), "the whole path, never cut");
+    assert_eq!((action().explainer.unwrap()).sentence(&json!({})), "", "nothing to say, no line");
+}
+
+#[test]
+fn refusals_never_show_the_rules_internal_labels() {
+    let (_d, home) = home("words");
+    std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+    std::fs::write(home.join(".local/bin/f"), "x").unwrap();
+    let err = plan(&args(&home, ".local/bin/f", "Documents"), &home, true).unwrap_err();
+    assert!(err.contains("hidden place") && !err.contains("hidden_place") && !err.contains("hard_link"), "{err}");
+    std::fs::write(home.join("Desktop/two"), "x").unwrap();
+    std::fs::hard_link(home.join("Desktop/two"), home.join("Desktop/two-again")).unwrap();
+    let err = plan(&args(&home, "Desktop/two", "Documents"), &home, true).unwrap_err();
+    assert!(err.contains("more than one name") && !err.contains("hard_link"), "{err}");
 }
