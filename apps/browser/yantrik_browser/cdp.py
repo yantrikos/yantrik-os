@@ -73,6 +73,9 @@ class Browser:
         self.active = None                     # the tab actions go to unless told otherwise
         self.reader = None
         self.alive = False
+        # Asked about every request a page makes, when set (`Fetch`): it returns, or raises to
+        # have the request failed. The render instance's rule for what a Mind's page may load.
+        self.guard = None
 
     # ── the connection ──
 
@@ -226,6 +229,9 @@ class Browser:
         tab = self.by_session.get(msg.get("sessionId"))
         if tab is None:
             return
+        if method == "Fetch.requestPaused":
+            self._judge(msg.get("sessionId"), p)
+            return
         if method == "Runtime.executionContextCreated":
             ctx = p.get("context", {})
             aux = ctx.get("auxData", {})
@@ -262,6 +268,24 @@ class Browser:
             tab.inflight.pop(p.get("requestId"), None)
             tab.last_network = time.monotonic()
 
+    def _judge(self, session, params):
+        """Decide one paused request off the reader's thread (the guard may ask the shell)."""
+        request_id = params.get("requestId")
+        url = str((params.get("request") or {}).get("url", ""))
+        guard = self.guard
+
+        def decide():
+            try:
+                (guard or (lambda _u: None))(url)
+                method, body = "Fetch.continueRequest", {"requestId": request_id}
+            except Exception:  # noqa: BLE001 - anything but a plain yes fails the request
+                method, body = "Fetch.failRequest", {"requestId": request_id, "errorReason": "AccessDenied"}
+            try:
+                self.call(method, body, session=session)
+            except (BrowserClosed, CdpError):
+                pass
+        threading.Thread(target=decide, name="cdp-guard", daemon=True).start()
+
     # ── tabs ──
 
     def pages(self):
@@ -291,12 +315,18 @@ class Browser:
         self.by_session[tab.session] = tab
         for method in ("Page.enable", "Runtime.enable", "Network.enable"):
             self.call(method, session=tab.session)
+        if self.guard:
+            # Every request of this page and its frames, before it is made.
+            self.call("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
+                      session=tab.session)
         tree = self.call("Page.getFrameTree", session=tab.session)
         tab.main_frame = tree["frameTree"]["frame"]["id"]
         return tab
 
     def new_tab(self, url):
-        got = self.call("Target.createTarget", {"url": url or "about:blank"})
+        # With a guard the tab is made blank, guarded, and only then sent to the address, so its
+        # first request is judged like every other.
+        got = self.call("Target.createTarget", {"url": "about:blank" if self.guard else (url or "about:blank")})
         deadline = time.monotonic() + 5
         with self.cond:
             while got["targetId"] not in self.tabs and time.monotonic() < deadline:
@@ -304,6 +334,8 @@ class Browser:
         tab = self.tabs.get(got["targetId"]) or Tab(got["targetId"], url)
         self.tabs.setdefault(tab.id, tab)
         self.active = self.attach(tab)
+        if self.guard and url:
+            self.call("Page.navigate", {"url": url}, session=tab.session)
         return tab
 
     # ── the reader ──

@@ -1663,6 +1663,23 @@ def is_local_page(url):
     return isinstance(url, str) and url.strip().lower().startswith("file:")
 
 
+def answer_shows_local_page(out):
+    """Does a browser answer come from a `file:` page? Read from the answer, not the request: a
+    `file:` tab can come from the person's own double-click, from history, or from a link on a
+    page, and whatever it holds is on this machine (#1068)."""
+    reply = result_object(out)
+
+    def walk(node, depth=0):
+        if depth > 6:
+            return False
+        if isinstance(node, dict):
+            return any((k == "url" and is_local_page(v)) or walk(v, depth + 1) for k, v in node.items())
+        if isinstance(node, list):
+            return any(walk(v, depth + 1) for v in node[:200])
+        return False
+    return walk(reply)
+
+
 def saw_private(what):
     """This conversation has read something private: held here first, then kept by the desktop."""
     with _SCOPE_LOCK:
@@ -3040,10 +3057,14 @@ def run_tool(tool, args, present=None):
         # Recorded after the call, not before: a read that failed saw nothing.
         saw_private(tool["name"])
     outbound_name, outbound_args = outbound_of(tool, args)
-    if outbound_name == "web_go" and p.returncode == 0 and is_local_page(outbound_args.get("url")):
+    if p.returncode == 0 and tool["name"] == "os_act" and surface_name(app) in BROWSER_NAMES:
         # Recorded after the call, as every read is: a page that was refused was not read. A local
         # page is private the way os_screen is, so the taint rule closes new addresses after it.
-        saw_private("web_go.file")
+        # By the address asked for, and by the address the answer came from, on every browser act.
+        if outbound_name == "web_go" and is_local_page(outbound_args.get("url")):
+            saw_private("web_go.file")
+        elif answer_shows_local_page(out):
+            saw_private("browser.file")
     if tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) in PRIVATE_ACT_SURFACES:
         saw_private("%s.%s" % (surface_name(app), args.get("action")))
     if (tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) == "shell"

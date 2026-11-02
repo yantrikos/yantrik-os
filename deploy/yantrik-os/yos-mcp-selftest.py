@@ -192,6 +192,10 @@ revision: c0ffee
 # grades them in control_agent_terminal.rs).
 SHELL_ACTIONS = """  act: open_app(name)  [standard, settles later]
        Launch an app, or focus it if it is already running.
+  act: present_file(path, title?)  [standard, settles on return]
+       Offer the person a file you made; a card appears and nothing moves until they press it.
+         path: string - the file
+         title?: string - a few words for the card
   act: read_mind_view(region?)  [safe, settles on return]
        Read the text on Mind View from its pixels.
          region?: string - x,y,w,h
@@ -1635,6 +1639,31 @@ with tempfile.TemporaryDirectory() as d:
     text, _ = module.run_tool(module.BY_NAME["web_type"], {"ref": 1, "text": "what I read"})
     check("after it, typing into a page is refused, naming the read",
           text.startswith("REFUSED") and "web_go.file" in text, text)
+
+    # 15d'''. What a browser answer comes from decides the taint, not what was asked (#1068): a
+    # `file:` tab can come from the person's own double-click or a link on a page.
+    module, state = case(tmp, "taint-answer-url", mode="auto", machine_ceiling="dangerous", ceiling=None)
+    def answer(url):
+        return chr(10).join(["Browser", "{", '  "now_in_tab": "t2",', '  "page": {"url": "%s"},' % url,
+                             '  "text": "see file:///x"', "}"])
+    check("an answer from a file: page is read as one", module.answer_shows_local_page(answer("file:///home/p/Sites/a.html")))
+    check("an answer from a web page is not", not module.answer_shows_local_page(answer("https://example.com/")))
+    check("nor one that names no address", not module.answer_shows_local_page("nothing"))
+
+    # 15g. After a `web_go` of a file: page taints, `present_file` still raises its card: it
+    # only asks the person, so a taint that closed it would leave a Mind unable to say "it is
+    # done, here it is". In `ask` and in full bypass alike (mind-3e's bar).
+    for mode in ("ask", "bypass_all"):
+        module, state = case(tmp, "present-after-taint-" + mode, mode=mode, machine_ceiling="dangerous",
+                             ceiling=None, answer="granted")
+        module.run_tool(module.BY_NAME["web_go"], {"url": "file:///home/p/Sites/index.html"})
+        check("the session is tainted by the file: page (%s)" % mode, module._SAW_PRIVATE == ["web_go.file"],
+              module._SAW_PRIVATE)
+        text, is_error = act(module, "shell", "present_file", {"path": "~/Sites/index.html", "title": "your website"})
+        s2 = read(state)
+        acted = [a for a in s2.get("acted", []) if a["action"] == "present_file"]
+        check("present_file runs after the taint (%s)" % mode, not is_error and len(acted) == 1 and not text.startswith("REFUSED"), text)
+        check("and nobody is asked for it (%s)" % mode, not s2.get("requests"), s2.get("requests"))
 
     # 15d'. A calendar read is the person's data, whether it is the Calendar window or, since a
     # mind reaches calendar-service at its door (16 Oct 2026, VM 541, #411), the service: an

@@ -60,6 +60,63 @@ pub fn open_apart(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a file a Mind made and the person chose to look at, in a browser apart *and offline*: its
+/// own profile (none of the person's sign-ins or cookies), no remote-debugging port, and no network
+/// at all - names do not resolve and every request goes to a proxy that is not there, loopback
+/// included. The press is consent to view the page, not to run its requests from a logged-in
+/// profile (security review of #1081). Anything the page loads from the internet (fonts, scripts,
+/// pictures) does not appear. Only a Chromium-based browser can be held to that; any other is not
+/// used, and the person is told.
+pub fn open_file_offline(path: &Path) -> Result<(), String> {
+    let (browser, _) = crate::wire::dock::find_browser().ok_or("there is no browser on this machine")?;
+    if !browser.contains("chrom") {
+        return Err(format!("{browser} cannot open a page with no network, and this page is not opened with one"));
+    }
+    let profile = yantrik_ml::private_dir::state_dir("presented-files")
+        .map_err(|e| format!("no private profile for the browser: {e}"))?;
+    let program = crate::wire::dock::find_program(browser).ok_or("there is no browser on this machine")?;
+    let before = foreign_windows();
+    let child = Command::new(program)
+        .args(offline_args(&profile, &file_url(path)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("the browser could not be opened: {e}"))?;
+    bring_forward(before, child);
+    Ok(())
+}
+
+/// The arguments for [`open_file_offline`]: [`apart_args`]'s, plus no network.
+pub(crate) fn offline_args(profile: &Path, url: &str) -> Vec<String> {
+    vec![
+        "--ozone-platform=wayland".into(),
+        "--no-first-run".into(),
+        "--no-default-browser-check".into(),
+        "--disable-background-networking".into(),
+        "--host-resolver-rules=MAP * ~NOTFOUND".into(),
+        "--proxy-server=socks5://127.0.0.1:9".into(),
+        "--proxy-bypass-list=<-loopback>".into(),
+        format!("--user-data-dir={}", profile.display()),
+        "--new-window".into(),
+        url.into(),
+    ]
+}
+
+/// A `file://` address for a path, every byte outside the unreserved set and `/` escaped.
+pub(crate) fn file_url(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 /// The browser's arguments for a page apart: its own profile, a window of its own, and no
 /// remote debugging (none of the desktop's `CHROMIUM_FLAGS` debugging switches is here).
 fn apart_args(browser: &str, profile: &Path, url: &str) -> Vec<String> {
@@ -167,6 +224,24 @@ mod tests {
         let two = vec![w("foot", "Terminal"), w("foot", "Terminal")];
         assert_eq!(arrived(&two[..1], &two).as_deref(), Some("Terminal"));
         assert_eq!(arrived(&two, &two), None);
+    }
+
+    /// A presented file opens with no network, no debugging port and a profile of its own.
+    #[test]
+    fn a_presented_file_opens_offline_in_a_profile_of_its_own() {
+        let args = offline_args(Path::new("/home/p/.local/state/yantrik/presented-files"), "file:///home/p/Sites/index.html");
+        let joined = args.join(" ");
+        assert!(joined.contains("--host-resolver-rules=MAP * ~NOTFOUND"), "{joined}");
+        assert!(joined.contains("--proxy-server=") && joined.contains("--proxy-bypass-list=<-loopback>"), "{joined}");
+        assert!(joined.contains("--user-data-dir=/home/p/.local/state/yantrik/presented-files"), "{joined}");
+        assert!(!joined.contains("remote-debugging") && !joined.contains("9222"), "{joined}");
+        assert_eq!(args.last().unwrap(), "file:///home/p/Sites/index.html");
+    }
+
+    #[test]
+    fn a_path_becomes_a_file_address_with_everything_odd_escaped() {
+        assert_eq!(file_url(Path::new("/home/p/My Site/a b#c?.html")), "file:///home/p/My%20Site/a%20b%23c%3F.html");
+        assert_eq!(file_url(Path::new("/home/p/ü.html")), "file:///home/p/%C3%BC.html");
     }
 
     /// A page apart gets its own profile and never a debugging port.

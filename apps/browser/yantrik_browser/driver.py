@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.parse
 
-from . import cdp, commit, hands, judgement, local_page
+from . import cdp, commit, hands, judgement, local_page, render_instance
 
 NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
 ACT_LIMIT = 4.0           # seconds a click or a key is given
@@ -78,6 +78,10 @@ def commitment_of(element):
 class Driver:
     def __init__(self, browser=None, judge=None):
         self.browser = browser or cdp.Browser()
+        # The desktop's browser (the person's profile) and, for a Mind's own `file:` pages, a
+        # render instance of its own (render_instance.py). `browser` is the side actions go to.
+        self.main_browser = self.browser
+        self.instance = render_instance.Instance()
         # The person's decision model, asked when the words say nothing (judgement.py). `False`
         # turns it off (tests of the words alone); None is the shell's `decide`.
         self.judge = None if judge is False else (judge or judgement.Judgement())
@@ -103,6 +107,35 @@ class Driver:
 
     # ── plumbing ──
 
+    def _use(self, render):
+        """Point actions at the render instance (a Mind's own page) or the desktop's browser."""
+        if not render:
+            self.browser = self.main_browser
+            return
+        try:
+            self.browser = self.instance.start()
+        except local_page.LocalRefused as e:
+            raise Refused(str(e)) from None
+
+    def _vet(self, t):
+        """Refuse a tab that shows a file a Mind may not read, before anything is read from it. In
+        the render instance the tab is also taken off it; the desktop's browser is the person's, so
+        its tab is left as it is and only this action is refused."""
+        if not local_page.is_file_url(getattr(t, "url", "")):
+            return
+        try:
+            local_page.check(t.url)
+        except local_page.LocalRefused as e:
+            if self.browser is self.main_browser:
+                raise Refused("this tab is showing a file a Mind may not read, so nothing was read "
+                              "from it: %s" % e) from None
+            try:
+                self._call("Page.navigate", {"url": "about:blank"}, t)
+            except Refused:
+                pass
+            raise Refused("this tab had gone to a file a Mind may not read, and was taken off it: "
+                          "%s" % e) from None
+
     def _allow_file(self, url):
         try:
             return local_page.check(url)
@@ -111,18 +144,7 @@ class Driver:
 
     def _tab(self, tab=None):
         t = self._tab_unchecked(tab)
-        if local_page.is_file_url(getattr(t, "url", "")):
-            # The page is a file: the Mind's own, or one a link on it led to. Held to the roots
-            # wherever it is now; one outside them is left and nothing of it is read.
-            try:
-                local_page.check(t.url)
-            except local_page.LocalRefused as e:
-                try:
-                    self._call("Page.navigate", {"url": "about:blank"}, t)
-                except Refused:
-                    pass
-                raise Refused("this tab had gone to a file a Mind may not read, and was taken off "
-                              "it: %s" % e) from None
+        self._vet(t)
         return t
 
     def _tab_unchecked(self, tab=None):
@@ -191,13 +213,17 @@ class Driver:
         out = {"did": doing, "settled_in": took}
         if why == "limit":
             out["still_loading"] = True
+        self._vet(tab)
         new = [t for t in self.browser.pages() if t.id not in before_tabs]
+        for t in new:
+            self._vet(t)
         if new:
             out["new_tabs"] = [{"tab": short(t.id), "url": t.url, "title": t.title} for t in new]
             # A link that opened a tab: the work continues there, as it does for a person.
             opened_here = [t for t in new if t.opened_by == tab.id] or new
             self.browser.active = self.browser.attach(opened_here[-1])
             hands.settle(self.browser, self.browser.active, NAVIGATE_LIMIT / 2)
+            self._vet(self.browser.active)
             out["now_in_tab"] = short(self.browser.active.id)
             tab = self.browser.active
         if tab.dialog:
@@ -212,7 +238,9 @@ class Driver:
                 changes = None
             if changes and changes.get("appeared"):
                 out["appeared"] = changes["appeared"]
+        self._vet(tab)
         page = self._marked(self._run(tab, "snapshot", False))
+        self._vet(tab)
         out["url"] = page.get("url")
         out["title"] = page.get("title")
         if navigated or new:
@@ -243,7 +271,7 @@ class Driver:
                 return {"open": False}
             pages = self.browser.pages()
             active = self.browser.active if self.browser.active in pages else (pages[0] if pages else None)
-            if active is not None and active.session:
+            if active is not None and active.session and not self._unreadable(active):
                 # The target list's title arrives a moment after the page has it; ask the page.
                 try:
                     here = self.browser.run(active, "where", timeout=3)
@@ -252,11 +280,26 @@ class Driver:
                     pass
             self.last_status = {
                 "open": True,
-                "tabs": [{"tab": short(t.id), "title": str(t.title)[:100], "url": str(t.url)[:200],
-                          "active": t is active} for t in pages],
+                "tabs": [self._listed(t, t is active) for t in pages],
                 "dialog": active.dialog if active else None,
             }
             return self.last_status
+
+    def _unreadable(self, t):
+        """Is this tab showing a file a Mind may not read?"""
+        if not local_page.is_file_url(t.url):
+            return False
+        try:
+            local_page.check(t.url)
+            return False
+        except local_page.LocalRefused:
+            return True
+
+    def _listed(self, t, active):
+        """A tab as `tabs` lists it: a file a Mind may not read is named only as such."""
+        if self._unreadable(t):
+            return {"tab": short(t.id), "title": "", "url": "(a file a Mind may not read)", "active": active}
+        return {"tab": short(t.id), "title": str(t.title)[:100], "url": str(t.url)[:200], "active": active}
 
     def _marked(self, page):
         """A reading with every control that reads as a commitment marked: the reader learns
@@ -342,6 +385,8 @@ class Driver:
             raise Refused("go opens web pages (http, https) and your own files (file:///home/...); "
                           "`%s:` is not one" % scheme)
         with self.held():
+            # A Mind's own page goes to the render instance, anything else to the desktop's browser.
+            self._use(scheme == "file")
             if new_tab:
                 self._tab(None)
                 before = {t.id for t in self.browser.pages()}
