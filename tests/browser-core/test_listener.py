@@ -208,11 +208,13 @@ class StopMindView(unittest.TestCase):
         self.procs = []
         self.addCleanup(lambda: [p.kill() for p in self.procs])
 
-    def browser(self):
-        """A process standing in for the browser, started BEFORE its lock is written, as Chromium's is."""
+    def browser(self, holding=True):
+        """A process standing in for the browser, started BEFORE its lock is written, as Chromium's is,
+        holding a file of the profile open as a real one does (or not: the person's Browser holds none)."""
         import subprocess
         import time
-        p = subprocess.Popen(["sleep", "60"])
+        script = 'exec 3>>"$0/Local State"; exec sleep 60' if holding else "exec sleep 60"
+        p = subprocess.Popen(["bash", "-c", script, self.profile])
         self.procs.append(p)
         time.sleep(0.2)
         return p
@@ -235,7 +237,7 @@ class StopMindView(unittest.TestCase):
         p = self.browser()
         self.lock(p.pid)
         self.assertEqual(self.found(), p.pid)
-        self.assertTrue(stop_mind_view.stop(p.pid, self.me))
+        self.assertTrue(stop_mind_view.stop(p.pid, self.me, self.profile))
         self.assertEqual(p.wait(timeout=10), -15, "SIGTERM")
 
     def test_a_link_planted_in_another_accounts_home_is_never_looked_at(self):
@@ -282,12 +284,32 @@ class StopMindView(unittest.TestCase):
     def test_a_process_of_another_account_is_never_chosen(self):
         self.lock(1)                        # init: root's, and nothing a planted link may name
         self.assertIsNone(self.found())
-        self.assertFalse(stop_mind_view.stop(1, self.me), "and it is refused again at the signal")
+        self.assertFalse(stop_mind_view.stop(1, self.me, self.profile), "and it is refused again at the signal")
 
     def test_a_stale_link_naming_a_pid_reused_since_is_not_believed(self):
         p = self.browser()
         self.lock(p.pid, age=3600)          # the lock was written an hour before this process began
         self.assertIsNone(self.found())
+
+    def test_a_planted_link_naming_the_accounts_own_process_that_holds_nothing_of_the_profile(self):
+        """520: the desktop account itself can plant the link. Its Browser, or any process of its own,
+        holds no file of Mind View's profile, so it is not chosen and not signalled."""
+        person = self.browser(holding=False)
+        self.lock(person.pid)
+        self.assertIsNone(self.found())
+        self.assertFalse(stop_mind_view.stop(person.pid, self.me, self.profile), "refused again at the signal")
+        self.assertIsNone(person.poll(), "the process was signalled")
+        # A process holding a file somewhere else is no more the profile's.
+        elsewhere = tempfile.mkdtemp(prefix="yb-else-")
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        import subprocess
+        import time
+        other = subprocess.Popen(["bash", "-c", 'exec 3>>"$0/f"; exec sleep 60', elsewhere])
+        self.procs.append(other)
+        time.sleep(0.2)
+        self.lock(other.pid)
+        self.assertIsNone(self.found())
+        self.assertIsNone(other.poll())
 
     def test_another_machines_lock_and_this_process_itself_are_not_believed(self):
         p = self.browser()

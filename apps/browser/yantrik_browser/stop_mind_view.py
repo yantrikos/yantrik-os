@@ -19,12 +19,15 @@ This runs as root, so what it will signal is held to facts a planted file cannot
   * the link names this machine and a pid that belongs to that account, that started no later than
     the link was written (a stale link naming a pid reused since fails this), and is not this
     process;
+  * the process holds files of the profile open: an fd of it whose target is under the profile's
+    real path. A real Mind View browser holds many (measured on 520); the person's Browser, or any
+    process a planted `SingletonLock` names, holds none. This is checked again, on the pid the
+    pidfd holds, just before the signal;
   * the signal goes through a pidfd opened and re-checked first, so the pid cannot change hands
     between the check and the kill.
 
-A Chromium's main process holds no `LOCK` file open (measured on Chrome 152), so that cannot be the
-test here the way it is for "whose browser holds this port" (listener.owns); the account, the start
-time and the host stand in for it.
+(A Chromium's main process holds no `LOCK` file open, measured on Chrome 152, so the test is any
+file of the profile, not a `LOCK` the way it is for "whose browser holds this port".)
 
     python3 stop_mind_view.py --user NAME           # run as root by yantrik-update
     python3 stop_mind_view.py --user NAME --list    # print what it would stop, stop nothing
@@ -74,10 +77,31 @@ def private_group(uid, gid):
         return False
 
 
+def profile_of(home):
+    return os.path.join(home, ".local", "share", *ports.MIND_VIEW_PROFILE.split("/"))
+
+
+def holds_profile(proc, pid, profile):
+    """Whether process `pid` has a file of `profile` open: an fd whose target is under its real path."""
+    real = os.path.realpath(profile) + os.sep
+    fds = os.path.join(proc, str(pid), "fd")
+    try:
+        names = os.listdir(fds)
+    except OSError:
+        return False
+    for name in names:
+        try:
+            if os.readlink(os.path.join(fds, name)).startswith(real):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def mind_view_main(home, uid, proc="/proc", host=None, me=None, group_ok=private_group):
     """The pid of the desktop account's Mind View browser, or None when there is none that is
     certainly it. `home` and `uid` are that account's."""
-    profile = os.path.join(home, ".local", "share", *ports.MIND_VIEW_PROFILE.split("/"))
+    profile = profile_of(home)
     try:
         d = os.lstat(profile)
         link = os.lstat(os.path.join(profile, "SingletonLock"))
@@ -101,19 +125,20 @@ def mind_view_main(home, uid, proc="/proc", host=None, me=None, group_ok=private
     except OSError:
         return None
     began = started_at(proc, pid)
-    if began is None or began > link.st_mtime + TICK_SLACK:
+    if began is None or began > link.st_mtime + TICK_SLACK or not holds_profile(proc, pid, profile):
         return None
     return pid
 
 
-def stop(pid, uid, proc="/proc", sig=signal.SIGTERM):
-    """Signal `pid` through a pidfd, after checking again that it is still that account's."""
+def stop(pid, uid, profile, proc="/proc", sig=signal.SIGTERM):
+    """Signal `pid` through a pidfd, after checking again that it is still that account's and still
+    holds the profile's files."""
     try:
         fd = os.pidfd_open(pid)
     except (OSError, AttributeError):
         return False
     try:
-        if os.stat(os.path.join(proc, str(pid))).st_uid != uid:
+        if os.stat(os.path.join(proc, str(pid))).st_uid != uid or not holds_profile(proc, pid, profile):
             return False
         signal.pidfd_send_signal(fd, sig)
         return True
@@ -140,7 +165,7 @@ def main(argv):
     if "--list" in argv:
         print("would stop %d" % pid)
     else:
-        print("stopping %d" % pid if stop(pid, entry.pw_uid) else "could not stop %d" % pid)
+        print("stopping %d" % pid if stop(pid, entry.pw_uid, profile_of(entry.pw_dir)) else "could not stop %d" % pid)
     return 0
 
 

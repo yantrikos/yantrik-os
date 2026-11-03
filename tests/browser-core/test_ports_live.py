@@ -287,14 +287,31 @@ class RealBrowsers(unittest.TestCase):
         person = self.fx.start("person", "default")
         other = self.fx.start("person", "other", port=free_port())
         legacy = self.fx.start("mind", "mind", port=free_port())
+        profile = ports.mind_view_profile()
+        os.chmod(profile, 0o775)             # 520: the desktop account's umask is 002
         chosen = stop_mind_view.mind_view_main(self.fx.home, os.getuid())
-        self.assertIsNotNone(chosen, "Mind View's browser was not found")
+        self.assertIsNotNone(chosen, "a real Mind View browser on a 775 profile was not found")
         self.assertNotIn(chosen, (person.pid, other.pid))
-        self.assertTrue(stop_mind_view.stop(chosen, os.getuid()))
+        # A planted link naming the person's real Browser, or an unrelated process, is not believed:
+        # neither holds a file of Mind View's profile (the real one is stopped first, its link stays).
+        lock = os.path.join(profile, "SingletonLock")
+        real_link = os.readlink(lock)
+        sleeper = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(sleeper.kill)
+        for victim in (person, sleeper):
+            os.unlink(lock)
+            os.symlink("%s-%d" % (real_link.rpartition("-")[0], victim.pid), lock)
+            self.assertIsNone(stop_mind_view.mind_view_main(self.fx.home, os.getuid()), "a planted link was believed")
+            self.assertFalse(stop_mind_view.stop(victim.pid, os.getuid(), profile))
+        os.unlink(lock)
+        os.symlink(real_link, lock)
+        self.assertEqual(stop_mind_view.mind_view_main(self.fx.home, os.getuid()), chosen)
+        self.assertTrue(stop_mind_view.stop(chosen, os.getuid(), profile))
         legacy.wait(timeout=30)
         self.assertIsNotNone(legacy.poll(), "Mind View's browser should have stopped")
         self.assertIsNone(person.poll(), "the person's Browser was stopped")
         self.assertIsNone(other.poll(), "a browser on the person's other profile was stopped")
+        self.assertIsNone(sleeper.poll(), "an unrelated process was stopped")
         self.assertIn(self.fx.titles(self.fx.person_port), (["about:blank"], [""]))
 
     def test_the_first_call_after_a_browser_appears_does_not_time_out(self):

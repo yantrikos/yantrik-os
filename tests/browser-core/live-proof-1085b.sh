@@ -64,6 +64,9 @@ import json, sys
 print(json.dumps(sorted((t["url"], t["title"]) for t in json.load(sys.stdin) if t["type"] == "page")))' 2>/dev/null; }
 wait_port() { for _ in $(seq 150); do [ -n "$(listener_pid "$1")" ] && return 0; sleep 0.2; done; return 1; }
 close_port() { local p; p=$(listener_pid "$1"); [ -n "$p" ] || return 0; kill "$p"; for _ in $(seq 60); do [ -z "$(listener_pid "$1")" ] && return 0; sleep 0.2; done; kill -9 "$p"; }
+# A stopped browser closes its port before it has finished exiting (and may stay a zombie a moment
+# until its parent reaps it): "stopped" is the process gone or a zombie, waited for, not looked at once.
+pid_gone() { for _ in $(seq 100); do [ -d "/proc/$1" ] && ! grep -q '^State:.*Z' "/proc/$1/status" 2>/dev/null || return 0; sleep 0.2; done; return 1; }
 close_all() { close_port "$PERSON"; close_port "$MIND"; }
 refused() { grep -q "Nothing was done" "$1"; }
 
@@ -127,7 +130,7 @@ settle() { # <label> <transcript> : the mind's page is in Mind View's browser, t
   check "$label: Mind View's browser has Mind View's profile" mind_view_holds
   check "$label: and the mind's page is not in the person's browser" bash -c '! tabs_of "$1" | grep -q THROWAWAY-PAGE-A' _ "$PERSON"
 }
-export -f tabs_of listener_pid owns_mind_view mind_view_holds 2>/dev/null
+export -f tabs_of listener_pid owns_mind_view mind_view_holds pid_gone 2>/dev/null
 export MIND PERSON MV_PROFILE_TAIL MV_PROFILE
 
 echo "== A. the person's Browser first, then a real mind turn"
@@ -171,7 +174,7 @@ check "D: the person's own act is refused, not sent to it" bash -c 'yos act brow
 OLD_PID=$(listener_pid "$PERSON")
 if [ -f "$STOP" ]; then python3 "$STOP" --user "$(id -un)" >/dev/null 2>&1; else fail "D: the update's step $STOP is not shipped"; fi
 for _ in $(seq 50); do [ -z "$(listener_pid "$PERSON")" ] && break; sleep 0.2; done
-check "D: the update step stopped it" bash -c '[ -z "$(listener_pid "$1")" ] && ! kill -0 "$2" 2>/dev/null' _ "$PERSON" "$OLD_PID"
+check "D: the update step stopped it" bash -c '[ -z "$(listener_pid "$1")" ] && pid_gone "$2"' _ "$PERSON" "$OLD_PID"
 open_persons || { echo "FAIL  the person's Browser did not open after the update step"; exit 1; }
 person_go b >/dev/null
 SIGNED_IN=$(tabs_of "$PERSON"); PERSON_PID=$(listener_pid "$PERSON")
@@ -183,7 +186,7 @@ check "E: Mind View's browser is up on its own port" mind_view_holds
 MIND_PID=$(listener_pid "$MIND")
 python3 "$STOP" --user "$(id -un)" >/dev/null 2>&1
 for _ in $(seq 50); do [ -z "$(listener_pid "$MIND")" ] && break; sleep 0.2; done
-check "E: the rollback step stopped it (the old build starts its own on its own port)" bash -c '! kill -0 "$1" 2>/dev/null' _ "$MIND_PID"
+check "E: the rollback step stopped it (the old build starts its own on its own port)" bash -c 'pid_gone "$1"' _ "$MIND_PID"
 check "E: and the person's Browser is untouched: same process, same tabs" bash -c '[ "$(listener_pid "$1")" = "$2" ] && [ "$(tabs_of "$1")" = "$3" ]' _ "$PERSON" "$PERSON_PID" "$SIGNED_IN"
 check "E: yantrik-update runs that step on both sides of a restart" \
   bash -c 'f=/opt/yantrik/bin/yantrik-update; [ -f "$f" ] || f="$1"; [ "$(grep -c "^  stop_mind_view_browsers" "$f")" -ge 2 ]' _ "$HERE/../../deploy/yantrik-os/yantrik-update"
