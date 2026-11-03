@@ -146,8 +146,13 @@ fn serve(mut stream: TcpStream, files: &HashMap<String, File>, gate: &Gate, rang
     }
     let mut at = start;
     if let Some(hold) = file.hold_at.filter(|h| *h > start) {
-        if stream.write_all(&file.body[at..hold]).is_err() {
-            return;
+        // In small pieces like the rest: a test that waits for the status word alone can pause
+        // before the worker has written anything, if one write hands it the whole held part.
+        for piece in file.body[at..hold].chunks(4096) {
+            if stream.write_all(piece).is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
         }
         at = hold;
         let (open, turned) = (&gate.0, &gate.1);
