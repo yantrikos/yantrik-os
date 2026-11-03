@@ -32,8 +32,8 @@ impl From<WireCounts> for FolderCounts {
 pub enum Counted {
     /// The server's numbers — or, for a folder the list does not carry, what is in hand.
     Known(FolderCounts),
-    /// The folder is listed and the server did not count it this time; `reason` is why, in the
-    /// list's own words.
+    /// The server gave no count for this folder — it was listed and not counted, or there was no
+    /// list at all; `reason` is why, in the list's own words where it has any.
     Unavailable { reason: String },
 }
 
@@ -46,7 +46,15 @@ impl Counted {
     /// list for it to contradict. A folder the list *does* have, uncounted, is a different thing:
     /// the server was asked and did not say, and the page in hand is not offered in place of an
     /// answer it refused.
+    ///
+    /// An empty list is the second thing, not the first: no folder was counted, so none of its
+    /// rows is missing. A look that fails before LIST — the session timed out while the window
+    /// sat closed — leaves the folders and the messages empty together, and counting the page in
+    /// hand then reports the failure as a fact about the mailbox, which is #131 by a new route.
     pub fn of(folders: &[EmailFolder], folder: &str, loaded_unread: usize, loaded: usize) -> Self {
+        if folders.is_empty() {
+            return Counted::Unavailable { reason: "the mail server listed no folders".to_string() };
+        }
         match folders.iter().find(|f| f.name.eq_ignore_ascii_case(folder)) {
             Some(EmailFolder { counts: Some(counts), .. }) => Counted::Known((*counts).into()),
             Some(EmailFolder { reason, .. }) => Counted::Unavailable {
