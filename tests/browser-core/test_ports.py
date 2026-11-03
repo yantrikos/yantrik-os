@@ -17,7 +17,7 @@ sys.path[:0] = [os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk",
 
 from yantrik_browser import ports  # noqa: E402
 
-CONF = os.path.join(ROOT, "apps", "browser", "yantrik_browser", "browsers.conf")
+CONF = os.path.join(ROOT, "crates", "yantrik-browser-ports", "browsers.conf")
 
 
 def read(*path):
@@ -103,15 +103,17 @@ class NothingSpellsThemTwice(unittest.TestCase):
 
     def test_the_rust_constants_are_built_from_the_python_packages_file(self):
         build = read("crates", "yantrik-browser-ports", "build.rs")
-        self.assertIn("apps/browser/yantrik_browser/browsers.conf", build)
+        self.assertIn('const CONF: &str = "browsers.conf"', build)
+        self.assertNotIn("..", code_of(build).split("const CONF")[1].split(";")[0], "build.rs must not reach into another folder")
         self.assertTrue(os.path.exists(CONF))
         lib = read("crates", "yantrik-browser-ports", "src", "lib.rs")
         self.assertNotRegex(code_of(lib), r"\b922[23]\b")
 
-    def test_the_file_ships_with_the_python_package(self):
-        # build-release.sh copies the whole package directory; a conf outside it would not ship.
-        self.assertEqual(os.path.dirname(CONF), os.path.join(ROOT, "apps", "browser", "yantrik_browser"))
-        self.assertIn('cp -r "$PROJECT_ROOT/apps/browser/yantrik_browser"', read("deploy", "yantrik-os", "build-release.sh"))
+    def test_the_file_ships_beside_the_python_package_and_python_finds_it_in_both_places(self):
+        release = read("deploy", "yantrik-os", "build-release.sh")
+        self.assertIn("crates/yantrik-browser-ports/browsers.conf", release)
+        self.assertIn("share/browser/yantrik_browser/browsers.conf", release)
+        self.assertEqual(os.path.realpath(ports.CONF), os.path.realpath(CONF))
 
 
 if __name__ == "__main__":

@@ -1,9 +1,10 @@
-//! Turns `apps/browser/yantrik_browser/browsers.conf` into constants. The Python browser service
-//! reads the same file at run time; nothing else may spell these ports or paths.
+//! Turns `browsers.conf` (in this crate) into constants. The Python browser service reads the same
+//! file at run time (a release copies it beside the service); nothing else may spell these ports
+//! or paths.
 
 use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
-const CONF: &str = "../../apps/browser/yantrik_browser/browsers.conf";
+const CONF: &str = "browsers.conf";
 
 fn main() {
     println!("cargo:rerun-if-changed={CONF}");

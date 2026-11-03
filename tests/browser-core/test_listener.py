@@ -195,44 +195,107 @@ class Identify(unittest.TestCase):
 
 
 class StopMindView(unittest.TestCase):
-    """The update's step: Mind View's browsers stop, the person's never do."""
+    """The update's step runs as root: it signals only the desktop account's own Mind View browser,
+    and nothing a planted file can name."""
 
-    def test_only_the_process_the_profile_names_is_chosen(self):
-        p = FakeProc()
-        self.addCleanup(p.close)
-        for pid in (10, 11, 12, 20, 21):
-            p.process(pid, b"chromium --user-data-dir=" + p.mind_view.encode())     # all CLAIM it
-        p.takes(p.mind_view, 20)                       # only 20 owns it
-        self.assertEqual(stop_mind_view.mind_view_mains(p.proc, homes=[p.root]), [20])
+    def setUp(self):
+        self.me = os.getuid()
+        self.home = tempfile.mkdtemp(prefix="yb-stop-home-")
+        self.addCleanup(shutil.rmtree, self.home, True)
+        self.profile = os.path.join(self.home, ".local", "share", *ports.MIND_VIEW_PROFILE.split("/"))
+        os.makedirs(self.profile, mode=0o755)
+        os.chmod(self.profile, 0o755)
+        self.procs = []
+        self.addCleanup(lambda: [p.kill() for p in self.procs])
 
-    def test_a_browser_whose_environment_was_overwritten_is_still_found(self):
-        """520: a real Chromium rewrites its environ area, and one started with a small environment
-        had no HOME left in it. Nothing here reads it."""
-        p = FakeProc()
-        self.addCleanup(p.close)
-        p.process(30, b"chromium")
-        with open(os.path.join(p.proc, "30", "environ"), "wb") as f:
-            f.write(b"s --ozone-platform=wayland --no-first-run\0")
-        p.takes(p.mind_view, 30)
-        self.assertEqual(stop_mind_view.mind_view_mains(p.proc, homes=[p.root]), [30])
+    def browser(self):
+        """A process standing in for the browser, started BEFORE its lock is written, as Chromium's is."""
+        import subprocess
+        import time
+        p = subprocess.Popen(["sleep", "60"])
+        self.procs.append(p)
+        time.sleep(0.2)
+        return p
 
-    def test_found_by_the_files_it_holds_when_the_home_is_not_one_it_knows(self):
-        p = FakeProc()
-        self.addCleanup(p.close)
-        p.process(40, b"chromium")
-        p.holds_lock(40, p.mind_view)
-        p.takes(p.mind_view, 40)
-        self.assertEqual(stop_mind_view.mind_view_mains(p.proc, homes=[]), [40])
+    def lock(self, pid, host=None, profile=None, age=0):
+        import socket
+        link = os.path.join(profile or self.profile, "SingletonLock")
+        if os.path.islink(link):
+            os.unlink(link)
+        os.symlink("%s-%d" % (host or socket.gethostname(), pid), link)
+        if age:
+            import time
+            then = time.time() - age
+            os.utime(link, (then, then), follow_symlinks=False)
 
-    def test_the_persons_browser_is_never_found(self):
-        p = FakeProc()
-        self.addCleanup(p.close)
-        person = os.path.join(p.root, ".config", "chromium")
-        os.makedirs(person)
-        p.process(50, b"chromium --user-data-dir=" + p.mind_view.encode())
-        p.holds_lock(50, person)
-        p.takes(person, 50)
-        self.assertEqual(stop_mind_view.mind_view_mains(p.proc, homes=[p.root]), [])
+    def found(self, **kw):
+        return stop_mind_view.mind_view_main(self.home, kw.pop("uid", self.me), **kw)
+
+    def test_the_account_own_running_browser_is_found_and_stopped_through_a_pidfd(self):
+        p = self.browser()
+        self.lock(p.pid)
+        self.assertEqual(self.found(), p.pid)
+        self.assertTrue(stop_mind_view.stop(p.pid, self.me))
+        self.assertEqual(p.wait(timeout=10), -15, "SIGTERM")
+
+    def test_a_link_planted_in_another_accounts_home_is_never_looked_at(self):
+        """The PoC: an account that can write a link names a root-owned victim. Only the desktop
+        account's own profile is read, and only when it and its link are that account's."""
+        victim = self.browser()
+        self.lock(victim.pid)
+        self.assertIsNone(self.found(uid=self.me + 1), "files owned by another account than the desktop's")
+        self.assertIsNone(stop_mind_view.mind_view_main(os.path.join(self.home, "elsewhere"), self.me))
+        os.chmod(self.profile, 0o775)
+        self.assertIsNone(self.found(), "a directory others can write")
+        os.chmod(self.profile, 0o755)
+        self.assertEqual(self.found(), victim.pid, "and the same files are fine when they are the account's")
+
+    def test_a_process_of_another_account_is_never_chosen(self):
+        self.lock(1)                        # init: root's, and nothing a planted link may name
+        self.assertIsNone(self.found())
+        self.assertFalse(stop_mind_view.stop(1, self.me), "and it is refused again at the signal")
+
+    def test_a_stale_link_naming_a_pid_reused_since_is_not_believed(self):
+        p = self.browser()
+        self.lock(p.pid, age=3600)          # the lock was written an hour before this process began
+        self.assertIsNone(self.found())
+
+    def test_another_machines_lock_and_this_process_itself_are_not_believed(self):
+        p = self.browser()
+        self.lock(p.pid, host="some-other-host")
+        self.assertIsNone(self.found())
+        self.lock(os.getpid())
+        self.assertIsNone(self.found())
+        self.lock(p.pid)
+        self.assertEqual(self.found(), p.pid)
+
+    def test_nothing_else_is_scanned_a_planted_profile_elsewhere_is_ignored(self):
+        other = tempfile.mkdtemp(prefix="yb-other-home-")
+        self.addCleanup(shutil.rmtree, other, True)
+        planted = os.path.join(other, ".local", "share", *ports.MIND_VIEW_PROFILE.split("/"))
+        os.makedirs(planted)
+        victim = self.browser()
+        self.lock(victim.pid, profile=planted)
+        self.assertIsNone(self.found(), "this home has no profile of its own")
+
+    def test_a_link_to_the_profile_through_a_link_is_not_followed(self):
+        real = tempfile.mkdtemp(prefix="yb-real-")
+        self.addCleanup(shutil.rmtree, real, True)
+        shutil.rmtree(self.profile)
+        os.symlink(real, self.profile)
+        victim = self.browser()
+        self.lock(victim.pid, profile=real)
+        self.assertIsNone(self.found())
+
+    def test_main_needs_the_account_and_names_what_it_would_stop(self):
+        import contextlib
+        import io
+        import pwd
+        self.assertEqual(stop_mind_view.main([]), 2)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(stop_mind_view.main(["--user", pwd.getpwuid(self.me).pw_name, "--list"]), 0)
+        self.assertEqual(out.getvalue(), "", "this account's real home has no Mind View browser here")
 
 
 if __name__ == "__main__":

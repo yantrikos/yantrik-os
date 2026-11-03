@@ -91,17 +91,17 @@ class Driver:
         return self.sides.current
 
     def held(self, wait=BUSY_WAIT):
-        """The driver, for one action: waited for up to `wait` seconds, then refused as busy. A
-        page that hangs holds one action, not every caller of the browser behind it."""
+        """The driver, for one action: waited for up to `wait` seconds, then refused as busy."""
         driver = self
 
         class Held:
             def __enter__(self):
+                decision = driver.sides.decide()        # who it is for, before any waiting
                 if not driver.lock.acquire(timeout=wait):
                     raise Refused("the browser is busy with another action (a page may be slow to "
                                   "answer); try again in a few seconds")
                 try:
-                    driver.sides.bind(start=True)
+                    driver.sides.bind(start=True, decision=decision)
                 except BaseException as e:
                     driver.lock.release()
                     raise (PageRefused(str(e)) if isinstance(e, guard.Denied) else e) from None

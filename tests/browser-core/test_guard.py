@@ -127,6 +127,88 @@ class Vetting(unittest.TestCase):
             self.assertIn("could not be established", str(refused.exception))
 
 
+class CallerGone(unittest.TestCase):
+    """A call is for the caller it came from, decided before it waits, and not carried out for one
+    that has gone: a killed Hermes' queued web_go must not land in the person's tab (#1085)."""
+
+    class Peer:
+        def __init__(self, gone=False):
+            self.flag = gone
+
+        def gone(self):
+            return self.flag
+
+    def driver(self, side, peer, asked):
+        def side_of():
+            asked.append(1)
+            return side
+        g = guard.Guard(identify=everywhere(listener.MIND_VIEW), uid=ME, side_of=side_of, watch=lambda who: peer)
+        return drv.Driver(judge=False, guard_=g)
+
+    def test_the_side_is_decided_before_the_wait_and_a_caller_that_left_while_waiting_does_nothing(self):
+        import threading
+        import time
+        peer, asked = self.Peer(), []
+        d = self.driver(ports.MIND, peer, asked)
+        d.lock.acquire()                                   # another act is running
+        result = []
+
+        def queued():
+            try:
+                with d.held():
+                    result.append("ran")
+            except drv.PageRefused as e:
+                result.append(str(e))
+        t = threading.Thread(target=queued)
+        t.start()
+        time.sleep(0.3)
+        self.assertEqual(asked, [1], "who it is for was decided before it waited for the lock")
+        peer.flag = True                                   # the caller is killed while it waits
+        d.lock.release()
+        t.join(10)
+        self.assertEqual(len(result), 1)
+        self.assertIn("gone away", result[0])
+        self.assertNotEqual(result[0], "ran")
+
+    def test_a_caller_already_gone_when_the_call_is_handled_is_a_mind_and_does_nothing(self):
+        d = self.driver(ports.PERSON, self.Peer(gone=True), [])
+        side, gone = d.sides.decide()
+        self.assertEqual(side, ports.MIND, "an exited caller is not shown to be the person")
+        self.assertTrue(gone())
+        with self.assertRaises(drv.PageRefused):
+            with d.held():
+                pass
+
+    def test_a_live_caller_goes_on(self):
+        d = self.driver(ports.MIND, self.Peer(), [])
+        with d.held():
+            pass
+
+    def test_the_real_watch_sees_a_process_exit(self):
+        import subprocess
+        p = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(p.kill)
+        w = guard.Watch(p.pid)
+        self.assertFalse(w.gone())
+        p.kill()
+        p.wait()
+        self.assertTrue(w.gone())
+        self.assertTrue(guard.Watch(None).gone())
+        self.assertTrue(guard.Watch(2 ** 22 + 12345).gone(), "a pid nothing has")
+
+    def test_the_mcp_bridge_is_found_as_a_real_script_shows_in_the_process_list(self):
+        proc = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, proc, True)
+        for pid, ppid, cmd in ((300, 200, b"python3\0yos\0"), (200, 100, b"/usr/bin/python3\0/opt/yantrik/bin/yos-mcp\0"), (100, 1, b"hermes\0")):
+            os.makedirs(os.path.join(proc, str(pid)))
+            with open(os.path.join(proc, str(pid), "cmdline"), "wb") as f:
+                f.write(cmd)
+            with open(os.path.join(proc, str(pid), "stat"), "w") as f:
+                f.write("%d (x) S %d 1 1" % (pid, ppid))
+        self.assertTrue(guard.is_bridge_ancestor(300, proc))
+        self.assertFalse(guard.is_bridge_ancestor(100, proc))
+
+
 class FirstCallAndOldAddress(unittest.TestCase):
     """A mind's first web call starts Mind View's browser; a person's browser on an old address is
     not "not open"."""

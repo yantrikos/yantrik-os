@@ -31,7 +31,7 @@ set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 CONF=""
-for c in /opt/yantrik/share/browser/yantrik_browser/browsers.conf "$HERE/../../apps/browser/yantrik_browser/browsers.conf"; do
+for c in /opt/yantrik/share/browser/yantrik_browser/browsers.conf "$HERE/../../crates/yantrik-browser-ports/browsers.conf"; do
   [ -f "$c" ] && CONF=$c && break
 done
 [ -n "$CONF" ] || { echo "FAIL  browsers.conf not found"; exit 1; }
@@ -169,7 +169,7 @@ start_legacy_mind_view || { echo "FAIL  could not start the legacy Mind View bro
 check "D: the legacy Mind View browser holds the person's port" bash -c 'owns_mind_view "$(listener_pid "$1")"' _ "$PERSON"
 check "D: the person's own act is refused, not sent to it" bash -c 'yos act browser tabs 2>&1 | grep -q "Mind View"'
 OLD_PID=$(listener_pid "$PERSON")
-if [ -f "$STOP" ]; then python3 "$STOP" >/dev/null 2>&1; else fail "D: the update's step $STOP is not shipped"; fi
+if [ -f "$STOP" ]; then python3 "$STOP" --user "$(id -un)" >/dev/null 2>&1; else fail "D: the update's step $STOP is not shipped"; fi
 for _ in $(seq 50); do [ -z "$(listener_pid "$PERSON")" ] && break; sleep 0.2; done
 check "D: the update step stopped it" bash -c '[ -z "$(listener_pid "$1")" ] && ! kill -0 "$2" 2>/dev/null' _ "$PERSON" "$OLD_PID"
 open_persons || { echo "FAIL  the person's Browser did not open after the update step"; exit 1; }
@@ -181,7 +181,7 @@ check "D: the person's Browser is the same process, with the same tabs" bash -c 
 echo "== E. a rollback: the update step runs before the old build starts, with the new build's Mind View browser up"
 check "E: Mind View's browser is up on its own port" mind_view_holds
 MIND_PID=$(listener_pid "$MIND")
-python3 "$STOP" >/dev/null 2>&1
+python3 "$STOP" --user "$(id -un)" >/dev/null 2>&1
 for _ in $(seq 50); do [ -z "$(listener_pid "$MIND")" ] && break; sleep 0.2; done
 check "E: the rollback step stopped it (the old build starts its own on its own port)" bash -c '! kill -0 "$1" 2>/dev/null' _ "$MIND_PID"
 check "E: and the person's Browser is untouched: same process, same tabs" bash -c '[ "$(listener_pid "$1")" = "$2" ] && [ "$(tabs_of "$1")" = "$3" ]' _ "$PERSON" "$PERSON_PID" "$SIGNED_IN"

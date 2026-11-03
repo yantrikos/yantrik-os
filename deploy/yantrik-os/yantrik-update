@@ -1366,7 +1366,7 @@ session_runtime_dir() {
 }
 
 # Mind View's browsers stop (the mind reopens them), so each build starts its own on its own port.
-stop_mind_view_browsers() { python3 "$PREFIX/share/browser/yantrik_browser/stop_mind_view.py" >/dev/null 2>&1 || true; }
+stop_mind_view_browsers() { python3 "$PREFIX/share/browser/yantrik_browser/stop_mind_view.py" --user "$(desktop_owner)" >/dev/null 2>&1 || true; }
 
 restart_and_verify() {
   local backup="$1"

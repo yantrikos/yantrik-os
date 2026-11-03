@@ -12,6 +12,7 @@ never sent to a browser it was not meant for, and a refusal says what is true.
 """
 
 import os
+import select
 import time
 
 from yantrik_surface import PeerRefused, agent_token, call_once, caller
@@ -45,6 +46,41 @@ def shell_open_mind_browser():
         raise Starting("the desktop did not answer (%s)" % e) from None
 
 
+def _start_of(pid, proc="/proc"):
+    """A process's start time in ticks since boot: with its pid, who it is for as long as it lives."""
+    try:
+        with open(os.path.join(proc, str(pid), "stat"), encoding="utf-8", errors="replace") as f:
+            return f.read().rpartition(")")[2].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+class Watch:
+    """A caller, held by something that survives its pid being reused: a pidfd, or failing that its
+    start time. `gone()` says it has exited (or was never there). Taken as early as the call is
+    handled, so a call that waited behind another is still known to be its caller's."""
+
+    def __init__(self, pid, proc="/proc"):
+        self.pid, self.proc, self.fd = pid, proc, None
+        self.start = _start_of(pid, proc) if pid else None
+        try:
+            self.fd = os.pidfd_open(pid) if pid else None
+        except (OSError, AttributeError):
+            self.fd = None
+
+    def gone(self):
+        if self.fd is not None and select.select([self.fd], [], [], 0)[0]:
+            return True
+        return self.start is None or _start_of(self.pid, self.proc) != self.start
+
+    def __del__(self):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+
+
 def is_bridge_ancestor(pid, proc="/proc"):
     """Whether the process `pid` started below a `yos-mcp`, the program every mind's tools run
     through. The shell's own ancestry reading (which minds are attached) decides the rest."""
@@ -53,13 +89,13 @@ def is_bridge_ancestor(pid, proc="/proc"):
         seen.add(pid)
         try:
             with open(os.path.join(proc, str(pid), "cmdline"), "rb") as f:
-                first = f.read().replace(b"\0", b" ").split(b" ")[0].decode("utf-8", "replace")
+                words = f.read().replace(b"\0", b" ").decode("utf-8", "replace").split(" ")
             with open(os.path.join(proc, str(pid), "stat"), encoding="utf-8", errors="replace") as f:
                 stat = f.read()
             parent = int(stat[stat.rindex(")") + 1:].split()[1])
         except (OSError, ValueError, IndexError):
             return False
-        if os.path.basename(first) == "yos-mcp":
+        if any(os.path.basename(w) == "yos-mcp" for w in words[:3]):
             return True
         pid = parent
     return False
@@ -101,7 +137,8 @@ class Guard:
     """Decides, and checks, which browser a call uses. The parts that read the machine are
     arguments, so a test can stand in for them."""
 
-    def __init__(self, identify=None, uid=None, side_of=None, starter=None, old_address=None):
+    def __init__(self, identify=None, uid=None, side_of=None, starter=None, old_address=None, watch=None):
+        self._watch = watch
         self.starter = starter or shell_open_mind_browser
         self.old_address = old_address or listener.on_old_address
         self.identify = identify or listener.identify
@@ -110,6 +147,15 @@ class Guard:
 
     def side(self):
         return self.side_of()
+
+    def decide(self):
+        """(side, gone): who this call is for, decided NOW, before it waits for anything, and a
+        function that says the caller has since gone. A call whose caller is gone does nothing."""
+        peer = caller()
+        watch = self._watch(peer) if self._watch else (Watch(peer.pid) if peer is not None else None)
+        if watch is not None and watch.gone():
+            return ports.MIND, lambda: True            # exited before it could be asked about
+        return self.side_of(), (watch.gone if watch is not None else (lambda: False))
 
     def vet(self, side):
         """The listener on `side`'s port if it is the right browser; None when nothing listens;

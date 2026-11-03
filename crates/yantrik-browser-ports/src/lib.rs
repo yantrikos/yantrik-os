@@ -9,7 +9,7 @@
 //! * Mind View's browser: `MIND_VIEW_PORT`, a profile of its own. Every mind's web tools, the
 //!   built-in companion's included, drive this one and nothing else.
 //!
-//! The numbers and paths live in `apps/browser/yantrik_browser/browsers.conf`, which the Python
+//! The numbers and paths live in `browsers.conf` (beside `Cargo.toml`), which the Python
 //! browser service reads at run time and `build.rs` turns into the constants below. A mind is
 //! sent to its port by who it is; the port is then checked by what holds it (`listener`), never
 //! by who answers first.

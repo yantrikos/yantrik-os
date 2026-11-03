@@ -31,14 +31,21 @@ class Sides:
     def side(self):
         return self.guard.side() if self.guard is not None else ports.MIND
 
-    def bind(self, start=False):
+    def decide(self):
+        """Who this call is for, before it waits for anything: (side, gone)."""
+        return self.guard.decide() if self.guard is not None else (ports.MIND, lambda: False)
+
+    def bind(self, start=False, decision=None):
         """Choose this call's browser and check what holds its port. Raises guard.Denied when it
         may not be used. With `start`, a mind whose browser is not open gets Mind View's started
         (the first web call on a cold start carries on rather than failing). Returns the side."""
         if self.guard is None:
             self._here.browser = self.fixed
             return ports.MIND
-        side = self.guard.side()
+        side, gone = decision or self.guard.decide()
+        if gone():
+            raise guard.Denied("Nothing was done: whoever asked has gone away while this waited, "
+                               "and a call is never carried out for a caller that is not there.")
         browser = self._here.browser = self.browsers[side]
         try:
             held = self.guard.vet(side)

@@ -1786,8 +1786,8 @@ def cmd_notify(argv):
 def __getattr__(name):
     # `yos.CDP`, for release-check's own tab bookkeeping: the person's port, from browsers.conf.
     here = os.path.dirname(os.path.realpath(__file__))
-    for rel in ("../share/browser", "../../apps/browser"):
-        path = os.path.join(here, rel, "yantrik_browser", "browsers.conf")
+    for rel in ("../share/browser/yantrik_browser", "../../crates/yantrik-browser-ports"):
+        path = os.path.join(here, rel, "browsers.conf")
         if name == "CDP" and os.path.exists(path):
             conf = {k.strip(): v.strip() for k, _, v in (ln.partition("=") for ln in open(path, encoding="utf-8"))}
             return "http://127.0.0.1:" + conf["person_port"]

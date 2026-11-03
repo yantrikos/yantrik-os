@@ -269,16 +269,16 @@ class RealBrowsers(unittest.TestCase):
         self.assertNotIn("MIND-B", self.fx.titles(self.fx.mind_port))
 
     def test_the_update_step_stops_mind_views_browser_and_never_the_persons(self):
-        """What yantrik-update runs on both sides of a restart (an update, and a rollback)."""
+        """What yantrik-update runs on both sides of a restart (an update, and a rollback), against a
+        real Chromium's own SingletonLock and a real process start time."""
         from yantrik_browser import stop_mind_view
         person = self.fx.start("person", "default")
         other = self.fx.start("person", "other", port=free_port())
         legacy = self.fx.start("mind", "mind", port=free_port())
-        chosen = set(stop_mind_view.mind_view_mains())
-        self.assertTrue(chosen, "Mind View's browser was not found")
-        self.assertNotIn(person.pid, chosen)
-        self.assertNotIn(other.pid, chosen)
-        self.assertEqual(stop_mind_view.main([]), 0)
+        chosen = stop_mind_view.mind_view_main(self.fx.home, os.getuid())
+        self.assertIsNotNone(chosen, "Mind View's browser was not found")
+        self.assertNotIn(chosen, (person.pid, other.pid))
+        self.assertTrue(stop_mind_view.stop(chosen, os.getuid()))
         legacy.wait(timeout=30)
         self.assertIsNotNone(legacy.poll(), "Mind View's browser should have stopped")
         self.assertIsNone(person.poll(), "the person's Browser was stopped")

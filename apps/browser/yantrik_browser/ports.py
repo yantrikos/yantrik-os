@@ -2,14 +2,17 @@
 
 There are two: the person's Browser (their own signed-in profile) and Mind View's browser (a
 profile of its own, which every mind's web tools drive). The numbers and paths are in
-browsers.conf, beside this file, and the Rust side (the yantrik-browser-ports crate) builds its
+browsers.conf (the yantrik-browser-ports crate owns it; a release copies it beside this file), and the Rust side (the yantrik-browser-ports crate) builds its
 constants from the same file. Nothing else spells them.
 """
 
 import os
 import tempfile
 
-CONF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browsers.conf")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+CONF = next((p for p in (os.path.join(_HERE, "browsers.conf"),
+                         os.path.join(_HERE, "..", "..", "..", "crates", "yantrik-browser-ports", "browsers.conf"))
+             if os.path.isfile(p)), os.path.join(_HERE, "browsers.conf"))
 
 
 def read_conf(path=CONF):

@@ -21,12 +21,23 @@ pub fn class_of(pid: i64) -> &'static str {
     if pid <= 0 {
         return "mind";
     }
-    let attached_mind = crate::caller_identity::resolve(pid).attached_mind;
+    let identity = crate::caller_identity::resolve(pid);
+    // A caller that has exited has no chain, and a pid reused since starts a chain of someone
+    // else's: neither is shown to be the person (#1085).
+    if !chain_starts_at(&identity.chain, pid) {
+        return "mind";
+    }
+    let attached_mind = identity.attached_mind;
     let facts = CallerFacts { pid: Some(pid as u32), agent: None, attached_mind, mind_account: false };
     match classify(&facts, std::process::id()) {
         Requester::Person => "person",
         Requester::Mind(_) => "mind",
     }
+}
+
+/// Whether a walked ancestry starts at the process that was asked about.
+fn chain_starts_at(chain: &[yantrik_ipc_transport::peer_identity::ProcessFacts], pid: i32) -> bool {
+    chain.first().is_some_and(|first| first.pid == pid)
 }
 
 pub fn actions(surface: ControlSurface) -> ControlSurface {
@@ -74,5 +85,21 @@ mod tests {
         assert_eq!(class_of(0), "mind");
         assert_eq!(class_of(-4), "mind");
         assert_eq!(class_of(i64::MAX), "mind");
+    }
+
+    /// The hole: a pid that had exited walked to an empty chain, which classified as the person,
+    /// so a queued web_go from a killed Hermes could land in the person's tab.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_caller_that_has_exited_is_a_mind_and_one_that_is_here_is_asked_about() {
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        let pid = gone.id() as i64;
+        gone.wait().unwrap();
+        assert_eq!(class_of(pid), "mind", "an exited caller is not shown to be the person");
+        let empty: Vec<yantrik_ipc_transport::peer_identity::ProcessFacts> = Vec::new();
+        assert!(!chain_starts_at(&empty, 7));
+        let here = yantrik_ipc_transport::peer_identity::walk(std::process::id() as i32);
+        assert!(chain_starts_at(&here, std::process::id() as i32));
+        assert!(!chain_starts_at(&here, 1), "a chain that starts at another process is not this pid's");
     }
 }

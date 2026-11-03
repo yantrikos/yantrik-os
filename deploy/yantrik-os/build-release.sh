@@ -169,16 +169,16 @@ for f in yos yos-mcp release-check yantrik-mind-launch; do
 done
 echo "   + yos, yos-mcp, release-check"
 
-# The browser as an app (#477): yantrik-browser holds the one DevTools connection and serves
-# app-browser, which `yos web` and every mind's web tools are clients of. A Python program, like
-# the Blender addon, with the surface SDK vendored beside it in share/browser so it always runs
-# with the SDK it was released with. The desktop's service manager starts it (main.rs).
+# The browser as an app (#477): yantrik-browser serves app-browser, which `yos web` and every mind's
+# web tools are clients of. A Python program, like the Blender addon, with the surface SDK vendored
+# beside it in share/browser so it runs with the SDK it was released with (main.rs starts it).
 [ -f "$PROJECT_ROOT/apps/browser/yantrik-browser" ] || fail "apps/browser/yantrik-browser missing — nothing could drive the browser"
 install -m 0755 "$PROJECT_ROOT/apps/browser/yantrik-browser" "$ROOT/bin/yantrik-browser"
 mkdir -p "$ROOT/share/browser"
 cp -r "$PROJECT_ROOT/apps/browser/yantrik_browser" "$ROOT/share/browser/"   || fail "apps/browser/yantrik_browser missing — the browser service would import nothing"
 cp -r "$PROJECT_ROOT/sdk/python/yantrik_surface" "$ROOT/share/browser/"   || fail "sdk/python/yantrik_surface missing — the browser service would have no surface to serve"
 find "$ROOT/share/browser" -name __pycache__ -type d -prune -exec rm -rf {} +
+cp "$PROJECT_ROOT/crates/yantrik-browser-ports/browsers.conf" "$ROOT/share/browser/yantrik_browser/browsers.conf" || fail "browsers.conf (the browsers' ports and profiles) did not ship"
 [ -f "$ROOT/share/browser/yantrik_browser/page.js" ] || fail "the browser service's page reader (page.js) did not ship"
 echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored in share/browser)"
 
