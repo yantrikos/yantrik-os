@@ -226,6 +226,24 @@ class FirstCallAndOldAddress(unittest.TestCase):
         g = guard.Guard(identify=identify, uid=ME, side_of=lambda: side, starter=starter, old_address=lambda p: old)
         return drv.Driver(judge=False, guard_=g)
 
+    def test_a_minds_first_call_being_tabs_starts_it_too(self):
+        """520: with the person's Browser open first, a mind's web_tabs was told "the browser is not
+        open. Open it: act shell open_app name=browser", because only some calls started one."""
+        up, calls = [False], []
+
+        def starter():
+            calls.append(1)
+            up[0] = True
+        d = self.driver(ports.MIND, up, starter)
+        self.assertTrue(d.tabs()["open"])
+        self.assertEqual(calls, [1])
+        d.tabs()
+        self.assertEqual(calls, [1])
+        # The person's tabs never start one, and a look at the view (describe) starts none.
+        never = self.driver(ports.PERSON, [False], lambda: self.fail("started"))
+        never.tabs()
+        self.driver(ports.MIND, [False], lambda: self.fail("started")).status()
+
     def test_the_first_call_starts_mind_views_browser_once(self):
         up, calls = [False], []
 

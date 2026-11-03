@@ -76,8 +76,7 @@ def commitment_of(element):
 
 
 class Driver:
-    """The browser surface's actions. `browser` is the one this call drives: a mind's, Mind View's;
-    the person's own, theirs (guard.py, sides.py)."""
+    """The browser surface's actions; `browser` is this call's: a mind's is Mind View's, the person's theirs."""
 
     def __init__(self, browser=None, judge=None, guard_=None):
         self.sides = sides.Sides(browser, guard_)
@@ -297,7 +296,8 @@ class Driver:
             return got
 
     def tabs(self):
-        out = self.status()
+        with self.held():          # a mind looking at the tabs starts Mind View's browser, as any web call does
+            out = self.status()
         if out.get("refused"):
             raise PageRefused(out["refused"])
         return out

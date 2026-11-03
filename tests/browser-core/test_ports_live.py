@@ -225,6 +225,18 @@ class RealBrowsers(unittest.TestCase):
         self.go(ports.MIND, "mind-b")
         self.assertEqual(self.starts, [1], "a browser already open is not started again")
 
+    def test_with_the_persons_browser_open_first_a_minds_first_call_may_be_tabs(self):
+        """The 520 order: the person's Browser first; the mind's FIRST call is web_tabs."""
+        self.fx.start("person", "default")
+        self.go(ports.PERSON, "person-a")
+        tabs = self.as_(ports.MIND).tabs()
+        self.assertEqual(self.starts, [1])
+        self.assertTrue(tabs["open"], tabs)
+        self.assertNotIn("PERSON-A", [t["title"] for t in tabs["tabs"]], "the person's tabs were shown to a mind")
+        self.go(ports.MIND, "mind-a")
+        self.assertEqual(self.fx.titles(self.fx.mind_port), ["MIND-A"])
+        self.assertEqual(self.fx.titles(self.fx.person_port), ["PERSON-A"])
+
     def test_when_it_cannot_be_started_the_mind_is_told_what_is_true(self):
         def cannot():
             raise guard.Starting("Mind View is not available (no Xwayland)")

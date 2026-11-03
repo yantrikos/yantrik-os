@@ -13,7 +13,9 @@ This runs as root, so what it will signal is held to facts a planted file cannot
     its home's `.local/share/<Mind View's profile>`), never another account's home and never a scan
     of what processes hold open;
   * the profile directory and its `SingletonLock` link are owned by that account, the directory is
-    not writable by group or others, and its real path is itself (no link anywhere on the way);
+    not writable by others, nor by a group unless that is the account's own private group (its
+    primary group, with no other member and no other account's primary group: a desktop with umask
+    002 makes every directory 775), and its real path is itself (no link anywhere on the way);
   * the link names this machine and a pid that belongs to that account, that started no later than
     the link was written (a stale link naming a pid reused since fails this), and is not this
     process;
@@ -59,7 +61,20 @@ def started_at(proc, pid, ticks=None):
         return None
 
 
-def mind_view_main(home, uid, proc="/proc", host=None, me=None):
+def private_group(uid, gid):
+    """Whether `gid` is the account's own private group: its primary group, with no other member."""
+    try:
+        import grp
+        import pwd
+        entry = pwd.getpwuid(uid)
+        return (entry.pw_gid == gid
+                and all(m == entry.pw_name for m in grp.getgrgid(gid).gr_mem)
+                and not any(e.pw_gid == gid and e.pw_uid != uid for e in pwd.getpwall()))
+    except (ImportError, KeyError):
+        return False
+
+
+def mind_view_main(home, uid, proc="/proc", host=None, me=None, group_ok=private_group):
     """The pid of the desktop account's Mind View browser, or None when there is none that is
     certainly it. `home` and `uid` are that account's."""
     profile = os.path.join(home, ".local", "share", *ports.MIND_VIEW_PROFILE.split("/"))
@@ -69,7 +84,8 @@ def mind_view_main(home, uid, proc="/proc", host=None, me=None):
         target = os.readlink(os.path.join(profile, "SingletonLock"))
     except OSError:
         return None
-    if (not stat.S_ISDIR(d.st_mode) or d.st_uid != uid or d.st_mode & 0o022
+    if (not stat.S_ISDIR(d.st_mode) or d.st_uid != uid or d.st_mode & 0o002
+            or (d.st_mode & 0o020 and not group_ok(uid, d.st_gid))
             or not stat.S_ISLNK(link.st_mode) or link.st_uid != uid
             or os.path.realpath(profile) != os.path.join(os.path.realpath(home), profile[len(home):].lstrip(os.sep))):
         return None

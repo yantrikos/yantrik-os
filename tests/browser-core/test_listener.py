@@ -245,10 +245,39 @@ class StopMindView(unittest.TestCase):
         self.lock(victim.pid)
         self.assertIsNone(self.found(uid=self.me + 1), "files owned by another account than the desktop's")
         self.assertIsNone(stop_mind_view.mind_view_main(os.path.join(self.home, "elsewhere"), self.me))
-        os.chmod(self.profile, 0o775)
+        os.chmod(self.profile, 0o757)
         self.assertIsNone(self.found(), "a directory others can write")
+        os.chmod(self.profile, 0o775)
+        self.assertIsNone(self.found(group_ok=lambda uid, gid: False), "group-writable, and the group is shared")
         os.chmod(self.profile, 0o755)
         self.assertEqual(self.found(), victim.pid, "and the same files are fine when they are the account's")
+
+    def test_a_directory_the_accounts_own_private_group_can_write_is_accepted(self):
+        """520: the desktop account's umask is 002, so the shell makes the profile 775."""
+        p = self.browser()
+        self.lock(p.pid)
+        os.chmod(self.profile, 0o775)
+        seen = []
+        self.assertEqual(self.found(group_ok=lambda uid, gid: seen.append((uid, gid)) or True), p.pid)
+        self.assertEqual(seen, [(self.me, os.stat(self.profile).st_gid)])
+
+    def test_what_a_private_group_is(self):
+        import grp
+        import pwd
+        from unittest import mock
+        me = pwd.struct_passwd(("alice", "x", 1000, 1000, "", "/home/alice", "/bin/sh"))
+        other = pwd.struct_passwd(("bob", "x", 1001, 1000, "", "/home/bob", "/bin/sh"))
+        mine = grp.struct_group(("alice", "x", 1000, []))
+        shared = grp.struct_group(("alice", "x", 1000, ["alice", "carol"]))
+        with mock.patch.object(pwd, "getpwuid", return_value=me), mock.patch.object(pwd, "getpwall", return_value=[me]):
+            with mock.patch.object(grp, "getgrgid", return_value=mine):
+                self.assertTrue(stop_mind_view.private_group(1000, 1000))
+                self.assertFalse(stop_mind_view.private_group(1000, 50), "not its primary group")
+            with mock.patch.object(grp, "getgrgid", return_value=shared):
+                self.assertFalse(stop_mind_view.private_group(1000, 1000), "another member")
+        with mock.patch.object(pwd, "getpwuid", return_value=me), mock.patch.object(pwd, "getpwall", return_value=[me, other]):
+            with mock.patch.object(grp, "getgrgid", return_value=mine):
+                self.assertFalse(stop_mind_view.private_group(1000, 1000), "another account's primary group too")
 
     def test_a_process_of_another_account_is_never_chosen(self):
         self.lock(1)                        # init: root's, and nothing a planted link may name
