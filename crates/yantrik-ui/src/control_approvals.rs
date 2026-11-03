@@ -1006,9 +1006,11 @@ fn explained_in(address: &str, action: &str, args: &serde_json::Value) -> String
 /// one wrapped paragraph and never the app's own layout. The length bound is the store's
 /// (`EXPLAINED_CHARS`, applied in `Store::request`), so the cut names the true length once.
 fn sanitised_explanation(raw: &str) -> String {
-    // Unicode's format characters (general category Cf), none of which draws anything — the bidi
-    // controls among them change how the rest of a line reads, and the other invisibles hide
-    // words — from the one shared list (`approvals::is_format_char`; review of #639).
+    // The invisible characters — category Cf and, since #1071, the blanks that can hide a word
+    // boundary and the variation selectors that draw as nothing — from the one shared list
+    // (`approvals::is_format_char`; review of #639). The bidi controls among them change how the
+    // rest of a line reads; all of it is dropped without a trace, a hidden blank included,
+    // because nothing that cannot be seen belongs under a label.
     let mut out = String::with_capacity(raw.len());
     let mut gap = false;
     for c in raw.chars() {
