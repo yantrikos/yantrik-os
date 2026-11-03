@@ -50,6 +50,7 @@ pub mod wifi_reconnect;
 pub mod dock;
 /// A launch by name for an app already open on the desktop raises its window instead.
 pub(crate) mod already_open;
+pub(crate) mod browser_launch;
 /// The grounded dock's buttons and window list, published from the window list.
 pub mod dock_bar;
 pub mod harness;

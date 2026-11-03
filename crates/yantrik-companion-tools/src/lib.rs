@@ -18,6 +18,7 @@ pub mod artifacts;
 pub mod bluetooth;
 pub mod browser;
 pub mod browser_lifecycle;
+pub mod browser_side;
 pub mod calculator;
 pub mod canvas;
 pub mod claude;
