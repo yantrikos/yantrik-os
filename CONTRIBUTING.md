@@ -97,6 +97,7 @@ Every pull request runs two jobs, and both must pass:
   bash deploy/yantrik-os/yantrik-update selftest
   sh deploy/yantrik-os/yantrik-shell selftest
   bash deploy/yantrik-os/service-bins.sh selftest
+  sh deploy/live/director/check-page-selftest   # needs chromium; CHECK_PAGE_NO_SANDBOX=1 as root
   python3 -m unittest discover -s harnesses/tests -v
   ```
 
