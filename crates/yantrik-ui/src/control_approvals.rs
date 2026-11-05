@@ -764,10 +764,11 @@ const MENU_NEVER_ON: [i32; 4] = [0, 2, 3, 32];
 /// How long the shell will wait for another app to say what one of its actions is graded.
 ///
 /// This runs on the UI thread, inside an action handler, whose own budget is `UI_ROUNDTRIP` =
-/// 3s. Half a second was too little: the browser answers in 350-570 ms on a test VM, so a tainted
-/// `web_go` was refused without its card, every time (#1080's gate). 1.5 s still leaves room for the
+/// 3s. The browser answers in 350-570 ms on a test VM, and its view waits up to 1 s more behind an
+/// act that is running, so half a second was too little for it. 1.5 s still leaves room for the
 /// rest of the handler; a surface slower than that is one the caller should hear about rather than
-/// wait on, and `SyncRpcClient`'s breaker makes the second attempt free.
+/// wait on, and `SyncRpcClient`'s breaker makes the second attempt free. This thread answers nothing
+/// else meanwhile, so a surface must not ask the shell back while answering (`guard.is_the_shell`).
 const GRADE_LOOKUP: Duration = Duration::from_millis(1500);
 
 /// How much of the "you said X, the app says Y" sentence fits on one elided card row.

@@ -13,6 +13,7 @@ never sent to a browser it was not meant for, and a refusal says what is true.
 
 import os
 import select
+import socket
 import time
 
 from yantrik_surface import PeerRefused, agent_token, call_once, caller
@@ -21,6 +22,7 @@ from yantrik_surface import gate, mind_door, reach, wire
 from . import listener, ports
 
 SHELL_ASKED = 3.0
+SHELL_LOOKED_AT = 0.5    # seconds to connect to the shell's socket and read who holds it
 START_WAIT = 30.0        # seconds Mind View's browser is given to open its port once asked for
 
 
@@ -116,10 +118,27 @@ def shell_class(pid):
     return kind if kind in ("person", "mind") else None
 
 
+def is_the_shell(pid):
+    """Whether `pid` is the process answering on the shell's socket, by the kernel's word. Nothing
+    is sent. The shell reads an action's grade from here on its UI thread while a card waits, and
+    `shell_class` is answered on that same thread, so asking it who it is left each waiting on the
+    other until the shell gave up and refused the card (#1080)."""
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(SHELL_LOOKED_AT)
+    try:
+        client.connect(wire.default_socket_path(gate.SHELL))
+        peer = wire.peer_cred(client)
+    except OSError:
+        return False
+    finally:
+        client.close()
+    return peer is not None and peer.pid == pid and gate.must_be_the_shell(peer) is None
+
+
 _UNSET = object()
 
 
-def side_of_caller(peer=_UNSET, token=_UNSET, ask_shell=None, uid=None, proc="/proc"):
+def side_of_caller(peer=_UNSET, token=_UNSET, ask_shell=None, uid=None, proc="/proc", is_shell=None):
     """PERSON or MIND for the call being handled (the dispatch's own, unless given). Fails towards
     MIND: a caller that cannot be shown to be the person never reaches the person's browser."""
     token = agent_token() if token is _UNSET else token
@@ -130,6 +149,8 @@ def side_of_caller(peer=_UNSET, token=_UNSET, ask_shell=None, uid=None, proc="/p
         return ports.MIND
     if is_bridge_ancestor(peer.pid, proc):
         return ports.MIND
+    if (is_shell or is_the_shell)(peer.pid):
+        return ports.PERSON                         # what `shell_class` says of the shell itself
     return ports.PERSON if (ask_shell or shell_class)(peer.pid) == "person" else ports.MIND
 
 
