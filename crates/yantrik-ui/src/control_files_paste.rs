@@ -13,9 +13,9 @@ use yantrik_ipc_contracts::home_paths;
 
 const RULE: &str = "a mind pastes only what is in the person's home, outside its protected places";
 
-/// Refuse pasting `sources` into the folder `dest_label` (as the Files screen spells it), with
-/// `home` as the person's home.
-pub fn paste_verdict(sources: &[PathBuf], dest_label: &str, home: &Path) -> Result<(), String> {
+/// Refuse pasting `sources` into the folder `dest_label` (as the Files screen spells it), where
+/// `cut` says whether the clipboard was made by cutting (#1083), with `home` as the person's home.
+pub fn paste_verdict(sources: &[PathBuf], dest_label: &str, cut: bool, home: &Path) -> Result<(), String> {
     crate::control_files_mind::here_verdict(dest_label, home)?;
     let dest = home_paths::expand(dest_label, home).ok_or_else(|| format!("{dest_label} is not a folder"))?;
     let real_dest = dest.canonicalize().map_err(|e| format!("the folder on screen cannot be read: {e}"))?;
@@ -24,6 +24,12 @@ pub fn paste_verdict(sources: &[PathBuf], dest_label: &str, home: &Path) -> Resu
         let answer = home_paths::stat(&shown, home);
         if answer["exists"] != true {
             return Err(format!("{RULE}; {shown} is {}", answer["reason"].as_str().unwrap_or("not there")));
+        }
+        // Pasting a cut moves the source, so it is checked as a move: a mind that cut the
+        // desktop would otherwise move the shell's folder somewhere else. A copy leaves the
+        // original where it was, so nothing is moved and only what may be read decides.
+        if cut {
+            crate::control_files_mind::shift_verdict(src, home)?;
         }
         let Some(name) = src.file_name() else {
             return Err(format!("{shown} has no name to paste under"));
@@ -67,7 +73,7 @@ mod tests {
     fn a_folder_in_the_home_pastes_into_another() {
         let (_d, home) = home("plain");
         let label = home.join("Documents");
-        assert!(paste_verdict(&[home.join("project")], label.to_str().unwrap(), &home).is_ok());
+        assert!(paste_verdict(&[home.join("project")], label.to_str().unwrap(), true, &home).is_ok());
     }
 
     #[test]
@@ -75,9 +81,9 @@ mod tests {
         let (_d, home) = home("key");
         let label = home.join("Documents");
         let label = label.to_str().unwrap();
-        refused_because(paste_verdict(&[home.join(".ssh/id_ed25519")], label, &home), " is protected");
-        refused_because(paste_verdict(&[home.join(".ssh")], label, &home), " is protected");
-        refused_because(paste_verdict(&[PathBuf::from("/etc/hostname")], label, &home), " is outside");
+        refused_because(paste_verdict(&[home.join(".ssh/id_ed25519")], label, true, &home), " is protected");
+        refused_because(paste_verdict(&[home.join(".ssh")], label, true, &home), " is protected");
+        refused_because(paste_verdict(&[PathBuf::from("/etc/hostname")], label, true, &home), " is outside");
     }
 
     #[test]
@@ -88,12 +94,12 @@ mod tests {
         std::fs::create_dir_all(home.join("applications")).unwrap();
         std::fs::write(home.join("applications/term.desktop"), "[Desktop Entry]").unwrap();
         let share = home.join(".local/share");
-        refused_because(paste_verdict(&[home.join("applications")], share.to_str().unwrap(), &home), " is protected");
+        refused_because(paste_verdict(&[home.join("applications")], share.to_str().unwrap(), true, &home), " is protected");
         // And a hidden folder deep inside what is copied: programs read their startup there.
         std::fs::create_dir_all(home.join("backup/.config/autostart")).unwrap();
         std::fs::write(home.join("backup/.config/autostart/run.desktop"), "x").unwrap();
         let label = home.join("Documents");
-        refused_because(paste_verdict(&[home.join("backup")], label.to_str().unwrap(), &home), " is hidden_place");
+        refused_because(paste_verdict(&[home.join("backup")], label.to_str().unwrap(), true, &home), " is hidden_place");
     }
 
     #[test]
@@ -101,7 +107,23 @@ mod tests {
         let (_d, home) = home("hard");
         std::fs::hard_link(home.join(".ssh/id_ed25519"), home.join("project/src/copy")).unwrap();
         let label = home.join("Documents");
-        refused_because(paste_verdict(&[home.join("project")], label.to_str().unwrap(), &home), " is hard_link");
+        refused_because(paste_verdict(&[home.join("project")], label.to_str().unwrap(), true, &home), " is hard_link");
+    }
+
+    /// A copy leaves the shell's folder where it is; a cut is the move. Which one the clipboard
+    /// holds is therefore what decides, and a mind that cut the desktop would otherwise move it
+    /// out from under the Bench (#1083).
+    #[test]
+    fn a_cut_of_a_folder_the_shell_keeps_is_refused_where_a_copy_of_it_is_not() {
+        let (_d, home) = home("cut");
+        std::fs::create_dir_all(home.join("Schreibtisch/notes")).unwrap();
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        std::fs::write(home.join(".config/user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n").unwrap();
+        let dest = home.join("Documents");
+        let dest = dest.to_str().unwrap();
+        let desk = vec![home.join("Schreibtisch")];
+        assert!(paste_verdict(&desk, dest, false, &home).is_ok(), "a copy moves nothing");
+        refused_because(paste_verdict(&desk, dest, true, &home), "a mind does not move it");
     }
 
     #[test]
@@ -109,6 +131,6 @@ mod tests {
         let (_d, home) = home("link");
         symlink(home.join(".ssh"), home.join("project/keys")).unwrap();
         let label = home.join("Documents");
-        assert!(paste_verdict(&[home.join("project")], label.to_str().unwrap(), &home).is_ok());
+        assert!(paste_verdict(&[home.join("project")], label.to_str().unwrap(), true, &home).is_ok());
     }
 }
