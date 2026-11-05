@@ -457,6 +457,8 @@ mod write_rule_tests {
             format!("~/.local/bin/yantrik-rule-test-{id}"),
             format!("~/bin/yantrik-rule-test-{id}"),
         ];
+        // A clean turn: with none, a fetch is not known to be clean and asks (#1063 review, M5).
+        yantrik_companion_core::taint::begin_turn();
         for path in &targets {
             let said = run(&WriteFileTool, serde_json::json!({ "path": path, "content": "!echo pwned" }));
             assert!(said.contains("hidden folders or dotfiles"), "{path}: {said}");

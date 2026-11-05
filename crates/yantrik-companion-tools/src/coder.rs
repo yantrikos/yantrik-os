@@ -1621,7 +1621,7 @@ mod outward_tests {
         let (_shell, heard) = installed("code-strict", "pending", "denied");
         let said = with_ctx(|ctx| CodeExecuteTool.execute(ctx, &serde_json::json!({ "code": "print(1)" })));
         if has_bwrap() {
-            assert!(!said.contains("said no") && heard.lock().unwrap().is_empty(), "a strict sandbox was asked about: {said}");
+            assert!(!said.contains("said no") && heard.lock().unwrap().is_empty(), "a strict sandbox was asked about: {said} {:?}", heard.lock().unwrap());
         } else {
             assert!(said.contains("said no") && shown(&first_card(&heard), "to").contains("bubblewrap is not installed"), "{said}");
         }
