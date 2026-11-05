@@ -258,6 +258,16 @@ export component EmailClient inherits Rectangle {
     callback save-account(string, string, string, string, string, string, string, string);
     callback test-connection(string, string, string, string, string);
 
+    // Sign In, from wherever the typing happens. On a short window the form is taller than the
+    // screen and the button is below its bottom edge (#1052) -- the field the person is already
+    // looking at is the one place the primary action can always be reached from. Enter does what
+    // the button does, including standing down while a connection is in flight.
+    function submit-setup() {
+        if (!root.setup-testing) {
+            root.save-account(root.setup-email, root.setup-password, root.setup-display-name, root.setup-provider, root.setup-imap-server, root.setup-imap-port, root.setup-smtp-server, root.setup-smtp-port);
+        }
+    }
+
     // ── Account setup (shown until there is an account) ──
     //
     // With the header. This was the one screen in the OS that had no app shell at all: no
@@ -283,470 +293,483 @@ export component EmailClient inherits Rectangle {
         }
 
         Rectangle {
-        background: Theme.bg-deep;
+            background: Theme.bg-deep;
 
-        VerticalLayout {
-            alignment: center;
-            spacing: 0px;
+            // The form grows as it is filled in -- Gmail's device-code panel, the advanced
+            // servers opened out, a password hint that wraps -- and nothing here scrolled, so
+            // on a short window the Sign In button fell off the bottom of the screen with no
+            // way to reach it (#1052). The installer's answer, verbatim: scroll when the
+            // column is taller than the window, stay centred when it is not.
+            setup-scroll := Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-height: max(self.height, setup-body.preferred-height);
 
-            // ── The service is not there ──
-            //
-            // Not a form. Saving an account goes through the mail service, and offering eight
-            // fields and a Sign In button to something that cannot be reached is how a person
-            // comes to believe they have typed their password into a working machine.
-            if root.service-state == "unreachable" : HorizontalLayout {
-                alignment: center;
+                setup-body := VerticalLayout {
+                    width: setup-scroll.width;
+                    height: setup-scroll.viewport-height;
+                    alignment: center;
+                    padding: Theme.sp-6;
+                    spacing: 0px;
 
-                Rectangle {
-                    width: 440px;
-                    height: down-content.preferred-height + 48px;
-                    border-radius: 16px;
-                    background: Theme.bg-surface;
-                    border-width: 1px;
-                    border-color: Theme.amber.with-alpha(0.4);
+                    // ── The service is not there ──
+                    //
+                    // Not a form. Saving an account goes through the mail service, and offering eight
+                    // fields and a Sign In button to something that cannot be reached is how a person
+                    // comes to believe they have typed their password into a working machine.
+                    if root.service-state == "unreachable" : HorizontalLayout {
+                        alignment: center;
 
-                    down-content := VerticalLayout {
-                        padding: 32px;
-                        spacing: 12px;
+                        Rectangle {
+                            width: 440px;
+                            height: down-content.preferred-height + 48px;
+                            border-radius: 16px;
+                            background: Theme.bg-surface;
+                            border-width: 1px;
+                            border-color: Theme.amber.with-alpha(0.4);
 
-                        Icon {
-                            commands: Icons.warning;
-                            size: 32px;
-                            tint: Theme.amber;
-                            thickness: 1.6px;
-                            x: (parent.width - self.width) / 2;
-                        }
-                        Text {
-                            text: "The mail service is not running";
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-title-2;
-                            font-weight: Theme.fw-title-2;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
-                        Text {
-                            text: root.notice;
-                            color: Theme.amber;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
-                        Text {
-                            text: "This is not the same as having no account. Until the service "
-                                + "answers, this app cannot tell whether one is configured, and "
-                                + "there is nothing here to sign in to.";
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-caption;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
+                            down-content := VerticalLayout {
+                                padding: 32px;
+                                spacing: 12px;
 
-                        HorizontalLayout {
-                            alignment: center;
-                            YButton {
-                                label: "Try again";
-                                icon: Icons.refresh;
-                                clicked => { root.sync-emails(); }
+                                Icon {
+                                    commands: Icons.warning;
+                                    size: 32px;
+                                    tint: Theme.amber;
+                                    thickness: 1.6px;
+                                    x: (parent.width - self.width) / 2;
+                                }
+                                Text {
+                                    text: "The mail service is not running";
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-title-2;
+                                    font-weight: Theme.fw-title-2;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.notice;
+                                    color: Theme.amber;
+                                    font-size: Theme.fs-caption;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "This is not the same as having no account. Until the service "
+                                        + "answers, this app cannot tell whether one is configured, and "
+                                        + "there is nothing here to sign in to.";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-caption;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+
+                                HorizontalLayout {
+                                    alignment: center;
+                                    YButton {
+                                        label: "Try again";
+                                        icon: Icons.refresh;
+                                        clicked => { root.sync-emails(); }
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            }
 
-            if root.service-state != "unreachable" : HorizontalLayout {
-                alignment: center;
+                    if root.service-state != "unreachable" : HorizontalLayout {
+                        alignment: center;
 
-                Rectangle {
-                    width: 440px;
-                    height: setup-content.preferred-height + 48px;
-                    border-radius: 16px;
-                    background: Theme.bg-surface;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    drop-shadow-blur: 32px;
-                    drop-shadow-color: Theme.overlay-backdrop;
+                        Rectangle {
+                            width: 440px;
+                            height: setup-content.preferred-height + 48px;
+                            border-radius: 16px;
+                            background: Theme.bg-surface;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            drop-shadow-blur: 32px;
+                            drop-shadow-color: Theme.overlay-backdrop;
 
-                    setup-content := VerticalLayout {
-                        padding: 32px;
-                        spacing: 16px;
+                            setup-content := VerticalLayout {
+                                padding: 32px;
+                                spacing: 16px;
 
-                        // Header
-                        VerticalLayout {
-                            spacing: Theme.sp-2;
+                                // Header
+                                VerticalLayout {
+                                    spacing: Theme.sp-2;
 
-                            // Was the character "@" at display size. It happens to render, but
-                            // a letter standing in for an icon is the look this kit exists to
-                            // retire, and this one is the first thing a new user sees.
-                            Icon {
-                                commands: Icons.mail;
-                                size: 40px;
-                                tint: Theme.accent;
-                                thickness: 1.6px;
-                                x: (parent.width - self.width) / 2;
-                            }
-                            Text {
-                                text: "Add Email Account";
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-title-1;
-                                font-weight: Theme.fw-title-1;
-                                horizontal-alignment: center;
-                            }
-                            Text {
-                                text: "Choose your provider or use Advanced for custom domains.";
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-caption;
-                                horizontal-alignment: center;
-                                wrap: word-wrap;
-                            }
-                        }
-
-                        // ── Provider Picker ──
-                        VerticalLayout {
-                            spacing: 8px;
-
-                            Text {
-                                text: "Email Provider";
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-caption;
-                                font-weight: 600;
-                            }
-
-                            HorizontalLayout {
-                                spacing: 8px;
-
-                                for prov in [
-                                    { id: "gmail", label: "Gmail" },
-                                    { id: "outlook", label: "Outlook" },
-                                    { id: "yahoo", label: "Yahoo" },
-                                    { id: "icloud", label: "iCloud" },
-                                    { id: "advanced", label: "Advanced" },
-                                ] : Rectangle {
-                                    height: Theme.h-prominent;
-                                    border-radius: Theme.r-md;
-                                    background: root.setup-provider == prov.id ? AppIdentity.tint : Theme.bg-deep;
-                                    border-width: root.setup-provider == prov.id ? 2px : 1px;
-                                    border-color: root.setup-provider == prov.id ? AppIdentity.accent : Theme.border-subtle;
-
-                                    TouchArea {
-                                        clicked => {
-                                            root.setup-provider = prov.id;
-                                            root.setup-advanced-mode = prov.id == "advanced";
-                                        }
-                                        mouse-cursor: pointer;
+                                    // Was the character "@" at display size. It happens to render, but
+                                    // a letter standing in for an icon is the look this kit exists to
+                                    // retire, and this one is the first thing a new user sees.
+                                    Icon {
+                                        commands: Icons.mail;
+                                        size: 40px;
+                                        tint: Theme.accent;
+                                        thickness: 1.6px;
+                                        x: (parent.width - self.width) / 2;
                                     }
-
                                     Text {
-                                        text: prov.label;
-                                        color: root.setup-provider == prov.id ? AppIdentity.accent : Theme.text-secondary;
-                                        font-size: Theme.fs-body;
-                                        font-weight: root.setup-provider == prov.id ? Theme.fw-headline : Theme.fw-body;
+                                        text: "Add Email Account";
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-title-1;
+                                        font-weight: Theme.fw-title-1;
                                         horizontal-alignment: center;
-                                        vertical-alignment: center;
                                     }
-
-                                    animate background { duration: Theme.dur-fast; }
-                                    animate border-color { duration: Theme.dur-fast; }
-                                }
-                            }
-
-                            if root.setup-provider != "" && root.setup-provider != "advanced" : Text {
-                                text: root.setup-provider == "gmail" ? "Sign in with Google below, or fill in the form with an App Password: Google Account > Security > 2-Step Verification > App passwords. Custom domains on Gmail supported."
-                                    : root.setup-provider == "outlook" ? "Use your Outlook/Office 365 password. Custom domains on Outlook supported."
-                                    : root.setup-provider == "yahoo" ? "Requires App Password: Yahoo Account > Security > App passwords."
-                                    : "Requires App-specific password: appleid.apple.com > Security > App passwords.";
-                                color: Theme.amber;
-                                font-size: Theme.fs-micro;
-                                wrap: word-wrap;
-                            }
-                        }
-
-                        // ── Sign in with Google ──
-                        //
-                        // Only for Gmail, because that is the only account this flow can be
-                        // for: the scope is Google's and the servers behind it are Gmail's.
-                        //
-                        // Three states and never a dead control. With a client id configured:
-                        // a button, and then a waiting panel with a Cancel that is real. With
-                        // no client id: the service's own sentence saying so and pointing at
-                        // the App Password path below, which works on every build.
-                        if root.setup-provider == "gmail" : VerticalLayout {
-                            spacing: 8px;
-
-                            if root.google-available && !root.google-waiting : Rectangle {
-                                height: 44px; border-radius: 10px; background: Theme.bg-card;
-                                border-width: 1px; border-color: Theme.border-subtle;
-                                TouchArea {
-                                    clicked => { root.sign-in-with-google(); }
-                                    mouse-cursor: pointer;
-                                }
-                                Text {
-                                    text: "Sign in with Google";
-                                    color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600;
-                                    horizontal-alignment: center; vertical-alignment: center;
-                                }
-                            }
-
-                            // What is happening, while it is happening. The person has left for
-                            // a browser; this window says what it is waiting for and offers the
-                            // way out, rather than sitting on an unchanged form.
-                            if root.google-waiting : VerticalLayout {
-                                spacing: 8px;
-
-                                Text {
-                                    text: "Waiting for Google\u{2026}";
-                                    color: AppIdentity.accent; font-size: Theme.fs-body; font-weight: 600;
-                                    horizontal-alignment: center;
-                                }
-                                Text {
-                                    text: "Choose the account in your browser and allow access to mail, then come back to this window.";
-                                    color: Theme.text-secondary; font-size: Theme.fs-micro;
-                                    horizontal-alignment: center; wrap: word-wrap;
-                                }
-                                // Only when a browser could not be opened. The address is long
-                                // and unlovely and it is the only way through on a machine with
-                                // no handler for it, so it is on the screen rather than in a log.
-                                if root.google-url != "" : Rectangle {
-                                    height: url-text.preferred-height + 16px;
-                                    border-radius: 8px; background: Theme.bg-deep;
-                                    border-width: 1px; border-color: Theme.border-subtle;
-                                    url-text := TextInput {
-                                        x: 8px; y: 8px; width: parent.width - 16px;
-                                        text: root.google-url;
-                                        read-only: true;
-                                        color: Theme.text-dim; font-size: Theme.fs-micro;
+                                    Text {
+                                        text: "Choose your provider or use Advanced for custom domains.";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        horizontal-alignment: center;
                                         wrap: word-wrap;
                                     }
                                 }
-                                Rectangle {
-                                    height: 38px; border-radius: 10px; background: Theme.bg-card;
-                                    border-width: 1px; border-color: Theme.border-subtle;
-                                    TouchArea {
-                                        clicked => { root.cancel-google-sign-in(); }
-                                        mouse-cursor: pointer;
+
+                                // ── Provider Picker ──
+                                VerticalLayout {
+                                    spacing: 8px;
+
+                                    Text {
+                                        text: "Email Provider";
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-caption;
+                                        font-weight: 600;
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+
+                                        for prov in [
+                                            { id: "gmail", label: "Gmail" },
+                                            { id: "outlook", label: "Outlook" },
+                                            { id: "yahoo", label: "Yahoo" },
+                                            { id: "icloud", label: "iCloud" },
+                                            { id: "advanced", label: "Advanced" },
+                                        ] : Rectangle {
+                                            height: Theme.h-prominent;
+                                            border-radius: Theme.r-md;
+                                            background: root.setup-provider == prov.id ? AppIdentity.tint : Theme.bg-deep;
+                                            border-width: root.setup-provider == prov.id ? 2px : 1px;
+                                            border-color: root.setup-provider == prov.id ? AppIdentity.accent : Theme.border-subtle;
+
+                                            TouchArea {
+                                                clicked => {
+                                                    root.setup-provider = prov.id;
+                                                    root.setup-advanced-mode = prov.id == "advanced";
+                                                }
+                                                mouse-cursor: pointer;
+                                            }
+
+                                            Text {
+                                                text: prov.label;
+                                                color: root.setup-provider == prov.id ? AppIdentity.accent : Theme.text-secondary;
+                                                font-size: Theme.fs-body;
+                                                font-weight: root.setup-provider == prov.id ? Theme.fw-headline : Theme.fw-body;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+
+                                            animate background { duration: Theme.dur-fast; }
+                                            animate border-color { duration: Theme.dur-fast; }
+                                        }
+                                    }
+
+                                    if root.setup-provider != "" && root.setup-provider != "advanced" : Text {
+                                        text: root.setup-provider == "gmail" ? "Sign in with Google below, or fill in the form with an App Password: Google Account > Security > 2-Step Verification > App passwords. Custom domains on Gmail supported."
+                                            : root.setup-provider == "outlook" ? "Use your Outlook/Office 365 password. Custom domains on Outlook supported."
+                                            : root.setup-provider == "yahoo" ? "Requires App Password: Yahoo Account > Security > App passwords."
+                                            : "Requires App-specific password: appleid.apple.com > Security > App passwords.";
+                                        color: Theme.amber;
+                                        font-size: Theme.fs-micro;
+                                        wrap: word-wrap;
+                                    }
+                                }
+
+                                // ── Sign in with Google ──
+                                //
+                                // Only for Gmail, because that is the only account this flow can be
+                                // for: the scope is Google's and the servers behind it are Gmail's.
+                                //
+                                // Three states and never a dead control. With a client id configured:
+                                // a button, and then a waiting panel with a Cancel that is real. With
+                                // no client id: the service's own sentence saying so and pointing at
+                                // the App Password path below, which works on every build.
+                                if root.setup-provider == "gmail" : VerticalLayout {
+                                    spacing: 8px;
+
+                                    if root.google-available && !root.google-waiting : Rectangle {
+                                        height: 44px; border-radius: 10px; background: Theme.bg-card;
+                                        border-width: 1px; border-color: Theme.border-subtle;
+                                        TouchArea {
+                                            clicked => { root.sign-in-with-google(); }
+                                            mouse-cursor: pointer;
+                                        }
+                                        Text {
+                                            text: "Sign in with Google";
+                                            color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                        }
+                                    }
+
+                                    // What is happening, while it is happening. The person has left for
+                                    // a browser; this window says what it is waiting for and offers the
+                                    // way out, rather than sitting on an unchanged form.
+                                    if root.google-waiting : VerticalLayout {
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: "Waiting for Google\u{2026}";
+                                            color: AppIdentity.accent; font-size: Theme.fs-body; font-weight: 600;
+                                            horizontal-alignment: center;
+                                        }
+                                        Text {
+                                            text: "Choose the account in your browser and allow access to mail, then come back to this window.";
+                                            color: Theme.text-secondary; font-size: Theme.fs-micro;
+                                            horizontal-alignment: center; wrap: word-wrap;
+                                        }
+                                        // Only when a browser could not be opened. The address is long
+                                        // and unlovely and it is the only way through on a machine with
+                                        // no handler for it, so it is on the screen rather than in a log.
+                                        if root.google-url != "" : Rectangle {
+                                            height: url-text.preferred-height + 16px;
+                                            border-radius: 8px; background: Theme.bg-deep;
+                                            border-width: 1px; border-color: Theme.border-subtle;
+                                            url-text := TextInput {
+                                                x: 8px; y: 8px; width: parent.width - 16px;
+                                                text: root.google-url;
+                                                read-only: true;
+                                                color: Theme.text-dim; font-size: Theme.fs-micro;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                        Rectangle {
+                                            height: 38px; border-radius: 10px; background: Theme.bg-card;
+                                            border-width: 1px; border-color: Theme.border-subtle;
+                                            TouchArea {
+                                                clicked => { root.cancel-google-sign-in(); }
+                                                mouse-cursor: pointer;
+                                            }
+                                            Text {
+                                                text: "Cancel";
+                                                color: Theme.text-secondary; font-size: Theme.fs-body; font-weight: 500;
+                                                horizontal-alignment: center; vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Said either way: where the OAuth client came from, or that there
+                                    // is not one on this build and what works instead.
+                                    if root.google-note != "" : Text {
+                                        text: root.google-note;
+                                        color: root.google-available ? Theme.text-dim : Theme.amber;
+                                        font-size: Theme.fs-micro;
+                                        horizontal-alignment: center; wrap: word-wrap;
+                                    }
+
+                                    Rectangle { height: 1px; background: Theme.border-subtle; }
+                                }
+
+                                // Display Name
+                                VerticalLayout {
+                                    spacing: 4px;
+                                    Text { text: "Your Name"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 600; }
+                                    Rectangle {
+                                        height: 42px; border-radius: 8px; background: Theme.bg-deep;
+                                        border-width: 1px; border-color: Theme.border-subtle; clip: true;
+                                        HorizontalLayout {
+                                            padding-left: 14px; padding-right: 14px;
+                                            TextInput { text <=> root.setup-display-name; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; accepted => { submit-setup(); } }
+                                        }
+                                    }
+                                }
+
+                                // Email Address
+                                VerticalLayout {
+                                    spacing: 4px;
+                                    Text { text: "Email Address"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 600; }
+                                    Rectangle {
+                                        height: 42px; border-radius: 8px; background: Theme.bg-deep; clip: true;
+                                        border-width: 1px; border-color: Theme.border-subtle;
+                                        HorizontalLayout {
+                                            padding-left: 14px; padding-right: 14px;
+                                            TextInput { text <=> root.setup-email; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; accepted => { submit-setup(); } }
+                                        }
+                                    }
+                                }
+
+                                // Password
+                                VerticalLayout {
+                                    spacing: 4px;
+                                    Text { text: "Password"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 600; }
+                                    Rectangle {
+                                        height: 42px; border-radius: 8px; background: Theme.bg-deep; clip: true;
+                                        border-width: 1px; border-color: Theme.border-subtle;
+                                        HorizontalLayout {
+                                            padding-left: 14px; padding-right: 14px;
+                                            TextInput { text <=> root.setup-password; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; input-type: password; accepted => { submit-setup(); } }
+                                        }
                                     }
                                     Text {
-                                        text: "Cancel";
-                                        color: Theme.text-secondary; font-size: Theme.fs-body; font-weight: 500;
-                                        horizontal-alignment: center; vertical-alignment: center;
+                                        text: root.setup-provider == "gmail"
+                                            ? "App Password (16 chars, no spaces): Google Account > Security > 2-Step Verification > App passwords > Mail"
+                                            : root.setup-provider == "yahoo"
+                                            ? "App Password: Yahoo Account > Account Security > Generate app password"
+                                            : root.setup-provider == "icloud"
+                                            ? "App-specific password: appleid.apple.com > Sign-In and Security > App-Specific Passwords"
+                                            : "Use your email account password or app password.";
+                                        color: Theme.amber; font-size: Theme.fs-micro; wrap: word-wrap;
                                     }
                                 }
-                            }
 
-                            // Said either way: where the OAuth client came from, or that there
-                            // is not one on this build and what works instead.
-                            if root.google-note != "" : Text {
-                                text: root.google-note;
-                                color: root.google-available ? Theme.text-dim : Theme.amber;
-                                font-size: Theme.fs-micro;
-                                horizontal-alignment: center; wrap: word-wrap;
-                            }
+                                // ── Advanced: Manual IMAP/SMTP fields ──
+                                if root.setup-advanced-mode : VerticalLayout {
+                                    spacing: 12px;
 
-                            Rectangle { height: 1px; background: Theme.border-subtle; }
-                        }
+                                    Rectangle { height: 1px; background: Theme.border-subtle; }
+                                    Text { text: "Server Settings"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 600; }
 
-                        // Display Name
-                        VerticalLayout {
-                            spacing: 4px;
-                            Text { text: "Your Name"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 600; }
-                            Rectangle {
-                                height: 42px; border-radius: 8px; background: Theme.bg-deep;
-                                border-width: 1px; border-color: Theme.border-subtle; clip: true;
-                                HorizontalLayout {
-                                    padding-left: 14px; padding-right: 14px;
-                                    TextInput { text <=> root.setup-display-name; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; }
-                                }
-                            }
-                        }
+                                    // IMAP row
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        VerticalLayout {
+                                            spacing: 4px;
+                                            Text { text: "IMAP Server"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                            Rectangle {
+                                                height: 38px; border-radius: 8px; background: Theme.bg-deep; clip: true;
+                                                border-width: 1px; border-color: Theme.border-subtle;
+                                                HorizontalLayout {
+                                                    padding-left: 12px; padding-right: 12px;
+                                                    TextInput { text <=> root.setup-imap-server; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; accepted => { submit-setup(); } }
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            spacing: 4px; max-width: 80px;
+                                            Text { text: "Port"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                            Rectangle {
+                                                height: 38px; border-radius: 8px; background: Theme.bg-deep; clip: true;
+                                                border-width: 1px; border-color: Theme.border-subtle;
+                                                HorizontalLayout {
+                                                    padding-left: 12px; padding-right: 12px;
+                                                    TextInput { text <=> root.setup-imap-port; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; accepted => { submit-setup(); } }
+                                                }
+                                            }
+                                        }
+                                    }
 
-                        // Email Address
-                        VerticalLayout {
-                            spacing: 4px;
-                            Text { text: "Email Address"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 600; }
-                            Rectangle {
-                                height: 42px; border-radius: 8px; background: Theme.bg-deep; clip: true;
-                                border-width: 1px; border-color: Theme.border-subtle;
-                                HorizontalLayout {
-                                    padding-left: 14px; padding-right: 14px;
-                                    TextInput { text <=> root.setup-email; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; }
-                                }
-                            }
-                        }
-
-                        // Password
-                        VerticalLayout {
-                            spacing: 4px;
-                            Text { text: "Password"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 600; }
-                            Rectangle {
-                                height: 42px; border-radius: 8px; background: Theme.bg-deep; clip: true;
-                                border-width: 1px; border-color: Theme.border-subtle;
-                                HorizontalLayout {
-                                    padding-left: 14px; padding-right: 14px;
-                                    TextInput { text <=> root.setup-password; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; input-type: password; }
-                                }
-                            }
-                            Text {
-                                text: root.setup-provider == "gmail"
-                                    ? "App Password (16 chars, no spaces): Google Account > Security > 2-Step Verification > App passwords > Mail"
-                                    : root.setup-provider == "yahoo"
-                                    ? "App Password: Yahoo Account > Account Security > Generate app password"
-                                    : root.setup-provider == "icloud"
-                                    ? "App-specific password: appleid.apple.com > Sign-In and Security > App-Specific Passwords"
-                                    : "Use your email account password or app password.";
-                                color: Theme.amber; font-size: Theme.fs-micro; wrap: word-wrap;
-                            }
-                        }
-
-                        // ── Advanced: Manual IMAP/SMTP fields ──
-                        if root.setup-advanced-mode : VerticalLayout {
-                            spacing: 12px;
-
-                            Rectangle { height: 1px; background: Theme.border-subtle; }
-                            Text { text: "Server Settings"; color: Theme.text-secondary; font-size: Theme.fs-caption; font-weight: 600; }
-
-                            // IMAP row
-                            HorizontalLayout {
-                                spacing: 8px;
-                                VerticalLayout {
-                                    spacing: 4px;
-                                    Text { text: "IMAP Server"; color: Theme.text-dim; font-size: Theme.fs-micro; }
-                                    Rectangle {
-                                        height: 38px; border-radius: 8px; background: Theme.bg-deep; clip: true;
-                                        border-width: 1px; border-color: Theme.border-subtle;
-                                        HorizontalLayout {
-                                            padding-left: 12px; padding-right: 12px;
-                                            TextInput { text <=> root.setup-imap-server; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; }
+                                    // SMTP row
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        VerticalLayout {
+                                            spacing: 4px;
+                                            Text { text: "SMTP Server"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                            Rectangle {
+                                                height: 38px; border-radius: 8px; background: Theme.bg-deep; clip: true;
+                                                border-width: 1px; border-color: Theme.border-subtle;
+                                                HorizontalLayout {
+                                                    padding-left: 12px; padding-right: 12px;
+                                                    TextInput { text <=> root.setup-smtp-server; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; accepted => { submit-setup(); } }
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            spacing: 4px; max-width: 80px;
+                                            Text { text: "Port"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+                                            Rectangle {
+                                                height: 38px; border-radius: 8px; background: Theme.bg-deep; clip: true;
+                                                border-width: 1px; border-color: Theme.border-subtle;
+                                                HorizontalLayout {
+                                                    padding-left: 12px; padding-right: 12px;
+                                                    TextInput { text <=> root.setup-smtp-port; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; accepted => { submit-setup(); } }
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                                VerticalLayout {
-                                    spacing: 4px; max-width: 80px;
-                                    Text { text: "Port"; color: Theme.text-dim; font-size: Theme.fs-micro; }
-                                    Rectangle {
-                                        height: 38px; border-radius: 8px; background: Theme.bg-deep; clip: true;
+
+                                // Where the password goes, in the service's own words.
+                                //
+                                // A form that asks a person for a mail password and will not say what is
+                                // done with it is asking them to trust something they cannot see. The
+                                // text comes from the service, so the day there is a secret store behind
+                                // this it stops saying there is not.
+                                if root.setup-note != "" : Text {
+                                    text: root.setup-note;
+                                    color: Theme.text-dim; font-size: Theme.fs-micro;
+                                    horizontal-alignment: center; wrap: word-wrap;
+                                }
+
+                                // What happened, last time either button was pressed.
+                                //
+                                // This was compared against the literal string "Connected!" to choose its
+                                // colour, so anything the server actually said was drawn as a failure.
+                                // The app sets `setup-ok` alongside the words now.
+                                if root.setup-status != "" : Text {
+                                    text: root.setup-status;
+                                    color: root.setup-ok ? AppIdentity.accent : Theme.amber;
+                                    font-size: Theme.fs-caption; horizontal-alignment: center; wrap: word-wrap;
+                                }
+
+                                // Action buttons
+                                //
+                                // Not while a Google sign-in is in flight. Both of these sign in to the
+                                // same mail server with a password the form does not have during that
+                                // flow, and a control that is drawn and refused in Rust is a dead
+                                // control with extra steps. The waiting panel above carries the only
+                                // thing there is to do, which is Cancel.
+                                if !root.google-waiting : HorizontalLayout {
+                                    spacing: 12px;
+
+                                    // Only when there is a mailbox to go back to. On first run this form
+                                    // is the whole app and a Cancel would lead nowhere.
+                                    if root.setup-open : Rectangle {
+                                        height: 44px; border-radius: 10px; background: Theme.bg-card;
                                         border-width: 1px; border-color: Theme.border-subtle;
-                                        HorizontalLayout {
-                                            padding-left: 12px; padding-right: 12px;
-                                            TextInput { text <=> root.setup-imap-port; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; }
+                                        TouchArea {
+                                            clicked => { root.cancel-setup(); }
+                                            mouse-cursor: pointer;
+                                        }
+                                        Text {
+                                            text: "Cancel";
+                                            color: Theme.text-secondary; font-size: Theme.fs-body; font-weight: 500;
+                                            horizontal-alignment: center; vertical-alignment: center;
                                         }
                                     }
-                                }
-                            }
 
-                            // SMTP row
-                            HorizontalLayout {
-                                spacing: 8px;
-                                VerticalLayout {
-                                    spacing: 4px;
-                                    Text { text: "SMTP Server"; color: Theme.text-dim; font-size: Theme.fs-micro; }
                                     Rectangle {
-                                        height: 38px; border-radius: 8px; background: Theme.bg-deep; clip: true;
+                                        height: 44px; border-radius: 10px; background: Theme.bg-card;
                                         border-width: 1px; border-color: Theme.border-subtle;
-                                        HorizontalLayout {
-                                            padding-left: 12px; padding-right: 12px;
-                                            TextInput { text <=> root.setup-smtp-server; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; }
+                                        TouchArea {
+                                            clicked => {
+                                                root.test-connection(root.setup-email, root.setup-password, root.setup-provider, root.setup-imap-server, root.setup-imap-port);
+                                            }
+                                            mouse-cursor: pointer;
+                                        }
+                                        Text {
+                                            text: root.setup-testing ? "Testing..." : "Test Connection";
+                                            color: Theme.text-secondary; font-size: Theme.fs-body; font-weight: 500;
+                                            horizontal-alignment: center; vertical-alignment: center;
                                         }
                                     }
-                                }
-                                VerticalLayout {
-                                    spacing: 4px; max-width: 80px;
-                                    Text { text: "Port"; color: Theme.text-dim; font-size: Theme.fs-micro; }
+
                                     Rectangle {
-                                        height: 38px; border-radius: 8px; background: Theme.bg-deep; clip: true;
-                                        border-width: 1px; border-color: Theme.border-subtle;
-                                        HorizontalLayout {
-                                            padding-left: 12px; padding-right: 12px;
-                                            TextInput { text <=> root.setup-smtp-port; color: Theme.text-primary; font-size: Theme.fs-body; vertical-alignment: center; }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Where the password goes, in the service's own words.
-                        //
-                        // A form that asks a person for a mail password and will not say what is
-                        // done with it is asking them to trust something they cannot see. The
-                        // text comes from the service, so the day there is a secret store behind
-                        // this it stops saying there is not.
-                        if root.setup-note != "" : Text {
-                            text: root.setup-note;
-                            color: Theme.text-dim; font-size: Theme.fs-micro;
-                            horizontal-alignment: center; wrap: word-wrap;
-                        }
-
-                        // What happened, last time either button was pressed.
-                        //
-                        // This was compared against the literal string "Connected!" to choose its
-                        // colour, so anything the server actually said was drawn as a failure.
-                        // The app sets `setup-ok` alongside the words now.
-                        if root.setup-status != "" : Text {
-                            text: root.setup-status;
-                            color: root.setup-ok ? AppIdentity.accent : Theme.amber;
-                            font-size: Theme.fs-caption; horizontal-alignment: center; wrap: word-wrap;
-                        }
-
-                        // Action buttons
-                        //
-                        // Not while a Google sign-in is in flight. Both of these sign in to the
-                        // same mail server with a password the form does not have during that
-                        // flow, and a control that is drawn and refused in Rust is a dead
-                        // control with extra steps. The waiting panel above carries the only
-                        // thing there is to do, which is Cancel.
-                        if !root.google-waiting : HorizontalLayout {
-                            spacing: 12px;
-
-                            // Only when there is a mailbox to go back to. On first run this form
-                            // is the whole app and a Cancel would lead nowhere.
-                            if root.setup-open : Rectangle {
-                                height: 44px; border-radius: 10px; background: Theme.bg-card;
-                                border-width: 1px; border-color: Theme.border-subtle;
-                                TouchArea {
-                                    clicked => { root.cancel-setup(); }
-                                    mouse-cursor: pointer;
-                                }
-                                Text {
-                                    text: "Cancel";
-                                    color: Theme.text-secondary; font-size: Theme.fs-body; font-weight: 500;
-                                    horizontal-alignment: center; vertical-alignment: center;
-                                }
-                            }
-
-                            Rectangle {
-                                height: 44px; border-radius: 10px; background: Theme.bg-card;
-                                border-width: 1px; border-color: Theme.border-subtle;
-                                TouchArea {
-                                    clicked => {
-                                        root.test-connection(root.setup-email, root.setup-password, root.setup-provider, root.setup-imap-server, root.setup-imap-port);
-                                    }
-                                    mouse-cursor: pointer;
-                                }
-                                Text {
-                                    text: root.setup-testing ? "Testing..." : "Test Connection";
-                                    color: Theme.text-secondary; font-size: Theme.fs-body; font-weight: 500;
-                                    horizontal-alignment: center; vertical-alignment: center;
-                                }
-                            }
-
-                            Rectangle {
-                                height: 44px; border-radius: 10px;
-                                background: root.setup-testing ? Theme.bg-card : Theme.accent;
-                                TouchArea {
-                                    clicked => {
+                                        height: 44px; border-radius: 10px;
+                                        background: root.setup-testing ? Theme.bg-card : Theme.accent;
                                         // Not while a connection is being tried: both buttons go
                                         // to the same server with the same credentials, and a
                                         // second attempt on top of the first only makes the
-                                        // provider's rate limiter the thing being tested.
-                                        if (!root.setup-testing) {
-                                            root.save-account(root.setup-email, root.setup-password, root.setup-display-name, root.setup-provider, root.setup-imap-server, root.setup-imap-port, root.setup-smtp-server, root.setup-smtp-port);
+                                        // provider's rate limiter the thing being tested. That
+                                        // guard is `submit-setup`, which Enter in any field runs
+                                        // too (#1052).
+                                        TouchArea {
+                                            clicked => { submit-setup(); }
+                                            mouse-cursor: pointer;
+                                        }
+                                        Text {
+                                            text: root.setup-testing ? "Working..." : "Sign In";
+                                            color: root.setup-testing ? Theme.text-dim : Theme.text-on-accent;
+                                            font-size: Theme.fs-body; font-weight: 600;
+                                            horizontal-alignment: center; vertical-alignment: center;
                                         }
                                     }
-                                    mouse-cursor: pointer;
-                                }
-                                Text {
-                                    text: root.setup-testing ? "Working..." : "Sign In";
-                                    color: root.setup-testing ? Theme.text-dim : Theme.text-on-accent;
-                                    font-size: Theme.fs-body; font-weight: 600;
-                                    horizontal-alignment: center; vertical-alignment: center;
                                 }
                             }
                         }
@@ -755,7 +778,6 @@ export component EmailClient inherits Rectangle {
             }
         }
     }
-        }
 
     // ── Main Email View (shown when account is configured) ──
     if (root.has-account && !root.setup-open) : VerticalLayout {
