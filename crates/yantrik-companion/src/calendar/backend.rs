@@ -44,13 +44,17 @@ pub trait CalendarBackend: Send + Sync {
 pub struct ServiceCalendar;
 
 impl ServiceCalendar {
+    /// The transport's two seconds is for a service answering out of memory; this one reads and
+    /// writes files, and may be cold when first called.
+    const BUDGET_SECS: u64 = 10;
+
     const SERVICE: &'static str = "calendar";
 
     fn call<P: serde::Serialize, R: serde::de::DeserializeOwned>(
         method_name: &str,
         params: &P,
     ) -> Result<R, String> {
-        let client = yantrik_ipc_transport::service::client(Self::SERVICE)?;
+        let client = yantrik_ipc_transport::service::client(Self::SERVICE)?.with_timeout(std::time::Duration::from_secs(Self::BUDGET_SECS));
         client.call_typed(method_name, params).map_err(|e| e.message)
     }
 }
@@ -73,7 +77,7 @@ impl CalendarBackend for ServiceCalendar {
     }
 
     fn delete(&self, id: &str) -> Result<(), String> {
-        let client = yantrik_ipc_transport::service::client(Self::SERVICE)?;
+        let client = yantrik_ipc_transport::service::client(Self::SERVICE)?.with_timeout(std::time::Duration::from_secs(Self::BUDGET_SECS));
         // The reply is null; what matters is that the service did not refuse. Deleting something
         // that is not there is a refusal, and the caller is told so.
         client

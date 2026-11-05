@@ -1,6 +1,9 @@
 //! Google Calendar API client — REST via ureq with OAuth2.
 //!
-//! Reuses the email account's OAuth2 tokens (same Google Cloud project).
+//! The token comes from a [`GoogleAccess`]. It used to come from the OAuth2 tokens a mail account
+//! kept in `config.yaml`; mail accounts and their tokens now belong to `email-service` and the
+//! credential vault (#1022), whose Google sign-in asks for the mail scope only, so there is no
+//! calendar token to borrow and Google sync is off until one is provided ([`NoGoogleAccess`]).
 //! All operations are blocking — runs on companion worker thread.
 //!
 //! This file used to be two things: a Google client, and a second calendar. The second calendar
@@ -18,8 +21,6 @@ pub mod migrate;
 pub mod stamps;
 pub mod sync;
 
-use crate::config::EmailAccountConfig;
-use crate::email;
 use serde::{Deserialize, Serialize};
 
 const CALENDAR_API: &str = "https://www.googleapis.com/calendar/v3";
@@ -46,11 +47,29 @@ pub struct CalendarInfo {
     pub primary: bool,
 }
 
-/// Get a fresh OAuth2 access token from the email account config.
-pub fn get_access_token(account: &mut EmailAccountConfig, config_path: Option<&str>) -> Result<String, String> {
-    email::ensure_fresh_token(account, config_path)?;
-    account.oauth_access_token.clone()
-        .ok_or_else(|| "No OAuth access token available".to_string())
+/// Where a Google Calendar access token comes from.
+///
+/// Nothing in the companion holds one at rest. An implementation reads a token from wherever it is
+/// kept safely (the credential vault) at the moment of use, and the companion never writes one
+/// down.
+pub trait GoogleAccess: Send + Sync {
+    /// Whether there is a Google account to sync with at all.
+    fn connected(&self) -> bool;
+    /// A fresh access token, or why there is none.
+    fn token(&self) -> Result<String, String>;
+}
+
+/// No Google account: the machine's calendar only, no sync.
+pub struct NoGoogleAccess;
+
+impl GoogleAccess for NoGoogleAccess {
+    fn connected(&self) -> bool {
+        false
+    }
+
+    fn token(&self) -> Result<String, String> {
+        Err("no Google Calendar account is connected, so there is no Google calendar to sync".to_string())
+    }
 }
 
 /// List user's calendars.

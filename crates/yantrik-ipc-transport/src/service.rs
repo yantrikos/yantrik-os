@@ -124,7 +124,9 @@ pub fn ensure(service_id: &str) -> Result<(), String> {
             // The address failed a moment ago, when the service was genuinely down, and the
             // breaker is holding that verdict for a few seconds more. Drop it: the socket just
             // answered, and the call this start was for is about to be made.
-            SyncRpcClient::clear_breaker(&RpcServer::default_address(service_id));
+            // Through the client a caller will use: in a mind's process that dials the door, whose
+            // key is not the default address (#1026 review).
+            SyncRpcClient::for_service(service_id).forget_breaker();
             return Ok(());
         }
         std::thread::sleep(POLL);
