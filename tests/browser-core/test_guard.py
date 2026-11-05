@@ -71,11 +71,12 @@ class WhoIsCalling(unittest.TestCase):
         def never(pid):
             raise AssertionError("the shell was asked about itself")
         me = PeerCred(4242, ME, ME)
+        # A mind, as `caller_class` says of the shell's own pid (its test `the_shell_itself_is_a_mind`):
+        # a mind reaches this browser through the shell, by a glance or a notification's button.
         self.assertEqual(self.side(peer=me, token=None, ask_shell=never, is_shell=lambda pid: pid == 4242),
-                         ports.PERSON)
+                         ports.MIND)
         # Another process of the person's is still asked about.
-        self.assertEqual(self.side(peer=me, token=None, ask_shell=lambda pid: "mind",
-                                   is_shell=lambda pid: pid == 1), ports.MIND)
+        self.assertEqual(self.side(peer=me, token=None, is_shell=lambda pid: pid == 1), ports.PERSON)
 
     def test_what_is_a_mind_by_its_own_marks_is_never_taken_for_the_shell(self):
         me = PeerCred(4242, ME, ME)
@@ -129,6 +130,7 @@ class IsTheShell(unittest.TestCase):
         self.addCleanup(server.close)
         server.bind(self.path)
         server.listen(1)
+        return server
 
     def test_only_the_process_on_the_socket_running_the_shells_binary(self):
         self.listening()
@@ -141,10 +143,18 @@ class IsTheShell(unittest.TestCase):
     def test_no_shell_is_no_answer(self):
         self.assertFalse(guard.is_the_shell(os.getpid()))
 
+    def test_a_process_that_is_not_the_shells_binary_is_not_the_shell(self):
+        self.listening()        # the real rule: this test's own process is not `yantrik-ui`
+        self.assertFalse(guard.is_the_shell(os.getpid()))
+
     def test_nothing_is_written_to_it(self):
-        self.listening()
-        with mock.patch.object(guard.gate, "must_be_the_shell", lambda peer: None),                 mock.patch.object(socket.socket, "sendall", side_effect=AssertionError("written")):
+        server = self.listening()
+        with mock.patch.object(guard.gate, "must_be_the_shell", lambda peer: None):
             self.assertTrue(guard.is_the_shell(os.getpid()))
+        conn, _ = server.accept()
+        self.addCleanup(conn.close)
+        conn.settimeout(2)
+        self.assertEqual(conn.recv(1), b"", "closed having sent nothing")
 
 
 class Vetting(unittest.TestCase):

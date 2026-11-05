@@ -771,6 +771,11 @@ const MENU_NEVER_ON: [i32; 4] = [0, 2, 3, 32];
 /// else meanwhile, so a surface must not ask the shell back while answering (`guard.is_the_shell`).
 const GRADE_LOOKUP: Duration = Duration::from_millis(1500);
 
+/// How long the same thread will wait for the sentence an action says about one call. Shorter than
+/// the grade: a card goes up without the sentence and never without the grade, and the two together
+/// have to stay under `UI_ROUNDTRIP`.
+const EXPLAIN_LOOKUP: Duration = Duration::from_millis(500);
+
 /// How much of the "you said X, the app says Y" sentence fits on one elided card row.
 const NOTE_CHARS: usize = 62;
 
@@ -988,7 +993,7 @@ fn explained_or_unsaid(sentence: String) -> String {
 /// bound on arrival, so what is recorded is bounded too.
 fn explained_in(address: &str, action: &str, args: &serde_json::Value) -> String {
     yantrik_ipc_transport::SyncRpcClient::new(address)
-        .with_timeout(GRADE_LOOKUP)
+        .with_timeout(EXPLAIN_LOOKUP)
         .call("app.explain", serde_json::json!({ "action": action, "args": args }))
         .ok()
         .and_then(|reply| reply["explanation"].as_str().map(sanitised_explanation))

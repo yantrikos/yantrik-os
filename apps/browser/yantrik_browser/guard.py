@@ -122,7 +122,8 @@ def is_the_shell(pid):
     """Whether `pid` is the process answering on the shell's socket, by the kernel's word. Nothing
     is sent. The shell reads an action's grade from here on its UI thread while a card waits, and
     `shell_class` is answered on that same thread, so asking it who it is left each waiting on the
-    other until the shell gave up and refused the card (#1080)."""
+    other until the shell gave up and refused the card (#1080). The answer it would have given is
+    a mind: what the shell does here it may do for a mind (a glance, a notification's button)."""
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(SHELL_LOOKED_AT)
     try:
@@ -150,7 +151,7 @@ def side_of_caller(peer=_UNSET, token=_UNSET, ask_shell=None, uid=None, proc="/p
     if is_bridge_ancestor(peer.pid, proc):
         return ports.MIND
     if (is_shell or is_the_shell)(peer.pid):
-        return ports.PERSON                         # what `shell_class` says of the shell itself
+        return ports.MIND       # what `shell_class` says of the shell (`classify`, "the companion")
     return ports.PERSON if (ask_shell or shell_class)(peer.pid) == "person" else ports.MIND
 
 
