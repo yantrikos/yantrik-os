@@ -23,7 +23,7 @@ use crate::{play, verify};
 pub trait Slow: Send + Sync {
     /// Runs `verb` (one of play, verify, screenshot) on the built game `slug` whose file is
     /// `html`: the verdict in a sentence, or why it failed.
-    fn run(&self, verb: Verb, library: &Library, slug: &str, html: &Path) -> Result<String, String>;
+    fn run(&self, verb: Verb, library: &Library, slug: &str, html: &Path, by_mind: bool) -> Result<String, String>;
 }
 
 /// The verifier and the screenshot taker, as functions, so a test can stand in for the browser
@@ -61,7 +61,7 @@ impl Drop for Staging {
 }
 
 impl Slow for Real {
-    fn run(&self, verb: Verb, library: &Library, slug: &str, html: &Path) -> Result<String, String> {
+    fn run(&self, verb: Verb, library: &Library, slug: &str, html: &Path, by_mind: bool) -> Result<String, String> {
         // This run's own handle on its cancellation flag. The browser handle dropping must not be
         // able to clear what is read here: `verify_game` drops its browser before it returns.
         let cancel = Arc::new(AtomicBool::new(false));
@@ -104,7 +104,7 @@ impl Slow for Real {
             // If the Browser cannot draw the game, play renders it headless instead and says
             // where the picture is; that picture is staged and committed like any other.
             Verb::Play => {
-                let said = play::play(html, &staged);
+                let said = play::play(html, &staged, by_mind);
                 if stopped() {
                     return Err(browser::STOPPED.into());
                 }
@@ -174,7 +174,7 @@ mod tests {
     fn a_verify_cancelled_after_its_shot_commits_nothing_and_the_earlier_files_stand() {
         let (library, dir, html) = built();
         let real = Real::with(verify_then_cancelled, shoot_ok);
-        let err = real.run(Verb::Verify, &library, "meadow-run", &html).unwrap_err();
+        let err = real.run(Verb::Verify, &library, "meadow-run", &html, false).unwrap_err();
         assert_eq!(err, browser::STOPPED);
         assert_eq!(std::fs::read(library.screenshot_path("meadow-run")).unwrap(), b"OLD PNG");
         assert!(std::fs::read_to_string(library.verify_path("meadow-run")).unwrap().contains("earlier"));
@@ -187,7 +187,7 @@ mod tests {
     fn a_verify_that_finishes_commits_its_screenshot_and_verdict() {
         let (library, dir, html) = built();
         let real = Real::with(verify_ok, shoot_ok);
-        real.run(Verb::Verify, &library, "meadow-run", &html).unwrap();
+        real.run(Verb::Verify, &library, "meadow-run", &html, false).unwrap();
         assert_eq!(std::fs::read(library.screenshot_path("meadow-run")).unwrap(), b"NEW PNG");
         assert!(!std::fs::read_to_string(library.verify_path("meadow-run")).unwrap().contains("earlier"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -203,7 +203,7 @@ mod tests {
             Ok(Report::new("stand-in".into()).finish())
         }
         let real = Real::with(verify_then_rebuilt, shoot_ok);
-        let err = real.run(Verb::Verify, &library, "meadow-run", &html).unwrap_err();
+        let err = real.run(Verb::Verify, &library, "meadow-run", &html, false).unwrap_err();
         assert!(err.contains("built again"), "{err}");
         assert_eq!(std::fs::read(library.screenshot_path("meadow-run")).unwrap(), b"OLD PNG");
         let _ = std::fs::remove_dir_all(&dir);
@@ -219,9 +219,9 @@ mod tests {
             Ok(())
         }
         let real = Real::with(verify_ok, shoot_then_cancelled);
-        assert_eq!(real.run(Verb::Screenshot, &library, "meadow-run", &html).unwrap_err(), browser::STOPPED);
+        assert_eq!(real.run(Verb::Screenshot, &library, "meadow-run", &html, false).unwrap_err(), browser::STOPPED);
         assert_eq!(std::fs::read(library.screenshot_path("meadow-run")).unwrap(), b"OLD PNG");
-        real.run(Verb::Screenshot, &library, "meadow-run", &html).ok();
+        real.run(Verb::Screenshot, &library, "meadow-run", &html, false).ok();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -235,7 +235,7 @@ mod tests {
             Err("the browser failed".into())
         }
         let real = Real::with(remember, shoot_ok);
-        assert!(real.run(Verb::Verify, &library, "meadow-run", &html).is_err());
+        assert!(real.run(Verb::Verify, &library, "meadow-run", &html, false).is_err());
         let stage = STAGED.lock().unwrap().clone().unwrap();
         assert!(!stage.exists(), "{} was left behind", stage.display());
         let _ = std::fs::remove_dir_all(&dir);

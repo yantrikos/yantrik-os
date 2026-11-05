@@ -16,10 +16,8 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
 use crate::tools::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
-// ── CDP constants (same as browser.rs) ──
+use yantrik_companion_tools::browser_side;
 
-const CDP_HOST: &str = "127.0.0.1";
-const CDP_PORT: u16 = 9222;
 const MAX_TEXT_CHARS: usize = 6000;
 
 /// Global CDP message counter for unique IDs (separate from browser.rs to avoid conflict).
@@ -71,23 +69,10 @@ pub struct MergedResult {
 
 // ── CDP helpers (inline, same approach as browser.rs) ──
 
-/// Fetch the WebSocket URL for the first open tab from CDP.
+/// The WebSocket URL of the first open tab of Mind View's browser, once its port is shown to be
+/// Mind View's (never the person's Browser, which this used to drive when it held the port).
 fn cdp_first_tab_ws() -> Result<String, String> {
-    let url = format!("http://{}:{}/json", CDP_HOST, CDP_PORT);
-    let output = std::process::Command::new("curl")
-        .args(["-s", "--max-time", "3", &url])
-        .output()
-        .map_err(|e| format!("Cannot reach browser (curl): {e}"))?;
-
-    if !output.status.success() {
-        return Err("Browser not reachable. Use launch_browser first.".to_string());
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout);
-    let tabs: Vec<Value> = serde_json::from_str(&body)
-        .map_err(|e| format!("Bad CDP response: {e}"))?;
-
-    for tab in &tabs {
+    for tab in &browser_side::targets()? {
         if tab.get("type").and_then(|v| v.as_str()) == Some("page") {
             if let Some(ws) = tab.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
                 if !ws.is_empty() {
@@ -186,13 +171,9 @@ fn cdp_get_text(
     cdp_eval(ws, "document.body?.innerText || ''")
 }
 
-/// Check if CDP is reachable.
+/// Whether Mind View's browser is up.
 fn is_browser_running() -> bool {
-    TcpStream::connect_timeout(
-        &format!("{}:{}", CDP_HOST, CDP_PORT).parse().unwrap(),
-        Duration::from_millis(500),
-    )
-    .is_ok()
+    browser_side::is_running()
 }
 
 // ── URL encoding ──
