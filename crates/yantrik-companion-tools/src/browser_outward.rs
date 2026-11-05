@@ -2,10 +2,14 @@
 //! #1063).
 //!
 //! A click can be a link or the "Place order" button, and a keystroke can be a letter or the Enter
-//! that submits a form. The rule here is the safe one: **a click asks unless it is provably a plain
+//! that submits a form. The rule here is the safe one: **a click asks unless it is a plain
 //! navigation link, or a text field being focused.** Nothing enumerates what counts as "acting":
 //! a button, a `div` with a handler, the `span` inside a button, an `iframe` or a shadow-DOM
-//! component (whose inside cannot be seen) all ask. Typing that submits always asks.
+//! component (whose inside cannot be seen) all ask. Typing that submits always asks. A link is not
+//! plain with a handler attribute, a framework's method attribute (`data-method`,
+//! `data-turbo-method`, `data-remote`, `hx-*`) or `ping`; a field is an `input`, a `textarea`, or an
+//! editing host itself, never a control inside one. One limit is inherent: a handler added with
+//! `addEventListener` leaves no trace in the DOM, so a link with one is still described as plain.
 //!
 //! Three things keep the card honest:
 //!
@@ -13,14 +17,18 @@
 //!   world* (`Page.createIsolatedWorld`): the page's own scripts cannot reach its globals or its
 //!   prototypes, so a hostile page cannot override `closest` or `JSON.stringify` to report its own
 //!   submit button as harmless.
-//! - **What is pressed is what was shown.** The description is the card's content and its
-//!   fingerprint. After the Allow, the press is a single evaluation that describes the same element
-//!   again, compares, and only then clicks (or types and submits) it; a page that changed while the
-//!   person decided is not pressed, and the answer says so, so the model looks again and asks again
-//!   for what is there now.
+//! - **What is pressed is what was shown**, as of the moment before the click (the page's own click
+//!   listeners run first and can still change the form). The description is the card's content and
+//!   its fingerprint, card or no card. After the Allow, the press is a single evaluation that
+//!   describes the same element again, compares, and only then clicks (or types and submits) it; a
+//!   page that changed while the person decided is not pressed, and the answer says so, so the
+//!   model looks again and asks again for what is there now. At a point, a described element is
+//!   pressed this way too, not by the mouse, which the page can redirect (`Pressing::at_point`).
 //! - **The card names where it goes and what goes.** A form's destination is its resolved `action`
-//!   (or the pressed button's `formaction`), its method, and every field it will send, hidden ones
-//!   included, each quoted; a password shows only its length.
+//!   (or the pressed button's `formaction`, only when it has one; for typing, the default button's,
+//!   which Enter uses), its method, and every field it will send, hidden ones included, each quoted;
+//!   a password shows only its length. The form's own properties are read through
+//!   `HTMLFormElement.prototype`, so a field named `action`, `method` or `elements` cannot stand in.
 //!
 //! Where the page cannot be described at all (no isolated world, a script error) the click still
 //! asks, as "a control the page could not describe", and is then made the way it always was.
@@ -57,55 +65,65 @@ pub(crate) const NOT_FOUND: &str = "no such element";
 pub(crate) const DESCRIBE_FN: &str = r#"function (typed) {
   const el = this;
   const lower = (s) => String(s || '').toLowerCase();
-  const tag = lower(el.tagName);
-  const attr = (n) => (el.getAttribute ? el.getAttribute(n) || '' : '');
+  const E = Element.prototype;
+  const getter = (C, n) => Object.getOwnPropertyDescriptor(C.prototype, n).get;
+  const [formAction, formMethod, formElements] = ['action', 'method', 'elements'].map((n) => getter(HTMLFormElement, n));
+  const closest = (x, sel) => (x instanceof Element ? E.closest.call(x, sel) : null);
+  const has = (x, n) => x instanceof Element && E.hasAttribute.call(x, n);
+  const attr = (n) => (el instanceof Element ? E.getAttribute.call(el, n) || '' : '');
+  const tag = lower(el instanceof Element ? getter(Element, 'tagName').call(el) : '');
   const type = lower(attr('type'));
   const textTypes = ['', 'text', 'search', 'email', 'url', 'tel', 'number', 'password'];
-  const isField = tag === 'textarea' || el.isContentEditable === true || (tag === 'input' && textTypes.includes(type));
+  const acting = 'button, a, [role=button], input, select, textarea, label, summary, [onclick], [onmousedown], [onmouseup], [onpointerdown], [onpointerup], [ontouchstart]';
+  const editingHost = el.isContentEditable === true && !closest(el, acting);
+  const isField = tag === 'textarea' || editingHost || (tag === 'input' && textTypes.includes(type));
   const opaque = ['iframe', 'frame', 'object', 'embed'].includes(tag) || !!el.shadowRoot;
-  const anchor = el.closest ? el.closest('a[href]') : null;
-  const form = (el.closest ? el.closest('form') : null) || el.form || null;
+  const anchor = closest(el, 'a[href]');
+  const ctl = closest(el, 'button, input[type=submit], input[type=image], [role=button]');
+  const ownerOf = (x) => (x && x.form instanceof HTMLFormElement ? x.form : null);
+  const form = ownerOf(ctl) || ownerOf(el) || (el instanceof HTMLFormElement ? el : null) || closest(el, 'form');
+  const sends = (x) => Array.from(x.attributes || []).some((a) => /^(data-(turbo-)?method|data-remote|data-turbo-stream|data-confirm|(data-)?hx-|ping$)/.test(lower(a.name)));
   let plainLink = false;
   if (anchor && !form && !opaque) {
-    const href = anchor.getAttribute('href') || '';
-    const m = /^([a-z][a-z0-9+.-]*):/i.exec(href);
-    const scheme = m ? lower(m[1]) : '';
+    const href = E.getAttribute.call(anchor, 'href') || '';
+    let scheme = '';
+    try { scheme = new URL(String(anchor.href)).protocol; } catch (e) { scheme = ''; }
     let handler = false;
     for (let x = el; x; x = x.parentElement) {
-      if (['onclick', 'onmousedown', 'onmouseup', 'onpointerdown', 'onpointerup', 'ontouchstart'].some((n) => x.hasAttribute(n))) handler = true;
+      if (['onclick', 'onmousedown', 'onmouseup', 'onpointerdown', 'onpointerup', 'ontouchstart'].some((n) => has(x, n)) || sends(x)) handler = true;
       if (x === anchor) break;
     }
-    plainLink = (scheme === '' || scheme === 'http' || scheme === 'https') && href !== '' && href[0] !== '#' && !handler && !anchor.hasAttribute('download');
+    plainLink = (scheme === 'http:' || scheme === 'https:') && href.trim() !== '' && href.trim()[0] !== '#' && !handler && !has(anchor, 'download');
   }
   const typing = typed !== undefined && typed !== null;
   const acts = typing ? true : !(plainLink || isField);
-  const ctl = el.closest ? el.closest('button, input[type=submit], input[type=image], [role=button]') : null;
   const raw = ctl || anchor || el;
-  const named = typing ? (el.name || el.id || tag) : (raw.textContent || raw.value || (raw.getAttribute && (raw.getAttribute('aria-label') || raw.getAttribute('title'))) || tag);
+  const named = typing ? (el.name || el.id || tag) : (getter(Node, 'textContent').call(raw) || raw.value || (raw instanceof Element && (E.getAttribute.call(raw, 'aria-label') || E.getAttribute.call(raw, 'title'))) || tag);
   const label = String(named).replace(/\s+/g, ' ').trim().slice(0, 80);
+  const controls = form ? Array.from(formElements.call(form)) : [];
+  const isSubmit = (x) => (x instanceof HTMLButtonElement && lower(x.type) === 'submit') || (x instanceof HTMLInputElement && ['submit', 'image'].includes(lower(x.type)));
   let destination = '';
   let method = '';
   if (form) {
-    const submitter = ctl && ctl.form === form ? ctl : null;
-    destination = String(submitter && submitter.formAction ? submitter.formAction : form.action);
-    method = lower(submitter && submitter.formMethod ? submitter.formMethod : form.method) || 'get';
+    const submitter = typing ? controls.find(isSubmit) || null : (ctl && ownerOf(ctl) === form ? ctl : null);
+    destination = String(has(submitter, 'formaction') ? submitter.formAction : formAction.call(form));
+    method = lower(has(submitter, 'formmethod') ? submitter.formMethod : formMethod.call(form)) || 'get';
   }
   const fields = [];
-  if (form) {
-    for (const f of Array.from(form.elements)) {
-      const name = f.name || f.id;
-      if (!name || f.disabled) continue;
-      const t = lower(f.type);
-      if (['submit', 'button', 'image', 'reset', 'file'].includes(t)) continue;
-      if ((t === 'checkbox' || t === 'radio') && !f.checked) continue;
-      let v = typing && f === el ? String(typed) : String(f.value || '');
-      if (t === 'password') v = '(password, ' + v.length + ' characters)';
-      fields.push(name + '=' + v.replace(/\s+/g, ' '));
-    }
+  for (const f of controls) {
+    const name = f.name || f.id;
+    if (!name || f.disabled) continue;
+    const t = lower(f.type);
+    if (['submit', 'button', 'image', 'reset', 'file', 'fieldset', 'output'].includes(t) || f instanceof HTMLObjectElement) continue;
+    if ((t === 'checkbox' || t === 'radio') && !f.checked) continue;
+    let v = typing && f === el ? String(typed) : String(f.value || '');
+    if (t === 'password') v = '(password, ' + v.length + ' characters)';
+    fields.push(name + '=' + v.replace(/\s+/g, ' '));
   }
   const kind = opaque ? 'opaque' : plainLink ? 'link' : isField ? 'field' : ctl ? 'button' : 'other';
   return JSON.stringify({ acts, kind, label, url: String(location.href), destination, method, fields, typing });
 }"#;
+
 
 /// What the page's description of a control says, as the card needs it.
 #[derive(Debug, PartialEq)]
@@ -168,9 +186,14 @@ impl Described {
 /// The answer to "may this act be done?", carried to the act.
 pub(crate) struct Pressing {
     permit: Permit,
-    /// The description the person was shown (as JSON), when there was one: the act is made only if
-    /// the element still describes exactly like this.
+    /// The description the verdict was made on (as JSON), card or no card: the act is made only if
+    /// the element still describes exactly like this. `None` when the page could not be described
+    /// (the card said so) or nothing was there.
     shown: Option<String>,
+    /// What the description was made with (text about to be typed and submitted, or null).
+    typed: serde_json::Value,
+    /// Whether the submit can be checked against `shown` (the text replaces the field's).
+    exact: bool,
     /// Whether the person was asked at all.
     asked: bool,
 }
@@ -185,6 +208,17 @@ pub(crate) enum Outcome {
     Unavailable,
 }
 
+/// How an act at a point is made.
+pub(crate) enum AtPoint {
+    /// Made in the isolated world, on the element that was described: this is what to tell the model.
+    Done(String),
+    /// Not made; this says why.
+    Refused(String),
+    /// To be made by the mouse: the point is a frame or component the page controls (whose inside
+    /// only the mouse reaches), or a page that could not be described; checked again just before.
+    Mouse,
+}
+
 const CHANGED: &str = "The page changed while the person was deciding (the control or the form it sends is not what the card showed), so nothing was pressed. Look at the page again and retry; the person will be asked about what is there now.";
 
 impl Pressing {
@@ -197,11 +231,21 @@ impl Pressing {
         self.asked
     }
 
-    /// Press the element, but only if it is what the card showed; one evaluation describes it
-    /// again, compares, and clicks it.
+    fn expected(&self, for_submit: bool) -> serde_json::Value {
+        match &self.shown {
+            Some(json) if !for_submit || self.exact => serde_json::Value::from(json.as_str()),
+            _ => serde_json::Value::Null,
+        }
+    }
+
+    /// Press the element, but only if it is what the verdict was made on; one evaluation describes
+    /// it again, compares, and clicks it.
     pub(crate) fn press(&self, page: &mut dyn Page, pick: &Pick) -> Outcome {
-        let expected = self.shown.as_deref().map(serde_json::Value::from).unwrap_or(serde_json::Value::Null);
-        match page.on_element(pick, &press_fn(), &[expected]) {
+        self.press_with(page, pick, false)
+    }
+
+    fn press_with(&self, page: &mut dyn Page, pick: &Pick, double: bool) -> Outcome {
+        match page.on_element(pick, &press_fn(), &[self.expected(false), double.into()]) {
             Ok(reply) => match serde_json::from_str::<serde_json::Value>(&reply) {
                 Ok(v) if v["pressed"] == true => Outcome::Done(format!("Clicked: {}", v["label"].as_str().unwrap_or(""))),
                 Ok(_) => Outcome::Changed(CHANGED.to_string()),
@@ -213,10 +257,9 @@ impl Pressing {
 
     /// Type `text` into the element and submit it, but only if the form it sends is what the card
     /// showed: one evaluation sets the value, lets the page's own handlers run, describes the form
-    /// again, compares, and submits.
+    /// again, compares, and submits through the form's default button, as Enter would.
     pub(crate) fn type_and_submit(&self, page: &mut dyn Page, pick: &Pick, text: &str, clear: bool) -> Outcome {
-        let expected = self.shown.as_deref().map(serde_json::Value::from).unwrap_or(serde_json::Value::Null);
-        match page.on_element(pick, &type_fn(), &[text.into(), expected, clear.into()]) {
+        match page.on_element(pick, &type_fn(), &[text.into(), self.expected(true), clear.into()]) {
             Ok(reply) => match serde_json::from_str::<serde_json::Value>(&reply) {
                 Ok(v) if v["pressed"] == true => Outcome::Done(format!("Typed into: {}", v["label"].as_str().unwrap_or(""))),
                 Ok(_) => Outcome::Changed(CHANGED.to_string()),
@@ -226,29 +269,83 @@ impl Pressing {
         }
     }
 
-    /// For presses that are made by the mouse at a point (a frame's inside cannot be reached any
-    /// other way): check, right before the mouse events, that the point still describes as shown.
-    pub(crate) fn confirm(&self, page: &mut dyn Page, pick: &Pick, typed: Option<&str>) -> Result<(), String> {
-        let Some(shown) = &self.shown else { return Ok(()) };
-        let args = [typed.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null)];
-        match page.on_element(pick, DESCRIBE_FN, &args) {
-            Ok(now) if &now == shown => Ok(()),
-            Ok(_) => Err(CHANGED.to_string()),
-            Err(_) => Ok(()), // cannot be described now either way: the card named it as it was
+    /// Click (`focus_only`: focus) the element at a point. A mouse press is described once and then
+    /// lands wherever the page has moved things by the time it arrives (a link that turns
+    /// `pointer-events: none` on `mousemove` passes it to a cross-origin frame underneath), so every
+    /// described target is pressed in the isolated world, on the element that was described, and
+    /// only a frame or component the page controls, or a page that could not be described, is left
+    /// to the mouse (#1063 review, M3).
+    pub(crate) fn at_point(&self, page: &mut dyn Page, pick: &Pick, focus_only: bool, double: bool) -> AtPoint {
+        let opaque = self.shown.as_deref().and_then(Described::parse).is_some_and(|d| d.kind == "opaque");
+        if opaque || (self.shown.is_none() && self.asked) {
+            return match self.confirm(page, pick) {
+                Ok(()) => AtPoint::Mouse,
+                Err(said) => AtPoint::Refused(said),
+            };
         }
+        if self.shown.is_none() {
+            return AtPoint::Refused("Nothing is at that point, so nothing was pressed.".to_string());
+        }
+        let outcome = if focus_only {
+            match page.on_element(pick, &focus_fn(), &[self.typed.clone(), self.expected(false)]) {
+                Ok(r) if r == "focused" => Outcome::Done(String::new()),
+                Ok(_) => Outcome::Changed(CHANGED.to_string()),
+                Err(_) => Outcome::Unavailable,
+            }
+        } else {
+            self.press_with(page, pick, double)
+        };
+        match outcome {
+            Outcome::Done(said) => AtPoint::Done(said),
+            Outcome::Changed(said) => AtPoint::Refused(said),
+            Outcome::Unavailable => AtPoint::Refused("The control at that point could no longer be reached, so nothing was pressed. Look at the page again.".to_string()),
+        }
+    }
+
+    /// For presses that are made by the mouse or the keyboard: check, right before, that the target
+    /// still describes as it did. A target that cannot be described now is not pressed.
+    pub(crate) fn confirm(&self, page: &mut dyn Page, pick: &Pick) -> Result<(), String> {
+        let Some(shown) = &self.shown else { return Ok(()) }; // the card said the page could not be described
+        match page.on_element(pick, DESCRIBE_FN, std::slice::from_ref(&self.typed)) {
+            Ok(now) if &now == shown => Ok(()),
+            _ => Err(CHANGED.to_string()),
+        }
+    }
+
+    /// [`Self::confirm`] for the Enter that submits typed text: the focused field, described with
+    /// the text, against the card. Text appended to what was there could not be described ahead,
+    /// and was asked about as such.
+    pub(crate) fn confirm_submit(&self, page: &mut dyn Page) -> Result<(), String> {
+        if !self.exact {
+            return Ok(());
+        }
+        self.confirm(page, &Pick::Active)
     }
 }
 
-/// Click `this` if it still describes as `expected` (null: just click).
+/// Click `this` (twice and a `dblclick` if `double`) if it still describes as `expected` (null:
+/// just click).
 fn press_fn() -> String {
     format!(
-        "function (expected) {{ const describe = {DESCRIBE_FN}; const now = describe.call(this, null); \
+        "function (expected, double) {{ const describe = {DESCRIBE_FN}; const now = describe.call(this, null); \
          if (expected !== null && now !== expected) return JSON.stringify({{ pressed: false }}); \
-         const label = JSON.parse(now).label; this.click(); return JSON.stringify({{ pressed: true, label }}); }}"
+         const label = JSON.parse(now).label; this.click(); \
+         if (double) {{ this.click(); this.dispatchEvent(new MouseEvent('dblclick', {{ bubbles: true, detail: 2 }})); }} \
+         return JSON.stringify({{ pressed: true, label }}); }}"
     )
 }
 
-/// Type `text` into `this`, then submit only if the form it sends still describes as `expected`.
+/// Focus `this` if it still describes as `expected`, for typing at a point.
+fn focus_fn() -> String {
+    format!(
+        "function (typed, expected) {{ const describe = {DESCRIBE_FN}; const now = describe.call(this, typed); \
+         if (expected !== null && now !== expected) return 'changed'; this.focus(); return 'focused'; }}"
+    )
+}
+
+/// Type `text` into `this`, then submit only if the form it sends still describes as `expected`:
+/// through the form's default button, as Enter does, so the button's own `formaction` is what the
+/// description named, by the prototype's methods, which a field named `submit` cannot replace.
 pub(crate) fn type_fn() -> String {
     format!(
         "function (text, expected, clear) {{ const describe = {DESCRIBE_FN}; const el = this; el.focus(); \
@@ -257,7 +354,11 @@ pub(crate) fn type_fn() -> String {
          if (set && set.set) set.set.call(el, value); else el.value = value; \
          el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); \
          const now = describe.call(el, value); if (expected !== null && now !== expected) return JSON.stringify({{ pressed: false }}); \
-         if (el.form) {{ el.form.submit(); }} else {{ el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', keyCode: 13, bubbles: true }})); }} \
+         const form = el.form instanceof HTMLFormElement ? el.form : null; \
+         if (form) {{ const F = HTMLFormElement.prototype; \
+           const def = Array.from(Object.getOwnPropertyDescriptor(F, 'elements').get.call(form)).find((x) => (x instanceof HTMLButtonElement && x.type === 'submit') || (x instanceof HTMLInputElement && ['submit', 'image'].includes(x.type))); \
+           if (def) F.requestSubmit.call(form, def); else F.requestSubmit.call(form); }} \
+         else {{ el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', keyCode: 13, bubbles: true }})); }} \
          return JSON.stringify({{ pressed: true, label: JSON.parse(now).label }}); }}"
     )
 }
@@ -281,18 +382,18 @@ pub(crate) fn ask_before_press(page: &mut dyn Page, pick: &Pick, tool: &str) -> 
 /// made the old way.
 pub(crate) fn ask_before_typing(page: &mut dyn Page, pick: &Pick, tool: &str, text: &str, submit: bool, exact: bool) -> Result<Pressing, String> {
     let mut pressing = ask(page, pick, tool, submit.then_some(text))?;
-    if !exact {
-        pressing.shown = None;
-    }
+    pressing.exact = exact;
     Ok(pressing)
 }
 
 fn ask(page: &mut dyn Page, pick: &Pick, tool: &str, typed: Option<&str>) -> Result<Pressing, String> {
     let arg = typed.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null);
-    let (to, what, shown) = match page.on_element(pick, DESCRIBE_FN, &[arg]) {
-        Err(e) if e == NOT_FOUND => return Ok(Pressing { permit: Permit::asked(), shown: None, asked: false }), // nothing there; the act will say so
+    let unasked = |shown: Option<String>| Ok(Pressing { permit: Permit::asked(), shown, typed: arg.clone(), exact: true, asked: false });
+    let (to, what, shown) = match page.on_element(pick, DESCRIBE_FN, std::slice::from_ref(&arg)) {
+        Err(e) if e == NOT_FOUND => return unasked(None), // nothing there; the act will say so
         Ok(json) => match Described::parse(&json) {
-            Some(d) if !d.acts => return Ok(Pressing { permit: Permit::asked(), shown: None, asked: false }),
+            // No card, but the press is still checked against this description (review L1).
+            Some(d) if !d.acts => return unasked(Some(json)),
             Some(d) => {
                 let (to, what) = d.card(typed);
                 (to, what, Some(json))
@@ -308,170 +409,9 @@ fn ask(page: &mut dyn Page, pick: &Pick, tool: &str, typed: Option<&str>) -> Res
         }
     };
     let permit = ask_person_before_acting(&OutwardAct { tool, to: &to, what: &what, more: "" })?;
-    Ok(Pressing { permit, shown, asked: true })
+    Ok(Pressing { permit, shown, typed: arg, exact: true, asked: true })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn described(kind: &str, acts: bool, destination: &str, fields: &[&str]) -> String {
-        serde_json::json!({ "acts": acts, "kind": kind, "label": "Place order", "url": "https://shop.example/cart",
-                            "destination": destination, "method": if destination.is_empty() { "" } else { "post" },
-                            "fields": fields, "typing": false })
-        .to_string()
-    }
-
-    /// A page that answers from a script: each describe gets the next canned description, and a
-    /// press answers as told.
-    struct Fake {
-        describes: Vec<Result<String, String>>,
-        press: String,
-        pressed: bool,
-    }
-
-    impl Page for Fake {
-        fn on_element(&mut self, _pick: &Pick, function_src: &str, _args: &[serde_json::Value]) -> Result<String, String> {
-            if function_src.contains("this.click()") || function_src.contains("el.form.submit()") {
-                self.pressed = true;
-                return Ok(self.press.clone());
-            }
-            if self.describes.len() > 1 { self.describes.remove(0) } else { self.describes[0].clone() }
-        }
-    }
-
-    fn fake(describes: Vec<Result<String, String>>) -> Fake {
-        Fake { describes, press: r#"{"pressed":true,"label":"Place order"}"#.to_string(), pressed: false }
-    }
-
-    #[test]
-    fn the_description_script_asks_by_default_and_exempts_only_links_and_text_fields() {
-        let js = DESCRIBE_FN;
-        // The default: acts unless it is a plain link or a text field.
-        assert!(js.contains("const acts = typing ? true : !(plainLink || isField);"));
-        // Climbs from the inner node to its control, anchor and form.
-        for needle in ["el.closest('a[href]')", "el.closest('button, input[type=submit], input[type=image], [role=button]')", "el.closest('form')"] {
-            assert!(js.contains(needle), "{needle}");
-        }
-        // What the page cannot be seen into asks, and handlers make a link not plain.
-        for needle in ["'iframe'", "el.shadowRoot", "'onclick'", "anchor.hasAttribute('download')"] {
-            assert!(js.contains(needle), "{needle}");
-        }
-        // The destination is the resolved one, the submitter's own if it has one.
-        for needle in ["submitter.formAction", "form.action", "submitter.formMethod", "(password, "] {
-            assert!(js.contains(needle), "{needle}");
-        }
-        assert!(press_fn().contains("now !== expected") && press_fn().contains("this.click()"));
-        assert!(type_fn().contains("now !== expected"));
-    }
-
-    #[test]
-    fn the_card_names_the_page_the_destination_and_each_field_quoted_on_its_own() {
-        let d = Described::parse(&described("button", true, "https://elsewhere.example/buy", &["qty=2", "note=, card=(password, 0 characters)"])).unwrap();
-        let (to, what) = d.card(None);
-        assert_eq!(to, "https://shop.example/cart -> POST https://elsewhere.example/buy");
-        assert_eq!(what, r#"press "Place order" sending ["qty=2", "note=, card=(password, 0 characters)"]"#);
-        let d = Described::parse(&described("opaque", true, "", &[])).unwrap();
-        assert!(d.card(None).0.contains("inside a frame or component the page controls"));
-        let d = Described::parse(&described("field", true, "https://elsewhere.example/post", &["q=hi"])).unwrap();
-        assert_eq!(d.card(Some("hi")).1, r#"type "hi" into "Place order" and submit sending ["q=hi"]"#);
-    }
-
-    #[cfg(unix)]
-    mod asking {
-        use super::*;
-        use crate::outward_testing::{actions, first_card, installed, shown};
-
-        #[test]
-        fn a_button_raises_a_card_with_the_real_destination_and_a_no_presses_nothing() {
-            let (_shell, heard) = installed("br-no", "pending", "denied");
-            let mut page = fake(vec![Ok(described("button", true, "https://elsewhere.example/buy", &["qty=2"]))]);
-            let refusal = ask_before_press(&mut page, &Pick::Selector("#buy".into()), "browser_click").err().expect("a no");
-            assert!(refusal.contains("said no") && refusal.contains("Nothing was done"), "{refusal}");
-            let card = first_card(&heard);
-            assert_eq!(shown(&card, "to"), "https://shop.example/cart -> POST https://elsewhere.example/buy");
-            assert!(!page.pressed && !actions(&heard).contains(&"consume_approval".to_string()));
-        }
-
-        #[test]
-        fn a_plain_link_and_a_text_field_need_no_card_and_everything_else_does() {
-            for (kind, acts, asked) in [("link", false, false), ("field", false, false), ("button", true, true), ("other", true, true), ("opaque", true, true)] {
-                let (_shell, heard) = installed(&format!("br-{kind}"), "pending", "denied");
-                let mut page = fake(vec![Ok(described(kind, acts, "", &[]))]);
-                let result = ask_before_press(&mut page, &Pick::Point(1.0, 2.0), "browser_click_xy");
-                assert_eq!(result.is_err(), asked, "{kind}");
-                assert_eq!(!heard.lock().unwrap().is_empty(), asked, "{kind}: a card was or was not raised");
-            }
-        }
-
-        /// The point H1 made: typing at a point asks when the point is not a text field.
-        #[test]
-        fn typing_at_a_point_that_is_a_button_asks_even_without_submit() {
-            let (_shell, heard) = installed("br-xy-button", "pending", "denied");
-            let mut page = fake(vec![Ok(described("button", true, "", &[]))]);
-            assert!(ask_before_typing(&mut page, &Pick::Point(5.0, 5.0), "browser_type_xy", "a", false, true).is_err());
-            assert!(!heard.lock().unwrap().is_empty());
-            let (_shell, heard) = installed("br-xy-field", "pending", "denied");
-            let mut page = fake(vec![Ok(described("field", false, "", &[]))]);
-            assert!(ask_before_typing(&mut page, &Pick::Point(5.0, 5.0), "browser_type_xy", "a", false, true).is_ok());
-            assert!(heard.lock().unwrap().is_empty());
-        }
-
-        #[test]
-        fn typing_that_submits_always_asks_and_shows_the_form_it_sends() {
-            let (_shell, heard) = installed("br-submit", "pending", "denied");
-            let typing = serde_json::json!({ "acts": true, "kind": "field", "label": "q", "url": "https://bank.example/", "destination": "https://evil.example/collect",
-                                             "method": "post", "fields": ["q=my card number", "token=abc"], "typing": true }).to_string();
-            let mut page = fake(vec![Ok(typing)]);
-            assert!(ask_before_typing(&mut page, &Pick::Selector("#q".into()), "browser_type", "my card number", true, true).is_err());
-            let card = first_card(&heard);
-            assert_eq!(shown(&card, "to"), "https://bank.example/ -> POST https://evil.example/collect");
-            assert!(shown(&card, "what").contains("token=abc"));
-        }
-
-        #[test]
-        fn a_page_that_cannot_be_described_is_asked_about_and_then_pressed_the_old_way() {
-            let (_shell, heard) = installed("br-unknown", "pending", "granted");
-            let mut page = fake(vec![Err("cannot be done here".into())]);
-            let pressing = ask_before_press(&mut page, &Pick::Selector("#x".into()), "browser_click").expect("allowed");
-            assert!(pressing.was_asked());
-            assert!(shown(&first_card(&heard), "what").contains("could not describe"));
-            page.press = "not json".into();
-            assert!(matches!(pressing.press(&mut page, &Pick::Selector("#x".into())), Outcome::Unavailable));
-        }
-
-        #[test]
-        fn nothing_there_needs_no_card() {
-            let (_shell, heard) = installed("br-gone", "pending", "denied");
-            let mut page = fake(vec![Err(NOT_FOUND.into())]);
-            assert!(ask_before_press(&mut page, &Pick::Selector("#gone".into()), "browser_click").is_ok());
-            assert!(heard.lock().unwrap().is_empty());
-        }
-
-        #[test]
-        fn an_allowed_press_is_made_once_and_a_page_that_changed_is_not_pressed() {
-            let (_shell, heard) = installed("br-allow", "pending", "granted");
-            let mut page = fake(vec![Ok(described("button", true, "https://shop.example/buy", &["qty=1"]))]);
-            let pressing = ask_before_press(&mut page, &Pick::Selector("#buy".into()), "browser_click").expect("allowed");
-            assert_eq!(actions(&heard).iter().filter(|a| *a == "consume_approval").count(), 1);
-            assert!(matches!(pressing.press(&mut page, &Pick::Selector("#buy".into())), Outcome::Done(s) if s == "Clicked: Place order"));
-            assert!(page.pressed);
-
-            // The same press when the page's script says the element no longer matches.
-            let (_shell, _heard) = installed("br-changed", "pending", "granted");
-            let mut page = fake(vec![Ok(described("button", true, "https://shop.example/buy", &["qty=1"]))]);
-            let pressing = ask_before_press(&mut page, &Pick::Selector("#buy".into()), "browser_click").expect("allowed");
-            page.press = r#"{"pressed":false}"#.into();
-            assert!(matches!(pressing.press(&mut page, &Pick::Selector("#buy".into())), Outcome::Changed(s) if s.contains("nothing was pressed")));
-
-            // A press by the mouse at a point re-describes first and refuses if it differs.
-            let (_shell, _heard) = installed("br-xy", "pending", "granted");
-            let first = described("button", true, "https://shop.example/buy", &["qty=1"]);
-            let moved = described("button", true, "https://evil.example/buy", &["qty=1"]);
-            let mut page = fake(vec![Ok(first.clone()), Ok(first), Ok(moved)]);
-            let pressing = ask_before_press(&mut page, &Pick::Point(3.0, 4.0), "browser_click_xy").expect("allowed");
-            assert!(pressing.confirm(&mut page, &Pick::Point(3.0, 4.0), None).is_ok());
-            assert!(pressing.confirm(&mut page, &Pick::Point(3.0, 4.0), None).is_err(), "the page moved the control");
-        }
-    }
-}
+#[path = "browser_outward_tests.rs"]
+mod tests;

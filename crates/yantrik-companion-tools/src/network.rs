@@ -64,7 +64,7 @@ impl Tool for DownloadFileTool {
         let path = path.as_str();
 
         match std::process::Command::new("curl")
-            .args(["-fsSL", "--max-time", "60", "--max-filesize", "10485760", "-o", path, url])
+            .args(["-fsSLg", "--max-time", "60", "--max-filesize", "10485760", "-o", path, url])
             .output()
         {
             Ok(output) if output.status.success() => {
@@ -121,7 +121,7 @@ impl Tool for HttpFetchTool {
 
         if extract == "headers" {
             return match std::process::Command::new("curl")
-                .args(["-fsS", "-I", "--max-time", "10", url])
+                .args(["-fsSg", "-I", "--max-time", "10", url])
                 .output()
             {
                 Ok(output) if output.status.success() => {
@@ -139,7 +139,7 @@ impl Tool for HttpFetchTool {
 
         // Fetch body content
         match std::process::Command::new("curl")
-            .args(["-fsSL", "--max-time", "10", "--max-filesize", "1048576", url])
+            .args(["-fsSLg", "--max-time", "10", "--max-filesize", "1048576", url])
             .output()
         {
             Ok(output) if output.status.success() => {
@@ -447,6 +447,21 @@ fn strip_html(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// curl expands `[1-1000]` and `{a,b}` in an address into many requests, so one Allow for the
+    /// address a card showed was a thousand fetches (#1063 review, L4). Every curl the tools give an
+    /// address to turns globbing off.
+    #[test]
+    fn every_curl_given_an_address_turns_globbing_off() {
+        for (file, src) in [("network.rs", include_str!("network.rs")), ("clipboard.rs", include_str!("clipboard.rs")), ("weather.rs", include_str!("weather.rs")),
+                            ("pipe.rs", include_str!("pipe.rs")), ("home_assistant.rs", include_str!("home_assistant.rs"))] {
+            let code = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+            for call in code.split("Command::new(\"curl\")").skip(1) {
+                let flags = call.split('"').nth(1).unwrap_or("");
+                assert!(flags.starts_with('-') && !flags.starts_with("--") && flags.contains('g'), "{file}: curl's first flags {flags:?} leave globbing on");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

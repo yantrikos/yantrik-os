@@ -27,7 +27,7 @@ fn validate_entity_id(id: &str) -> bool {
 fn ha_curl(base_url: &str, token: &str, method: &str, path: &str, body: Option<&str>) -> String {
     let url = format!("{}{}", base_url, path);
     let mut cmd = std::process::Command::new("curl");
-    cmd.arg("-s")
+    cmd.arg("-sg")
         .arg("-X").arg(method)
         .arg("-H").arg(format!("Authorization: Bearer {}", token))
         .arg("-H").arg("Content-Type: application/json")

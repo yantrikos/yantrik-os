@@ -66,6 +66,9 @@ const OUTWARD: &[(&str, Gate)] = &[
     ("run_background", Gate::Contained),
     ("code_execute", Gate::Contained),
     ("script_run", Gate::Contained),
+    // A prompt to Claude under the person's sign-in: unasked only where this machine's CLI is shown
+    // to run it with no tools and no MCP servers (#1063 review, M4).
+    ("claude_think", Gate::Contained),
     // Reads aimed at an address (or a search) the model chose: asked about once the conversation
     // holds something of the person's, because the address can carry it.
     ("browse", Gate::Reads),
@@ -147,10 +150,6 @@ const NOT_OUTWARD: &[(&str, &[&str])] = &[
     (
         "local background commands on this machine",
         &["check_background_task", "list_background_tasks", "stop_background_task"],
-    ),
-    (
-        "an answer from the person's own Claude sign-in, run with every tool and MCP server disabled in an empty directory (`claude_think`)",
-        &["claude_think"],
     ),
     (
         "this machine's clipboard (fetching a URL is a GET)",

@@ -572,7 +572,7 @@ pub(crate) fn open_url_for_mind(url: &str) -> String {
 
 // ── Launch Browser ──
 
-use crate::browser_outward::{ask_before_press, ask_before_typing, Outcome, Page, Pick, NOT_FOUND};
+use crate::browser_outward::{ask_before_press, ask_before_typing, AtPoint, Outcome, Page, Pick, NOT_FOUND};
 
 /// The page the tools are driving, described and pressed in a world its own scripts cannot reach.
 struct CdpPage<'a> {
@@ -2342,9 +2342,10 @@ impl Tool for BrowserClickXYTool {
 
         let click_count = if double_click { 2 } else { 1 };
 
-        // A control that acts is asked about first, as the page describes it. A frame's inside can
-        // only be reached by the mouse, so this one presses by the mouse, after checking once more,
-        // right before, that the point still describes as the card showed (#1054, #1063).
+        // A control that acts is asked about first, as the page describes it, and is then pressed
+        // in the isolated world on the element described: a mouse press lands wherever the page has
+        // moved things by then. Only a frame's inside, which nothing else reaches, gets the mouse,
+        // checked once more right before (#1054, #1063; browser_outward::Pressing::at_point).
         let pick = Pick::Point(x, y);
         let pressing = {
             let mut page = CdpPage { ws: &mut ws };
@@ -2352,41 +2353,23 @@ impl Tool for BrowserClickXYTool {
                 Ok(p) => p,
                 Err(refusal) => return refusal,
             };
-            if let Err(said) = pressing.confirm(&mut page, &pick, None) {
-                pressing.finish(false);
-                return said;
+            match pressing.at_point(&mut page, &pick, false, double_click) {
+                AtPoint::Mouse => pressing,
+                AtPoint::Done(said) => return { pressing.finish(true); format!("Clicked at ({}, {}) — {said}", x as i64, y as i64) },
+                AtPoint::Refused(said) => return { pressing.finish(false); said },
             }
-            pressing
         };
 
         // CDP Input.dispatchMouseEvent: move → press → release
-        // This triggers real browser-level mouse events that work with any framework.
-        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
-            "type": "mouseMoved",
-            "x": x,
-            "y": y,
-        })) {
-            return format!("Mouse move error: {e}");
-        }
-
-        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": click_count,
-        })) {
-            return format!("Mouse press error: {e}");
-        }
-
-        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
-            "type": "mouseReleased",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": click_count,
-        })) {
-            return format!("Mouse release error: {e}");
+        for evt in ["mouseMoved", "mousePressed", "mouseReleased"] {
+            let mut params = json!({ "type": evt, "x": x, "y": y });
+            if evt != "mouseMoved" {
+                params["button"] = json!("left");
+                params["clickCount"] = json!(click_count);
+            }
+            if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", params) {
+                return format!("Mouse error ({evt}): {e}");
+            }
         }
 
         // Brief wait for DOM changes
@@ -2460,25 +2443,26 @@ impl Tool for BrowserTypeXYTool {
             Err(e) => return format!("Error: {e}"),
         };
 
-        // The first thing this does is click the point, so it asks like a click does: a text field
+        // The first thing this does is reach the point, so it asks like a click does: a text field
         // needs no card, a button does, with or without `submit` (#1063). With `submit`, the card is
-        // the form the text goes out in, checked again right before Enter.
+        // the form the text goes out in, checked again right before Enter. A described target is
+        // focused in the isolated world; only a frame's inside is clicked by the mouse (at_point).
         let pick = Pick::Point(x, y);
-        let pressing = {
+        let (pressing, by_mouse) = {
             let mut page = CdpPage { ws: &mut ws };
             let pressing = match ask_before_typing(&mut page, &pick, "browser_type_xy", text, submit, clear_first) {
                 Ok(p) => p,
                 Err(refusal) => return refusal,
             };
-            if let Err(said) = pressing.confirm(&mut page, &pick, submit.then_some(text)) {
-                pressing.finish(false);
-                return said;
+            match pressing.at_point(&mut page, &pick, true, false) {
+                AtPoint::Mouse => (pressing, true),
+                AtPoint::Done(_) => (pressing, false),
+                AtPoint::Refused(said) => return { pressing.finish(false); said },
             }
-            pressing
         };
 
-        // 1. Click at coordinates to focus the field
-        for evt in &["mouseMoved", "mousePressed", "mouseReleased"] {
+        // 1. Click at coordinates to focus the field, if it is in a frame
+        for evt in if by_mouse { &["mouseMoved", "mousePressed", "mouseReleased"][..] } else { &[] } {
             let mut params = json!({ "type": evt, "x": x, "y": y });
             if *evt != "mouseMoved" {
                 params["button"] = json!("left");
@@ -2528,7 +2512,7 @@ impl Tool for BrowserTypeXYTool {
         if submit {
             {
                 let mut page = CdpPage { ws: &mut ws };
-                if let Err(said) = pressing.confirm(&mut page, &Pick::Active, Some(text)) {
+                if let Err(said) = pressing.confirm_submit(&mut page) {
                     pressing.finish(false);
                     return said;
                 }
@@ -3039,3 +3023,7 @@ mod mind_display_tests {
 #[cfg(test)]
 #[path = "browser_url_tests.rs"]
 mod url_tests;
+
+#[cfg(test)]
+#[path = "browser_chromium_tests.rs"]
+mod chromium_tests;

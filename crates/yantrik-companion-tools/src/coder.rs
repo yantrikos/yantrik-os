@@ -26,6 +26,10 @@ use std::path::{Path, PathBuf};
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
+#[path = "coder_contain.rs"]
+mod contain;
+use contain::{install_deps, installs, sandbox_words};
+
 const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
 const OUTPUT_DIR: &str = "/home/yantrik/.config/yantrik/scripts/output";
 const REGISTRY_FILE: &str = "/home/yantrik/.config/yantrik/scripts/registry.json";
@@ -91,25 +95,6 @@ fn save_registry(registry: &HashMap<String, ScriptEntry>) {
     if let Ok(data) = serde_json::to_string_pretty(registry) {
         let _ = std::fs::write(REGISTRY_FILE, data);
     }
-}
-
-/// Where a script runs, in words for the card.
-fn sandbox_words(mode: SandboxMode) -> String {
-    match mode {
-        SandboxMode::Strict if has_bwrap() => "this machine, inside the strict sandbox".to_string(),
-        SandboxMode::Strict => "this machine, with no sandbox (bubblewrap is not installed here, so strict is not enforced)".to_string(),
-        SandboxMode::Network => "this machine, with network access".to_string(),
-        SandboxMode::None => "this machine, with no sandbox at all".to_string(),
-    }
-}
-
-/// The text of a stored script, or empty if there is no such script.
-fn stored_script_text(name: &str) -> String {
-    let safe = sanitize_name(name);
-    load_registry()
-        .get(&safe)
-        .and_then(|entry| std::fs::read_to_string(scripts_dir().join(&entry.filename)).ok())
-        .unwrap_or_default()
 }
 
 fn sanitize_name(name: &str) -> String {
@@ -299,34 +284,6 @@ fn detect_node_deps(content: &str) -> Vec<String> {
     let mut sorted: Vec<_> = packages.into_iter().collect();
     sorted.sort();
     sorted
-}
-
-/// Install dependencies before execution. Returns error message if installation fails.
-fn install_deps(language: &str, deps: &[String]) -> Option<String> {
-    if deps.is_empty() { return None; }
-
-    let (cmd, args_prefix): (&str, &[&str]) = match language {
-        "python" => ("pip3", &["install", "-q", "--break-system-packages"]),
-        "node" | "javascript" | "typescript" => ("npm", &["install", "--no-save", "--silent"]),
-        "ruby" => ("gem", &["install", "--no-document"]),
-        _ => return None,
-    };
-
-    tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
-
-    let mut command = std::process::Command::new(cmd);
-    command.args(args_prefix);
-    command.args(deps);
-    command.current_dir(scripts_dir());
-
-    match command.output() {
-        Ok(output) if output.status.success() => None,
-        Ok(output) => {
-            let err = String::from_utf8_lossy(&output.stderr);
-            Some(format!("Dependency install failed ({cmd}): {}", err.chars().take(500).collect::<String>()))
-        }
-        Err(e) => Some(format!("Could not run {cmd}: {e}")),
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -535,10 +492,11 @@ fn build_bwrap_args(
         args.push("/lib64".into());
     }
 
-    // Writable workspace (scripts + output)
+    // Writable workspace (scripts + output), but not what later runs outside the sandbox read
     args.push("--bind".into());
     args.push(workspace.to_string_lossy().to_string());
     args.push(workspace.to_string_lossy().to_string());
+    args.extend(contain::kept_read_only(workspace));
     if output != workspace && output.starts_with(workspace) {
         // output is inside workspace, already covered
     } else if output.exists() {
@@ -659,11 +617,11 @@ fn execute_script(
             inner.push_str("ts-node ");
         }
         inner.push_str(&format!("\"{}\"", filepath.display()));
-        if !args.is_empty() {
-            inner.push(' ');
-            inner.push_str(args);
+        // The arguments as words, each quoted: the card showed them as arguments, so the shell
+        // here must not read `;` or `$(…)` in them, and they split as they do without bwrap.
+        for word in shell_words::split(args).unwrap_or_else(|_| args.split_whitespace().map(String::from).collect()) {
+            inner.push_str(&format!(" '{}'", word.replace('\'', "'\\''")));
         }
-
         c.arg(inner);
         c
     } else {
@@ -937,11 +895,13 @@ impl Tool for CodeExecuteTool {
         // network, read-only files), which is the default. A wider one, or no bubblewrap on this
         // machine to enforce the strict one, can send anything anywhere (#1063).
         let gate_sandbox = args.get("sandbox").and_then(|v| v.as_str()).map(SandboxMode::from_str).unwrap_or(SandboxMode::Strict);
-        let gate_isolated = gate_sandbox == SandboxMode::Strict && has_bwrap();
         let gate_code = args.get("code").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let gate_where = sandbox_words(gate_sandbox);
         let gate_language = args.get("language").and_then(|v| v.as_str()).unwrap_or("python").to_string();
-        crate::outward::acting_unless(gate_isolated || gate_code.is_empty(), &crate::outward::OutwardAct { tool: "code_execute", to: &gate_where, what: &gate_code, more: &gate_language }, || {
+        // The packages its imports name are installed outside the sandbox first: shown, and asked.
+        let deps = match gate_language.as_str() { "python" => detect_python_deps(&gate_code), "node" | "javascript" => detect_node_deps(&gate_code), _ => vec![] };
+        let gate_more = format!("{gate_language} {}", installs(&gate_language, &deps)).trim_end().to_string();
+        crate::outward::acting_unless(contain::contained(gate_sandbox, &deps) || gate_code.is_empty(), &crate::outward::OutwardAct { tool: "code_execute", to: &gate_where, what: &gate_code, more: &gate_more }, || {
         let code = args.get("code").and_then(|v| v.as_str()).unwrap_or_default();
         let language = args.get("language").and_then(|v| v.as_str()).unwrap_or("python");
         let timeout = args.get("timeout")
@@ -982,12 +942,7 @@ impl Tool for CodeExecuteTool {
             let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
         }
 
-        // Auto-install deps
-        let deps = match language {
-            "python" => detect_python_deps(code),
-            "node" | "javascript" => detect_node_deps(code),
-            _ => vec![],
-        };
+        // Auto-install the deps the card named
         if let Some(err) = install_deps(language, &deps) {
             let _ = std::fs::remove_file(&tmp_path);
             return err;
@@ -1165,12 +1120,11 @@ impl Tool for ScriptRunTool {
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         // A stored script, run on this machine: unasked only inside the strict sandbox, as above.
         let gate_sandbox = args.get("sandbox").and_then(|v| v.as_str()).map(SandboxMode::from_str).unwrap_or(SandboxMode::Strict);
-        let gate_isolated = gate_sandbox == SandboxMode::Strict && has_bwrap();
         let gate_name = args.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let gate_source = stored_script_text(&gate_name);
+        let (gate_source, gate_deps, gate_language) = contain::stored(&gate_name);
         let gate_where = sandbox_words(gate_sandbox);
-        let gate_more = args.get("args").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        crate::outward::acting_unless(gate_isolated || gate_source.is_empty(), &crate::outward::OutwardAct { tool: "script_run", to: &gate_where, what: &gate_source, more: &gate_more }, || {
+        let gate_more = format!("{} {}", args.get("args").and_then(|v| v.as_str()).unwrap_or(""), installs(&gate_language, &gate_deps)).trim().to_string();
+        crate::outward::acting_unless(contain::contained(gate_sandbox, &gate_deps) || gate_source.is_empty(), &crate::outward::OutwardAct { tool: "script_run", to: &gate_where, what: &gate_source, more: &gate_more }, || {
         let name = args.get("name").and_then(|v| v.as_str()).unwrap_or_default();
         let script_args = args.get("args").and_then(|v| v.as_str()).unwrap_or("");
         let timeout = args.get("timeout")
@@ -1208,7 +1162,11 @@ impl Tool for ScriptRunTool {
             return format!("Error: script file {} not found on disk", entry.filename);
         }
 
-        // Auto-install dependencies (runs OUTSIDE sandbox — needs network + write to site-packages)
+        // Run what was shown or judged contained, not what the file or registry say by now.
+        if std::fs::read_to_string(&filepath).unwrap_or_default() != gate_source || entry.dependencies != gate_deps {
+            return contain::CHANGED.to_string();
+        }
+        // Auto-install dependencies (runs OUTSIDE sandbox, which is why they asked: contain.rs)
         if !entry.dependencies.is_empty() {
             if let Some(err) = install_deps(&entry.language, &entry.dependencies) {
                 return err;

@@ -29,7 +29,7 @@ pub fn run_with_stdin(mut cmd: Command, input: Vec<u8>) -> std::io::Result<Outpu
 /// error (`-f`) or after `max_time_secs`. The caller checks the status and parses stdout.
 pub fn post_json(url: &str, max_time_secs: u32, body: Vec<u8>) -> std::io::Result<Output> {
     let mut cmd = Command::new("curl");
-    cmd.args(["-fsSL", "--max-time", &max_time_secs.to_string()])
+    cmd.args(["-fsSLg", "--max-time", &max_time_secs.to_string()])
         .args(["-H", "Content-Type: application/json", "--data-binary", "@-", url]);
     run_with_stdin(cmd, body)
 }

