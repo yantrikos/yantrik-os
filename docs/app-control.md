@@ -67,6 +67,55 @@ revision: <16 hex digits>
 surface through the MCP bridge (`os_apps`, `os_describe`, `os_act`) and the built-in companion's
 `list_apps`, `describe_app` and `app_action`.
 
+### What reading an app taints (the MCP bridge, #1062)
+
+`yos-mcp` keeps a conversation from carrying what it read out of the machine: once it has read
+something private, it will not type into a page, every command and hand-off asks the person, and
+an address it has not been to asks too. Most turns begin by describing an app to learn its
+actions, so what counts as a private read is as narrow as the data and no narrower:
+
+- **`os_apps` is not a private read.** Besides the open apps and services it lists every app on the
+  machine, running or not, as one JSON object per line: `name`, `for` (what it is for), `opens` (how
+  it opens) and `describe_as` (the name to describe it by), from the same list as `describe shell` >
+  `state.apps`. Only those four keys, as text, cut at 300 characters; nothing of any app's state.
+  The "Open now" lines name the running apps and nothing more: an app's one-line summary is its
+  state (a page's title and host, a note's title), so `os_apps` leaves it out and a mind that wants
+  it uses `os_describe`, which taints. A person's own `yos ls` still shows the summaries.
+- **A describe whose answer holds no state is not a private read.** `os_describe {app, actions:
+  "<prefix>"}` runs `yos describe --no-state`, which prints the action signatures behind a sentinel
+  line (`(action signatures only: this answer holds no state)`) and nothing else: no summary, no
+  `revision`, no state, not even as JSON. The bridge judges the *answer*, not the request: the
+  sentinel first and every other line indented, which a summary, a `revision:` line and a state
+  object (`{` in column zero) never are. A `yos` that does not know the flag prints the state, fails
+  the check, and taints.
+- **A describe of an app on the bridge's `NO_PERSON_DATA` list is not a private read.** The list is
+  explicit, and **empty today**: `mind-desk`'s describe holds none of the person's data, but any app
+  can declare the surface id `mind-desk` in its `.desktop` file and nothing reserves the name, so an
+  exemption by name would free that app's state. Every app taints, **including one nobody has
+  classified**:
+  Calendar, Notes, Email, Files, Weather (it holds the person's city), the shell, the terminals, and
+  the browser (its describe holds the page's title, host and tabs).
+- **Reading back an app a mind just changed is a read of its real state**, so it is private if the
+  app is.
+- **A tainted `web_go` is an access decision, not a dead end.** It raises the person's card, showing
+  the exact, whole address (the shell draws it whole or does not ask), asked whatever the mode, with
+  no "allow for this session". The address on the card is the form the browser will send, made by
+  `wire_address` in `yos-mcp` (the one shared function for any card that shows an address; word it
+  with `shown_url`): the host in punycode, every non-ASCII, control or whitespace character
+  percent-encoded, so nothing on the card is invisible and a look-alike host shows as `xn--…`. A
+  host with no valid name is not put to the person at all. Allow opens that address once: the grant is bound to its exact
+  arguments and spent by the browser's own dispatch. No answer, or no, opens nothing. Typing into a
+  page (`web_type`) stays refused, and an address the session has already been to, with nothing in
+  its query, fragment or userinfo, still opens unasked.
+
+The signatures-only answer trusts an app's action declarations (names, parameter text, enum values)
+to be static, as every first-party app's are; a third-party app that wrote state into them would not
+be caught.
+
+Only the person's **+** in the Lens clears a scope, marks only add, an unreadable record is tainted,
+and no tool lets a mind clear its own taint. None of this is in the decision table
+(`mind_mode::decide`, `mind-mode-vectors.json`): it is the bridge's.
+
 ## Adding a surface to an app
 
 ```rust
@@ -336,6 +385,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `agent_run`, `agent_input` | sensitive | arbitrary commands; typing into a live shell |
 | shell | `agent_job`, `agent_kill` | standard | reading a job's state; ending a job the caller's token owns |
 | shell | `request_approval`, `approval_status`, `consume_approval`, `set_mind_mode`, `record_unasked_action`, `show_mind_audit`, `close_mind_menu` | safe | the approval machinery itself, which must never act; `set_mind_mode` refuses every loosening, so it can only tighten |
+| shell | `approvals_test_state` | safe | whether a test run has turned approval cards off, without `describe shell` (a mind's describe taints it): `{"on", "expires_in_secs", "means"}`, exactly what `describe shell` publishes under `approvals_off_for_test`. No arguments, holds nothing of the person's, any caller may read it, and it changes nothing; it is not a private read in `yos-mcp` |
 | shell | `open_switcher`, `switcher_move`, `switcher_cancel` | safe | drawing the window overview (Super+Tab; Alt+Tab is labwc's own cycling and not this), moving its selection, putting it away; nothing is switched. Cancel gives the previous window back only when no card waits |
 | shell | `switcher_commit` | standard | brings the selected window in front of the shell, as `focus_window` does; a window that has closed is taken off the card and the answer says so |
 | shell | `open_today`, `close_today`, `open_quick_settings`, `close_quick_settings`, `open_power_menu`, `close_power_menu`, `open_clipboard`, `close_clipboard`, `open_cheat_sheet`, `close_cheat_sheet` | safe | showing or putting away the bar's panels (Today, Quick Settings, the power menu, the clipboard) and the keyboard cheat sheet; opening the power menu powers nothing off, choosing an entry is the person's |
@@ -716,16 +766,16 @@ framework opens there at all any more; see the last section.)
   toolkit settings, so a dead socket fails the app instead of falling back to the person's X display.
 - Mind View down is a refusal that says so (`failed_launches`), never a fall back to the desktop.
   A failed start is tried again after 30 s.
-- `open_app` for a program already open on the person's desktop starts nothing: the answer says it was
-  not launched again and not raised, and the mind drives the open window through its surface.
+- `open_app` for a program open on the person's desktop starts nothing (not launched, not raised; the
+  mind drives the open window through its surface), except the Browser: a mind's is Mind View's own.
 - `open_app` and, for a mind, `files_open` answer after the window is seen: `window: appeared`
   with `where`, or an error that says only what was observed (a refusal; an exit; "no window listed
   within 8 s", which does not say where a slow start may still land). The answer is settled, and
   `open_app`'s also carries `app`: the opened app's own summary (`state`) and its actions with the
   arguments each takes (`actions`, e.g. `new {text?}`, `save_as {path}`), so the next call can act.
-- `open_url` and `launch_browser` open the companion's own browser in Mind View, or are refused.
-  A browser on the default debugging port that is not the companion's (the person's own) is not
-  attached to.
+- `open_url`, `launch_browser` and `open_app browser` open Mind View's browser (port 9223, its own
+  profile), or are refused; a mind's `web_*` and `browser_*` tools drive only it. The person's Browser
+  (9222, their profile) is theirs alone: the port is picked by who calls (`browsers.conf`).
 - `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
   and colours only (no screen clears, no carriage returns, no titles), capped per command; the
   answer and the Agents screen keep the full output.

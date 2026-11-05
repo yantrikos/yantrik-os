@@ -182,8 +182,13 @@ fn several_tabs_and_a_running_job_are_described_as_they_were() {
 #[test]
 fn an_exited_shell_says_how() {
     let f = open();
-    f.type_until("exit 7\r", "exit 7");
-    f.until("the exit", |f| f.summary().contains("shell exited (status 7)"));
+    // Not `type_until`: a shell quick to leave may not leave the echo of its line on the screen
+    // (the kernel can drop it as the PTY closes). What is waited on is the exit itself, below.
+    f.app.run(crate::Command::Input(b"exit 7\r".to_vec()));
+    // `describe` reads the shell as it is, while the window shows it a frame later (the worker's
+    // wake, then the frame timer). So wait for the window's own words, which is what is asserted.
+    f.until("the exit shown", |f| f.app.ui(|ui| ui.get_status().to_string()) == "Shell exited \u{b7} status 7");
+    assert!(f.summary().contains("shell exited (status 7)"), "{}", f.summary());
     assert!(f.summary().contains("`new_tab` starts another"), "{}", f.summary());
     assert_eq!(f.state()["shell_exit_code"], json!(7));
     assert_eq!(f.state()["alive"], json!(false));

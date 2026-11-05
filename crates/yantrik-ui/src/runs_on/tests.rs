@@ -440,3 +440,11 @@ fn an_address_whose_host_cannot_be_told_is_a_service_you_set_up() {
     assert!(identity::is_local("http://u@127.0.0.1:11434") && identity::is_local("https://user:pw@[fd00::1]:8443/v1"));
     assert!(!identity::is_local("https://user:pw@aig.example/v1"));
 }
+
+#[test]
+fn with_sharing_off_everywhere_the_lens_says_why_no_model_can_be_used() {
+    let rows = resolve(&[on_gateway("hermes", "Hermes Agent", "Hermes 0.21.5 \u{b7} picked", GatewayFact::NoneShared)], None);
+    assert_eq!(rows[0].destination(), "No model can be used yet: sharing is off for every account");
+    assert_eq!(rows[0].runs_on(), "No model picked yet");
+    assert_eq!(rows[0].plain_runs_on(), "No model picked yet");
+}

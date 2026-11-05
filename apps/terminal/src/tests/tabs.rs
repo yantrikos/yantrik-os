@@ -137,7 +137,8 @@ fn restart_replaces_an_exited_shell_and_does_nothing_for_a_live_one() {
     f.app.ui(|ui| ui.invoke_action("restart".into()));
     f.quiet();
     assert_eq!(f.active_pid(), first, "a live shell is not restarted");
-    f.type_until("exit 3\r", "exit 3");
+    // Not `type_until`: the echo of a line that ends the shell may never reach the screen.
+    f.app.run(Command::Input(b"exit 3\r".to_vec()));
     f.until("the exit", |f| !f.app.model(|m| m.session().is_some_and(|s| s.alive())));
     f.app.ui(|ui| ui.invoke_action("restart".into()));
     f.until("a new shell", |f| f.tabs() == 1 && f.app.model(|m| m.session().is_some_and(|s| s.alive())));

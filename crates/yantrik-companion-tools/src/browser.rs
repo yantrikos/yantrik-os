@@ -11,12 +11,12 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
+use yantrik_browser_ports::{self as ports, Place};
 use yantrik_ipc_contracts::mind_view::FOR_MIND_VAR;
 
+use super::browser_side::{self, CDP_HOST, CDP_PORT};
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
-const CDP_HOST: &str = "127.0.0.1";
-const CDP_PORT: u16 = 9222;
 const MAX_TEXT_CHARS: usize = 6000;
 const MAX_SELECTOR_LEN: usize = 200;
 const MAX_ELEMENTS: usize = 250;
@@ -119,23 +119,9 @@ struct CdpTab {
     ws_url: String,
 }
 
-/// Fetch open tabs from Chromium's CDP HTTP endpoint.
+/// Fetch open tabs from Mind View's browser, once the port is shown to be its own (#1085).
 fn get_tabs() -> Result<Vec<CdpTab>, String> {
-    let url = format!("http://{}:{}/json", CDP_HOST, CDP_PORT);
-    let output = std::process::Command::new("curl")
-        .args(["-s", "--max-time", "3", &url])
-        .output()
-        .map_err(|e| format!("Cannot reach browser (curl): {e}"))?;
-
-    if !output.status.success() {
-        return Err("Browser not reachable. Use launch_browser first.".to_string());
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout);
-    let tabs: Vec<Value> = serde_json::from_str(&body)
-        .map_err(|e| format!("Bad CDP response: {e}"))?;
-
-    Ok(tabs
+    Ok(browser_side::targets()?
         .iter()
         .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
         .map(|t| CdpTab {
@@ -458,104 +444,30 @@ pub fn chrome_binary() -> Result<String, String> {
     ))
 }
 
-/// Where a browsing identity keeps its cookies, logins and history.
+/// Where a browsing identity keeps its cookies, logins and history, and the port it answers on.
 ///
-/// One profile per identity, under the user's data directory rather than `/tmp`. The old
-/// hardcoded `/tmp/chromium-profile` meant one identity for the whole machine — you could not
-/// hold a work account and a personal one — and every session died with the tmpdir on reboot.
-/// Sessions are the thing worth keeping: they survive where a stored password would have to be
-/// replayed through a login form, 2FA and a device check.
+/// One profile per identity, under the user's data directory rather than `/tmp`, so sessions
+/// survive a reboot. The default identity is Mind View's browser (its port, its profile): the
+/// companion is a mind, and a mind's web tools drive that browser and no other (#1085). The
+/// others each have a profile and a port of their own, derived from the name so a second process
+/// finds the same browser again. Where these live is `yantrik_browser_ports`'s.
 pub fn profile_dir(identity: &str) -> std::path::PathBuf {
-    let identity = sanitize_identity(identity);
-    let base = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
-    base.join(".local/share/yantrik/browsers").join(identity)
+    ports::identity_side(identity).1
 }
 
-/// An identity names a directory, so it may not wander out of one.
-fn sanitize_identity(identity: &str) -> String {
-    let cleaned: String = identity
-        .trim()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect();
-    if cleaned.is_empty() {
-        "default".to_string()
-    } else {
-        cleaned
-    }
-}
-
-/// The debugging port for an identity.
-///
-/// Derived from the name rather than fixed, because the two launchers both used 9222: whichever
-/// browser started first owned the port, `is_browser_running` could not tell them apart, and the
-/// headless extraction browser would happily drive the user's visible window — or report "already
-/// running" when only the other one was up.
 pub fn port_for(identity: &str) -> u16 {
-    let identity = sanitize_identity(identity);
-    if identity == "default" {
-        return CDP_PORT;
-    }
-    // FNV-1a, so the same name always lands on the same port and a caller can find it again.
-    let mut hash: u32 = 2166136261;
-    for byte in identity.as_bytes() {
-        hash ^= *byte as u32;
-        hash = hash.wrapping_mul(16777619);
-    }
-    // 9223..=9322, leaving 9222 to the default identity.
-    9223 + (hash % 100) as u16
+    ports::identity_side(identity).0
 }
 
-/// Check if a browser is listening on this identity's port.
-fn is_identity_running(identity: &str) -> bool {
-    port_is_open(port_for(identity))
+/// Which profile a browser on `identity`'s port must have been started with.
+fn place_for(identity: &str) -> Place {
+    if ports::sanitize_identity(identity) == "default" { Place::MindView } else { Place::Identity }
 }
 
-fn port_is_open(port: u16) -> bool {
-    TcpStream::connect_timeout(
-        &format!("{CDP_HOST}:{port}").parse().unwrap(),
-        Duration::from_millis(500),
-    )
-    .is_ok()
-}
-
-/// Whether `cmdline` (a `/proc/<pid>/cmdline`, NUL-separated) is a browser serving DevTools on
-/// `port` from some profile other than `profile`: the person's own Chromium started with
-/// `--remote-debugging-port=9222`. Attaching to it would let a mind drive the person's tabs.
-fn is_foreign_debug_browser(cmdline: &[u8], port: u16, profile: &std::path::Path) -> bool {
-    let args: Vec<&str> = cmdline.split(|b| *b == 0).filter_map(|a| std::str::from_utf8(a).ok()).collect();
-    let serves = args.iter().any(|a| *a == format!("--remote-debugging-port={port}"));
-    if !serves {
-        return false;
-    }
-    let ours = args.iter().any(|a| a.strip_prefix("--user-data-dir=").is_some_and(|p| std::path::Path::new(p) == profile));
-    !ours
-}
-
-/// Whether the browser answering on the default CDP port belongs to someone else. Only a process
-/// that can be read answers yes: with none visible (another pid namespace), the port is taken as ours.
-fn cdp_port_is_the_persons() -> bool {
-    let profile = profile_dir("default");
-    let Ok(entries) = std::fs::read_dir("/proc") else { return false };
-    entries.flatten().any(|e| {
-        e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
-            && std::fs::read(e.path().join("cmdline"))
-                .is_ok_and(|c| is_foreign_debug_browser(&c, CDP_PORT, &profile))
-    })
-}
-
-/// Check if the companion's own Chromium CDP is reachable. A browser on that port that is not the
-/// companion's (the person's, started with remote debugging) does not count, so the companion
-/// never attaches to and drives the person's tabs.
+/// Whether Mind View's browser is up. A browser on that port that is not Mind View's (the
+/// person's, say) is not the companion's, whatever it answers.
 fn is_browser_running() -> bool {
-    TcpStream::connect_timeout(
-        &format!("{}:{}", CDP_HOST, CDP_PORT).parse().unwrap(),
-        Duration::from_millis(500),
-    )
-    .is_ok()
-        && !cdp_port_is_the_persons()
+    browser_side::is_running()
 }
 
 /// Auto-launch Chromium in headless mode for data-extraction tools (web_search, browse).
@@ -565,6 +477,7 @@ fn ensure_headless_browser() -> Result<(), String> {
     if is_browser_running() {
         return Ok(());
     }
+    browser_side::may_start(CDP_PORT, Place::MindView)?;
 
     // Run watchdog cleanup first
     if let Some(warning) = super::browser_lifecycle::watchdog_check() {
@@ -583,9 +496,6 @@ fn ensure_headless_browser() -> Result<(), String> {
         .args([
             "--headless=new",
             "--ozone-platform=headless",
-            "--remote-debugging-address=127.0.0.1",
-            "--remote-debugging-port=9222",
-            "--remote-allow-origins=http://127.0.0.1:9222",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-gpu",
@@ -603,6 +513,7 @@ fn ensure_headless_browser() -> Result<(), String> {
             "--excludeSwitches=enable-automation",
             // Anti-detection: use real browser profile dir for persistent cookies/state
         ])
+        .args(ports::debugging_flags(CDP_PORT))
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("about:blank")
         // Headless draws nothing, and it is not handed the person's display to draw on either.
@@ -761,11 +672,6 @@ fn launch_browser(args: &serde_json::Value) -> String {
         tracing::info!("launch_browser pre-flight: {}", warning);
     }
 
-    // Check if already running
-    if is_browser_running() {
-        return "Browser already running (CDP on port 9222).".to_string();
-    }
-
     let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
     let headless = args.get("headless").and_then(|v| v.as_bool()).unwrap_or(false);
     if url != "about:blank" {
@@ -784,6 +690,12 @@ fn launch_browser(args: &serde_json::Value) -> String {
         return format!("Cannot create the profile directory {}: {e}", profile.display());
     }
     let port = port_for(identity);
+    // Never a second Chromium on a port something else holds (#1085).
+    match browser_side::may_start(port, place_for(identity)) {
+        Ok(true) => {}
+        Ok(false) => return format!("Browser already running (CDP on port {port})."),
+        Err(why) => return why,
+    }
 
     let binary = match chrome_binary() {
         Ok(b) => b,
@@ -793,11 +705,6 @@ fn launch_browser(args: &serde_json::Value) -> String {
     let mut chrome_args: Vec<String> = vec![
         // Headless has no display to be ozone's platform; it is set to headless below.
         if headless { "--ozone-platform=headless".into() } else { "--ozone-platform=wayland".into() },
-        "--remote-debugging-address=127.0.0.1".into(),
-        format!("--remote-debugging-port={port}"),
-        // Chrome 2026 refuses a DevTools websocket whose Origin it does not know. Only ours:
-        // `connect_tab` presents exactly this one, and a web page's script cannot.
-        format!("--remote-allow-origins={}", devtools_origin(port)),
         format!("--user-data-dir={}", profile.display()),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
@@ -822,6 +729,9 @@ fn launch_browser(args: &serde_json::Value) -> String {
             "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
         );
     }
+    // Loopback only, and the one Origin `connect_tab` presents: Chrome 2026 refuses a DevTools
+    // websocket whose Origin it does not know, and a web page's script cannot present this one.
+    chrome_args.extend(ports::debugging_flags(port));
     chrome_args.push(url.to_string());
 
     // A headed window goes where a mind's windows go, and nowhere else: Mind View's display
@@ -850,9 +760,9 @@ fn launch_browser(args: &serde_json::Value) -> String {
             // Wait a moment for CDP to become available
             for _ in 0..10 {
                 std::thread::sleep(Duration::from_millis(500));
-                if is_browser_running() {
+                if browser_side::held(port, place_for(identity)) == browser_side::Held::Ours {
                     let mode = if headless { "headless" } else { "visible" };
-                    return format!("Browser launched in {mode} mode (CDP on port 9222). Opening: {url}");
+                    return format!("Browser launched in {mode} mode (CDP on port {port}). Opening: {url}");
                 }
             }
             "Browser process started but CDP not yet reachable. Try again in a few seconds.".to_string()
@@ -2645,12 +2555,13 @@ impl Tool for BrowserTypeXYTool {
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+    use yantrik_browser_ports::sanitize_identity;
 
     #[test]
     fn the_devtools_origin_is_the_browsers_own_address_and_nothing_wider() {
         assert_eq!(port_of("ws://127.0.0.1:9230/devtools/page/AB12"), Some(9230));
         assert_eq!(port_of("ws://127.0.0.1/devtools/page/AB12"), None);
-        assert_eq!(devtools_origin(port_for("default")), "http://127.0.0.1:9222");
+        assert_eq!(devtools_origin(port_for("default")), "http://127.0.0.1:9223");
         let port = port_for("research");
         assert_eq!(devtools_origin(port), format!("http://127.0.0.1:{port}"));
         assert!(!devtools_origin(port).contains('*'));
@@ -2683,7 +2594,20 @@ mod identity_tests {
         let personal = port_for("personal");
         assert_ne!(work, personal);
         assert_ne!(work, CDP_PORT);
-        assert!((9223..=9322).contains(&work));
+        assert!((ports::IDENTITY_PORT_FIRST..=ports::IDENTITY_PORT_LAST).contains(&work));
+        // 9222 is the person's Browser, and the default identity is Mind View's.
+        assert_ne!(work, ports::PERSON_PORT);
+        assert_eq!(CDP_PORT, ports::MIND_VIEW_PORT);
+    }
+
+    #[test]
+    fn no_browser_tool_reaches_the_persons_port() {
+        // The default identity is Mind View's; no identity can land on the person's port.
+        assert_ne!(port_for("default"), ports::PERSON_PORT);
+        for name in ["default", "work", "personal", "9222", "x", "chromium", "a b c"] {
+            assert_ne!(port_for(name), ports::PERSON_PORT, "{name}");
+        }
+        assert_eq!(profile_dir("default"), ports::mind_view_profile());
     }
 
     #[test]
@@ -3096,20 +3020,19 @@ mod mind_display_tests {
         assert!(f.contains("open_url_for_mind"));
     }
 
-    /// The person's own Chromium with remote debugging on 9222 is not the companion's browser.
+    /// The bug (#1085): `get_tabs` fetched `/json` on 9222 whoever held it, `browser_tabs` listed the
+    /// person's tabs, and the "is it the person's" scan failed open. No code here names a DevTools
+    /// port or fetches targets itself: the one reader is `browser_side::targets`, which shows the
+    /// port is Mind View's browser first.
     #[test]
-    fn a_browser_on_the_default_port_from_another_profile_is_the_persons() {
-        let ours = std::path::Path::new("/home/p/.config/yantrik/browser/default");
-        let cmd = |args: &[&str]| args.join("\0").into_bytes();
-        let persons = cmd(&["chromium", "--remote-debugging-port=9222", "--user-data-dir=/home/p/.config/chromium"]);
-        assert!(is_foreign_debug_browser(&persons, 9222, ours));
-        let no_profile = cmd(&["chromium", "--remote-debugging-port=9222"]);
-        assert!(is_foreign_debug_browser(&no_profile, 9222, ours));
-        let mine = cmd(&["chromium", "--remote-debugging-port=9222", &format!("--user-data-dir={}", ours.display())]);
-        assert!(!is_foreign_debug_browser(&mine, 9222, ours));
-        let other_port = cmd(&["chromium", "--remote-debugging-port=9300"]);
-        assert!(!is_foreign_debug_browser(&other_port, 9222, ours));
-        assert!(!is_foreign_debug_browser(&cmd(&["vim"]), 9222, ours));
+    fn every_road_to_a_browser_goes_through_the_one_checked_reader() {
+        let src = include_str!("browser.rs");
+        let code = &src[..src.find("#[cfg(test)]").unwrap()];
+        for banned in ["9222", "{CDP_PORT}/json", "cdp_port_is_the_persons", "is_foreign_debug_browser", "pgrep"] {
+            assert!(!code.contains(banned), "{banned}");
+        }
+        assert!(code.contains("browser_side::targets()"));
+        assert!(code.contains("browser_side::may_start("), "a launch must not start a second browser on a taken port");
     }
 }
 
