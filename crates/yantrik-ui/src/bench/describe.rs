@@ -21,6 +21,19 @@ pub fn for_describe() -> Value {
     with(|b| describe(b)).unwrap_or(Value::Null)
 }
 
+/// Said at the end of `describe shell`'s first line, the one a Mind reads before anything else:
+/// "what's on my desktop" was once answered from `windows`, the open apps.
+pub const POINTER: &str = "Files and icons on the desktop: desktop.items (not windows, which are open apps)";
+
+/// `summary` with [`POINTER`] after it, unless it is the installer's.
+pub fn with_pointer(summary: String) -> String {
+    if summary.contains("first-run setup") {
+        summary
+    } else {
+        format!("{summary}. {POINTER}")
+    }
+}
+
 fn label(b: &Bench) -> String {
     display_path(&b.home, &b.model.desktop)
 }
@@ -30,6 +43,7 @@ fn describe(b: &Bench) -> Value {
     let grid = b.model.grid().map(|g| json!({ "columns": g.cols, "rows": g.rows, "cell_width": g.m.cell_w, "cell_height": g.m.cell_h }));
     let base = json!({
         "folder": folder,
+        "about": "what is on the person's desktop; `files_list` on the folder lists the same, `files_move` puts one into a folder, `desktop_archive` puts one away",
         "snap": b.model.store.snap,
         "icons_shown": b.model.show_icons(),
         "grid": grid,
