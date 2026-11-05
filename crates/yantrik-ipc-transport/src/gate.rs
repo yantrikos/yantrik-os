@@ -109,7 +109,7 @@ pub fn unrecoverable(purpose: &str) -> bool {
 
 // ── What runs whatever it is given ──────────────────────────────────
 
-pub use yantrik_ipc_contracts::control_surface::OPEN_ENDED;
+pub use yantrik_ipc_contracts::control_surface::{fetches_address, leaves_machine, LEAVES_MACHINE, OPEN_ENDED};
 
 /// Does the app's own description declare that the action runs whatever it is given — a command
 /// line, a script, keystrokes into a shell — so it can do anything the person can?

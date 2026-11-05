@@ -50,6 +50,7 @@ pub fn table(table: &mut Intents<Downloads>) {
             // In `ask` mode an agent's download shows the person the URL and the folder first.
             Action::new("add", "Download a URL to this machine")
                 .risk("sensitive")
+                .fetches_address("url")
                 .defers()
                 .arg(Param::text("url").describe("The http(s) URL to fetch"))
                 .arg(

@@ -33,7 +33,7 @@ fn before() -> Vec<Golden> {
         Golden {
             name: "generate",
             risk: "standard",
-            description: r####"Make pictures from a sentence and save them as files in the output folder, each with a small JSON record beside it naming the prompt, the seed, the model, the backend and how many seconds it took. This starts the work rather than finishing it: the answer carries the job's id, and `describe` lists that job under `queue.running` until the pictures land in `gallery.newest`. Graded `sensitive` while a hosted backend is configured, because the sentence is sent to a machine you do not own and the service may charge for each picture; graded `standard` on a ComfyUI server on your own network and on `fake`, the placeholder backend, where the prompt never leaves the building."####,
+            description: r####"Make pictures from a sentence and save them as files in the output folder, each with a small JSON record beside it naming the prompt, the seed, the model, the backend and how many seconds it took. This starts the work rather than finishing it: the answer carries the job's id, and `describe` lists that job under `queue.running` until the pictures land in `gallery.newest`. Graded `sensitive` while a hosted backend is configured, because the sentence is sent to a machine you do not own and the service may charge for each picture; graded `standard` on a ComfyUI server on your own network and on `fake`, the placeholder backend, where the prompt never leaves the building. What it is given may leave this machine."####,
             deferred: true,
             explains: false,
             params: vec![
@@ -49,7 +49,7 @@ fn before() -> Vec<Golden> {
         Golden {
             name: "variations",
             risk: "standard",
-            description: r####"Make more pictures of one that already exists, taken from the record beside it: the same sentence, the same size, the same step count, new seeds. `of` is the picture's path, or just its filename if it is in the gallery. Starts the work and answers with the job's id. Graded the same way as `generate`, because it sends the same prompt to the same backend."####,
+            description: r####"Make more pictures of one that already exists, taken from the record beside it: the same sentence, the same size, the same step count, new seeds. `of` is the picture's path, or just its filename if it is in the gallery. Starts the work and answers with the job's id. Graded the same way as `generate`, because it sends the same prompt to the same backend. What it is given may leave this machine."####,
             deferred: true,
             explains: false,
             params: vec![

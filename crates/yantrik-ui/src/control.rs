@@ -1133,6 +1133,7 @@ pub fn publish(
                  Once sent it cannot be undone.",
             )
             .risk("sensitive")
+            .leaves_machine()
             .defers()
             .arg(Param::text("record")
                 .describe("The record's file name from `problems`, e.g. 1790120000-yantrik-studio.json. Left out means the newest.")

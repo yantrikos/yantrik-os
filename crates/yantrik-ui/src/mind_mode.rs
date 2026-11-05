@@ -208,7 +208,7 @@ impl Mode {
             Mode::Ask => "It asks you before anything that could matter.",
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
             Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete, and once per session before running commands.",
-            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo.",
+            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. The one exception: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still asks. (The built-in assistant's own mail is not covered by this.)",
         }
     }
 
@@ -1343,7 +1343,7 @@ pub fn lower_from_socket(mode: &str) -> Result<Mode, String> {
             "`{mode}` is not a mode. This desktop has five: plan (read only), ask (you are asked \
              about anything that matters), auto (only destructive actions are asked about), \
              bypass (nothing is asked except before what cannot be undone), bypass_all (nothing \
-             is asked at all). From here you can only tighten it."
+             is asked, bar a connected mind's command, hand-off, new address or send after a private read). From here you can only tighten it."
         ));
     };
     let settled = locked().lower_from_socket(wanted, Instant::now())?;

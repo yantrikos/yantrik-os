@@ -1326,20 +1326,16 @@ def state_keys_in_order(state):
 def render_state(state, app, fold):
     """The state object, still JSON, without the air.
 
-    Every describe a mind reads stays in its conversation for the rest of the session, so its
-    size is paid on every later turn. Measured on a live desktop, `describe shell` was 13.8 KB —
-    about 3,400 tokens — and 5.9 KB of that was this object pretty-printed at indent 2: one
-    line per bracket, a window list of four entries spread over twenty lines. It is printed one
-    top-level key per line with the value compact. That is the same JSON — every caller that
-    parses it from the first `{` still can — at well under half the size.
+    Every describe a mind reads stays in its conversation, so its size is paid on every later turn:
+    `describe shell` was 13.8 KB, 5.9 KB of it this object pretty-printed at indent 2. It is printed
+    one top-level key per line with the value compact: the same JSON, parseable from the first `{`,
+    at well under half the size.
 
-    The keys are printed in the fixed order of `state_keys_in_order`, small fields first and the
-    large lists last, because the wire's own order is alphabetical and put the largest fields
-    over the small ones a length-clipped reader keeps (#319).
+    Keys are in the fixed order of `state_keys_in_order`, small fields first and large lists last: the
+    wire's order is alphabetical and put the largest over the small ones a clipped reader keeps (#319).
 
-    `--fold` (what the MCP bridge asks for) also leaves out the shell's `apps` list: it is the
-    table behind `open_app`, `os_apps` already presents it in three lines, and here it was 2.7 KB
-    of every describe of the desktop. It is named, not silently dropped.
+    `--fold` (what the MCP bridge asks for) also leaves out the shell's `apps` list, which `os_apps`
+    already presents in three lines and which was 2.7 KB of every describe. It is named, not dropped.
     """
     if not isinstance(state, dict):
         return json.dumps(state)
@@ -1361,14 +1357,8 @@ FAMILY_AT_LEAST = 4
 def render_folded(app, actions, expand=None):
     """Actions for a reader paying by the token: documented where it matters, listed elsewhere.
 
-    The desktop publishes 36 actions and 20 of them are `files_*` and `editor_*`, which matter
-    on two screens out of fifteen. Documenting all 36 in full on every describe cost a mind
-    about 2,000 tokens to learn, again, how to rename a file it was not going to rename. An app
-    with a handful of actions is printed in full, as before. Above FOLD_ABOVE, a family — four
-    or more actions sharing the word before their first underscore — is printed as signatures
-    and grades only, under a line that says how to read the rest. Nothing is hidden: every
-    action's name, arguments and grade are still there, which is what is needed to notice that
-    an action exists; its documentation is one call away, and `expand` is that call.
+    A handful of actions is printed in full. Above FOLD_ABOVE, a family (four or more actions sharing the
+    word before their first underscore) is signatures and grades only; `expand` reads the rest.
     """
     if len(actions) <= FOLD_ABOVE and not expand:
         return "\n".join(render_action(a) for a in actions)
@@ -1385,7 +1375,7 @@ def render_folded(app, actions, expand=None):
         want = expand.rstrip("_")
         out = [render_action(a) for a in actions if a["name"].split("_", 1)[0] == want]
         if not out:
-            out = ["  (no action of %s starts with `%s`)" % (app, expand)]
+            out = [no_family_line(app, expand, actions)]
         rest = [a for a in actions if a["name"].split("_", 1)[0] != want]
         out.append("  other actions of %s, briefly:" % app)
         out.extend(render_action(a, brief=True) for a in rest)
@@ -1407,6 +1397,16 @@ def render_folded(app, actions, expand=None):
         else:
             out.append(render_action(a))
     return "\n".join(out)
+
+
+def no_family_line(app, expand, actions):
+    """Why `actions=<expand>` matched nothing: a family is the word before an action's first underscore."""
+    heads = sorted({a["name"].split("_", 1)[0] for a in actions if "_" in a["name"]})
+    if "_" in expand and any(a["name"] == expand for a in actions):
+        return ("  (`%s` is one action of %s, not a family: pass its family word, `%s_`, as `actions`)"
+                % (expand, app, expand.split("_", 1)[0]))
+    return ("  (no family of %s is named `%s`: `actions` takes the word before an action's first underscore%s)"
+            % (app, expand, "; here " + ", ".join(h + "_" for h in heads) if heads else ""))
 
 
 def render_action(action, brief=False):
