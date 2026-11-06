@@ -67,7 +67,7 @@ impl Tool for GetWeatherTool {
         };
 
         match std::process::Command::new("curl")
-            .args(["-fsSL", "--max-time", "10", &url])
+            .args(["-fsSLg", "--max-time", "10", &url])
             .env("LANG", "en_US.UTF-8")
             .output()
         {

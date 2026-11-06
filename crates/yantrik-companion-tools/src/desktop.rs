@@ -39,6 +39,7 @@ impl Tool for OpenUrlTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("open_url", args, "url", crate::outward::Target::Address, |args: &serde_json::Value| {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         if url.is_empty() {
             return "Error: url is required".to_string();
@@ -50,6 +51,7 @@ impl Tool for OpenUrlTool {
         // mind's page opens in the companion's own browser, on the display the shell says minds'
         // windows go to (Mind View), or is refused (PR #582 review, B3).
         super::browser::open_url_for_mind(url)
+        })
     }
 }
 

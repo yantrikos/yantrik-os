@@ -31,7 +31,38 @@ pub const PURPOSE: &str = "Send an email from one of the person's accounts, to p
                            Once sent it cannot be undone. This action sends nothing itself: the mind asks it \
                            to put a card in front of the person, and sends only after their Allow.";
 
+/// The second question, for everything else the companion does outside this machine on the
+/// person's behalf (#1054): a message to a chat, a form submitted in a browser, a command on
+/// another host, a call to a third party's tool. The same grade and the same reading as `send_mail`.
+pub const ACT: &str = "outward_act";
+
+/// What a person reads on the card for [`ACT`].
+pub const ACT_PURPOSE: &str = "Act outside this machine on the person's behalf: send a message, submit a form, \
+                               run a command on another host, call another party's tool. Once done it cannot be \
+                               undone. This action does nothing itself: the mind asks it to put a card in front \
+                               of the person, and acts only after their Allow.";
+
 pub fn actions(surface: ControlSurface) -> ControlSurface {
+    outward_act(send_mail(surface))
+}
+
+fn outward_act(surface: ControlSurface) -> ControlSurface {
+    surface.action(
+        Action::new(ACT, ACT_PURPOSE)
+            .risk(GRADE)
+            .arg(Param::text("tool").describe("The companion tool that is acting").optional())
+            .arg(Param::text("to").describe("Who or what it is aimed at, quoted").optional())
+            .arg(Param::text("what").describe("What it will send or do, whole and quoted").optional())
+            .arg(Param::text("more").describe("Anything else to see before saying yes, quoted").optional()),
+        |_| {
+            Err("outward_act is a question and not a way to act: the mind asks it, waits for the person's \
+                 Allow, and acts itself. Nothing was done."
+                .to_string())
+        },
+    )
+}
+
+fn send_mail(surface: ControlSurface) -> ControlSurface {
     surface.action(
         Action::new(ACTION, PURPOSE)
             .risk(GRADE)
@@ -58,14 +89,18 @@ mod tests {
     use super::*;
     use crate::mind_mode::{Decision, Mode, Modes};
 
-    /// The grade and sentence the surface publishes: read from the declaration itself, so a
-    /// regrade in `actions` (not only in this test's copy of it) is what the tests decide on.
-    fn published() -> (String, String) {
+    /// The questions the surface publishes, with the grade and sentence each is declared with.
+    /// Read from the declarations themselves, so a regrade in `actions` (not only in this test's
+    /// copy of it) is what the tests decide on.
+    fn published() -> [(&'static str, String, String); 2] {
         let production = include_str!("control_mail.rs").split("#[cfg(test)]").next().unwrap();
-        let declaration = production.split("Action::new(").nth(1).expect("the declaration");
-        assert!(declaration.starts_with("ACTION, PURPOSE)"), "the action is not declared with ACTION and PURPOSE");
-        assert!(declaration.contains(".risk(GRADE)"), "the action is not published at GRADE");
-        (GRADE.to_string(), PURPOSE.to_string())
+        for (declared, name) in [("ACTION, PURPOSE)", "send_mail"), ("ACT, ACT_PURPOSE)", "outward_act")] {
+            let at = production.find(&format!("Action::new({declared}")).unwrap_or_else(|| panic!("{name} is not declared with {declared}"));
+            let own = &production[at..];
+            let own = &own[..own.find("|_| {").expect("its handler")];
+            assert!(own.contains(".risk(GRADE)"), "{name} is not published at GRADE");
+        }
+        [(ACTION, GRADE.to_string(), PURPOSE.to_string()), (ACT, GRADE.to_string(), ACT_PURPOSE.to_string())]
     }
 
     fn authority(mode: &str) -> Authority {
@@ -73,39 +108,40 @@ mod tests {
     }
 
     #[test]
-    fn it_is_published_as_sensitive_and_as_what_cannot_be_undone() {
-        let (grade, said) = published();
-        assert_eq!(grade, "sensitive", "the grade under the machine ceiling");
-        assert!(gate::unrecoverable(&said), "{said}");
-        assert!(crate::approvals::shown_whole(&grade, &said), "the card shows it whole or not at all");
+    fn both_questions_are_published_as_sensitive_and_as_what_cannot_be_undone() {
+        for (name, grade, said) in published() {
+            assert_eq!(grade, "sensitive", "{name}: the grade under the machine ceiling");
+            assert!(gate::unrecoverable(&said), "{name}: {said}");
+            assert!(crate::approvals::shown_whole(&grade, &said), "{name}: the card shows it whole or not at all");
+        }
     }
 
     /// 520 gate, 30 Oct: mail went out in `auto` and in `ask` with no card. The shell's real
     /// decision table, on the values the surface really publishes.
     #[test]
     fn the_shell_asks_in_ask_auto_and_bypass_refuses_in_plan_and_runs_only_in_full_bypass() {
-        let (grade, said) = published();
-        let cannot_be_undone = gate::unrecoverable(&said);
-        let decide = |mode| Modes::new(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
-        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
-            assert!(matches!(decide(mode), Decision::Ask), "{mode:?} did not ask");
+        for (name, grade, said) in published() {
+            let cannot_be_undone = gate::unrecoverable(&said);
+            let decide = |mode| Modes::new(mode).decide(&grade, "shell", name, cannot_be_undone, "dangerous", Instant::now());
+            for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
+                assert!(matches!(decide(mode), Decision::Ask), "{name}: {mode:?} did not ask");
+            }
+            assert!(matches!(decide(Mode::Plan), Decision::Refuse { .. }), "{name}: plan");
+            // Full bypass is time-boxed and cannot be entered by construction here; the wire gate
+            // answers for it below: the person's own word, the one mode that runs it unasked.
+            for mode in ["ask", "auto", "bypass", "plan"] {
+                assert!(gate::decide(&authority(mode), "shell", name, &grade, &said).is_err(), "{name}: {mode}");
+            }
+            assert!(gate::decide(&authority("bypass_all"), "shell", name, &grade, &said).is_ok(), "{name}: full bypass");
+            let granted = Authority { granted: true, ..authority("auto") };
+            assert!(gate::decide(&granted, "shell", name, &grade, &said).is_ok());
         }
-        assert!(matches!(decide(Mode::Plan), Decision::Refuse { .. }), "plan");
-        // Full bypass is time-boxed and cannot be entered by construction here; the wire gate
-        // answers for it below: the person's own word, the one mode that runs it unasked.
-        // The wire gate agrees, on the same values.
-        for mode in ["ask", "auto", "bypass", "plan"] {
-            assert!(gate::decide(&authority(mode), "shell", ACTION, &grade, &said).is_err(), "{mode}");
-        }
-        assert!(gate::decide(&authority("bypass_all"), "shell", ACTION, &grade, &said).is_ok(), "full bypass");
-        let granted = Authority { granted: true, ..authority("auto") };
-        assert!(gate::decide(&granted, "shell", ACTION, &grade, &said).is_ok());
     }
 
     /// What the card will do with a mail: a short one is put up; one it cannot show whole is not.
     #[test]
     fn a_short_mail_fits_the_card_and_a_long_one_is_refused_rather_than_clipped() {
-        let (grade, said) = published();
+        let (_, grade, said) = published()[0].clone();
         let whole = crate::approvals::shown_whole(&grade, &said);
         let quoted = |t: &str| serde_json::Value::String(serde_json::Value::String(t.to_string()).to_string());
         let mail = |body: &str| {
@@ -117,5 +153,16 @@ mod tests {
         assert_eq!(crate::approval_bounds::refusal(&mail("Thanks, Monday works."), None, whole), None);
         let long = "x".repeat(400);
         assert!(crate::approval_bounds::refusal(&mail(&long), None, whole).is_some(), "a body the card cannot show whole");
+    }
+
+    /// And for the other question: a short act fits, a long one is refused, never clipped.
+    #[test]
+    fn a_short_act_fits_the_card_and_a_long_one_is_refused_rather_than_clipped() {
+        let (_, grade, said) = published()[1].clone();
+        let whole = crate::approvals::shown_whole(&grade, &said);
+        let quoted = |t: &str| serde_json::Value::String(serde_json::Value::String(t.to_string()).to_string());
+        let act = |what: &str| serde_json::json!({ "tool": "telegram_send", "to": quoted("the person's Telegram chat"), "what": quoted(what) });
+        assert_eq!(crate::approval_bounds::refusal(&act("Running late"), None, whole), None);
+        assert!(crate::approval_bounds::refusal(&act(&"x".repeat(400)), None, whole).is_some());
     }
 }

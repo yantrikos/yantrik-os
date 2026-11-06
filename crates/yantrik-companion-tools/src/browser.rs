@@ -572,6 +572,64 @@ pub(crate) fn open_url_for_mind(url: &str) -> String {
 
 // ── Launch Browser ──
 
+use crate::browser_outward::{ask_before_press, ask_before_typing, AtPoint, Outcome, Page, Pick, NOT_FOUND};
+
+/// The page the tools are driving, described and pressed in a world its own scripts cannot reach.
+struct CdpPage<'a> {
+    ws: &'a mut WebSocket<MaybeTlsStream<TcpStream>>,
+}
+
+impl CdpPage<'_> {
+    /// A fresh isolated world in the page's main frame: same DOM, none of the page's JavaScript.
+    fn isolated_context(&mut self) -> Result<i64, String> {
+        let tree = cdp_send(self.ws, "Page.getFrameTree", json!({}))?;
+        let frame = tree["frameTree"]["frame"]["id"].as_str().ok_or("the page has no frame")?.to_string();
+        let world = cdp_send(self.ws, "Page.createIsolatedWorld", json!({ "frameId": frame, "worldName": "yantrik-guard" }))?;
+        world["executionContextId"].as_i64().ok_or_else(|| "no isolated world".to_string())
+    }
+
+    /// The element `expression` evaluates to in the isolated world, as a remote object id.
+    fn object_in(&mut self, context: i64, expression: &str) -> Result<String, String> {
+        let r = cdp_send(self.ws, "Runtime.evaluate", json!({ "expression": expression, "contextId": context, "returnByValue": false }))?;
+        r["result"]["objectId"].as_str().map(str::to_string).ok_or_else(|| NOT_FOUND.to_string())
+    }
+}
+
+impl Page for CdpPage<'_> {
+    fn on_element(&mut self, pick: &Pick, function_src: &str, args: &[Value]) -> Result<String, String> {
+        let context = self.isolated_context()?;
+        let object_id = match pick {
+            Pick::Selector(sel) => self.object_in(context, &format!("document.querySelector({})", Value::String(sel.clone())))?,
+            Pick::Point(x, y) => self.object_in(context, &format!("document.elementFromPoint({x}, {y})"))?,
+            Pick::Active => self.object_in(context, "document.activeElement")?,
+            Pick::Index(n) => {
+                // The snapshot's elements live in the page's own world; the same node is fetched
+                // into the isolated one by its backend id.
+                let main = cdp_send(
+                    self.ws,
+                    "Runtime.evaluate",
+                    json!({ "expression": format!("(window.__yantrik_elements || [])[{}]", n.saturating_sub(1)), "returnByValue": false }),
+                )?;
+                let remote = main["result"]["objectId"].as_str().ok_or_else(|| NOT_FOUND.to_string())?.to_string();
+                let node = cdp_send(self.ws, "DOM.describeNode", json!({ "objectId": remote }))?;
+                let backend = node["node"]["backendNodeId"].as_i64().ok_or("no such node")?;
+                let resolved = cdp_send(self.ws, "DOM.resolveNode", json!({ "backendNodeId": backend, "executionContextId": context }))?;
+                resolved["object"]["objectId"].as_str().ok_or("the node could not be reached")?.to_string()
+            }
+        };
+        let arguments: Vec<Value> = args.iter().map(|a| json!({ "value": a })).collect();
+        let r = cdp_send(
+            self.ws,
+            "Runtime.callFunctionOn",
+            json!({ "objectId": object_id, "functionDeclaration": function_src, "arguments": arguments, "returnByValue": true }),
+        )?;
+        if let Some(exception) = r.get("exceptionDetails") {
+            return Err(format!("JS exception: {}", exception.get("text").and_then(|v| v.as_str()).unwrap_or("error")));
+        }
+        r["result"]["value"].as_str().map(str::to_string).ok_or_else(|| "no value".to_string())
+    }
+}
+
 pub struct LaunchBrowserTool;
 
 impl Tool for LaunchBrowserTool {
@@ -601,7 +659,9 @@ impl Tool for LaunchBrowserTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("launch_browser", args, "url", crate::outward::Target::Address, |args: &serde_json::Value| {
         launch_browser(args)
+        })
     }
 }
 
@@ -738,6 +798,7 @@ impl Tool for BrowseTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("browse", args, "url", crate::outward::Target::Address, |args: &serde_json::Value| {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         if url.is_empty() {
             return "Error: url is required".to_string();
@@ -811,6 +872,7 @@ impl Tool for BrowseTool {
         cleanup_after_data_extraction(&mut ws);
 
         out
+        })
     }
 }
 
@@ -917,6 +979,29 @@ impl Tool for BrowserClickTool {
             Err(e) => return format!("Error: {e}"),
         };
 
+        // A control that acts is asked about first, as the page describes it, and pressed only if
+        // it still is what the card showed (#1054, #1063).
+        let pick = Pick::Selector(sel.clone());
+        let pressing = {
+            let mut page = CdpPage { ws: &mut ws };
+            let pressing = match ask_before_press(&mut page, &pick, "browser_click") {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            };
+            match pressing.press(&mut page, &pick) {
+                Outcome::Done(said) => {
+                    std::thread::sleep(Duration::from_millis(300));
+                    pressing.finish(true);
+                    return said;
+                }
+                Outcome::Changed(said) => {
+                    pressing.finish(false);
+                    return said;
+                }
+                Outcome::Unavailable => pressing,
+            }
+        };
+
         let js = format!(
             r#"(() => {{
                 const el = document.querySelector('{}');
@@ -928,10 +1013,12 @@ impl Tool for BrowserClickTool {
             sel.replace('\'', "\\'"),
         );
 
-        match eval_js(&mut ws, &js) {
+        let out = match eval_js(&mut ws, &js) {
             Ok(result) => result,
             Err(e) => format!("Click error: {e}"),
-        }
+        };
+        pressing.finish(crate::outward::outcome_ok(&out));
+        out
     }
 }
 
@@ -998,6 +1085,31 @@ impl Tool for BrowserTypeTool {
         } else {
             ""
         };
+        // Typing that submits sends the text and the form out: asked about first, with the form as
+        // the page describes it, and submitted only if it still is what the card showed (#1054,
+        // #1063). Typing alone is not asked about here.
+        let pick = Pick::Selector(sel.clone());
+        let pressing = if submit {
+            let mut page = CdpPage { ws: &mut ws };
+            let pressing = match ask_before_typing(&mut page, &pick, "browser_type", text, true, true) {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            };
+            match pressing.type_and_submit(&mut page, &pick, text, true) {
+                Outcome::Done(said) => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    pressing.finish(true);
+                    return said;
+                }
+                Outcome::Changed(said) => {
+                    pressing.finish(false);
+                    return said;
+                }
+                Outcome::Unavailable => Some(pressing),
+            }
+        } else {
+            None
+        };
 
         let js = format!(
             r#"(() => {{
@@ -1016,7 +1128,7 @@ impl Tool for BrowserTypeTool {
             submit_js,
         );
 
-        match eval_js(&mut ws, &js) {
+        let out = match eval_js(&mut ws, &js) {
             Ok(result) => {
                 if submit {
                     // Wait a moment for form submission
@@ -1025,7 +1137,11 @@ impl Tool for BrowserTypeTool {
                 result
             }
             Err(e) => format!("Type error: {e}"),
+        };
+        if let Some(pressing) = pressing {
+            pressing.finish(crate::outward::outcome_ok(&out));
         }
+        out
     }
 }
 
@@ -1199,6 +1315,7 @@ impl Tool for BrowserSearchTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("browser_search", args, "query", crate::outward::Target::Text, |args: &serde_json::Value| {
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or_default();
         if query.is_empty() {
             return "Error: query is required".to_string();
@@ -1257,6 +1374,7 @@ impl Tool for BrowserSearchTool {
 
         cleanup_after_data_extraction(&mut ws);
         format!("Search results for: {query}\n\n{truncated}")
+        })
     }
 }
 
@@ -1290,6 +1408,7 @@ impl Tool for WebSearchTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("web_search", args, "query", crate::outward::Target::Text, |args: &serde_json::Value| {
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or_default();
         if query.is_empty() {
             return "Error: query is required".to_string();
@@ -1410,6 +1529,7 @@ impl Tool for WebSearchTool {
         cleanup_after_data_extraction(&mut ws);
 
         output
+        })
     }
 }
 
@@ -1787,6 +1907,29 @@ impl Tool for BrowserClickElementTool {
             Err(e) => return format!("Error: {e}"),
         };
 
+        // A control that acts is asked about first, as the page describes it, and pressed only if
+        // it still is what the card showed (#1054, #1063).
+        let pick = Pick::Index(num);
+        let pressing = {
+            let mut page = CdpPage { ws: &mut ws };
+            let pressing = match ask_before_press(&mut page, &pick, "browser_click_element") {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            };
+            match pressing.press(&mut page, &pick) {
+                Outcome::Done(said) => {
+                    std::thread::sleep(Duration::from_millis(300));
+                    pressing.finish(true);
+                    return said;
+                }
+                Outcome::Changed(said) => {
+                    pressing.finish(false);
+                    return said;
+                }
+                Outcome::Unavailable => pressing,
+            }
+        };
+
         let js = format!(
             r#"(() => {{
                 const els = window.__yantrik_elements;
@@ -1804,14 +1947,16 @@ impl Tool for BrowserClickElementTool {
             num = num,
         );
 
-        match eval_js(&mut ws, &js) {
+        let out = match eval_js(&mut ws, &js) {
             Ok(result) => {
                 // Wait briefly for any navigation or DOM changes
                 std::thread::sleep(Duration::from_millis(500));
                 result
             }
             Err(e) => format!("Click error: {e}"),
-        }
+        };
+        pressing.finish(crate::outward::outcome_ok(&out));
+        out
     }
 }
 
@@ -1876,6 +2021,31 @@ impl Tool for BrowserTypeElementTool {
         } else {
             ""
         };
+        // Typing that submits sends the text and the form out: asked about first, with the form as
+        // the page describes it, and submitted only if it still is what the card showed (#1054,
+        // #1063). Typing alone is not asked about here.
+        let pick = Pick::Index(num);
+        let pressing = if submit {
+            let mut page = CdpPage { ws: &mut ws };
+            let pressing = match ask_before_typing(&mut page, &pick, "browser_type_element", text, true, clear_first) {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            };
+            match pressing.type_and_submit(&mut page, &pick, text, clear_first) {
+                Outcome::Done(said) => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    pressing.finish(true);
+                    return said;
+                }
+                Outcome::Changed(said) => {
+                    pressing.finish(false);
+                    return said;
+                }
+                Outcome::Unavailable => Some(pressing),
+            }
+        } else {
+            None
+        };
 
         let js = format!(
             r#"(() => {{
@@ -1912,10 +2082,14 @@ impl Tool for BrowserTypeElementTool {
             submit_js = submit_js,
         );
 
-        match eval_js(&mut ws, &js) {
+        let out = match eval_js(&mut ws, &js) {
             Ok(result) => result,
             Err(e) => format!("Type error: {e}"),
+        };
+        if let Some(pressing) = pressing {
+            pressing.finish(crate::outward::outcome_ok(&out));
         }
+        out
     }
 }
 
@@ -2168,34 +2342,34 @@ impl Tool for BrowserClickXYTool {
 
         let click_count = if double_click { 2 } else { 1 };
 
+        // A control that acts is asked about first, as the page describes it, and is then pressed
+        // in the isolated world on the element described: a mouse press lands wherever the page has
+        // moved things by then. Only a frame's inside, which nothing else reaches, gets the mouse,
+        // checked once more right before (#1054, #1063; browser_outward::Pressing::at_point).
+        let pick = Pick::Point(x, y);
+        let pressing = {
+            let mut page = CdpPage { ws: &mut ws };
+            let pressing = match ask_before_press(&mut page, &pick, "browser_click_xy") {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            };
+            match pressing.at_point(&mut page, &pick, false, double_click) {
+                AtPoint::Mouse => pressing,
+                AtPoint::Done(said) => return { pressing.finish(true); format!("Clicked at ({}, {}) — {said}", x as i64, y as i64) },
+                AtPoint::Refused(said) => return { pressing.finish(false); said },
+            }
+        };
+
         // CDP Input.dispatchMouseEvent: move → press → release
-        // This triggers real browser-level mouse events that work with any framework.
-        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
-            "type": "mouseMoved",
-            "x": x,
-            "y": y,
-        })) {
-            return format!("Mouse move error: {e}");
-        }
-
-        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": click_count,
-        })) {
-            return format!("Mouse press error: {e}");
-        }
-
-        if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", json!({
-            "type": "mouseReleased",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": click_count,
-        })) {
-            return format!("Mouse release error: {e}");
+        for evt in ["mouseMoved", "mousePressed", "mouseReleased"] {
+            let mut params = json!({ "type": evt, "x": x, "y": y });
+            if evt != "mouseMoved" {
+                params["button"] = json!("left");
+                params["clickCount"] = json!(click_count);
+            }
+            if let Err(e) = cdp_send(&mut ws, "Input.dispatchMouseEvent", params) {
+                return format!("Mouse error ({evt}): {e}");
+            }
         }
 
         // Brief wait for DOM changes
@@ -2211,6 +2385,7 @@ impl Tool for BrowserClickXYTool {
             }})()"
         )).unwrap_or_else(|_| "unknown".to_string());
 
+        pressing.finish(true);
         format!("Clicked at ({}, {}) — {}", x as i64, y as i64, what)
     }
 }
@@ -2268,8 +2443,26 @@ impl Tool for BrowserTypeXYTool {
             Err(e) => return format!("Error: {e}"),
         };
 
-        // 1. Click at coordinates to focus the field
-        for evt in &["mouseMoved", "mousePressed", "mouseReleased"] {
+        // The first thing this does is reach the point, so it asks like a click does: a text field
+        // needs no card, a button does, with or without `submit` (#1063). With `submit`, the card is
+        // the form the text goes out in, checked again right before Enter. A described target is
+        // focused in the isolated world; only a frame's inside is clicked by the mouse (at_point).
+        let pick = Pick::Point(x, y);
+        let (pressing, by_mouse) = {
+            let mut page = CdpPage { ws: &mut ws };
+            let pressing = match ask_before_typing(&mut page, &pick, "browser_type_xy", text, submit, clear_first) {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            };
+            match pressing.at_point(&mut page, &pick, true, false) {
+                AtPoint::Mouse => (pressing, true),
+                AtPoint::Done(_) => (pressing, false),
+                AtPoint::Refused(said) => return { pressing.finish(false); said },
+            }
+        };
+
+        // 1. Click at coordinates to focus the field, if it is in a frame
+        for evt in if by_mouse { &["mouseMoved", "mousePressed", "mouseReleased"][..] } else { &[] } {
             let mut params = json!({ "type": evt, "x": x, "y": y });
             if *evt != "mouseMoved" {
                 params["button"] = json!("left");
@@ -2315,8 +2508,15 @@ impl Tool for BrowserTypeXYTool {
             return format!("Type error: {e}");
         }
 
-        // 4. Submit if requested
+        // 4. Submit if requested, if the field in focus still sends what the card showed
         if submit {
+            {
+                let mut page = CdpPage { ws: &mut ws };
+                if let Err(said) = pressing.confirm_submit(&mut page) {
+                    pressing.finish(false);
+                    return said;
+                }
+            }
             let _ = cdp_send(&mut ws, "Input.dispatchKeyEvent", json!({
                 "type": "keyDown",
                 "key": "Enter",
@@ -2330,6 +2530,7 @@ impl Tool for BrowserTypeXYTool {
             std::thread::sleep(Duration::from_millis(500));
         }
 
+        pressing.finish(true);
         let preview = if text.len() > 50 { &text[..text.floor_char_boundary(50)] } else { text };
         format!("Typed at ({}, {}): \"{}\"", x as i64, y as i64, preview)
     }
@@ -2612,6 +2813,24 @@ impl Tool for BrowserLoginTool {
             );
         }
 
+        // Signing in hands the person's saved credential to a site and acts as them there: asked
+        // about first, with the site and the account (never the password) (#1054). Filling the
+        // form without submitting it is not asked about.
+        let permit = if should_submit {
+            let what = format!("sign in to {service} as {} with the saved password", entry.username);
+            match crate::outward::ask_person_before_acting(&crate::outward::OutwardAct {
+                tool: "browser_login",
+                to: page_origin,
+                what: &what,
+                more: "",
+            }) {
+                Ok(p) => p,
+                Err(refusal) => return refusal,
+            }
+        } else {
+            crate::outward::Permit::asked()
+        };
+
         if form["has_user_field"].as_bool().unwrap_or(false) {
             if let Err(e) = focus_login_field(&mut ws, "user") {
                 return format!("Error: {e}");
@@ -2657,6 +2876,7 @@ impl Tool for BrowserLoginTool {
         // log. The username is shown because knowing which account was used is the point; the
         // password appears nowhere in this function's output, by construction.
         let now = eval_js(&mut ws, "location.href").unwrap_or_default();
+        permit.finish(true);
         format!(
             "Signed in to {service} as {} on {page_origin}.{} Now at {now}. \
              Check the page to confirm — a wrong password looks like a page that did not change.",
@@ -2803,3 +3023,7 @@ mod mind_display_tests {
 #[cfg(test)]
 #[path = "browser_url_tests.rs"]
 mod url_tests;
+
+#[cfg(test)]
+#[path = "browser_chromium_tests.rs"]
+mod chromium_tests;

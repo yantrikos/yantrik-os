@@ -67,11 +67,16 @@ impl TaskManager {
     ///
     /// Returns the task_id on success. Stdout and stderr are redirected to
     /// `yantrik-task-{id}.out` in the private scratch dir (see `output_path`).
+    ///
+    /// `plain` is the checked words of a read-only command (`safe_command::plain`): they are
+    /// started as they are, with no shell, so what was checked is what runs. Without them the line
+    /// goes to `sh -c`, which only a command the person allowed may do.
     pub fn spawn(
         &mut self,
         conn: &Connection,
         command: &str,
         label: &str,
+        plain: Option<&[String]>,
     ) -> Result<String, String> {
         // Check concurrent limit
         let running: i64 = conn
@@ -99,9 +104,15 @@ impl TaskManager {
             .try_clone()
             .map_err(|e| format!("Failed to clone file handle: {e}"))?;
 
-        let child = Command::new("sh")
-            .arg("-c")
-            .arg(command)
+        let mut launch = match plain {
+            Some(argv) => yantrik_companion_tools::safe_command::command(argv),
+            None => {
+                let mut sh = Command::new("sh");
+                sh.arg("-c").arg(command);
+                sh
+            }
+        };
+        let child = launch
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(stderr_file))
             .spawn()
@@ -476,5 +487,23 @@ mod tests {
         let got = TaskManager::read_output_tail(file, tail_lines);
         let _ = std::fs::remove_file(&path);
         got
+    }
+
+    /// A plain read-only command is started as the words that were checked, with no shell: `$` and
+    /// `;` reach `echo` as text (#1063 review, H1). Under `sh -c` this printed the home directory.
+    #[test]
+    fn a_plain_command_is_started_without_a_shell() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        TaskManager::ensure_table(&conn);
+        let mut tm = TaskManager::new();
+        let argv = vec!["echo".to_string(), "$HOME;id".to_string()];
+        let id = tm.spawn(&conn, "echo $HOME;id", "plain", Some(&argv)).expect("spawns");
+        for _ in 0..200 {
+            if tm.poll(&conn).contains(&id) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(TaskManager::read_output(&id, 5).trim(), "$HOME;id");
     }
 }

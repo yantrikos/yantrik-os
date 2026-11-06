@@ -222,7 +222,7 @@ impl Tool for ClipboardFetchUrlTool {
         // Fetch with curl, timeout 10s, follow redirects, user-agent
         let output = match std::process::Command::new("curl")
             .args([
-                "-sL",
+                "-sLg",
                 "--max-time", "10",
                 "--max-filesize", "500000",
                 "-A", "Mozilla/5.0 (compatible; YantrikOS/1.0)",

@@ -11360,6 +11360,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "html2text",
+ "idna",
  "regex",
  "rusqlite",
  "serde",

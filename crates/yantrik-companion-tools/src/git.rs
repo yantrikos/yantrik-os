@@ -219,6 +219,7 @@ impl Tool for GitCloneTool {
     }
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
+        crate::outward::reading("git_clone", args, "url", crate::outward::Target::Address, |args: &serde_json::Value| {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         let dest = args.get("destination").and_then(|v| v.as_str()).unwrap_or_default();
         let shallow = args.get("shallow").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -254,6 +255,7 @@ impl Tool for GitCloneTool {
             }
             Err(e) => format!("Error: {e}"),
         }
+        })
     }
 }
 

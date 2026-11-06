@@ -43,5 +43,7 @@ regex = { workspace = true }
 crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
+# A fake desktop shell for the tests of every tool that asks the person first (`outward_testing`).
+yantrik-companion-tools = { workspace = true, features = ["test-support"] }
 # Only to spell the `LLMBackend` trait's return type on a stub mind in the bond scoring tests.
 anyhow = "1"
