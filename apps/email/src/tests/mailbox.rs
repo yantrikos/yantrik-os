@@ -1,10 +1,10 @@
 //! The mailbox: the first look, Sync, folders, search and the triage tabs, by button and by
 //! intent, each answered from what the service said.
 
-use serde_json::json;
+use serde_json::{json, Value};
 use yantrik_app::mind::fake::FakeMind;
 
-use super::{act, inbox, listed, message, notice, quiet, start_with, started, state, with_inbox};
+use super::{act, inbox, listed, message, notice, quiet, start_with, started, state, summary, with_inbox};
 use crate::backend::fake::{FakeMail, UNREACHABLE};
 use crate::command::{Command, Look};
 
@@ -48,6 +48,32 @@ fn the_three_states_are_three_screens() {
     assert!(broken.ui(|ui| ui.get_has_account()));
     assert_eq!(broken.ui(|ui| ui.get_email_sync_status()), "Mailbox did not open");
     assert_eq!(notice(&broken), "The account is configured and the mailbox did not open: No Response: SELECT failed");
+}
+
+/// The #1089 look: the IMAP session timed out while the window sat closed, so the look died
+/// before LIST. Folders and messages empty together used to count as "0 unread of 0", which is
+/// what an empty inbox says — so the person who opened a mailbox that would not open was told
+/// their inbox was empty, in the header and in `describe`, next to a notice saying it did not
+/// open. The window above this one is the folder whose STATUS the server refused (#131); here
+/// nothing was ever asked.
+#[test]
+fn a_mailbox_that_never_opened_is_not_reported_as_an_empty_one() {
+    let mail = FakeMail::ready().failing("email.list_folders", "ReadLineTimeout: no data within 30s");
+    let app = started(&mail);
+
+    let said = summary(&app);
+    assert!(!said.contains("0 unread of 0"), "a mailbox that was never read is not an empty one: {said}");
+    assert_eq!(said, "Email — INBOX, counts unavailable (the mail server listed no folders)");
+    assert_eq!(state(&app)["counts"], Value::Null);
+    assert_eq!(state(&app)["counts_reason"], "the mail server listed no folders");
+    assert_eq!(state(&app)["folders"], json!([]));
+    assert_eq!(state(&app)["listed"], 0);
+    // The header carries it the same way, flag off rather than two zeros.
+    assert!(!app.ui(|ui| ui.get_email_folder_counts_known()));
+    assert_eq!(app.ui(|ui| ui.get_email_folder_counts_reason()), "the mail server listed no folders");
+    // And it is still said as the failure it is, in the two places that already said it.
+    assert_eq!(app.ui(|ui| ui.get_email_sync_status()), "Mailbox did not open");
+    assert_eq!(notice(&app), "The account is configured and the mailbox did not open: ReadLineTimeout: no data within 30s");
 }
 
 #[test]

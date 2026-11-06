@@ -372,6 +372,23 @@ mod tests {
         assert_eq!(counts, Counted::Known(FolderCounts { unread: 2, total: 7 }));
     }
 
+    #[test]
+    fn no_folder_list_at_all_has_not_been_counted() {
+        // The look died before LIST — the session timed out while the window sat closed — so
+        // there are no folders and no rows. An empty list is not a list that reports the folder
+        // empty, and it has no row the header could be missing, so counting the page in hand
+        // here reports a failed look as an empty inbox (#1089).
+        let counts = Counted::of(&[], "INBOX", 0, 0);
+        assert_eq!(counts, Counted::Unavailable { reason: "the mail server listed no folders".into() });
+        assert_eq!(counts.known(), None);
+        let line = state::folder_summary("INBOX", &counts, None);
+        assert!(!line.contains("0 unread of 0"), "{line} reports a failed look as an empty inbox");
+        assert!(line.contains("counts unavailable"), "{line} does not say the counts are missing");
+        // The rows are in hand for the unlisted folder above; here there are none either, and
+        // that changes nothing: no list means no count, whatever the list would have been.
+        assert_eq!(Counted::of(&[], "INBOX", 9, 21), counts);
+    }
+
     // ── A folder the server would not count ──────────────────────────
     //
     // The list wrote `0/0` for a folder whose STATUS the server refused or never answered, and
