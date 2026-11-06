@@ -2414,7 +2414,7 @@ source_is_roots() {
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
 # from before a capability was required.
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] || [ "$1" = yantrik-update-args ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -7122,6 +7122,8 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "serial console: reconcile and an up-to-date apply both run it" "yes" \
     "$(declare -f cmd_reconcile | grep -q reconcile_serial_console && declare -f cmd_apply | grep -q reconcile_serial_console && echo yes || echo no)"
 
+  declare -F selftest_args >/dev/null && selftest_args  # the arguments of each subcommand: yantrik-update-args
+
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
     return 0
@@ -7151,8 +7153,15 @@ usage() {
     "verified (unsigned, wrongly signed, expired or older than one already accepted) · 1 anything else."
 }
 
+# What each subcommand takes, checked before it runs (#1103); sourced from beside this file.
+ARGS_LIB="$(dirname "$SELF_PATH")/yantrik-update-args"
+# shellcheck source=deploy/yantrik-os/yantrik-update-args
+# shellcheck disable=SC1090
+if [ -r "$ARGS_LIB" ]; then . "$ARGS_LIB"; else warn "yantrik-update-args is missing: arguments are not checked"; args_check() { case " $* " in *" -h "*|*" --help "*) usage; exit 0 ;; esac; }; fi
+
 # ── dispatch ────────────────────────────────────────────────────────────────────────────
 CMD="${1:-check}"; shift || true
+args_check "$CMD" "$@"
 case "$CMD" in
   check)    cmd_check "$@" ;;
   apply)    cmd_apply "$@" ;;
