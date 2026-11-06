@@ -71,6 +71,8 @@ cargo run -q -p xtask -- check-architecture --write
 
 **The design lint** (`cargo test -p yantrik-ui-kit design_lint`) holds hex colours, pixel font sizes, private copies of kit controls and `std-widgets` imports to their own baseline, in the same way.
 
+**`cargo run -q -p xtask -- check-sentences`** ([tools/xtask/src/sentences.rs](../tools/xtask/src/sentences.rs); CI runs it as a `cargo test -p xtask` test) reads every string literal in the workspace for a run of spaces between two words — the words either side were meant to be one apart, and a literal whose `\` line continuation was taken out ships to a person with a hole in the sentence. A literal indented on purpose, columns padded on purpose, and test code are excused.
+
 **`deny.toml`** (the `dependencies` job, cargo-deny) checks advisories, licences (compatible with GPL-3.0), duplicate versions and sources. It reports and does not fail yet.
 
 **`rust-toolchain.toml`** pins the Rust the nightly ships with. The build host, CI and a laptop all build with it, and moving it is a PR of its own.
