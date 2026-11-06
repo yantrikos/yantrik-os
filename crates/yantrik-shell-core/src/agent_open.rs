@@ -18,6 +18,10 @@ use crate::office::{is_libreoffice, CLOSED_TO_AGENTS};
 /// Names that mean LibreOffice to a caller, whether or not an entry is installed under them.
 const OFFICE_NAMES: &[&str] = &["libreoffice", "soffice", "writer", "calc", "impress", "draw", "office"];
 
+/// Names that mean the machine's web browser to a caller, whether or not an entry is installed
+/// under them (#954).
+const BROWSER_NAMES: &[&str] = &["browser", "web_browser", "webbrowser"];
+
 /// What the shell's one MIME rule picked to open a file in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Handler<'a> {
@@ -94,11 +98,14 @@ pub fn may_open_file(handler: Handler, installed: &[DesktopEntry]) -> Result<(),
 }
 
 /// The verdict for an agent or the Mind launching the app `name` (any spelling `open_app` takes).
-/// A name no catalogue entry carries is one of the shell's own screens or routes, which
-/// `check_launchable` has already vetted.
+/// A name no catalogue entry carries - by id, surface, alias or display name - is one of the
+/// shell's own screens or routes, which `check_launchable` has already vetted.
 pub fn may_launch(name: &str, installed: &[DesktopEntry]) -> Result<(), String> {
     let want = canon(name);
     let bare = want.strip_prefix("yantrik_").unwrap_or(&want);
+    if BROWSER_NAMES.contains(&bare) {
+        return Err(not_a_yantrik_app("the browser"));
+    }
     if OFFICE_NAMES.contains(&bare) {
         return Err(CLOSED_TO_AGENTS.to_string());
     }
@@ -108,6 +115,7 @@ pub fn may_launch(name: &str, installed: &[DesktopEntry]) -> Result<(), String> 
             || id.strip_prefix("yantrik_") == Some(want.as_str())
             || e.surface.as_deref().is_some_and(|s| canon(s) == want)
             || e.aliases.iter().any(|a| canon(a) == want)
+            || canon(&e.name) == want
     };
     for e in installed.iter().filter(carries) {
         if is_libreoffice(e) {
@@ -116,7 +124,9 @@ pub fn may_launch(name: &str, installed: &[DesktopEntry]) -> Result<(), String> 
         if is_yantrik_app(e) {
             return Err(no_window_for_minds(&e.app_id, installed));
         }
-        if e.exec != "__builtin__" && !program(e).starts_with("yantrik-") {
+        // Not one of ours: an entry is launchable only if it is the framework app it is named
+        // for (#978's refusal, above) or a screen of the shell itself.
+        if e.exec != "__builtin__" {
             return Err(format!(
                 "Agents can launch only Yantrik's own apps; {} isn't one of them. Nothing was launched.",
                 shown(e)
