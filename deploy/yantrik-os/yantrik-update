@@ -216,6 +216,26 @@ has_porcelain() {
   return 1
 }
 
+# The bridge the mind runs on: what to do when this update left a harness gateway running the
+# yos-mcp of an older build, and what `status` says about it. Sourced from beside this file, which
+# is the repo's deploy directory during a build and /opt/yantrik/bin once installed.
+#
+# Not `fail` when it is gone: `check`, `status` and `apply` are how a machine gets out of a bad
+# update, and an optional helper must not be able to take them away. What is lost is the restart
+# and the Bridge line, and that is said out loud once, here.
+HARNESS_BRIDGE_LIB="$(dirname "$SELF_PATH")/yantrik-harness-bridge.sh"
+if [ -r "$HARNESS_BRIDGE_LIB" ]; then
+  # shellcheck source=deploy/yantrik-os/yantrik-harness-bridge.sh
+  # shellcheck disable=SC1090
+  . "$HARNESS_BRIDGE_LIB"
+else
+  warn "yantrik-harness-bridge.sh is missing: an update run here cannot give the mind a new bridge"
+  harness_bridge_update() { warn "the mind is still on the old bridge; restart hermes-gateway when Hermes is idle"; }
+  harness_bridge_state() { printf 'unknown (yantrik-harness-bridge.sh is missing)'; }
+  harness_bridge_verdict() { return 0; }
+  harness_bridge_retry() { return 0; }
+fi
+
 # Ask the manifest about one channel, once, and distinguish the three things that can happen.
 #
 # This was `manifest_field CHANNEL FIELD`: one HTTP request per field, four of them in `apply`,
@@ -510,6 +530,10 @@ decide_check() { # <local_git> <local_ver> <remote_git> <remote_ver> <channel>
 cmd_check() {
   need python3
   parse_channel "$@"
+  # The one thing that already runs the updater now and then (the shell, once after boot and on
+  # every visit to About): a later idle moment to give the mind a bridge an update could not. To
+  # stderr, so it cannot reach --porcelain's output.
+  harness_bridge_retry >&2
 
   local probe rc pstatus remote_ver remote_git local_ver local_git published detail
   probe="$(channel_probe "$CHANNEL")"; rc=$?
@@ -1330,9 +1354,27 @@ report_stale() {
   local stale; stale="$(stale_processes)"
   [ -n "$stale" ] || return 0
   warn "still running the previous build until they are reopened: $stale"
+  # A harness gateway holding an old yos-mcp is not left for the person to notice and fix by
+  # hand: it is the mind's own bridge, and the update gives it back once the harness is idle.
   case "$stale" in
-    *yos-mcp*) info "a harness holds that bridge; restart the harness to give the mind the new tools (Hermes: systemctl --user restart hermes-gateway)" ;;
+    *yos-mcp*) harness_bridge_update "$stale" ;;
   esac
+}
+
+# The update's own closing line, once the new shell answers. "Complete" is only said when nothing
+# the update was meant to put in force is still running old code: a harness gateway on the old
+# yos-mcp (#1102) is the mind enforcing the previous build's taint and approval rules, so the
+# update ends "not done" with the reason, and `status` says the same until it is given the new
+# bridge. The exit code stays 0: the update has been applied, and `apply` is how a machine gets
+# out of a bad one.
+finish_update() {
+  local why
+  report_stale
+  if why="$(harness_bridge_verdict)"; then
+    printf '%shealthy - update complete%s\n' "$c_grn" "$c_off"
+  else
+    printf '%sshell healthy - update applied, but NOT done: %s%s\n' "$c_red" "$why" "$c_off"
+  fi
 }
 
 # Wait for the shell to answer its control socket. The socket existing is not enough: it is
@@ -1344,8 +1386,7 @@ wait_for_shell() {
   for _ in $(seq 1 30); do
     if [ -S "$sock" ] \
        && XDG_RUNTIME_DIR="$runtime" "$BIN_DIR/yos" describe shell >/dev/null 2>&1; then
-      printf '%shealthy — update complete%s\n' "$c_grn" "$c_off"
-      report_stale
+      finish_update
       return 0
     fi
     sleep 1
@@ -1451,8 +1492,7 @@ sudo systemctl restart $SESSION_UNIT"
   local sock="$runtime/yantrik/app-shell.sock"
   for _ in $(seq 1 20); do
     if [ -S "$sock" ] && XDG_RUNTIME_DIR="$runtime" "$BIN_DIR/yos" describe shell >/dev/null 2>&1; then
-      printf '%shealthy — update complete%s\n' "$c_grn" "$c_off"
-      report_stale
+      finish_update
       return 0
     fi
     sleep 1
@@ -1676,7 +1716,7 @@ cmd_rollback() {
 # the updater. The shell has no business parsing update.conf itself: two parsers of one file is
 # how the machine got three answers to this question in the first place.
 cmd_status() {
-  local can_write="no"
+  local can_write="no" why
   if [ -f "$CONF" ]; then
     [ -w "$CONF" ] && can_write="yes"
   elif [ -w "$(dirname "$CONF")" ]; then
@@ -1701,6 +1741,13 @@ cmd_status() {
     printf 'name=%s\n' "$(build_field name)"
     printf 'installed=%s\n' "$(build_field installed)"
     printf 'backups=%s\n' "$(find "$BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+    # Added after the fields above, which keep their order: the mind's bridge is current, or the
+    # update that installed it is not done, and why.
+    if why="$(harness_bridge_verdict)"; then
+      printf 'bridge=current\nbridge_reason=\n'
+    else
+      printf 'bridge=not_done\nbridge_reason=%s\n' "$why"
+    fi
     return 0
   fi
 
@@ -1719,6 +1766,13 @@ cmd_status() {
   else
     info "none"
   fi
+  # The bridge the mind thinks the desktop is: whatever yos-mcp a harness gateway is running,
+  # which is where the desktop's taint and approval rules live. It gets a line of its own because
+  # it is the one part of an update that can be installed and still not in force, and the only
+  # witness that it is not is the process still holding the old file. Also in --porcelain, as
+  # bridge= and bridge_reason=.
+  say "Bridge"
+  info "$(harness_bridge_state)"
 }
 
 # ── set-channel ─────────────────────────────────────────────────────────────────────────
@@ -2412,9 +2466,12 @@ source_is_roots() {
 
 # The updater and the lists it trusts, which roll forward only: neither a rollback nor an older
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
-# from before a capability was required.
+# from before a capability was required, or the bridge rule this updater sources and depends on
+# being there (a rollback that left a newer yantrik-update sourcing an older bridge module would
+# be an updater reading rules it never shipped with).
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] \
+    || [ "$1" = yantrik-harness-bridge.sh ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -7121,6 +7178,17 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "serial getty: never masked" "no" "$(declare -f stop_serial_getty_loop | grep -q mask && echo yes || echo no)"
   is "serial console: reconcile and an up-to-date apply both run it" "yes" \
     "$(declare -f cmd_reconcile | grep -q reconcile_serial_console && declare -f cmd_apply | grep -q reconcile_serial_console && echo yes || echo no)"
+
+  # The mind's bridge (#1102): its checks run the behaviour, in a file of their own.
+  local bridge_selftest; bridge_selftest="$(dirname "$SELF_PATH")/yantrik-update-selftest-bridge.sh"
+  if [ -r "$bridge_selftest" ]; then
+    # shellcheck source=deploy/yantrik-os/yantrik-update-selftest-bridge.sh
+    # shellcheck disable=SC1090
+    . "$bridge_selftest"
+    selftest_bridge
+  else
+    info "no yantrik-update-selftest-bridge.sh beside the updater: the bridge checks did not run"
+  fi
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
