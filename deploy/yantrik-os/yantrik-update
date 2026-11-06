@@ -216,6 +216,24 @@ has_porcelain() {
   return 1
 }
 
+# The bridge the mind runs on: what to do when this update left a harness gateway running the
+# yos-mcp of an older build, and what `status` says about it. Sourced from beside this file, which
+# is the repo's deploy directory during a build and /opt/yantrik/bin once installed.
+#
+# Not `fail` when it is gone: `check`, `status` and `apply` are how a machine gets out of a bad
+# update, and an optional helper must not be able to take them away. What is lost is the restart
+# and the Bridge line, and that is said out loud once, here.
+HARNESS_BRIDGE_LIB="$(dirname "$SELF_PATH")/yantrik-harness-bridge.sh"
+if [ -r "$HARNESS_BRIDGE_LIB" ]; then
+  # shellcheck source=deploy/yantrik-os/yantrik-harness-bridge.sh
+  # shellcheck disable=SC1090
+  . "$HARNESS_BRIDGE_LIB"
+else
+  warn "yantrik-harness-bridge.sh is missing: an update run here cannot give the mind a new bridge"
+  harness_bridge_update() { warn "the mind is still on the old bridge; restart hermes-gateway when Hermes is idle"; }
+  harness_bridge_state() { printf 'unknown (yantrik-harness-bridge.sh is missing)'; }
+fi
+
 # Ask the manifest about one channel, once, and distinguish the three things that can happen.
 #
 # This was `manifest_field CHANNEL FIELD`: one HTTP request per field, four of them in `apply`,
@@ -1330,8 +1348,10 @@ report_stale() {
   local stale; stale="$(stale_processes)"
   [ -n "$stale" ] || return 0
   warn "still running the previous build until they are reopened: $stale"
+  # A harness gateway holding an old yos-mcp is not left for the person to notice and fix by
+  # hand: it is the mind's own bridge, and the update gives it back once the harness is idle.
   case "$stale" in
-    *yos-mcp*) info "a harness holds that bridge; restart the harness to give the mind the new tools (Hermes: systemctl --user restart hermes-gateway)" ;;
+    *yos-mcp*) harness_bridge_update "$stale" ;;
   esac
 }
 
@@ -1719,6 +1739,13 @@ cmd_status() {
   else
     info "none"
   fi
+  # The bridge the mind thinks the desktop is: whatever yos-mcp a harness gateway is running,
+  # which is where the desktop's taint and approval rules live. It gets a line of its own because
+  # it is the one part of an update that can be installed and still not in force, and the only
+  # witness that it is not is the process still holding the old file. No porcelain field: nothing
+  # reads one, and the About screen that shows this reads this.
+  say "Bridge"
+  info "$(harness_bridge_state)"
 }
 
 # ── set-channel ─────────────────────────────────────────────────────────────────────────
@@ -2412,9 +2439,12 @@ source_is_roots() {
 
 # The updater and the lists it trusts, which roll forward only: neither a rollback nor an older
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
-# from before a capability was required.
+# from before a capability was required, or the bridge rule this updater sources and depends on
+# being there (a rollback that left a newer yantrik-update sourcing an older bridge module would
+# be an updater reading rules it never shipped with).
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] \
+    || [ "$1" = yantrik-harness-bridge.sh ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -7121,6 +7151,169 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "serial getty: never masked" "no" "$(declare -f stop_serial_getty_loop | grep -q mask && echo yes || echo no)"
   is "serial console: reconcile and an up-to-date apply both run it" "yes" \
     "$(declare -f cmd_reconcile | grep -q reconcile_serial_console && declare -f cmd_apply | grep -q reconcile_serial_console && echo yes || echo no)"
+
+  # The mind's bridge (#1102): a gateway still running an old yos-mcp is the desktop's rules
+  # staying behind, so the update restarts it -- by pid, through systemd, once Hermes is idle.
+  # What stands in here is only the outside world: /proc's cgroup for which unit holds a pid, the
+  # shell's run store for whether a turn is in flight (a real sqlite db, the real query), and
+  # systemctl for the restart. The rules under test -- pid not name, idle before restarting,
+  # never the Mind's unit, a failed restart never failing the update -- are the helper's own.
+  local hb="$root/bridge" hb_pid=4242 hb_owner; hb_owner="$(id -un)"
+  mkdir -p "$hb/proc/$hb_pid" "$hb/proc/5150" "$hb/proc/6161"
+  # $me is the uid here, as systemd spells it in a user's own slice. Only the last element of the
+  # path is ever read -- that is the unit a process runs in -- but a fixture should look like the
+  # real thing, since its being the last element is the whole rule.
+  printf '0::/user.slice/user-%s.slice/user@%s.service/app.slice/hermes-gateway.service\n' "$me" "$me" > "$hb/proc/$hb_pid/cgroup"
+  # The Mind's bridge, in its own system unit: of this restart's making, never.
+  printf '0::/system.slice/yantrik-mind.service\n' > "$hb/proc/5150/cgroup"
+  printf '0::/user.slice/user-%s.slice/user@%s.service/app.slice/yantrik-shell.service\n' "$me" "$me" > "$hb/proc/6161/cgroup"
+
+  hb_db() { # hb_db <runs as harness=state ...>: the shell's run store, its own schema
+    rm -f "$hb/runs.db"
+    python3 -I - "$hb/runs.db" "$@" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("create table runs (run_id integer primary key, harness text not null,"
+          " conversation text not null, owner text not null, state text not null,"
+          " started_at integer not null, updated_at integer not null)")
+for spec in sys.argv[2:]:
+    harness, _, state = spec.partition("=")
+    c.execute("insert into runs (harness, conversation, owner, state, started_at, updated_at)"
+              " values (?,?,?,?,?,?)", (harness, "conv", "owner", state, 1, 1))
+c.commit()
+PY
+  }
+  hb_exec() { # hb_exec <restart stand-in: a file, or fail> <stale list> <runs...>: that update, in its own words
+    ( unset HARNESS_BRIDGE_TRIED
+      # The stand-in is appended to, as a real restart would be, and the note is one desktop's
+      # memory. Both are emptied here so that what a run is read as having done is that run's doing
+      # and not the fixtures'; the pair that has to be read across runs -- the note a failed update
+      # leaves and the later one that clears it -- is written as a pair, below.
+      [ "$1" = fail ] || rm -f "$1"; rm -f "$hb/note"
+      hb_db "$3" "${@:4}" 2>/dev/null
+      export YANTRIK_SELFTEST=1 YANTRIK_PROC="$hb/proc" HARNESS_BRIDGE_RUNS_DB="$hb/runs.db" \
+             HARNESS_BRIDGE_STATE="$hb/note" HARNESS_BRIDGE_RESTART="$1" \
+             HARNESS_BRIDGE_WAIT_SECONDS=0 HERMES_GATEWAY_UNIT=hermes-gateway.service
+      harness_bridge_update "$2" 2>&1
+    )
+  }
+  # What a run did, on one line and never what it said: the unit and the account of the restart
+  # (the two things that must not be wrong, so read from the stand-in rather than trusted from the
+  # output), and the first word of the note left behind. `|none` rather than `|` when the note was
+  # never written, since the two are different facts and only the second one is a bug.
+  hb_did() {
+    ( hb_exec "$@" >/dev/null
+      printf 'did=%s|%s\n' "$(cat "$1" 2>/dev/null)" \
+             "$( [ -f "$hb/note" ] && cut -c1-5 "$hb/note" || echo none)"
+    )
+  }
+  # Whether a run said a thing, out of its own output: the words a person reads are part of the
+  # answer, and `is` compares whole strings, so they are asked as yes/no and not as a prefix.
+  hb_said() { # hb_said <restart stand-in> <stale list> <the words> <runs...>
+    local want="$3"
+    hb_exec "$1" "$2" "${@:4}" | grep -qF -- "$want" && printf yes || printf no
+  }
+  # What `status` says about that desktop, given the processes it finds old. `status` asks what is
+  # running now, so <stale list> is what this machine pretends is running -- the real
+  # stale_processes would otherwise report this host's, and every case below would be about the
+  # machine running the selftest. The clock in the note is cut out, since what is being asked is
+  # the reason and the pid; that it is timed is a fact of the sentence, not of the answer.
+  hb_ask() {
+    ( unset HARNESS_BRIDGE_TRIED; export YANTRIK_SELFTEST=1 YANTRIK_PROC="$hb/proc" \
+             HARNESS_BRIDGE_STATE="$hb/note" HERMES_GATEWAY_UNIT=hermes-gateway.service
+      hb_found="$1"
+      stale_processes() { printf '%s' "$hb_found"; }
+      harness_bridge_state | sed 's/ (as of [^)]*Z)//'
+    )
+  }
+  # A run's two outputs at once, since a run of `hb_did` wipes what an earlier run left: for the
+  # pair that only exists across runs -- the note one update leaves and the next one puts away.
+  hb_note() { [ -f "$hb/note" ] && printf there || printf gone; }
+  local hb_stale="yos-mcp(pid-$hb_pid)" hb_sh="yantrik-shell(pid-6161)"
+
+  hb_db hermes=done pi=done
+  is "bridge: no bridge of the gateway's, so nothing to restart and nothing said" \
+    "did=|none" "$(hb_did "$hb/restart" "$hb_sh")"
+  is "bridge: ... and status calls it current" "current" "$(hb_ask "$hb_sh")"
+
+  # No Hermes running at all is not a bridge left behind: the mind is not using one.
+  is "bridge: no yos-mcp running: nothing to restart, and nothing said" \
+    "did=|none" "$(hb_did "$hb/restart" "")"
+  is "bridge: ... and nothing of the bridge is said" "no" "$(hb_said "$hb/restart" "" bridge)"
+
+  is "bridge: idle Hermes (only a closed run of hers, another harness's open): restarted, as the person" \
+    "did=restart hermes-gateway.service as $hb_owner|none" \
+    "$(hb_did "$hb/restart" "$hb_stale" hermes=done pi=running)"
+  is "bridge: ... and it says so in the update's own words" "yes" \
+    "$(hb_said "$hb/restart" "$hb_stale" "Gave the mind the new bridge" hermes=done)"
+  is "bridge: a turn in flight: left alone, and said as not done" \
+    "did=|Herm" "$(hb_did "$hb/restart" "$hb_stale" hermes=running)"
+  is "bridge: ... the reason is in the update's output, with what to do about it" "yes" \
+    "$(hb_said "$hb/restart" "$hb_stale" "restart hermes-gateway.service when Hermes is idle" hermes=running)"
+  is "bridge: ... and status reports it not done, with that reason and the pid" \
+    "not done: Hermes is on the old bridge: Hermes was still working after 0 minutes (pid $hb_pid)" \
+    "$( hb_did "$hb/restart" "$hb_stale" hermes=running >/dev/null; hb_ask "$hb_stale" )"
+
+  is "bridge: a run waiting on the person is still a turn in flight" \
+    "did=|Herm" "$(hb_did "$hb/restart" "$hb_stale" hermes=waiting-on-person)"
+  is "bridge: the Mind's bridge is never this restart's, and no note is left for it" \
+    "did=|none" "$(hb_did "$hb/restart" "yos-mcp(pid-5150)")"
+  is "bridge: a pid systemd does not place in the gateway is not the gateway's bridge" \
+    "did=|none" "$(hb_did "$hb/restart" "yos-mcp(pid-9999)")"
+
+  # A restart that does not happen: the update's work stands (this returns, it does not fail), the
+  # reason is said, left for `status`, and said as the failed restart it was and not as Hermes
+  # being busy.
+  is "bridge: a restart that fails still leaves the update's work standing, and a reason" \
+    "did=|resto" "$(hb_did fail "$hb_stale" hermes=done)"
+  is "bridge: ... said as the failed restart, not as Hermes being busy" "yes" \
+    "$(hb_said fail "$hb_stale" "restarting hermes-gateway.service failed" hermes=done)"
+  is "bridge: ... and status carries that reason, and the pid of the bridge it is about" \
+    "not done: Hermes is on the old bridge: restarting hermes-gateway.service failed (pid $hb_pid)" \
+    "$( hb_did fail "$hb_stale" hermes=done >/dev/null; hb_ask "$hb_stale" )"
+
+  # The note's life is across runs, so asked across runs: left by the update that could not
+  # restart, put away by the next one that could, and by a `status` that finds the gateway current
+  # -- which is what a person who restarts Hermes themselves sees, since `status` asks what is
+  # running now. Neither of these is visible through one run, since a run starts with the note
+  # emptied; both are asked from the note file itself.
+  is "bridge: the note a failed update leaves is put away by the next update that could restart" \
+    "there then gone" \
+    "$( hb_exec fail "$hb_stale" hermes=done >/dev/null 2>&1
+       printf '%s then ' "$(hb_note)"
+       hb_exec "$hb/restart2" "$hb_stale" hermes=done >/dev/null 2>&1
+       printf '%s' "$(hb_note)" )"
+  is "bridge: a status finding the gateway current puts the note away too, and says current" \
+    "current then gone" \
+    "$( hb_exec fail "$hb_stale" hermes=done >/dev/null 2>&1
+       printf '%s then ' "$(hb_ask "$hb_sh")"
+       printf '%s' "$(hb_note)" )"
+  is "bridge: ... and with the note gone and the bridge still old, status is still not done, in its own words" \
+    "not done: Hermes is on the old bridge: no restart of hermes-gateway.service has happened since the last update (pid $hb_pid)" \
+    "$(hb_ask "$hb_stale")"
+
+  is "bridge: the update's own report of old processes is what triggers it" "yes" \
+    "$(declare -f report_stale | grep -q 'harness_bridge_update' && echo yes || echo no)"
+  is "bridge: a rollback reaches it the same way an apply does" "yes" \
+    "$(declare -f restart_and_verify | grep -q report_stale && declare -f cmd_rollback | grep -q restart_and_verify && echo yes || echo no)"
+  is "bridge: pid only, never a signal to a name, and only through systemd" "yes" \
+    "$(! grep -E 'pkill|killall|pgrep|(^|[^-a-z])kill ' "$HARNESS_BRIDGE_LIB" 2>/dev/null | grep -v '^ *#' \
+        && grep -q 'harness_bridge_restart()' "$HARNESS_BRIDGE_LIB" \
+        && grep -q 'systemctl --user' "$HARNESS_BRIDGE_LIB" && echo yes || echo no)"
+  # The columns and the state spelling are the shell's, and the helper asks for exactly those,
+  # so drift in run_store.rs fails here rather than quietly making every gateway look idle. Where
+  # the source tree is not alongside (an installed updater), the absent file skips rather than
+  # fails -- same rule as the installer.rs check above.
+  is "bridge: the idle question is the shell's run store, not a second opinion" "yes" \
+    "$(! [ -f "$here/../../crates/yantrik-harness/src/run_store.rs" ] \
+       || { grep -qE '^ +harness +TEXT NOT NULL' "$here/../../crates/yantrik-harness/src/run_store.rs" \
+            && grep -qE '^ +state +TEXT NOT NULL' "$here/../../crates/yantrik-harness/src/run_store.rs" \
+            && grep -qF 'waiting-on-person' "$here/../../crates/yantrik-harness/src/run_store.rs"; } \
+       && grep -q 'where state in' "$HARNESS_BRIDGE_LIB" \
+       && grep -q 'and harness=' "$HARNESS_BRIDGE_LIB" && echo yes || echo no)"
+  is "bridge: an update run without the helper still runs, and says the bridge is not handled" "yes" \
+    "$(grep -qF 'yantrik-harness-bridge.sh is missing' "$0" && echo yes || echo no)"
+  rm -f "$hb/note" "$hb/restart" "$hb/restart2" "$hb/restart3"
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"

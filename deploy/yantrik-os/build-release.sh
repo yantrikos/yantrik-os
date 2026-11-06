@@ -211,6 +211,11 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
   install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
     || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
+  # The bridge rule the updater sources to hand the mind a new yos-mcp after an update (#1102).
+  # Missing would be tolerable by design — the updater warns and carries on — but a bundle that
+  # never shipped it is a build that quietly gives every updated machine the old hint-only path.
+  install -m 0644 "$SCRIPT_DIR/yantrik-harness-bridge.sh" "$ROOT/bin/yantrik-harness-bridge.sh" \
+    || fail "no yantrik-harness-bridge.sh: an update could not give the mind the new bridge"
   # The check the updater runs on the release manifest before it reads a field of it (#537),
   # and the public keys it trusts. Beside the updater, in the root-owned bin/ and share/, so
   # nothing the desktop's account can write decides who may sign an update. A build with no
