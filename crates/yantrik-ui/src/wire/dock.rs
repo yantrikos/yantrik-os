@@ -246,6 +246,16 @@ const PURPOSES: &[(&str, &str)] = &[
     ("recipes", "every recipe the companion holds, as its stages while it runs — answer the one waiting on you, pause, resume or cancel"),
     ("files", "browse, move, rename and delete files"),
     ("settings", "this desktop's settings"),
+    ("bond", "how far this companion knows you — its level, the exchanges and the days behind them"),
+    ("personality", "how this companion has been acting — how formal, how joking, the opinions it has started to hold"),
+    ("memory", "what this machine remembers about you, as sentences you can read and correct"),
+    ("notifications", "what the desktop has told you since you last looked, newest first"),
+    ("system", "what the machine is doing right now — uptime, load, CPU and memory"),
+    ("about", "what this machine and this Yantrik OS are — version and build, CPU, memory, disk, kernel"),
+    ("skills", "install the skills a companion can use, and configure or turn off the ones it has"),
+    ("packages", "search, install and remove software — Debian packages and Flathub apps, in one list"),
+    ("devices", "the hardware this machine has and has plugged in — USB, PCI, input, storage, displays"),
+    ("permissions", "who can do what on this machine — users, groups, the setuid files, the world-writable ones"),
     ("browser", "the web"),
     ("launchpad", "every app on this machine, by category, searchable"),
 ];
@@ -2345,10 +2355,14 @@ mod tests {
         let notes = apps.iter().find(|a| a["name"] == "notes").expect("notes is openable");
         assert_eq!(notes["describe_as"], "notes");
         assert!(apps.iter().filter(|a| a["opens"] == "app").all(|a| a["describe_as"].is_string()));
-        // Every program says what it is for: a list of names is how three models wrote a
-        // "document" into Notes.
-        for app in apps.iter().filter(|a| a["opens"] == "app") {
-            assert!(app["for"].as_str().is_some_and(|s| s.len() > 8), "{} does not say what it is for", app["name"]);
+        // Every row says what it is for, not only the apps'. Checked for the apps and not for
+        // the routes, this let 10 of the 36 rows the gate listed — every screen the shell
+        // had never written a purpose for, `memory` and `devices` among them — reach a Mind as a
+        // name and nothing beside it. A list of names is how three models wrote a "document"
+        // into Notes. (The browser has `for` and no `describe_as` of its own, which is true:
+        // opening it puts a window on the screen without giving the shell anything to describe.)
+        for row in &apps {
+            assert!(row["for"].as_str().is_some_and(|s| s.len() > 8), "{} does not say what it is for", row["name"]);
         }
     }
 
