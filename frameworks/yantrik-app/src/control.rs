@@ -913,6 +913,7 @@ fn serve_rpc(app_id: &str, instance: &str, action_count: usize) {
                         "Control surface listening (app.describe / app.act)"
                     );
                     if let Err(e) = RpcServer::new(&address)
+                        .door_reported_to(note_door)
                         .serve(Arc::new(ControlRpc {
                             service_id: service_id.clone(),
                             app_id,
@@ -925,6 +926,63 @@ fn serve_rpc(app_id: &str, instance: &str, action_count: usize) {
             })
             .ok();
     }
+}
+
+// ── The mind door this process bound ──────────────────────────────────────────
+
+/// The mind door this process bound, if it bound one (#984).
+///
+/// [`RpcServer`]'s `Drop` is the right cleaner for a server that stops on its own. This one is not:
+/// [`serve_rpc`] puts it on a thread nobody joins, and its accept loop is still running when the app
+/// ends, so `Drop` never runs. The app's own socket goes with the session's runtime directory; the
+/// door copy under `/run/yantrik-minds` is on a tmpfs that lives the whole boot, so the stale socket
+/// is what the next run — and the mind — find there.
+///
+/// What is held is a path a server reported *binding*, never one worked out from the app's name: a
+/// second copy that was refused the name records nothing, and so deletes nothing of the running
+/// one's. A crash or a kill -9 still leaves the door, which is what `owner::claim` already copes
+/// with.
+///
+/// The one an app runs with is [`MIND_DOOR`]; the type is its own so the rule can be driven without
+/// the process-wide one — the test binary serves a surface of its own on another thread, whose door
+/// that thread records here too.
+pub(crate) struct BoundDoor(std::sync::Mutex<Option<std::path::PathBuf>>);
+
+impl BoundDoor {
+    pub(crate) const fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+
+    /// Records a door that was just bound, for the exit to remove. Runs on the serving thread, at the
+    /// moment the server records it for its own `Drop`.
+    pub(crate) fn note(&self, door: std::path::PathBuf) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(door);
+    }
+
+    /// Removes the recorded door, if it is still there, and forgets it either way. A door that is
+    /// already gone is not an error, and a door never recorded leaves another copy's alone.
+    pub(crate) fn clear(&self) {
+        let bound = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(door) = bound {
+            let _ = std::fs::remove_file(&door);
+        }
+    }
+}
+
+/// The control surface's door, recorded as it is bound and removed on the app's way out.
+static MIND_DOOR: BoundDoor = BoundDoor::new();
+
+/// Records the door the control server bound, on the serving thread. See [`BoundDoor`].
+pub(crate) fn note_door(door: std::path::PathBuf) {
+    MIND_DOOR.note(door);
+}
+
+/// Removes the door this app bound, if it is still there (#984).
+///
+/// The runner calls this on the way out — the one place every clean exit already goes through —
+/// because the thread that would have cleaned it is still serving there.
+pub(crate) fn clear_mind_door() {
+    MIND_DOOR.clear();
 }
 
 /// Put every other name this app answers to beside the socket it is about to bind.
