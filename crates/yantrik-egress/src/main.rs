@@ -37,6 +37,7 @@ mod peer;
 mod policy;
 mod proxy;
 mod request;
+mod search;
 mod seed;
 mod state;
 

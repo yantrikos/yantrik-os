@@ -75,7 +75,7 @@ mod tests {
     use crate::policy::{place_of, Mode, Rule};
 
     fn lan(host: &str, ports: &[u16]) -> Rule {
-        Rule { host: host.into(), ports: ports.to_vec(), http: true, lan: true, why: "an endpoint".into(), seeded: true }
+        Rule { host: host.into(), ports: ports.to_vec(), http: true, lan: true, why: "an endpoint".into(), seeded: true, search_bound: false }
     }
 
     fn policy(mode: Mode) -> Policy {
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn a_rule_without_lan_is_no_reason_to_refuse() {
         let mut p = Policy::default();
-        p.allow(Rule { host: "api.x.ai".into(), ports: vec![443], http: false, lan: false, why: "the model".into(), seeded: false }).unwrap();
+        p.allow(Rule { host: "api.x.ai".into(), ports: vec![443], http: false, lan: false, why: "the model".into(), seeded: false, search_bound: false }).unwrap();
         assert_eq!(Door::Public.before_resolve(&p, "api.x.ai"), None);
     }
 
