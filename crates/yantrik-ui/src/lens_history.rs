@@ -5,12 +5,14 @@
 //! conversation was never lost. The Agents store keeps every turn of it, the Lens's own included
 //! (`<mind>:main`, one line per turn in `~/.local/share/yantrik/agents`), and the Agents screen
 //! shows it. The Lens just never read it. This reads it: the last turns of the answering mind's
-//! conversation, as the bubbles the Lens draws. The request goes in a bubble of its own; the
-//! reply carries its text as markdown blocks and each tool call as the card it was.
+//! conversation — the current one; what New chat left behind stays in Agents (#1051) — as the
+//! bubbles the Lens draws. The request goes in a bubble of its own; the reply carries its text as
+//! markdown blocks and each tool call as the card it was.
 
 use slint::{Model, ModelRc, SharedString, VecModel};
 
-use crate::agents::model::{Item, Turn};
+use crate::agents::model::{Agent, Item, Turn};
+use crate::agents::store::Store;
 use crate::{App, ContentBlock, MessageData, ToolCallData};
 
 /// How many of the latest turns the Lens puts back: enough to see where the conversation was,
@@ -48,6 +50,16 @@ pub fn bubbles(turns: &[Turn], limit: usize, mind: &str) -> Vec<MessageData> {
         }
     }
     out
+}
+
+/// The bubbles for the last `limit` turns of `agent`'s *current* conversation (#1051): the turns
+/// after the fence the person's last New chat left, cut the way [`crate::agents::handover`] cuts
+/// a handover. What lies before the fence stays in Agents → History; it is not the conversation
+/// the Lens is putting back.
+pub fn bubbles_since(store: &Store, agent: &Agent, limit: usize) -> Vec<MessageData> {
+    let fence = store.fence(&agent.meta.id);
+    let first = agent.turns.iter().position(|t| t.n > fence).unwrap_or(agent.turns.len());
+    bubbles(&agent.turns[first..], limit, &agent.meta.mind)
 }
 
 /// A turn's reply as the Lens draws one: its text, and the blocks the bubble renders.
@@ -126,8 +138,9 @@ pub fn restore_if_empty(ui: &App) -> usize {
         return 0;
     };
     let agent = crate::agents::feed::main_agent(&host.active_id());
-    let restored =
-        crate::agents::store().read(|s| s.agent(&agent).map(|a| bubbles(&a.turns, RESTORED_TURNS, &a.meta.mind))).unwrap_or_default();
+    let restored = crate::agents::store()
+        .read(|s| s.agent(&agent).map(|a| bubbles_since(s, a, RESTORED_TURNS)))
+        .unwrap_or_default();
     for bubble in &restored {
         model.push(bubble.clone());
     }
@@ -217,5 +230,31 @@ mod tests {
         let turns = vec![turn(1, "hello", vec![Item::Thinking(capped("hmm"))], true)];
         let b = bubbles(&turns, RESTORED_TURNS, "Yantrik Mind");
         assert_eq!(b.len(), 1, "the request alone; thinking is not a reply");
+    }
+
+    /// #1051: New chat empties the Lens, and the next start put the emptied conversation back —
+    /// every turn of the agent's, including the ones the press had just left behind. The bubbles
+    /// come from the fence the same cut the handover makes: the last turn, and only the last turn.
+    #[test]
+    fn a_new_chat_leaves_the_conversation_before_it_in_agents() {
+        use crate::agents::model::AgentId;
+        let mut store = Store::new();
+        let id = AgentId::new("mind", AgentId::MAIN);
+        for n in 1..=2 {
+            store.open_turn(&id, &format!("question {n}"));
+            store.text(&id, &format!("answer {n}"));
+            store.close_turn(&id, true);
+        }
+        store.new_conversation();
+        store.open_turn(&id, "what's on tomorrow");
+        store.text(&id, "Two meetings.");
+        store.close_turn(&id, true);
+
+        let agent = store.agent(&id).unwrap();
+        let b = bubbles_since(&store, agent, RESTORED_TURNS);
+        let asked: Vec<String> = b.iter().filter(|m| m.role == "user").map(|m| m.content.to_string()).collect();
+        assert_eq!(asked, vec!["what's on tomorrow"], "what the fence left behind stays in Agents");
+        assert_eq!(b.len(), 2, "the last turn's request and reply, and nothing older");
+        assert_eq!(b[1].content, "Two meetings.");
     }
 }
