@@ -7190,7 +7190,7 @@ PY
       # and not the fixtures'; the pair that has to be read across runs -- the note a failed update
       # leaves and the later one that clears it -- is written as a pair, below.
       [ "$1" = fail ] || rm -f "$1"; rm -f "$hb/note"
-      hb_db "$3" "${@:4}" 2>/dev/null
+      hb_db "${@:3}" 2>/dev/null
       export YANTRIK_SELFTEST=1 YANTRIK_PROC="$hb/proc" HARNESS_BRIDGE_RUNS_DB="$hb/runs.db" \
              HARNESS_BRIDGE_STATE="$hb/note" HARNESS_BRIDGE_RESTART="$1" \
              HARNESS_BRIDGE_WAIT_SECONDS=0 HERMES_GATEWAY_UNIT=hermes-gateway.service
@@ -7247,7 +7247,7 @@ PY
   is "bridge: ... and it says so in the update's own words" "yes" \
     "$(hb_said "$hb/restart" "$hb_stale" "Gave the mind the new bridge" hermes=done)"
   is "bridge: a turn in flight: left alone, and said as not done" \
-    "did=|Herm" "$(hb_did "$hb/restart" "$hb_stale" hermes=running)"
+    "did=|Herme" "$(hb_did "$hb/restart" "$hb_stale" hermes=running)"
   is "bridge: ... the reason is in the update's output, with what to do about it" "yes" \
     "$(hb_said "$hb/restart" "$hb_stale" "restart hermes-gateway.service when Hermes is idle" hermes=running)"
   is "bridge: ... and status reports it not done, with that reason and the pid" \
@@ -7255,7 +7255,7 @@ PY
     "$( hb_did "$hb/restart" "$hb_stale" hermes=running >/dev/null; hb_ask "$hb_stale" )"
 
   is "bridge: a run waiting on the person is still a turn in flight" \
-    "did=|Herm" "$(hb_did "$hb/restart" "$hb_stale" hermes=waiting-on-person)"
+    "did=|Herme" "$(hb_did "$hb/restart" "$hb_stale" hermes=waiting-on-person)"
   is "bridge: the Mind's bridge is never this restart's, and no note is left for it" \
     "did=|none" "$(hb_did "$hb/restart" "yos-mcp(pid-5150)")"
   is "bridge: a pid systemd does not place in the gateway is not the gateway's bridge" \
@@ -7265,7 +7265,7 @@ PY
   # reason is said, left for `status`, and said as the failed restart it was and not as Hermes
   # being busy.
   is "bridge: a restart that fails still leaves the update's work standing, and a reason" \
-    "did=|resto" "$(hb_did fail "$hb_stale" hermes=done)"
+    "did=|resta" "$(hb_did fail "$hb_stale" hermes=done)"
   is "bridge: ... said as the failed restart, not as Hermes being busy" "yes" \
     "$(hb_said fail "$hb_stale" "restarting hermes-gateway.service failed" hermes=done)"
   is "bridge: ... and status carries that reason, and the pid of the bridge it is about" \
