@@ -202,8 +202,13 @@ impl<S: Settings> Boot<S> {
         if service && !launch.is_empty() {
             return Err(Startup::new("A service start takes nothing to open: it starts the app with no window."));
         }
-        // Settings from the old shared place, once, before the app's own file is opened.
-        crate::settings::former::import::<S>(&paths);
+        // Settings from the old shared place, once, before the app's own file is opened. Never at a
+        // service start: that copy is the shell's start of the instance for an agent, and it is a
+        // thing the person never asked for and would find in their config (#1043). Their next
+        // normal start imports, exactly as before.
+        if !service {
+            crate::settings::former::import::<S>(&paths);
+        }
         let store = Store::<S>::open(paths.config_file().to_path_buf(), paths.id());
         let drafts = Drafts::read(paths.state_dir());
         let boot = Boot {
@@ -419,5 +424,63 @@ mod tests {
         let mut all = Changed::all();
         all.add("x");
         assert!(all.has("anything"));
+    }
+
+    /// An app whose settings were at the old shared place before they had a directory, as Music's
+    /// are (`apps/music-player/src/kept.rs`).
+    #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+    struct Old {
+        n: i32,
+    }
+    impl Settings for Old {
+        const SCHEMA: u32 = 1;
+        const FORMER_FILE: Option<&'static str> = Some("old-app.json");
+        const LEGACY_KEYS: &'static [&'static str] = &["n"];
+    }
+
+    /// A place of its own, with the settings lying at the old shared place, as they were before
+    /// the app had a directory.
+    fn with_former_settings(name: &str) -> (Paths, std::path::PathBuf) {
+        let paths = Paths::temporary(name);
+        let former = paths.former_config_file(Old::FORMER_FILE.unwrap()).unwrap();
+        std::fs::create_dir_all(former.parent().unwrap()).unwrap();
+        std::fs::write(&former, r#"{"n": 7}"#).unwrap();
+        (paths, former)
+    }
+
+    /// One start of the app's one instance: the agent's (`--service`) or the person's own.
+    fn start(paths: &Paths, service: bool) -> Boot<Old> {
+        let args = if service {
+            vec![std::ffi::OsString::from(crate::service::FLAG)]
+        } else {
+            vec![]
+        };
+        Boot::<Old>::open_as(
+            paths.clone(),
+            args,
+            std::sync::Arc::new(yantrik_mind::fake::FakeMind::new()),
+            crate::services::Services::fakes(),
+            false,
+        )
+        .map(|(boot, _store)| boot)
+        .unwrap_or_else(|e| panic!("a boot: {e}"))
+    }
+
+    /// The look at the old place spends the one it gets (`former::record`), so a service start that
+    /// took it leaves the person with the defaults and no way back to the old file.
+    #[test]
+    fn a_service_boot_imports_none_of_the_persons_settings() {
+        let (paths, former) = with_former_settings("service-import");
+
+        // An agent's `describe` or `act` starts the instance: nothing of the person's is written.
+        start(&paths, true);
+        assert!(!paths.config_file().exists(), "a service start wrote no settings file of the person's");
+        assert!(!paths.imported_record().exists(), "nor the record of the look, which would spend it");
+
+        // The person's own start brings the settings across, as it always did.
+        let boot = start(&paths, false);
+        assert_eq!(boot.settings, Old { n: 7 }, "the old file is taken at the person's start");
+        assert!(paths.imported_record().exists(), "and the look is recorded for the once");
+        assert_eq!(std::fs::read_to_string(&former).unwrap(), r#"{"n": 7}"#, "the old file is kept as the backup");
     }
 }
