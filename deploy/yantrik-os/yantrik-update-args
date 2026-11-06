@@ -1,0 +1,170 @@
+#!/bin/bash
+# Sourced by yantrik-update, never run: what each subcommand takes, checked once before it runs
+# (#1103). Each cmd_* function reads its arguments by scanning for the words it knows and ignoring
+# the rest, so `rollback --help` was not a request for help but an argument like any other, and it
+# rolled the machine back; `rollback now` and a misspelt flag did the same. This table is the one
+# place that says what a subcommand takes. The usage line is derived from it, the checker reads it,
+# and the selftest holds cmd_apply's own parser to it.
+#
+# One row per subcommand: `command|flags|positionals`.
+#   flags        space separated; `--channel=` is a flag that takes a value, and the value may not
+#                start with `-` (so `--channel --porcelain` is refused, not read as a channel)
+#   positionals  space separated, in order, and no more and no fewer. `a/b/c` is a choice, shown
+#                `a|b|c`; an UPPERCASE word is any word that does not start with `-`.
+# `set_channel` is `set-channel`, as the control surface spells it.
+
+args_table() {
+  cat <<'TABLE'
+check|--porcelain --channel=|
+apply|--channel= --force --allow-downgrade --reboot --no-restart|
+rollback||
+status|--porcelain|
+set-channel||nightly/beta/stable
+reconcile||
+package-list||FILE
+migrate-minds||
+install-mind||BUNDLE SHA256
+mind-egress||apply
+migrate-ownership||
+selftest||
+TABLE
+}
+
+# The row of one subcommand (empty, and failing, for a word that is not one: `help`, `--help`, an
+# unknown command, which the dispatch answers itself).
+args_row() { # <command>
+  local c="${1//_/-}"
+  args_table | awk -F'|' -v c="$c" '$1 == c { print; found = 1 } END { exit !found }'
+}
+
+args_commands() { args_table | cut -d'|' -f1; }
+
+# `--channel=` is the flag --channel; `--force` is itself.
+args_flag_names() { # <command>
+  local row; row="$(args_row "$1")" || return 1
+  printf '%s\n' "$row" | cut -d'|' -f2 | tr ' ' '\n' | sed 's/=$//' | sed '/^$/d'
+}
+
+# The usage line, from the row: `usage: yantrik-update apply [--channel C] [--force] ...`.
+args_usage() { # <command>
+  local row cmd f p out
+  row="$(args_row "$1")" || return 1
+  cmd="$(printf '%s' "$row" | cut -d'|' -f1)"
+  out="usage: yantrik-update $cmd"
+  for f in $(printf '%s' "$row" | cut -d'|' -f2); do
+    case "$f" in *=) out="$out [${f%=} C]" ;; *) out="$out [$f]" ;; esac
+  done
+  for p in $(printf '%s' "$row" | cut -d'|' -f3); do
+    out="$out ${p//\//|}"
+  done
+  printf '%s\n' "$out"
+}
+
+# Check <command>'s arguments; returns 0 to carry on, and otherwise does not return: `-h` and
+# `--help` print the usage and exit 0, and anything the subcommand does not take is refused,
+# naming it and saying nothing was changed. `-h` comes first: asking for help wins over a bad flag.
+args_check() { # <command> <its arguments...>
+  local row cmd flags pos a f want n=0 took
+  row="$(args_row "$1")" || return 0
+  shift
+  cmd="$(printf '%s' "$row" | cut -d'|' -f1)"
+  flags="$(printf '%s' "$row" | cut -d'|' -f2)"
+  pos="$(printf '%s' "$row" | cut -d'|' -f3)"
+  for a in "$@"; do
+    case "$a" in -h|--help) args_usage "$cmd"; exit 0 ;; esac
+  done
+  set -- "$@" ""   # a sentinel, so a flag that wants a value can look at the next word
+  while [ "$#" -gt 1 ]; do
+    a="$1"; shift
+    took=0
+    for f in $flags; do
+      if [ "$f" = "$a" ]; then took=1; break; fi
+      if [ "$f" = "$a=" ]; then
+        case "$1" in
+          ''|-*) fail "$cmd: $a needs a value, not '${1:-nothing}'; nothing was changed. $(args_usage "$cmd")" ;;
+        esac
+        shift; took=1; break
+      fi
+    done
+    [ "$took" = 1 ] && continue
+    case "$a" in
+      -*) fail "$cmd does not take '$a'; nothing was changed. $(args_usage "$cmd")" ;;
+    esac
+    n=$((n + 1))
+    want="$(printf '%s' "$pos" | awk -v n="$n" '{ print $n }')"
+    [ -n "$want" ] || fail "$cmd does not take '$a'; nothing was changed. $(args_usage "$cmd")"
+    case "$want" in
+      *[a-z]*) case "/$want/" in */"$a"/*) ;; *) fail "$cmd takes ${want//\//, }, not '$a'; nothing was changed. $(args_usage "$cmd")" ;; esac ;;
+    esac
+  done
+  [ "$n" -ge "$(printf '%s' "$pos" | wc -w)" ] \
+    || fail "$cmd needs $(printf '%s' "$pos" | wc -w) argument(s), got $n; nothing was changed. $(args_usage "$cmd")"
+  return 0
+}
+
+# ── selftest ──────────────────────────────────────────────────────────────────────────────
+# Run by `yantrik-update selftest` (uses its `is` and `root`). The updater is run by the absolute
+# path it resolved for itself, since CI runs it by a relative one and the selftest's own cwd has
+# moved by now; every exit code is asserted and the usage text must have appeared, so a command that
+# never ran (127) can not read as "nothing changed". The tree has a backup in it, so "nothing
+# changed" means the binaries a rollback would have put back are still exactly where they were.
+selftest_args() {
+  local argd="$root/args" argd0 cmd words p w out rc name
+  mkdir -p "$argd/bin" "$argd/updates" "$argd/backups/2026-01-01T000000Z/bin"
+  printf 'the running shell\n'   > "$argd/bin/yantrik-shell"
+  printf 'the backed-up shell\n' > "$argd/backups/2026-01-01T000000Z/bin/yantrik-shell"
+  printf '%s\n' "$argd/backups/2026-01-01T000000Z" > "$argd/updates/last-backup"
+  args_state() { ( cd "$argd" && find . -type f -exec sha256sum {} + | sort ) | sha256sum | cut -c1-12; }
+  argd0="$(args_state)"
+  args_run() { YANTRIK_PREFIX="$argd" bash "$SELF_PATH" "$@" 2>&1; }
+
+  # One loop over every subcommand: help is an answer and changes nothing, a flag it does not have
+  # and a word it does not take are refused and change nothing.
+  for cmd in $(args_commands); do
+    for w in -h --help; do
+      out="$(args_run "$cmd" "$w")"; rc=$?
+      is "args: $cmd $w prints its usage, exits 0, changes nothing" "0|$(args_usage "$cmd")|$argd0" \
+        "$rc|$out|$(args_state)"
+    done
+    out="$(args_run "$cmd" --nonsense)"; rc=$?
+    case "$out" in *"$cmd does not take '--nonsense'"*"nothing was changed"*usage:*) name=named ;; *) name="$out" ;; esac
+    is "args: $cmd --nonsense is refused by name, with the usage, changing nothing" "1|named|$argd0" \
+      "$rc|$name|$(args_state)"
+    # As many words as the command takes, then one more.
+    words=""
+    for p in $(args_table | awk -F'|' -v c="$cmd" '$1 == c { print $3 }'); do
+      case "$p" in *[a-z]*) words="$words ${p%%/*}" ;; *) words="$words x" ;; esac
+    done
+    # shellcheck disable=SC2086
+    out="$(args_run "$cmd" $words stray)"; rc=$?
+    case "$out" in *"$cmd does not take 'stray'"*"nothing was changed"*) name=named ;; *) name="$out" ;; esac
+    is "args: $cmd with a stray word is refused by name, changing nothing" "1|named|$argd0" \
+      "$rc|$name|$(args_state)"
+  done
+
+  out="$(args_run rollback now)"; rc=$?
+  is "args: rollback now does not roll back" "1|$argd0" "$rc|$(args_state)"
+  t "args: ... and says why" "rollback does not take 'now'" "$out"
+  out="$(args_run check --channel --porcelain)"; rc=$?
+  is "args: --channel needs a value that is not a flag" "1" "$rc"
+  t "args: ... and says so" "--channel needs a value" "$out"
+
+  # Every way the callers in the repo call it still passes the check. Not run: checked.
+  for words in "set-channel stable" "set_channel beta" "package-list /abs/packages.list" \
+               "check --porcelain" "check --porcelain --channel nightly" "check --channel beta" \
+               "apply" "apply --channel nightly --force --allow-downgrade" "apply --reboot --no-restart" \
+               "migrate-ownership" "migrate-minds" "mind-egress apply" "status --porcelain" \
+               "reconcile" "rollback" "selftest" "install-mind /b/x.tar.zst abc"; do
+    # shellcheck disable=SC2086
+    is "args: accepted, as the callers pass it: $words" "0|" \
+      "$( out="$( ( args_check $words ) 2>&1 )"; echo "$?|$out" )"
+  done
+
+  # One source of truth: cmd_apply's own parser takes exactly the flags the table lists for it
+  # (--channel is parse_channel's, not the loop's), and every command in the usage text has a row.
+  is "args: cmd_apply's flags are the table's" \
+    "$(args_flag_names apply | grep -vx -- --channel | sort | tr '\n' ' ')" \
+    "$(declare -f cmd_apply | sed -n 's/^ *\(--[a-z-]*\)) *$/\1/p' | sort | tr '\n' ' ')"
+  is "args: every command in the usage text is in the table" "" \
+    "$(usage | sed -n 's/^  \([a-z-][a-z-]*\)  .*/\1/p' | while read -r name; do args_row "$name" >/dev/null || echo "$name"; done)"
+}

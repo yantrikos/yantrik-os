@@ -2414,7 +2414,7 @@ source_is_roots() {
 # bundle puts back an updater from before content was checked (#419), or a Mind capability list
 # from before a capability was required.
 is_updater_file() {
-  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ]
+  [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] || [ "$1" = yantrik-update-args ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says
@@ -7122,42 +7122,7 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
   is "serial console: reconcile and an up-to-date apply both run it" "yes" \
     "$(declare -f cmd_reconcile | grep -q reconcile_serial_console && declare -f cmd_apply | grep -q reconcile_serial_console && echo yes || echo no)"
 
-  # -h and --help on a subcommand, and a word the subcommand does not take (#1103). Each cmd_*
-  # function read its arguments by scanning for the words it knew and ignoring the rest — apply its
-  # four flags, check --channel, and rollback, status and reconcile none at all — so `rollback
-  # --help` was not a request for help but an argument like any other, and it rolled the machine
-  # back. The tree here has a backup in it, so "nothing changed" means the binaries a rollback
-  # would have put back are still exactly where they were.
-  local argd="$root/args" argd0
-  mkdir -p "$argd/bin" "$argd/updates" "$argd/backups/2026-01-01T000000Z/bin"
-  printf 'the running shell\n'   > "$argd/bin/yantrik-shell"
-  printf 'the running ui\n'      > "$argd/bin/yantrik-ui"
-  printf 'the backed-up shell\n' > "$argd/backups/2026-01-01T000000Z/bin/yantrik-shell"
-  printf '%s\n' "$argd/backups/2026-01-01T000000Z" > "$argd/updates/last-backup"
-  args_state() { ( cd "$1" && find . -type f -exec sha256sum {} + | sort ) | sha256sum | cut -c1-12; }
-  argd0="$(args_state "$argd")"
-
-  out="$(YANTRIK_PREFIX="$argd" "$0" rollback --help 2>&1)"; rc=$?
-  t "rollback --help: the usage of rollback" "usage: yantrik-update rollback" "$out"
-  is "rollback --help: not an error" "0" "$rc"
-  is "rollback --help: no backup touched, no file written" "$argd0" "$(args_state "$argd")"
-  t "the short form asks the same question" "usage: yantrik-update rollback" \
-    "$(YANTRIK_PREFIX="$argd" "$0" rollback -h 2>&1)"
-
-  out="$(YANTRIK_PREFIX="$argd" "$0" apply --help 2>&1)"; rc=$?
-  t "apply --help: the usage of apply, with the flags it takes" "--allow-downgrade" "$out"
-  is "apply --help: not an error" "0" "$rc"
-  is "apply --help: nothing applied, no file written" "$argd0" "$(args_state "$argd")"
-
-  out="$(YANTRIK_PREFIX="$argd" "$0" rollback --nonsense 2>&1)"; rc=$?
-  t "rollback --nonsense: the word is named back" "rollback does not take '--nonsense'" "$out"
-  t "... and it says nothing was changed" "nothing was changed" "$out"
-  if [ "$rc" = 0 ]; then
-    printf '  %sFAIL%s a word rollback does not take exited 0\n' "$c_red" "$c_off"; fails=$((fails + 1))
-  else
-    printf '  %sok%s   a word rollback does not take is an error\n' "$c_grn" "$c_off"
-  fi
-  is "rollback --nonsense: no backup touched, no file written" "$argd0" "$(args_state "$argd")"
+  declare -F selftest_args >/dev/null && selftest_args  # the arguments of each subcommand: yantrik-update-args
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"
@@ -7188,70 +7153,15 @@ usage() {
     "verified (unsigned, wrongly signed, expired or older than one already accepted) · 1 anything else."
 }
 
-# What one subcommand takes, on one line. Printed for -h/--help, and shown back to whoever typed
-# a word the command does not take, so the sentence that refuses carries the fix with it.
-subcommand_usage() { # <command>
-  case "$1" in
-    check)             printf '%s\n' "usage: yantrik-update check [--channel C] [--porcelain]" ;;
-    apply)             printf '%s\n' "usage: yantrik-update apply [--channel C] [--force] [--allow-downgrade] [--reboot] [--no-restart]" ;;
-    rollback)          printf '%s\n' "usage: yantrik-update rollback" ;;
-    status)            printf '%s\n' "usage: yantrik-update status [--porcelain]" ;;
-    set-channel|set_channel) printf '%s\n' "usage: yantrik-update set-channel nightly|beta|stable" ;;
-    reconcile)         printf '%s\n' "usage: yantrik-update reconcile" ;;
-    package-list)      printf '%s\n' "usage: yantrik-update package-list FILE" ;;
-    migrate-minds)     printf '%s\n' "usage: yantrik-update migrate-minds" ;;
-    install-mind)      printf '%s\n' "usage: yantrik-update install-mind BUNDLE SHA256" ;;
-    mind-egress)       printf '%s\n' "usage: yantrik-update mind-egress apply" ;;
-    migrate-ownership) printf '%s\n' "usage: yantrik-update migrate-ownership" ;;
-    selftest)          printf '%s\n' "usage: yantrik-update selftest" ;;
-  esac
-}
-
-# The options a subcommand takes, one per line. --channel is the only one that takes a word with
-# it (the channel), which is how parse_channel reads it. A word that is not an option — a channel
-# name, a bundle path, the FILE of `package-list` — is a command's own argument, and it goes on
-# checking those itself against what it needs.
-subcommand_options() { # <command>
-  case "$1" in
-    check)  printf '%s\n' "--channel" "--porcelain" ;;
-    apply)  printf '%s\n' "--channel" "--force" "--allow-downgrade" "--reboot" "--no-restart" ;;
-    status) printf '%s\n' "--porcelain" ;;
-  esac
-}
-
-# Checked once, here, before a subcommand runs (#1103). Each cmd_* function scans the arguments
-# for the words it knows and ignores the rest — apply its four flags, check --channel — and
-# rollback, status and reconcile read nothing at all. So `yantrik-update rollback --help` was not
-# a request for help but an argument like any other, and it rolled the machine back; a misspelt
-# flag did the same, running the plain command instead of the one that was asked for. Asking the
-# same question of every subcommand above the case below means neither can come back.
-check_subcommand_args() { # <command> <its arguments...>
-  local cmd="$1"; shift
-  # A word that is not one of the above is either `--help` itself, which is asking about the
-  # program and not about a subcommand, or no command at all. Both belong to the case below,
-  # which answers with the general usage or with the unknown command's name. This is about
-  # arguments only.
-  [ -n "$(subcommand_usage "$cmd")" ] || return 0
-  local a o channel_comes=0
-  for a in "$@"; do
-    case "$a" in
-      -h|--help) subcommand_usage "$cmd"; exit 0 ;;
-    esac
-    if [ "$channel_comes" = 1 ]; then channel_comes=0; continue; fi  # the channel, not an option
-    for o in $(subcommand_options "$cmd"); do
-      [ "$o" = "$a" ] || continue
-      [ "$a" = "--channel" ] && channel_comes=1
-      continue 2
-    done
-    case "$a" in
-      -*) fail "$cmd does not take '$a'; nothing was changed" ;;
-    esac
-  done
-}
+# What each subcommand takes, checked before it runs (#1103); sourced from beside this file.
+ARGS_LIB="$(dirname "$SELF_PATH")/yantrik-update-args"
+# shellcheck source=deploy/yantrik-os/yantrik-update-args
+# shellcheck disable=SC1090
+if [ -r "$ARGS_LIB" ]; then . "$ARGS_LIB"; else warn "yantrik-update-args is missing: arguments are not checked"; args_check() { case " $* " in *" -h "*|*" --help "*) usage; exit 0 ;; esac; }; fi
 
 # ── dispatch ────────────────────────────────────────────────────────────────────────────
 CMD="${1:-check}"; shift || true
-check_subcommand_args "$CMD" "$@"
+args_check "$CMD" "$@"
 case "$CMD" in
   check)    cmd_check "$@" ;;
   apply)    cmd_apply "$@" ;;
