@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 use yantrik_app_runtime::notify;
-use yantrik_ipc_contracts::notifications::{Notification, Since, Urgency, MARK_READ, SINCE};
+use yantrik_ipc_contracts::notifications::{Notification, Since, Source, Urgency, MARK_READ, SINCE};
 use yantrik_ipc_transport::SyncRpcClient;
 
 use crate::app_context::AppContext;
@@ -352,10 +352,10 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
             return;
         }
     }
-    act(
-        yantrik_ipc_contracts::notifications::ACTION,
-        serde_json::json!({ "id": id, "action_id": action_id }),
-    );
+    // Who raised this, as the mirror still knows it — taken before the press is filed away,
+    // because it is what makes the service's answer mean something.
+    let source = with_mirror(|m| m.get(id).map(|n| n.source)).flatten();
+    tell_the_service(id, action_id, source);
 
     let ours = with_mirror(|m| {
         m.get(id).and_then(|n| {
@@ -389,6 +389,76 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
         }
     }
     tracing::info!(id, action_id, "notification action pressed");
+}
+
+/// Tell the service that a notification's button was pressed, and say what came back.
+///
+/// Not the fire-and-forget `act`: that never reads the reply, which is right for a call made for
+/// the store's own bookkeeping and wrong for this one. The service answers with
+/// `told_the_sender` — whether it got as far as emitting `ActionInvoked` for the program that
+/// raised the notification — and that answer is the only evidence the shell has that the press
+/// went anywhere. A freedesktop sender that never hears it has an action button doing nothing,
+/// and a sender that has left the bus since is beyond the shell's reach — neither is beyond
+/// saying, which is what [`action_press_outcome`] is for.
+///
+/// The wait is on a worker thread the way `forward_to_app` does it, two seconds of it. The screen
+/// has already been updated optimistically by the caller, so this waits for nothing the person is
+/// looking at.
+fn tell_the_service(id: &str, action_id: &str, source: Option<Source>) {
+    let id = id.to_string();
+    let action_id = action_id.to_string();
+    let _ = std::thread::Builder::new()
+        .name("yos-notification-press".into())
+        .spawn(move || {
+            if let Err(e) = yantrik_app_runtime::service::ensure(SERVICE) {
+                tracing::warn!(action_id, error = %e, "the notifications service is not reachable");
+                return;
+            }
+            match SyncRpcClient::for_service(SERVICE)
+                .with_timeout(Duration::from_secs(2))
+                .call(
+                    yantrik_ipc_contracts::notifications::ACTION,
+                    serde_json::json!({ "id": id, "action_id": action_id }),
+                ) {
+                // Two seconds on a press the person is watching, and the sender may simply have
+                // left the bus: either way the answer, not the press, is what gets reported.
+                Ok(reply) => match action_press_outcome(&reply, source) {
+                    Some(what) => tracing::warn!(action_id,
+                        told_the_sender = ?reply["told_the_sender"].as_bool(), "{what}"),
+                    None => tracing::debug!(action_id,
+                        told_the_sender = ?reply["told_the_sender"].as_bool(),
+                        "the service took the press and the sender was, or need not be, told"),
+                },
+                Err(e) => tracing::warn!(action_id, error = %e.message,
+                    "the notifications service refused the action a button named"),
+            }
+        });
+}
+
+/// Why a press on a freedesktop notification's button may have come to nothing, if it did.
+///
+/// `told_the_sender` is false in two quite different situations and telling them apart is the
+/// whole job: a **freedesktop** sender is told by this signal and nothing else, so a false answer
+/// there is a button that did nothing the person asked it to — the dead control this repo forbids,
+/// and the silence this issue is about. Under `Yantrik` the shell carries the button out itself,
+/// on the app's control surface, so false is the ordinary answer. A notification the mirror no
+/// longer holds is not worth an alarm either; an answer that does not say either way is, because
+/// that leaves the press unobservable again.
+///
+/// `Some` is the sentence to log at warn; `None` is nothing worth more than a debug line.
+fn action_press_outcome(reply: &serde_json::Value, source: Option<Source>) -> Option<&'static str> {
+    match (
+        reply.get("told_the_sender").and_then(|v| v.as_bool()),
+        source,
+    ) {
+        (Some(false), Some(Source::Freedesktop)) => Some(
+            "the program that raised a notification was not told its button was pressed, so that button does nothing",
+        ),
+        (None, _) => Some(
+            "the notifications service answered a pressed button without saying whether the sender was told",
+        ),
+        (Some(true), _) | (Some(false), _) => None,
+    }
 }
 
 /// Make the call one of our own notifications' buttons stands for.
@@ -1768,5 +1838,51 @@ mod button_route_tests {
         assert_eq!(route("Firefox"), None);
         assert_eq!(route("browser"), None, "the browser publishes nothing");
         assert_eq!(route("no-such-app"), None);
+    }
+}
+
+/// Whether a pressed button's answer is the silent dead control of #1107.
+#[cfg(test)]
+mod press_outcome_tests {
+    use super::action_press_outcome;
+    use yantrik_ipc_contracts::notifications::Source;
+
+    /// The service's answer to `notifications.action`, with or without the field it owes.
+    fn reply(told: Option<bool>) -> serde_json::Value {
+        match told {
+            Some(told) => serde_json::json!({ "id": 7, "told_the_sender": told }),
+            None => serde_json::json!({ "id": 7 }),
+        }
+    }
+
+    /// A freedesktop sender is told by `ActionInvoked` and by nothing else, so this is the one
+    /// answer that means a button did nothing the person pressed it for.
+    #[test]
+    fn a_browser_that_was_never_told_is_the_one_that_must_be_said_out_loud() {
+        let silent = action_press_outcome(&reply(Some(false)), Some(Source::Freedesktop));
+        assert!(silent.is_some(), "a browser's button that reached nobody is the issue's dead control");
+    }
+
+    /// The same false answer under `Yantrik` is ordinary — the shell carries its own apps'
+    /// buttons out on their control surface — and a notification the mirror has already let go of
+    /// is not a reason to alarm anybody.
+    #[test]
+    fn the_same_false_answer_is_harmless_for_every_other_sender() {
+        assert_eq!(action_press_outcome(&reply(Some(false)), Some(Source::Yantrik)), None);
+        assert_eq!(action_press_outcome(&reply(Some(false)), None), None);
+    }
+
+    #[test]
+    fn a_press_that_reached_the_sender_is_nothing_to_complain_about() {
+        assert_eq!(action_press_outcome(&reply(Some(true)), Some(Source::Freedesktop)), None);
+        assert_eq!(action_press_outcome(&reply(Some(true)), None), None);
+    }
+
+    /// The other half of the silence: an answer that does not say either way leaves the press as
+    /// unobservable as no answer at all.
+    #[test]
+    fn an_answer_that_says_nothing_either_way_is_worth_saying() {
+        assert!(action_press_outcome(&reply(None), Some(Source::Freedesktop)).is_some());
+        assert!(action_press_outcome(&reply(None), None).is_some());
     }
 }
