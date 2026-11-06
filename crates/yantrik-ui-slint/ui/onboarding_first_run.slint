@@ -476,11 +476,11 @@ export component FirstRunScreen inherits Rectangle {
     in property <string> nearby-status: "";
     in property <string> nearby-words: "";
     // "", "checking", "choose-model", "connected", "attention", "pick-failed"
-    in property <string> connect-status: "";
+    in-out property <string> connect-status: "";
     // The models the connected account lists, and the one the person chose (none until they do).
     in property <[FirstRunModel]> models: [];
     in-out property <string> chosen-model: "";
-    in property <string> connect-words: "";
+    in-out property <string> connect-words: "";
     // The key placeholder of the chosen card, and whether it has a browser sign-in.
     in property <string> chosen-key-placeholder: "";
     in property <bool> chosen-browser-sign-in: false;
@@ -566,6 +566,10 @@ export component FirstRunScreen inherits Rectangle {
         root.chosen-id = "";
         root.chosen-name = "";
         root.chosen-model = "";
+        // The connection's state goes with the choice: its words and the "connected" the shell
+        // reads back describe the attempt that was just abandoned.
+        root.connect-status = "";
+        root.connect-words = "";
     }
     // Escape is Back, on every screen: it never closes the first run. Step 2 with a card being
     // connected goes back to the list first; from the installer, Back is the installer.
