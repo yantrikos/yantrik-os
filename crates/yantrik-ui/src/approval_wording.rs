@@ -99,7 +99,10 @@ impl<'a> Published<'a> {
 }
 
 /// `text` with every control, bidi and format character drawn as a visible escape: `\n`, `\r`,
-/// `\t`, and `<U+XXXX>` for the rest — and a backslash as `\\`, so a `\n` the caller typed reads
+/// `\t`, and `<U+XXXX>` for the rest — the rest being `is_control()` (which covers NEL U+0085),
+/// the bidi controls, and the one shared invisible-character list `approvals::is_format_char`,
+/// which since #1071 also names the blanks that can hide a word boundary and the variation
+/// selectors that draw as nothing — and a backslash as `\\`, so a `\n` the caller typed reads
 /// `\\n` and cannot pass for a newline it sent. Nothing else changes, so what is shown is what was
 /// sent.
 pub fn visible(text: &str) -> String {
