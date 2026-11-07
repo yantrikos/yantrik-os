@@ -4,7 +4,7 @@
 use serde_json::{json, Value};
 use yantrik_testing::Call;
 
-use super::{open, AGENT};
+use super::{open, PROMPT, AGENT};
 use crate::command::Command;
 
 fn keys(v: &Value) -> Vec<&str> {
@@ -164,4 +164,26 @@ fn the_notice_is_the_sentence_the_caller_was_told_and_is_cleared_by_the_next_tab
     assert!(f.summary().ends_with(&format!(" \u{b7} {blank}")), "{}", f.summary());
     f.act("new_tab", json!({})).unwrap();
     assert_eq!(f.notice(), "", "a tab that opened clears what the last refusal said");
+}
+
+#[test]
+fn run_refuses_a_line_already_underway_at_the_prompt_and_lands_on_a_clean_one() {
+    let f = open();
+    f.type_until("git che", "git che");
+    let refusal = f.act("run", json!({ "command": "echo MARKER" })).unwrap_err();
+    assert_eq!(
+        refusal,
+        "Someone is mid-line at this shell's prompt; the command was not sent. `send_input` with \
+         a leading `\\r` starts a clean line, or call `run` again once Return is pressed."
+    );
+    assert_eq!(refusal, f.notice(), "said twice: to the caller, and on the notice line");
+    assert!(!f.screen().contains("MARKER"), "nothing was typed into the shell: {}", f.screen());
+    assert!(f.screen().trim_end().ends_with("yantrik $ git che"), "their line is as they left it: {}", f.screen());
+
+    // They finish the line themselves, and the same call lands once the prompt is clean again.
+    f.type_until("ck ; echo THEIR_LINE_DONE\r", "THEIR_LINE_DONE");
+    f.until("the prompt back", |f| f.screen().trim_end().ends_with(PROMPT));
+    let answer = f.act("run", json!({ "command": "echo MARKER" })).unwrap();
+    assert!(answer["output"].as_str().unwrap().contains("MARKER"), "{answer}");
+    f.until("the output", |f| f.screen().contains("MARKER"));
 }
