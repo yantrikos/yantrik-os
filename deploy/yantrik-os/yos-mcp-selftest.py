@@ -3605,6 +3605,26 @@ with tempfile.TemporaryDirectory() as d:
           module.carries_private("browser", "go", False, {"args": {"url": TAHOE + "?d=1"}})
           and not module.carries_private("browser", "go", False, {"args": {"url": TAHOE}}), None)
 
+    # 25g. The sealed workshop (#1120). The tainted conversation above has read private state. A
+    # command is outward and asks; the sealed form is a different action the shell checks against its
+    # own grant record, and it asks nothing. What a caller CLAIMS changes neither: an `agent_run`
+    # that names a workshop is still `agent_run`, and the command tools send the shell no claim.
+    sealed_args = {"command": "npm run build", "workshop": "/home/x/Documents/w"}
+    check("tainted: agent_run asks", bool(module.carries_private("shell", "agent_run", True, {"args": sealed_args})), None)
+    check("tainted: agent_run asks even when it claims a workshop and says nothing of running anything",
+          bool(module.carries_private("shell", "agent_run", False, {"args": sealed_args})), None)
+    check("tainted: the sealed form is not outward, so it is not asked about",
+          module.carries_private("shell", "agent_run_sealed", False, {"args": sealed_args}) == "", None)
+    check("the sealed action is in no list of outward actions",
+          ("shell", "agent_run_sealed") not in module.COMMANDS and ("shell", "agent_run_sealed") not in module.HANDOFFS, None)
+    check("run_command cannot claim a workshop: the argument is not sent",
+          "workshop" not in module.agent_args("run_command", dict(sealed_args)), module.agent_args("run_command", dict(sealed_args)))
+    check("run_sealed_command sends the shell the name of the folder and the shell alone decides",
+          module.agent_args("run_sealed_command", dict(sealed_args)) == sealed_args, module.agent_args("run_sealed_command", dict(sealed_args)))
+    check("the sealed tool and its grant are offered, and waiting on a sealed command is a long wait",
+          "run_sealed_command" in module.AGENT_BY_NAME and module.AGENT_BY_NAME["workshop_request"]["agent_action"] == "workshop_create"
+          and "agent_run_sealed" in module.AGENT_WAITING, None)
+
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed
     # call learning it was not a surface (#190). Run through the real `yos`, against sockets: the

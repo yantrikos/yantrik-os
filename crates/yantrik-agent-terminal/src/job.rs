@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::jobs::{JobId, JobState, Limits, RunAnswer, Shared};
 use crate::retained::Retained;
+use crate::sealed::Sealed;
 use crate::AgentId;
 
 /// What `bash -c` runs. `$1` is the command.
@@ -90,6 +91,7 @@ pub(crate) fn spawn(
     cwd: PathBuf,
     seq: u64,
     env: &[(String, String)],
+    sealed: Option<&Sealed>,
     shared: Arc<Shared>,
 ) -> Result<Arc<Job>, String> {
     let limits = &shared.limits;
@@ -109,8 +111,21 @@ pub(crate) fn spawn(
         .find(|p| Path::new(p).exists())
         .ok_or_else(|| "the command was not started: this machine has no bash".to_string())?;
     let write_fd = pwd_write.as_raw_fd();
-    let builder = pty_process::blocking::Command::new(bash)
-        .args(["--noprofile", "--norc", "-c", WRAPPER, "bash", command])
+    // A sealed command is the same wrapper inside the sandbox; one the sandbox cannot be built
+    // for is not started at all.
+    let (program, args, env): (String, Vec<String>, Vec<(String, String)>) = match sealed {
+        None => (
+            bash.to_string(),
+            ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from).to_vec(),
+            env.to_vec(),
+        ),
+        Some(s) => {
+            let spec = s.spec(bash, WRAPPER, command, &cwd, env).map_err(|e| format!("the command was not started: {e}"))?;
+            (spec.program, spec.args, spec.env)
+        }
+    };
+    let builder = pty_process::blocking::Command::new(program)
+        .args(args)
         .env_clear()
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(&cwd);

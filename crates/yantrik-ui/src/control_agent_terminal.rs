@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use yantrik_agent_terminal::{
-    AgentId, AgentResolver, HostTokens, JobId, JobState, Jobs, Limits, NoAgents, RunAnswer,
+    AgentId, AgentResolver, HostTokens, JobId, JobState, Jobs, Limits, NoAgents, RunAnswer, Sealed,
     DEFAULT_WAIT,
 };
 use yantrik_app_runtime::control::{self, Action, App as ControlSurface, Param};
@@ -279,7 +279,7 @@ pub fn shutdown() {
 
 /// What the dispatch established about one call, read on the UI thread where it is set and
 /// carried to the work.
-struct Call {
+pub(crate) struct Call {
     /// The socket peer, as the kernel reported it — the only account of the caller the token is
     /// checked against.
     pid: Option<u32>,
@@ -288,14 +288,14 @@ struct Call {
 }
 
 impl Call {
-    fn current() -> Call {
+    pub(crate) fn current() -> Call {
         Call {
             pid: control::caller().and_then(|c| u32::try_from(c.pid).ok()).filter(|pid| *pid > 0),
             token: control::agent_token(),
         }
     }
 
-    fn agent(&self) -> Result<AgentId, String> {
+    pub(crate) fn agent(&self) -> Result<AgentId, String> {
         resolver().resolve(self.token.as_deref().unwrap_or_default(), self.pid)
     }
 }
@@ -347,7 +347,7 @@ fn later(work: impl FnOnce() -> Result<Value, String> + Send + 'static) -> Resul
         .or_else(|work| work())
 }
 
-fn text(args: &Value, name: &str) -> String {
+pub(crate) fn text(args: &Value, name: &str) -> String {
     args.get(name).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
@@ -365,7 +365,7 @@ fn job_arg(args: &Value) -> Result<JobId, String> {
 /// the command. Minds send `wait: true` whatever the parameter says. On the live instance the
 /// Mind did it twice in one turn, was refused twice, and went on without the output it had asked
 /// for (2 Oct 2026). Refusing a request whose meaning is not in doubt helps nobody.
-fn wait_arg(args: &Value) -> Result<Duration, String> {
+pub(crate) fn wait_arg(args: &Value) -> Result<Duration, String> {
     let most = jobs().limits().max_wait.as_secs();
     let Some(given) = args.get("wait").filter(|v| !v.is_null()) else {
         return Ok(DEFAULT_WAIT);
@@ -515,14 +515,30 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         .filter(|c| !c.is_empty())
         .map(PathBuf::from);
     let wait = wait_arg(args)?;
+    run_job(command, wait, call, Box::new(move |_| Ok(Prepared { cwd, sealed: None })))
+}
+
+/// Where a command starts and whether it is sealed, settled once the agent is known. Sealed only
+/// from `control_workshop`, which has checked the grant itself.
+pub(crate) struct Prepared {
+    pub cwd: Option<PathBuf>,
+    pub sealed: Option<Sealed>,
+}
+
+pub(crate) type Prepare = Box<dyn FnOnce(&AgentId) -> Result<Prepared, String> + Send>;
+
+/// One command for the calling agent, in its terminal and in Mind View: the whole of `agent_run`,
+/// and of `agent_run_sealed` with a sandbox.
+pub(crate) fn run_job(command: String, wait: Duration, call: Call, prepare: Prepare) -> Result<Value, String> {
     later(move || {
         let agent = call.agent()?;
+        let Prepared { cwd, sealed } = prepare(&agent)?;
         // Started, then carded, then waited on: the card opens in the agent's pane the moment the
         // command exists, and fills as its terminal does. `run` would be the same two steps with
         // nothing between them.
         // The command's line is put in the Mind View log first, so no output can arrive ahead of it.
         let mirror = crate::mind_agent_terminal::begin(&agent.0, &command);
-        let job = match jobs().start(&agent, &command, cwd) {
+        let job = match jobs().start_in(&agent, &command, cwd, sealed.as_ref()) {
             Ok(job) => job,
             Err(e) => {
                 if matches!(mirror, crate::mind_agent_terminal::Begin::Log(_)) {
@@ -548,6 +564,9 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         let answer = jobs().job(&agent, &job, wait)?;
         told(&answer);
         let mut out = answer_json(&answer);
+        if sealed.is_some() {
+            out["sealed"] = true.into();
+        }
         match &shown {
             Some(shown) => {
                 if let (Some(into), Some(from)) =
