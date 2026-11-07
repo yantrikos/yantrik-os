@@ -20,6 +20,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use super::disk::{DiskError, Displaced, Exchanged, RealDisk, Step};
+use super::Fingerprint;
 use crate::quiet::{self, Looked};
 
 /// Read back at most this much of a replaced file; a larger one is kept under its temp name.
@@ -129,6 +130,44 @@ pub(crate) fn replace_if(
     judge: quiet::Judge,
     accept: impl Fn(&[u8]) -> bool,
 ) -> std::io::Result<Guarded> {
+    let read = |temp: &Path| match quiet::read_own_headed(temp, limit, judge) {
+        Ok(Looked::Read(theirs)) => Some(theirs),
+        _ => None,
+    };
+    replace_by(path, bytes, read, accept)
+}
+
+/// Replaces `path` with `bytes` only over nothing, or over a regular file of at most `limit`
+/// whose bytes fingerprint as `expected` ([`Fingerprint::of_bytes`], compared on what the
+/// exchange actually displaced). This is [`replace_if`] with the check the document writer
+/// already makes — the fingerprint of the file the person agreed to replace — carried into the
+/// step it belongs in, so a file that arrives in the instant between that look and the rename is
+/// exchanged with rather than written over. Read as the writer reads a document
+/// ([`crate::quiet::read_within`]): a file of more than one name is the person's own business,
+/// unlike a settings file. A displaced file that cannot be read back so is not the expected one
+/// and goes back.
+pub(crate) fn replace_if_fingerprint(
+    path: &Path,
+    bytes: &[u8],
+    limit: u64,
+    expected: Option<Fingerprint>,
+) -> std::io::Result<Guarded> {
+    let read = |temp: &Path| match quiet::read_within(temp, limit) {
+        Ok(Looked::Read(theirs)) => Some(theirs),
+        _ => None,
+    };
+    replace_by(path, bytes, read, |theirs| expected == Some(Fingerprint::of_bytes(theirs)))
+}
+
+/// The two replaces: write `bytes` to a temp, put it at `path`, and read what the exchange
+/// displaced with `read` — its bytes, or `None` when it is not a file to be read that way. What
+/// cannot be read, or is not `accept`ed, goes back the way it came.
+fn replace_by(
+    path: &Path,
+    bytes: &[u8],
+    read: impl Fn(&Path) -> Option<Vec<u8>>,
+    accept: impl Fn(&[u8]) -> bool,
+) -> std::io::Result<Guarded> {
     let (temp, mut file) = RealDisk::create_temp_as(path, false, EXCHANGE_SUFFIX)?;
     let written = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
@@ -145,18 +184,18 @@ pub(crate) fn replace_if(
     };
     let outcome = match placed {
         Placed::Created | Placed::Renamed => Guarded::Placed,
-        Placed::Exchanged => match quiet::read_own_headed(&temp, limit, judge) {
-            Ok(Looked::Read(theirs)) if accept(&theirs) => {
+        Placed::Exchanged => match read(&temp) {
+            Some(theirs) if accept(&theirs) => {
                 let _ = std::fs::remove_file(&temp);
                 Guarded::Placed
             }
-            // Not accepted, or not readable as a file of one name: theirs goes back.
+            // Not accepted, or not readable as a file read this way: theirs goes back.
             _ => match exchange_names(&temp, path) {
                 Ok(()) => {
                     // What came back under the temp name is removed only if it is ours: a third
                     // writer may have put its own file at the path in that instant.
-                    match quiet::read_own_headed(&temp, limit, judge) {
-                        Ok(Looked::Read(back)) if back == bytes => {
+                    match read(&temp) {
+                        Some(back) if back == bytes => {
                             let _ = std::fs::remove_file(&temp);
                         }
                         _ => {
