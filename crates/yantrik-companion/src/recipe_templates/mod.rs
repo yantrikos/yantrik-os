@@ -119,7 +119,9 @@ pub fn start(
     }
     let Some(leave) = leave else {
         return Err(format!(
-            "'{}' hands work to agents from the catalog, and starting agents needs the person's leave:              start it from the Recipes screen, or with the shell's run_recipe, which is graded sensitive              and asks them first.",
+            "'{}' hands work to agents from the catalog, and starting agents needs the person's \
+             leave: start it from the Recipes screen, or with the shell's run_recipe, which is \
+             graded sensitive and asks them first.",
             recipe.name
         ));
     };

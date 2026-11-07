@@ -744,7 +744,8 @@ pub fn blender_display(display: Option<&str>) -> Result<(), String> {
     match display {
         Some(d) if !d.trim().is_empty() => Ok(()),
         _ => Err(
-            "an X display for Blender's window: this Blender speaks X11 only, and no DISPLAY is              set, so Xwayland is not running in this session (is the xwayland package installed?)"
+            "an X display for Blender's window: this Blender speaks X11 only, and no DISPLAY is \
+             set, so Xwayland is not running in this session (is the xwayland package installed?)"
                 .to_string(),
         ),
     }

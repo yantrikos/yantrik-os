@@ -270,7 +270,8 @@ fn every_window_title_rc_xml_asks_for_is_one_the_shell_gives_a_window() {
         seen += 1;
         assert!(
             known.contains(&title),
-            "rc.xml asks for the window titled {title:?}, which the shell never gives a window              (known: {known:?}): {command}"
+            "rc.xml asks for the window titled {title:?}, which the shell never gives a window \
+             (known: {known:?}): {command}"
         );
     }
     assert!(seen >= 1, "found no `title=` binding; the scan is reading the wrong thing");
