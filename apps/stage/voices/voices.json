@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "sample_rate": 44100,
+  "models": {
+    "lessac": {"file": "en_US-lessac-medium.onnx", "source": "piper-dir"},
+    "ryan": {"file": "en_US-ryan-medium.onnx", "url": "en/en_US/ryan/medium/en_US-ryan-medium"},
+    "alan": {"file": "en_GB-alan-medium.onnx", "url": "en/en_GB/alan/medium/en_GB-alan-medium"},
+    "amy": {"file": "en_US-amy-medium.onnx", "url": "en/en_US/amy/medium/en_US-amy-medium"}
+  },
+  "voices": {
+    "claude": {
+      "about": "warm, careful, a touch slower; lessac pitched slightly down with a soft top end",
+      "model": "lessac", "length_scale": 1.06, "noise_scale": 0.55, "noise_w": 0.7,
+      "pitch": 0.98, "fx": "highshelf=f=6000:g=-2,acompressor=threshold=-20dB:ratio=3"
+    },
+    "gpt": {
+      "about": "smooth, quick salesman; ryan with a touch of brightness and speed",
+      "model": "ryan", "length_scale": 0.9, "noise_scale": 0.72, "noise_w": 0.85,
+      "pitch": 0.97, "fx": "equalizer=f=3000:t=q:w=1.2:g=3,acompressor=threshold=-18dB:ratio=4"
+    },
+    "gemini": {
+      "about": "bright, hyper, high; amy pitched up and rushed",
+      "model": "amy", "length_scale": 0.84, "noise_scale": 0.8, "noise_w": 0.9,
+      "pitch": 1.16, "fx": "equalizer=f=4500:t=q:w=1.5:g=3,highpass=f=140"
+    },
+    "grok": {
+      "about": "dry, low, unbothered; alan pitched down, slower, with a flat radio top-cut",
+      "model": "alan", "length_scale": 1.12, "noise_scale": 0.45, "noise_w": 0.5,
+      "pitch": 0.86, "fx": "lowpass=f=5200,equalizer=f=180:t=q:w=1:g=3,acompressor=threshold=-16dB:ratio=5"
+    }
+  }
+}

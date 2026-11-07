@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://yantrikos.com/stage/episode.schema.json",
+  "title": "Stage episode",
+  "description": "The only file a Mind writes. The OS draws, voices, lights, films and cuts it. Everything except title, cast and scenes is optional.",
+  "type": "object",
+  "required": ["title", "scenes"],
+  "x-accessories": {"CLAUDE": ["glasses", "beret"], "GPT": ["tie", "bowtie"], "GEMINI": ["headphones", "cape"], "GROK": ["shades", "chain"]},
+  "x-default-voice": {"CLAUDE": "claude", "GPT": "gpt", "GEMINI": "gemini", "GROK": "grok"},
+  "additionalProperties": false,
+  "properties": {
+    "title": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Episode title, shown on the title card and used as the video file name."},
+    "show": {"type": "string", "maxLength": 60, "default": "THE CLUSTER"},
+    "cast": {
+      "type": "array", "minItems": 1, "maxItems": 4,
+      "description": "Who is in the show. Leave it out to get all four stars with their own voices.",
+      "items": {"$ref": "#/$defs/castMember"}
+    },
+    "music": {"$ref": "#/$defs/music"},
+    "scenes": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/$defs/scene"}}
+  },
+  "$defs": {
+    "castMember": {
+      "type": "object", "required": ["name"], "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_ ]{0,15}$", "description": "Short UPPERCASE name used as the speaker in lines."},
+        "rig": {"enum": ["CLAUDE", "GPT", "GEMINI", "GROK"], "description": "Which finished character to draw. Defaults to the one named like the cast member."},
+        "voice": {"enum": ["claude", "gpt", "gemini", "grok"], "description": "Which voice to speak with. Defaults to the rig's own voice."},
+        "palette": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "main": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"},
+            "accent": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}
+          }
+        },
+        "accessory": {"type": "string", "description": "CLAUDE: glasses, beret. GPT: tie, bowtie. GEMINI: headphones, cape. GROK: shades, chain. Or none."}
+      }
+    },
+    "music": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "cue": {"enum": ["none", "cheeky", "calm", "tense", "triumphant"], "default": "cheeky"},
+        "volume": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5}
+      }
+    },
+    "scene": {
+      "type": "object", "required": ["lines"], "additionalProperties": false,
+      "properties": {
+        "set": {"enum": ["server-room", "break-room", "rooftop"], "default": "server-room"},
+        "camera": {"enum": ["wide", "two-shot", "close-up", "push-in"], "default": "wide"},
+        "transition": {"enum": ["cut", "fade", "wipe"], "default": "fade", "description": "How this scene is entered."},
+        "present": {"type": "array", "items": {"type": "string"}, "description": "Cast names on screen. Defaults to everyone in the cast."},
+        "lines": {"type": "array", "minItems": 1, "maxItems": 24, "items": {"$ref": "#/$defs/line"}}
+      }
+    },
+    "line": {
+      "type": "object", "required": ["speaker", "text"], "additionalProperties": false,
+      "properties": {
+        "speaker": {"type": "string"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 240},
+        "emotion": {"enum": ["neutral", "happy", "smug", "shocked", "angry", "sad", "confused", "laughing"], "default": "neutral"},
+        "pose": {"enum": ["idle", "talk-gesture", "point", "facepalm"], "description": "Defaults to talk-gesture for the speaker, idle for everyone else."},
+        "pause": {"type": "number", "minimum": 0, "maximum": 4, "default": 0.25, "description": "Seconds of silence after the line."},
+        "react": {
+          "type": "object",
+          "description": "Optional. How others feel while this line is spoken, e.g. {\"GROK\": \"smug\"}.",
+          "additionalProperties": {"enum": ["neutral", "happy", "smug", "shocked", "angry", "sad", "confused", "laughing"]}
+        },
+        "camera": {"enum": ["wide", "two-shot", "close-up", "push-in"], "description": "Optional override of the scene camera for this line."}
+      }
+    }
+  }
+}
