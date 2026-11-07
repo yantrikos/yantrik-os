@@ -79,6 +79,7 @@ mod job;
 mod jobs;
 mod proc;
 mod retained;
+mod sealed;
 
 pub use identity::{descends_from, AgentResolver, HostTokens, Lookup, NoAgents, TokenTable, NO_AGENT};
 pub use jobs::{
@@ -86,6 +87,7 @@ pub use jobs::{
     DEFAULT_WAIT,
 };
 pub use retained::dropped_marker;
+pub use sealed::{Caps, Sealed};
 
 /// Which of the person's agents something belongs to — the harness wire's own type.
 pub use yantrik_harness::event::AgentId;
