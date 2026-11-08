@@ -148,6 +148,13 @@ pub fn revoke(path: &Path, agent: &str) -> Result<bool, String> {
     Ok(had)
 }
 
+/// Is `v` one plain name, as a Mind's id or a workshop's name must be?
+pub fn plain_name(what: &str, v: &str) -> Result<(), String> {
+    let one = matches!(Path::new(v).components().collect::<Vec<_>>().as_slice(), [Component::Normal(_)]);
+    let clean = !v.chars().any(|c| c.is_control() || crate::approvals::is_format_char(c));
+    (one && clean && !v.starts_with('.')).then_some(()).ok_or_else(|| format!("{what} is one plain name, with no `/` and no leading dot."))
+}
+
 /// The folder for `name` in `agent`'s place under the root, as `check_folder` would read it.
 pub fn folder_for(home: &Path, agent: &str, name: &str, for_grant: bool) -> Result<PathBuf, String> {
     plain_name("`name`", name.trim())?;

@@ -321,7 +321,7 @@ mod tests {
         let run = crate::control_agent_terminal::specs().into_iter().find(|a| a.name == "agent_run").unwrap();
         assert!(crate::taint_ask::is_sink("shell", "agent_run", &run.description));
         // The grant and the export are asked about on a card, in every mode; showing a file is not.
-        assert_eq!((grant.permission.as_str(), export.permission.as_str(), present.permission.as_str()), ("sensitive", "sensitive", "standard"));
+        assert_eq!((grant.permission, export.permission, present.permission), ("sensitive", "sensitive", "standard"));
         assert!(yantrik_ipc_transport::gate::always_asks(&grant.description) && yantrik_ipc_transport::gate::always_asks(&export.description));
         assert!(!yantrik_ipc_transport::gate::always_asks(&present.description), "a decoder reads bytes and runs no hooks: no card");
     }

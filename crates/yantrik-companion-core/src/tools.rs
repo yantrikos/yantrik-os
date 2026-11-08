@@ -886,6 +886,19 @@ mod path_root_tests {
     use super::{under_any, validate_path, with_canonical};
     use std::path::PathBuf;
 
+    /// #1120: the companion's file tools (`read_file`, `grep`, `git` and the rest all validate their
+    /// path here) refuse a Mind's workshops, the part not made yet included.
+    #[test]
+    fn a_minds_workshop_is_out_of_reach_of_the_companions_tools() {
+        for p in [
+            "~/.local/share/yantrik/workshops/hermes/shop/notes.md",
+            "~/.local/share/yantrik/workshops/hermes",
+            "~/.local/share/yantrik/workshops/hermes/shop/../shop/notes.md",
+        ] {
+            assert!(validate_path(p).is_err(), "{p}");
+        }
+    }
+
     #[test]
     fn the_work_dir_is_out_of_reach_in_both_spellings() {
         // Other programs write there while following links; the model must not be able to plant

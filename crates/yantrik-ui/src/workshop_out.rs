@@ -201,18 +201,21 @@ fn names_in(dir: RawFd) -> Vec<CString> {
     out
 }
 
-/// Copy the content of a regular file to a new file (never over one), mode 0644, with no
-/// attributes of the source: a new inode with the bytes and nothing else.
-fn copy_file(src: OwnedFd, to: &Path, budget: &mut Budget) -> Result<(), String> {
+/// A new file at `to`, never over one, mode 0644, with none of a source's attributes.
+fn create_new(to: &Path) -> Result<File, String> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut from = File::from(src);
-    let mut out = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o644)
         .custom_flags(libc::O_NOFOLLOW)
         .open(to)
-        .map_err(|e| format!("{} could not be made ({e})", to.display()))?;
+        .map_err(|e| format!("{} could not be made ({e})", to.display()))
+}
+
+/// Copy the content of a regular file into `out`: the bytes and nothing else.
+fn copy_file(src: OwnedFd, mut out: File, to: &Path, budget: &mut Budget) -> Result<(), String> {
+    let mut from = File::from(src);
     let mut buf = vec![0u8; 1 << 16];
     loop {
         let n = from.read(&mut buf).map_err(|e| format!("a file could not be read ({e})"))?;
@@ -257,7 +260,7 @@ fn copy_dir(dir: RawFd, to: &Path, depth: usize, budget: &mut Budget) -> Result<
                     Ok(now) if now.st_ino == st.st_ino && now.st_dev == st.st_dev && now.st_mode & libc::S_IFMT == libc::S_IFREG => {}
                     _ => continue,
                 }
-                copy_file(fd, &target, budget)?;
+                copy_file(fd, create_new(&target)?, &target, budget)?;
             }
             libc::S_IFDIR => {
                 let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
@@ -289,10 +292,15 @@ pub fn export(workshop: &Path, path: &Path, into: &Path) -> Result<(PathBuf, Exp
     let target = into.join(last);
     let mut budget = Budget { entries: 0, bytes: 0, out: Exported::default() };
     let done = match kind {
-        libc::S_IFREG => copy_file(fd, &target, &mut budget),
-        libc::S_IFDIR => std::fs::create_dir(&target)
-            .map_err(|e| format!("{} could not be made ({e})", target.display()))
-            .and_then(|()| copy_dir(fd.as_raw_fd(), &target, 0, &mut budget)),
+        // A name that is taken is refused here, before anything is made, so nothing is removed below.
+        libc::S_IFREG => {
+            let out = create_new(&target)?;
+            copy_file(fd, out, &target, &mut budget)
+        }
+        libc::S_IFDIR => {
+            std::fs::create_dir(&target).map_err(|e| format!("{} could not be made ({e})", target.display()))?;
+            copy_dir(fd.as_raw_fd(), &target, 0, &mut budget)
+        }
         _ => return Err("only a regular file or a folder of them is exported.".into()),
     };
     if let Err(e) = done {
