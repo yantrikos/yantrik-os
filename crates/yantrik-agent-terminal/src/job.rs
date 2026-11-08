@@ -64,6 +64,8 @@ pub(crate) struct Job {
     pub started: Instant,
     /// The command's `bash`: session leader, so also the process group's id.
     pub pid: i32,
+    /// The job's systemd scope, when it has one: stopped with the job, to reach what left the group.
+    scope: Option<String>,
     /// `/dev/pts/N`, for telling a read on this terminal from any other read.
     tty: PathBuf,
     state: Mutex<State>,
@@ -109,10 +111,14 @@ pub(crate) fn spawn(
         .find(|p| Path::new(p).exists())
         .ok_or_else(|| "the command was not started: this machine has no bash".to_string())?;
     let write_fd = pwd_write.as_raw_fd();
-    let builder = pty_process::blocking::Command::new(bash)
+    // In a scope of its own, outside the person's session (#1137); see `scope`.
+    let launch = crate::scope::launch(&id.0, bash);
+    let builder = pty_process::blocking::Command::new(&launch.program)
+        .args(&launch.args)
         .args(["--noprofile", "--norc", "-c", WRAPPER, "bash", command])
         .env_clear()
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .envs(launch.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(&cwd);
     // Safety: only async-signal-safe calls (dup2, fcntl) between fork and exec.
     let builder = unsafe { builder.pre_exec(move || hand_over_pwd_pipe(write_fd)) };
@@ -139,6 +145,7 @@ pub(crate) fn spawn(
         seq,
         started: Instant::now(),
         pid,
+        scope: launch.unit,
         tty,
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
@@ -160,6 +167,9 @@ pub(crate) fn spawn(
         // command running that nobody can see.
         unsafe {
             libc::kill(-pid, libc::SIGKILL);
+        }
+        if let Some(unit) = &job.scope {
+            crate::scope::stop(unit);
         }
         return Err(refuse("no thread to watch it", &e));
     }
@@ -429,6 +439,9 @@ impl Job {
             unsafe {
                 libc::kill(-self.pid, libc::SIGKILL);
             }
+            if let Some(unit) = &self.scope {
+                crate::scope::stop(unit);
+            }
         }
     }
 
@@ -599,6 +612,9 @@ fn worker(
                 // Still unreaped, so still this group: whatever ignored the TERM goes now.
                 unsafe {
                     libc::kill(-job.pid, libc::SIGKILL);
+                }
+                if let Some(unit) = &job.scope {
+                    crate::scope::stop(unit);
                 }
                 escalated = true;
             }

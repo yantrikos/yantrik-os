@@ -3276,6 +3276,9 @@ reconcile_mind_socket() { # <owner>
 # port answering from any other account has its data dropped. Written by this updater's own code.
 DEVTOOLS_GUARD=/etc/yantrik/devtools-guard.nft
 DEVTOOLS_UNIT=/etc/systemd/system/yantrik-devtools-guard.service
+# The cgroup layer (#1137), a table of its own: nft resolves a cgroup path when a rule loads and
+# refuses the whole file if the path is not there yet, and the uid layer above must never wait on it.
+DEVTOOLS_SESSION_GUARD=/etc/yantrik/devtools-guard-session.nft
 
 devtools_guard_text() {
   cat <<EOF
@@ -3295,6 +3298,64 @@ table inet yantrik_devtools {
 EOF
 }
 
+# The cgroup layer (#1137). The uid rule cannot tell the person from a Mind running as them:
+# Hermes and the other harness services, and `agent_run` jobs, are all the person's uid. What tells
+# them apart is the cgroup. The shell, labwc and the browser service (the 9222 client) run in the
+# login's session-N.scope; the harness services run under user@UID.service, and so do the Minds'
+# jobs (yantrik-minds.slice, one scope each). So loopback 9222-9322 and VNC refuse every socket under
+# user@UID.service: only root and the session scope are left. Level 3 is root > user.slice >
+# user-UID.slice > user@UID.service. (The person's Chromium is under user@UID.service too, but
+# it only listens: this rule is on the connecting side.)
+devtools_session_text() {
+  cat <<EOF
+# Yantrik OS: loopback DevTools (9222-9322) and VNC (5900-5909) refuse every socket in the
+# person's user manager (user@$1.service): the harness services and the Minds' jobs. The login
+# session (the shell, the browser service) is outside it. Loaded when the manager starts, because
+# nft resolves the cgroup path to an inode at load. Made by yantrik-update.
+table inet yantrik_devtools_session
+delete table inet yantrik_devtools_session
+table inet yantrik_devtools_session {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" tcp dport { 5900-5909, 9222-9322 } socket cgroupv2 level 3 "user.slice/user-$1.slice/user@$1.service" reject with tcp reset
+	}
+}
+EOF
+}
+
+# Loaded by the person's manager itself, before anything runs in it: the cgroup exists by then (it
+# is made before the first command of the unit) and nothing it starts can connect first. The + is
+# for the unit's own User=, which cannot load rules. Fail closed: if the load fails, the manager
+# does not start and the person cannot log in, loudly, rather than get a desktop whose Minds reach
+# their browser. The updater loads the file by hand first and installs this only if that worked.
+devtools_session_dropin_text() {
+  cat <<EOF
+# Yantrik OS (#1137): the DevTools/VNC cgroup guard is in place before the manager's first process.
+[Service]
+ExecStartPre=+$1 -f $DEVTOOLS_SESSION_GUARD
+EOF
+}
+
+reconcile_devtools_session() { # <nft> <uid>: 0 when the cgroup layer is active or will be at login
+  local nft="$1" uid="$2" dropin_dir="/etc/systemd/system/user@$2.service.d"
+  local cg="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service"
+  install -d -o root -g root -m 0755 /etc/yantrik "$dropin_dir"
+  if [ "$(cat "$DEVTOOLS_SESSION_GUARD" 2>/dev/null)" != "$(devtools_session_text "$uid")" ]; then
+    devtools_session_text "$uid" > "$DEVTOOLS_SESSION_GUARD" && chmod 0644 "$DEVTOOLS_SESSION_GUARD"
+  fi
+  if [ -d "$cg" ] && ! "$nft" -f "$DEVTOOLS_SESSION_GUARD" 2>/dev/null; then
+    # No drop-in: a kernel that cannot load it would then keep the person from logging in.
+    rm -f "$dropin_dir/yantrik-devtools.conf"
+    warn "could not load $DEVTOOLS_SESSION_GUARD; the Minds in the person's user manager can still reach 9222 and VNC (the uid rule stands)"
+    return 1
+  fi
+  if [ "$(cat "$dropin_dir/yantrik-devtools.conf" 2>/dev/null)" != "$(devtools_session_dropin_text "$nft")" ]; then
+    devtools_session_dropin_text "$nft" > "$dropin_dir/yantrik-devtools.conf" && chmod 0644 "$dropin_dir/yantrik-devtools.conf"
+    systemctl daemon-reload >/dev/null 2>&1
+  fi
+  return 0
+}
+
 devtools_unit_text() {
   cat <<EOF
 [Unit]
@@ -3310,6 +3371,11 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=$1 -f $DEVTOOLS_GUARD
 ExecReload=$1 -f $DEVTOOLS_GUARD
+# The session table names a cgroup that exists only while the person's manager runs. The leading -
+# lets this unit load at boot, before it does; the manager's own drop-in loads it then (see
+# devtools_session_dropin_text), and this line puts it back after a ruleset flush.
+ExecStart=-$1 -f $DEVTOOLS_SESSION_GUARD
+ExecReload=-$1 -f $DEVTOOLS_SESSION_GUARD
 
 [Install]
 WantedBy=multi-user.target
@@ -3355,6 +3421,7 @@ reconcile_devtools_guard() {
   else
     warn "could not load $DEVTOOLS_GUARD; the DevTools ports stay open to every local account"
   fi
+  reconcile_devtools_session "$nft" "$owner_uid"
 }
 
 # logs/ and data/ are the desktop's alone. The installer made logs/ 0777, so any other account on
@@ -7188,6 +7255,15 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
     selftest_bridge
   else
     info "no yantrik-update-selftest-bridge.sh beside the updater: the bridge checks did not run"
+  fi
+  # The DevTools and VNC guard (#1137), in a file of its own.
+  local devtools_selftest; devtools_selftest="$(dirname "$SELF_PATH")/yantrik-update-selftest-devtools.sh"
+  if [ -r "$devtools_selftest" ]; then
+    # shellcheck disable=SC1090
+    . "$devtools_selftest"
+    selftest_devtools
+  else
+    info "no yantrik-update-selftest-devtools.sh beside the updater: the DevTools checks did not run"
   fi
   declare -F selftest_args >/dev/null && selftest_args  # the arguments of each subcommand: yantrik-update-args
 
