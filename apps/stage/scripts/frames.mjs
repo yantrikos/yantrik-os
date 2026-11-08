@@ -13,7 +13,9 @@ fs.mkdirSync(path.join(work, 'public', 'fonts'), {recursive: true});
 fs.copyFileSync(path.join(stage, 'fonts', 'Fredoka.ttf'), path.join(work, 'public', 'fonts', 'Fredoka.ttf'));
 fs.mkdirSync(outDir, {recursive: true});
 const browserExecutable = findBrowser(stage);
-const serveUrl = await bundleStage(stage, path.join(work, 'public'));
+const bundleDir = path.join(work, 'bundle');
+process.on('exit', () => fs.rmSync(bundleDir, {recursive: true, force: true}));
+const serveUrl = await bundleStage(stage, path.join(work, 'public'), bundleDir);
 const inputProps = {episode, timeline};
 const composition = await selectComposition({serveUrl, id: 'Episode', inputProps, browserExecutable});
 for (const f of frames) {

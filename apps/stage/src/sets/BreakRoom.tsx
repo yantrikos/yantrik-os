@@ -23,7 +23,8 @@ export const BreakRoom: React.FC<{frame: number; props: PropViews}> = ({frame, p
         <rect width={560} height={380} rx={10} fill="#3a2a22" />
         <rect x={16} y={16} width={528} height={348} fill="url(#brSky)" />
         <path d="M16,364 L16,290 L70,290 L70,240 L130,240 L130,300 L200,300 L200,210 L270,210 L270,320 L330,320 L330,260 L410,260 L410,330 L480,330 L480,280 L544,280 L544,364Z" fill="#2a2147" />
-        {[[90, 262], [230, 236], [244, 270], [360, 282], [500, 306]].map(([x, y], i) => <rect key={i} x={x} y={y} width={12} height={14} fill="#ffd35c" opacity={0.5 + 0.5 * Math.sin(frame * 0.05 + i)} />)}
+        {[[90, 262], [230, 236], [244, 270], [360, 282], [500, 306]].map(([x, y], i) => <rect key={i} x={x} y={y} width={12} height={14}
+          fill="#ffd35c" opacity={0.5 + 0.5 * Math.sin(frame * 0.05 + i)} />)}
         <circle cx={420} cy={90} r={34} fill="#fff3d0" opacity={0.9} />
         <line x1={280} y1={16} x2={280} y2={364} stroke="#3a2a22" strokeWidth={10} /><line x1={16} y1={190} x2={544} y2={190} stroke="#3a2a22" strokeWidth={10} />
       </g>
@@ -49,7 +50,9 @@ export const BreakRoom: React.FC<{frame: number; props: PropViews}> = ({frame, p
       {/* floor */}
       <rect x={0} y={700} width={1920} height={380} fill="url(#brFloor)" />
       {Array.from({length: 7}).map((_, i) => <line key={i} x1={0} x2={1920} y1={730 + i * i * 9 + i * 22} y2={730 + i * i * 9 + i * 22} stroke="#3e2412" strokeOpacity={0.5} strokeWidth={3} />)}
-      {Array.from({length: 18}).map((_, i) => <line key={i} x1={(i * 130 + 40) % 1920} x2={(i * 130 + 40) % 1920 + ((i % 2) * 2 - 1) * 40} y1={702} y2={1080} stroke="#3e2412" strokeOpacity={0.22} strokeWidth={2} />)}
+      {Array.from({length: 18}).map((_, i) => <line
+        key={i} x1={(i * 130 + 40) % 1920} x2={(i * 130 + 40) % 1920 + ((i % 2) * 2 - 1) * 40} y1={702} y2={1080} stroke="#3e2412"
+        strokeOpacity={0.22} strokeWidth={2} />)}
       <rect x={0} y={692} width={1920} height={14} fill="#f3ead8" />
     </svg>
   );

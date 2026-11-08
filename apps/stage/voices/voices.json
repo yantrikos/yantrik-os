@@ -2,31 +2,91 @@
   "version": 1,
   "sample_rate": 44100,
   "models": {
-    "lessac": {"file": "en_US-lessac-medium.onnx", "source": "piper-dir"},
-    "ryan": {"file": "en_US-ryan-medium.onnx", "url": "en/en_US/ryan/medium/en_US-ryan-medium"},
-    "alan": {"file": "en_GB-alan-medium.onnx", "url": "en/en_GB/alan/medium/en_GB-alan-medium"},
-    "amy": {"file": "en_US-amy-medium.onnx", "url": "en/en_US/amy/medium/en_US-amy-medium"}
+    "lessac": {
+      "file": "en_US-lessac-medium.onnx",
+      "source": "piper-dir",
+      "sha256": {
+        "onnx": "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f",
+        "onnx.json": "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0"
+      },
+      "license": "Blizzard 2013 Lessac licence",
+      "license_url": "https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html",
+      "dataset": "https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/"
+    },
+    "ryan": {
+      "file": "en_US-ryan-medium.onnx",
+      "url": "en/en_US/ryan/medium/en_US-ryan-medium",
+      "sha256": {
+        "onnx": "abf4c274862564ed647ba0d2c47f8ee7c9b717d27bdad9219100eb310db4047a",
+        "onnx.json": "44034c056cb15681b2ad494307c7f3f2e4499d1253c700c711fa0a4607ffe78d"
+      },
+      "license": "CC BY-NC-SA 4.0 (non-commercial)",
+      "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+      "dataset": "https://www.kaggle.com/datasets/roholazandie/ryanspeech"
+    },
+    "alan": {
+      "file": "en_GB-alan-medium.onnx",
+      "url": "en/en_GB/alan/medium/en_GB-alan-medium",
+      "sha256": {
+        "onnx": "0a309668932205e762801f1efc2736cd4b0120329622adf62be09e56339d3330",
+        "onnx.json": "c0f0d124e5895c00e7c03b35dcc8287f319a6998a365b182deb5c8e752ee8c1e"
+      },
+      "license": "see dataset page (MycroftAI mimic3-voices)",
+      "license_url": "https://github.com/MycroftAI/mimic3-voices/blob/master/voices/en_UK/apope_low",
+      "dataset": "https://github.com/MycroftAI/mimic3-voices/blob/master/voices/en_UK/apope_low"
+    },
+    "amy": {
+      "file": "en_US-amy-medium.onnx",
+      "url": "en/en_US/amy/medium/en_US-amy-medium",
+      "sha256": {
+        "onnx": "b3a6e47b57b8c7fbe6a0ce2518161a50f59a9cdd8a50835c02cb02bdd6206c18",
+        "onnx.json": "95a23eb4d42909d38df73bb9ac7f45f597dbfcde2d1bf9526fdeaf5466977d77"
+      },
+      "license": "see dataset page (MycroftAI mimic3-voices)",
+      "license_url": "https://github.com/MycroftAI/mimic3-voices",
+      "dataset": "https://github.com/MycroftAI/mimic3-voices"
+    }
   },
   "voices": {
     "claude": {
       "about": "warm, careful, a touch slower; lessac pitched slightly down with a soft top end",
-      "model": "lessac", "length_scale": 1.06, "noise_scale": 0.55, "noise_w": 0.7,
-      "pitch": 0.98, "fx": "highshelf=f=6000:g=-2,acompressor=threshold=-20dB:ratio=3"
+      "model": "lessac",
+      "length_scale": 1.06,
+      "noise_scale": 0.55,
+      "noise_w": 0.7,
+      "pitch": 0.98,
+      "fx": "highshelf=f=6000:g=-2,acompressor=threshold=-20dB:ratio=3"
     },
     "gpt": {
       "about": "smooth, quick salesman; ryan with a touch of brightness and speed",
-      "model": "ryan", "length_scale": 0.9, "noise_scale": 0.72, "noise_w": 0.85,
-      "pitch": 0.97, "fx": "equalizer=f=3000:t=q:w=1.2:g=3,acompressor=threshold=-18dB:ratio=4"
+      "model": "ryan",
+      "length_scale": 0.9,
+      "noise_scale": 0.72,
+      "noise_w": 0.85,
+      "pitch": 0.97,
+      "fx": "equalizer=f=3000:t=q:w=1.2:g=3,acompressor=threshold=-18dB:ratio=4"
     },
     "gemini": {
       "about": "bright, hyper, high; amy pitched up and rushed",
-      "model": "amy", "length_scale": 0.84, "noise_scale": 0.8, "noise_w": 0.9,
-      "pitch": 1.16, "fx": "equalizer=f=4500:t=q:w=1.5:g=3,highpass=f=140"
+      "model": "amy",
+      "length_scale": 0.84,
+      "noise_scale": 0.8,
+      "noise_w": 0.9,
+      "pitch": 1.16,
+      "fx": "equalizer=f=4500:t=q:w=1.5:g=3,highpass=f=140"
     },
     "grok": {
       "about": "dry, low, unbothered; alan pitched down, slower, with a flat radio top-cut",
-      "model": "alan", "length_scale": 1.12, "noise_scale": 0.45, "noise_w": 0.5,
-      "pitch": 0.86, "fx": "lowpass=f=5200,equalizer=f=180:t=q:w=1:g=3,acompressor=threshold=-16dB:ratio=5"
+      "model": "alan",
+      "length_scale": 1.12,
+      "noise_scale": 0.45,
+      "noise_w": 0.5,
+      "pitch": 0.86,
+      "fx": "lowpass=f=5200,equalizer=f=180:t=q:w=1:g=3,acompressor=threshold=-16dB:ratio=5"
     }
+  },
+  "source": {
+    "repo": "rhasspy/piper-voices",
+    "revision": "e7229f7d33a10e145e109b886d661984201ac3c4"
   }
 }

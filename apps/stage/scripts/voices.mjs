@@ -11,7 +11,7 @@ import {fileURLToPath} from 'node:url';
 import {lipsync} from './lipsync.mjs';
 import {renderMusic} from './music.mjs';
 import {renderSfx} from './sfx.mjs';
-import {layoutTimeline, FPS} from './timeline.mjs';
+import {layoutTimeline, FPS, WORDS_PER_SECOND} from './timeline.mjs';
 import {cacheKey} from './voicecache.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -44,7 +44,7 @@ const run = (cmd, args, opts = {}) => {
 const voiceByName = Object.fromEntries(ep.cast.map((c) => [c.name, c.voice]));
 
 function silentLine(text, key) {
-  const sec = Math.max(0.6, text.split(/s+/).length / 2.4);
+  const sec = Math.max(0.6, text.trim().split(/\s+/).length / WORDS_PER_SECOND);
   const wav = path.join(cache, `${key}.wav`);
   run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', `anullsrc=r=${bank.sample_rate}:cl=mono`, '-t', String(sec), wav]);
   const frames = Math.ceil(sec * FPS);
@@ -109,4 +109,5 @@ if (ep.music.cue !== 'none') {
 }
 fs.writeFileSync(path.join(work, 'timeline.json'), JSON.stringify(timeline));
 const lines = ep.scenes.reduce((n, s) => n + s.lines.length, 0);
-console.log(`voices: ${lines} lines (${made} spoken, ${hits} from cache), ${spoken.toFixed(1)}s of speech, ${(total / FPS).toFixed(1)}s episode, ${used.length ? `sounds ${used.join(', ')}, ` : ''}music ${ep.music.cue}${SILENT ? ' [storyboard: no voices]' : ''}`);
+console.log(`voices: ${lines} lines (${made} spoken, ${hits} from cache), ${spoken.toFixed(1)}s of speech, ${(total / FPS).toFixed(1)}s episode, ${used.length ? `sounds ${used.join(', ')},
+  ` : ''}music ${ep.music.cue}${SILENT ? ' [storyboard: no voices]' : ''}`);

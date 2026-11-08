@@ -43,7 +43,8 @@
     "show": {
       "type": "string",
       "maxLength": 60,
-      "default": "THE CLUSTER"
+      "default": "THE CLUSTER",
+      "minLength": 1
     },
     "cast": {
       "type": "array",
@@ -179,7 +180,8 @@
           "items": {
             "type": "string"
           },
-          "description": "Cast names on screen. Defaults to everyone in the cast."
+          "description": "Cast names on screen. Defaults to everyone in the cast.",
+          "maxItems": 4
         },
         "lines": {
           "type": "array",
@@ -203,7 +205,8 @@
           "items": {
             "$ref": "#/$defs/propSet"
           },
-          "description": "How props start this scene. They keep their state from the last scene in the same set."
+          "description": "How props start this scene. They keep their state from the last scene in the same set.",
+          "maxItems": 8
         }
       }
     },
@@ -298,7 +301,8 @@
           "items": {
             "$ref": "#/$defs/propSet"
           },
-          "description": "Props that change as this line starts, like [{\"prop\":\"alert-lamp\",\"state\":\"steady\"}]."
+          "description": "Props that change as this line starts, like [{\"prop\":\"alert-lamp\",\"state\":\"steady\"}].",
+          "maxItems": 8
         },
         "move": {
           "type": "object",
@@ -316,7 +320,8 @@
               "type": "array",
               "items": {
                 "type": "string"
-              }
+              },
+              "maxItems": 4
             }
           ],
           "description": "Sound cue, one of x-sfx."
@@ -475,5 +480,12 @@
     "coffee-pour",
     "crowd-gasp",
     "laugh"
-  ]
+  ],
+  "x-limits": {
+    "maxSeconds": 180,
+    "maxTotalLines": 60,
+    "maxFileBytes": 262144,
+    "maxSfxPerLine": 4,
+    "maxPropsPerList": 8
+  }
 }

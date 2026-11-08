@@ -25,9 +25,11 @@ export function renderMusic(cue, seconds, file, gain = 1) {
     for (let i = 0; i < n && s0 + i < total; i++) {
       const t = i / SR;
       let env, v;
-      if (kind === 'pluck') { env = Math.exp(-t * 7) * Math.min(1, t * 400); v = Math.sin(2 * Math.PI * f * t) + 0.35 * Math.sin(4 * Math.PI * f * t) * Math.exp(-t * 14) + 0.12 * Math.sin(6 * Math.PI * f * t); }
+      if (kind === 'pluck') { env = Math.exp(-t * 7) * Math.min(1, t * 400);
+        v = Math.sin(2 * Math.PI * f * t) + 0.35 * Math.sin(4 * Math.PI * f * t) * Math.exp(-t * 14) + 0.12 * Math.sin(6 * Math.PI * f * t); }
       else if (kind === 'bass') { env = Math.exp(-t * 3.2) * Math.min(1, t * 200); v = Math.sin(2 * Math.PI * f * t) + 0.25 * Math.sin(4 * Math.PI * f * t); }
-      else if (kind === 'pad') { const a = Math.min(1, t / 0.5), r = Math.min(1, (dur - t) / 0.5); env = a * Math.max(0, r); v = Math.sin(2 * Math.PI * f * t) + Math.sin(2 * Math.PI * f * 1.004 * t) * 0.8 + 0.3 * Math.sin(2 * Math.PI * f * 2 * t); }
+      else if (kind === 'pad') { const a = Math.min(1, t / 0.5), r = Math.min(1, (dur - t) / 0.5); env = a * Math.max(0, r);
+        v = Math.sin(2 * Math.PI * f * t) + Math.sin(2 * Math.PI * f * 1.004 * t) * 0.8 + 0.3 * Math.sin(2 * Math.PI * f * 2 * t); }
       else { env = Math.exp(-t * 60); v = rnd() * 2 - 1; }
       buf[s0 + i] += v * env * amp;
     }

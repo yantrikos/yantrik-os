@@ -50,7 +50,8 @@ export const AlertLamp: PropArt = ({frame, state, text, since}) => {
       {/* rays */}
       {lit > 0.2 && [-70, -45, -20, 20, 45, 70].map((a) => {
         const r = (a * Math.PI) / 180;
-        return <line key={a} x1={Math.sin(r) * 56} y1={176 - Math.cos(r) * 56} x2={Math.sin(r) * 78} y2={176 - Math.cos(r) * 78} stroke="#ff7a6e" strokeWidth={5} strokeLinecap="round" opacity={lit * 0.85} />;
+        return <line key={a} x1={Math.sin(r) * 56} y1={176 - Math.cos(r) * 56} x2={Math.sin(r) * 78} y2={176 - Math.cos(r) * 78} stroke="#ff7a6e"
+          strokeWidth={5} strokeLinecap="round" opacity={lit * 0.85} />;
       })}
       <g transform="translate(0,176)"><Pulse since={since} frame={frame} r0={46} r1={230} color="#ff6a5e" /></g>
     </g>

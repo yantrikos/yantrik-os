@@ -28,7 +28,8 @@ const spec: RigSpec = {
   </g>,
   body: (c) => <g>
     {c.acc === 'cape' && <path d="M148,290 Q90,420 78,520 Q200,550 322,520 Q310,420 252,290Z" fill={c.url('v')} stroke={c.p.outline} strokeWidth={6} strokeLinejoin="round" />}
-    <path d="M154,288 Q200,276 246,288 Q262,330 276,418 Q290,480 300,508 Q200,538 100,508 Q110,480 124,418 Q138,330 154,288Z" fill={c.url('j')} stroke={c.p.outline} strokeWidth={6} strokeLinejoin="round" />
+    <path d="M154,288 Q200,276 246,288 Q262,330 276,418 Q290,480 300,508 Q200,538 100,508 Q110,480 124,418 Q138,330 154,288Z" fill={c.url('j')}
+      stroke={c.p.outline} strokeWidth={6} strokeLinejoin="round" />
     <path d="M118,486 Q200,520 282,486" stroke={c.p.accent} strokeWidth={9} fill="none" strokeLinecap="round" />
     <path d="M160,300 Q150,380 128,470" stroke="#fff" strokeWidth={7} opacity={0.22} fill="none" strokeLinecap="round" />
     <g stroke={c.p.outline} strokeWidth={4}>
@@ -54,7 +55,8 @@ const spec: RigSpec = {
     {c.acc === 'headphones' && <g stroke={c.p.outline} strokeWidth={6} strokeLinejoin="round">
       <path d="M-104,0 C-116,-130 116,-130 104,0" fill="none" stroke={c.p.outline} strokeWidth={17} />
       <path d="M-104,0 C-116,-130 116,-130 104,0" fill="none" stroke={c.p.accent} strokeWidth={8} />
-      {[-1, 1].map((s) => <g key={s}><rect x={s * 106 - 17} y={-26} width={34} height={58} rx={16} fill={c.url('v')} /><rect x={s * 106 - 7} y={-14} width={10} height={30} rx={5} fill="#fff" opacity={0.3} stroke="none" /></g>)}
+      {[-1, 1].map((s) => <g key={s}><rect x={s * 106 - 17} y={-26} width={34} height={58} rx={16} fill={c.url('v')} /><rect x={s * 106 - 7} y={-14}
+        width={10} height={30} rx={5} fill="#fff" opacity={0.3} stroke="none" /></g>)}
     </g>}
   </g>,
   front2: (c) => c.acc === 'cape' ? <g stroke={c.p.outline} strokeWidth={5}><circle cx={200} cy={292} r={11} fill={c.url('g')} /></g> : null,

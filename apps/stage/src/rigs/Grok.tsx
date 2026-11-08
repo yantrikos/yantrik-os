@@ -30,7 +30,8 @@ const spec: RigSpec = {
     })}
   </g>,
   body: (c) => <g>
-    <path d="M142,292 Q200,278 258,292 Q300,310 306,380 Q312,450 296,496 Q200,524 104,496 Q88,450 94,380 Q100,310 142,292Z" fill={c.url('j')} stroke={c.p.outline} strokeWidth={6} strokeLinejoin="round" />
+    <path d="M142,292 Q200,278 258,292 Q300,310 306,380 Q312,450 296,496 Q200,524 104,496 Q88,450 94,380 Q100,310 142,292Z" fill={c.url('j')}
+      stroke={c.p.outline} strokeWidth={6} strokeLinejoin="round" />
     <path d="M296,330 Q312,430 296,496" stroke={RIM} strokeWidth={5} fill="none" opacity={0.85} strokeLinecap="round" />
     <path d="M104,340 Q92,420 104,490" stroke={RIM} strokeWidth={3} fill="none" opacity={0.4} strokeLinecap="round" />
     <path d="M128,430 Q200,452 272,430 L286,490 Q200,516 114,490Z" fill={c.url('q')} stroke={c.p.outline} strokeWidth={5} strokeLinejoin="round" />

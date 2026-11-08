@@ -6,6 +6,8 @@ import craft from '../src/stagecraft.mjs';
 import {slotX, markX, freeSpot, walkFrames} from '../src/stagepos.mjs';
 
 export const FPS = 30, TITLE = 75, CREDITS = 90, LEAD_IN = 3, SCENE_LEAD = 8, SCENE_TAIL = 10;
+/** Speech pace of the Piper voices, measured on real renders: words per second. Used for lines not yet spoken. */
+export const WORDS_PER_SECOND = 2.4;
 const LAUGH_FRAMES = 30;   // a laugh track keeps the scene alive at least this long after the line
 const WALK_SETTLE = 6;
 

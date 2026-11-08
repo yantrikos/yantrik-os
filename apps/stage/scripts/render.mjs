@@ -30,7 +30,7 @@ const walk = (d) => fs.readdirSync(d, {withFileTypes: true}).forEach((e) => {
   const p = path.join(d, e.name);
   e.isDirectory() ? walk(p) : h.update(e.name).update(fs.readFileSync(p));
 });
-walk(path.join(stage, 'src'));
+for (const d of ['src', 'fonts', 'scripts']) walk(path.join(stage, d));
 h.update(JSON.stringify(episode)).update(JSON.stringify(timeline));
 const stamp = h.digest('hex');
 const stampFile = path.join(out, '.stage-hash');
@@ -38,11 +38,13 @@ const fresh = fs.existsSync(mp4) && fs.existsSync(stampFile) && fs.readFileSync(
 const dur = timeline.totalFrames / timeline.fps;
 // Contact sheet: nine frames across the episode, tiled 3x3.
 const makeContact = () => {
-  const r = spawnSync('ffmpeg', ['-y', '-v', 'error', '-ss', String(dur / 20), '-i', mp4, '-vf', `fps=10/${dur},scale=640:360,tile=3x3:padding=6:color=0x120f24`, '-frames:v', '1', contact], {encoding: 'utf8'});
+  const r = spawnSync('ffmpeg', ['-y', '-v', 'error', '-ss', String(dur / 20), '-i', mp4, '-vf',
+    `fps=10/${dur},scale=640:360,tile=3x3:padding=6:color=0x120f24`, '-frames:v', '1', contact], {encoding: 'utf8'});
   if (r.status !== 0) die(`could not make the contact sheet: ${r.stderr}`);
 };
 if (fresh) {
   if (!fs.existsSync(contact)) makeContact();
+  fs.writeFileSync(path.join(out, 'video'), mp4 + '\n');
   fs.appendFileSync(path.join(out, 'progress'), 'render: done (up to date)\n');
   console.log(`render: up to date, nothing to film (${path.basename(mp4)})`);
   process.exit(0);
@@ -55,12 +57,17 @@ fs.mkdirSync(path.join(work, 'public', 'fonts'), {recursive: true});
 fs.copyFileSync(path.join(stage, 'fonts', 'Fredoka.ttf'), path.join(work, 'public', 'fonts', 'Fredoka.ttf'));
 fs.mkdirSync(out, {recursive: true});
 
+// Everything Remotion and Chrome write goes under the work folder: the bundle, and temp frames via TMPDIR.
+const bundleDir = path.join(work, 'bundle'), tmpDir = path.join(work, 'tmp');
+fs.mkdirSync(tmpDir, {recursive: true});
+process.env.TMPDIR = tmpDir;
+process.on('exit', () => { for (const d of [bundleDir, tmpDir]) fs.rmSync(d, {recursive: true, force: true}); });
 const t0 = Date.now();
 // out/progress: one line per step, newest last, so a mind can read the end of it cheaply
 const progress = path.join(out, 'progress');
 const say = (line) => fs.appendFileSync(progress, line + '\n');
 say('render: 0%');
-const serveUrl = await bundleStage(stage, path.join(work, 'public'));
+const serveUrl = await bundleStage(stage, path.join(work, 'public'), bundleDir);
 const inputProps = {episode, timeline};
 const composition = await selectComposition({serveUrl, id: 'Episode', inputProps, browserExecutable, logLevel: 'error'});
 const concurrency = Number(process.env.STAGE_CONCURRENCY) || Math.max(1, Math.min(3, os.cpus().length - 1));
@@ -77,6 +84,7 @@ await renderMedia({
 
 makeContact();
 fs.writeFileSync(stampFile, stamp);
+fs.writeFileSync(path.join(out, 'video'), mp4 + '\n');
 say('render: done');
 const secs = ((Date.now() - t0) / 1000).toFixed(0);
 const mb = (fs.statSync(mp4).size / 1048576).toFixed(1);

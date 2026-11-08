@@ -99,7 +99,8 @@ export const SceneView: React.FC<{scene: Scene; cast: any[]; accent: string}> = 
           background: `linear-gradient(90deg, ${accent}, #ffffff 90%)`, boxShadow: '0 0 60px rgba(0,0,0,.4)'}} />
       )}
       {(fadeIn > 0 || fadeOut > 0) && <div style={{position: 'absolute', inset: 0, background: '#000', opacity: Math.max(fadeIn, fadeOut)}} />}
-      <div style={{position: 'absolute', inset: 0, background: insertShot ? 'radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.6) 100%)' : 'radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.45) 100%)', pointerEvents: 'none'}} />
+      <div style={{position: 'absolute', inset: 0,
+        background: insertShot ? 'radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.6) 100%)' : 'radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.45) 100%)', pointerEvents: 'none'}} />
       {scene.lines.map((l) => (
         <Sequence key={l.start} from={l.start - scene.start} durationInFrames={l.audioFrames + 2}>
           <Audio src={staticFile(l.audio)} />

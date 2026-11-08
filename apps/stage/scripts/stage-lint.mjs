@@ -1,4 +1,5 @@
-#!/usr/bin/env node// Exit 0 = good (warnings are advice), 1 = problems to fix.
+#!/usr/bin/env node
+// Exit 0 = good (warnings are advice), 1 = problems to fix.
 import fs from 'node:fs';
 import path from 'node:path';
 import {lintFile} from './lint.mjs';

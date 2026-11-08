@@ -48,7 +48,8 @@ export const NeonSign: PropArt = ({frame, state, text}) => {
       <rect x={0} y={270} width={420} height={150} rx={14} fill="#120d2c" stroke="#0a0720" strokeWidth={6} />
       <rect x={14} y={284} width={392} height={122} rx={8} fill="none" stroke={col} strokeWidth={4} opacity={0.55 + 0.45 * flick} />
       {flick > 0.5 && <text x={210} y={345 + fs * 0.35} textAnchor="middle" fontFamily={FONT} fontWeight={700} fontSize={fs} fill="#ff5fe0" filter="url(#neonBlur)" opacity={0.85}>{shown}</text>}
-      <text x={210} y={345 + fs * 0.35} textAnchor="middle" fontFamily={FONT} fontWeight={700} fontSize={fs} fill={flick > 0.5 ? '#ffe4f8' : '#4a2a48'} stroke={col} strokeWidth={flick > 0.5 ? 2 : 1}>{shown}</text>
+      <text x={210} y={345 + fs * 0.35} textAnchor="middle" fontFamily={FONT} fontWeight={700} fontSize={fs}
+        fill={flick > 0.5 ? '#ffe4f8' : '#4a2a48'} stroke={col} strokeWidth={flick > 0.5 ? 2 : 1}>{shown}</text>
     </g>
   );
 };

@@ -30,7 +30,8 @@ export const Rooftop: React.FC<{frame: number; props: PropViews}> = ({frame, pro
             ? <rect key={`${r}-${c}`} x={bx + 14 + c * 36} y={760 - h + 18 + r * 44} width={16} height={22} fill="#ffd98a" opacity={0.75} /> : null)))}
         </g>
       ))}
-      <g transform="translate(300,330)"><rect x={0} y={90} width={90} height={80} fill="#2a2147" /><path d="M-10,90 L45,40 L100,90Z" fill="#33295a" /><rect x={20} y={170} width={8} height={300} fill="#2a2147" /><rect x={62} y={170} width={8} height={300} fill="#2a2147" /></g>
+      <g transform="translate(300,330)"><rect x={0} y={90} width={90} height={80} fill="#2a2147" /><path d="M-10,90 L45,40 L100,90Z"
+        fill="#33295a" /><rect x={20} y={170} width={8} height={300} fill="#2a2147" /><rect x={62} y={170} width={8} height={300} fill="#2a2147" /></g>
       {/* parapet, floor, string lights */}
       <rect x={0} y={720} width={1920} height={50} fill="#2c3048" /><rect x={0} y={714} width={1920} height={12} fill="#4a5070" />
       <rect x={0} y={770} width={1920} height={310} fill="url(#rtFloor)" />

@@ -64,7 +64,8 @@ export const VendingMachine: PropArt = ({frame, state, text}) => {
             : <rect key={c} x={34 + c * 38} y={48 + r * 80} width={28} height={40} rx={5} fill={SNACKS[(r * 4 + c) % 5]} />))}
         </g>
       ))}
-      {stuck && <g transform="translate(86,56) rotate(-18 14 6)"><rect width={28} height={40} rx={5} fill="#ffd35c" stroke="#3b0f1b" strokeWidth={2} /><rect x={4} y={14} width={20} height={10} fill="#fff" opacity={0.6} /></g>}
+      {stuck && <g transform="translate(86,56) rotate(-18 14 6)"><rect width={28} height={40} rx={5} fill="#ffd35c" stroke="#3b0f1b"
+        strokeWidth={2} /><rect x={4} y={14} width={20} height={10} fill="#fff" opacity={0.6} /></g>}
       <rect x={208} y={34} width={44} height={128} rx={6} fill="#2a2f40" />
       <rect x={213} y={40} width={34} height={26} rx={3} fill="#0b0d14" />
       {!off && <text x={230} y={59} textAnchor="middle" fontFamily={FONT} fontWeight={700} fontSize={fitSize(label, 30, 18, 9)} fill={stuck ? '#ff6b6b' : '#6df2a6'} opacity={flash}>{label}</text>}

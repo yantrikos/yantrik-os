@@ -244,7 +244,8 @@ function Fx({kind, f, t}: {kind: string; f: FaceSpec; t: number}) {
   if (kind === 'tear') {
     const fall = (t * 24) % 40;
     return <g>
-      <path transform={`translate(${-f.eyeDx - 4},${f.eyeY + f.eyeR + 10 + fall * 0.5})`} opacity={1 - fall / 55} d="M0,-14 C7,-3 10,2 10,7 A10,10 0 1 1 -10,7 C-10,2 -7,-3 0,-14Z" fill="#a9defc" stroke="#3b7fb5" strokeWidth={3} />
+      <path transform={`translate(${-f.eyeDx - 4},${f.eyeY + f.eyeR + 10 + fall * 0.5})`} opacity={1 - fall / 55}
+        d="M0,-14 C7,-3 10,2 10,7 A10,10 0 1 1 -10,7 C-10,2 -7,-3 0,-14Z" fill="#a9defc" stroke="#3b7fb5" strokeWidth={3} />
     </g>;
   }
   if (kind === 'question') {
@@ -263,7 +264,8 @@ function Fx({kind, f, t}: {kind: string; f: FaceSpec; t: number}) {
     const fall = (t * 30) % 30;
     return <g>
       {[-1, 1].map((sd) => (
-        <path key={sd} transform={`translate(${sd * (f.eyeDx + 26)},${f.eyeY + 4 + fall * 0.4}) rotate(${sd * 55})`} opacity={1 - fall / 40} d="M0,-12 C6,-3 9,2 9,6 A9,9 0 1 1 -9,6 C-9,2 -6,-3 0,-12Z" fill="#a9defc" stroke="#3b7fb5" strokeWidth={3} />
+        <path key={sd} transform={`translate(${sd * (f.eyeDx + 26)},${f.eyeY + 4 + fall * 0.4}) rotate(${sd * 55})`} opacity={1 - fall / 40}
+          d="M0,-12 C6,-3 9,2 9,6 A9,9 0 1 1 -9,6 C-9,2 -6,-3 0,-12Z" fill="#a9defc" stroke="#3b7fb5" strokeWidth={3} />
       ))}
     </g>;
   }
@@ -333,7 +335,8 @@ function Face({f, c, expression, viseme, blink, look, squint}: {f: FaceSpec; c: 
       {lens && [-1, 1].map((s) => {
         const tl = s * ex.tilt * 0.5 * -1 + (expression === 'smug' ? s * 3 : 0);
         return <g key={s} transform={`rotate(${tl} ${s * f.eyeDx} ${f.eyeY})`}>
-          <rect x={s * f.eyeDx - f.eyeR * 1.35} y={f.eyeY - f.eyeR * 1.1} width={f.eyeR * 2.7} height={f.eyeR * (squint ? 1.2 : 2.1)} rx={f.eyeR * 0.7} fill="#0b0b10" fillOpacity={0.82} stroke="#2c2f3a" strokeWidth={5} />
+          <rect x={s * f.eyeDx - f.eyeR * 1.35} y={f.eyeY - f.eyeR * 1.1} width={f.eyeR * 2.7} height={f.eyeR * (squint ? 1.2 : 2.1)}
+            rx={f.eyeR * 0.7} fill="#0b0b10" fillOpacity={0.82} stroke="#2c2f3a" strokeWidth={5} />
           <path d={`M${s * f.eyeDx - f.eyeR},${f.eyeY - f.eyeR * 0.7} L${s * f.eyeDx - f.eyeR * 0.2},${f.eyeY - f.eyeR * 0.95}`} stroke="#fff" strokeWidth={4} strokeLinecap="round" opacity={0.5} />
         </g>;
       })}
@@ -342,7 +345,8 @@ function Face({f, c, expression, viseme, blink, look, squint}: {f: FaceSpec; c: 
         const s = i === 0 ? -1 : 1, b = ex[k];
         const bw = f.eyeR * 1.35;
         return <g key={k} transform={ang(b, s)}>
-          <path d={`M${s * f.eyeDx - bw},${by + b.dy + 2} Q${s * f.eyeDx},${by + b.dy - 7} ${s * f.eyeDx + bw},${by + b.dy + 2}`} fill="none" stroke={f.browColor} strokeWidth={f.browW} strokeLinecap="round" />
+          <path d={`M${s * f.eyeDx - bw},${by + b.dy + 2} Q${s * f.eyeDx},${by + b.dy - 7} ${s * f.eyeDx + bw},${by + b.dy + 2}`} fill="none"
+            stroke={f.browColor} strokeWidth={f.browW} strokeLinecap="round" />
         </g>;
       })}
       <g transform={`translate(0,${f.mouthY})`}><MouthArt m={base} f={f} uid={c.uid} k={mouthK} /></g>
