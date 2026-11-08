@@ -14,6 +14,7 @@ use crate::job_sys::{hand_over_fds, peek_exit, pipe, reported_directory};
 use crate::jobs::{JobId, JobState, Limits, RunAnswer, Shared};
 use crate::retained::Retained;
 use crate::sealed::Sealed;
+use yantrik_ipc_contracts::home_paths::workshops;
 use crate::AgentId;
 
 /// What `bash -c` runs. `$1` is the command.
@@ -129,11 +130,13 @@ pub(crate) fn spawn(
     // A sealed command is the same wrapper inside the sandbox; one the sandbox cannot be built
     // for is not started at all.
     let (program, args, env): (String, Vec<String>, Vec<(String, String)>) = match sealed {
-        None => (
-            bash.to_string(),
-            ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from).to_vec(),
-            env.to_vec(),
-        ),
+        // Not sealed: the outside view, in which the workshops root does not exist (#1120).
+        None => {
+            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            let words = ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from);
+            let (program, args) = workshops::outside_command(&home, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
+            (program, args, env.to_vec())
+        }
         Some(s) => {
             let spec = s.spec(bash, WRAPPER, command, &cwd, env).map_err(|e| format!("the command was not started: {e}"))?;
             (spec.program, spec.args, spec.env)

@@ -17,12 +17,12 @@
 //! # The grant
 //!
 //! `workshop_create` is `sensitive`, declares `always_asks` and explains each call on the card
-//! ("Give <the Mind> a workshop at ~/Documents/x"). That declaration is the shell's way of forcing
+//! ("Give <the Mind> a workshop at ~/.local/share/yantrik/workshops/<the Mind>/x"). That declaration is the shell's way of forcing
 //! a card whatever the mode: `gate::decide` refuses the call without a grant in every mode (full
 //! bypass included, no session or standing rule answering), `request_approval` asks whatever its
 //! table says (`taint_ask::resolve`, the path the taint already uses to ask in every mode), and
 //! the card offers no "Allow for this session". The grant a person allows is bound to the folder
-//! as typed. A Mind never answers it (#1124, H1).
+//! the card names. A Mind never answers it (#1124, H1).
 
 use std::path::{Path, PathBuf};
 
@@ -30,21 +30,23 @@ use serde_json::{json, Value};
 use yantrik_app_runtime::control::{Action, App as ControlSurface, Param};
 use yantrik_agent_terminal::Sealed;
 
-use crate::control_agent_terminal::{calling_agent, run_job, text, wait_arg, Call, Prepared};
+use crate::control_agent_terminal::{calling_agent, later, run_job, text, wait_arg, Call, Prepared};
 use crate::workshop;
 
-/// The sentence the card shows for one `workshop_create`. Empty folders say what is wrong instead.
+/// The sentence the card shows for one `workshop_create`. A name that will be refused says why.
 fn explain_grant(args: &Value) -> String {
-    explain_in(&workshop::home(), args)
+    explain_in(&args_name(args))
 }
 
-fn explain_in(home: &Path, args: &Value) -> String {
-    let raw = text(args, "folder");
-    match workshop::check_folder(home, &raw, false) {
-        // Not made yet: the rules are run as a grant would, without making it.
-        Err(e) if e.contains("does not exist") => format!("Give the Mind asking a workshop at {}.", raw.trim()),
-        Err(e) => format!("Give the Mind asking a workshop at {}. This will be refused: {e}", raw.trim()),
-        Ok(real) => format!("Give the Mind asking a workshop at {}.", real.display()),
+fn args_name(args: &Value) -> String {
+    text(args, "name").trim().to_string()
+}
+
+fn explain_in(name: &str) -> String {
+    let at = format!("~/{}/the Mind asking/{name}", yantrik_ipc_contracts::home_paths::workshops::ROOT_UNDER_HOME);
+    match workshop::plain_name("`name`", name) {
+        Ok(()) => format!("Give the Mind asking a workshop at {at}."),
+        Err(e) => format!("Give the Mind asking a workshop called {name:?}. This will be refused: {e}"),
     }
 }
 
@@ -54,7 +56,7 @@ fn explain_in(home: &Path, args: &Value) -> String {
 /// `who` is the token-vouched agent id or the verified program, cleaned of anything that draws
 /// differently from how it reads.
 pub(crate) fn name_the_mind(app: &str, action: &str, explained: &str, who: &str) -> String {
-    if (app, action) != ("shell", "workshop_create") {
+    if app != "shell" || !matches!(action, "workshop_create" | "workshop_export") {
         return explained.to_string();
     }
     let clean: String = who
@@ -66,14 +68,14 @@ pub(crate) fn name_the_mind(app: &str, action: &str, explained: &str, who: &str)
     if clean.is_empty() {
         return explained.to_string();
     }
-    explained.replacen("the Mind asking", clean, 1)
+    explained.replace("the Mind asking", clean)
 }
 
-pub(crate) fn specs() -> [Action; 4] {
+pub(crate) fn specs() -> [Action; 6] {
     [
         Action::new(
             "workshop_create",
-            "Ask the person for a workshop: one new folder under ~/Documents where you may build \
+            "Ask the person for a workshop: a private folder of your own, made for you, where you may build \
              with `agent_run_sealed`, sealed away from the network and the rest of the machine. \
              The person decides on a card. Acts for the agent named by the agent token your call \
              carries — never an argument.",
@@ -83,9 +85,8 @@ pub(crate) fn specs() -> [Action; 4] {
         // (#1124 H1): `gate::decide` refuses a call without a grant and `request_approval` asks
         // whatever its table says.
         .always_asks()
-        .arg(Param::text("folder").describe(
-            "A new folder under ~/Documents, written ~/Documents/<name>. Never the home folder, \
-             Desktop or Downloads, never through a symlink, never with a dot name. The shell makes it",
+        .arg(Param::text("name").describe(
+            "A plain name for the workshop, e.g. sitcom: no `/`, no leading dot. The shell makes              ~/.local/share/yantrik/workshops/<you>/<name>",
         ))
         .explain(explain_grant),
         Action::new(
@@ -115,11 +116,35 @@ pub(crate) fn specs() -> [Action; 4] {
         .arg(Param::number("wait").optional().describe(
             "A number of seconds, e.g. 30. How long to wait before answering `running: true`. Default 120, at most 600",
         )),
+        Action::new(
+            "workshop_present",
+            "Show a video, a song or a picture from your workshop in the OS's own player, which says it \
+             is from your workshop. Needs a workshop the person granted you. Only a regular file whose \
+             first bytes are a media format is shown; a link, a pipe, a folder or any other file is \
+             refused. Acts for the agent named by the agent token your call carries — never an argument.",
+        )
+        .arg(Param::text("workshop").describe("Your workshop's folder, exactly as granted"))
+        .arg(Param::text("path").describe("The file: inside the workshop, relative to it or absolute")),
+        Action::new(
+            "workshop_export",
+            "Copy a file or a folder out of your workshop into the person's own folders, as plain \
+             regular files by content: no .git, no links, no file attributes. `to` is `videos` or a \
+             folder in the home. Nothing leaves a workshop otherwise. Acts for the agent named by the \
+             agent token your call carries — never an argument.",
+        )
+        .risk("sensitive")
+        // The person allows each copy on a card, in every mode, and no session rule covers it.
+        .always_asks()
+        .defers()
+        .arg(Param::text("workshop").describe("Your workshop's folder, exactly as granted"))
+        .arg(Param::text("path").describe("The file or folder: inside the workshop, relative to it or absolute"))
+        .arg(Param::text("to").describe("`videos`, or an existing folder in the home, written ~/<folder>"))
+        .explain(explain_export),
     ]
 }
 
 pub fn actions(surface: ControlSurface) -> ControlSurface {
-    let [grant, revoke, list, sealed] = specs();
+    let [grant, revoke, list, sealed, present, export] = specs();
     surface
         .action(grant, |args| workshop_create(args, &workshop::home(), &workshop::record_path()))
         .action(revoke, |args| {
@@ -128,6 +153,8 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
         })
         .action(list, |_| workshop_list(&workshop::record_path()))
         .action(sealed, agent_run_sealed)
+        .action(present, workshop_present)
+        .action(export, workshop_export)
 }
 
 /// The Mind the token names, or why the call is not a Mind's.
@@ -145,7 +172,7 @@ fn now() -> u64 {
 
 fn workshop_create(args: &Value, home: &Path, record: &Path) -> Result<Value, String> {
     let agent = mind()?.ok_or("only a Mind asks for a workshop, and the person answers on the card: this call carries no agent token.")?;
-    let folder = workshop::check_folder(home, &text(args, "folder"), true)?;
+    let folder = workshop::folder_for(home, &agent, &args_name(args), true)?;
     let made = workshop::grant(record, &agent, &folder, now())?;
     Ok(json!({
         "granted": true,
@@ -212,13 +239,65 @@ fn agent_run_sealed(args: &Value) -> Result<Value, String> {
     )
 }
 
+/// The Mind and the workshop it names, checked against the grant record.
+fn held_by(call: &Call, named: &str) -> Result<(String, PathBuf), String> {
+    let agent = call.agent()?.0;
+    let shop = workshop::granted_for(&workshop::record_path(), &workshop::home(), &agent, named)?;
+    Ok((agent, shop))
+}
+
+/// Show a media file from the workshop in the OS's player (`workshop_out::present`). No card.
+fn workshop_present(args: &Value) -> Result<Value, String> {
+    let (agent, shop) = held_by(&Call::current(), &text(args, "workshop"))?;
+    let media = crate::workshop_out::present(&shop, Path::new(text(args, "path").trim()), &agent)?;
+    Ok(json!({ "shown": true, "media": media, "note": "The player says it is from your workshop." }))
+}
+
+/// Where an export goes: `videos`, or an existing folder in the home that a Mind may make things in.
+fn export_dest(home: &Path, to: &str, make: bool) -> Result<PathBuf, String> {
+    let to = to.trim();
+    if to.eq_ignore_ascii_case("videos") {
+        let dir = home.join("Videos");
+        if make && !dir.is_dir() {
+            std::fs::create_dir_all(&dir).map_err(|e| format!("{} could not be made ({e})", dir.display()))?;
+        }
+        return Ok(dir);
+    }
+    yantrik_ipc_contracts::home_paths::may_create(to, home)?;
+    let dir = yantrik_ipc_contracts::home_paths::expand(to, home).ok_or("`to` is `videos` or ~/<folder>.")?;
+    dir.is_dir().then_some(dir).ok_or_else(|| format!("{to} is not a folder that is there."))
+}
+
+fn explain_export(args: &Value) -> String {
+    let (path, to) = (text(args, "path"), text(args, "to"));
+    let path: String = path.trim().chars().filter(|c| !c.is_control() && !crate::approvals::is_format_char(*c)).take(120).collect();
+    let said = format!("Copy {path} out of the workshop of the Mind asking, as plain files with no .git and no links, into");
+    match export_dest(&workshop::home(), &to, false) {
+        Ok(dir) => format!("{said} {}.", dir.display()),
+        Err(e) if to.trim().eq_ignore_ascii_case("videos") => format!("{said} ~/Videos. ({e})"),
+        Err(e) => format!("{said} {}. This will be refused: {e}", to.trim()),
+    }
+}
+
+/// Copy out of the workshop (`workshop_out::export`), once the person has allowed this call.
+fn workshop_export(args: &Value) -> Result<Value, String> {
+    let (named, path, to) = (text(args, "workshop"), text(args, "path"), text(args, "to"));
+    let call = Call::current();
+    later(move || {
+        let (_, shop) = held_by(&call, &named)?;
+        let dest = export_dest(&workshop::home(), &to, true)?;
+        let (at, done) = crate::workshop_out::export(&shop, Path::new(path.trim()), &dest)?;
+        Ok(json!({ "exported": at.display().to_string(), "files": done.files, "bytes": done.bytes }))
+    })
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use yantrik_ipc_transport::gate::{fetches_address, leaves_machine, open_ended};
 
-    fn grant_for(home: &Path, rec: &Path, agent: &str, folder: &str) -> PathBuf {
-        let real = workshop::check_folder(home, folder, true).unwrap();
+    fn grant_for(home: &Path, rec: &Path, agent: &str, name: &str) -> PathBuf {
+        let real = workshop::folder_for(home, agent, name, true).unwrap();
         workshop::grant(rec, agent, &real, 1).unwrap();
         real
     }
@@ -231,9 +310,9 @@ mod tests {
 
     #[test]
     fn the_sealed_action_asks_nothing_only_because_it_is_not_what_agent_run_is() {
-        let [grant, _, list, sealed] = specs();
+        let [grant, _, list, sealed, present, export] = specs();
         assert_eq!(sealed.permission, "standard");
-        for a in [&sealed, &list, &grant] {
+        for a in [&sealed, &list, &grant, &present, &export] {
             assert!(!open_ended(&a.description) && !leaves_machine(&a.description), "{}", a.name);
             assert!(fetches_address(&a.description).is_none(), "{}", a.name);
         }
@@ -241,25 +320,27 @@ mod tests {
         assert!(!crate::taint_ask::is_sink("shell", "agent_run_sealed", &sealed.description));
         let run = crate::control_agent_terminal::specs().into_iter().find(|a| a.name == "agent_run").unwrap();
         assert!(crate::taint_ask::is_sink("shell", "agent_run", &run.description));
-        // The grant is asked about, in the ordinary way.
-        assert_eq!(grant.permission, "sensitive");
+        // The grant and the export are asked about on a card, in every mode; showing a file is not.
+        assert_eq!((grant.permission.as_str(), export.permission.as_str(), present.permission.as_str()), ("sensitive", "sensitive", "standard"));
+        assert!(yantrik_ipc_transport::gate::always_asks(&grant.description) && yantrik_ipc_transport::gate::always_asks(&export.description));
+        assert!(!yantrik_ipc_transport::gate::always_asks(&present.description), "a decoder reads bytes and runs no hooks: no card");
     }
 
     #[test]
     fn a_command_is_sealed_only_by_the_grant_record() {
         let h = home();
         let rec = h.path().join("workshops.json");
-        let shop = grant_for(h.path(), &rec, "hermes", "~/Documents/shop");
+        let shop = grant_for(h.path(), &rec, "hermes", "shop");
         let ok = prepare(h.path(), &rec, "hermes", shop.to_str().unwrap(), None).unwrap();
         assert_eq!(ok.cwd.as_deref(), Some(shop.as_path()));
         assert_eq!(ok.sealed.unwrap().workshop, shop);
         // Not granted: another Mind, an un-granted folder, a symlink to the granted one, `..`.
-        let other = workshop::check_folder(h.path(), "~/Documents/other", true).unwrap();
-        std::os::unix::fs::symlink(&shop, h.path().join("Documents/alias")).unwrap();
+        let other = workshop::folder_for(h.path(), "hermes", "other", true).unwrap();
+        std::os::unix::fs::symlink(&shop, h.path().join("alias")).unwrap();
         for (agent, named) in [
             ("pi", shop.to_str().unwrap().to_string()),
             ("hermes", other.display().to_string()),
-            ("hermes", h.path().join("Documents/alias").display().to_string()),
+            ("hermes", h.path().join("alias").display().to_string()),
             ("hermes", format!("{}/..", shop.display())),
             ("hermes", h.path().display().to_string()),
             ("hermes", String::new()),
@@ -279,21 +360,22 @@ mod tests {
 
     #[test]
     fn the_card_says_what_it_grants() {
-        let h = home();
-        let said = explain_in(h.path(), &json!({ "folder": "~/Desktop/x" }));
-        assert!(said.contains("refused"), "{said}");
-        assert!(explain_in(h.path(), &json!({ "folder": "~/Documents/new" })).starts_with("Give the Mind asking a workshop at ~/Documents/new"));
+        for bad in ["../x", "a/b", ".hidden", "", "a\nb", "a\u{202E}b"] {
+            assert!(explain_in(bad).contains("refused"), "{bad:?}");
+        }
+        let said = explain_in("new");
+        assert!(said.starts_with("Give the Mind asking a workshop at ~/.local/share/yantrik/workshops/the Mind asking/new"), "{said}");
+        assert_eq!(args_name(&json!({ "name": "  new " })), "new");
     }
 
     /// #1124 L4 and N7: the card says which Mind asks, from the verified asker, with nothing invisible in it.
     /// The sentence it names it in is the registry's own, which `published_detail` now hands the card for
     /// the shell's surface (`published_explanation`).
     #[test]
-    fn the_card_names_the_mind_that_asked() {
-        let h = home();
-        let said = explain_in(h.path(), &json!({ "folder": "~/Documents/new" }));
+    fn the_card_names_the_mind_that_asked_and_the_folder_it_gets() {
+        let said = explain_in("new");
         let named = name_the_mind("shell", "workshop_create", &said, "hermes:main");
-        assert!(named.starts_with("Give hermes:main a workshop at ~/Documents/new"), "{named}");
+        assert!(named.starts_with("Give hermes:main a workshop at ~/.local/share/yantrik/workshops/hermes:main/new"), "{named}");
         let tricked = name_the_mind("shell", "workshop_create", &said, &format!("her{}mes{}:main", char::from_u32(0x202E).unwrap(), char::from_u32(10).unwrap()));
         assert!(tricked.starts_with("Give hermes:main a workshop"), "{tricked}");
         // Another action's sentence is left alone, and an empty asker leaves the words as they were.
@@ -306,7 +388,7 @@ mod tests {
     fn only_the_person_or_the_mind_itself_revokes() {
         let h = home();
         let rec = h.path().join("workshops.json");
-        grant_for(h.path(), &rec, "hermes", "~/Documents/shop");
+        grant_for(h.path(), &rec, "hermes", "shop");
         let named = json!({ "agent": "hermes" });
         assert!(workshop_revoke(&named, &rec, None, false).unwrap_err().contains("only the person"));
         assert_eq!(workshop::load(&rec).unwrap().len(), 1, "an unplaced caller revoked nothing");
@@ -314,7 +396,7 @@ mod tests {
         assert_eq!(workshop_revoke(&named, &rec, Some("pi".into()), false).unwrap()["revoked"], false);
         assert_eq!(workshop::load(&rec).unwrap().len(), 1);
         assert_eq!(workshop_revoke(&named, &rec, Some("hermes".into()), false).unwrap()["revoked"], true);
-        grant_for(h.path(), &rec, "hermes", "~/Documents/shop2");
+        grant_for(h.path(), &rec, "hermes", "shop2");
         assert_eq!(workshop_revoke(&named, &rec, None, true).unwrap()["revoked"], true);
     }
 
@@ -331,7 +413,7 @@ mod tests {
         let secret_dir = h.path().join(".config");
         std::fs::create_dir(&secret_dir).unwrap();
         std::fs::write(secret_dir.join("token"), "do-not-read").unwrap();
-        let shop = workshop::check_folder(h.path(), "~/Documents/shop", true).unwrap();
+        let shop = workshop::folder_for(h.path(), "hermes", "shop", true).unwrap();
         let s = Sealed::new(shop.clone());
         let env: Vec<(String, String)> = vec![("USER".into(), "p".into()), ("LANG".into(), "C.UTF-8".into()), ("TERM".into(), "xterm".into())];
         let mut argv = vec![["/usr/bin/bwrap", "/bin/bwrap"].into_iter().find(|p| Path::new(p).exists()).unwrap().to_string()];

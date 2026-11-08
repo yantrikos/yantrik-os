@@ -11126,6 +11126,7 @@ dependencies = [
  "tracing",
  "vt100",
  "yantrik-harness",
+ "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
 ]
 

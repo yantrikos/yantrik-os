@@ -5,6 +5,7 @@
 //! better planning, or more reliable tool-call generation.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
+use yantrik_ipc_contracts::home_paths::workshops;
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ClaudeThinkTool));
@@ -160,15 +161,20 @@ fn run_claude(prompt: &str, _verbose: bool) -> String {
 
 /// Run claude CLI with tool access (can execute commands, read/write files).
 fn run_claude_code(task: &str, cwd: &str) -> String {
+    if let Err(e) = workshops::refuse(cwd) {
+        return e;
+    }
     // As in `run_claude`: the task after `--`, so one beginning with `-` cannot add options —
-    // `--dangerously-skip-permissions`, say, or a wider `--allowedTools`.
-    let result = std::process::Command::new("claude")
-        .arg("-p")
-        .arg("--allowedTools")
-        .arg("Bash,Read,Write,Glob,Grep")
-        .arg("--no-input")
-        .arg("--")
-        .arg(task)
+    // `--dangerously-skip-permissions`, say, or a wider `--allowedTools`. Claude Code runs Bash, so
+    // it starts in the outside view, where the workshops root does not exist.
+    let words = ["-p", "--allowedTools", "Bash,Read,Write,Glob,Grep", "--no-input", "--", task].map(String::from);
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let (program, argv) = match workshops::outside_command(&home, "claude", &words) {
+        Ok(v) => v,
+        Err(e) => return format!("Error: {e}"),
+    };
+    let result = std::process::Command::new(program)
+        .args(argv)
         .current_dir(cwd)
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(std::process::Stdio::null())

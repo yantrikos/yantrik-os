@@ -23,6 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use yantrik_ipc_contracts::home_paths::workshops;
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
@@ -648,17 +649,37 @@ fn execute_script(
         c.arg(inner);
         c
     } else {
-        let mut c = std::process::Command::new(interpreter);
+        let mut words: Vec<String> = Vec::new();
         if language == "typescript" {
-            c.arg("ts-node");
+            words.push("ts-node".into());
         }
-        c.arg(filepath);
+        words.push(filepath.to_string_lossy().into_owned());
         if !args.is_empty() {
-            c.args(shell_words::split(args).unwrap_or_else(|_|
+            words.extend(shell_words::split(args).unwrap_or_else(|_|
                 args.split_whitespace().map(String::from).collect()
             ));
         }
-        c
+        // Unsandboxed, so in the outside view: the workshops root does not exist for it.
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        match workshops::outside_command(&home, interpreter, &words) {
+            Ok((program, argv)) => {
+                let mut c = std::process::Command::new(program);
+                c.args(argv);
+                c
+            }
+            Err(e) => {
+                return ExecutionResult {
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: e,
+                    duration_secs: 0.0,
+                    timed_out: false,
+                    generated_files: vec![],
+                    error_analysis: None,
+                    sandboxed: false,
+                };
+            }
+        }
     };
 
     // Working directory (only for non-bwrap — bwrap runs from /)
@@ -1154,6 +1175,12 @@ impl Tool for ScriptRunTool {
             .map(SandboxMode::from_str)
             .unwrap_or(SandboxMode::Strict);
 
+        // A program keeps the directory it starts in: not a Mind's workshop.
+        if let Some(dir) = working_dir {
+            if let Err(e) = workshops::refuse(dir) {
+                return e;
+            }
+        }
         if name.is_empty() {
             return "Error: name is required".to_string();
         }
