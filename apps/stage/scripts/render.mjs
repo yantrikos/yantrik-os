@@ -43,8 +43,7 @@ const makeContact = () => {
 };
 if (fresh) {
   if (!fs.existsSync(contact)) makeContact();
-  fs.appendFileSync(path.join(out, 'progress'), 'render: done (up to date)
-');
+  fs.appendFileSync(path.join(out, 'progress'), 'render: done (up to date)\n');
   console.log(`render: up to date, nothing to film (${path.basename(mp4)})`);
   process.exit(0);
 }
@@ -59,8 +58,7 @@ fs.mkdirSync(out, {recursive: true});
 const t0 = Date.now();
 // out/progress: one line per step, newest last, so a mind can read the end of it cheaply
 const progress = path.join(out, 'progress');
-const say = (line) => fs.appendFileSync(progress, line + '
-');
+const say = (line) => fs.appendFileSync(progress, line + '\n');
 say('render: 0%');
 const serveUrl = await bundleStage(stage, path.join(work, 'public'));
 const inputProps = {episode, timeline};

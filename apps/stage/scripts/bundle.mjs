@@ -26,13 +26,17 @@ export function findBrowser(stage) {
 }
 
 export async function bundleStage(stage, publicDir) {
-  const cacheDirectory = path.join(cacheRoot(), 'webpack');
-  let cache = false;
-  try { fs.mkdirSync(cacheDirectory, {recursive: true}); fs.accessSync(cacheDirectory, fs.constants.W_OK); cache = {type: 'filesystem', cacheDirectory, name: 'stage'}; }
-  catch { /* no writable cache: bundle cold, slower but correct */ }
+  // Remotion keeps webpack's cache at <nearest package.json>/node_modules/.cache from its root dir, so
+  // give it a root of our own that lives in the cache folder instead of the install.
+  const rootDir = path.join(cacheRoot(), 'root');
+  let usable = true;
+  try {
+    fs.mkdirSync(rootDir, {recursive: true});
+    fs.writeFileSync(path.join(rootDir, 'package.json'), '{"name":"stage-cache","private":true}\n');
+    fs.accessSync(rootDir, fs.constants.W_OK);
+  } catch { usable = false; }   // no writable cache folder: bundle cold, slower but correct
   return bundle({
     entryPoint: path.join(stage, 'src', 'index.ts'), publicDir, onProgress: () => {},
-    enableCaching: false,
-    webpackOverride: (c) => ({...c, cache}),
+    ...(usable ? {rootDir, enableCaching: true} : {enableCaching: false}),
   });
 }
