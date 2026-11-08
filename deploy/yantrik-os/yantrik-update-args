@@ -149,6 +149,19 @@ selftest_args() {
   is "args: --channel needs a value that is not a flag" "1" "$rc"
   t "args: ... and says so" "--channel needs a value" "$out"
 
+  # Without this file the updater refuses what it cannot check (a copy of it alone, as a half-finished
+  # apply leaves it): rollback with a word is refused and the tree stays, the forms recovery needs run.
+  mkdir -p "$argd/nolib"; cp "$SELF_PATH" "$argd/nolib/yantrik-update"
+  argd0="$(args_state)"
+  for words in "rollback now" "apply --allow-dowgrade" "status --porcelain junk" "set-channel a b"; do
+    # shellcheck disable=SC2086
+    out="$(YANTRIK_PREFIX="$argd" bash "$argd/nolib/yantrik-update" $words 2>&1)"; rc=$?
+    case "$out" in *"yantrik-update-args is missing"*"nothing was changed"*) name=refused ;; *) name="$out" ;; esac
+    is "args: without its table, '$words' is refused" "1|refused|$argd0" "$rc|$name|$(args_state)"
+  done
+  out="$(YANTRIK_PREFIX="$argd" bash "$argd/nolib/yantrik-update" rollback --help 2>&1)"; rc=$?
+  is "args: without its table, --help still answers" "0|$argd0" "$rc|$(args_state)"
+
   # Every way the callers in the repo call it still passes the check. Not run: checked.
   for words in "set-channel stable" "set_channel beta" "package-list /abs/packages.list" \
                "check --porcelain" "check --porcelain --channel nightly" "check --channel beta" \

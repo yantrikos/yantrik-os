@@ -7157,7 +7157,30 @@ usage() {
 ARGS_LIB="$(dirname "$SELF_PATH")/yantrik-update-args"
 # shellcheck source=deploy/yantrik-os/yantrik-update-args
 # shellcheck disable=SC1090
-if [ -r "$ARGS_LIB" ]; then . "$ARGS_LIB"; else warn "yantrik-update-args is missing: arguments are not checked"; args_check() { case " $* " in *" -h "*|*" --help "*) usage; exit 0 ;; esac; }; fi
+if [ -r "$ARGS_LIB" ]; then . "$ARGS_LIB"; else
+  # Without its table the updater fails closed: only help, no arguments, and the forms recovery and
+  # the callers hard-code are let through; anything else is refused (rollback never takes one).
+  args_check() {
+    case " $* " in *" -h "*|*" --help "*) usage; exit 0 ;; esac
+    local c="$1"; shift
+    case "$c" in
+      rollback|reconcile|selftest|migrate-ownership|migrate-minds) [ $# -eq 0 ] && return 0 ;;
+      mind-egress) [ "$*" = apply ] && return 0 ;;
+      set-channel|set_channel) [ $# -eq 1 ] && return 0 ;;
+      check|status|apply)
+        while [ $# -gt 0 ]; do
+          case "$c:$1" in
+            *:--porcelain) [ "$c" = apply ] && break ;;
+            apply:--force|apply:--allow-downgrade|apply:--reboot|apply:--no-restart) ;;
+            *:--channel) [ $# -ge 2 ] || break; shift ;;
+            *) break ;;
+          esac; shift
+        done
+        [ $# -eq 0 ] && return 0 ;;
+    esac
+    fail "yantrik-update-args is missing, so '$c $*' is refused and nothing was changed; reinstall with: sudo yantrik-update apply --force"
+  }
+fi
 
 # ── dispatch ────────────────────────────────────────────────────────────────────────────
 CMD="${1:-check}"; shift || true
