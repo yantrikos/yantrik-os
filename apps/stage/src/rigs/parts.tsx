@@ -48,6 +48,7 @@ export type RigProps = {
   seed?: number;
   width?: number;
   shadow?: boolean;
+  walk?: number; // walk-cycle phase in radians while striding between marks; leave out when standing
 };
 export type Ctx = {
   p: Palette; acc: string; t: number; energy: number; uid: string;
@@ -129,7 +130,7 @@ export function Arm({c, spec, s, target, bend, point}: {c: Ctx; spec: RigSpec; s
 }
 
 // ----------------------------------------------------------------- poses
-function handTargets(pose: Pose, t: number, energy: number, spec: RigSpec) {
+function handTargets(pose: Pose, t: number, energy: number, spec: RigSpec, walk?: number) {
   const L = spec.shoulderL, R = spec.shoulderR;
   const sway = Math.sin(t * 1.7) * 3;
   const rest = (s: Pt, side: number): Pt => [s[0] + side * 8 + sway * side, s[1] + (spec.arm.l1 + spec.arm.l2) * 0.97];
@@ -148,6 +149,13 @@ function handTargets(pose: Pose, t: number, energy: number, spec: RigSpec) {
     out.r = [R[0] + 150, R[1] - 24 + Math.sin(t * 6) * 2]; out.br = 1; out.point = true; out.lean = 2.5; out.tilt = -3;
   } else if (pose === 'facepalm') {
     out.dy = 36; out.shrug = 18; out.r = [spec.headC[0] - 6, spec.headC[1] + out.dy - 2]; out.br = 1; out.tilt = 9; out.lean = 2; out.squint = true;
+  }
+  if (walk !== undefined) {
+    // arms swing against the stride, body leans into it
+    const sw = Math.sin(walk);
+    out.l = [out.l[0] + sw * 16, out.l[1] - Math.abs(sw) * 6];
+    out.r = [out.r[0] - sw * 16, out.r[1] - Math.abs(sw) * 6];
+    out.lean += 3.2; out.tilt += sw * 1.6;
   }
   return out;
 }
@@ -359,11 +367,13 @@ export function RigFrame({spec, ...p}: RigProps & {spec: RigSpec}) {
   const pal = resolvePalette(spec.palette, p.palette);
   const acc = p.accessory && (spec.accessories.includes(p.accessory) || p.accessory === 'none') ? p.accessory : spec.accessory;
   const c: Ctx = {p: pal, acc, t, energy, uid, url: (n) => `url(#${uid}${n})`};
-  const pose = handTargets(p.pose ?? 'idle', t, energy, spec);
+  const walking = p.walk !== undefined;
+  const stride = walking ? Math.sin(p.walk!) : 0;
+  const pose = handTargets(p.pose ?? 'idle', t, energy, spec, p.walk);
   const seed = p.seed ?? 1;
   const breath = Math.sin((t * Math.PI * 2) / 3.4 + seed);
   const sy = 1 + breath * 0.012, sx = 1 - breath * 0.005;
-  const bounce = -Math.pow(Math.sin(t * 2.2 + seed), 2) * 2.5 - energy * Math.abs(Math.sin(t * 9)) * 3;
+  const bounce = walking ? -Math.abs(stride) * 11 : -Math.pow(Math.sin(t * 2.2 + seed), 2) * 2.5 - energy * Math.abs(Math.sin(t * 9)) * 3;
   const blink = blinkAt(t, seed);
   const headDy = pose.dy + breath * -1.5 + energy * Math.sin(t * 11) * 1.4;
   const tilt = pose.tilt + Math.sin(t * 1.3 + seed) * 0.8 + energy * Math.sin(t * 7) * 1.2;
@@ -376,7 +386,7 @@ export function RigFrame({spec, ...p}: RigProps & {spec: RigSpec}) {
       <g transform={p.flip ? 'translate(400,0) scale(-1,1)' : undefined}>
         {p.shadow !== false && <ellipse cx={200} cy={568} rx={118} ry={14} fill="#000" opacity={0.28} />}
         <g transform={`translate(0,${bounce}) translate(200,565) scale(${sx},${sy}) translate(-200,-565) rotate(${pose.lean} 200 565)`}>
-          {spec.legs(c)}
+          <g transform={walking ? `translate(200,486) skewX(${stride * 9}) translate(-200,-486)` : undefined}>{spec.legs(c)}</g>
           {spec.body(c)}
           <Arm c={c} spec={spec} s={spec.shoulderL} target={pose.l} bend={pose.bl} />
           <g transform={`translate(0,${headDy}) rotate(${tilt} ${nx} ${ny})`}>

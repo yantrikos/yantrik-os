@@ -9,8 +9,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {bundle} from '@remotion/bundler';
 import {renderMedia, selectComposition} from '@remotion/renderer';
+import {bundleStage, findBrowser} from './bundle.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const stage = path.resolve(here, '..');
@@ -43,26 +43,13 @@ const makeContact = () => {
 };
 if (fresh) {
   if (!fs.existsSync(contact)) makeContact();
+  fs.appendFileSync(path.join(out, 'progress'), 'render: done (up to date)
+');
   console.log(`render: up to date, nothing to film (${path.basename(mp4)})`);
   process.exit(0);
 }
 
-// The browser Remotion fetched into node_modules/.remotion at install time.
-const findBrowser = () => {
-  const root = path.join(stage, 'node_modules', '.remotion');
-  if (!fs.existsSync(root)) return null;
-  const stack = [root];
-  while (stack.length) {
-    const d = stack.pop();
-    for (const e of fs.readdirSync(d, {withFileTypes: true})) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) stack.push(p);
-      else if (e.name === 'chrome-headless-shell' || e.name === 'headless_shell') return p;
-    }
-  }
-  return null;
-};
-const browserExecutable = process.env.STAGE_BROWSER || findBrowser();
+const browserExecutable = findBrowser(stage);
 if (!browserExecutable) die('the render browser is not installed. Run install.sh once (it runs "npx remotion browser ensure").');
 
 fs.mkdirSync(path.join(work, 'public', 'fonts'), {recursive: true});
@@ -70,7 +57,12 @@ fs.copyFileSync(path.join(stage, 'fonts', 'Fredoka.ttf'), path.join(work, 'publi
 fs.mkdirSync(out, {recursive: true});
 
 const t0 = Date.now();
-const serveUrl = await bundle({entryPoint: path.join(stage, 'src', 'index.ts'), publicDir: path.join(work, 'public'), onProgress: () => {}, webpackOverride: (c) => ({...c, cache: false})});
+// out/progress: one line per step, newest last, so a mind can read the end of it cheaply
+const progress = path.join(out, 'progress');
+const say = (line) => fs.appendFileSync(progress, line + '
+');
+say('render: 0%');
+const serveUrl = await bundleStage(stage, path.join(work, 'public'));
 const inputProps = {episode, timeline};
 const composition = await selectComposition({serveUrl, id: 'Episode', inputProps, browserExecutable, logLevel: 'error'});
 const concurrency = Number(process.env.STAGE_CONCURRENCY) || Math.max(1, Math.min(3, os.cpus().length - 1));
@@ -80,13 +72,14 @@ await renderMedia({
   codec: 'h264', crf: 19, pixelFormat: 'yuv420p', imageFormat: 'jpeg', jpegQuality: 88, audioCodec: 'aac',
   outputLocation: mp4, overwrite: true,
   onProgress: ({progress}) => {
-    const pct = Math.floor(progress * 10) * 10;
-    if (pct !== lastPct) { lastPct = pct; console.log(`render: ${pct}% (${((Date.now() - t0) / 1000).toFixed(0)}s)`); }
+    const pct = Math.floor(progress * 20) * 5;
+    if (pct !== lastPct) { lastPct = pct; say(`render: ${pct}%`); if (pct % 10 === 0) console.log(`render: ${pct}% (${((Date.now() - t0) / 1000).toFixed(0)}s)`); }
   },
 });
 
 makeContact();
 fs.writeFileSync(stampFile, stamp);
+say('render: done');
 const secs = ((Date.now() - t0) / 1000).toFixed(0);
 const mb = (fs.statSync(mp4).size / 1048576).toFixed(1);
 console.log(`render: done in ${secs}s -> ${mp4} (${dur.toFixed(1)}s video, ${mb} MB), ${contact}`);

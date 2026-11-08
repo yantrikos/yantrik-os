@@ -1,9 +1,11 @@
 // Set: the rooftop at night. Skyline, twinkling stars, string lights.
 import React from 'react';
+import type {PropViews} from '../props/state';
+import {Antenna, NeonSign, StringLights} from '../props/RoofProps';
 
 const rnd = (n: number) => { const x = Math.sin(n * 91.7 + 17.3) * 24634.6345; return x - Math.floor(x); };
 
-export const Rooftop: React.FC<{frame: number}> = ({frame}) => {
+export const Rooftop: React.FC<{frame: number; props: PropViews}> = ({frame, props}) => {
   const buildings = [];
   let x = -40, i = 0;
   while (x < 1960) {
@@ -33,12 +35,9 @@ export const Rooftop: React.FC<{frame: number}> = ({frame}) => {
       <rect x={0} y={720} width={1920} height={50} fill="#2c3048" /><rect x={0} y={714} width={1920} height={12} fill="#4a5070" />
       <rect x={0} y={770} width={1920} height={310} fill="url(#rtFloor)" />
       {Array.from({length: 12}).map((_, k) => <line key={k} x1={k * 180 + 30} x2={k * 180 - 40} y1={770} y2={1080} stroke="#fff" strokeOpacity={0.05} strokeWidth={2} />)}
-      <path d="M0,150 Q480,260 960,150 T1920,150" fill="none" stroke="#1a1d2c" strokeWidth={4} />
-      {Array.from({length: 17}).map((_, k) => {
-        const t = k / 16, px = t * 1920, py = 150 + Math.sin(t * Math.PI * 4) * 55 * 0.5 + (t * 4 % 1 > 0 ? 0 : 0);
-        const y = 150 + 0.5 * 110 * Math.sin(t * Math.PI * 2 * 2 - Math.PI / 2) * -1 + 55;
-        return <g key={k}><circle cx={px} cy={y - 28} r={34} fill="#ffd98a" opacity={0.12} /><circle cx={px} cy={y - 28} r={9} fill="#fff1b8" opacity={0.7 + 0.3 * Math.sin(frame * 0.1 + k)} /></g>;
-      })}
+      <NeonSign frame={frame} {...props['neon-sign']} />
+      <Antenna frame={frame} {...props.antenna} />
+      <StringLights frame={frame} {...props['string-lights']} />
     </svg>
   );
 };

@@ -6,15 +6,17 @@
 // Usage: voices.mjs <normalized-episode.json> <work-dir>
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {lipsync} from './lipsync.mjs';
 import {renderMusic} from './music.mjs';
+import {renderSfx} from './sfx.mjs';
+import {layoutTimeline, FPS} from './timeline.mjs';
+import {cacheKey} from './voicecache.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const stage = path.resolve(here, '..');
-const FPS = 30, TITLE = 75, CREDITS = 90, LEAD_IN = 3, SCENE_LEAD = 8, SCENE_TAIL = 10;
+const SILENT = process.env.STAGE_VOICES === 'silent'; // storyboard mode: timing from word count, no Piper
 
 const [epFile, work] = process.argv.slice(2);
 if (!epFile || !work) { console.error('usage: voices.mjs <normalized-episode.json> <work-dir>'); process.exit(2); }
@@ -33,7 +35,7 @@ const findModel = (name) => {
   die(`the voice model '${name}' (${f}) is not installed. Run voices/fetch-voices.sh once at install time.`);
 };
 const piperBin = path.join(piperDir, 'piper');
-if (!fs.existsSync(piperBin)) die(`Piper is not at ${piperBin}. Set STAGE_PIPER_DIR to the folder holding the piper program.`);
+if (!SILENT && !fs.existsSync(piperBin)) die(`Piper is not at ${piperBin}. Set STAGE_PIPER_DIR to the folder holding the piper program.`);
 const run = (cmd, args, opts = {}) => {
   const r = spawnSync(cmd, args, {encoding: 'utf8', ...opts});
   if (r.status !== 0) die(`${cmd} failed: ${(r.stderr || '').split('\n').slice(-4).join(' ')}`);
@@ -41,12 +43,21 @@ const run = (cmd, args, opts = {}) => {
 };
 const voiceByName = Object.fromEntries(ep.cast.map((c) => [c.name, c.voice]));
 
+function silentLine(text, key) {
+  const sec = Math.max(0.6, text.split(/s+/).length / 2.4);
+  const wav = path.join(cache, `${key}.wav`);
+  run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', `anullsrc=r=${bank.sample_rate}:cl=mono`, '-t', String(sec), wav]);
+  const frames = Math.ceil(sec * FPS);
+  return {key, wav, frames, durationSec: sec, visemes: '.'.repeat(frames), energy: Array(frames).fill(0), cached: true};
+}
+
 function speak(text, voiceKey) {
   const v = bank.voices[voiceKey];
   if (!v) die(`voice '${voiceKey}' is not in voices.json.`);
-  const key = crypto.createHash('sha1').update(JSON.stringify([bank.version, text, v])).digest('hex').slice(0, 16);
+  const key = cacheKey(bank, text, voiceKey);
   const wav = path.join(cache, `${key}.wav`), meta = path.join(cache, `${key}.json`);
   if (fs.existsSync(wav) && fs.existsSync(meta)) return {key, wav, ...JSON.parse(fs.readFileSync(meta, 'utf8')), cached: true};
+  if (SILENT) return silentLine(text, key);
   const model = findModel(v.model);
   const sr = JSON.parse(fs.readFileSync(model + '.json', 'utf8')).audio.sample_rate;
   const raw = path.join(cache, `${key}.raw.wav`);
@@ -66,37 +77,36 @@ function speak(text, voiceKey) {
   return {key, wav, ...rec, cached: false};
 }
 
-let frame = TITLE, spoken = 0, made = 0, hits = 0;
-const scenes = ep.scenes.map((sc) => {
-  const start = frame;
-  frame += SCENE_LEAD;
-  const lines = sc.lines.map((ln) => {
-    const r = speak(ln.text, voiceByName[ln.speaker]);
-    r.cached ? hits++ : made++;
-    fs.copyFileSync(r.wav, path.join(pub, 'voice', `${r.key}.wav`));
-    const lstart = frame + LEAD_IN;
-    const aframes = Math.ceil(r.durationSec * FPS);
-    const pauseF = Math.round(ln.pause * FPS);
+let spoken = 0, made = 0, hits = 0;
+const spokenOf = new Map();
+const timeline = layoutTimeline(ep, (ln) => {
+  const r = speak(ln.text, voiceByName[ln.speaker]);
+  r.cached ? hits++ : made++;
+  fs.copyFileSync(r.wav, path.join(pub, 'voice', `${r.key}.wav`));
+  spokenOf.set(ln, r);
+  spoken += r.durationSec;
+  return r.durationSec;
+});
+for (const sc of timeline.scenes) {
+  for (const l of sc.lines) {
+    const r = spokenOf.get(l.src);
     const vis = r.visemes;
     const first = vis.search(/[^.]/), last = vis.length - 1 - [...vis].reverse().findIndex((c) => c !== '.');
-    frame = lstart + aframes + pauseF;
-    spoken += r.durationSec;
-    return {speaker: ln.speaker, text: ln.text, emotion: ln.emotion, pose: ln.pose ?? null, camera: ln.camera ?? null, react: ln.react,
-      start: lstart, audioFrames: aframes, end: frame, audio: `voice/${r.key}.wav`, visemes: vis, energy: r.energy,
-      speakStart: Math.max(0, first), speakEnd: Math.max(first, last)};
-  });
-  frame += SCENE_TAIL;
-  return {set: sc.set, camera: sc.camera, transition: sc.transition, present: sc.present, start, end: frame, lines};
-});
-const creditsStart = frame;
-const total = frame + CREDITS;
+    Object.assign(l, {audio: `voice/${r.key}.wav`, visemes: vis, energy: r.energy, speakStart: Math.max(0, first), speakEnd: Math.max(first, last)});
+  }
+}
+const total = timeline.totalFrames;
 
-let music = null;
+const used = [...new Set(timeline.sfx.map((c) => c.name))];
+fs.mkdirSync(path.join(pub, 'sfx'), {recursive: true});
+for (const name of used) renderSfx(name, path.join(pub, 'sfx', `${name}.wav`));
+timeline.sfx = timeline.sfx.map((c) => ({...c, file: `sfx/${c.name}.wav`}));
+
 if (ep.music.cue !== 'none') {
   const mfile = path.join(pub, 'music.wav');
   renderMusic(ep.music.cue, total / FPS + 1, mfile);
-  music = {file: 'music.wav', volume: ep.music.volume};
+  timeline.music = {file: 'music.wav', volume: ep.music.volume};
 }
-const timeline = {fps: FPS, titleFrames: TITLE, creditsStart, creditsFrames: CREDITS, totalFrames: total, scenes, music};
 fs.writeFileSync(path.join(work, 'timeline.json'), JSON.stringify(timeline));
-console.log(`voices: ${ep.scenes.reduce((n, s) => n + s.lines.length, 0)} lines (${made} spoken, ${hits} from cache), ${spoken.toFixed(1)}s of speech, ${(total / FPS).toFixed(1)}s episode, music ${ep.music.cue}`);
+const lines = ep.scenes.reduce((n, s) => n + s.lines.length, 0);
+console.log(`voices: ${lines} lines (${made} spoken, ${hits} from cache), ${spoken.toFixed(1)}s of speech, ${(total / FPS).toFixed(1)}s episode, ${used.length ? `sounds ${used.join(', ')}, ` : ''}music ${ep.music.cue}${SILENT ? ' [storyboard: no voices]' : ''}`);

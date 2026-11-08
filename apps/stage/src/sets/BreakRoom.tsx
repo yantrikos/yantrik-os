@@ -1,14 +1,10 @@
 // Set: the break room. Warm light, a window onto dusk, a vending machine
 // with one lonely snack, a coffee machine that has seen things.
 import React from 'react';
+import type {PropViews} from '../props/state';
+import {CoffeeMachine, VendingMachine, WallClock} from '../props/BreakProps';
 
-export const BreakRoom: React.FC<{frame: number}> = ({frame}) => {
-  const steam = (i: number) => {
-    const t = ((frame + i * 17) % 60) / 60;
-    return <circle key={i} cx={1498 + Math.sin(t * 9 + i) * 8} cy={452 - t * 90} r={8 + t * 10} fill="#fff" opacity={0.42 * (1 - t)} />;
-  };
-  const snackRows = [0, 1, 2, 3];
-  const colors = ['#ff6b6b', '#ffd35c', '#5cc8ff', '#a78bfa', '#6df2a6'];
+export const BreakRoom: React.FC<{frame: number; props: PropViews}> = ({frame, props}) => {
   return (
     <svg viewBox="0 0 1920 1080" width={1920} height={1080} style={{position: 'absolute', left: 0, top: 0}}>
       <defs>
@@ -31,14 +27,7 @@ export const BreakRoom: React.FC<{frame: number}> = ({frame}) => {
         <circle cx={420} cy={90} r={34} fill="#fff3d0" opacity={0.9} />
         <line x1={280} y1={16} x2={280} y2={364} stroke="#3a2a22" strokeWidth={10} /><line x1={16} y1={190} x2={544} y2={190} stroke="#3a2a22" strokeWidth={10} />
       </g>
-      {/* wall clock stuck at 4:59 */}
-      <g transform="translate(1330,230)">
-        <circle r={62} fill="#fff8e8" stroke="#3a2a22" strokeWidth={8} />
-        {[...Array(12)].map((_, i) => <line key={i} x1={0} y1={-52} x2={0} y2={-44} stroke="#3a2a22" strokeWidth={4} transform={`rotate(${i * 30})`} />)}
-        <line x1={0} y1={0} x2={0} y2={-32} stroke="#3a2a22" strokeWidth={7} strokeLinecap="round" transform="rotate(148)" />
-        <line x1={0} y1={0} x2={0} y2={-48} stroke="#3a2a22" strokeWidth={4} strokeLinecap="round" transform="rotate(354)" />
-        <circle r={6} fill="#d6334b" />
-      </g>
+      <WallClock frame={frame} {...props['wall-clock']} />
       {/* poster */}
       <g transform="translate(160,170)">
         <rect width={260} height={340} rx={6} fill="#fff8e8" stroke="#3a2a22" strokeWidth={7} />
@@ -47,29 +36,12 @@ export const BreakRoom: React.FC<{frame: number}> = ({frame}) => {
         <text x={130} y={236} textAnchor="middle" fontFamily="Fredoka, sans-serif" fontWeight={700} fontSize={26} fill="#3a2a22">HANG IN</text>
         <text x={130} y={270} textAnchor="middle" fontFamily="Fredoka, sans-serif" fontWeight={700} fontSize={26} fill="#3a2a22">THERE, PROD</text>
       </g>
-      {/* vending machine */}
-      <g transform="translate(1590,240)">
-        <rect width={270} height={470} rx={14} fill="url(#brVend)" stroke="#3b0f1b" strokeWidth={7} />
-        <rect x={20} y={24} width={170} height={330} rx={8} fill="#171c2a" stroke="#3b0f1b" strokeWidth={5} />
-        {snackRows.map((r) => <g key={r}>
-          <line x1={26} x2={184} y1={92 + r * 80} y2={92 + r * 80} stroke="#aebbd0" strokeWidth={4} />
-          {[0, 1, 2, 3].map((c) => ((r + c) % 3 === 2 ? null : <rect key={c} x={34 + c * 38} y={48 + r * 80} width={28} height={40} rx={5} fill={colors[(r * 4 + c) % 5]} />))}
-        </g>)}
-        <rect x={208} y={40} width={44} height={120} rx={6} fill="#2a2f40" />
-        {[0, 1, 2].map((i) => <rect key={i} x={216} y={52 + i * 34} width={28} height={22} rx={3} fill={i === 0 ? '#6df2a6' : '#556'} />)}
-        <rect x={34} y={386} width={200} height={54} rx={8} fill="#0b0d14" />
-        <text x={134} y={50} textAnchor="middle" fontSize={0} />
-      </g>
+      <VendingMachine frame={frame} {...props['vending-machine']} />
       {/* counter + coffee machine */}
       <g>
         <rect x={1120} y={500} width={420} height={210} rx={6} fill="#5a3a24" stroke="#2b1a10" strokeWidth={6} />
         <rect x={1100} y={486} width={460} height={28} rx={8} fill="#f3ead8" stroke="#2b1a10" strokeWidth={5} />
-        <g transform="translate(1428,350)">
-          <rect width={140} height={136} rx={12} fill="#2a2f40" stroke="#0b0d14" strokeWidth={6} />
-          <rect x={16} y={16} width={108} height={46} rx={6} fill="#0b0d14" /><text x={70} y={48} textAnchor="middle" fontFamily="Fredoka, sans-serif" fontWeight={600} fontSize={26} fill="#6df2a6">READY</text>
-          <rect x={44} y={86} width={52} height={50} fill="#fff8e8" /><rect x={44} y={106} width={52} height={30} fill="#7a4a2a" />
-        </g>
-        {[0, 1, 2].map(steam)}
+        <CoffeeMachine frame={frame} {...props['coffee-machine']} />
         <rect x={1180} y={548} width={190} height={14} rx={6} fill="#3a2a22" opacity={0.35} />
       </g>
       {/* lamp glows */}

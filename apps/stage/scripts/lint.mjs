@@ -5,6 +5,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {closest, list, kind} from './lint-util.mjs';
+import {lintProps, lintMove, lintSfx, lintInsert} from './lint-stage.mjs';
+import {layoutTimeline, FPS} from './timeline.mjs';
+import {loadBank, cachedSeconds} from './voicecache.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const schema = JSON.parse(fs.readFileSync(path.join(here, '..', 'episode.schema.json'), 'utf8'));
@@ -18,32 +22,17 @@ const ENUM = {
   transition: D.scene.properties.transition.enum,
   emotion: D.line.properties.emotion.enum,
   pose: D.line.properties.pose.enum,
+  part: D.scene.properties.part.enum,
 };
 const ACCESSORIES = schema['x-accessories'];
 const DEFAULT_VOICE = schema['x-default-voice'];
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
-const lev = (a, b) => {
-  const m = Array.from({length: a.length + 1}, (_, i) => [i, ...Array(b.length).fill(0)]);
-  for (let j = 1; j <= b.length; j++) m[0][j] = j;
-  for (let i = 1; i <= a.length; i++)
-    for (let j = 1; j <= b.length; j++)
-      m[i][j] = Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-  return m[a.length][b.length];
-};
-const closest = (v, opts) => {
-  const s = String(v).toLowerCase();
-  let best = null, bd = 99;
-  for (const o of opts) {
-    const d = lev(s, String(o).toLowerCase());
-    if (d < bd) { bd = d; best = o; }
-  }
-  return bd <= Math.max(2, Math.floor(String(v).length / 2)) ? best : null;
-};
-const list = (a) => a.join(', ');
-const kind = (v) => (v === null ? 'null' : Array.isArray(v) ? 'a list' : typeof v === 'object' ? 'an object' : `a ${typeof v}`);
+/** Speech pace of the Piper voices, measured on real renders: words per second. Used only for lines not yet spoken. */
+const WORDS_PER_SECOND = 2.4;
 
-export function lintEpisode(ep) {
+/** opts.cacheDir: a Stage voice cache; lines already spoken there count at their true length. */
+export function lintEpisode(ep, opts = {}) {
   const errors = [], warnings = [];
   const err = (where, msg) => errors.push(`${where}: ${msg}`);
   const warn = (where, msg) => warnings.push(`${where}: ${msg}`);
@@ -130,7 +119,6 @@ export function lintEpisode(ep) {
 
   // scenes
   const scenes = [];
-  let seconds = 0;
   if (!Array.isArray(ep.scenes) || ep.scenes.length === 0) err('scenes', `must be a list of 1 to 12 scenes, each with a 'lines' list. ${ep.scenes === undefined ? 'It is missing.' : `You gave ${kind(ep.scenes)}.`}`);
   else {
     if (ep.scenes.length > 12) err('scenes', `has ${ep.scenes.length} scenes; the limit is 12.`);
@@ -139,8 +127,11 @@ export function lintEpisode(ep) {
       if (!s || typeof s !== 'object' || Array.isArray(s)) { err(sw, `must be an object with a 'lines' list. You gave ${kind(s)}.`); return; }
       unknownKeys(sw, s, Object.keys(D.scene.properties));
       const set = pick(sw, 'set', s.set, ENUM.set, 'server-room');
-      const camera = pick(sw, 'camera', s.camera, ENUM.camera, 'wide');
-      const transition = pick(sw, 'transition', s.transition, ENUM.transition, si === 0 ? 'cut' : 'fade');
+      const camera = pick(sw, 'camera', s.camera, ENUM.camera, 'auto');
+      const part = pick(sw, 'part', s.part, ENUM.part, 'main');
+      const firstOfPart = !ep.scenes.slice(0, si).some((x) => x && typeof x === 'object' && (x.part ?? 'main') === part) && part !== 'tag';
+      const transition = pick(sw, 'transition', s.transition, ENUM.transition, firstOfPart ? 'cut' : 'fade');
+      const sprops = lintProps(sw, s.props, set, {err, warn});
       let present = names.slice();
       if (s.present !== undefined) {
         if (!Array.isArray(s.present) || s.present.length === 0) err(sw, `'present' must be a list of cast names like ["CLAUDE","GPT"]. You gave ${kind(s.present)}.`);
@@ -171,7 +162,18 @@ export function lintEpisode(ep) {
           else if (text.length > 170) warn(lw, `text is ${text.length} characters, which is a long speech for a sitcom. Shorter lines are funnier.`);
           const emotion = pick(lw, 'emotion', l.emotion, ENUM.emotion, 'neutral');
           const pose = pick(lw, 'pose', l.pose, ENUM.pose, undefined);
-          const lcamera = pick(lw, 'camera', l.camera, ENUM.camera, undefined);
+          let lcamera;
+          if (typeof l.camera === 'string' && /^insert\s*:/i.test(l.camera)) lcamera = lintInsert(lw, l.camera, set, err) ?? undefined;
+          else lcamera = pick(lw, 'camera', l.camera, ENUM.camera, undefined);
+          let hold = 0;
+          if (l.hold !== undefined) {
+            if (typeof l.hold !== 'number' || l.hold < 0 || l.hold > 4) err(lw, `hold must be a number of seconds from 0 to 4. You gave ${JSON.stringify(l.hold)}.`);
+            else hold = l.hold;
+          }
+          const lprops = lintProps(lw, l.props, set, {err, warn});
+          const move = lintMove(lw, l.move, set, names, present, {err, warn});
+          const sfx = lintSfx(lw, l.sfx, {err});
+          if (l.laugh !== undefined && typeof l.laugh !== 'boolean') err(lw, `laugh must be true or false. You gave ${JSON.stringify(l.laugh)}.`);
           let pause = 0.25;
           if (l.pause !== undefined) {
             if (typeof l.pause !== 'number' || l.pause < 0 || l.pause > 4) err(lw, `pause must be a number of seconds from 0 to 4. You gave ${JSON.stringify(l.pause)}.`);
@@ -186,23 +188,38 @@ export function lintEpisode(ep) {
               react[nm] = pick(lw, `react ${nm}`, v, ENUM.emotion, 'neutral');
             }
           }
-          lines.push({speaker, text: String(text).trim(), emotion, pose, camera: lcamera, pause, react});
-          seconds += String(text).trim().split(/\s+/).length / 2.7 + pause;
+          lines.push({speaker, text: String(text).trim(), emotion, pose, camera: lcamera, pause, hold, react, props: lprops, move, sfx, laugh: l.laugh === true});
         });
       }
-      seconds += 0.5;
-      scenes.push({set, camera, transition, present, lines});
+      if (lines.length >= 3 && lines.every((x) => !x.hold)) {
+        const last = lines[lines.length - 1];
+        warn(sw, `the last line (${last.speaker}: "${last.text.slice(0, 28)}${last.text.length > 28 ? '...' : ''}") has no hold. A beat of silence before a punchline lands it: add "hold": 0.6 to that line.`);
+      }
+      scenes.push({set, camera, transition, part, present, props: sprops, lines});
     });
   }
-  const est = Math.round(seconds + 5.5);
-  if (errors.length === 0) {
+  let est = 0, basis = 'words';
+  const episode = errors.length ? null : {title: String(title).trim(), show, cast, music, scenes};
+  if (episode) {
+    const bank = loadBank(), voiceOf = Object.fromEntries(cast.map((c) => [c.name, c.voice]));
+    const heard = [];   // [words, seconds] of lines already spoken
+    const words = (t) => t.split(/\s+/).length;
+    const known = new Map();
+    for (const sc of scenes) for (const l of sc.lines) {
+      const sec = cachedSeconds(opts.cacheDir, bank, l.text, voiceOf[l.speaker]);
+      if (sec !== null) { known.set(l, sec); heard.push([words(l.text), sec]); }
+    }
+    const pace = heard.length >= 3 ? heard.reduce((a, h) => a + h[0], 0) / heard.reduce((a, h) => a + h[1], 0) : WORDS_PER_SECOND;
+    const tl = layoutTimeline(episode, (l) => known.get(l) ?? words(l.text) / pace);
+    est = Math.round(tl.totalFrames / FPS);
+    basis = known.size === 0 ? 'words' : known.size === heard.length && heard.length === scenes.reduce((n, s) => n + s.lines.length, 0) ? 'voices' : 'mixed';
     if (est < 30) warn('episode', `runs about ${est} seconds. A good episode is 45 to 60 seconds; add a scene or more lines.`);
     else if (est > 120) warn('episode', `runs about ${est} seconds. A good episode is 45 to 60 seconds; trim some lines.`);
   }
-  return {errors, warnings, estSeconds: est, episode: errors.length ? null : {title: String(title).trim(), show, cast, music, scenes}};
+  return {errors, warnings, estSeconds: est, estBasis: basis, episode};
 }
 
-export function lintFile(file) {
+export function lintFile(file, opts = {}) {
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); }
   catch { return {errors: [`file: I cannot read '${file}'. Check the path and write episode.json first.`], warnings: [], episode: null}; }
@@ -215,5 +232,5 @@ export function lintFile(file) {
     if (m) { const pos = Number(m[1]); const before = raw.slice(0, pos); where = ` near line ${before.split('\n').length}, column ${pos - before.lastIndexOf('\n')}`; }
     return {errors: [`file: '${path.basename(file)}' is not valid JSON${where}: ${e.message.split('\n')[0]}. Common causes: a missing comma, a trailing comma, or a double quote inside text that needs a backslash.`], warnings: [], episode: null};
   }
-  return lintEpisode(obj);
+  return lintEpisode(obj, opts);
 }
