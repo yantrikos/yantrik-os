@@ -43,7 +43,7 @@
 #   HARNESS_BRIDGE_CANRELOAD         selftest: whether the unit can reload (yes | no)
 #   HARNESS_BRIDGE_PERSON_SECONDS    how long a run waiting on the person is waited on (30)
 #   HARNESS_BRIDGE_ORPHAN_SECONDS    how long a run orphaned by a shell restart still counts as in flight (900)
-#   YANTRIK_PROC, HARNESS_BRIDGE_RUNS_DB, HARNESS_BRIDGE_STATE   /proc, the run store, the note
+#   YANTRIK_PROC, HARNESS_BRIDGE_RUNS_DB, HARNESS_BRIDGE_STATE, HARNESS_BRIDGE_STAMP   /proc, the run store, the note, the signal stamp
 harness_bridge_knob() { # harness_bridge_knob <var> <default>
   local v=""
   selftest_standins && v="$(printenv "$1" 2>/dev/null)"
@@ -208,6 +208,10 @@ harness_bridge_wait_idle() {
 # file the ask is written to, so the selftest can read which verb, unit and account -- the things
 # that must not be wrong.
 harness_bridge_signal() {
+  harness_bridge_signal_do "$@" || return 1
+  harness_bridge_stamp_write
+}
+harness_bridge_signal_do() {
   if selftest_standins && [ -n "${HARNESS_BRIDGE_RESTART:-}" ]; then
     [ "$HARNESS_BRIDGE_RESTART" = fail ] && return 1
     printf '%s %s as %s\n' "$1" "$(harness_bridge_unit)" "$(harness_bridge_owner)" >> "$HARNESS_BRIDGE_RESTART"
@@ -216,6 +220,31 @@ harness_bridge_signal() {
   harness_bridge_userctl "$1" "$(harness_bridge_unit)"
 }
 harness_bridge_restart() { harness_bridge_signal restart; }
+
+# When the gateway was last signalled, for the half-hour guard of the retry. The note cannot carry it
+# on its own: it is root's, and a `check` run as the person (the shell runs it) can neither write
+# it nor find one on a machine whose old updater left none. So the stamp lives in the desktop
+# account's runtime directory (/run/user/<uid>), which that person writes and root reads, and
+# which a reboot clears along with the stale gateway it guards. Its mtime is the time.
+harness_bridge_stamp_file() {
+  local v owner uid; v="$(harness_bridge_knob HARNESS_BRIDGE_STAMP "")"
+  [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  owner="$(harness_bridge_owner)" && uid="$(id -u "$owner" 2>/dev/null)" || return 1
+  printf '/run/user/%s/yantrik-hermes-bridge-signalled' "$uid"
+}
+harness_bridge_stamp_write() {
+  local f; f="$(harness_bridge_stamp_file)" || return 0
+  rm -f "$f" 2>/dev/null; : > "$f" 2>/dev/null && chmod 0644 "$f" 2>/dev/null
+  return 0
+}
+# Was the gateway signalled, or the note written, within the last 30 minutes?
+harness_bridge_signalled_recently() {
+  local f
+  for f in "$(harness_bridge_note_file)" "$(harness_bridge_stamp_file 2>/dev/null)"; do
+    [ -n "$f" ] && [ -n "$(find "$f" -mmin -30 2>/dev/null)" ] && return 0
+  done
+  return 1
+}
 
 # Can the unit reload, which for Hermes is its drain-aware restart.
 harness_bridge_can_reload() {
@@ -289,15 +318,19 @@ harness_bridge_update() {
 
 # A later try, for whatever already runs the updater. Nothing runs it on a timer; `check` is run by
 # the shell once after boot and on every visit to About, so that is where this is called from. Only
-# when an earlier update left the note, so a current machine pays one stat; never waits.
+# when a gateway's bridge is old (not when a note says so); never waits.
 harness_bridge_retry() {
-  [ -f "$(harness_bridge_note_file)" ] || return 0
+  local stale; stale="$(stale_processes)"
+  # The live test `status` uses, not the note: an update applied by an older updater never ran the
+  # bridge step and left no note, and neither does a manual install or a crash mid-apply.
+  [ -n "$(harness_bridge_stale_pids "$stale")" ] || return 0
   # A reload asks Hermes to drain first, which can take up to its own 30-minute cap; signalling it
   # again on every About visit cannot make that faster, and its handling of a second request while
-  # one is pending is not ours to rely on (review of #1110). One retry per half hour of the note.
-  [ -z "$(find "$(harness_bridge_note_file)" -mmin -30 2>/dev/null)" ] || return 0
+  # one is pending is not ours to rely on (review of #1110). One retry per half hour, by the
+  # newer of the note and the stamp of the last signal.
+  ! harness_bridge_signalled_recently || return 0
   HARNESS_BRIDGE_TRIED=""
-  harness_bridge_update "$(stale_processes)" 0
+  harness_bridge_update "$stale" 0
   # Nothing old is left running: the note is out of date, put it away.
   harness_bridge_verdict >/dev/null || true
 }

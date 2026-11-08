@@ -46,7 +46,7 @@ PY
   # 0 would not end at once. HB_WAIT / HB_PERSON are the two bounds, in seconds.
   hb_env() {
     export YANTRIK_SELFTEST=1 YANTRIK_PROC="$hb/proc" HARNESS_BRIDGE_RUNS_DB="$hb/runs.db" \
-           HARNESS_BRIDGE_STATE="$hb/note" HERMES_GATEWAY_UNIT=hermes-gateway.service \
+           HARNESS_BRIDGE_STATE="$hb/note" HARNESS_BRIDGE_STAMP="$hb/stamp" HERMES_GATEWAY_UNIT=hermes-gateway.service \
            HARNESS_BRIDGE_WAIT_SECONDS="${HB_WAIT:-0}" HARNESS_BRIDGE_PERSON_SECONDS="${HB_PERSON:-0}"
   }
   hb_exec() { # hb_exec <restart stand-in: a file, or fail> <stale list> <runs...>: that update, in its words
@@ -196,12 +196,15 @@ PY
 
   # The later try: `check` runs it, without waiting, only when an update left the note.
   hb_retry() { # hb_retry <restart stand-in> <runs...>: the retry of a machine that has the note
-    ( unset HARNESS_BRIDGE_TRIED; hb_env; rm -f "$1" "$hb/note"; hb_db "${@:2}" 2>/dev/null
+    ( unset HARNESS_BRIDGE_TRIED; hb_env; rm -f "$1" "$hb/note" "$hb/stamp"; hb_db "${@:2}" 2>/dev/null
       export HARNESS_BRIDGE_RESTART="$1"
       hb_found="$hb_stale"; stale_processes() { printf '%s' "$hb_found"; }
       [ -z "${HB_NONOTE:-}" ] && printf 'earlier failure\n' > "$hb/note"
       # A note older than the half hour a reload may spend draining, unless the case asks otherwise.
       [ -z "${HB_NONOTE:-}" ] && [ -z "${HB_FRESH:-}" ] && touch -d '-31 minutes' "$hb/note"
+      [ -z "${HB_STAMP:-}" ] || : > "$hb/stamp"
+      [ -z "${HB_STAMP_OLD:-}" ] || touch -d '-31 minutes' "$hb/stamp"
+      [ -z "${HB_CLEAN:-}" ] || hb_found=""
       harness_bridge_retry >/dev/null 2>&1
       printf 'did=%s|%s\n' "$(cat "$1" 2>/dev/null)" "$(hb_note)" )
   }
@@ -209,8 +212,19 @@ PY
     "did=restart hermes-gateway.service as $hb_owner|gone" "$(hb_retry "$hb/restart" hermes=done)"
   is "bridge: ... leaves a busy Hermes alone, with the note still there" "did=|there" \
     "$(hb_retry "$hb/restart" hermes=running)"
-  is "bridge: ... and does nothing on a machine no update left a note on" "did=|gone" \
-    "$(HB_NONOTE=1 hb_retry "$hb/restart" hermes=done)"
+  is "bridge: ... and with no note at all, a stale bridge is still given the new one (the old updater left none)" \
+    "did=restart hermes-gateway.service as $hb_owner|gone" "$(HB_NONOTE=1 hb_retry "$hb/restart" hermes=done)"
+  is "bridge: ... reloading when the unit can, with no note (it awaits Hermes draining, so the note stays)" "did=reload hermes-gateway.service as $hb_owner|there" \
+    "$(HB_NONOTE=1 HARNESS_BRIDGE_CANRELOAD=yes hb_retry "$hb/restart" hermes=done)"
+  is "bridge: ... not signalling again within the half hour of a recent signal, with no note" "did=|gone" \
+    "$(HB_NONOTE=1 HB_STAMP=1 hb_retry "$hb/restart" hermes=done)"
+  is "bridge: ... signalling again once that signal is older than the half hour" \
+    "did=restart hermes-gateway.service as $hb_owner|gone" "$(HB_NONOTE=1 HB_STAMP=1 HB_STAMP_OLD=1 hb_retry "$hb/restart" hermes=done)"
+  is "bridge: ... and doing nothing when the bridge is current" "did=|gone" \
+    "$(HB_NONOTE=1 HB_CLEAN=1 hb_retry "$hb/restart" hermes=done)"
+  is "bridge: ... a signal leaves its stamp, for the person's own check" "yes" \
+    "$( ( unset HARNESS_BRIDGE_TRIED; hb_env; rm -f "$hb/stamp" "$hb/restart"; export HARNESS_BRIDGE_RESTART="$hb/restart"
+          harness_bridge_signal reload; [ -f "$hb/stamp" ] && echo yes || echo no ) )"
   is "bridge: ... and does not signal again within the half hour a reload may spend draining" "did=|there" \
     "$(HB_FRESH=1 hb_retry "$hb/restart" hermes=done)"
 
