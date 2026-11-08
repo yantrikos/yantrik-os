@@ -47,10 +47,12 @@ export async function buildPage(stage, pageDir) {
 export async function launch(executablePath, scratchDir) {
   const profile = path.join(scratchDir, 'chrome-profile');
   fs.mkdirSync(profile, {recursive: true});
-  // no-sandbox: the page is our own bundle with no network, and the workshop already seals the process (bwrap)
+  // Chrome's sandbox stays on for a normal user. It cannot start as root (an install script, or a user
+  // namespace that maps to root), so there it is off: the page is our own bundle with no network.
+  const asRoot = process.getuid?.() === 0 || process.env.STAGE_NO_SANDBOX === '1';
   return puppeteer.launch({
     executablePath, headless: 'shell', pipe: true, userDataDir: profile, protocolTimeout: 120000,
-    args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--force-color-profile=srgb', '--font-render-hinting=none',
+    args: [...(asRoot ? ['--no-sandbox'] : []), '--disable-dev-shm-usage', '--disable-gpu', '--force-color-profile=srgb', '--font-render-hinting=none',
       '--disable-crash-reporter', '--no-first-run', '--hide-scrollbars'],
     env: {...process.env, HOME: process.env.HOME || scratchDir, XDG_CONFIG_HOME: path.join(scratchDir, 'xdg-config'), XDG_CACHE_HOME: path.join(scratchDir, 'xdg-cache')},
   });
