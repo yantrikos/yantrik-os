@@ -111,6 +111,10 @@ pub(crate) struct Plan {
     /// For the Mind, which keeps its settings itself: the body sent to its own `POST /provider`
     /// (yantrik-mind E.PROV1) in place of a file. It holds the token.
     pub mind_post: Option<Token>,
+    /// For a harness that has moved to the mind account (Hermes, #411): its config is in that
+    /// account's home, so the settings go to the updater's root-side helper (`hermes::post_model`)
+    /// in place of a file. It holds the token.
+    pub moved_post: Option<Token>,
 }
 
 impl Plan {
@@ -387,6 +391,7 @@ pub(crate) fn gateway_plan(adapter: &dyn Handoff, offer: &Offer, writes: Vec<Wri
         token: Some(offer.token.clone()),
         private_context: adapter.private_context(),
         mind_post: None,
+        moved_post: None,
     }
 }
 
@@ -494,15 +499,18 @@ pub(crate) fn apply(home: &Path, plan: &Plan) -> Result<Marker, String> {
         }
         None => {}
     }
-    if let Some(body) = &plan.mind_post {
-        // A Mind that refuses the offer keeps its own provider, so the gateway keeps no token for
-        // it either: the token went nowhere that holds it.
-        if let Err(e) = mind::post(&body.0) {
-            if plan.token.is_some() {
-                let _ = crate::gateway::tokens().revoke(&plan.harness);
-            }
-            return Err(e);
+    // A Mind that refuses the offer keeps its own provider, and so does a moved Hermes: the gateway
+    // keeps no token for either, since the token went nowhere that holds it.
+    let posted = match (&plan.mind_post, &plan.moved_post) {
+        (Some(body), _) => Some(mind::post(&body.0)),
+        (_, Some(body)) => Some(hermes::post_model("apply", Some(&body.0))),
+        _ => None,
+    };
+    if let Some(Err(e)) = posted {
+        if plan.token.is_some() {
+            let _ = crate::gateway::tokens().revoke(&plan.harness);
         }
+        return Err(e);
     }
     let text = serde_json::to_string_pretty(&m).map_err(|e| e.to_string())?;
     private_file::write(&marker_path(home, &plan.harness), text.as_bytes(), Publish::Replace, || Ok(()))?;
@@ -555,6 +563,9 @@ pub(crate) fn revert(home: &Path, harness: &str) -> Result<(), String> {
         crate::gateway::tokens().revoke(harness)?;
         if harness == mind::ID {
             mind::post(&mind::revert_body())?;
+        }
+        if harness == hermes::ID && hermes::moved() {
+            hermes::post_model("revert", None)?;
         }
     }
     if let Some(unit) = adapter.unit() {

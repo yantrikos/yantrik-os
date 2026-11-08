@@ -377,6 +377,15 @@ pub trait App: Sized + 'static {
     /// parts that changed; once at start with `Changed::All`.
     fn render(ui: &Self::Ui, window: WindowId, model: &Self::Model, changed: &Changed);
 
+    /// Whether work is in flight that the person or a Mind started and would lose if the app
+    /// ended: a transfer, a command running in a shell, a render. A windowless on-demand app is
+    /// not ended by the idle wait (`service::IDLE`) while this is true; the wait starts over.
+    /// Read the model's own facts; never recompute them. Default false.
+    fn busy(model: &Self::Model) -> bool {
+        let _ = model;
+        false
+    }
+
     /// The Mind's view of the app: a projection of the committed model, never the model itself
     /// (no caches, no credentials). Runs on every `describe` and around every `act`.
     fn describe(model: &Self::Model) -> View {

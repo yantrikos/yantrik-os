@@ -16,7 +16,8 @@ import time
 import urllib.error
 import urllib.request
 
-DEFAULT_ADDRESS = "http://127.0.0.1:9222"
+from . import ports
+
 WORLD = "yantrik-browser"
 CALL_TIMEOUT = 20.0
 
@@ -60,7 +61,12 @@ class Tab:
 
 class Browser:
     def __init__(self, address=None):
-        self.address = (address or os.environ.get("YANTRIK_BROWSER_CDP") or DEFAULT_ADDRESS).rstrip("/")
+        # Mind View's browser unless told otherwise, and no environment variable moves it: where a
+        # browser is, is decided in ports.py and nowhere a process's environment reaches.
+        self.address = (address or ports.address(ports.MIND_VIEW_PORT)).rstrip("/")
+        # Called before a connection is opened and again once it is, to hold it to the browser it
+        # was made for (driver.py); it raises to stop. None where the caller owns the browser.
+        self.check = None
         self.ws = None
         self.lock = threading.Lock()          # one writer
         self.cond = threading.Condition()     # replies and events
@@ -87,6 +93,8 @@ class Browser:
         """Connect if not connected. Raises BrowserClosed when no browser answers."""
         if self.alive:
             return
+        if self.check:
+            self.check()
         try:
             from websocket import create_connection
         except ImportError:
@@ -98,6 +106,12 @@ class Browser:
         # debugging address and nothing wider.
         self.close()
         ws = create_connection(url, origin=self.address, timeout=None, suppress_origin=False)
+        if self.check:
+            try:
+                self.check()
+            except BaseException:
+                ws.close()
+                raise
         with self.cond:
             self.generation += 1
             generation = self.generation

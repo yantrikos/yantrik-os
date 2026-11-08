@@ -72,9 +72,17 @@ no approval card. Now:
   and every harness: a destination in the counts may be either, and a rule you add for one opens it
   for the other.
 
+*Use Yantrik models* still works. Hermes's config is in the account's home, which the desktop cannot
+write, so the desktop sends the four `model` settings (address, `picked`, `custom`, and a gateway token
+of Hermes's own) to `sudo yantrik-update harness model hermes apply` on its **stdin**: never an
+argument or the environment. The account's own tool (`hermes_model.py`, inside the gateway's sandbox)
+writes only those keys, only for this machine's own gateway address, keeps the earlier `model` section
+once, and Hermes then drains and restarts onto it. *Revert* (`... model hermes revert`) puts the section
+back. The desktop cannot read the account's file, so after *Choose model* or `hermes model` moves Hermes
+to another model, the card still says what it last asked for.
+
 What stops working, and why it is the right answer: Hermes's `terminal` in *your* home (it is not
-your account any more), and *Use Yantrik models* for Hermes (the gateway token it writes would go
-into your home; for now Hermes keeps its own model: *Choose model* on its row). A task that needs a
+your account any more). A task that needs a
 file of yours is done through the desktop's tools (`yos`/Files), with their approval cards, or not
 at all, and the answer says which.
 
@@ -194,6 +202,41 @@ question), the question ends the reply it is in instead, with any choices number
 message is the answer: a number, the choice's words or your own; Hermes's work goes on in the reply
 to it. Hermes's "⏳ Working — N min" line is shown as the reply's status, not in its text. An older
 Hermes, which has no `clarify` gateway, is unchanged.
+
+A question nobody answers does not hold the reply (#1070). After five minutes
+(`YANTRIK_QUESTION_SECONDS`) Hermes is told there was no answer and goes on without it, the reply
+says so, and Hermes says which part it did not do. This holds for a question shown as a card and for
+one asked as text on a desktop without cards; on the text path the turn that asked it is already
+over, so nothing is said there, and the person's next message is a message again, not the answer.
+If the next question of the same run is also left alone (answering one in between starts the count
+again), Hermes is released from the wait. The run then goes on with no turn open, so what it
+produces from there is kept as a background result (below) and shown in the next reply.
+
+A question Hermes asks when no turn is open to ask it in (after that release, say) is not left
+waiting either. Hermes reads a failed send as "use the plain-text fallback", which would be kept as
+a result and counted as delivered, and the run would wait its own hour. So the question is kept for
+the next reply and the run is told at once that nobody was there to ask.
+
+## Results that arrive with no conversation open
+
+The desktop's protocol has no way to say something unasked, so a background task's result or a
+scheduled job's has nowhere to appear when nothing is open. The adapter keeps what arrives (the
+last 20, cut on a line at 4,000 characters each) and shows it at the top of the next reply, as a
+message of its own ahead of the answer, under "While you were away, Hermes finished something in
+the background", each result with the time it arrived and quoted line by line (what a background
+task prints is not the reply and is not trusted as the interface). It is kept only in the
+gateway's memory: **a restart loses it**, and nothing shows the task as running meanwhile. If the
+desktop has closed the turn it was about to be shown in, it is kept for the next one. So Hermes is
+told it cannot speak unasked and must not promise to "report back": it waits for the result inside
+the turn, or says plainly that it will not arrive by itself.
+
+## What Hermes is told about the desktop
+
+The platform hint sends Hermes to the person's own apps first. "My weather", "my calendar", "my
+notes" mean those apps on this machine, not its memory or the web; it calls `os_apps` (every app,
+running or not, with `for`, `opens` and `describe_as`), then `os_describe` and `os_act`. The
+terminal is for when no app has the action, since each command is a card the person must answer, and
+it is never to offer a way past that approval.
 
 ## Yantrik models
 

@@ -247,18 +247,54 @@ impl std::fmt::Debug for Explainer {
 /// session to run commands, not once per command. Full bypass runs it unasked; plan refuses it.
 pub const OPEN_ENDED: &str = "What it runs can do anything you can.";
 
-/// `description` with [`OPEN_ENDED`] said at its end, once. Pure, so the Python SDK's copy can
-/// be held to it sentence for sentence.
-pub fn with_open_ended(description: &str) -> String {
-    if description.contains(OPEN_ENDED) {
+/// The sentence that makes an action a way off the machine for free text: what it is given may
+/// leave this machine (a report, a prompt to a hosted model, a message). [`Action::leaves_machine`]
+/// appends it. The MCP bridge reads it (`yos-mcp`): from a conversation that has read the person's
+/// private state, such an action asks in every mode, full bypass included.
+pub const LEAVES_MACHINE: &str = "What it is given may leave this machine.";
+
+/// Does `purpose` declare [`LEAVES_MACHINE`]? Case aside, as the gate reads its other sentences.
+pub fn leaves_machine(purpose: &str) -> bool {
+    purpose.to_lowercase().contains(&LEAVES_MACHINE.to_lowercase())
+}
+
+/// The sentence that names the parameter holding an address the action fetches, said as
+/// `It fetches the address in `url`.` ([`Action::fetches_address`]). From a tainted conversation
+/// such an action is visited-or-ask like the browser's `go`, with the address shown whole.
+pub fn fetches_address_sentence(param: &str) -> String {
+    format!("It fetches the address in `{param}`.")
+}
+
+/// The parameter [`fetches_address_sentence`] names in `purpose`, if it says so.
+pub fn fetches_address(purpose: &str) -> Option<String> {
+    let at = purpose.find("It fetches the address in `")? + "It fetches the address in `".len();
+    let name = &purpose[at..];
+    let name = &name[..name.find("`.")?];
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| name.to_string())
+}
+
+/// Parameter names that hold an address to fetch. An action that takes one must declare it with
+/// [`Action::fetches_address`]; publishing its schema in a debug build (every test) panics if it
+/// does not, so a new app cannot quietly add a way to send data to an address.
+pub const ADDRESS_PARAMS: [&str; 7] = ["url", "uri", "link", "href", "webhook", "endpoint", "address"];
+
+/// `description` with `sentence` said at its end, once.
+fn with_sentence(description: &str, sentence: &str) -> String {
+    if description.contains(sentence) {
         return description.to_string();
     }
     let said = description.trim_end();
     if said.is_empty() {
-        return OPEN_ENDED.to_string();
+        return sentence.to_string();
     }
     let stop = if said.ends_with(['.', '!', '?']) { "" } else { "." };
-    format!("{said}{stop} {OPEN_ENDED}")
+    format!("{said}{stop} {sentence}")
+}
+
+/// `description` with [`OPEN_ENDED`] said at its end, once. Pure, so the Python SDK's copy can
+/// be held to it sentence for sentence.
+pub fn with_open_ended(description: &str) -> String {
+    with_sentence(description, OPEN_ENDED)
 }
 
 /// One thing an app can be asked to do.
@@ -370,6 +406,22 @@ impl Action {
         self
     }
 
+    /// Declare that what this action is given may leave the machine (a report, a prompt to a hosted
+    /// model, a message): a tainted conversation is asked about it in every mode. See
+    /// [`LEAVES_MACHINE`].
+    pub fn leaves_machine(mut self) -> Self {
+        self.description = with_sentence(&self.description, LEAVES_MACHINE);
+        self
+    }
+
+    /// Declare that this action fetches the address in parameter `param`: a tainted conversation
+    /// may fetch one it has already been to, and is asked about any other, shown whole, in every
+    /// mode. See [`fetches_address_sentence`].
+    pub fn fetches_address(mut self, param: &str) -> Self {
+        self.description = with_sentence(&self.description, &fetches_address_sentence(param));
+        self
+    }
+
     /// Declare that this action only *starts* the work.
     ///
     /// Anything handed to a worker thread, sent over a network, or waiting on another process.
@@ -421,6 +473,15 @@ impl Action {
 
     /// The action as JSON Schema, so a caller can hand it to a model unmodified.
     pub fn schema(&self) -> serde_json::Value {
+        // Every address-named parameter is the one declared, and the declared one exists.
+        let declared = fetches_address(&self.description);
+        debug_assert!(
+            self.params.iter().all(|p| !ADDRESS_PARAMS.contains(&p.name.as_str()) || declared.as_deref() == Some(p.name.as_str()))
+                && declared.as_deref().map_or(true, |d| self.params.iter().any(|p| p.name == d)),
+            "`{}` takes an address ({:?}) and must say so, for that parameter, with `.fetches_address(<param>)`",
+            self.name,
+            ADDRESS_PARAMS
+        );
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
         for p in &self.params {
@@ -541,6 +602,46 @@ mod open_ended_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_sinks_are_read_back_from_the_description() {
+        let fetch = Action::new("add", "Download it").fetches_address("url").arg(Param::text("url"));
+        assert_eq!(fetches_address(&fetch.description).as_deref(), Some("url"));
+        assert_eq!(fetches_address(&fetch.clone().fetches_address("url").description).as_deref(), Some("url"));
+        assert_eq!(fetches_address("Download a URL."), None);
+        assert_eq!(fetches_address("It fetches the address in ``."), None);
+        let send = Action::new("report", "Send a report").leaves_machine();
+        assert!(leaves_machine(&send.description));
+        assert!(leaves_machine(&send.description.to_uppercase()));
+        assert!(!leaves_machine("Send a report."));
+        assert_eq!(send.clone().leaves_machine().description, send.description, "said once");
+    }
+
+    /// A new app cannot quietly add an action that takes an address: publishing it says so or panics.
+    #[test]
+    #[should_panic(expected = "must say so")]
+    fn an_undeclared_address_parameter_does_not_publish() {
+        let _ = Action::new("fetch", "Get it").arg(Param::text("url")).schema();
+    }
+
+    /// Declaring one address parameter does not cover another, and a declaration must name a real one.
+    #[test]
+    #[should_panic(expected = "must say so")]
+    fn a_second_address_parameter_is_not_covered() {
+        let _ = Action::new("fetch", "Get it").fetches_address("url").arg(Param::text("url")).arg(Param::text("webhook")).schema();
+    }
+
+    #[test]
+    #[should_panic(expected = "must say so")]
+    fn a_declaration_must_name_a_real_parameter() {
+        let _ = Action::new("fetch", "Get it").fetches_address("nonexistent").arg(Param::text("url")).schema();
+    }
+
+    #[test]
+    fn a_declared_address_parameter_publishes() {
+        let schema = Action::new("fetch", "Get it").fetches_address("url").arg(Param::text("url")).schema();
+        assert!(schema["description"].as_str().unwrap().contains("It fetches the address in `url`."));
+    }
 
     #[test]
     fn revision_is_stable_across_key_order() {

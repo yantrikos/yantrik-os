@@ -97,6 +97,16 @@ const AN_AGENTS_OWN: &str = "This agent's conversation is its own, not one the p
 /// A bridge with no token: one process serving every session of its gateway.
 const A_SHARED_BRIDGE: &str = "This bridge carries no agent token, so the desktop cannot tell which of the mind's sessions a call comes from: the Lens conversation, a scheduled job, a background task or another chat. The person's + in the Lens does not clear it, so its taint lasts as long as the bridge runs.";
 
+/// Has the shell's own record of the caller's conversation got a private read in it? Only for a
+/// caller the shell follows (a believed `<harness>:main` token); any other caller, a tokenless
+/// bridge included, is one it cannot place, so this is false and the bridge's flag is all there is.
+pub(crate) fn caller_has_read_private() -> bool {
+    match callers_conversation() {
+        Ok(Caller::Lens(harness)) => !taint_scope::current(&harness).read.is_empty(),
+        _ => false,
+    }
+}
+
 /// The caller's conversation, from what the desktop itself can establish; an error when a token
 /// is presented and not believed.
 fn callers_conversation() -> Result<Caller, String> {
@@ -155,7 +165,10 @@ mod tests {
         }
         assert_eq!(code.matches(".risk(\"safe\")").count(), 2);
         assert!(!code.contains("begin_by_person"), "nothing on the surface begins a scope");
-        assert_eq!(code.matches("Caller::Lens(").count(), 3, "one rule makes a caller the Lens's; two actions read it");
+        // One rule makes a caller the Lens's; the two actions and the approval's taint check read it.
+        assert_eq!(code.matches("Caller::Lens(").count(), 4, "one rule, three readers");
+        assert!(code.contains("Ok(Caller::Lens(harness)) => !taint_scope::current(&harness).read.is_empty()"), "the approval check only reads the record");
+        assert!(code.contains("fn caller_has_read_private"), "named, so a fifth reader is a decision");
         assert!(!code.contains("caller_identity::resolve"), "a process walk names the mind, not the session");
     }
 }

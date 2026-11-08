@@ -131,7 +131,7 @@ fn command(library: &Library, request: &Request) -> Result<Reply, String> {
             if !html.exists() {
                 return Err(format!("{slug} has not been built yet; `build game={slug}` first"));
             }
-            Ok(Reply::Done { value: Value::Null, select: None, slow: Some(Browse { verb: request.verb, slug, html }) })
+            Ok(Reply::Done { value: Value::Null, select: None, slow: Some(Browse { verb: request.verb, slug, html, by_mind: request.by_mind }) })
         }
         Verb::Delete => {
             let message = library.delete_game(&request.game)?;

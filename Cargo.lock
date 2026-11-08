@@ -11193,6 +11193,7 @@ dependencies = [
  "ureq 2.12.1",
  "yantrik-app",
  "yantrik-app-build",
+ "yantrik-browser-ports",
  "yantrik-design-tokens",
  "yantrik-foundation",
  "yantrik-ipc-contracts",
@@ -11226,6 +11227,10 @@ dependencies = [
  "tracing",
  "uuid7",
 ]
+
+[[package]]
+name = "yantrik-browser-ports"
+version = "0.1.0"
 
 [[package]]
 name = "yantrik-calendar"
@@ -11363,6 +11368,7 @@ dependencies = [
  "tracing",
  "tungstenite",
  "ureq 2.12.1",
+ "yantrik-browser-ports",
  "yantrik-companion-core",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
@@ -12083,6 +12089,7 @@ dependencies = [
  "yantrik-agent-terminal",
  "yantrik-app-runtime",
  "yantrik-bench",
+ "yantrik-browser-ports",
  "yantrik-chat",
  "yantrik-companion",
  "yantrik-foundation",

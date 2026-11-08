@@ -483,6 +483,41 @@ hi_restart() { # <name>
   info "$(hi_unit "$1") restarted"
 }
 
+# The updater's own call after it has put a new bridge (yos-mcp) in place: Hermes drains and
+# restarts itself (ExecReload sends it SIGUSR1), so a turn in flight is not cut. The person's
+# `check` reaches this through the updater's sudo rule (yantrik-harness-bridge.sh).
+hi_reload() { # <name>
+  hi_known "$1" || fail "unknown harness '$1'"
+  hi_migrated "$1" || fail "$1 is not under the mind account here; nothing to reload"
+  [ "$(id -u)" = 0 ] || fail "run as root"
+  type harness_bridge_signal >/dev/null 2>&1 || fail "yantrik-harness-bridge.sh is not beside the updater"
+  harness_bridge_signal reload || fail "$(hi_unit "$1") would not reload (journalctl -u $(hi_unit "$1"))"
+  info "$(hi_unit "$1") asked to finish its turns and restart"
+}
+
+# "Use Yantrik models" for a harness that has moved (Hermes, #411): its config is in the account's
+# home, which the person's desktop cannot write, so the desktop sends the model settings here, on
+# stdin (never an argument: they hold the gateway token), and the account's own tool writes them
+# inside the gateway's sandbox (hermes_model.py: only the `model` keys, only a local address).
+# Then Hermes drains and restarts onto them. `revert` puts its earlier model section back.
+hi_model() { # <name> <apply|revert>; the settings on stdin for apply
+  local name="${1:-}" op="${2:-}" body="" dir
+  hi_known "$name" || fail "usage: yantrik-update harness model hermes apply|revert"
+  case "$op" in apply|revert) ;; *) fail "usage: yantrik-update harness model $name apply|revert" ;; esac
+  hi_migrated "$name" || fail "$name is not under the mind account here; nothing to set"
+  [ "$(id -u)" = 0 ] || fail "run as root"
+  dir="$(dirname "$(hi_installer "$name")")"
+  [ -f "$dir/$name-model.sh" ] || fail "this build has no $name-model.sh"
+  if [ "$op" = apply ]; then body="$(head -c 8192)"; [ -n "$body" ] || fail "no model settings on stdin"; fi
+  printf '%s' "$body" | hi_task 120 0 "$name" /usr/bin/env "HERMES_HOME=$(hi_home "$name")/.hermes" /bin/sh "$dir/$name-model.sh" "$op" 2>&1 | hi_relay
+  [ "${PIPESTATUS[1]}" = 0 ] || fail "$name's model settings were not changed (the line above says why)"
+  # A drain-aware restart where the unit can reload, a plain restart where it cannot: Hermes reads
+  # its config as it starts.
+  systemctl reload-or-restart "$(hi_unit "$name")" >/dev/null 2>&1 \
+    || warn "$(hi_unit "$name") did not restart; it reads the new model when it next starts"
+  info "$name's model settings changed; $(hi_unit "$name") finishes its turns and restarts"
+}
+
 # The few things a person does by hand, as the mind account, in their terminal. A list, not a
 # pass-through: the person's sudo rule must not become a shell as the account that holds the
 # Mind's memory.
@@ -500,14 +535,16 @@ hi_run() { # <name> <args...>
 cmd_harness() {
   local sub="${1:-}"; shift || true
   case "$sub" in
-    install|restart|run|status) ;;
-    *) fail "usage: yantrik-update harness install|restart|run|status hermes" ;;
+    install|restart|reload|model|run|status) ;;
+    *) fail "usage: yantrik-update harness install|restart|reload|model|run|status hermes" ;;
   esac
   migrate_if_needed
   elevate "$sub" "$@"
   case "$sub" in
     install) hi_install "${1:-}" ;;
     restart) hi_restart "${1:-}" ;;
+    reload) hi_reload "${1:-}" ;;
+    model) hi_model "$@" ;;
     run) hi_run "$@" ;;
     status)
       hi_known "${1:-}" || fail "usage: yantrik-update harness status hermes"

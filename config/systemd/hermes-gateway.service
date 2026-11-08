@@ -74,6 +74,10 @@ Restart=always
 RestartSec=5
 # Hermes asks to be restarted with 75 (gateway/restart.py).
 RestartForceExitStatus=75
+# A reload is Hermes's drain-aware restart (what its own user unit does): SIGUSR1, which yantrik-init
+# passes on. The gateway refuses new turns, finishes the running ones within its own cap, and exits 75
+# (RestartForceExitStatus) to be started again. The updater uses it to hand Hermes a new bridge (#1102).
+ExecReload=/bin/kill -USR1 $MAINPID
 KillMode=mixed
 KillSignal=SIGTERM
 # A stop is SIGTERM to the main process, then the kill after TimeoutStopSec. Hermes handles SIGTERM

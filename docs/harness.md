@@ -231,7 +231,9 @@ agents it started (and read itself). A child starts with nothing of its parent's
 is its task and the desktop's context, with a token of its own, and a grant asked for one agent
 is not spent by another through `consume_approval`. Stop on a parent stops its children.
 `read_agent` answers with the agent's recent turns as text, and counts as reading private state
-for the bridge's taint rule: after it, the bridge will not type into a page.
+for the bridge's taint rule: after it, the bridge will not type into a page, and an address it has
+not been to is the person's to allow (a card showing the exact address). What counts as a private
+read, for `os_describe` and `os_apps`, is in `docs/app-control.md` ("What reading an app taints").
 
 The taint lasts for the person's conversation, as the desktop counts it, not for the bridge
 process. The bridge reads which conversation it is in from the shell (`taint_scope`) and marks

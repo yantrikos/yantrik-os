@@ -547,3 +547,30 @@ fn the_mind_moved_off_the_gateway_in_its_own_settings_is_not_said_by_the_gateway
     assert!(!still_on_gateway("mind", Some("ollama-cloud:deepseek-v4.1-flash")));
     assert!(still_on_gateway("hermes", Some("Hermes 0.21.5 \u{b7} deepseek")), "the others' configs are read instead");
 }
+
+#[test]
+fn a_moved_hermes_is_sent_its_settings_not_a_file() {
+    // Hermes under the mind account (#411): its config is not the person's to write.
+    let home = Home::new("gw-hermes-moved");
+    std::fs::create_dir_all(home.0.join(".hermes")).unwrap();
+    let theirs = "model: anthropic/claude-opus\n";
+    std::fs::write(home.0.join(".hermes/config.yaml"), theirs).unwrap();
+    let o = offer();
+    let plan = hermes::plan_gateway_as(&hermes::Hermes, &home.0, &o, true).unwrap();
+    assert!(plan.writes.is_empty(), "nothing is written into the person's home");
+    assert!(plan.token.is_some() && plan.private_context);
+    let body: serde_json::Value = serde_json::from_str(&plan.moved_post.as_ref().expect("sent to the updater").0).unwrap();
+    let keys: std::collections::BTreeSet<_> = body.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(keys, ["api_key", "base_url", "default", "provider"].map(String::from).into());
+    assert_eq!(body["default"], "picked");
+    assert_eq!(body["provider"], "custom");
+    assert_eq!(body["base_url"], o.base_url());
+    assert_eq!(body["api_key"], o.token.0);
+    assert_eq!(std::fs::read_to_string(home.0.join(".hermes/config.yaml")).unwrap(), theirs);
+    // The token is in the body and nowhere a log or a card would print it.
+    assert!(!format!("{plan:?}").contains(&o.token.0));
+    assert!(!plan.card(&home.0).contains(&o.token.0));
+    // The file plan (a Hermes still the person's) is unchanged: one write, no post.
+    let file = hermes::plan_gateway_as(&hermes::Hermes, &home.0, &o, false).unwrap();
+    assert_eq!((file.writes.len(), file.moved_post.is_none()), (1, true));
+}

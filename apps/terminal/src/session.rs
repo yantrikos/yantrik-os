@@ -29,6 +29,7 @@ struct State {
     exit: Mutex<Option<i32>>,
     error: Mutex<Option<String>>,
     revision: AtomicU64,
+    tty: crate::foreground::Tty,
 }
 pub struct Session {
     state: Arc<State>,
@@ -131,6 +132,7 @@ impl Session {
             exit: Mutex::new(None),
             error: Mutex::new(None),
             revision: AtomicU64::new(1),
+            tty: crate::foreground::Tty::new(raw),
         });
         let (input, receiver) = sync_channel::<Input>(32);
         let shared = state.clone();
@@ -241,6 +243,7 @@ impl Session {
                     signal(member, pid as i32, libc::SIGHUP);
                 }
             }
+            shared.tty.release();
             drop(master);
             let mut status = None;
             for _ in 0..25 {
@@ -362,6 +365,10 @@ impl Session {
         self.alive()
             && std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", self.pid))
                 .is_ok_and(|s| !s.trim().is_empty())
+    }
+    /// Whether a job other than the shell is in front of the terminal, however it was started.
+    pub fn job_in_front(&self) -> bool {
+        self.alive() && self.state.tty.job_in_front(self.pid)
     }
     pub fn cwd(&self) -> PathBuf {
         std::fs::read_link(format!("/proc/{}/cwd", self.pid))

@@ -336,6 +336,11 @@ jobs:
       - name: A harness running as the mind account cannot reach the person
         run: sudo bash deploy/yantrik-os/harness-isolation-selftest.sh
 
+      # The two root-side verbs a moved Hermes needs from the desktop: "Use Yantrik models" (the token
+      # on stdin, never in an argument) and the drain-aware reload the bridge update asks for.
+      - name: A moved Hermes takes its model and a reload from the updater
+        run: bash deploy/yantrik-os/harness-model-selftest.sh
+
       # The boot test's check that no real network address ships: config.yaml and update.conf
       # name no private address, the updater only ranges in CIDR and its marked selftest's made-up
       # fixtures, and nothing anywhere is on the developer's LAN. Held here against the updater in
@@ -464,7 +469,7 @@ jobs:
       - name: The browser surface reads real pages and refuses every road to a commitment
         run: |
           sudo apt-get install -y -qq python3-websocket >/dev/null
-          python3 tests/browser-core/test_live.py
+          for t in test_live test_ports test_listener test_guard test_ports_live; do python3 tests/browser-core/$t.py || exit 1; done
 
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the
