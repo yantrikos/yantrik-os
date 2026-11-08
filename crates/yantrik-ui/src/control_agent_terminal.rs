@@ -181,7 +181,7 @@ pub fn agent_for(token: &str, pid: Option<u32>) -> Result<AgentId, String> {
 pub(crate) static RESOLVER_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Hand the work to the socket's side; run it here only when called without a socket.
-fn later(work: impl FnOnce() -> Result<Value, String> + Send + 'static) -> Result<Value, String> {
+pub(crate) fn later(work: impl FnOnce() -> Result<Value, String> + Send + 'static) -> Result<Value, String> {
     control::answer_later(work)
         .map(|()| json!({ "answering": "off the UI thread" }))
         .or_else(|work| work())

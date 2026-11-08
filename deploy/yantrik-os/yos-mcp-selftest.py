@@ -224,13 +224,22 @@ SHELL_ACTIONS = """  act: open_app(name)  [standard, settles later]
   act: agent_kill(job)  [standard, settles later]
        Stop one of your commands.
          job: string - the job id agent_run answered with
-  act: workshop_create(folder)  [sensitive, settles on return]
+  act: workshop_create(name)  [sensitive, settles on return]
        Ask the person for a workshop. The person allows each one on a card, in every mode.
-         folder: string - ~/Documents/<name>
+         name: string - a plain name
   act: agent_run_sealed(command, workshop, cwd?, wait?)  [standard, settles later]
        Run one command line in your workshop, sealed.
          command: string - one command line
          workshop: string - your workshop folder
+  act: workshop_present(workshop, path)  [standard, settles on return]
+       Show a media file from your workshop in the OS's player.
+         workshop: string - your workshop folder
+         path: string - the file
+  act: workshop_export(workshop, path, to)  [sensitive, settles later]
+       Copy a file out of your workshop. The person allows each one on a card, in every mode.
+         workshop: string - your workshop folder
+         path: string - the file or folder
+         to: string - videos, or a folder in the home
   act: new_agent(mind, task)  [sensitive, settles on return]
        Start another agent and give it a task.
          mind: string - which mind
@@ -3639,7 +3648,7 @@ with tempfile.TemporaryDirectory() as d:
     for mode in ("ask", "auto", "bypass", "bypass_all"):
         module, state = case(tmp, "workshop-card-%s" % mode, mode=mode, machine_ceiling="dangerous",
                              ceiling=None, not_needed=True, rules=[{"app": "shell", "action": "workshop_create"}])
-        text, is_error = act(module, "shell", "workshop_create", {"folder": "~/Documents/x"})
+        text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
         s = read(state)
         check("workshop_request raises a card in %s even with a session rule, and runs only on the grant" % mode,
               len(s.get("requests", [])) == 1 and s["requests"][0].get("tainted") is True
@@ -3647,7 +3656,7 @@ with tempfile.TemporaryDirectory() as d:
               and all(a.get("grant") for a in s.get("acted", []) if a["action"] == "workshop_create"),
               (text, s.get("requests"), s.get("acted")))
     module, state = case(tmp, "workshop-card-granted", mode="bypass_all", machine_ceiling="dangerous", ceiling=None)
-    text, is_error = act(module, "shell", "workshop_create", {"folder": "~/Documents/x"})
+    text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
     s = read(state)
     check("and once the person allows it, it runs with their grant",
           len(s.get("requests", [])) == 1 and [a["action"] for a in s.get("acted", [])] == ["workshop_create"], (text, s))

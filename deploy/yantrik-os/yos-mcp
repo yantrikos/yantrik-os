@@ -803,10 +803,12 @@ AGENT_TOOLS = [
                        "folder the person granted you with workshop_request; the desktop checks "
                        "that grant itself and runs nothing otherwise. Answers like run_command. "
                        "Use it for builds and tests. There is NO network mode: a command that needs "
-                       "the network (npm install, git clone, a download) cannot run in the workshop, "
-                       "and run_command is refused in or naming a workshop, because what you write "
-                       "there is never run outside the sandbox. Tell the person what needs the "
-                       "network and let them decide; do not route around it.",
+                       "the network (npm install, git clone, a download) cannot run in the workshop. "
+                       "Nothing outside the sandbox can see the workshop either, run_command "
+                       "included, so a file you made there leaves it only through workshop_show "
+                       "(a video, song or picture, in the OS's player) or workshop_save (a copy the "
+                       "person allows on a card). Tell the person what needs the network and let "
+                       "them decide; do not route around it.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -822,19 +824,57 @@ AGENT_TOOLS = [
     {
         "name": "workshop_request",
         "agent_action": "workshop_create",
-        "pass": ["folder"],
+        "pass": ["name"],
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
-        "description": "Ask the person for a workshop: one new folder under ~/Documents "
-                       "(~/Documents/<name>) where run_sealed_command may build. They decide on a "
-                       "card EVERY time, in every mode (full bypass included), and no session "
-                       "allowance covers it. Never the home folder, Desktop or Downloads, never "
-                       "through a symlink, never a dot name or an invisible character; the desktop "
-                       "makes the folder, and a folder already another Mind's is refused. Deleting "
-                       "or replacing the folder ends the grant. Graded sensitive.",
+        "description": "Ask the person for a workshop: a private folder of your own where "
+                       "run_sealed_command may build. The desktop makes it under "
+                       "~/.local/share/yantrik/workshops/<you>/<name> and answers with the path "
+                       "to use as `workshop`. They decide on a card EVERY time, in every mode "
+                       "(full bypass included), and no session allowance covers it. A name is one "
+                       "plain word: no slash, no leading dot, no invisible character. Deleting or "
+                       "replacing the folder ends the grant. Graded sensitive.",
         "inputSchema": {
             "type": "object",
-            "properties": {"folder": {"type": "string", "description": "~/Documents/<name>"}},
-            "required": ["folder"],
+            "properties": {"name": {"type": "string", "description": "A plain name, e.g. sitcom"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "workshop_show",
+        "agent_action": "workshop_present",
+        "pass": ["workshop", "path"],
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+        "description": "Show a video, song or picture from your workshop in the OS's own player, "
+                       "which says it is from your workshop. No card: a player only decodes it. "
+                       "Only a regular file whose first bytes are a media format is shown; a link, "
+                       "a pipe, a folder or any other file is refused.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workshop": {"type": "string", "description": "Your workshop folder, as granted."},
+                "path": {"type": "string", "description": "The file, inside the workshop."},
+            },
+            "required": ["workshop", "path"],
+        },
+    },
+    {
+        "name": "workshop_save",
+        "agent_action": "workshop_export",
+        "pass": ["workshop", "path", "to"],
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+        "description": "Copy a file or folder out of your workshop into the person's own folders, as "
+                       "plain files by content (no .git, no links, no attributes). `to` is `videos` "
+                       "or a folder in the home. The person allows EVERY copy on a card, in every "
+                       "mode. This is the only way what you made leaves the workshop, besides "
+                       "workshop_show.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workshop": {"type": "string", "description": "Your workshop folder, as granted."},
+                "path": {"type": "string", "description": "The file or folder, inside the workshop."},
+                "to": {"type": "string", "description": "`videos`, or ~/<an existing folder>"},
+            },
+            "required": ["workshop", "path", "to"],
         },
     },
     {
