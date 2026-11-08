@@ -88,7 +88,8 @@ pub fn actions() -> Vec<(Action, Parse)> {
                 "Type a command line into the active shell and press Return. It does not wait for \
                  the command to finish: the answer carries what the shell printed in the moment \
                  after, `running` names anything still going, and `describe` shows the rest as it \
-                 arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`.",
+                 arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`. It is for \
+                 interactive work: a long command (a render, a build) belongs in `shell.agent_run`.",
             )
             .risk("sensitive")
             .defers()

@@ -101,6 +101,10 @@ impl App for Terminal {
         view::render(ui, m, changed);
     }
 
+    fn busy(m: &Model) -> bool {
+        m.working()
+    }
+
     fn describe(m: &Model) -> View {
         describe::view(m)
     }
