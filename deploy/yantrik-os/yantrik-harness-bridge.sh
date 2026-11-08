@@ -141,7 +141,7 @@ harness_bridge_system_stale() {
   for d in "$(harness_bridge_proc)"/[0-9]*; do
     pid="${d##*/}"
     harness_bridge_holds_pid "$pid" || continue
-    cmd="$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)"
+    cmd="$(tr '\0' ' ' 2>/dev/null < "$d/cmdline")"
     case "$cmd" in
       *"${BIN_DIR:-/opt/yantrik/bin}/yos-mcp"*)
         started="$(stat -c %Y "$d" 2>/dev/null || echo 0)"
