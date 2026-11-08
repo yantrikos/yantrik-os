@@ -7,11 +7,11 @@
 #
 # Sealed workshop (#1124) assumptions, checked by sealed-smoke.sh:
 #   - no network, and HOME may be unset;
-#   - every write lands in STAGE_OUT (default $PWD/out, must be writable) or in
-#     STAGE_CACHE_DIR (webpack cache, capped at 500 MB; STAGE_NO_CACHE=1 skips it);
+#   - every write lands in STAGE_OUT (default $PWD/out, must be writable); STAGE_CACHE_DIR and
+#     STAGE_NO_CACHE are no longer used (there is no bundle cache);
 #   - TMPDIR is pointed inside STAGE_OUT/work, so /tmp is never filled;
 #   - read-only binds needed: the Stage install (this folder), /opt/yantrik/models/tts
-#     (piper, espeak-ng-data, lessac; or STAGE_PIPER_DIR) and ffmpeg on PATH;
+#     (piper, espeak-ng-data, the OS voice; or STAGE_PIPER_DIR) and ffmpeg on PATH;
 #   - the render browser is the one fetched at install time (or STAGE_BROWSER); Chrome
 #     needs /dev/shm or --disable-dev-shm-usage handled by the workshop's bwrap setup.
 set -euo pipefail
@@ -30,7 +30,7 @@ STEP="start"
 # any failure leaves a last line saying which step failed, so a poller never sees "in progress" forever
 trap 'echo "stage: failed at $STEP" >> "$OUT/progress"' ERR
 step() { STEP="$1"; echo "== $2 =="; }
-if [ ! -d "$STAGE_DIR/node_modules/remotion" ]; then
+if [ ! -d "$STAGE_DIR/node_modules/puppeteer-core" ]; then
   echo "build.sh: Stage is not fully installed (no node_modules). Run $STAGE_DIR/install.sh once." >&2
   echo "stage: failed at install check" >> "$OUT/progress"
   exit 3

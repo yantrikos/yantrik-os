@@ -1,6 +1,6 @@
 // One scene: set, staged characters, camera, captions and entry/exit transitions.
 import React from 'react';
-import {Audio, Sequence, staticFile, useCurrentFrame} from 'remotion';
+import {useCurrentFrame} from './anim';
 import {RIGS, RigName, Expression, Pose, Viseme} from './rigs';
 import {SETS} from './sets';
 import {Captions} from './Captions';
@@ -101,11 +101,6 @@ export const SceneView: React.FC<{scene: Scene; cast: any[]; accent: string}> = 
       {(fadeIn > 0 || fadeOut > 0) && <div style={{position: 'absolute', inset: 0, background: '#000', opacity: Math.max(fadeIn, fadeOut)}} />}
       <div style={{position: 'absolute', inset: 0,
         background: insertShot ? 'radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.6) 100%)' : 'radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.45) 100%)', pointerEvents: 'none'}} />
-      {scene.lines.map((l) => (
-        <Sequence key={l.start} from={l.start - scene.start} durationInFrames={l.audioFrames + 2}>
-          <Audio src={staticFile(l.audio)} />
-        </Sequence>
-      ))}
     </div>
   );
 };

@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-// Render step: bundle the Remotion template, film it offline with the
-// browser that was installed with Stage, write out/<title>.mp4 and
-// out/contact.png (a 3x3 grid of frames). Skips work when nothing changed.
+// Render step: bundle the template into one page, draw every frame in the pinned
+// headless browser (puppeteer-core), pipe the pictures to ffmpeg with the mixed
+// sound, write out/<title>.mp4 and out/contact.png (a 3x3 grid of frames).
+// Skips work when nothing changed.
 // Usage: render.mjs <work-dir> <out-dir>
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {spawnSync} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {renderMedia, selectComposition} from '@remotion/renderer';
-import {bundleStage, findBrowser} from './bundle.mjs';
+import {buildPage, findBrowser, launch, filmFrames} from './page.mjs';
+import {buildAudio} from './audio.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const stage = path.resolve(here, '..');
@@ -51,36 +52,49 @@ if (fresh) {
 }
 
 const browserExecutable = findBrowser(stage);
-if (!browserExecutable) die('the render browser is not installed. Run install.sh once (it runs "npx remotion browser ensure").');
-
-fs.mkdirSync(path.join(work, 'public', 'fonts'), {recursive: true});
-fs.copyFileSync(path.join(stage, 'fonts', 'Fredoka.ttf'), path.join(work, 'public', 'fonts', 'Fredoka.ttf'));
+if (!browserExecutable) die('the render browser is not installed. Run install.sh once (it fetches the pinned chrome-headless-shell).');
 fs.mkdirSync(out, {recursive: true});
 
-// Everything Remotion and Chrome write goes under the work folder: the bundle, and temp frames via TMPDIR.
-const bundleDir = path.join(work, 'bundle'), tmpDir = path.join(work, 'tmp');
+// Everything the browser and ffmpeg write goes under the work folder, removed when the film is done.
+const pageDir = path.join(work, 'page'), tmpDir = path.join(work, 'tmp');
 fs.mkdirSync(tmpDir, {recursive: true});
 process.env.TMPDIR = tmpDir;
-process.on('exit', () => { for (const d of [bundleDir, tmpDir]) fs.rmSync(d, {recursive: true, force: true}); });
+process.on('exit', () => { for (const d of [pageDir, tmpDir]) fs.rmSync(d, {recursive: true, force: true}); });
 const t0 = Date.now();
 // out/progress: one line per step, newest last, so a mind can read the end of it cheaply
 const progress = path.join(out, 'progress');
 const say = (line) => fs.appendFileSync(progress, line + '\n');
 say('render: 0%');
-const serveUrl = await bundleStage(stage, path.join(work, 'public'), bundleDir);
-const inputProps = {episode, timeline};
-const composition = await selectComposition({serveUrl, id: 'Episode', inputProps, browserExecutable, logLevel: 'error'});
-const concurrency = Number(process.env.STAGE_CONCURRENCY) || Math.max(1, Math.min(3, os.cpus().length - 1));
+await buildPage(stage, pageDir);
+const workers = Number(process.env.STAGE_CONCURRENCY) || Math.max(1, Math.min(3, os.cpus().length - 1));
+const audio = buildAudio(timeline, path.join(work, 'public'));
+const total = timeline.totalFrames;
+const ff = spawn('ffmpeg', ['-y', '-v', 'error', '-f', 'image2pipe', '-framerate', String(timeline.fps), '-c:v', 'mjpeg', '-i', 'pipe:0',
+  ...audio.inputs.flatMap((f) => ['-i', f]),
+  ...(audio.map ? ['-filter_complex', audio.graph] : []), '-map', '0:v', ...(audio.map ? ['-map', audio.map, '-c:a', 'aac', '-b:a', '192k', '-ac', '2'] : []),
+  '-c:v', 'libx264', '-crf', '19', '-pix_fmt', 'yuv420p', '-r', String(timeline.fps), '-movflags', '+faststart', '-frames:v', String(total), mp4],
+  {stdio: ['pipe', 'inherit', 'pipe']});
+let ffErr = '';
+ff.stderr.on('data', (d) => { ffErr += d; });
+let filming = true;
+const ffDone = new Promise((res) => ff.on('close', (code) => { if (filming && code !== 0) die('ffmpeg stopped early: ' + ffErr.split('\n').slice(-4).join(' ')); res(code); }));
+ff.stdin.on('error', () => {});   // ffmpeg died early: its exit code says why
+const browser = await launch(browserExecutable, tmpDir);
 let lastPct = -1;
-await renderMedia({
-  composition, serveUrl, inputProps, browserExecutable, concurrency, logLevel: 'error',
-  codec: 'h264', crf: 19, pixelFormat: 'yuv420p', imageFormat: 'jpeg', jpegQuality: 88, audioCodec: 'aac',
-  outputLocation: mp4, overwrite: true,
-  onProgress: ({progress}) => {
-    const pct = Math.floor(progress * 20) * 5;
-    if (pct !== lastPct) { lastPct = pct; say(`render: ${pct}%`); if (pct % 10 === 0) console.log(`render: ${pct}% (${((Date.now() - t0) / 1000).toFixed(0)}s)`); }
-  },
-});
+try {
+  await filmFrames({
+    browser, pageDir, workers, frames: Array.from({length: total}, (_, i) => i),
+    show: {kind: 'episode', props: {episode, timeline}, fps: timeline.fps, durationInFrames: total},
+    shot: {type: 'jpeg', quality: 88},
+    sink: (img) => ff.stdin.write(img) || new Promise((r) => ff.stdin.once('drain', r)),
+    onProgress: (p) => {
+      const pct = Math.floor(p * 20) * 5;
+      if (pct !== lastPct) { lastPct = pct; say(`render: ${pct}%`); if (pct % 10 === 0) console.log(`render: ${pct}% (${((Date.now() - t0) / 1000).toFixed(0)}s)`); }
+    },
+  });
+} finally { filming = false; await browser.close(); }
+ff.stdin.end();
+if ((await ffDone) !== 0) die(`ffmpeg failed: ${ffErr.split('\n').slice(-4).join(' ')}`);
 
 makeContact();
 fs.writeFileSync(stampFile, stamp);

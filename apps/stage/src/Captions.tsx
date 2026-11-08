@@ -1,6 +1,6 @@
 // Lower-third captions: speaker chip plus the words, lit up as they are spoken.
 import React from 'react';
-import {spring, useVideoConfig} from 'remotion';
+import {spring, useVideoConfig} from './anim';
 
 export const Captions: React.FC<{line: any; g: number; color: string}> = ({line, g, color}) => {
   const {fps} = useVideoConfig();

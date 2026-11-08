@@ -1,6 +1,6 @@
 // Title card and end credits.
 import React from 'react';
-import {interpolate, spring, useCurrentFrame, useVideoConfig} from 'remotion';
+import {interpolate, spring, useCurrentFrame, useVideoConfig} from './anim';
 import {RIGS, RigName} from './rigs';
 import {ROLE, castColor} from './castInfo';
 

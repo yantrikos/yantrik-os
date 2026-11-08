@@ -1,7 +1,7 @@
 // Character sheet: a QA composition that lays a rig out across expressions,
 // visemes or poses. Used by `npm run studio` and scripts/sheet.mjs.
 import React from 'react';
-import {AbsoluteFill, useCurrentFrame} from 'remotion';
+import {AbsoluteFill, useCurrentFrame} from './anim';
 import {RIGS, RigName, EXPRESSIONS, VISEMES, POSES} from './rigs';
 
 export type SheetProps = {mode: 'cast' | 'expressions' | 'visemes' | 'poses'; rig: RigName};

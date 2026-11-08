@@ -8,9 +8,9 @@ EP="${1:-$STAGE_DIR/examples/episode.json}"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 NODE="$(command -v node)"; FFMPEG_DIR="$(dirname "$(command -v ffmpeg)")"
-RUN=(env -i PATH="$(dirname "$NODE"):$FFMPEG_DIR:/usr/bin:/bin" STAGE_OUT="$SCRATCH/out" STAGE_CACHE_DIR="$SCRATCH/cache" STAGE_CONCURRENCY=1)
+RUN=(env -i PATH="$(dirname "$NODE"):$FFMPEG_DIR:/usr/bin:/bin" STAGE_OUT="$SCRATCH/out" STAGE_CONCURRENCY=1)
 # no network (only loopback): a private network namespace when unshare allows it, else run as-is and say so
-if unshare -rn true 2>/dev/null; then NET=(unshare -rn sh -c 'ip link set lo up; exec "$0" "$@"');  # loopback stays up: Remotion serves the bundle on 127.0.0.1
+if unshare -rn true 2>/dev/null; then NET=(unshare -rn sh -c 'ip link set lo up; exec "$0" "$@"');  # loopback stays up: Chrome's own pipes and DevTools need it
    else NET=(); echo "sealed-smoke: cannot unshare the network here; running with it on" >&2; fi
 "${NET[@]}" "${RUN[@]}" bash "$STAGE_DIR/build.sh" "$EP"
 [ -s "$SCRATCH/out/contact.png" ] || { echo "sealed-smoke: no contact.png" >&2; exit 1; }
