@@ -46,6 +46,7 @@ mod answers;
 mod child;
 mod command;
 mod describe;
+mod foreground;
 mod hub;
 mod intents;
 mod keys;
@@ -101,6 +102,10 @@ impl App for Terminal {
 
     fn render(ui: &TerminalApp, _: WindowId, m: &Model, changed: &Changed) {
         view::render(ui, m, changed);
+    }
+
+    fn busy(m: &Model) -> bool {
+        m.working()
     }
 
     fn describe(m: &Model) -> View {

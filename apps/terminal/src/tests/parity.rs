@@ -25,7 +25,7 @@ fn before() -> Vec<Golden> {
         Golden {
             name: "run",
             risk: "sensitive",
-            description: r####"Type a command line into the active shell and press Return. It does not wait for the command to finish: the answer carries what the shell printed in the moment after, `running` names anything still going, and `describe` shows the rest as it arrives. There is no exit status — ask for one with `; echo exit=$?`. A Mind's `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view). What it runs can do anything you can."####,
+            description: r####"Type a command line into the active shell and press Return. It does not wait for the command to finish: the answer carries what the shell printed in the moment after, `running` names anything still going, and `describe` shows the rest as it arrives. There is no exit status — ask for one with `; echo exit=$?`. It is for interactive work: a long command (a render, a build) belongs in `shell.agent_run`. A Mind's `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view). What it runs can do anything you can."####,
             deferred: true,
             params: vec![("command", "string", true, r####"One command line, exactly as it would be typed; a newline is added. It is interpreted by the shell, so pipes, redirection and `cd` all work, and `cd` moves this tab for every command after it."####)],
         },

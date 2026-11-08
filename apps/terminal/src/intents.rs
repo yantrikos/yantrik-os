@@ -101,7 +101,8 @@ pub fn actions() -> Vec<(Action, Parse)> {
                 "Type a command line into the active shell and press Return. It does not wait for \
                  the command to finish: the answer carries what the shell printed in the moment \
                  after, `running` names anything still going, and `describe` shows the rest as it \
-                 arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`. A Mind's \
+                 arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`. It is for \
+                 interactive work: a long command (a render, a build) belongs in `shell.agent_run`. A Mind's \
                  `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that \
                  cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view).",
             )
