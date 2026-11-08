@@ -46,6 +46,7 @@ mod answers;
 mod child;
 mod command;
 mod describe;
+mod foreground;
 mod hub;
 mod intents;
 mod keys;

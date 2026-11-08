@@ -39,10 +39,12 @@ pub fn tabs_full(open: usize) -> Option<String> {
 }
 
 impl Model {
-    /// Whether any tab has a foreground job other than its shell: what `describe` shows as
-    /// `running`. The idle wait never ends the app over it.
+    /// Whether any tab has a foreground job other than its shell. `running` (what `describe`
+    /// shows) is a probe's last reading and is only fresh for a job the `run` act started; the pty
+    /// itself is asked too, so a typed or pasted command counts. The idle wait never ends the app
+    /// over it.
     pub fn working(&self) -> bool {
-        self.tabs.iter().any(|t| t.facts.running.is_some())
+        self.tabs.iter().any(|t| t.facts.running.is_some() || t.session.job_in_front())
     }
 }
 
