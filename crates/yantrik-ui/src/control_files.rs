@@ -94,6 +94,18 @@ pub(crate) fn begin_open<B: Browser>(
     Ok(())
 }
 
+/// `files_open`'s answer before the window is looked for. The person's own call really is on the
+/// screen the action switched to, so it is named. A Mind's is not: its window goes to Mind View,
+/// and only the wait finds out which of the two it landed on — `screen: "files"` told a Mind its
+/// window was open on the person's screen when it had opened in Mind View (#1112). So the key is
+/// left off for a Mind and [`crate::mind_landing::answer`] adds `where`, from the window it saw.
+fn opened_answer(name: &str, app: &str, for_mind: bool, screen: &str) -> serde_json::Value {
+    let mut answer = serde_json::json!({ "opened": name, "app": app });
+    if !for_mind {
+        answer["screen"] = screen.into();
+    }
+    answer
+}
 
 /// Whether the current listing has an entry by this name, so an action can refuse a name that is
 /// not there and say so, rather than invoke a callback that quietly does nothing.
@@ -231,7 +243,8 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 let for_mind = matches!(crate::mind_view::requester_now(), crate::mind_view::Requester::Mind(_));
                 crate::running::clear_launch_failure(&app);
                 ui.invoke_file_open(name.clone().into());
-                let answer = serde_json::json!({ "opened": name, "app": app, "screen": crate::control::screen_name(ui.get_current_screen()) });
+                let answer =
+                    opened_answer(&name, &app, for_mind, crate::control::screen_name(ui.get_current_screen()));
                 if !for_mind {
                     return Ok(answer);
                 }
@@ -602,5 +615,27 @@ mod order_tests {
         let b = fake();
         begin_open(&b, "notes.txt", |_| Ok(())).expect("an open that is allowed");
         assert!(b.switched.get(), "and an allowed open goes to Files");
+    }
+
+    /// `screen` is the person's shell screen, so a Mind is not handed one: its window lands in Mind
+    /// View or on the person's desktop, and `where` — which the wait only knows after it has looked
+    /// — is what says which. A Mind that read `screen: "files"` told the person the window was open
+    /// on their screen when it had opened in Mind View (#1112).
+    #[test]
+    fn a_mind_is_told_where_its_window_landed_rather_than_which_screen_the_person_is_on() {
+        use super::opened_answer;
+        use crate::mind_landing::{answer, Place};
+
+        let base = opened_answer("notes.txt", "gedit", true, "files");
+        assert!(base.get("screen").is_none(), "a Mind's answer named the person's screen: {base}");
+
+        let seen = answer(base.clone(), "gedit", Ok(Place::MindView)).unwrap();
+        assert_eq!(seen["window"], "appeared");
+        assert_eq!(seen["where"], "Mind View");
+        assert_eq!(seen["opened"], "notes.txt", "what it opened is still said");
+        assert!(seen.get("screen").is_none(), "{seen}");
+
+        // The person's own call really is on the screen the action switched to, and says so.
+        assert_eq!(opened_answer("notes.txt", "gedit", false, "files")["screen"], "files");
     }
 }
