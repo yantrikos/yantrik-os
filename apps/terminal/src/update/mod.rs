@@ -29,10 +29,12 @@ mod explain;
 mod find;
 mod frame;
 pub mod life;
+mod mind;
 mod surface;
 mod tabs;
 
 pub use life::CLOSING;
+pub use mind::NOT_YOURS;
 pub use tabs::first;
 
 type Fx = Effects<Terminal>;
@@ -102,8 +104,9 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Fx) -> Result<(), Refuse
         }
         Command::Run(line) => surface::run(m, fx, line),
         Command::SendInput(text) => surface::send_input(m, fx, text),
-        Command::NewTab => tabs::new_tab(m, fx, Why::NewTab),
-        Command::OpenDirectory(given) => surface::open_directory(m, fx, given),
+        Command::NewTab => tabs::new_tab(m, fx, Why::NewTab, false),
+        Command::OpenDirectory(given) => surface::open_directory(m, fx, given, false),
+        Command::FromMind(inner) => mind::apply(m, fx, *inner),
         Command::Spawned(spawned) => tabs::spawned(m, fx, *spawned),
         Command::SpawnLost => tabs::spawn_lost(m, fx),
         Command::Answered(reply) => {
@@ -142,6 +145,7 @@ fn starts_work(command: &Command) -> bool {
             | Command::SendInput(_)
             | Command::NewTab
             | Command::OpenDirectory(_)
+            | Command::FromMind(_)
             | Command::Input(_)
             | Command::Paste(_)
             | Command::Do(Do::New | Do::Restart)
@@ -165,7 +169,7 @@ pub fn refuse(m: &mut Model, fx: &mut Fx, sentence: impl Into<String>) {
 /// A header button, a shortcut or the prompt's answer.
 fn button(m: &mut Model, fx: &mut Fx, d: Do) {
     match d {
-        Do::New => tabs::new_tab(m, fx, Why::Person),
+        Do::New => tabs::new_tab(m, fx, Why::Person, false),
         Do::Close => life::close_tab(m, fx, m.active as i32),
         Do::ConfirmClose => life::confirm(m, fx),
         Do::CancelClose => life::cancel(m, fx),

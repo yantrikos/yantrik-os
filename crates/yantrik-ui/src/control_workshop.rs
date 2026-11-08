@@ -32,6 +32,7 @@ use yantrik_agent_terminal::Sealed;
 
 use crate::control_agent_terminal::{calling_agent, later, run_job, text, wait_arg, Call, Prepared};
 use crate::workshop;
+use yantrik_ipc_contracts::home_paths::workshops;
 
 /// The sentence the card shows for one `workshop_create`. A name that will be refused says why.
 fn explain_grant(args: &Value) -> String {
@@ -128,8 +129,8 @@ pub(crate) fn specs() -> [Action; 6] {
         Action::new(
             "workshop_export",
             "Copy a file or a folder out of your workshop into the person's own folders, as plain \
-             regular files by content: no .git, no links, no file attributes. `to` is `videos` or a \
-             folder in the home. Nothing leaves a workshop otherwise. Acts for the agent named by the \
+             regular files by content: no repository (a git, hg or jj folder refuses the whole \
+             copy), no links, no file attributes. `to` is `videos` or a folder in the home. Nothing leaves a workshop otherwise. Acts for the agent named by the \
              agent token your call carries — never an argument.",
         )
         .risk("sensitive")
@@ -172,6 +173,9 @@ fn now() -> u64 {
 
 fn workshop_create(args: &Value, home: &Path, record: &Path) -> Result<Value, String> {
     let agent = mind()?.ok_or("only a Mind asks for a workshop, and the person answers on the card: this call carries no agent token.")?;
+    // A workshop is hidden from the programs a Mind drives by `bwrap`; with none here there is
+    // nothing to keep it hidden with, so none is made (#1124, L3).
+    workshops::find_bwrap().ok_or("this machine has no bubblewrap (bwrap), which keeps a workshop out of the programs a Mind runs, so no workshop is made.")?;
     let folder = workshop::folder_for(home, &agent, &args_name(args), true)?;
     let made = workshop::grant(record, &agent, &folder, now())?;
     Ok(json!({
@@ -246,19 +250,33 @@ fn held_by(call: &Call, named: &str) -> Result<(String, PathBuf), String> {
     Ok((agent, shop))
 }
 
-/// Show a media file from the workshop in the OS's player (`workshop_out::present`). No card.
+/// Show a media file from the workshop in the OS's player (`workshop_play::present`). No card.
 fn workshop_present(args: &Value) -> Result<Value, String> {
     let (agent, shop) = held_by(&Call::current(), &text(args, "workshop"))?;
-    let media = crate::workshop_out::present(&shop, Path::new(text(args, "path").trim()), &agent)?;
+    let media = crate::workshop_play::present(&shop, Path::new(text(args, "path").trim()), &agent)?;
     Ok(json!({ "shown": true, "media": media, "note": "The player says it is from your workshop." }))
 }
 
-/// Where an export goes: `videos`, or an existing folder in the home that a Mind may make things in.
-fn export_dest(home: &Path, to: &str, make: bool) -> Result<PathBuf, String> {
+/// The name an export would land under: the last part of `path`, with no dot in front of it.
+fn landing_name(path: &str) -> Result<String, String> {
+    let last = Path::new(path.trim()).file_name().and_then(|n| n.to_str()).ok_or("`path` names a file or folder inside the workshop.")?;
+    match last.starts_with('.') {
+        true => Err(format!("{last} starts with a dot, which is a name programs read settings from; it is not exported.")),
+        false => Ok(last.to_string()),
+    }
+}
+
+/// Where an export goes: `videos`, or an existing folder in the home that a Mind may make things
+/// in. The name that lands there (`last`) is judged as the folder is (`may_create` on the whole
+/// path), so a startup file is refused in a folder that is itself fine (#1124, M3).
+fn export_dest(home: &Path, to: &str, last: &str, make: bool) -> Result<PathBuf, String> {
     let to = to.trim();
-    if to.eq_ignore_ascii_case("videos") {
+    let videos = to.eq_ignore_ascii_case("videos");
+    let shown = if videos { "~/Videos".to_string() } else { to.trim_end_matches('/').to_string() };
+    yantrik_ipc_contracts::home_paths::may_create(&format!("{shown}/{last}"), home)?;
+    if videos {
         let dir = home.join("Videos");
-        if make && !dir.is_dir() {
+        if make && !dir.is_dir() && dir.symlink_metadata().is_err() {
             std::fs::create_dir_all(&dir).map_err(|e| format!("{} could not be made ({e})", dir.display()))?;
         }
         return Ok(dir);
@@ -270,24 +288,24 @@ fn export_dest(home: &Path, to: &str, make: bool) -> Result<PathBuf, String> {
 
 fn explain_export(args: &Value) -> String {
     let (path, to) = (text(args, "path"), text(args, "to"));
-    let path: String = path.trim().chars().filter(|c| !c.is_control() && !crate::approvals::is_format_char(*c)).take(120).collect();
-    let said = format!("Copy {path} out of the workshop of the Mind asking, as plain files with no .git and no links, into");
-    match export_dest(&workshop::home(), &to, false) {
+    let shown: String = path.trim().chars().filter(|c| !c.is_control() && !crate::approvals::is_format_char(*c)).take(120).collect();
+    let said = format!("Copy {shown} out of the workshop of the Mind asking, as plain files with no repository, no links and no startup files, into");
+    let dest = landing_name(&path).and_then(|last| export_dest(&workshop::home(), &to, &last, false));
+    match dest {
         Ok(dir) => format!("{said} {}.", dir.display()),
-        Err(e) if to.trim().eq_ignore_ascii_case("videos") => format!("{said} ~/Videos. ({e})"),
         Err(e) => format!("{said} {}. This will be refused: {e}", to.trim()),
     }
 }
 
-/// Copy out of the workshop (`workshop_out::export`), once the person has allowed this call.
+/// Copy out of the workshop (`workshop_export::export`), once the person has allowed this call.
 fn workshop_export(args: &Value) -> Result<Value, String> {
     let (named, path, to) = (text(args, "workshop"), text(args, "path"), text(args, "to"));
     let call = Call::current();
     later(move || {
         let (_, shop) = held_by(&call, &named)?;
-        let dest = export_dest(&workshop::home(), &to, true)?;
-        let (at, done) = crate::workshop_out::export(&shop, Path::new(path.trim()), &dest)?;
-        Ok(json!({ "exported": at.display().to_string(), "files": done.files, "bytes": done.bytes }))
+        let dest = export_dest(&workshop::home(), &to, &landing_name(&path)?, true)?;
+        let (at, done) = crate::workshop_export::export(&shop, Path::new(path.trim()), &dest)?;
+        Ok(json!({ "exported": at.display().to_string(), "files": done.files, "bytes": done.bytes, "left_out": done.dropped }))
     })
 }
 
@@ -440,5 +458,25 @@ mod tests {
         assert!(text.contains("bus=unset"), "{text}");
         assert!(!text.contains("net=0"), "the network was reachable: {text}");
         assert!(shop.join("made").exists(), "the workshop must be writable: {text}");
+    }
+
+    /// #1124 M3: the card names the folder, and what lands there is judged as well: a startup file
+    /// is refused in a folder that is itself fine, and `videos` is not followed through a link.
+    #[test]
+    fn an_export_is_judged_by_the_name_that_lands_and_videos_by_where_it_leads() {
+        let h = home();
+        let p = h.path().canonicalize().unwrap();
+        for last in [".bash_profile", ".zshenv", ".gitconfig", ".pam_environment", ".npmrc"] {
+            assert!(landing_name(&format!("sub/{last}")).unwrap_err().contains("dot"), "{last}");
+            assert!(export_dest(&p, "~", last, false).is_err(), "{last} in ~");
+        }
+        assert_eq!(landing_name("a/b/episode.mp4").unwrap(), "episode.mp4");
+        assert!(export_dest(&p, "~/Documents", "note.txt", false).is_ok());
+        assert!(export_dest(&p, "~/.config", "x", false).is_err());
+        // ~/Videos is a link to the autostart folder: refused, and not made over.
+        std::fs::create_dir_all(p.join(".config/autostart")).unwrap();
+        std::os::unix::fs::symlink(p.join(".config/autostart"), p.join("Videos")).unwrap();
+        assert!(export_dest(&p, "videos", "x.desktop", true).is_err());
+        assert!(!p.join(".config/autostart/x.desktop").exists());
     }
 }

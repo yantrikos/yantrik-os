@@ -59,6 +59,8 @@ pub struct Tab {
     pub due: bool,
     /// The session's revision when the last frame looked.
     pub revision: u64,
+    /// A Mind opened this shell, so it runs in the outside view (no Mind workshop exists in it).
+    pub outside: bool,
 }
 
 /// What a prompt is about to end.

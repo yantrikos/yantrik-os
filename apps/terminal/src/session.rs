@@ -17,7 +17,7 @@ use std::{
 
 pub const HISTORY_LINES: usize = 1000;
 const INPUT_LIMIT: usize = 64 * 1024;
-type Notify = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type Notify = Arc<dyn Fn() + Send + Sync>;
 enum Input {
     Bytes(Vec<u8>),
     Resize(u16, u16),
@@ -64,7 +64,12 @@ pub struct Snapshot {
 
 impl Session {
     pub fn spawn(dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Self> {
-        let shell = std::env::var("SHELL")
+        Self::spawn_shell(&Self::login_shell(), &["-i"], dir, rows, cols, notify)
+    }
+
+    /// The person's shell, or the first of bash and sh that is there.
+    pub fn login_shell() -> String {
+        std::env::var("SHELL")
             .ok()
             .filter(|s| Path::new(s).is_file())
             .unwrap_or_else(|| {
@@ -73,8 +78,7 @@ impl Session {
                 } else {
                     "/bin/sh".into()
                 }
-            });
-        Self::spawn_shell(&shell, &["-i"], dir, rows, cols, notify)
+            })
     }
 
     pub fn spawn_shell(

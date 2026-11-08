@@ -109,7 +109,9 @@ mod control_agent_late;
 mod control_agent_terminal;
 mod control_workshop;
 mod workshop;
+mod workshop_export;
 mod workshop_out;
+mod workshop_play;
 /// A recipe on the shell's surface: answer_recipe / pause_recipe / resume_recipe / cancel_recipe.
 mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.

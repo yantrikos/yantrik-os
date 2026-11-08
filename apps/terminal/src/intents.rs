@@ -21,6 +21,10 @@
 //! `new_tab` and `open_directory` are not: they start a shell and run nothing they are given.
 //! Nothing here opens anything to an agent that was shut to it.
 //!
+//! A Mind's input never reaches the person's own shell, which sees the workshops root and has
+//! `sudo` (#1124, H1): its `new_tab` and `open_directory` start a shell in the outside view, and
+//! its `run` and `send_input` go only to such a tab (`update/mind.rs`).
+//!
 //! # Settling
 //!
 //! `run` and `send_input` declare that they only start the work, as they always did. Every action
@@ -67,7 +71,7 @@ fn text(a: &Args<'_>, name: &str) -> String {
 
 pub fn table(table: &mut Intents<Terminal>) {
     for (action, parse) in actions() {
-        table.add(Intent::new(action, move |a| Ok(parse(a))).settles(Settle::Explicit { within: WITHIN }).reply(answer));
+        table.add(Intent::new(action, move |a| Ok(from_caller(parse(a)))).settles(Settle::Explicit { within: WITHIN }).reply(answer));
     }
 }
 
@@ -77,6 +81,14 @@ fn answer(m: &Model) -> Value {
 }
 
 type Parse = fn(&Args<'_>) -> Command;
+
+/// A Mind's call is marked as one, so that it only ever reaches a shell in the outside view.
+fn from_caller(command: Command) -> Command {
+    match yantrik_app::control::agent_is_calling() {
+        true => Command::FromMind(Box::new(command)),
+        false => command,
+    }
+}
 
 /// The declarations, kept apart from the commands so a test can read exactly what a caller is
 /// shown.
@@ -88,7 +100,9 @@ pub fn actions() -> Vec<(Action, Parse)> {
                 "Type a command line into the active shell and press Return. It does not wait for \
                  the command to finish: the answer carries what the shell printed in the moment \
                  after, `running` names anything still going, and `describe` shows the rest as it \
-                 arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`.",
+                 arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`. A Mind's \
+                 `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that \
+                 cannot see Minds' workshops and has no sudo.",
             )
             .risk("sensitive")
             .defers()
@@ -106,7 +120,7 @@ pub fn actions() -> Vec<(Action, Parse)> {
                 "send_input",
                 "Send raw bytes to the active shell without pressing Return \u{2014} for answering a \
                  prompt a running command is waiting on, or sending a control character like \
-                 \\u0003 (Ctrl-C) to interrupt it.",
+                 \\u0003 (Ctrl-C) to interrupt it. A Mind's goes only to a tab it opened itself.",
             )
             .risk("sensitive")
             .defers()

@@ -25,14 +25,14 @@ fn before() -> Vec<Golden> {
         Golden {
             name: "run",
             risk: "sensitive",
-            description: r####"Type a command line into the active shell and press Return. It does not wait for the command to finish: the answer carries what the shell printed in the moment after, `running` names anything still going, and `describe` shows the rest as it arrives. There is no exit status — ask for one with `; echo exit=$?`. What it runs can do anything you can."####,
+            description: r####"Type a command line into the active shell and press Return. It does not wait for the command to finish: the answer carries what the shell printed in the moment after, `running` names anything still going, and `describe` shows the rest as it arrives. There is no exit status — ask for one with `; echo exit=$?`. A Mind's `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that cannot see Minds' workshops and has no sudo. What it runs can do anything you can."####,
             deferred: true,
             params: vec![("command", "string", true, r####"One command line, exactly as it would be typed; a newline is added. It is interpreted by the shell, so pipes, redirection and `cd` all work, and `cd` moves this tab for every command after it."####)],
         },
         Golden {
             name: "send_input",
             risk: "sensitive",
-            description: r####"Send raw bytes to the active shell without pressing Return — for answering a prompt a running command is waiting on, or sending a control character like \u0003 (Ctrl-C) to interrupt it. What it runs can do anything you can."####,
+            description: r####"Send raw bytes to the active shell without pressing Return — for answering a prompt a running command is waiting on, or sending a control character like \u0003 (Ctrl-C) to interrupt it. A Mind's goes only to a tab it opened itself. What it runs can do anything you can."####,
             deferred: true,
             params: vec![("text", "string", true, r####"The exact characters to send, with no newline added: end it with \n to submit a line. \u0003 interrupts, \u0004 is end-of-input. Up to 64 KiB."####)],
         },

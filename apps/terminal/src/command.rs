@@ -72,6 +72,8 @@ pub enum Why {
 #[derive(Clone)]
 pub struct Spawned {
     pub why: Why,
+    /// The shell runs in the outside view (a Mind opened it).
+    pub outside: bool,
     pub result: Result<(Arc<Session>, Facts), String>,
 }
 
@@ -101,6 +103,9 @@ pub enum Command {
     SendInput(String),
     NewTab,
     OpenDirectory(String),
+    /// A surface action a Mind raised. Its shell is only ever one started in the outside view
+    /// (`update/mind.rs`); the person's own typing is never wrapped.
+    FromMind(Box<Command>),
 
     // ── What the workers and the shells found ──
     Spawned(Box<Spawned>),

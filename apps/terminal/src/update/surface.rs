@@ -61,7 +61,7 @@ pub fn send_input(m: &mut Model, fx: &mut Fx, text: String) {
     });
 }
 
-pub fn open_directory(m: &mut Model, fx: &mut Fx, given: String) {
+pub fn open_directory(m: &mut Model, fx: &mut Fx, given: String, outside: bool) {
     let given = given.trim().to_string();
     if given.is_empty() {
         return refuse(m, fx, "`open_directory` needs `directory`: an absolute path to a folder.");
@@ -70,10 +70,15 @@ pub fn open_directory(m: &mut Model, fx: &mut Fx, given: String) {
     if !dir.is_absolute() {
         return refuse(m, fx, format!("`directory` has to be an absolute path; `{given}` is not one."));
     }
+    // A Mind's workshop is not a place a shell opens in, for anyone (#1124, H1): a Mind's shell
+    // would start in a view where it does not exist.
+    if let Err(why) = yantrik_ipc_contracts::home_paths::workshops::refuse(&given) {
+        return refuse(m, fx, why);
+    }
     if let Some(full) = tabs_full(m.tabs.len() + m.spawning) {
         return refuse(m, fx, full);
     }
-    tabs::start(m, fx, Why::Directory(given), Some(dir));
+    tabs::start(m, fx, Why::Directory(given), Some(dir), outside);
 }
 
 /// A worker that waited for a shell never answered: a panic, or the pool at its bound.

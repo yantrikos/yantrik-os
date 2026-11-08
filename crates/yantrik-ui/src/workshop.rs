@@ -27,11 +27,15 @@
 //!
 //! # The grant record
 //!
-//! One workshop per Mind, in `~/.local/share/yantrik/workshops.json`, written by the shell only
-//! (atomically, mode 0600). A record that cannot be read grants nothing. Revoking is deleting the
-//! Mind's entry. A command is sealed because this record says so, never because a caller says it.
-//! The record is as safe as the person's own account: a program running as the person outside
-//! the outside view could write it. The run-time rules above are what a forged entry still meets.
+//! One workshop per Mind, in `<root>/.grants.json`: inside the root, under its 0700 folder, and
+//! written by the shell only (atomically, mode 0600). Nothing a Mind drives can open it: the
+//! sealed view has only its own workshop, the outside view has a tmpfs where the root is, and the
+//! companion's tools refuse every path under the root (`Root::holds`). A Mind's job that could
+//! write the record could give itself another Mind's workshop with no card (#1124, M4), which is
+//! why it does not sit beside the root. A name starting with a dot is never a Mind's id or a
+//! workshop's name, so the file cannot be one. A record that cannot be read grants nothing.
+//! Revoking is deleting the Mind's entry. A command is sealed because this record says so, never
+//! because a caller says it. The run-time rules above are what a forged entry still meets.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -69,12 +73,17 @@ struct File {
 /// Writers of the record take this, so two grants cannot lose each other.
 static WRITE: Mutex<()> = Mutex::new(());
 
+/// The record for a person whose home is `home`: a file in the root itself.
+pub fn record_in(home: &Path) -> PathBuf {
+    workshops::root(home).join(".grants.json")
+}
+
 /// Where the shell keeps the record. Under test, a file of the run's own.
 pub fn record_path() -> PathBuf {
     #[cfg(test)]
     return std::env::temp_dir().join(format!("yantrik-workshops-under-test-{}.json", std::process::id()));
     #[cfg(not(test))]
-    return home().join(".local/share/yantrik/workshops.json");
+    return record_in(&home());
 }
 
 pub fn home() -> PathBuf {
@@ -484,5 +493,28 @@ mod tests {
             assert!(folder_for(h.path(), "hermes", bad, true).is_err(), "{bad:?}");
         }
         assert!(folder_for(h.path(), "hermes", "sitcom-\u{e9}pisode", true).is_ok());
+    }
+
+    /// #1124 M4: the record is inside the root, so every view that hides the root hides it, and
+    /// every in-process tool that refuses the root refuses it. No name a Mind chooses can be it.
+    #[test]
+    fn the_grant_record_is_inside_the_root_where_no_view_of_a_mind_reaches() {
+        let h = home();
+        let home = h.path().canonicalize().unwrap();
+        let rec = record_in(&home);
+        assert_eq!(rec, workshops::root(&home).join(".grants.json"));
+        let shop = folder_for(&home, "hermes", "shop", true).unwrap();
+        grant(&rec, "hermes", &shop, 1).unwrap();
+        assert!(rec.is_file() && workshops::holds(&rec, &home), "the tools that refuse the root refuse the record");
+        // The outside view is a tmpfs over the root, so the record is not in it; the sealed view has
+        // only the one workshop.
+        let masked = workshops::outside_args(&workshops::root(&home));
+        assert!(masked.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == rec.parent().unwrap()));
+        assert!(!masked.iter().any(|a| a.contains(".grants")), "nothing re-exposes it");
+        for name in [".grants.json", ".grants"] {
+            assert!(plain_name("the Mind's id", name).is_err() && folder_for(&home, name, "x", true).is_err(), "{name}");
+            assert!(folder_for(&home, "hermes", name, true).is_err(), "{name}");
+        }
+        assert!(!home.join(".local/share/yantrik/workshops.json").exists(), "not beside the root");
     }
 }

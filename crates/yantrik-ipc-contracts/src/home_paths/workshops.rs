@@ -9,6 +9,13 @@
 //! - **outside** ([`outside_command`]): sees the host, with a tmpfs over the root, so the root
 //!   does not exist for it.
 //!
+//! The outside view hides a *path*, not the person's session. From inside it, `systemd-run --user`,
+//! a `tmux send-keys` to a tmux outside it, or the session bus all reach a process that sees the
+//! root. That is the person's account being the person's account: the command that does it is on
+//! a card the person read (`agent_run` asks), and a Mind's own Terminal tab is wrapped the same
+//! way (#1124, H1, L3). The root exists from the first wrapped program on (`ensure_root`), so "no
+//! root yet" is never "no mask"; a machine with no `bwrap` makes no workshop at all.
+//!
 //! The companion's own tools run in the shell's process and cannot be given a view. They refuse
 //! any path for which [`Root::holds`] is true, which is a prefix test on where the path really is
 //! and an inode test on every folder above it: one check, with no walk below the root and no
@@ -49,12 +56,30 @@ impl Root {
         self.holds_at(path, 0)
     }
 
+    /// The folders that are the root, a Mind's folder or a workshop, by device and inode. A
+    /// second view of any of them (a bind or FUSE mount) is as much the root as a second view of
+    /// the root is (#1124, L2); this reads two levels of a 0700 folder and follows no link.
+    fn folder_ids(&self) -> Vec<(u64, u64)> {
+        let mut out: Vec<(u64, u64)> = self.id.into_iter().collect();
+        let Ok(minds) = std::fs::read_dir(&self.path) else { return out };
+        let dir_id = |e: &std::fs::DirEntry| e.metadata().ok().filter(|m| m.is_dir()).map(|m| (m.dev(), m.ino()));
+        for mind in minds.flatten().take(256) {
+            let Some(id) = dir_id(&mind) else { continue };
+            out.push(id);
+            if let Ok(shops) = std::fs::read_dir(mind.path()) {
+                out.extend(shops.flatten().take(64).filter_map(|s| dir_id(&s)));
+            }
+        }
+        out
+    }
+
     fn holds_at(&self, path: &Path, depth: u8) -> bool {
         let Some(real) = resolved(path) else { return false };
         if real.starts_with(&self.path) {
             return true;
         }
-        if self.id.is_some_and(|id| real.ancestors().any(|a| std::fs::metadata(a).is_ok_and(|m| (m.dev(), m.ino()) == id))) {
+        let ids = self.folder_ids();
+        if !ids.is_empty() && real.ancestors().any(|a| std::fs::metadata(a).is_ok_and(|m| ids.contains(&(m.dev(), m.ino())))) {
             return true;
         }
         // A link on the way that leads nowhere yet (a write through it would make the file there)
@@ -96,15 +121,41 @@ pub fn outside_args(root: &Path) -> Vec<String> {
     .to_vec()
 }
 
-/// `program` and `args` as a program a Mind drives should be started: in the outside view. With no
-/// workshops root there is nothing to hide and the command is as it was. With one and no
-/// `bwrap`, nothing starts.
+/// Where `bwrap` is on this machine, if it is.
+pub fn find_bwrap() -> Option<&'static str> {
+    ["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"].into_iter().find(|p| Path::new(p).exists())
+}
+
+/// The root, made (0700) if it is not there. A mask needs something to cover: with the root made
+/// before the first program a Mind drives is started, "no root yet" never means "no mask" for a
+/// long-running one that starts first (#1124, L3).
+pub fn ensure_root(home: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let at = root(home);
+    if let Some(parent) = at.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{} cannot be made: {e}", parent.display()))?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(&at) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("{} cannot be made: {e}", at.display())),
+    }
+    std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    at.canonicalize().map_err(|e| format!("{} cannot be resolved: {e}", at.display()))
+}
+
+/// `program` and `args` as a program a Mind drives should be started: in the outside view. A
+/// machine with no `bwrap` can hold no workshop (`workshop_create` refuses there), so with no
+/// root either the command is as it was. Where `bwrap` is, the root is made first and the mask
+/// is always there. With a root and no `bwrap`, nothing starts.
 pub fn outside_command(home: &Path, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
-    let Ok(real) = root(home).canonicalize() else { return Ok((program.to_string(), args.to_vec())) };
-    let bwrap = ["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"]
-        .into_iter()
-        .find(|p| Path::new(p).exists())
-        .ok_or("this machine holds Minds' workshops and has no bubblewrap (bwrap) to hide them from a program; nothing was run.")?;
+    let bwrap = find_bwrap();
+    let real = match (root(home).canonicalize(), bwrap) {
+        (Ok(real), _) => real,
+        (Err(_), None) => return Ok((program.to_string(), args.to_vec())),
+        (Err(_), Some(_)) => ensure_root(home)?,
+    };
+    let bwrap = bwrap.ok_or("this machine holds Minds' workshops and has no bubblewrap (bwrap) to hide them from a program; nothing was run.")?;
     let mut argv = outside_args(&real);
     argv.push(program.to_string());
     argv.extend(args.iter().cloned());
@@ -202,6 +253,22 @@ mod tests {
     }
 
     #[test]
+    fn a_mind_folder_and_a_workshop_are_known_by_inode_as_well_as_the_root() {
+        let (_h, home) = home_with_root();
+        let r = root(&home);
+        std::fs::create_dir_all(r.join("pi/other")).unwrap();
+        std::fs::write(r.join("note"), "not a folder").unwrap();
+        std::os::unix::fs::symlink(&home, r.join("link-out")).unwrap();
+        let ids = Root::at(&r).folder_ids();
+        let id = |p: PathBuf| std::fs::metadata(p).map(|m| (m.dev(), m.ino())).unwrap();
+        for p in [r.clone(), r.join("hermes"), r.join("hermes/shop"), r.join("pi"), r.join("pi/other")] {
+            assert!(ids.contains(&id(p.clone())), "{}", p.display());
+        }
+        assert!(!ids.contains(&id(home.clone())), "a link out of the root is not followed");
+        assert!(!Root::at(&home.join("nowhere")).folder_ids().contains(&id(r.join("hermes/shop"))));
+    }
+
+    #[test]
     fn the_outside_view_masks_the_root_and_nothing_else() {
         let a = outside_args(Path::new("/home/p/.local/share/yantrik/workshops"));
         assert!(a.windows(2).any(|w| w == ["--tmpfs", "/home/p/.local/share/yantrik/workshops"]));
@@ -217,10 +284,19 @@ mod tests {
     }
 
     #[test]
-    fn with_no_root_a_command_is_unchanged_and_with_one_it_is_wrapped() {
+    fn with_no_root_a_command_is_wrapped_where_bwrap_is_and_unchanged_where_it_is_not() {
         let h = Tmp::new();
         let args = vec!["-c".to_string(), "ls".to_string()];
-        assert_eq!(outside_command(h.path(), "/bin/bash", &args).unwrap(), ("/bin/bash".to_string(), args.clone()));
+        let first = outside_command(h.path(), "/bin/bash", &args).unwrap();
+        match find_bwrap() {
+            // The mask is there from the first program on: the root is made for it to cover.
+            Some(_) => {
+                use std::os::unix::fs::PermissionsExt;
+                assert!(first.0.ends_with("bwrap"));
+                assert_eq!(std::fs::metadata(root(h.path())).unwrap().permissions().mode() & 0o777, 0o700);
+            }
+            None => assert_eq!(first, ("/bin/bash".to_string(), args.clone())),
+        }
         std::fs::create_dir_all(root(h.path())).unwrap();
         match outside_command(h.path(), "/bin/bash", &args) {
             Ok((bwrap, argv)) => {

@@ -35,6 +35,7 @@ pub mod files;
 pub mod firewall;
 pub mod foreign_ui;
 pub mod git;
+pub mod git_guard;
 pub mod github;
 pub mod glob;
 pub mod grep;

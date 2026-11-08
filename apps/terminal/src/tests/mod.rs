@@ -27,6 +27,7 @@ use crate::Terminal;
 mod closing;
 mod flood;
 mod for_mind;
+mod mind_shell;
 mod parity;
 mod private_mode;
 mod rest;

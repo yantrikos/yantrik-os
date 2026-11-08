@@ -804,8 +804,10 @@ AGENT_TOOLS = [
                        "that grant itself and runs nothing otherwise. Answers like run_command. "
                        "Use it for builds and tests. There is NO network mode: a command that needs "
                        "the network (npm install, git clone, a download) cannot run in the workshop. "
-                       "Nothing outside the sandbox can see the workshop either, run_command "
-                       "included, so a file you made there leaves it only through workshop_show "
+                       "No other program you drive can see the workshop either: agent_run, a "
+                       "terminal tab you open, scripts and Claude Code run where the workshops "
+                       "folder is empty, and run_command and the file tools refuse it. So a "
+                       "file you made there leaves it only through workshop_show "
                        "(a video, song or picture, in the OS's player) or workshop_save (a copy the "
                        "person allows on a card). Tell the person what needs the network and let "
                        "them decide; do not route around it.",
@@ -863,7 +865,7 @@ AGENT_TOOLS = [
         "pass": ["workshop", "path", "to"],
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
         "description": "Copy a file or folder out of your workshop into the person's own folders, as "
-                       "plain files by content (no .git, no links, no attributes). `to` is `videos` "
+                       "plain files by content (no repository, no links, no attributes). `to` is `videos` "
                        "or a folder in the home. The person allows EVERY copy on a card, in every "
                        "mode. This is the only way what you made leaves the workshop, besides "
                        "workshop_show.",
