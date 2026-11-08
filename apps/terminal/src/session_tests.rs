@@ -82,3 +82,23 @@ fn bounded_history_independent_tabs_and_cleanup() {
     wait(|| !Path::new(&format!("/proc/{pid}")).exists());
     assert!(other.alive());
 }
+#[test]
+fn a_job_in_front_of_the_pty_is_seen_however_it_started() {
+    let s = session();
+    s.write(b"printf 'UP\n'\n").unwrap();
+    wait(|| s.snapshot().text.contains("UP"));
+    assert!(!s.job_in_front(), "a shell at its prompt has no job in front");
+    // Typed straight into the pty, not through the `run` act.
+    s.write(b"sleep 30\n").unwrap();
+    wait(|| s.job_in_front());
+    s.write(&[3]).unwrap();
+    wait(|| !s.job_in_front());
+    // A background job leaves the shell's own group in front, so it is not counted as busy: the
+    // shell takes input again, and a long `&` job is the person's to keep or end.
+    s.write(b"sleep 30 &\n").unwrap();
+    s.write(b"printf 'BACK\n'\n").unwrap();
+    wait(|| s.snapshot().text.contains("BACK"));
+    assert!(!s.job_in_front());
+    assert!(s.has_children(), "the background job is still there");
+    s.shutdown();
+}
