@@ -9,6 +9,7 @@ yantrik-companion-core = { workspace = true }
 yantrikdb-core = { workspace = true }
 yantrik-shown-address = { workspace = true }
 yantrik-browser-ports = { workspace = true }
+yantrik-mind-scope = { workspace = true }
 # Private scratch and quarantine directories (`yantrik_ml::private_dir`). Already in the graph
 # through yantrik-companion-core; named because the tools call it directly.
 # api-llm: the free tiers' key shapes (provider::pool::signup), for the clipboard tools

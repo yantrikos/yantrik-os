@@ -79,7 +79,6 @@ mod job;
 mod jobs;
 mod proc;
 mod retained;
-mod scope;
 
 pub use identity::{descends_from, AgentResolver, HostTokens, Lookup, NoAgents, TokenTable, NO_AGENT};
 pub use jobs::{

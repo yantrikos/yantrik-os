@@ -3279,6 +3279,7 @@ DEVTOOLS_UNIT=/etc/systemd/system/yantrik-devtools-guard.service
 # The cgroup layer (#1137), a table of its own: nft resolves a cgroup path when a rule loads and
 # refuses the whole file if the path is not there yet, and the uid layer above must never wait on it.
 DEVTOOLS_SESSION_GUARD=/etc/yantrik/devtools-guard-session.nft
+DEVTOOLS_LOCKDOWN=/etc/yantrik/devtools-guard-lockdown.nft
 
 devtools_guard_text() {
   cat <<EOF
@@ -3323,35 +3324,91 @@ table inet yantrik_devtools_session {
 EOF
 }
 
+# The same ports with no exception for the session: what the manager's pre-step loads when the
+# cgroup rule cannot be loaded. Only root reaches them, so the person's own Chromium by `yos web` is
+# shut out too, but nothing is left open and the desktop still starts.
+devtools_lockdown_text() {
+  cat <<EOF
+# Yantrik OS: the cgroup rule could not be loaded, so loopback DevTools (9222-9322) and VNC
+# (5900-5909) refuse every account but root until it can. Made by yantrik-update.
+table inet yantrik_devtools_session
+delete table inet yantrik_devtools_session
+table inet yantrik_devtools_session {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" tcp dport { 5900-5909, 9222-9322 } meta skuid != 0 reject with tcp reset
+	}
+}
+EOF
+}
+
 # Loaded by the person's manager itself, before anything runs in it: the cgroup exists by then (it
 # is made before the first command of the unit) and nothing it starts can connect first. The + is
-# for the unit's own User=, which cannot load rules. Fail closed: if the load fails, the manager
-# does not start and the person cannot log in, loudly, rather than get a desktop whose Minds reach
-# their browser. The updater loads the file by hand first and installs this only if that worked.
+# for the unit's own User=, which cannot load rules. If the cgroup rule does not load, the lockdown
+# does, and the manager still starts: a failed pre-step would NOT stop the login (pam_systemd goes
+# on, the shell and labwc start in the session scope), it would leave a desktop with no user bus,
+# portals, audio or browser. Only if neither loads does the pre-step fail, and the journal says so.
 devtools_session_dropin_text() {
   cat <<EOF
 # Yantrik OS (#1137): the DevTools/VNC cgroup guard is in place before the manager's first process.
 [Service]
-ExecStartPre=+$1 -f $DEVTOOLS_SESSION_GUARD
+ExecStartPre=+/bin/sh -c '$1 -f $DEVTOOLS_SESSION_GUARD || $1 -f $DEVTOOLS_LOCKDOWN'
 EOF
 }
 
+# Can this kernel match on a cgroup at all? Tried on a table of its own against system.slice, which
+# every systemd machine has, so the answer does not depend on the person being logged in.
+devtools_cgroup_probe() { # <nft>
+  local nft="$1" rc
+  "$nft" -f - 2>/dev/null <<'EOF'
+table inet yantrik_devtools_probe {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" tcp dport 1 socket cgroupv2 level 1 "system.slice" reject with tcp reset
+	}
+}
+EOF
+  rc=$?
+  "$nft" delete table inet yantrik_devtools_probe >/dev/null 2>&1
+  return "$rc"
+}
+
 reconcile_devtools_session() { # <nft> <uid>: 0 when the cgroup layer is active or will be at login
-  local nft="$1" uid="$2" dropin_dir="/etc/systemd/system/user@$2.service.d"
-  local cg="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service"
-  install -d -o root -g root -m 0755 /etc/yantrik "$dropin_dir"
+  local nft="$1" uid="$2" dropin_dir="${DEVTOOLS_DROPIN_ROOT:-/etc/systemd/system}/user@$2.service.d"
+  local cg="${DEVTOOLS_CGROOT:-/sys/fs/cgroup}/user.slice/user-$uid.slice/user@$uid.service"
+  local want_dropin="$dropin_dir/yantrik-devtools.conf"
+  install -d -m 0755 "$(dirname "$DEVTOOLS_SESSION_GUARD")" "$dropin_dir"
   if [ "$(cat "$DEVTOOLS_SESSION_GUARD" 2>/dev/null)" != "$(devtools_session_text "$uid")" ]; then
     devtools_session_text "$uid" > "$DEVTOOLS_SESSION_GUARD" && chmod 0644 "$DEVTOOLS_SESSION_GUARD"
   fi
+  if [ "$(cat "$DEVTOOLS_LOCKDOWN" 2>/dev/null)" != "$(devtools_lockdown_text)" ]; then
+    devtools_lockdown_text > "$DEVTOOLS_LOCKDOWN" && chmod 0644 "$DEVTOOLS_LOCKDOWN"
+  fi
+  # No drop-in unless the kernel is known to take the rule: the person's manager must not depend on
+  # a match it cannot do. The probe needs no login; the real file is tried too when the cgroup is up.
+  if ! devtools_cgroup_probe "$nft"; then
+    rm -f "$want_dropin"
+    warn "this kernel cannot match on a cgroup; the Minds in the person's user manager can still reach 9222 and VNC (the uid rule stands)"
+    return 1
+  fi
   if [ -d "$cg" ] && ! "$nft" -f "$DEVTOOLS_SESSION_GUARD" 2>/dev/null; then
-    # No drop-in: a kernel that cannot load it would then keep the person from logging in.
-    rm -f "$dropin_dir/yantrik-devtools.conf"
+    rm -f "$want_dropin"
     warn "could not load $DEVTOOLS_SESSION_GUARD; the Minds in the person's user manager can still reach 9222 and VNC (the uid rule stands)"
     return 1
   fi
-  if [ "$(cat "$dropin_dir/yantrik-devtools.conf" 2>/dev/null)" != "$(devtools_session_dropin_text "$nft")" ]; then
-    devtools_session_dropin_text "$nft" > "$dropin_dir/yantrik-devtools.conf" && chmod 0644 "$dropin_dir/yantrik-devtools.conf"
-    systemctl daemon-reload >/dev/null 2>&1
+  if [ "$(cat "$want_dropin" 2>/dev/null)" != "$(devtools_session_dropin_text "$nft")" ]; then
+    devtools_session_dropin_text "$nft" > "$want_dropin" && chmod 0644 "$want_dropin"
+    [ -n "${DEVTOOLS_NO_RELOAD:-}" ] || systemctl daemon-reload >/dev/null 2>&1
+  fi
+  # A flush of the ruleset or a failed reload takes the table away without a word: look.
+  if [ -d "$cg" ]; then
+    if ! "$nft" list table inet yantrik_devtools_session >/dev/null 2>&1; then
+      warn "the table inet yantrik_devtools_session is not loaded although the person's manager runs; the Minds in it can reach 9222 and VNC until it is"
+      return 1
+    fi
+    if "$nft" list table inet yantrik_devtools_session 2>/dev/null | grep -q 'skuid != 0'; then
+      warn "the DevTools and VNC ports are in lockdown (only root reaches them): the cgroup rule did not load at login"
+    fi
   fi
   return 0
 }

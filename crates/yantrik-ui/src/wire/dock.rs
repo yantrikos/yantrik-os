@@ -1247,6 +1247,23 @@ pub(super) fn launch(
 ) {
     let path = resolve_app_binary(bin);
     let mut command = launch_command(&path, args, dir, seat);
+    // An app a Mind asked for (anything on its seat, or a call a Mind made when the setting sends
+    // its apps to the desktop) runs in a scope of its own, outside the person's session (#1137);
+    // the person's own launches stay in the session. No scope available: the app is not started.
+    let mut scope = None;
+    if seat.is_some() || matches!(crate::mind_view::requester_now(), crate::mind_view::Requester::Mind(_)) {
+        let id = yantrik_mind_scope::fresh_id(&format!("app-{app_id}"));
+        match yantrik_mind_scope::wrap(&command, &id, false) {
+            Ok((scoped, unit)) => {
+                command = scoped;
+                scope = unit;
+            }
+            Err(why) => {
+                let said = format!("{}{why}", crate::mind_landing::REFUSED);
+                return crate::running::mark_launch_failed(app_id, bin, &said, 0);
+            }
+        }
+    }
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
         // inherits the environment, and an app that inherits that variable opens fullscreen too.
@@ -1333,6 +1350,10 @@ pub(super) fn launch(
                 crate::surfaces::app_exited(pid, second_copy);
                 crate::running::mark_exited(&id, pid);
                 crate::mind_view::mark_exited(pid);
+                // What the app left in its scope goes with it.
+                if let Some(unit) = &scope {
+                    yantrik_mind_scope::stop(unit);
+                }
             });
         }
         Err(e) => tracing::error!(app = app_id, bin, path = %path.display(), error = %e, "Failed to launch app"),

@@ -23,14 +23,55 @@ selftest_devtools() {
   is "devtools: ... in a table of its own, replaced whole on each load" "yes" \
     "$(has 'delete table inet yantrik_devtools_session' "$session")"
   is "devtools: the cgroup rule names the uid it is given" "yes" "$(has 'user@4242.service' "$(devtools_session_text 4242)")"
-  is "devtools: the manager loads the rule itself, before its first process, with full rights" "yes" \
-    "$(has 'ExecStartPre=+/usr/sbin/nft -f /etc/yantrik/devtools-guard-session.nft' "$dropin")"
+  is "devtools: the manager loads the rule itself, before its first process, with full rights" "yes"     "$(has "ExecStartPre=+/bin/sh -c '/usr/sbin/nft -f /etc/yantrik/devtools-guard-session.nft || " "$dropin")"
+  is "devtools: ... and falls back to the lockdown, so the manager still starts" "yes"     "$(has '|| /usr/sbin/nft -f /etc/yantrik/devtools-guard-lockdown.nft' "$dropin")"
+  is "devtools: the lockdown shuts the same ports to everyone but root, on loopback" "yes"     "$(has 'oifname "lo" tcp dport { 5900-5909, 9222-9322 } meta skuid != 0 reject with tcp reset' "$(devtools_lockdown_text)")"
+  is "devtools: the lockdown replaces the session table whole" "yes"     "$(has 'delete table inet yantrik_devtools_session' "$(devtools_lockdown_text)")"
   is "devtools: the boot and reload unit puts it back, tolerating a manager not yet up" "yes" \
     "$(has 'ExecStart=-/usr/sbin/nft -f /etc/yantrik/devtools-guard-session.nft' "$unit")"
   is "devtools: the uid layer loads first and is not tolerant" "yes" "$(has 'ExecStart=/usr/sbin/nft -f /etc/yantrik/devtools-guard.nft' "$unit")"
-  is "devtools: a failed manual load leaves no drop-in (a kernel without the match cannot lock the person out)" "yes" \
-    "$(declare -f reconcile_devtools_session | tr -s ' 
-' ' ' | grep -qE 'nft" -f "\$DEVTOOLS_SESSION_GUARD" 2> ?/dev/null; then rm -f [^;]*yantrik-devtools.conf"; warn .*; return 1' && echo yes || echo no)"
   is "devtools: the guard reconcile runs the cgroup layer" "yes" \
     "$(declare -f reconcile_devtools_guard | grep -q 'reconcile_devtools_session' && echo yes || echo no)"
+  selftest_devtools_reconcile
+}
+
+# reconcile_devtools_session against a stand-in nft, in a scratch tree: which branch installs the
+# drop-in, and what is said when a table has gone. FAKE_FAIL picks what the stand-in refuses.
+selftest_devtools_reconcile() {
+  local d out rc dropin
+  d="$(mktemp -d)" || return 0
+  mkdir -p "$d/bin" "$d/etc" "$d/cg/user.slice/user-1000.slice/user@1000.service"
+  cat > "$d/bin/nft" <<'FAKE'
+#!/bin/bash
+all="$*"; [ "$1" = "-f" ] && [ "$2" = "-" ] && all="$all $(cat)"
+echo "$all" >> "$FAKE_LOG"
+case "$FAKE_FAIL:$all" in
+  probe:*yantrik_devtools_probe*|session:*devtools-guard-session*|all:*) exit 1 ;;
+esac
+[ "$1" = "list" ] && [ -n "$FAKE_MISSING" ] && exit 1
+[ "$1" = "list" ] && [ -n "$FAKE_LOCKDOWN" ] && echo 'meta skuid != 0 reject'
+exit 0
+FAKE
+  chmod +x "$d/bin/nft"
+  dropin="$d/etc/user@1000.service.d/yantrik-devtools.conf"
+  dt_run() { # <FAKE_FAIL> <cgroup present: yes|no> [extra env]
+    rm -rf "$d/etc"; mkdir -p "$d/etc"; : > "$d/log"
+    local cgroot="$d/cg"; [ "$2" = no ] && cgroot="$d/nocg"
+    ( DEVTOOLS_SESSION_GUARD="$d/etc/session.nft" DEVTOOLS_LOCKDOWN="$d/etc/lockdown.nft"       DEVTOOLS_DROPIN_ROOT="$d/etc" DEVTOOLS_CGROOT="$cgroot" DEVTOOLS_NO_RELOAD=1       FAKE_LOG="$d/log" FAKE_FAIL="$1" FAKE_MISSING="$FAKE_MISSING" FAKE_LOCKDOWN="$FAKE_LOCKDOWN"       reconcile_devtools_session "$d/bin/nft" 1000 ) 2>&1
+  }
+  out="$(dt_run none yes)"; rc=$?
+  is "devtools: with the cgroup up and every load good, the drop-in goes in" "yes" "$([ -f "$dropin" ] && echo yes || echo no)"
+  out="$(dt_run none no)"
+  is "devtools: with nobody logged in the kernel is probed first, then the drop-in goes in" "yes"     "$([ -f "$dropin" ] && grep -q yantrik_devtools_probe "$d/log" && echo yes || echo no)"
+  is "devtools: ... the probe names a cgroup every systemd machine has" "yes" "$(grep -q 'level 1 "system.slice"' "$d/log" && echo yes || echo no)"
+  out="$(dt_run probe no)"
+  is "devtools: with nobody logged in and a kernel that cannot match a cgroup, no drop-in (the login cannot break)" "no" "$([ -f "$dropin" ] && echo yes || echo no)"
+  is "devtools: ... and the updater says so" "yes" "$(printf '%s' "$out" | grep -q 'cannot match on a cgroup' && echo yes || echo no)"
+  out="$(dt_run session yes)"
+  is "devtools: a rule that will not load leaves no drop-in" "no" "$([ -f "$dropin" ] && echo yes || echo no)"
+  out="$(FAKE_MISSING=1 dt_run none yes)"
+  is "devtools: a session table that has gone is warned about" "yes" "$(printf '%s' "$out" | grep -q 'is not loaded although' && echo yes || echo no)"
+  out="$(FAKE_LOCKDOWN=1 dt_run none yes)"
+  is "devtools: a lockdown table standing at login is warned about" "yes" "$(printf '%s' "$out" | grep -q 'in lockdown' && echo yes || echo no)"
+  rm -rf "$d"
 }

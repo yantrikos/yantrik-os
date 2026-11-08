@@ -21,6 +21,7 @@ yantrik-harness = { workspace = true }
 yantrik-gateway = { workspace = true }
 # Agents' commands, each in a PTY the shell owns (design/agents-workspace-2026-09-23.md, decision 3).
 yantrik-agent-terminal = { workspace = true }
+yantrik-mind-scope = { workspace = true }
 yantrik-companion = { workspace = true }
 yantrik-chat = { workspace = true }
 yantrik-ml = { workspace = true, features = ["api-llm", "claude-cli"] }

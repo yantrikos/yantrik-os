@@ -111,8 +111,12 @@ pub(crate) fn spawn(
         .find(|p| Path::new(p).exists())
         .ok_or_else(|| "the command was not started: this machine has no bash".to_string())?;
     let write_fd = pwd_write.as_raw_fd();
-    // In a scope of its own, outside the person's session (#1137); see `scope`.
-    let launch = crate::scope::launch(&id.0, bash);
+    // In a scope of its own, outside the person's session (#1137); see `yantrik_mind_scope`. A
+    // machine with a user manager that cannot give one refuses the job: it does not run in the
+    // session. (A unit test has no user manager and says so.)
+    let mut host = yantrik_mind_scope::Host::here();
+    host.systemd &= !cfg!(test);
+    let launch = yantrik_mind_scope::plan(&id.0, bash, &host, true)?;
     let builder = pty_process::blocking::Command::new(&launch.program)
         .args(&launch.args)
         .args(["--noprofile", "--norc", "-c", WRAPPER, "bash", command])
@@ -169,7 +173,7 @@ pub(crate) fn spawn(
             libc::kill(-pid, libc::SIGKILL);
         }
         if let Some(unit) = &job.scope {
-            crate::scope::stop(unit);
+            yantrik_mind_scope::stop(unit);
         }
         return Err(refuse("no thread to watch it", &e));
     }
@@ -440,7 +444,7 @@ impl Job {
                 libc::kill(-self.pid, libc::SIGKILL);
             }
             if let Some(unit) = &self.scope {
-                crate::scope::stop(unit);
+                yantrik_mind_scope::stop(unit);
             }
         }
     }
@@ -614,7 +618,7 @@ fn worker(
                     libc::kill(-job.pid, libc::SIGKILL);
                 }
                 if let Some(unit) = &job.scope {
-                    crate::scope::stop(unit);
+                    yantrik_mind_scope::stop(unit);
                 }
                 escalated = true;
             }

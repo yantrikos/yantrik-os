@@ -62,7 +62,14 @@ impl Tool for DownloadFileTool {
         };
         let path = path.as_str();
 
-        match std::process::Command::new("curl")
+        if let Err(e) = refuse_browser_port(url) {
+            return format!("Error: {e}");
+        }
+        let mut curl = match mind_curl() {
+            Ok(c) => c,
+            Err(why) => return format!("Error: {why}"),
+        };
+        match curl
             .args(["-fsSL", "--max-time", "60", "--max-filesize", "10485760", "-o", path, url])
             .output()
         {
@@ -117,7 +124,11 @@ impl Tool for HttpFetchTool {
         }
 
         if extract == "headers" {
-            return match std::process::Command::new("curl")
+            let mut curl = match mind_curl() {
+                Ok(c) => c,
+                Err(why) => return format!("Error: {why}"),
+            };
+            return match curl
                 .args(["-fsS", "-I", "--max-time", "10", url])
                 .output()
             {
@@ -135,7 +146,11 @@ impl Tool for HttpFetchTool {
         }
 
         // Fetch body content
-        match std::process::Command::new("curl")
+        let mut curl = match mind_curl() {
+            Ok(c) => c,
+            Err(why) => return format!("Error: {why}"),
+        };
+        match curl
             .args(["-fsSL", "--max-time", "10", "--max-filesize", "1048576", url])
             .output()
         {
@@ -260,6 +275,31 @@ impl Tool for WebFetchTool {
 }
 
 // ── Shared helpers ──
+
+/// `curl` for a Mind, in a scope of its own outside the person's session (#1137).
+fn mind_curl() -> Result<std::process::Command, String> {
+    yantrik_mind_scope::command(&yantrik_mind_scope::fresh_id("curl"), "curl", true).map(|(c, _)| c)
+}
+
+/// The browser's DevTools (9222-9322) and VNC (5900-5909) ports on this machine are the person's,
+/// not a download's: `/json/list` names their open tabs and `/json/close/<id>` closes one.
+fn refuse_browser_port(url: &str) -> Result<(), String> {
+    let authority = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => (h, p.parse::<u16>().ok()),
+        _ => (host_port, None),
+    };
+    let loopback = matches!(host, "localhost" | "[::1]" | "0.0.0.0") || host.starts_with("127.");
+    match port {
+        Some(9222..=9322 | 5900..=5909) if loopback => Err(
+            "That port is the person's browser or screen on this machine, not something to download from"
+                .to_string(),
+        ),
+        _ => Ok(()),
+    }
+}
 
 /// Validate a URL for fetch operations.
 fn validate_fetch_url(url: &str) -> Result<(), String> {
@@ -442,6 +482,22 @@ fn strip_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_download_never_reaches_the_browsers_debugging_port() {
+        for url in [
+            "http://localhost:9222/json/list",
+            "http://127.0.0.1:9223/json/close/1",
+            "http://localhost:5900",
+            "http://user@localhost:9230/",
+            "http://[::1]:9222/json",
+        ] {
+            assert!(refuse_browser_port(url).is_err(), "{url}");
+        }
+        for url in ["http://localhost:8080/x", "http://localhost/x", "https://example.com:9222/x", "http://localhost:80/9222"] {
+            assert!(refuse_browser_port(url).is_ok(), "{url}");
+        }
+    }
 
     #[test]
     fn a_chat_model_that_cannot_be_reached_is_named_without_its_sign_in() {

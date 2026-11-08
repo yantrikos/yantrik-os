@@ -572,6 +572,36 @@ impl Drop for RunHome {
     }
 }
 
+/// A script is a Mind's, so it runs in a scope of its own, outside the person's session (#1137).
+fn scoped(program: &str) -> Result<(std::process::Command, Option<String>), String> {
+    yantrik_mind_scope::command(&yantrik_mind_scope::fresh_id("script"), program, true)
+}
+
+/// Stops the run's scope when the run is over, to reach what left the process group on purpose.
+struct ScopeGuard(Option<String>);
+
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        if let Some(unit) = &self.0 {
+            yantrik_mind_scope::stop(unit);
+        }
+    }
+}
+
+/// The result of a run that was refused because it could not be given a scope of its own.
+fn refused(why: String) -> ExecutionResult {
+    ExecutionResult {
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: why,
+        duration_secs: 0.0,
+        timed_out: false,
+        generated_files: vec![],
+        error_analysis: None,
+        sandboxed: false,
+    }
+}
+
 /// Execute a file with real timeout (kill on deadline).
 /// Scripts run inside a bubblewrap sandbox by default.
 fn execute_script(
@@ -610,9 +640,12 @@ fn execute_script(
     let use_bwrap = sandbox != SandboxMode::None && has_bwrap();
 
     // Build command: either bwrap-wrapped or direct
-    let mut cmd = if use_bwrap {
+    let (mut cmd, unit) = if use_bwrap {
         let bwrap_args = build_bwrap_args(sandbox, &scripts, &out_dir);
-        let mut c = std::process::Command::new("/usr/bin/bwrap");
+        let (mut c, unit) = match scoped("/usr/bin/bwrap") {
+            Ok(made) => made,
+            Err(why) => return refused(why),
+        };
         c.env_remove("LD_PRELOAD"); // bwrap is native, LD_PRELOAD can interfere
         c.args(&bwrap_args);
 
@@ -646,9 +679,12 @@ fn execute_script(
         }
 
         c.arg(inner);
-        c
+        (c, unit)
     } else {
-        let mut c = std::process::Command::new(interpreter);
+        let (mut c, unit) = match scoped(interpreter) {
+            Ok(made) => made,
+            Err(why) => return refused(why),
+        };
         if language == "typescript" {
             c.arg("ts-node");
         }
@@ -658,8 +694,10 @@ fn execute_script(
                 args.split_whitespace().map(String::from).collect()
             ));
         }
-        c
+        (c, unit)
     };
+    // Whatever the script left behind in its scope goes when the run is over.
+    let _scope = ScopeGuard(unit);
 
     // Working directory (only for non-bwrap — bwrap runs from /)
     if !use_bwrap {

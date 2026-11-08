@@ -83,6 +83,7 @@ members = [
     "apps/studio",
     "crates/yantrik-harness",
     "crates/yantrik-agent-terminal",
+    "crates/yantrik-mind-scope",
     # The surface SDK's example, template and guide samples (docs/sdk): built and tested with
     # everything else, so what an outside author copies is what CI ran.
     "examples/hello-surface",
@@ -192,6 +193,7 @@ signal-hook = "0.3"
 yantrik-harness = { path = "crates/yantrik-harness" }
 yantrik-gateway = { path = "crates/yantrik-gateway" }
 yantrik-agent-terminal = { path = "crates/yantrik-agent-terminal" }
+yantrik-mind-scope = { path = "crates/yantrik-mind-scope" }
 yantrik-companion-core = { path = "crates/yantrik-companion-core" }
 yantrik-companion-instincts = { path = "crates/yantrik-companion-instincts" }
 yantrik-companion-cortex = { path = "crates/yantrik-companion-cortex" }

@@ -1,0 +1,8 @@
+[package]
+name = "yantrik-mind-scope"
+version = "0.1.0"
+edition = "2021"
+description = "Starts what a Mind asked for in a systemd scope of its own, outside the person's login session (#1137)"
+
+[dependencies]
+tracing = { workspace = true }
