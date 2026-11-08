@@ -59,6 +59,9 @@ PY
       [ -z "${HB_FLIP:-}" ] || harness_bridge_idle() { # idle once, then a turn begins
         if [ -e "$hb/flipped" ]; then printf busy; else : > "$hb/flipped"; printf idle; fi; }
       rm -f "$hb/flipped"
+      # HB_RELOAD=1: a unit that can reload. HB_FRESH=1: and the bridge is new once it has been asked.
+      [ -z "${HB_RELOAD:-}" ] || { export HARNESS_BRIDGE_CANRELOAD=yes; hb_rf="$1"; hb_old="$2"
+        stale_processes() { if [ -n "${HB_FRESH:-}" ] && [ -s "$hb_rf" ]; then :; else printf '%s' "$hb_old"; fi; }; }
       harness_bridge_update "$2" 2>&1
     )
   }
@@ -126,6 +129,16 @@ PY
     "did=restart hermes-gateway.service as $hb_owner|none" "$(hb_did "$hb/restart" "$hb_stale" hermes=orphaned:3600)"
   is "bridge: another harness's recent orphan does not hold it either" \
     "did=restart hermes-gateway.service as $hb_owner|none" "$(hb_did "$hb/restart" "$hb_stale" pi=orphaned:5)"
+
+  # A unit that can reload: Hermes drains its own work first, so nothing is waited on or looked up;
+  # the update asks, then confirms the bridge is new.
+  is "bridge: a unit that can reload is reloaded, not restarted, even with a turn in flight; note put away"     "did=reload hermes-gateway.service as $hb_owner|none" "$(HB_RELOAD=1 HB_FRESH=1 hb_did "$hb/restart" "$hb_stale" hermes=running)"
+  is "bridge: ... and says the mind has the new bridge" "yes"     "$(HB_RELOAD=1 HB_FRESH=1 hb_said "$hb/restart" "$hb_stale" "hermes-gateway.service reloaded" hermes=running)"
+  is "bridge: a reload after which the bridge is still old is not done, with a note" "did=reload hermes-gateway.service as $hb_owner|asked"     "$(HB_RELOAD=1 hb_did "$hb/restart" "$hb_stale" hermes=done)"
+  is "bridge: ... said as Hermes restarting once it has finished" "yes"     "$(HB_RELOAD=1 hb_said "$hb/restart" "$hb_stale" "restarts once it finishes what it is doing" hermes=done)"
+  is "bridge: a reload that fails is said as that" "yes"     "$(HB_RELOAD=1 hb_said fail "$hb_stale" "asking hermes-gateway.service to reload failed" hermes=done)"
+  # An orphaned row is final: the long wait could only end in the note, so it is not taken.
+  is "bridge: only an orphaned run holds it: no wait (300s bound would stall), and it is said" "did=|Herme"     "$(HB_WAIT=300 hb_did "$hb/restart" "$hb_stale" hermes=orphaned:5)"
 
   # Only the desktop account's own manager holds the gateway this restart reaches.
   mkdir -p "$hb/proc/7001" "$hb/proc/7002"

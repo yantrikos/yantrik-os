@@ -2471,7 +2471,7 @@ source_is_roots() {
 # be an updater reading rules it never shipped with).
 is_updater_file() {
   [ "$1" = yantrik-update ] || [ "$1" = yantrik-update-verify ] || [ "$1" = yantrik-root-files.sha256 ] || [ "$1" = mind-capabilities.sh ] \
-    || [ "$1" = yantrik-harness-bridge.sh ]
+    || [ "$1" = yantrik-harness-bridge.sh ] || [ "$1" = yantrik-update-args ]
 }
 
 # The hashes of everything this updater installs as root, shipped in bin/ (#419). Ownership says

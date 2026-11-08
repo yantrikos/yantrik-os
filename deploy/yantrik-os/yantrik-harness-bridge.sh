@@ -9,16 +9,20 @@
 #
 # Restarting a gateway is not free: it kills a turn in flight, which Hermes then replays into
 # the next turn as a "Recovered reply" -- the lesson that took restarts out of
-# refresh-plugins.sh in #808. So this waits for idle, and asks the machine, which does know: the
-# shell writes every run it hands a harness into its run store, so an unfinished run of Hermes's
-# is a turn in flight. That is the question below, not a proxy for it.
+# refresh-plugins.sh in #808. Hermes has its own answer: its unit's ExecReload sends SIGUSR1, and the
+# gateway then refuses new turns, drains every platform (desktop, Telegram, Slack, IRC), scheduled
+# job and API run, and restarts itself (systemd relaunches it), within its own cap
+# (restart_after_turn_timeout, 30 minutes). So when the unit can reload, that is what this asks for,
+# and it does not wait or look at the run store: Hermes's own count of work is the live answer.
 #
-# Two limits, said plainly. (1) What this protects is the desktop's turns. Hermes is a gateway with
-# other platforms (Telegram, Slack, IRC) and its own scheduled jobs, which the shell's run store does
-# not see; a turn from one of those can still be killed by the restart. (2) An update restarts the
-# shell, and a starting shell marks every unfinished run orphaned, yet Hermes keeps working on it.
-# So a Hermes run orphaned within the last HARNESS_BRIDGE_ORPHAN_SECONDS (15 minutes) counts as a
-# turn in flight; a turn that runs longer than that after the update is not protected.
+# A unit that cannot reload (an older one) keeps the guarded restart, which kills what is in
+# flight, so it waits for idle and asks the machine: the shell writes every run it hands a harness
+# into its run store, so an unfinished run of Hermes's is a turn in flight. Its limits, said
+# plainly. (1) That store sees the desktop's turns only, not Telegram, Slack, IRC or scheduled jobs.
+# (2) An update restarts the shell, and a starting shell marks every unfinished run orphaned, yet
+# Hermes keeps working on it. So a Hermes run orphaned within the last HARNESS_BRIDGE_ORPHAN_SECONDS
+# (15 minutes) counts as a turn in flight, and is not waited on (an orphaned row is final: nothing
+# changes it while waiting), just left; a turn that runs longer than that is not protected.
 #
 # Three rules hold here.
 #   - The bridge is found by pid, through systemd's own record of what the gateway holds (the
@@ -34,7 +38,9 @@
 # selftest (selftest_standins, never true for root): they are stand-ins for the selftest to point at
 # a fake desktop, not a way for a caller to steer a root-run restart or a root-owned note.
 #   HERMES_GATEWAY_UNIT              the user unit holding the bridge
-#   HARNESS_BRIDGE_WAIT_SECONDS      how long a turn in flight is waited on (300)
+#   HARNESS_BRIDGE_WAIT_SECONDS      how long a turn in flight is waited on (300), restart path
+#   HARNESS_BRIDGE_RELOAD_SECONDS    how long after a reload the bridge is awaited fresh (60)
+#   HARNESS_BRIDGE_CANRELOAD         selftest: whether the unit can reload (yes | no)
 #   HARNESS_BRIDGE_PERSON_SECONDS    how long a run waiting on the person is waited on (30)
 #   HARNESS_BRIDGE_ORPHAN_SECONDS    how long a run orphaned by a shell restart still counts as in flight (900)
 #   YANTRIK_PROC, HARNESS_BRIDGE_RUNS_DB, HARNESS_BRIDGE_STATE   /proc, the run store, the note
@@ -111,7 +117,7 @@ harness_bridge_runs_db() {
   printf '%s' "$home/.local/share/yantrik/runs.db"
 }
 
-# How many of Hermes's runs are still open, as "<running> <waiting-on-person>". The shell writes
+# How many of Hermes's runs are still open, as "<running> <waiting-on-person> <orphaned>". The shell writes
 # every run it hands a harness into the store, unfinished ones as running or waiting-on-person
 # (crates/yantrik-harness/src/run_store.rs), and under `harness` the id that harness announced --
 # "hermes" for this plugin (harnesses/hermes/adapter.py). So a run of hers still open is a turn in
@@ -132,30 +138,32 @@ try:
     c = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
     since = int(time.time() * 1000) - int(sys.argv[2]) * 1000
     # An orphaned run is one the shell gave up on when it started; Hermes is still on it.
-    r = c.execute("select coalesce(sum(state in (?,?)),0), coalesce(sum(state=?),0) from runs"
-                  " where harness=? and (state in (?,?) or (state=? and updated_at>=?))",
-                  ("running", "orphaned", "waiting-on-person", "hermes",
+    r = c.execute("select coalesce(sum(state=?),0), coalesce(sum(state=?),0), coalesce(sum(state=?),0)"
+                  " from runs where harness=? and (state in (?,?) or (state=? and updated_at>=?))",
+                  ("running", "waiting-on-person", "orphaned", "hermes",
                    "running", "waiting-on-person", "orphaned", since)).fetchone()
-    print("%d %d" % (r[0], r[1]))
+    print("%d %d %d" % (r[0], r[1], r[2]))
 except Exception as e:
     sys.stderr.write("%s\n" % e); sys.exit(1)
 ' "$db" "$orphan" 2>/dev/null)" || return 1
-  case "$out" in [0-9]*" "[0-9]*) ;; *) return 1 ;; esac
+  case "$out" in [0-9]*" "[0-9]*" "[0-9]*) ;; *) return 1 ;; esac
   case "$out" in *[!0-9" "]*) return 1 ;; esac
   printf '%s' "$out"
 }
 
-# Is Hermes idle? One word: `idle`; `busy` (a turn in flight); `waiting` (no turn in flight, but a
-# run is open waiting for the person to answer, which can stay open for hours); or `unknown` when
+# Is Hermes idle? One word: `idle`; `busy` (a turn in flight); `orphaned` (only a run the shell
+# orphaned, which may still be going and will not change by waiting); `waiting` (no turn in flight,
+# but a run is open waiting for the person to answer, which can stay open for hours); or `unknown` when
 # the store could not be asked -- which includes no store at all, since a store that is not there is
 # not a store with nothing in it. `unknown` is never a reason to restart.
 harness_bridge_idle() {
-  local db n running waiting
+  local db n running waiting orphaned
   db="$(harness_bridge_runs_db)" || { printf 'unknown'; return 0; }
   [ -f "$db" ] || { printf 'unknown'; return 0; }
   n="$(harness_bridge_open_runs "$db")" || { printf 'unknown'; return 0; }
-  running="${n% *}"; waiting="${n#* }"
+  read -r running waiting orphaned <<< "$n"
   if [ "$running" != 0 ]; then printf 'busy'
+  elif [ "$orphaned" != 0 ]; then printf 'orphaned'
   elif [ "$waiting" != 0 ]; then printf 'waiting'
   else printf 'idle'; fi
 }
@@ -166,11 +174,11 @@ harness_bridge_span() {
 }
 
 # Wait for Hermes to finish what it is doing; on failure leave the reason in $HARNESS_BRIDGE_IDLE
-# (`busy`, `waiting` or `unknown`). A turn in flight is waited on for <bound> seconds. A run waiting
+# (`busy`, `waiting`, `orphaned` or `unknown`). A turn in flight is waited on for <bound> seconds. A run waiting
 # on the person is waited on for a short bound only: it is the person being waited on, not a turn
 # that will finish by itself, and every update would otherwise stand five minutes in front of
 # someone who may be the very person it is waiting for. `unknown` is not waited on: no store, or
-# one that will not open, is not something a minute fixes.
+# one that will not open, is not something a minute fixes. Nor is an orphaned run: its row is final.
 harness_bridge_wait_idle() {
   local waited=0 bound="$1" person limit answer
   person="$(harness_bridge_seconds HARNESS_BRIDGE_PERSON_SECONDS 30)"
@@ -178,7 +186,7 @@ harness_bridge_wait_idle() {
     answer="$(harness_bridge_idle)"
     [ "$answer" = idle ] && return 0
     HARNESS_BRIDGE_IDLE="$answer"
-    [ "$answer" = unknown ] && return 1
+    case "$answer" in unknown|orphaned) return 1 ;; esac
     limit="$bound"
     if [ "$answer" = waiting ] && [ "$person" -lt "$bound" ]; then limit="$person"; fi
     if [ "$waited" = 0 ] && [ "$limit" -gt 0 ]; then
@@ -195,16 +203,37 @@ harness_bridge_wait_idle() {
   done
 }
 
-# Restart the gateway as the person. In selftest mode, <HARNESS_BRIDGE_RESTART> stands in for it:
-# `fail` for a restart that does not happen, anything else a file the ask is written to, so the
-# selftest can read which unit was restarted and as whom -- the two things that must not be wrong.
-harness_bridge_restart() {
+# Reload or restart the gateway as the person (<verb>: reload | restart). In selftest mode,
+# <HARNESS_BRIDGE_RESTART> stands in for it: `fail` for one that does not happen, anything else a
+# file the ask is written to, so the selftest can read which verb, unit and account -- the things
+# that must not be wrong.
+harness_bridge_signal() {
   if selftest_standins && [ -n "${HARNESS_BRIDGE_RESTART:-}" ]; then
     [ "$HARNESS_BRIDGE_RESTART" = fail ] && return 1
-    printf 'restart %s as %s\n' "$(harness_bridge_unit)" "$(harness_bridge_owner)" >> "$HARNESS_BRIDGE_RESTART"
+    printf '%s %s as %s\n' "$1" "$(harness_bridge_unit)" "$(harness_bridge_owner)" >> "$HARNESS_BRIDGE_RESTART"
     return 0
   fi
-  harness_bridge_userctl restart "$(harness_bridge_unit)"
+  harness_bridge_userctl "$1" "$(harness_bridge_unit)"
+}
+harness_bridge_restart() { harness_bridge_signal restart; }
+
+# Can the unit reload, which for Hermes is its drain-aware restart.
+harness_bridge_can_reload() {
+  if selftest_standins && [ -n "${HARNESS_BRIDGE_RESTART:-}" ]; then
+    [ "$(harness_bridge_knob HARNESS_BRIDGE_CANRELOAD no)" = yes ]; return
+  fi
+  [ "$(harness_bridge_userctl show -p CanReload --value "$(harness_bridge_unit)" 2>/dev/null)" = yes ]
+}
+
+# Is no gateway-held bridge old any more? Looked at again for up to <seconds>.
+harness_bridge_fresh_within() {
+  local waited=0
+  while :; do
+    [ -z "$(harness_bridge_stale_pids "$(stale_processes)")" ] && return 0
+    [ "$waited" -ge "$1" ] && return 1
+    sleep 2
+    waited=$((waited + 2))
+  done
 }
 
 # The update's one call, at the point where it found an old bridge; <stale> is the same
@@ -223,8 +252,20 @@ harness_bridge_update() {
   # Once a run: an apply reaches the point where an old bridge is reported twice.
   [ -n "${HARNESS_BRIDGE_TRIED:-}" ] && return 0
   HARNESS_BRIDGE_TRIED=1
-  if ! harness_bridge_wait_idle "$bound"; then
+  if harness_bridge_can_reload; then
+    # Hermes drains its own work before it restarts, so there is nothing to wait for here, only to
+    # confirm: the bridge is new once it has restarted, which may be up to its own cap from now.
+    local fresh; fresh="$(harness_bridge_seconds HARNESS_BRIDGE_RELOAD_SECONDS 60)"
+    [ "${2:-}" = 0 ] && fresh=0
+    if ! harness_bridge_signal reload; then why="asking $unit to reload failed"
+    elif harness_bridge_fresh_within "$fresh"; then
+      harness_bridge_note_clear; say "Gave the mind the new bridge: $unit reloaded"; return 0
+    else
+      why="asked $unit to reload; Hermes restarts once it finishes what it is doing, and the bridge is not new yet"
+    fi
+  elif ! harness_bridge_wait_idle "$bound"; then
     case "${HARNESS_BRIDGE_IDLE:-busy}" in
+      orphaned) why="Hermes was still working on a turn the update cut off, so it was left running" ;;
       unknown) why="could not tell whether Hermes was busy (its run store was not readable)" ;;
       waiting) why="Hermes is waiting for the person to answer, so it was left running" ;;
       *) why="Hermes was still working after $(harness_bridge_span "$bound")" ;;
