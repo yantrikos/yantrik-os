@@ -82,6 +82,50 @@ pub(crate) fn handle(app_id: &str, args: &serde_json::Value) -> Result<serde_jso
     WINDOW.with(|cell| answer_with(cell.borrow().as_deref(), args))
 }
 
+/// The Mind's way to the person's screen: `present_to_person`.
+pub const TO_PERSON: &str = "present_to_person";
+
+/// Graded `dangerous` so a Mind's call asks in `ask` and `auto` and runs in bypass: a window
+/// raised over the person's work is what Mind View exists to stop (#239), so it is the person's
+/// word, not the Mind's. (`present` stays `safe`: it is the desktop's own hand-over.) On a machine
+/// whose `tool_permission` ceiling is below `dangerous` it is refused outright, as any such action.
+pub(crate) fn to_person_action() -> Action {
+    Action::new(
+        TO_PERSON,
+        "Put this app's window on the person's screen and bring it forward, opening it if the          app has none. Use it when the person asked to see something; `shown` in describe and in          every open says where the window is now",
+    )
+    .risk("dangerous")
+    .arg(Param::text("display").optional().describe("only `person`, the default"))
+}
+
+/// What `present_to_person` does. Runs on the UI thread.
+pub(crate) fn to_person(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    to_person_with(WINDOW.with(|cell| cell.borrow().as_ref().map(|p| p())), crate::for_mind::from_env(), args)
+}
+
+/// [`to_person`], given what presenting the window came to (`None`: this process cannot show one).
+fn to_person_with(
+    presented: Option<Result<(), String>>,
+    drawn_for_mind: bool,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match args["display"].as_str().map(str::trim).filter(|d| !d.is_empty()) {
+        None | Some("person") => {}
+        Some(other) => return Err(format!("display `{other}` is not one this can show on; only `person`")),
+    }
+    if drawn_for_mind {
+        return Err(
+            "this window is in Mind View and cannot move to the person's screen; the person's own              copy of the app is the one that can be shown"
+                .into(),
+        );
+    }
+    match presented {
+        None => Err("this app has no window it can show".into()),
+        Some(Err(why)) => Err(why),
+        Some(Ok(())) => Ok(serde_json::json!({ "presented": true, "display": "person" })),
+    }
+}
+
 /// Whether the display `here` is another than `other`: the one rule for telling Mind View's
 /// display from the person's, for a launch's hand-over and for `for_mind`. Unknown on either
 /// side is not elsewhere.
@@ -330,5 +374,26 @@ mod tests {
             started.elapsed() < BIND_WAIT + Duration::from_secs(1),
             "waited past the bind budget"
         );
+    }
+
+    #[test]
+    fn present_to_person_grades_so_that_ask_and_auto_ask_and_bypass_runs() {
+        use yantrik_ipc_transport::gate::{grade, Mode, MODES};
+        let level = grade(to_person_action().permission).unwrap();
+        let runs_unasked = |mode: &str| level <= Mode::named(mode).allows();
+        assert!(!runs_unasked("ask"), "ask asks");
+        assert!(!runs_unasked("auto"), "auto asks");
+        assert!(runs_unasked("bypass") && runs_unasked("bypass_all"));
+        assert_eq!(MODES.len(), 5);
+        assert_eq!(action().permission, "safe", "the desktop's hand-over stays safe");
+    }
+
+    #[test]
+    fn present_to_person_shows_only_on_the_persons_screen() {
+        let ok = to_person_with(Some(Ok(())), false, &serde_json::json!({})).unwrap();
+        assert_eq!(ok["display"], "person");
+        assert!(to_person_with(Some(Ok(())), false, &serde_json::json!({ "display": "mind" })).is_err());
+        assert!(to_person_with(Some(Ok(())), true, &serde_json::json!({})).unwrap_err().contains("Mind View"));
+        assert!(to_person_with(None, false, &serde_json::json!({})).is_err());
     }
 }

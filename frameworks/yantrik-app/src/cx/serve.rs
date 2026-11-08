@@ -173,6 +173,7 @@ impl<A: App> Core<A> {
 
     /// The count of the person's windows, to the shell, when it changed.
     pub(super) fn report_windows(&self) {
+        crate::where_shown::note_windows(self.windows_open().len() as u32);
         if let Some(reporter) = self.serve.reporter.borrow().as_ref() {
             reporter.write(self.windows_open().len() as u32);
         }

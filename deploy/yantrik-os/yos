@@ -1283,6 +1283,7 @@ def cmd_describe(argv):
         print(PRIVATE_NOTE)
     if "revision" in view:
         print("revision: %s" % view["revision"])
+    print_shown(view)
     fold = "--fold" in argv
     if view.get("state"):
         print(render_state(view["state"], argv[0], fold))
@@ -1293,6 +1294,17 @@ def cmd_describe(argv):
         return
     for action in view.get("actions", []):
         print(render_action(action, brief))
+
+
+def print_shown(reply):
+    """Where the app's window is: `person`, `mind-view` or `nowhere` (#1129). Printed because "Done"
+    says the command ran, and a mind that reads it as "visible" tells the person a picture is on
+    their screen when it is in Mind View, or on no display at all."""
+    shown = reply.get("shown")
+    if isinstance(shown, str):
+        print("shown: %s" % shown)
+        if isinstance(reply.get("shown_note"), str):
+            print(one_line(reply["shown_note"]))
 
 
 # The fixed presentation order of the state's keys (#319). The wire cannot carry an order:
@@ -1672,6 +1684,7 @@ def cmd_act(argv):
     print("accepted: %s, settled: %s" % (reply.get("accepted"), reply.get("settled")))
     if "revision" in reply:
         print("revision: %s" % reply["revision"])
+    print_shown(reply)
     # The action's own result first: it is what the call was for. A caller that reads only so far
     # must never lose it to the state below — the shell's state line put files_go's result at
     # character 1,330 and past a mind's 900-character cut (yantrik-mind F24, 2026-09-27).
