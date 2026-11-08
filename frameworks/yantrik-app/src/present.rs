@@ -85,16 +85,16 @@ pub(crate) fn handle(app_id: &str, args: &serde_json::Value) -> Result<serde_jso
 /// The Mind's way to the person's screen: `present_to_person`.
 pub const TO_PERSON: &str = "present_to_person";
 
-/// Graded `dangerous` so a Mind's call asks in `ask` and `auto` and runs in bypass: a window
-/// raised over the person's work is what Mind View exists to stop (#239), so it is the person's
-/// word, not the Mind's. (`present` stays `safe`: it is the desktop's own hand-over.) On a machine
-/// whose `tool_permission` ceiling is below `dangerous` it is refused outright, as any such action.
+/// Graded `sensitive`: a Mind's call asks in `ask` and runs in `auto` and bypass. It only puts a
+/// window in front of the person, who asked for it, and changes or sends nothing; `dangerous`
+/// would be refused with no card under the default `sensitive` ceiling. (`present` stays `safe`:
+/// it is the desktop's own hand-over.)
 pub(crate) fn to_person_action() -> Action {
     Action::new(
         TO_PERSON,
         "Put this app's window on the person's screen and bring it forward, opening it if the          app has none. Use it when the person asked to see something; `shown` in describe and in          every open says where the window is now",
     )
-    .risk("dangerous")
+    .risk("sensitive")
     .arg(Param::text("display").optional().describe("only `person`, the default"))
 }
 
@@ -377,12 +377,14 @@ mod tests {
     }
 
     #[test]
-    fn present_to_person_grades_so_that_ask_and_auto_ask_and_bypass_runs() {
+    fn present_to_person_grades_so_that_ask_asks_and_auto_and_bypass_run() {
         use yantrik_ipc_transport::gate::{grade, Mode, MODES};
         let level = grade(to_person_action().permission).unwrap();
         let runs_unasked = |mode: &str| level <= Mode::named(mode).allows();
         assert!(!runs_unasked("ask"), "ask asks");
-        assert!(!runs_unasked("auto"), "auto asks");
+        assert!(runs_unasked("auto"), "auto runs it");
+        assert!(!runs_unasked("plan"), "plan does not");
+        assert_eq!(to_person_action().permission, "sensitive");
         assert!(runs_unasked("bypass") && runs_unasked("bypass_all"));
         assert_eq!(MODES.len(), 5);
         assert_eq!(action().permission, "safe", "the desktop's hand-over stays safe");
