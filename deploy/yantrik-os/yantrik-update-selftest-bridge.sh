@@ -200,6 +200,8 @@ PY
       export HARNESS_BRIDGE_RESTART="$1"
       hb_found="$hb_stale"; stale_processes() { printf '%s' "$hb_found"; }
       [ -z "${HB_NONOTE:-}" ] && printf 'earlier failure\n' > "$hb/note"
+      # A note older than the half hour a reload may spend draining, unless the case asks otherwise.
+      [ -z "${HB_NONOTE:-}" ] && [ -z "${HB_FRESH:-}" ] && touch -d '-31 minutes' "$hb/note"
       harness_bridge_retry >/dev/null 2>&1
       printf 'did=%s|%s\n' "$(cat "$1" 2>/dev/null)" "$(hb_note)" )
   }
@@ -209,6 +211,8 @@ PY
     "$(hb_retry "$hb/restart" hermes=running)"
   is "bridge: ... and does nothing on a machine no update left a note on" "did=|gone" \
     "$(HB_NONOTE=1 hb_retry "$hb/restart" hermes=done)"
+  is "bridge: ... and does not signal again within the half hour a reload may spend draining" "did=|there" \
+    "$(HB_FRESH=1 hb_retry "$hb/restart" hermes=done)"
 
   # The environment steers nothing outside selftest: the updater is root's. With every stand-in
   # named but selftest not on, none is read.

@@ -292,6 +292,10 @@ harness_bridge_update() {
 # when an earlier update left the note, so a current machine pays one stat; never waits.
 harness_bridge_retry() {
   [ -f "$(harness_bridge_note_file)" ] || return 0
+  # A reload asks Hermes to drain first, which can take up to its own 30-minute cap; signalling it
+  # again on every About visit cannot make that faster, and its handling of a second request while
+  # one is pending is not ours to rely on (review of #1110). One retry per half hour of the note.
+  [ -z "$(find "$(harness_bridge_note_file)" -mmin -30 2>/dev/null)" ] || return 0
   HARNESS_BRIDGE_TRIED=""
   harness_bridge_update "$(stale_processes)" 0
   # Nothing old is left running: the note is out of date, put it away.
