@@ -208,6 +208,10 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   cp "$SCRIPT_DIR/yantrik-update" "$ROOT/bin/yantrik-update"
   chmod +x "$ROOT/bin/yantrik-update"
   echo "   + yantrik-update"
+  # What each subcommand takes, checked before it runs (#1103): sourced beside the updater, and
+  # executable because it starts with #!.
+  install -m 0755 "$SCRIPT_DIR/yantrik-update-args" "$ROOT/bin/yantrik-update-args" \
+    || fail "no yantrik-update-args: the updater would not check what a command is given"
   # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
   install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
     || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
