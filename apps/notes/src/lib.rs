@@ -57,15 +57,16 @@ fn vault_dir(paths: &Paths) -> PathBuf {
     }
 }
 
-/// Where the old builds' lock is. Under `cargo test`, inside the test's own root: the tests'
-/// apps run side by side in one process, and none may stand in for the person's running Notes.
+/// Where the old builds' lock is, named for this boot's profile so a second profile starts beside
+/// the default's. Under `cargo test`, inside the test's own root: the tests' apps run side by side
+/// in one process, and none may stand in for the person's running Notes.
 fn legacy_lock(paths: &Paths) -> Option<PathBuf> {
     if cfg!(test) {
         let dir = paths.state_dir();
         let _ = std::fs::create_dir_all(dir);
-        Some(dir.join(claim::LEGACY_NAME))
+        Some(dir.join(claim::legacy_name(paths.profile())))
     } else {
-        claim::legacy_path()
+        claim::legacy_path(paths.profile())
     }
 }
 
@@ -89,9 +90,10 @@ impl App for Notes {
         }
         let claim = claim::hold(legacy_lock(&boot.paths).as_deref(), vault.dir()).map_err(|claim::Held| {
             // Never from a test: it would ask the person's own Notes to come forward. Nor for an
-            // agent's start: it shows the person nothing (#978).
+            // agent's start: it shows the person nothing (#978). Asked by the instance name, as the
+            // runner claims it (#976): the id alone presents the default profile's window.
             if !cfg!(test) && !boot.service {
-                yantrik_app::instance::present_running(Self::ID);
+                yantrik_app::instance::present_running(&boot.paths.instance_name());
             }
             Startup::handed_over(claim::ALREADY_RUNNING)
         })?;
