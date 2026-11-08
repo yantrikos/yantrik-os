@@ -228,6 +228,10 @@ pub fn into(label: &str, name: &str) -> String {
 
 /// Whether a mind may open `path` in Files, with `home` as the person's home.
 pub fn open_verdict(path: &str, home: &Path) -> Result<(), String> {
+    // What a conversation that had read private state wrote is read only sealed (#1124, N4).
+    if let Some(why) = crate::workshop_guard::refuse_tainted_read(&crate::workshop::record_path(), &crate::filebrowser::expand_home(path)) {
+        return Err(why);
+    }
     let answer = home_paths::stat(path, home);
     match (&answer["exists"], answer["kind"].as_str()) {
         (serde_json::Value::Bool(true), Some("directory")) => Ok(()),
@@ -290,6 +294,9 @@ pub fn here_verdict(label: &str, home: &Path) -> Result<(), String> {
 pub fn entry_verdict(label: &str, name: &str, home: &Path) -> Result<(), String> {
     here_verdict(label, home)?;
     let path = into(label, name);
+    if let Some(why) = crate::workshop_guard::refuse_tainted_read(&crate::workshop::record_path(), &crate::filebrowser::expand_home(&path)) {
+        return Err(why);
+    }
     let answer = home_paths::stat(&path, home);
     match &answer["exists"] {
         serde_json::Value::Bool(true) => Ok(()),

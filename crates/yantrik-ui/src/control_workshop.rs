@@ -302,7 +302,9 @@ mod tests {
         assert!(explain_in(h.path(), &json!({ "folder": "~/Documents/new" })).starts_with("Give the Mind asking a workshop at ~/Documents/new"));
     }
 
-    /// #1124 L4: the card says which Mind asks, from the verified asker, with nothing invisible in it.
+    /// #1124 L4 and N7: the card says which Mind asks, from the verified asker, with nothing invisible in it.
+    /// The sentence it names it in is the registry's own, which `published_detail` now hands the card for
+    /// the shell's surface (`published_explanation`).
     #[test]
     fn the_card_names_the_mind_that_asked() {
         let h = home();

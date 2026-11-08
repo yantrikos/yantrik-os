@@ -7,10 +7,12 @@
 //! - what the workshop holds (allocated blocks, links not followed), against [`Caps::disk_max`];
 //! - what the filesystem under it has left, against [`Caps::free_min`].
 //!
+//! - how many entries it holds and how many inodes the filesystem has left (a loop of empty files
+//!   costs no blocks).
+//!
 //! The walk stops as soon as it is over the bound, so a runaway folder costs one bounded sweep. A
 //! job is also refused at the start when the workshop is already over, or the disk already short.
 
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use crate::sealed::Caps;
@@ -18,43 +20,51 @@ use crate::sealed::Caps;
 /// How often the worker looks.
 pub(crate) const EVERY: std::time::Duration = std::time::Duration::from_secs(8);
 
-/// Allocated bytes under `root`, not following links, counting a hard-linked file once, and
-/// stopping once the sum passes `stop_after`.
-pub(crate) fn usage(root: &Path, stop_after: u64) -> u64 {
-    let mut total = 0u64;
-    let mut seen_links = std::collections::HashSet::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
-                total += meta.blocks() * 512;
-                stack.push(entry.path());
-            } else if meta.nlink() > 1 && !seen_links.insert((meta.dev(), meta.ino())) {
-                continue;
-            } else {
-                total += meta.blocks() * 512;
-            }
-            if total > stop_after {
-                return total;
-            }
-        }
-    }
-    total
+/// The most entries (files and folders) a workshop may hold, and the fewest inodes the filesystem
+/// may be left with. A loop of empty files costs no blocks and would fill `/home`'s inodes
+/// without crossing either byte bound (#1124, N5).
+pub(crate) const MAX_ENTRIES: usize = 5_000_000;
+pub(crate) const MIN_FREE_INODES: u64 = 100_000;
+
+/// What a workshop holds.
+pub(crate) struct Held {
+    /// Allocated bytes, a hard-linked file counted once.
+    pub bytes: u64,
+    pub entries: usize,
 }
 
-/// Bytes available to the person's account on the filesystem holding `path`.
-pub(crate) fn free_bytes(path: &Path) -> Option<u64> {
+/// What is under `root`, not following links (the walk is by descriptor, `fdwalk`, so a link a job
+/// swaps in is not entered, and it does not cross onto another filesystem), stopping once the sum
+/// passes `stop_after` or the entries pass [`MAX_ENTRIES`].
+pub(crate) fn usage(root: &Path, stop_after: u64) -> Held {
+    let mut bytes = 0u64;
+    let mut seen_links = std::collections::HashSet::new();
+    let entries = crate::fdwalk::walk(root, MAX_ENTRIES + 1, &mut |_, st| {
+        if st.st_nlink > 1 && st.st_mode & libc::S_IFMT != libc::S_IFDIR && !seen_links.insert((st.st_dev, st.st_ino)) {
+            return true;
+        }
+        bytes += (st.st_blocks as u64) * 512;
+        bytes <= stop_after
+    });
+    Held { bytes, entries }
+}
+
+/// Bytes available to the person's account on the filesystem holding `path`, and its free inodes
+/// (`None` where the filesystem has no inode count, as btrfs does not).
+pub(crate) fn free_space(path: &Path) -> Option<(u64, Option<u64>)> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0).then(|| (st.f_bavail as u64).saturating_mul(st.f_frsize as u64))
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    let inodes = (st.f_files != 0).then_some(st.f_favail as u64);
+    Some(((st.f_bavail as u64).saturating_mul(st.f_frsize as u64), inodes))
 }
 
 /// Why a job in `workshop` should not run (or go on), if it should not.
 pub(crate) fn verdict(workshop: &Path, caps: &Caps) -> Option<String> {
-    if let Some(free) = free_bytes(workshop) {
+    if let Some((free, inodes)) = free_space(workshop) {
         if free < caps.free_min {
             return Some(format!(
                 "the disk under the workshop has {} MiB free, below the {} MiB a sealed command must leave",
@@ -62,9 +72,15 @@ pub(crate) fn verdict(workshop: &Path, caps: &Caps) -> Option<String> {
                 caps.free_min >> 20
             ));
         }
+        if inodes.is_some_and(|n| n < MIN_FREE_INODES) {
+            return Some("the disk under the workshop is nearly out of file slots (inodes)".to_string());
+        }
     }
     let held = usage(workshop, caps.disk_max);
-    (held > caps.disk_max).then(|| {
+    if held.entries > MAX_ENTRIES {
+        return Some(format!("the workshop holds more than {MAX_ENTRIES} files and folders, the most a sealed command may leave in it"));
+    }
+    (held.bytes > caps.disk_max).then(|| {
         format!("the workshop holds more than {} GiB, the most a sealed command may leave in it", caps.disk_max >> 30)
     })
 }
@@ -87,9 +103,10 @@ mod tests {
         std::fs::hard_link(d.join("sub/a"), d.join("b")).unwrap();
         std::os::unix::fs::symlink("/usr", d.join("link")).unwrap();
         let held = usage(&d, u64::MAX);
-        assert!(held >= 64 * 1024 && held < 200 * 1024, "{held}");
+        assert!(held.bytes >= 64 * 1024 && held.bytes < 200 * 1024, "{}", held.bytes);
+        assert_eq!(held.entries, 4, "sub, sub/a, b and the link");
         // Stops early once over.
-        assert!(usage(&d, 1024) > 1024);
+        assert!(usage(&d, 1024).bytes > 1024);
         std::fs::remove_dir_all(&d).unwrap();
     }
 

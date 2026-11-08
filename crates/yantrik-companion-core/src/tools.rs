@@ -419,6 +419,26 @@ pub const BLOCKED_SEGMENTS: &[&str] = &[
 /// 3. Restrict to $HOME or this account's private scratch directory
 /// 4. Resolve symlinks and re-validate the canonical path
 pub fn validate_path(path: &str) -> Result<String, String> {
+    let expanded = validate_path_inner(path)?;
+    if let Some(rule) = TAINTED_READ.get() {
+        let at = std::path::Path::new(&expanded);
+        if let Some(why) = rule(at) {
+            return Err(format!("Access denied: {why}"));
+        }
+    }
+    Ok(expanded)
+}
+
+type ReadRule = Box<dyn Fn(&std::path::Path) -> Option<String> + Send + Sync>;
+static TAINTED_READ: std::sync::OnceLock<ReadRule> = std::sync::OnceLock::new();
+
+/// The shell's rule for a folder no tool reads or writes under (a workshop that holds what a
+/// tainted conversation wrote; #1124, N4): `Some(why)` to refuse. Installed once; the first wins.
+pub fn install_tainted_read_refusal(rule: impl Fn(&std::path::Path) -> Option<String> + Send + Sync + 'static) {
+    let _ = TAINTED_READ.set(Box::new(rule));
+}
+
+fn validate_path_inner(path: &str) -> Result<String, String> {
     let expanded = expand_home(path);
 
     // Block paths with .. traversal

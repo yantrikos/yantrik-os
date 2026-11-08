@@ -18,6 +18,8 @@
 //!   kernel; this holds where that flag is not;
 //! - `mount`, the new mount API, `pivot_root`, `chroot`, module and kexec loading, `swapon`,
 //!   `reboot`, `acct`, `quotactl`, `open_by_handle_at`, `process_vm_*`;
+//! - `socket(AF_VSOCK)`: a virtual socket reaches the hypervisor and the guest's own listeners
+//!   whatever the network namespace says;
 //! - `removexattr` and its two variants, so a sealed command cannot strip the marker the shell
 //!   puts on a workshop's files (`planted`).
 //!
@@ -98,6 +100,9 @@ fn denied() -> Vec<(u32, u32)> {
     list
 }
 
+/// `AF_VSOCK`: a socket to the hypervisor or to a listener in the guest, past the network namespace.
+const AF_VSOCK: u32 = 40;
+
 fn insn(code: u16, jt: u8, jf: u8, k: u32) -> [u8; 8] {
     let mut b = [0u8; 8];
     b[0..2].copy_from_slice(&code.to_le_bytes());
@@ -142,6 +147,14 @@ pub(crate) fn program() -> Result<Vec<u8>, String> {
         p.push(insn(JEQ, 0, 4, libc::SYS_clone as u32));
         p.push(insn(LD_ABS, 0, 0, 16));
         p.push(insn(JSET, 0, 1, CLONE_NEW_FLAGS));
+        p.push(insn(RET, 0, 0, eperm));
+        p.push(insn(LD_ABS, 0, 0, 0));
+        // socket: refused for AF_VSOCK, which `--unshare-net` does not isolate (#1124, N6). The
+        // same shape as clone: arg0 is the domain; any other domain, and any other call, lands on
+        // the final allow with the number still in A.
+        p.push(insn(JEQ, 0, 4, libc::SYS_socket as u32));
+        p.push(insn(LD_ABS, 0, 0, 16));
+        p.push(insn(JEQ, 0, 1, AF_VSOCK));
         p.push(insn(RET, 0, 0, eperm));
         p.push(insn(LD_ABS, 0, 0, 0));
         p.push(insn(RET, 0, 0, RET_ALLOW));
@@ -248,6 +261,18 @@ mod tests {
         for flag in [0x1000_0000u32, 0x2000_0000, 0x4000_0000, 0x0002_0000, 0x0800_0000, 0x0400_0000, 0x0200_0000, 0x80] {
             assert_eq!(run(&prog, native(), clone, 17 | flag), RET_ERRNO | libc::EPERM as u32, "{flag:#x}");
         }
+    }
+
+    #[test]
+    fn a_vsock_socket_is_refused_and_an_ordinary_one_is_not() {
+        let prog = program().unwrap();
+        let socket = libc::SYS_socket as u32;
+        assert_eq!(run(&prog, native(), socket, 40), RET_ERRNO | libc::EPERM as u32);
+        for domain in [libc::AF_UNIX as u32, libc::AF_INET as u32, libc::AF_INET6 as u32, libc::AF_NETLINK as u32] {
+            assert_eq!(run(&prog, native(), socket, domain), RET_ALLOW, "{domain}");
+        }
+        // A call after the block is still judged by its own number.
+        assert_eq!(run(&prog, native(), libc::SYS_mount as u32, 0), RET_ERRNO | libc::EPERM as u32);
     }
 
     #[test]

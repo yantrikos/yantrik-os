@@ -69,6 +69,72 @@ pub fn refuse_run_or_open_as_app(record: &Path, path: &Path) -> Option<String> {
     planted(record, path).map(|what| format!("{what} {WHY}"))
 }
 
+/// Hand the companion's tools the rule, so that none of them starts a program in a workshop
+/// (`yantrik_companion_tools::workshop_gate`; #1124, N1). Called once at start.
+pub fn install_for_tools() {
+    yantrik_companion_tools::workshop_gate::install(|path| planted(&workshop::record_path(), path));
+    // And the file tools read nothing under a tainted workshop (N4).
+    yantrik_companion_tools::install_tainted_read_refusal(|path| refuse_tainted_read(&workshop::record_path(), path));
+}
+
+/// Why `path` may not be read by a Mind or the companion: it is under a workshop that holds what a
+/// conversation which had read private state wrote (#1124, N4). Read there, it would put injected
+/// text into a conversation that is not marked tainted, and its next `curl` would go unasked in
+/// `auto`. The sealed door reads it and taints the reader (`agent_run_sealed`); this refusal needs
+/// no attribution of the caller, which a tokenless bridge does not have. The person's own reading
+/// (Files, the Editor) is not a Mind's and is not refused here.
+pub fn refuse_tainted_read(record: &Path, path: &Path) -> Option<String> {
+    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    workshop::tainted_folders(record).into_iter().find_map(|folder| {
+        let folder = Path::new(&folder);
+        (path.starts_with(folder) || real.starts_with(folder)).then(|| {
+            "that is in a workshop that holds what a conversation which had read private state wrote; \
+             read it with `agent_run_sealed`, which marks the conversation that does. Nothing was read."
+                .to_string()
+        })
+    })
+}
+
+/// Does an unsealed command, started in `cwd`, reach a tainted workshop's files? True when it starts in
+/// the workshop's folder or above it, or names the folder or the folder it is in, or the home with
+/// a tool that walks it. Over-inclusive on purpose: the answer only taints the conversation.
+pub fn reaches_tainted(record: &Path, home: &Path, command: &str, cwd: &Path) -> Option<String> {
+    let walks = ["-r", "-R", "find ", "rg ", "grep", "ag ", "tree", "locate"].iter().any(|t| command.contains(t));
+    for folder in workshop::tainted_folders(record) {
+        let folder = Path::new(&folder);
+        let name = folder.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let parent = folder.parent().unwrap_or(folder);
+        let parent_rel = parent.strip_prefix(home).ok().and_then(|p| p.to_str()).unwrap_or_default();
+        let names = |p: &Path, rel: &str| {
+            command.contains(&p.to_string_lossy().to_string())
+                || (!rel.is_empty() && (command.contains(&format!("~/{rel}")) || command.contains(&format!("$HOME/{rel}")) || command.contains(&format!("${{HOME}}/{rel}"))))
+        };
+        let home_walk = walks && ["~", "$HOME", "${HOME}"].iter().any(|h| command.contains(h)) || (walks && command.contains(&*home.to_string_lossy()));
+        if folder.starts_with(cwd) || names(folder, &format!("{parent_rel}/{name}")) || names(parent, parent_rel) || home_walk {
+            return Some(format!("workshop {name} (it holds what a conversation that had read private state wrote)"));
+        }
+    }
+    None
+}
+
+/// The red line for the card of an unsealed command, or `None`: the commands the shell runs or
+/// types unsealed (`agent_run`, `agent_input`, the Terminal's `run` and the rest), from a tainted
+/// conversation, while the Mind holds a workshop or any workshop is tainted. Whether the command
+/// touches a workshop cannot be told from its text (`cd ~/Doc*/sh*`), so the person is told what
+/// the risk is, and is given no standing yes (#1124, N3).
+pub fn unsealed_card_note(record: &Path, app: &str, action: &str, agent: &str, conversation_tainted: bool) -> Option<String> {
+    let unsealed = (app == "shell" && matches!(action, "agent_run" | "agent_input")) || app == "terminal";
+    if !unsealed || !conversation_tainted {
+        return None;
+    }
+    let held = workshop::load(record).unwrap_or_default().iter().any(|g| g.agent == agent);
+    (held || !workshop::tainted_folders(record).is_empty()).then(|| {
+        "This runs outside the sandbox, and files a Mind wrote may run with it: a package hook, a git setting, \
+         a script in a workshop. Read what it does, not only its name."
+            .to_string()
+    })
+}
+
 /// The same, against the shell's own record.
 pub fn refuse_open(path: &Path) -> Option<String> {
     refuse_run_or_open_as_app(&workshop::record_path(), path)
@@ -101,6 +167,39 @@ mod tests {
         // An ordinary command somewhere else is untouched.
         assert!(refuse_unsealed(&rec, "ls", &elsewhere).is_ok());
         assert!(refuse_unsealed(&rec, "cd ~/Documents/shop2 && ls", &elsewhere).is_err(), "a prefix of a longer name is refused too: the rule over-refuses, never under");
+    }
+
+    #[test]
+    fn a_tainted_workshop_is_not_read_and_a_command_that_may_reach_it_is_noticed() {
+        let (h, rec, shop) = setup();
+        std::fs::write(shop.join("notes.md"), "x").unwrap();
+        // Not tainted yet: readable.
+        assert!(refuse_tainted_read(&rec, &shop.join("notes.md")).is_none());
+        workshop::mark_tainted(&rec, "hermes").unwrap();
+        assert!(refuse_tainted_read(&rec, &shop.join("notes.md")).unwrap().contains("agent_run_sealed"));
+        assert!(refuse_tainted_read(&rec, &shop.join("not-yet.md")).is_some());
+        assert!(refuse_tainted_read(&rec, &h.path().join("Documents")).is_none(), "the folder above is not under it");
+        // A link out of the home into it is judged by where it leads.
+        std::os::unix::fs::symlink(shop.join("notes.md"), h.path().join("l.md")).unwrap();
+        assert!(refuse_tainted_read(&rec, &h.path().join("l.md")).is_some());
+        // Commands: the grep over the Documents, the folder above, the cwd above; not an unrelated one.
+        let docs = h.path().join("Documents");
+        assert!(reaches_tainted(&rec, h.path(), "grep -ri meeting ~/Documents", h.path()).is_some());
+        assert!(reaches_tainted(&rec, h.path(), "grep -ri meeting .", &docs).is_some());
+        assert!(reaches_tainted(&rec, h.path(), "grep -r x ~", &docs.join("elsewhere")).is_some());
+        assert!(reaches_tainted(&rec, h.path(), "ls /usr", &h.path().join("Downloads")).is_none());
+    }
+
+    #[test]
+    fn an_unsealed_card_from_a_tainted_conversation_warns_when_a_workshop_is_in_play() {
+        let (_h, rec, _shop) = setup();
+        let note = unsealed_card_note(&rec, "shell", "agent_run", "hermes", true).unwrap();
+        assert!(note.contains("a Mind wrote"));
+        assert!(unsealed_card_note(&rec, "terminal", "run", "other", true).is_none(), "no workshop tainted, none held");
+        assert!(unsealed_card_note(&rec, "shell", "agent_run", "hermes", false).is_none(), "an untainted conversation");
+        assert!(unsealed_card_note(&rec, "shell", "agent_run_sealed", "hermes", true).is_none());
+        workshop::mark_tainted(&rec, "hermes").unwrap();
+        assert!(unsealed_card_note(&rec, "terminal", "run", "other", true).is_some(), "a workshop is tainted");
     }
 
     #[test]

@@ -73,7 +73,7 @@ impl Tool for DetectProjectsTool {
             }
 
             let path = entry.path();
-            if !path.is_dir() {
+            if !path.is_dir() || crate::workshop_gate::in_workshop(&path.to_string_lossy()).is_some() {
                 continue;
             }
 
@@ -97,7 +97,8 @@ impl Tool for DetectProjectsTool {
                     }
 
                     let sub_path = sub_entry.path();
-                    if !sub_path.is_dir() {
+                    // A Mind's workshop is not listed, and git is not run in it (#1124, N1).
+                    if !sub_path.is_dir() || crate::workshop_gate::in_workshop(&sub_path.to_string_lossy()).is_some() {
                         continue;
                     }
 
@@ -128,7 +129,10 @@ impl Tool for DetectProjectsTool {
 
 /// Count dirty files in a git repo using `git status --short`.
 fn count_dirty(path: &str) -> String {
-    match std::process::Command::new("git")
+    if crate::workshop_gate::in_workshop(path).is_some() {
+        return "?".to_string();
+    }
+    match crate::safe_git::command()
         .current_dir(path)
         .args(["status", "--short"])
         .output()
@@ -182,6 +186,9 @@ impl Tool for SetActiveProjectTool {
         // Check it's a real directory
         if !std::path::Path::new(&expanded).is_dir() {
             return format!("Error: '{}' is not a directory", expanded);
+        }
+        if let Err(e) = crate::workshop_gate::refuse(&expanded) {
+            return e;
         }
 
         // Read branch if it's a git repo
@@ -268,7 +275,8 @@ impl Tool for GetProjectContextTool {
         }
 
         // Recent commits
-        if let Ok(o) = std::process::Command::new("git")
+        // (A workshop is refused above, before any of this.)
+        if let Ok(o) = crate::safe_git::command()
             .current_dir(&expanded)
             .args(["log", "--oneline", "-5"])
             .output()

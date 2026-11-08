@@ -17,8 +17,15 @@ pub fn register(reg: &mut ToolRegistry) {
 }
 
 /// Run a git command in a validated directory.
-fn run_git(dir: &str, git_args: &[&str]) -> String {
-    match std::process::Command::new("git")
+///
+/// Never in a Mind's workshop (`workshop_gate`), and with every config key that runs a program
+/// blanked (`safe_git`): a repository there may carry a `core.fsmonitor` or a `diff.external`
+/// (#1124, N1).
+pub(crate) fn run_git(dir: &str, git_args: &[&str]) -> String {
+    if let Err(e) = crate::workshop_gate::refuse(dir) {
+        return e;
+    }
+    match crate::safe_git::command()
         .current_dir(dir)
         .args(git_args)
         .output()
@@ -121,7 +128,7 @@ impl Tool for GitLogTool {
         };
 
         let n = format!("-{}", count);
-        run_git(&expanded, &["log", "--oneline", "--graph", &n])
+        run_git(&expanded, &["log", "--no-ext-diff", "--oneline", "--graph", &n])
     }
 }
 
@@ -165,9 +172,9 @@ impl Tool for GitDiffTool {
         };
 
         if staged {
-            run_git(&expanded, &["diff", "--cached", "--stat"])
+            run_git(&expanded, &["diff", "--no-ext-diff", "--no-textconv", "--cached", "--stat"])
         } else {
-            run_git(&expanded, &["diff", "--stat"])
+            run_git(&expanded, &["diff", "--no-ext-diff", "--no-textconv", "--stat"])
         }
     }
 }
@@ -401,7 +408,7 @@ impl Tool for GitShowTool {
             return "Error: invalid commit ref (only alphanumeric, ^, ~ allowed)".to_string();
         }
 
-        let out = run_git(&expanded, &["show", "--stat", commit]);
+        let out = run_git(&expanded, &["show", "--no-ext-diff", "--no-textconv", "--stat", commit]);
         if out.len() > 3000 {
             format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
         } else {
@@ -499,7 +506,7 @@ impl Tool for GitDiffFileTool {
             Err(e) => return format!("Error: {e}"),
         };
 
-        let out = run_git(&expanded, &["diff", "--", file]);
+        let out = run_git(&expanded, &["diff", "--no-ext-diff", "--no-textconv", "--", file]);
         if out.len() > 3000 {
             format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
         } else {

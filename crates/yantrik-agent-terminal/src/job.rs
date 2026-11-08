@@ -184,6 +184,9 @@ pub(crate) fn spawn(
     });
 
     let worker_job = job.clone();
+    if sealed.is_some() {
+        crate::planted::job_begins(&job.agent);
+    }
     let started = std::thread::Builder::new()
         .name(format!("agent-job-{pid}"))
         .spawn(move || worker(worker_job, master, pwd_read, wake_reader, child, shared));
@@ -192,6 +195,9 @@ pub(crate) fn spawn(
         // command running that nobody can see.
         unsafe {
             libc::kill(-pid, libc::SIGKILL);
+        }
+        if sealed.is_some() {
+            crate::planted::job_ends(&job.agent, None);
         }
         return Err(refuse("no thread to watch it", &e));
     }
@@ -510,10 +516,11 @@ fn worker(
                 }
                 // A sealed command's `$PWD` is written by the sandbox, so it is its word and nothing
                 // more: it never moves the Mind's directory for its next unsealed command (#1124,
-                // L3). What it left in the workshop is marked, before anyone is told it ended.
+                // L3). What it left in the workshop is marked, before anyone is told it ended, once
+                // the Mind's last sealed job is over (#1124, N2).
                 let cwd_after = match &job.sealed {
                     Some(s) => {
-                        crate::planted::mark_tree(&s.workshop, 300_000);
+                        crate::planted::job_ends(&job.agent, Some(&s.workshop));
                         job.cwd.clone()
                     }
                     None => reported_directory(&pwd).unwrap_or_else(|| job.cwd.clone()),

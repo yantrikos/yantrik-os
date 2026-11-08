@@ -2014,8 +2014,17 @@ def workshop_taint(app, action, args):
     command = str(given.get("command") or "")
     for folder in folders:
         base = folder.rstrip("/").rsplit("/", 1)[-1]
+        parent = folder.rstrip("/").rsplit("/", 1)[0]
+        home = os.path.expanduser("~")
+        above = parent[len(home):].strip("/") if parent.startswith(home) else ""
+        # The folder, the folder it is in (`grep -r x ~/Documents` reads it), or a start folder
+        # above it (#1124, N4). Over-inclusive on purpose: it only taints the conversation.
+        reaches = bool(above) and (parent in command or ("~/" + above) in command or ("$HOME/" + above) in command)
+        cwd = str(given.get("cwd") or "")
+        if cwd and (folder.rstrip("/") + "/").startswith(cwd.rstrip("/") + "/"):
+            reaches = True
         if (named and named.rstrip("/") == folder.rstrip("/")) or folder in command \
-                or ("Documents/" + base) in command:
+                or ("Documents/" + base) in command or reaches:
             saw_private("workshop %s (it holds what a conversation that had read private state wrote)" % base)
             return
 

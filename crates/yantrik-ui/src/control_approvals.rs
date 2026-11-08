@@ -306,7 +306,22 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // empty for an app that explains nothing per call, and then the card is exactly
                 // what it was. Display only, like the naming line: `parsed` reaches the store
                 // untouched and the grant binds to those bytes, never to a sentence about them.
-                let asked = approvals::request(
+                // An unsealed command from a tainted conversation, while a Mind holds a workshop or
+                // one is tainted, says in red that files a Mind wrote may run, and is a one-time
+                // question: no session rule (#1124, N3).
+                let conversation_tainted = crate::taint_ask::flagged(args.get("tainted"))
+                    || crate::control_taint_scope::caller_has_read_private();
+                let wording = match crate::workshop_guard::unsealed_card_note(
+                    &crate::workshop::record_path(),
+                    &app,
+                    &action,
+                    if agent.is_empty() { &asker } else { &agent },
+                    conversation_tainted,
+                ) {
+                    Some(warn) => approvals::Wording { once_only: true, warn, ..Default::default() },
+                    None => approvals::Wording::default(),
+                };
+                let asked = approvals::request_worded(
                     &requester,
                     verified,
                     approvals::Asked {
@@ -319,6 +334,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         explained: &explained,
                     },
                     parsed,
+                    wording,
                 )?;
 
                 // To the phone, when an agent answering a turn from it raised it: once, when it
@@ -825,9 +841,8 @@ type Detail = (String, String, Naming, String);
 /// What the target app itself says one of its actions is graded, what it is for, what the app
 /// says its own ids name, and what it says about one call of it with `args` (#137).
 ///
-/// The purpose, the naming and the explanation are empty for the shell's own surface: the local
-/// registry shortcut below publishes a grade and nothing else, and reaching the description would
-/// mean a new function in `yantrik-app-runtime`, which this change does not own. Nothing published
+/// The naming is empty for the shell's own surface; its purpose and its per-call sentence come
+/// from the registry on the UI thread (`published_description`, `published_explanation`). Nothing published
 /// by the shell matches the "cannot be undone" wording today — `files_delete` says "Move a file or
 /// folder to recoverable Trash" — and the caller ORs this with what the request declared, so a
 /// shell action that acquired such a sentence would still be asked about as long as the bridge
@@ -897,7 +912,14 @@ fn published_detail_full_in(
             .map(|grade| {
                 let purpose =
                     yantrik_app_runtime::control::published_description(action).unwrap_or_default();
-                ((grade.to_string(), purpose, Naming::new(), String::new()), None)
+                // An action that explains its calls (`workshop_create`) says so here too: the
+                // sentence was left empty for the shell's own surface, so its card named no
+                // folder, no Mind, and offered a session rule (#1124, N7).
+                let explained = match yantrik_app_runtime::control::published_explanation(action, args) {
+                    Some(Ok(sentence)) => explained_or_unsaid(sanitised_explanation(&sentence)),
+                    _ => String::new(),
+                };
+                ((grade.to_string(), purpose, Naming::new(), explained), None)
             })
             .ok_or_else(|| {
                 format!(
@@ -2940,6 +2962,7 @@ mod control_approvals_tests {
             decline: "Keep going".into(),
             asker: "Asked from the Mind desk in Mind View \u{b7} a Mind can press that button too".into(),
             once_only: true,
+            warn: String::new(),
         };
         let row = super::row_for(worded);
         assert_eq!((row.confirm_label.as_str(), row.decline_label.as_str()), ("Stop", "Keep going"));

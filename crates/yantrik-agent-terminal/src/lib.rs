@@ -78,6 +78,7 @@ mod identity;
 mod job;
 mod job_sys;
 mod jobs;
+mod fdwalk;
 mod planted;
 mod proc;
 mod retained;

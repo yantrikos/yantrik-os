@@ -370,7 +370,14 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
                 Some(dir) => here.join(dir),
                 None => here,
             };
-            crate::workshop_guard::refuse_unsealed(&crate::workshop::record_path(), &named, &start)?;
+            let record = crate::workshop::record_path();
+            crate::workshop_guard::refuse_unsealed(&record, &named, &start)?;
+            // A command that may read a tainted workshop's files (it starts in a folder above it,
+            // or names one, `grep -r` over the Documents) makes the conversation a tainted one:
+            // what is in there was written by a conversation that had read private state (#1124, N4).
+            if let Some(why) = crate::workshop_guard::reaches_tainted(&record, &crate::workshop::home(), &named, &start) {
+                crate::control_taint_scope::mark_agent_read(agent, &why);
+            }
             Ok(Prepared { cwd, sealed: None })
         }),
     )

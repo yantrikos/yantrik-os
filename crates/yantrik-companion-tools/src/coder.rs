@@ -1154,6 +1154,12 @@ impl Tool for ScriptRunTool {
             .map(SandboxMode::from_str)
             .unwrap_or(SandboxMode::Strict);
 
+        // Not a Mind's workshop: what is written there is not run unsealed (#1124, N1).
+        if let Some(dir) = working_dir {
+            if let Err(e) = crate::workshop_gate::refuse(dir) {
+                return e;
+            }
+        }
         if name.is_empty() {
             return "Error: name is required".to_string();
         }

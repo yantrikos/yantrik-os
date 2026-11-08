@@ -254,6 +254,9 @@ fn main() {
         }
     }
 
+    // The companion's git, project, script and Claude tools never start a program in a workshop.
+    workshop_guard::install_for_tools();
+
     // Private mode lasts until the person turns it off, so it is read back before the companion,
     // the clipboard watcher or the harness socket can start thinking it is off.
     let private_at_start = private_mode::load();

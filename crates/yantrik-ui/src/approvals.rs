@@ -843,11 +843,15 @@ pub struct Wording {
     /// The answer is for this one request and nothing more: no "Allow for this session", and no
     /// session rule, whatever the action's grade and wording would otherwise allow.
     pub once_only: bool,
+    /// A line the shell adds to the card's red warning, in its own words (never a caller's): why
+    /// this particular ask is riskier than its grade says. Empty: nothing added (#1124, N3).
+    pub warn: String,
 }
 
 /// The longest button label a [`Wording`] may bring, and the longest asker line.
 pub const LABEL_CHARS: usize = 24;
 pub const ASKER_CHARS: usize = 120;
+pub const WARN_CHARS: usize = 300;
 
 impl Wording {
     /// This wording, bounded: a label that would not fit its button is cut, and nothing here may
@@ -858,7 +862,17 @@ impl Wording {
             decline: clip_plain(self.decline.trim(), LABEL_CHARS),
             asker: clip_plain(self.asker.trim(), ASKER_CHARS),
             once_only: self.once_only,
+            warn: clip_plain(self.warn.trim(), WARN_CHARS),
         }
+    }
+}
+
+/// The warning the grade and the app's sentence give, with the shell's own line in front of it.
+fn with_shells_note(warning: String, note: &str) -> String {
+    match (note.is_empty(), warning.is_empty()) {
+        (true, _) => warning,
+        (false, true) => note.to_string(),
+        (false, false) => format!("{note} {warning}"),
     }
 }
 
@@ -1266,7 +1280,7 @@ impl Store {
                 // again here would rename the true length the marker names (#137).
                 explained: record.explained.clone(),
                 // From what the app says, not what the caller chose to repeat of it (#504).
-                warning: warning_for(&record.grade, &record.said()),
+                warning: with_shells_note(warning_for(&record.grade, &record.said()), &record.wording.warn),
                 // A card that needed a sentence about THIS call to be understood must not offer
                 // a standing yes: the session rule would cover every later call of the action,
                 // and the sentence the person just read explained exactly one (#137).
@@ -2277,6 +2291,7 @@ mod approvals_tests {
             decline: "Keep going".into(),
             asker: "Asked from the Mind desk".into(),
             once_only: true,
+            warn: String::new(),
         };
         let id = store
             .raise_worded("Mind desk", Verified::default(), asked(), args(serde_json::json!({"agent": "b"})), words.clone(), now, "12:01")
@@ -2287,7 +2302,7 @@ mod approvals_tests {
         assert_eq!(card.wording, words);
 
         // Bounded: a label that would not fit a button, and a line that would not fit the row.
-        let long = Wording { confirm: "x".repeat(200), decline: "y\n".repeat(50), asker: "z".repeat(900), once_only: true };
+        let long = Wording { confirm: "x".repeat(200), decline: "y\n".repeat(50), asker: "z".repeat(900), once_only: true, warn: String::new() };
         let id = store
             .raise_worded("Mind desk", Verified::default(), asked(), args(serde_json::json!({"agent": "c"})), long, now, "12:02")
             .unwrap()
