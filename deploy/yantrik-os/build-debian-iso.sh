@@ -905,7 +905,11 @@ fi
 # Natural-sounding voice synthesis via Piper (binary + voice model)
 TTS_DIR="$ROOTFS/opt/yantrik/models/tts"
 PIPER_URL="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
-PIPER_VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium"
+PIPER_VOICE="en_US-ljspeech-medium"
+PIPER_VOICE_REV="e7229f7d33a10e145e109b886d661984201ac3c4"   # rhasspy/piper-voices commit
+PIPER_VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/$PIPER_VOICE_REV/en/en_US/ljspeech/medium"
+PIPER_VOICE_SHA_ONNX="6f52a751e2349abe7a76735eb09dc1875298c77ea2342ffd2fef79ff81b87f22"
+PIPER_VOICE_SHA_JSON="141d612cc0a95ed7efc1ca936b845c2364967f2e9217c5dbfcf69fc4d6c65860"
 if [ ! -f "$TTS_DIR/piper" ]; then
     info "Piper TTS binary + voice model (~66MB)..."
     # Staged inside the build dir, not /tmp. `sudo wget` left a root-owned file in
@@ -926,13 +930,30 @@ if [ ! -f "$TTS_DIR/piper" ]; then
 else
     ok "Piper binary (cached)"
 fi
-if [ ! -f "$TTS_DIR/en_US-lessac-medium.onnx" ]; then
-    sudo wget -q "$PIPER_VOICE_URL/en_US-lessac-medium.onnx" -O "$TTS_DIR/en_US-lessac-medium.onnx"
-    sudo wget -q "$PIPER_VOICE_URL/en_US-lessac-medium.onnx.json" -O "$TTS_DIR/en_US-lessac-medium.onnx.json"
-    ok "Piper voice model (en_US-lessac-medium)"
+# The OS voice: Piper en_US-ljspeech-medium. Its model card (rhasspy/piper-voices, commit pinned
+# below) says "License: public domain"; trained from scratch on LJ Speech. Both files are pinned by
+# sha256, so a moved or tampered download fails the build instead of shipping. Any other Piper
+# voice left in a reused rootfs (an older build shipped en_US-lessac-medium) is removed: the
+# runtime takes the first .onnx it finds in this folder.
+if [ ! -f "$TTS_DIR/$PIPER_VOICE.onnx" ]; then
+    PIPER_VOICE_TMP="$WORK_DIR/piper-voice-stage"
+    sudo rm -rf "$PIPER_VOICE_TMP"
+    sudo mkdir -p "$PIPER_VOICE_TMP"
+    for ext in onnx onnx.json; do
+        sudo wget -q "$PIPER_VOICE_URL/$PIPER_VOICE.$ext" -O "$PIPER_VOICE_TMP/$PIPER_VOICE.$ext"
+    done
+    echo "$PIPER_VOICE_SHA_ONNX  $PIPER_VOICE_TMP/$PIPER_VOICE.onnx" | sha256sum -c --quiet - || fail "Piper voice model does not match its pinned sha256"
+    echo "$PIPER_VOICE_SHA_JSON  $PIPER_VOICE_TMP/$PIPER_VOICE.onnx.json" | sha256sum -c --quiet - || fail "Piper voice config does not match its pinned sha256"
+    sudo cp "$PIPER_VOICE_TMP/$PIPER_VOICE.onnx" "$PIPER_VOICE_TMP/$PIPER_VOICE.onnx.json" "$TTS_DIR/"
+    sudo rm -rf "$PIPER_VOICE_TMP"
+    ok "Piper voice model ($PIPER_VOICE)"
 else
     ok "Piper voice model (cached)"
 fi
+for stale in "$TTS_DIR"/*.onnx "$TTS_DIR"/*.onnx.json; do
+    [ -e "$stale" ] || continue
+    case "$(basename "$stale")" in "$PIPER_VOICE".onnx|"$PIPER_VOICE".onnx.json) ;; *) sudo rm -f "$stale" ;; esac
+done
 
 # ── Whisper STT (~75MB) — ALWAYS included for voice ──
 WHISPER_DIR="$ROOTFS/opt/yantrik/models/whisper"
