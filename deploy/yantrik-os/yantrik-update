@@ -7160,10 +7160,14 @@ ARGS_LIB="$(dirname "$SELF_PATH")/yantrik-update-args"
 if [ -r "$ARGS_LIB" ]; then . "$ARGS_LIB"; else
   # Without its table the updater fails closed: only help, no arguments, and the forms recovery and
   # the callers hard-code are let through; anything else is refused (rollback never takes one).
+  # This list is deliberately a narrower subset of yantrik-update-args (no package-list or
+  # install-mind, looser on a --channel value): every difference fails closed or is a no-write
+  # form, so keep it in step with that table when a form is added there.
   args_check() {
     case " $* " in *" -h "*|*" --help "*) usage; exit 0 ;; esac
     local c="$1"; shift
     case "$c" in
+      help) [ $# -eq 0 ] && return 0 ;;
       rollback|reconcile|selftest|migrate-ownership|migrate-minds) [ $# -eq 0 ] && return 0 ;;
       mind-egress) [ "$*" = apply ] && return 0 ;;
       set-channel|set_channel) [ $# -eq 1 ] && return 0 ;;

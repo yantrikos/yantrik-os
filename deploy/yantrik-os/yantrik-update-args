@@ -159,6 +159,13 @@ selftest_args() {
     case "$out" in *"yantrik-update-args is missing"*"nothing was changed"*) name=refused ;; *) name="$out" ;; esac
     is "args: without its table, '$words' is refused" "1|refused|$argd0" "$rc|$name|$(args_state)"
   done
+  # The forms the fallback promises pass its check. Only the check runs (its function is cut out of the
+  # updater and called alone), so none of them does anything.
+  for words in "help" "check --porcelain" "status --porcelain" "apply --force" "set-channel stable"; do
+    # shellcheck disable=SC2086
+    rc="$(bash -c 'usage() { :; }; fail() { exit 9; }; eval "$(sed -n "/^  args_check() {/,/^  }/p" "$1")"; shift; args_check "$@"; echo $?' _ "$SELF_PATH" $words 2>&1)"
+    is "args: without its table, '$words' is allowed" "0" "$rc"
+  done
   out="$(YANTRIK_PREFIX="$argd" bash "$argd/nolib/yantrik-update" rollback --help 2>&1)"; rc=$?
   is "args: without its table, --help still answers" "0|$argd0" "$rc|$(args_state)"
 
