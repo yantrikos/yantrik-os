@@ -12,14 +12,14 @@
 # Runs inside cmd_selftest and uses its `is`, `fails`, `root` and `me`.
 
 selftest_bridge() {
-  local hb="$root/bridge" hb_pid=4242 hb_owner; hb_owner="$(id -un)"
+  local hb="$root/bridge" hb_pid=4242 hb_owner hb_uid; hb_owner="$(id -un)"; hb_uid="$(id -u)"
   mkdir -p "$hb/proc/$hb_pid" "$hb/proc/5150" "$hb/proc/6161" "$hb/rt/yantrik" "$hb/bin" "$hb/backups/b1"
-  # $me is the uid, as systemd spells it in a user's own slice. Only the last element of the path
+  # $hb_uid is the uid, as systemd spells it in a user's own slice. The unit is the last element of the path, in the owner's manager
   # is read -- the unit a process runs in -- but a fixture should look like the real thing.
-  printf '0::/user.slice/user-%s.slice/user@%s.service/app.slice/hermes-gateway.service\n' "$me" "$me" > "$hb/proc/$hb_pid/cgroup"
+  printf '0::/user.slice/user-%s.slice/user@%s.service/app.slice/hermes-gateway.service\n' "$hb_uid" "$hb_uid" > "$hb/proc/$hb_pid/cgroup"
   # The Mind's bridge, in its own system unit: of this restart's making, never.
   printf '0::/system.slice/yantrik-mind.service\n' > "$hb/proc/5150/cgroup"
-  printf '0::/user.slice/user-%s.slice/user@%s.service/app.slice/yantrik-shell.service\n' "$me" "$me" > "$hb/proc/6161/cgroup"
+  printf '0::/user.slice/user-%s.slice/user@%s.service/app.slice/yantrik-shell.service\n' "$hb_uid" "$hb_uid" > "$hb/proc/6161/cgroup"
   # A shell that answers: a socket that exists and a `yos` that says yes.
   python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$hb/rt/yantrik/app-shell.sock" 2>/dev/null
   printf '#!/bin/sh\nexit 0\n' > "$hb/bin/yos"; chmod +x "$hb/bin/yos"
