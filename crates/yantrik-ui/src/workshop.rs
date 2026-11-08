@@ -63,13 +63,6 @@ pub struct Grant {
     /// birth time tells those two apart.
     #[serde(default)]
     pub born: u64,
-    /// Whether the shell could put its marker on the folder, which must then still be there.
-    #[serde(default)]
-    pub marked: bool,
-    /// Whether a conversation that had read private state ran a command here: what is in it may
-    /// carry that, and a conversation that reads it is tainted (#1124, M1).
-    #[serde(default)]
-    pub tainted: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -134,7 +127,6 @@ pub fn grant(path: &Path, agent: &str, folder: &Path, now: u64) -> Result<Grant,
         return Err("that folder is already another Mind's workshop; each Mind has a folder of its own.".into());
     }
     grants.retain(|g| g.agent != agent);
-    let marked = yantrik_agent_terminal::mark(folder);
     let made = Grant {
         agent: agent.to_string(),
         folder: folder.display().to_string(),
@@ -142,8 +134,6 @@ pub fn grant(path: &Path, agent: &str, folder: &Path, now: u64) -> Result<Grant,
         dev,
         ino,
         born,
-        marked,
-        tainted: false,
     };
     grants.push(made.clone());
     save(path, grants)?;
@@ -267,39 +257,12 @@ fn still_the_folder(g: &Grant) -> Result<(), String> {
     if g.ino == 0 || meta.dev() != g.dev || meta.ino() != g.ino || (g.born != 0 && born_of(&meta) != g.born) {
         return Err("the workshop folder was replaced by another one with the same name, so its grant was deleted.".into());
     }
-    if g.marked && !yantrik_agent_terminal::is_marked(Path::new(&g.folder)) {
-        return Err("the workshop folder lost the marker the shell put on it, so its grant was deleted.".into());
-    }
     Ok(())
 }
 
-/// Delete every grant whose folder is gone or is not the folder granted. The grants left.
+/// The grants whose folder is still the folder granted; a gone or replaced one is not listed.
 pub fn prune(path: &Path) -> Result<Vec<Grant>, String> {
-    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let all = load(path)?;
-    let (live, dead): (Vec<Grant>, Vec<Grant>) = all.into_iter().partition(|g| still_the_folder(g).is_ok());
-    if !dead.is_empty() {
-        save(path, live.clone())?;
-    }
-    Ok(live)
-}
-
-/// Note that a conversation which had read private state ran a command in `agent`'s workshop.
-pub fn mark_tainted(path: &Path, agent: &str) -> Result<(), String> {
-    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let mut grants = load(path)?;
-    match grants.iter_mut().find(|g| g.agent == agent) {
-        Some(g) if !g.tainted => {
-            g.tainted = true;
-            save(path, grants)
-        }
-        _ => Ok(()),
-    }
-}
-
-/// The workshops (every Mind's) that hold what a tainted conversation wrote.
-pub fn tainted_folders(path: &Path) -> Vec<String> {
-    prune(path).unwrap_or_default().into_iter().filter(|g| g.tainted).map(|g| g.folder).collect()
+    Ok(load(path)?.into_iter().filter(|g| still_the_folder(g).is_ok()).collect())
 }
 
 /// The workshop `agent` was granted, if it is `named` (the `workshop` argument, checked here and
@@ -538,18 +501,5 @@ mod grant_tests {
             assert!(check_folder(h.path(), &raw, true).is_err(), "{bad:?}");
         }
         assert!(check_folder(h.path(), "~/Documents/sitcom-épisode", true).is_ok());
-    }
-
-    #[test]
-    fn a_tainted_run_marks_the_workshop_and_only_that_one() {
-        let h = home();
-        let rec = h.path().join("workshops.json");
-        let a = check_folder(h.path(), "~/Documents/a", true).unwrap();
-        let b = check_folder(h.path(), "~/Documents/b", true).unwrap();
-        grant(&rec, "hermes", &a, 1).unwrap();
-        grant(&rec, "pi", &b, 1).unwrap();
-        assert!(tainted_folders(&rec).is_empty());
-        mark_tainted(&rec, "hermes").unwrap();
-        assert_eq!(tainted_folders(&rec), vec![a.display().to_string()]);
     }
 }

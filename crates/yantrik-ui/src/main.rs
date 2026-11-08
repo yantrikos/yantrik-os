@@ -109,7 +109,6 @@ mod control_agent_late;
 mod control_agent_terminal;
 mod control_workshop;
 mod workshop;
-mod workshop_guard;
 /// A recipe on the shell's surface: answer_recipe / pause_recipe / resume_recipe / cancel_recipe.
 mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.
@@ -253,9 +252,6 @@ fn main() {
             std::process::exit(wire::harness_provider::wire_model_cli(&args[1..]));
         }
     }
-
-    // The companion's git, project, script and Claude tools never start a program in a workshop.
-    workshop_guard::install_for_tools();
 
     // Private mode lasts until the person turns it off, so it is read back before the companion,
     // the clipboard watcher or the harness socket can start thinking it is off.

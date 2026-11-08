@@ -227,12 +227,10 @@ SHELL_ACTIONS = """  act: open_app(name)  [standard, settles later]
   act: workshop_create(folder)  [sensitive, settles on return]
        Ask the person for a workshop. The person allows each one on a card, in every mode.
          folder: string - ~/Documents/<name>
-  act: agent_run_sealed(command, workshop, cwd?, wait?, tainted?)  [standard, settles later]
+  act: agent_run_sealed(command, workshop, cwd?, wait?)  [standard, settles later]
        Run one command line in your workshop, sealed.
          command: string - one command line
          workshop: string - your workshop folder
-  act: workshop_tainted()  [safe, settles on return]
-       The workshop folders that hold what a conversation which had read private state wrote.
   act: new_agent(mind, task)  [sensitive, settles on return]
        Start another agent and give it a task.
          mind: string - which mind
@@ -479,9 +477,6 @@ if argv[:1] == ["act"]:
     # raise a card of its own; this fake has no card to raise. Both are recorded, because the
     # bridge carrying them is half of what this file checks.
     rest = argv[3:]
-    if target == "shell" and action == "workshop_tainted":
-        envelope({"folders": state.get("tainted_workshops", [])})
-        raise SystemExit(0)
     if target == "shell" and action in ("taint_scope", "taint_mark"):
         # The shell's taint scope (crates/yantrik-ui/src/taint_scope.rs): which of the person's
         # conversations this caller is in, begun only by a press of + in the Lens, and what it has
@@ -3632,7 +3627,7 @@ with tempfile.TemporaryDirectory() as d:
     check("run_command cannot claim a workshop: the argument is not sent",
           "workshop" not in module.agent_args("run_command", dict(sealed_args)), module.agent_args("run_command", dict(sealed_args)))
     check("run_sealed_command sends the shell the name of the folder and the shell alone decides",
-          {k: v for k, v in module.agent_args("run_sealed_command", dict(sealed_args)).items() if k != "tainted"} == sealed_args,
+          module.agent_args("run_sealed_command", dict(sealed_args)) == sealed_args,
           module.agent_args("run_sealed_command", dict(sealed_args)))
     check("the sealed tool and its grant are offered, and waiting on a sealed command is a long wait",
           "run_sealed_command" in module.AGENT_BY_NAME and module.AGENT_BY_NAME["workshop_request"]["agent_action"] == "workshop_create"
@@ -3662,35 +3657,9 @@ with tempfile.TemporaryDirectory() as d:
           sentence is not None and sentence.group(1) == module.ALWAYS_ASKS and module.always_asks("x. " + module.ALWAYS_ASKS.upper())
           and not module.always_asks("The person allows it."), sentence.group(1) if sentence else "no ALWAYS_ASKS")
 
-    # 25i. The workshop is not an uncarded channel from a tainted conversation to another (#1124, M1).
-    # A workshop a tainted conversation wrote in is tainted: a sealed command in it, or any command
-    # naming it, makes the conversation that runs it tainted, so its next command asks.
-    module, state = case(tmp, "workshop-taint", mode="auto", machine_ceiling="dangerous", ceiling=None,
-                         tainted_workshops=["/home/x/Documents/w"])
-    check("a clean conversation has read nothing", not module._SAW_PRIVATE, module._SAW_PRIVATE)
-    module.workshop_taint("shell", "agent_run_sealed", {"args": {"command": "ls", "workshop": "/home/x/Documents/w"}})
-    check("a sealed command in a tainted workshop taints the conversation that runs it",
-          any("workshop w" in r for r in module._SAW_PRIVATE), module._SAW_PRIVATE)
-    check("and then its own commands are asked about",
-          bool(module.carries_private("shell", "agent_run", True, {"args": {"command": "ls"}})), None)
-    module, state = case(tmp, "workshop-taint-cat", mode="auto", machine_ceiling="dangerous", ceiling=None,
-                         tainted_workshops=["/home/x/Documents/w"])
-    module.workshop_taint("shell", "agent_run", {"args": json.dumps({"command": "cat ~/Documents/w/notes.txt"})})
-    check("a command of its own that names a tainted workshop is a private read",
-          any("workshop w" in r for r in module._SAW_PRIVATE), module._SAW_PRIVATE)
-    module, state = case(tmp, "workshop-taint-other", mode="auto", machine_ceiling="dangerous", ceiling=None,
-                         tainted_workshops=["/home/x/Documents/w"])
-    module.workshop_taint("shell", "agent_run", {"args": {"command": "cat ~/Documents/other/notes.txt"}})
-    module.workshop_taint("shell", "agent_run_sealed", {"args": {"command": "ls", "workshop": "/home/x/Documents/other"}})
-    module.workshop_taint("shell", "agent_job", {"args": {"job": "j"}})
-    check("another folder, and a call that runs nothing, taint nothing", not module._SAW_PRIVATE, module._SAW_PRIVATE)
-    module, state = case(tmp, "workshop-claim", mode="auto", machine_ceiling="dangerous", ceiling=None)
-    module.saw_private("os_describe")
-    check("a tainted conversation tells the shell when it runs sealed",
-          module.agent_args("run_sealed_command", dict(sealed_args)).get("tainted") is True, None)
-    check("and the tool text says there is no network mode and run_command is refused in a workshop",
-          "NO network mode" in module.AGENT_BY_NAME["run_sealed_command"]["description"]
-          and "is run_command, and the person decides" not in module.AGENT_BY_NAME["run_sealed_command"]["description"], None)
+    # 25i. The tool text for the sealed command says what it cannot do.
+    check("the tool text says there is no network mode",
+          "NO network mode" in module.AGENT_BY_NAME["run_sealed_command"]["description"], None)
 
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed

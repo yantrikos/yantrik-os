@@ -21,24 +21,6 @@ pub fn launch(action: &FileAction, name: &str, full: &Path, ui: Option<&App>) {
         tracing::warn!(path = %full.display(), "{why}");
         return;
     }
-    // A Mind does not read a tainted workshop's files through the launcher either (#1124, N4).
-    if crate::control_files_mind::a_mind_is_calling() {
-        if let Some(why) = crate::workshop_guard::refuse_tainted_read(&crate::workshop::record_path(), full) {
-            tracing::warn!(path = %full.display(), "{why}");
-            return;
-        }
-    }
-    // Nothing a Mind wrote in its workshop opens in an app that RUNS it: a desktop entry's `Exec`,
-    // the browser (scripts). The Editor, Images and the media player only show it (#1124, H2).
-    if matches!(action, FileAction::DesktopApp(_) | FileAction::Browser) {
-        if let Some(why) = crate::workshop_guard::refuse_open(full) {
-            tracing::warn!(path = %full.display(), "{why}");
-            if let Some(ui) = ui {
-                super::files::set_notice(ui, &format!("{name} was not opened: it came from a Mind's workshop."), None);
-            }
-            return;
-        }
-    }
     // What the desktop's Continue row offers next. A mind opening a file is not the person
     // picking up where they left off.
     if !crate::control_files_mind::a_mind_is_calling() {

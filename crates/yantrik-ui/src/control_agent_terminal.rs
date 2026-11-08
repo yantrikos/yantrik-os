@@ -355,29 +355,11 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         .filter(|c| !c.is_empty())
         .map(PathBuf::from);
     let wait = wait_arg(args)?;
-    let named = command.clone();
     run_job(
         command,
         wait,
         call,
-        Box::new(move |agent| {
-            // An unsealed command does not start in a workshop or name one: what a Mind wrote there
-            // is not run outside the sandbox (#1124, H2). Where it would start is where it asked,
-            // or where its last command ended.
-            let here = jobs().directory(agent);
-            let start = match &cwd {
-                Some(dir) if dir.is_absolute() => dir.clone(),
-                Some(dir) => here.join(dir),
-                None => here,
-            };
-            let record = crate::workshop::record_path();
-            crate::workshop_guard::refuse_unsealed(&record, &named, &start)?;
-            // A command that may read a tainted workshop's files (it starts in a folder above it,
-            // or names one, `grep -r` over the Documents) makes the conversation a tainted one:
-            // what is in there was written by a conversation that had read private state (#1124, N4).
-            if let Some(why) = crate::workshop_guard::reaches_tainted(&record, &crate::workshop::home(), &named, &start) {
-                crate::control_taint_scope::mark_agent_read(agent, &why);
-            }
+        Box::new(move |_| {
             Ok(Prepared { cwd, sealed: None })
         }),
     )

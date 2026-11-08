@@ -45,8 +45,6 @@ impl McpConnection {
             .envs(env);
 
         if let Some(dir) = cwd {
-            // A program started in a Mind's workshop would run what a Mind wrote (#1124, N1).
-            yantrik_companion_tools::workshop_gate::refuse(dir)?;
             cmd.current_dir(dir);
         }
 

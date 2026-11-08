@@ -19,9 +19,7 @@
 //! - `mount`, the new mount API, `pivot_root`, `chroot`, module and kexec loading, `swapon`,
 //!   `reboot`, `acct`, `quotactl`, `open_by_handle_at`, `process_vm_*`;
 //! - `socket(AF_VSOCK)`: a virtual socket reaches the hypervisor and the guest's own listeners
-//!   whatever the network namespace says;
-//! - `removexattr` and its two variants, so a sealed command cannot strip the marker the shell
-//!   puts on a workshop's files (`planted`).
+//!   whatever the network namespace says.
 //!
 //! A call on the list answers `EPERM`, not a kill, so a tool that probes for it carries on. A call
 //! from a foreign ABI (32-bit on x86-64, the x32 range) is refused the same way: its numbers mean
@@ -88,9 +86,6 @@ fn denied() -> Vec<(u32, u32)> {
         libc::SYS_open_by_handle_at,
         libc::SYS_process_vm_readv,
         libc::SYS_process_vm_writev,
-        libc::SYS_removexattr,
-        libc::SYS_lremovexattr,
-        libc::SYS_fremovexattr,
     ]
     .into_iter()
     .map(|n| (n as u32, eperm))
@@ -240,13 +235,11 @@ mod tests {
             libc::SYS_mount,
             libc::SYS_keyctl,
             libc::SYS_userfaultfd,
-            libc::SYS_removexattr,
-            libc::SYS_fremovexattr,
         ] {
             assert_eq!(run(&prog, native(), nr as u32, 0), eperm, "{nr}");
         }
         assert_eq!(run(&prog, native(), libc::SYS_clone3 as u32, 0), RET_ERRNO | libc::ENOSYS as u32);
-        for nr in [libc::SYS_read, libc::SYS_write, libc::SYS_openat, libc::SYS_execve, libc::SYS_mmap, libc::SYS_futex, libc::SYS_setxattr] {
+        for nr in [libc::SYS_read, libc::SYS_write, libc::SYS_openat, libc::SYS_execve, libc::SYS_mmap, libc::SYS_futex] {
             assert_eq!(run(&prog, native(), nr as u32, 0), RET_ALLOW, "{nr}");
         }
     }

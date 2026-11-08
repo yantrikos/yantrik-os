@@ -12092,7 +12092,6 @@ dependencies = [
  "yantrik-browser-ports",
  "yantrik-chat",
  "yantrik-companion",
- "yantrik-companion-tools",
  "yantrik-foundation",
  "yantrik-gateway",
  "yantrik-harness",

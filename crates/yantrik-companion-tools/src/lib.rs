@@ -22,8 +22,6 @@ pub mod browser_side;
 pub mod calculator;
 pub mod canvas;
 pub mod claude;
-pub mod safe_git;
-pub mod workshop_gate;
 pub mod clipboard;
 pub mod coder;
 pub mod desktop;

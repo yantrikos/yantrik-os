@@ -209,7 +209,6 @@ pub fn desk_stop_wording() -> approvals::Wording {
         decline: "Keep going".to_string(),
         asker: "Asked from the Mind desk in Mind View \u{b7} a Mind can press that button too".to_string(),
         once_only: true,
-        warn: String::new(),
     }
 }
 

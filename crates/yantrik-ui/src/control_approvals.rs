@@ -306,22 +306,7 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // empty for an app that explains nothing per call, and then the card is exactly
                 // what it was. Display only, like the naming line: `parsed` reaches the store
                 // untouched and the grant binds to those bytes, never to a sentence about them.
-                // An unsealed command from a tainted conversation, while a Mind holds a workshop or
-                // one is tainted, says in red that files a Mind wrote may run, and is a one-time
-                // question: no session rule (#1124, N3).
-                let conversation_tainted = crate::taint_ask::flagged(args.get("tainted"))
-                    || crate::control_taint_scope::caller_has_read_private();
-                let wording = match crate::workshop_guard::unsealed_card_note(
-                    &crate::workshop::record_path(),
-                    &app,
-                    &action,
-                    if agent.is_empty() { &asker } else { &agent },
-                    conversation_tainted,
-                ) {
-                    Some(warn) => approvals::Wording { once_only: true, warn, ..Default::default() },
-                    None => approvals::Wording::default(),
-                };
-                let asked = approvals::request_worded(
+                let asked = approvals::request(
                     &requester,
                     verified,
                     approvals::Asked {
@@ -334,7 +319,6 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                         explained: &explained,
                     },
                     parsed,
-                    wording,
                 )?;
 
                 // To the phone, when an agent answering a turn from it raised it: once, when it
@@ -2962,7 +2946,6 @@ mod control_approvals_tests {
             decline: "Keep going".into(),
             asker: "Asked from the Mind desk in Mind View \u{b7} a Mind can press that button too".into(),
             once_only: true,
-            warn: String::new(),
         };
         let row = super::row_for(worded);
         assert_eq!((row.confirm_label.as_str(), row.decline_label.as_str()), ("Stop", "Keep going"));

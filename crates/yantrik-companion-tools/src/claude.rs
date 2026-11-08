@@ -160,10 +160,6 @@ fn run_claude(prompt: &str, _verbose: bool) -> String {
 
 /// Run claude CLI with tool access (can execute commands, read/write files).
 fn run_claude_code(task: &str, cwd: &str) -> String {
-    // Claude Code with Bash and Write is a program started in `cwd`; not in a Mind's workshop (#1124, N1).
-    if let Err(e) = crate::workshop_gate::refuse(cwd) {
-        return e;
-    }
     // As in `run_claude`: the task after `--`, so one beginning with `-` cannot add options —
     // `--dangerously-skip-permissions`, say, or a wider `--allowedTools`.
     let result = std::process::Command::new("claude")

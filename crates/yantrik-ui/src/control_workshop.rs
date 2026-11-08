@@ -69,7 +69,7 @@ pub(crate) fn name_the_mind(app: &str, action: &str, explained: &str, who: &str)
     explained.replacen("the Mind asking", clean, 1)
 }
 
-pub(crate) fn specs() -> [Action; 5] {
+pub(crate) fn specs() -> [Action; 4] {
     [
         Action::new(
             "workshop_create",
@@ -95,12 +95,6 @@ pub(crate) fn specs() -> [Action; 5] {
         )
         .arg(Param::text("agent").optional().describe("The Mind's agent id. Left out by a Mind: its own")),
         Action::new("workshop_list", "The workshops granted: a Mind sees its own, the person sees all.").risk("safe"),
-        Action::new(
-            "workshop_tainted",
-            "The workshop folders that hold what a conversation which had read private state wrote, \
-             for the bridge's taint rule. Folder paths only.",
-        )
-        .risk("safe"),
         // No sentence here may say what makes `agent_run` ask (the OPEN_ENDED, LEAVES_MACHINE or
         // fetches-an-address sentences): a test holds that, because this action is graded `standard`
         // and asks nothing, on the strength of what the code below does.
@@ -120,16 +114,12 @@ pub(crate) fn specs() -> [Action; 5] {
         .arg(Param::text("cwd").optional().describe("Where to run it: inside the workshop, relative to it or absolute. Left out: the workshop"))
         .arg(Param::number("wait").optional().describe(
             "A number of seconds, e.g. 30. How long to wait before answering `running: true`. Default 120, at most 600",
-        ))
-        .arg(Param::flag("tainted").optional().describe(
-            "`true` when this conversation has read the person's private state. The workshop is then \
-             marked as holding what it wrote. A claim can only tighten; leave it out otherwise",
         )),
     ]
 }
 
 pub fn actions(surface: ControlSurface) -> ControlSurface {
-    let [grant, revoke, list, tainted, sealed] = specs();
+    let [grant, revoke, list, sealed] = specs();
     surface
         .action(grant, |args| workshop_create(args, &workshop::home(), &workshop::record_path()))
         .action(revoke, |args| {
@@ -137,7 +127,6 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
             workshop_revoke(args, &workshop::record_path(), agent, the_person_is_calling())
         })
         .action(list, |_| workshop_list(&workshop::record_path()))
-        .action(tainted, |_| Ok(json!({ "folders": workshop::tainted_folders(&workshop::record_path()) })))
         .action(sealed, agent_run_sealed)
 }
 
@@ -211,9 +200,6 @@ fn agent_run_sealed(args: &Value) -> Result<Value, String> {
     let named = text(args, "workshop");
     let cwd = args.get("cwd").and_then(Value::as_str).map(str::trim).filter(|c| !c.is_empty()).map(PathBuf::from);
     let wait = wait_arg(args)?;
-    // A conversation that has read private state, by its own word or the shell's record: what it
-    // writes here may carry that, so the workshop is marked (#1124, M1).
-    let tainted = crate::taint_ask::flagged(args.get("tainted")) || crate::control_taint_scope::caller_has_read_private();
     run_job(
         command,
         wait,
@@ -221,9 +207,6 @@ fn agent_run_sealed(args: &Value) -> Result<Value, String> {
         Box::new(move |agent| {
             let record = workshop::record_path();
             let ready = prepare(&workshop::home(), &record, &agent.0, &named, cwd.as_deref())?;
-            if tainted {
-                workshop::mark_tainted(&record, &agent.0)?;
-            }
             Ok(ready)
         }),
     )
@@ -248,9 +231,9 @@ mod tests {
 
     #[test]
     fn the_sealed_action_asks_nothing_only_because_it_is_not_what_agent_run_is() {
-        let [grant, _, list, tainted, sealed] = specs();
+        let [grant, _, list, sealed] = specs();
         assert_eq!(sealed.permission, "standard");
-        for a in [&sealed, &list, &grant, &tainted] {
+        for a in [&sealed, &list, &grant] {
             assert!(!open_ended(&a.description) && !leaves_machine(&a.description), "{}", a.name);
             assert!(fetches_address(&a.description).is_none(), "{}", a.name);
         }

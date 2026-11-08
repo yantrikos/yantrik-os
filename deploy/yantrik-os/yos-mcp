@@ -1091,11 +1091,6 @@ def agent_args(name, args):
             # The folder as the Mind names it. Whether it is sealed is the shell's call, made from
             # its own grant record (`agent_run_sealed`), not anything said here.
             out["workshop"] = args.get("workshop")
-            # And what this conversation has read: the shell marks the workshop as holding what a
-            # tainted conversation wrote (#1124, M1). A claim like this can only tighten.
-            sync_scope()
-            if _SAW_PRIVATE:
-                out["tainted"] = True
         if args.get("cwd") not in (None, ""):
             out["cwd"] = args.get("cwd")
     else:
@@ -1975,58 +1970,6 @@ def sink_address(app, action, args, purpose=""):
     param = fetch_param(purpose)
     value = browser_args(args or {}).get(param) if param else None
     return ("Fetches", value if isinstance(value, str) else "") if param else ("", "")
-
-
-def inner_args(args):
-    """The arguments an `os_act` call hands its action, as a dict ({} when they cannot be read)."""
-    given = (args or {}).get("args")
-    if isinstance(given, str):
-        try:
-            given = json.loads(given, strict=False)
-        except ValueError:
-            given = None
-    return given if isinstance(given, dict) else {}
-
-
-def tainted_workshops():
-    """The workshop folders that hold what a tainted conversation wrote, from the shell's own record."""
-    result, _ = shell_call("workshop_tainted", {}, timeout=SCOPE_CALL_TIMEOUT)
-    folders = (result or {}).get("folders")
-    return [f for f in folders if isinstance(f, str) and f] if isinstance(folders, list) else []
-
-
-def workshop_taint(app, action, args):
-    """A workshop is a folder both Minds and conversations can reach, so it must not be an uncarded
-    channel from a tainted conversation to an untainted one (#1124, M1). Once a tainted conversation
-    has run a command in a workshop, that workshop is tainted; a conversation that then runs sealed in
-    it, or names it in a command of its own, has read private state, and is a tainted conversation from
-    then on. The shell holds the list (`workshop_tainted`); this only adds to this conversation's reads."""
-    if TAINT_OFF:
-        return
-    sealed = (surface_name(app), action) == ("shell", "agent_run_sealed")
-    if not (sealed or (surface_name(app), action) in COMMANDS):
-        return
-    folders = tainted_workshops()
-    if not folders:
-        return
-    given = inner_args(args)
-    named = str(given.get("workshop") or "") if sealed else ""
-    command = str(given.get("command") or "")
-    for folder in folders:
-        base = folder.rstrip("/").rsplit("/", 1)[-1]
-        parent = folder.rstrip("/").rsplit("/", 1)[0]
-        home = os.path.expanduser("~")
-        above = parent[len(home):].strip("/") if parent.startswith(home) else ""
-        # The folder, the folder it is in (`grep -r x ~/Documents` reads it), or a start folder
-        # above it (#1124, N4). Over-inclusive on purpose: it only taints the conversation.
-        reaches = bool(above) and (parent in command or ("~/" + above) in command or ("$HOME/" + above) in command)
-        cwd = str(given.get("cwd") or "")
-        if cwd and (folder.rstrip("/") + "/").startswith(cwd.rstrip("/") + "/"):
-            reaches = True
-        if (named and named.rstrip("/") == folder.rstrip("/")) or folder in command \
-                or ("Documents/" + base) in command or reaches:
-            saw_private("workshop %s (it holds what a conversation that had read private state wrote)" % base)
-            return
 
 
 def carries_private(app, action, runs_anything=False, args=None, purpose=""):
@@ -2918,7 +2861,6 @@ def guard_act(args):
     cannot_undo = unrecoverable(purpose)
     runs_anything = open_ended(purpose)
     cap = CEILING if CEILING_SET else None
-    workshop_taint(app, action, args)
     private = carries_private(app, action, runs_anything, args, purpose)
     # Declared by the action itself: asked in every mode, as a tainted sink is, with or without a taint.
     forced = always_asks(purpose)
