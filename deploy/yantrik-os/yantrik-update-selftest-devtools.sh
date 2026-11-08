@@ -46,10 +46,10 @@ selftest_devtools_reconcile() {
 all="$*"; [ "$1" = "-f" ] && [ "$2" = "-" ] && all="$all $(cat)"
 echo "$all" >> "$FAKE_LOG"
 case "$FAKE_FAIL:$all" in
-  probe:*yantrik_devtools_probe*|session:*devtools-guard-session*|all:*) exit 1 ;;
+  probe:*yantrik_devtools_probe*|session:*/session.nft*|all:*) exit 1 ;;
 esac
-[ "$1" = "list" ] && [ -n "$FAKE_MISSING" ] && exit 1
-[ "$1" = "list" ] && [ -n "$FAKE_LOCKDOWN" ] && echo 'meta skuid != 0 reject'
+[ "$1" = "list" ] && [ -n "${FAKE_MISSING:-}" ] && exit 1
+[ "$1" = "list" ] && [ -n "${FAKE_LOCKDOWN:-}" ] && echo 'meta skuid != 0 reject'
 exit 0
 FAKE
   chmod +x "$d/bin/nft"
@@ -57,7 +57,7 @@ FAKE
   dt_run() { # <FAKE_FAIL> <cgroup present: yes|no> [extra env]
     rm -rf "$d/etc"; mkdir -p "$d/etc"; : > "$d/log"
     local cgroot="$d/cg"; [ "$2" = no ] && cgroot="$d/nocg"
-    ( DEVTOOLS_SESSION_GUARD="$d/etc/session.nft" DEVTOOLS_LOCKDOWN="$d/etc/lockdown.nft"       DEVTOOLS_DROPIN_ROOT="$d/etc" DEVTOOLS_CGROOT="$cgroot" DEVTOOLS_NO_RELOAD=1       FAKE_LOG="$d/log" FAKE_FAIL="$1" FAKE_MISSING="$FAKE_MISSING" FAKE_LOCKDOWN="$FAKE_LOCKDOWN"       reconcile_devtools_session "$d/bin/nft" 1000 ) 2>&1
+    ( DEVTOOLS_SESSION_GUARD="$d/etc/session.nft" DEVTOOLS_LOCKDOWN="$d/etc/lockdown.nft"       DEVTOOLS_DROPIN_ROOT="$d/etc" DEVTOOLS_CGROOT="$cgroot" DEVTOOLS_NO_RELOAD=1       FAKE_LOG="$d/log" FAKE_FAIL="$1" FAKE_MISSING="${FAKE_MISSING:-}" FAKE_LOCKDOWN="${FAKE_LOCKDOWN:-}"       reconcile_devtools_session "$d/bin/nft" 1000 ) 2>&1
   }
   out="$(dt_run none yes)"; rc=$?
   is "devtools: with the cgroup up and every load good, the drop-in goes in" "yes" "$([ -f "$dropin" ] && echo yes || echo no)"

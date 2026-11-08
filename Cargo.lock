@@ -11127,6 +11127,7 @@ dependencies = [
  "vt100",
  "yantrik-harness",
  "yantrik-ipc-transport",
+ "yantrik-mind-scope",
 ]
 
 [[package]]
@@ -11372,6 +11373,7 @@ dependencies = [
  "yantrik-companion-core",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-mind-scope",
  "yantrik-ml",
  "yantrik-shown-address",
  "yantrikdb",
@@ -11664,6 +11666,13 @@ dependencies = [
  "yantrik-services",
  "yantrik-testing",
  "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-mind-scope"
+version = "0.1.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]
@@ -12098,6 +12107,7 @@ dependencies = [
  "yantrik-install-target",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+ "yantrik-mind-scope",
  "yantrik-ml",
  "yantrik-os",
  "yantrik-service-sdk",
