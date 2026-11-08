@@ -27,15 +27,18 @@ selftest_bridge() {
   hb_db() { # hb_db <harness=state ...>: the shell's run store, its own schema
     rm -f "$hb/runs.db"
     python3 -I - "$hb/runs.db" "$@" <<'PY'
-import sqlite3, sys
+import sqlite3, sys, time
 c = sqlite3.connect(sys.argv[1])
 c.execute("create table runs (run_id integer primary key, harness text not null,"
           " conversation text not null, owner text not null, state text not null,"
           " started_at integer not null, updated_at integer not null)")
 for spec in sys.argv[2:]:
     harness, _, state = spec.partition("=")
+    # state "orphaned:N" is a run the shell orphaned N seconds ago (what orphan_unfinished leaves)
+    state, _, age = state.partition(":")
+    at = int(time.time() * 1000) - int(age) * 1000 if age else 1
     c.execute("insert into runs (harness, conversation, owner, state, started_at, updated_at)"
-              " values (?,?,?,?,?,?)", (harness, "conv", "owner", state, 1, 1))
+              " values (?,?,?,?,?,?)", (harness, "conv", "owner", state, 1, at))
 c.commit()
 PY
   }
@@ -113,6 +116,29 @@ PY
     "$( HB_WAIT=300 hb_did "$hb/restart" "$hb_stale" hermes=waiting-on-person >/dev/null; hb_ask "$hb_stale" )"
   is "bridge: a turn in flight beside a waiting one is a turn in flight" "yes" \
     "$(hb_said "$hb/restart" "$hb_stale" "still working" hermes=waiting-on-person hermes=running)"
+
+  # An update restarts the shell, which orphans every unfinished run; Hermes is still working on it.
+  is "bridge: a run the shell just orphaned is a turn in flight: left alone, a note left" "did=|Herme" \
+    "$(hb_did "$hb/restart" "$hb_stale" hermes=orphaned:5)"
+  is "bridge: ... said as still working" "yes" \
+    "$(hb_said "$hb/restart" "$hb_stale" "still working" hermes=orphaned:5)"
+  is "bridge: a run orphaned long ago does not hold the restart" \
+    "did=restart hermes-gateway.service as $hb_owner|none" "$(hb_did "$hb/restart" "$hb_stale" hermes=orphaned:3600)"
+  is "bridge: another harness's recent orphan does not hold it either" \
+    "did=restart hermes-gateway.service as $hb_owner|none" "$(hb_did "$hb/restart" "$hb_stale" pi=orphaned:5)"
+
+  # Only the desktop account's own manager holds the gateway this restart reaches.
+  mkdir -p "$hb/proc/7001" "$hb/proc/7002"
+  printf '0::/system.slice/hermes-gateway.service\n' > "$hb/proc/7001/cgroup"
+  printf '0::/user.slice/user-0.slice/user@0.service/app.slice/hermes-gateway.service\n' > "$hb/proc/7002/cgroup"
+  is "bridge: a same-named unit in the system slice or in another user's manager is not the gateway" "did=|none" \
+    "$(hb_did "$hb/restart" "yos-mcp(pid-7001) yos-mcp(pid-7002)" hermes=done)"
+
+  # With the helper missing the updater cannot say the bridge is current.
+  is "bridge: without the helper, the done-check says why it cannot tell" "1|yes" \
+    "$( ( sed -n '/^  harness_bridge_verdict() {/p' "$SELF_PATH" > "$hb/fb.sh"; . "$hb/fb.sh"
+          o="$(harness_bridge_verdict)"; r=$?; case "$o" in *"is missing"*) w=yes ;; *) w=no ;; esac
+          echo "$r|$w" ) )"
 
   # Idle a moment ago, a turn now: the restart must not kill it.
   is "bridge: a turn that begins between the idle answer and the restart is left alone" "did=|Herme" \

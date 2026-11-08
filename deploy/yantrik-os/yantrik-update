@@ -232,7 +232,7 @@ else
   warn "yantrik-harness-bridge.sh is missing: an update run here cannot give the mind a new bridge"
   harness_bridge_update() { warn "the mind is still on the old bridge; restart hermes-gateway when Hermes is idle"; }
   harness_bridge_state() { printf 'unknown (yantrik-harness-bridge.sh is missing)'; }
-  harness_bridge_verdict() { return 0; }
+  harness_bridge_verdict() { printf 'yantrik-harness-bridge.sh is missing, so the bridge was not checked'; return 1; }
   harness_bridge_retry() { return 0; }
 fi
 

@@ -13,6 +13,13 @@
 # shell writes every run it hands a harness into its run store, so an unfinished run of Hermes's
 # is a turn in flight. That is the question below, not a proxy for it.
 #
+# Two limits, said plainly. (1) What this protects is the desktop's turns. Hermes is a gateway with
+# other platforms (Telegram, Slack, IRC) and its own scheduled jobs, which the shell's run store does
+# not see; a turn from one of those can still be killed by the restart. (2) An update restarts the
+# shell, and a starting shell marks every unfinished run orphaned, yet Hermes keeps working on it.
+# So a Hermes run orphaned within the last HARNESS_BRIDGE_ORPHAN_SECONDS (15 minutes) counts as a
+# turn in flight; a turn that runs longer than that after the update is not protected.
+#
 # Three rules hold here.
 #   - The bridge is found by pid, through systemd's own record of what the gateway holds (the
 #     cgroup a process runs in), never by process name. That is what keeps the Mind's bridge out
@@ -29,6 +36,7 @@
 #   HERMES_GATEWAY_UNIT              the user unit holding the bridge
 #   HARNESS_BRIDGE_WAIT_SECONDS      how long a turn in flight is waited on (300)
 #   HARNESS_BRIDGE_PERSON_SECONDS    how long a run waiting on the person is waited on (30)
+#   HARNESS_BRIDGE_ORPHAN_SECONDS    how long a run orphaned by a shell restart still counts as in flight (900)
 #   YANTRIK_PROC, HARNESS_BRIDGE_RUNS_DB, HARNESS_BRIDGE_STATE   /proc, the run store, the note
 harness_bridge_knob() { # harness_bridge_knob <var> <default>
   local v=""
@@ -70,10 +78,14 @@ harness_bridge_userctl() {
 
 # Did the gateway hold this pid? systemd says so in the process's cgroup: the last element of the
 # path is the unit it runs in. By pid, never by name.
+# It must also be in the desktop account's own manager (.../user@<uid>.service/...): root's own
+# user manager, or a system unit with the same name, is not the gateway this restart reaches.
 harness_bridge_holds_pid() {
-  local unit
-  unit="$(sed -n 's#^0::/\(.*\)$#\1#p' "$(harness_bridge_proc)/$1/cgroup" 2>/dev/null | sed 's#.*/##')"
-  [ "$unit" = "$(harness_bridge_unit)" ]
+  local path owner uid
+  path="$(sed -n 's#^0::/\(.*\)$#\1#p' "$(harness_bridge_proc)/$1/cgroup" 2>/dev/null)"
+  owner="$(harness_bridge_owner)" && uid="$(id -u "$owner" 2>/dev/null)" || return 1
+  case "/$path" in */user@"$uid".service/*) ;; *) return 1 ;; esac
+  [ "${path##*/}" = "$(harness_bridge_unit)" ]
 }
 
 # Of the processes an update left behind, which are the gateway's bridge. <stale> is
@@ -104,26 +116,30 @@ harness_bridge_runs_db() {
 # (crates/yantrik-harness/src/run_store.rs), and under `harness` the id that harness announced --
 # "hermes" for this plugin (harnesses/hermes/adapter.py). So a run of hers still open is a turn in
 # flight, and another harness's open run is not this gateway's business. A run the shell orphaned
-# when it started is already final, so a crash does not hold this shut.
+# when it started counts as one for a while (see the header): the update that restarted the shell
+# is what orphaned it, and Hermes keeps working on it. Older than that, a crash does not hold this shut.
 # Read as the person, so a store kept in their home is read only by someone entitled to it, and
 # read-only by URI, so SQLite takes in the WAL the running shell writes through. Fails when no
 # answer came: a store that will not open is not a store with nothing in it.
 harness_bridge_open_runs() {
-  local db owner reader=() out
-  db="$1"
+  local db owner reader=() out orphan
+  db="$1"; orphan="$(harness_bridge_seconds HARNESS_BRIDGE_ORPHAN_SECONDS 900)"
   owner="$(harness_bridge_owner)" || return 1
   [ "$owner" = "$(id -un)" ] || reader=(runuser -u "$owner" --)
   out="$("${reader[@]}" python3 -I -c '
-import sqlite3, sys
+import sqlite3, sys, time
 try:
     c = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
-    r = c.execute("select coalesce(sum(state=?),0), coalesce(sum(state=?),0) from runs"
-                  " where state in (?,?) and harness=?",
-                  ("running", "waiting-on-person", "running", "waiting-on-person", "hermes")).fetchone()
+    since = int(time.time() * 1000) - int(sys.argv[2]) * 1000
+    # An orphaned run is one the shell gave up on when it started; Hermes is still on it.
+    r = c.execute("select coalesce(sum(state in (?,?)),0), coalesce(sum(state=?),0) from runs"
+                  " where harness=? and (state in (?,?) or (state=? and updated_at>=?))",
+                  ("running", "orphaned", "waiting-on-person", "hermes",
+                   "running", "waiting-on-person", "orphaned", since)).fetchone()
     print("%d %d" % (r[0], r[1]))
 except Exception as e:
     sys.stderr.write("%s\n" % e); sys.exit(1)
-' "$db" 2>/dev/null)" || return 1
+' "$db" "$orphan" 2>/dev/null)" || return 1
   case "$out" in [0-9]*" "[0-9]*) ;; *) return 1 ;; esac
   case "$out" in *[!0-9" "]*) return 1 ;; esac
   printf '%s' "$out"
@@ -243,7 +259,10 @@ harness_bridge_retry() {
 
 # Why the bridge is still the old one, as the person reading `status` needs it. Recorded by the
 # update that could not restart the gateway, and put away by the next update that could, or by a
-# status that finds the bridge current again. A note, not a verdict: the check is live.
+# status that finds the bridge current again. A note, not a verdict: the check is live. It is
+# root's file: a `check` retry run as the person can restart the gateway but can neither write nor
+# remove it, so after such a retry `status` may show the earlier reason until the next update or
+# root's `status`; whether the bridge is reported current is the live check either way.
 harness_bridge_note_file() { harness_bridge_knob HARNESS_BRIDGE_STATE "$UPDATE_STATE_DIR/hermes-bridge"; }
 
 harness_bridge_note_write() {
