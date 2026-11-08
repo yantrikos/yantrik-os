@@ -16,9 +16,13 @@
 //!
 //! # The grant
 //!
-//! `workshop_create` is `sensitive` and explains each call on the card ("Give the Mind a workshop
-//! at ~/Documents/x"), so it is the ordinary approvals card, in every mode but full bypass, and
-//! the grant a person allows is bound to the folder as typed. A Mind never answers it.
+//! `workshop_create` is `sensitive`, declares `always_asks` and explains each call on the card
+//! ("Give <the Mind> a workshop at ~/Documents/x"). That declaration is the shell's way of forcing
+//! a card whatever the mode: `gate::decide` refuses the call without a grant in every mode (full
+//! bypass included, no session or standing rule answering), `request_approval` asks whatever its
+//! table says (`taint_ask::resolve`, the path the taint already uses to ask in every mode), and
+//! the card offers no "Allow for this session". The grant a person allows is bound to the folder
+//! as typed. A Mind never answers it (#1124, H1).
 
 use std::path::{Path, PathBuf};
 
@@ -44,7 +48,28 @@ fn explain_in(home: &Path, args: &Value) -> String {
     }
 }
 
-pub(crate) fn specs() -> [Action; 4] {
+/// The card's sentence names the Mind that asked. The action cannot know who that is while it is
+/// explaining (it is asked over a socket, with the arguments and nothing else), so the shell's
+/// `request_approval` puts the asker it verified in place of the words "the Mind asking" (#1124, L4).
+/// `who` is the token-vouched agent id or the verified program, cleaned of anything that draws
+/// differently from how it reads.
+pub(crate) fn name_the_mind(app: &str, action: &str, explained: &str, who: &str) -> String {
+    if (app, action) != ("shell", "workshop_create") {
+        return explained.to_string();
+    }
+    let clean: String = who
+        .chars()
+        .filter(|c| !c.is_control() && !crate::approvals::is_format_char(*c))
+        .take(60)
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        return explained.to_string();
+    }
+    explained.replacen("the Mind asking", clean, 1)
+}
+
+pub(crate) fn specs() -> [Action; 5] {
     [
         Action::new(
             "workshop_create",
@@ -54,6 +79,10 @@ pub(crate) fn specs() -> [Action; 4] {
              carries — never an argument.",
         )
         .risk("sensitive")
+        // The person allows each grant on a card, in every mode, and no session rule covers it
+        // (#1124 H1): `gate::decide` refuses a call without a grant and `request_approval` asks
+        // whatever its table says.
+        .always_asks()
         .arg(Param::text("folder").describe(
             "A new folder under ~/Documents, written ~/Documents/<name>. Never the home folder, \
              Desktop or Downloads, never through a symlink, never with a dot name. The shell makes it",
@@ -66,6 +95,12 @@ pub(crate) fn specs() -> [Action; 4] {
         )
         .arg(Param::text("agent").optional().describe("The Mind's agent id. Left out by a Mind: its own")),
         Action::new("workshop_list", "The workshops granted: a Mind sees its own, the person sees all.").risk("safe"),
+        Action::new(
+            "workshop_tainted",
+            "The workshop folders that hold what a conversation which had read private state wrote, \
+             for the bridge's taint rule. Folder paths only.",
+        )
+        .risk("safe"),
         // No sentence here may say what makes `agent_run` ask (the OPEN_ENDED, LEAVES_MACHINE or
         // fetches-an-address sentences): a test holds that, because this action is graded `standard`
         // and asks nothing, on the strength of what the code below does.
@@ -85,16 +120,24 @@ pub(crate) fn specs() -> [Action; 4] {
         .arg(Param::text("cwd").optional().describe("Where to run it: inside the workshop, relative to it or absolute. Left out: the workshop"))
         .arg(Param::number("wait").optional().describe(
             "A number of seconds, e.g. 30. How long to wait before answering `running: true`. Default 120, at most 600",
+        ))
+        .arg(Param::flag("tainted").optional().describe(
+            "`true` when this conversation has read the person's private state. The workshop is then \
+             marked as holding what it wrote. A claim can only tighten; leave it out otherwise",
         )),
     ]
 }
 
 pub fn actions(surface: ControlSurface) -> ControlSurface {
-    let [grant, revoke, list, sealed] = specs();
+    let [grant, revoke, list, tainted, sealed] = specs();
     surface
         .action(grant, |args| workshop_create(args, &workshop::home(), &workshop::record_path()))
-        .action(revoke, |args| workshop_revoke(args, &workshop::record_path()))
+        .action(revoke, |args| {
+            let agent = mind()?;
+            workshop_revoke(args, &workshop::record_path(), agent, the_person_is_calling())
+        })
         .action(list, |_| workshop_list(&workshop::record_path()))
+        .action(tainted, |_| Ok(json!({ "folders": workshop::tainted_folders(&workshop::record_path()) })))
         .action(sealed, agent_run_sealed)
 }
 
@@ -123,10 +166,19 @@ fn workshop_create(args: &Value, home: &Path, record: &Path) -> Result<Value, St
     }))
 }
 
-fn workshop_revoke(args: &Value, record: &Path) -> Result<Value, String> {
-    let agent = match mind()? {
+/// Is the caller the person's own process, as the shell classes it? A program it cannot place is
+/// not (`caller_class` answers `mind` for anything not shown to be the person's).
+fn the_person_is_calling() -> bool {
+    yantrik_app_runtime::control::caller().is_some_and(|c| crate::caller_class::class_of(c.pid as i64) == "person")
+}
+
+/// A Mind revokes its own grant. The person names the Mind. A caller with no token that the shell
+/// cannot show to be the person has no say in anyone's grant (#1124, L5).
+fn workshop_revoke(args: &Value, record: &Path, mind: Option<String>, person: bool) -> Result<Value, String> {
+    let agent = match mind {
         Some(own) => own,
-        None => text(args, "agent").trim().to_string(),
+        None if person => text(args, "agent").trim().to_string(),
+        None => return Err("only the person, or a Mind for its own workshop, takes a workshop back.".into()),
     };
     if agent.is_empty() {
         return Err("`agent` names the Mind whose workshop is taken back.".into());
@@ -136,7 +188,8 @@ fn workshop_revoke(args: &Value, record: &Path) -> Result<Value, String> {
 }
 
 fn workshop_list(record: &Path) -> Result<Value, String> {
-    let all = workshop::load(record)?;
+    // Grants whose folder is gone or replaced are dropped as the record is read.
+    let all = workshop::prune(record)?;
     let own = mind()?;
     let shown: Vec<Value> = all
         .into_iter()
@@ -158,11 +211,21 @@ fn agent_run_sealed(args: &Value) -> Result<Value, String> {
     let named = text(args, "workshop");
     let cwd = args.get("cwd").and_then(Value::as_str).map(str::trim).filter(|c| !c.is_empty()).map(PathBuf::from);
     let wait = wait_arg(args)?;
+    // A conversation that has read private state, by its own word or the shell's record: what it
+    // writes here may carry that, so the workshop is marked (#1124, M1).
+    let tainted = crate::taint_ask::flagged(args.get("tainted")) || crate::control_taint_scope::caller_has_read_private();
     run_job(
         command,
         wait,
         Call::current(),
-        Box::new(move |agent| prepare(&workshop::home(), &workshop::record_path(), &agent.0, &named, cwd.as_deref())),
+        Box::new(move |agent| {
+            let record = workshop::record_path();
+            let ready = prepare(&workshop::home(), &record, &agent.0, &named, cwd.as_deref())?;
+            if tainted {
+                workshop::mark_tainted(&record, &agent.0)?;
+            }
+            Ok(ready)
+        }),
     )
 }
 
@@ -185,9 +248,9 @@ mod tests {
 
     #[test]
     fn the_sealed_action_asks_nothing_only_because_it_is_not_what_agent_run_is() {
-        let [grant, _, list, sealed] = specs();
+        let [grant, _, list, tainted, sealed] = specs();
         assert_eq!(sealed.permission, "standard");
-        for a in [&sealed, &list, &grant] {
+        for a in [&sealed, &list, &grant, &tainted] {
             assert!(!open_ended(&a.description) && !leaves_machine(&a.description), "{}", a.name);
             assert!(fetches_address(&a.description).is_none(), "{}", a.name);
         }
@@ -237,6 +300,37 @@ mod tests {
         let said = explain_in(h.path(), &json!({ "folder": "~/Desktop/x" }));
         assert!(said.contains("refused"), "{said}");
         assert!(explain_in(h.path(), &json!({ "folder": "~/Documents/new" })).starts_with("Give the Mind asking a workshop at ~/Documents/new"));
+    }
+
+    /// #1124 L4: the card says which Mind asks, from the verified asker, with nothing invisible in it.
+    #[test]
+    fn the_card_names_the_mind_that_asked() {
+        let h = home();
+        let said = explain_in(h.path(), &json!({ "folder": "~/Documents/new" }));
+        let named = name_the_mind("shell", "workshop_create", &said, "hermes:main");
+        assert!(named.starts_with("Give hermes:main a workshop at ~/Documents/new"), "{named}");
+        let tricked = name_the_mind("shell", "workshop_create", &said, &format!("her{}mes{}:main", char::from_u32(0x202E).unwrap(), char::from_u32(10).unwrap()));
+        assert!(tricked.starts_with("Give hermes:main a workshop"), "{tricked}");
+        // Another action's sentence is left alone, and an empty asker leaves the words as they were.
+        assert_eq!(name_the_mind("shell", "agent_run", &said, "x"), said);
+        assert_eq!(name_the_mind("shell", "workshop_create", &said, "  "), said);
+    }
+
+    /// #1124 L5: with no token, only the person may take a Mind's workshop back.
+    #[test]
+    fn only_the_person_or_the_mind_itself_revokes() {
+        let h = home();
+        let rec = h.path().join("workshops.json");
+        grant_for(h.path(), &rec, "hermes", "~/Documents/shop");
+        let named = json!({ "agent": "hermes" });
+        assert!(workshop_revoke(&named, &rec, None, false).unwrap_err().contains("only the person"));
+        assert_eq!(workshop::load(&rec).unwrap().len(), 1, "an unplaced caller revoked nothing");
+        // Another Mind's own call revokes its own, whatever it names.
+        assert_eq!(workshop_revoke(&named, &rec, Some("pi".into()), false).unwrap()["revoked"], false);
+        assert_eq!(workshop::load(&rec).unwrap().len(), 1);
+        assert_eq!(workshop_revoke(&named, &rec, Some("hermes".into()), false).unwrap()["revoked"], true);
+        grant_for(h.path(), &rec, "hermes", "~/Documents/shop2");
+        assert_eq!(workshop_revoke(&named, &rec, None, true).unwrap()["revoked"], true);
     }
 
     /// Only with `bwrap` and a user systemd to hold the caps: the sandbox itself, run for real.

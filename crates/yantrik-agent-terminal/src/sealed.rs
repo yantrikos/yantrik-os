@@ -4,16 +4,20 @@
 //! # What the sandbox denies
 //!
 //! `--unshare-all` (network, IPC, pids, user, hostname, cgroup), `--die-with-parent`,
-//! `--new-session` (no TIOCSTI into the person's terminals) and `--clearenv`. The system is
+//! `--new-session` (no TIOCSTI into the person's terminals), `--clearenv`, `--disable-userns` (no
+//! further user namespaces; bubblewrap 0.8 or newer, and the ISO's Debian trixie ships 0.11) and a
+//! seccomp filter on fd 4 ([`crate::seccomp`]). The system is
 //! mounted read-only, and only the named files of `/etc`; there is no `$HOME`, no `/run`, no
 //! session bus, no Wayland or X socket and no portal. The one writable path is the workshop, and
 //! `/tmp` is a fresh tmpfs. `HOME` inside is the workshop.
 //!
 //! # Caps
 //!
-//! CPU, memory and wall time are a systemd scope (`systemd-run --user --scope`), the way the
+//! CPU, memory, tasks and wall time are a systemd scope (`systemd-run --user --scope`), the way the
 //! capture recorder is run. A machine with no `systemd-run` or no `bwrap` runs nothing sealed:
-//! the failure is a refusal, never a command run unsealed.
+//! the failure is a refusal, never a command run unsealed. A scope has no disk quota, so the
+//! worker watches the workshop's size and the free space under it while a sealed job runs
+//! ([`crate::sealed_disk`]) and stops the job when either bound is crossed.
 //!
 //! # Why a shell stands between the PTY and bwrap
 //!
@@ -28,8 +32,17 @@ use std::time::Duration;
 /// What one sealed command may spend.
 #[derive(Clone, Debug)]
 pub struct Caps {
-    /// `MemoryMax`, e.g. `8G`. Swap is held at zero beside it.
+    /// `MemoryMax`: a size (`8G`) or a share of the machine's memory (`50%`), so it caps something
+    /// on a small machine too. Swap is held at zero beside it.
     pub memory_max: String,
+    /// `TasksMax`: processes and threads, so a fork bomb is bounded by the scope and not only by
+    /// the user's default.
+    pub tasks_max: u32,
+    /// The most the workshop may hold, in bytes (allocated blocks), before the job is stopped.
+    pub disk_max: u64,
+    /// The least free space the filesystem under the workshop may be left with before the job is
+    /// stopped, so a build cannot fill the person's disk.
+    pub free_min: u64,
     /// `CPUQuota` in percent of one core: 400 is four cores.
     pub cpu_percent: u32,
     /// `RuntimeMaxSec`: the scope is stopped after this.
@@ -38,7 +51,14 @@ pub struct Caps {
 
 impl Default for Caps {
     fn default() -> Self {
-        Caps { memory_max: "8G".into(), cpu_percent: 400, wall: Duration::from_secs(6 * 3600) }
+        Caps {
+            memory_max: "50%".into(),
+            tasks_max: 4096,
+            disk_max: 30 << 30,
+            free_min: 5 << 30,
+            cpu_percent: 400,
+            wall: Duration::from_secs(6 * 3600),
+        }
     }
 }
 
@@ -61,7 +81,7 @@ pub(crate) struct Spec {
 const SYSTEM_DIRS: [&str; 6] = ["usr", "bin", "sbin", "lib", "lib32", "lib64"];
 
 /// The parts of `/etc` a build needs (certificates, the loader, users, locale), and no more.
-const ETC_FILES: [&str; 12] = [
+const ETC_FILES: [&str; 13] = [
     "ld.so.cache",
     "ld.so.conf",
     "ld.so.conf.d",
@@ -74,6 +94,8 @@ const ETC_FILES: [&str; 12] = [
     "localtime",
     "mime.types",
     "os-release",
+    // Fontconfig's configuration, so Chromium (Remotion's renderer) finds the fonts under /usr/share.
+    "fonts",
 ];
 
 const SYSTEM_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -94,9 +116,23 @@ impl Sealed {
         let var = |name: &str, fallback: &str| {
             env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()).unwrap_or_else(|| fallback.to_string())
         };
-        let mut a: Vec<String> = ["--unshare-all", "--die-with-parent", "--new-session", "--clearenv", "--cap-drop", "ALL"]
-            .map(String::from)
-            .to_vec();
+        // `--unshare-user` beside `--unshare-all` (which only tries it): `--disable-userns` needs a
+        // user namespace of ours, and a machine that cannot make one runs nothing. The filter is
+        // read from fd 4, which `job::spawn` hands over and closes everything else around.
+        let mut a: Vec<String> = [
+            "--unshare-all",
+            "--unshare-user",
+            "--disable-userns",
+            "--seccomp",
+            "4",
+            "--die-with-parent",
+            "--new-session",
+            "--clearenv",
+            "--cap-drop",
+            "ALL",
+        ]
+        .map(String::from)
+        .to_vec();
         for dir in SYSTEM_DIRS {
             let host = root.join(dir);
             match std::fs::symlink_metadata(&host) {
@@ -139,6 +175,7 @@ impl Sealed {
         for p in [
             format!("MemoryMax={}", c.memory_max),
             "MemorySwapMax=0".to_string(),
+            format!("TasksMax={}", c.tasks_max),
             format!("CPUQuota={}%", c.cpu_percent),
             format!("RuntimeMaxSec={}", c.wall.as_secs()),
         ] {
@@ -200,10 +237,12 @@ mod tests {
     #[test]
     fn every_denial_is_in_the_argv() {
         let a = argv();
-        for flag in ["--unshare-all", "--die-with-parent", "--new-session", "--clearenv"] {
+        for flag in ["--unshare-all", "--unshare-user", "--disable-userns", "--die-with-parent", "--new-session", "--clearenv"] {
             assert!(a.iter().any(|x| x == flag), "{flag} missing from {a:?}");
         }
         assert!(a.windows(2).any(|w| w == ["--cap-drop", "ALL"]));
+        // The syscall filter is read from fd 4, which the spawn provides (#1124, M4).
+        assert!(a.windows(2).any(|w| w == ["--seccomp", "4"]));
         assert!(a.windows(2).any(|w| w == ["--tmpfs", "/tmp"]));
         assert_eq!(a.last().unwrap(), "--");
         for banned in ["--share-net", "--unshare-all-try", "--dev-bind", "--bind-try", "--setenv-all"] {
@@ -244,7 +283,7 @@ mod tests {
     #[test]
     fn the_caps_are_a_scope() {
         let a = Sealed::new(PathBuf::from("/w")).scope_args().join(" ");
-        for want in ["--scope", "MemoryMax=8G", "MemorySwapMax=0", "CPUQuota=400%", "RuntimeMaxSec=21600"] {
+        for want in ["--scope", "MemoryMax=50%", "MemorySwapMax=0", "TasksMax=4096", "CPUQuota=400%", "RuntimeMaxSec=21600"] {
             assert!(a.contains(want), "{want} in {a}");
         }
     }

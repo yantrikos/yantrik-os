@@ -45,6 +45,12 @@ pub fn open_one(ui: &App, b: &mut Bench, name: &str) {
             b.remember(Target::File { path: path.to_string_lossy().into_owned() }, &item.label(), "Desktop");
         }
         Kind::App => {
+            // A shortcut a Mind made in its workshop is not launched from the desktop (#1124, H2).
+            if let Some(why) = crate::workshop_guard::refuse_open(&path) {
+                tracing::warn!(path = %path.display(), "{why}");
+                say(ui, &format!("{} was not opened", item.label()), "It came from a Mind's workshop, and what is made there is not launched as an app.");
+                return;
+            }
             let installed = b.catalogue.get();
             let Some(sc) = b.shortcuts.get(&b.model.desktop, &item) else {
                 say(ui, &format!("{} is not an app shortcut", item.label()), "Its file is not a desktop entry for an application.");

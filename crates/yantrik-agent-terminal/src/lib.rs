@@ -76,10 +76,14 @@
 
 mod identity;
 mod job;
+mod job_sys;
 mod jobs;
+mod planted;
 mod proc;
 mod retained;
 mod sealed;
+mod sealed_disk;
+mod seccomp;
 
 pub use identity::{descends_from, AgentResolver, HostTokens, Lookup, NoAgents, TokenTable, NO_AGENT};
 pub use jobs::{
@@ -87,6 +91,7 @@ pub use jobs::{
     DEFAULT_WAIT,
 };
 pub use retained::dropped_marker;
+pub use planted::{is_marked, mark, mark_tree, marked_or_under_marked, XATTR as PLANTED_XATTR};
 pub use sealed::{Caps, Sealed};
 
 /// Which of the person's agents something belongs to — the harness wire's own type.

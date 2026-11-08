@@ -364,3 +364,22 @@ fn every_running_group_dies_when_the_jobs_are_dropped() {
     drop(jobs);
     eventually("the shell closing to take the command with it", || gone(child));
 }
+
+/// #1124 M3: a descriptor the shell holds without close-on-exec (a C library's socket, an inotify
+/// fd) does not reach a command. Only the terminal (0, 1, 2) and the directory pipe (3) do.
+#[test]
+fn an_inherited_descriptor_does_not_reach_the_command() {
+    // Opened here without O_CLOEXEC, as a C library under the shell might.
+    let low = unsafe { libc::open(b"/dev/null ".as_ptr().cast(), libc::O_RDONLY) };
+    let leaked = unsafe { libc::fcntl(low, libc::F_DUPFD, 10) };
+    unsafe { libc::close(low) };
+    assert!(leaked >= 10, "the test needs a descriptor above the ones a job is given");
+    let jobs = jobs();
+    let listed = jobs
+        .run(&pi(), "for f in /proc/self/fd/*; do [ -e \"$f\" ] && echo \"fd=${f##*/}\"; done", None, LONG)
+        .unwrap();
+    unsafe { libc::close(leaked) };
+    let fds: Vec<u32> = listed.tail.lines().filter_map(|l| l.strip_prefix("fd=")?.trim().parse().ok()).collect();
+    assert!(fds.contains(&3), "the directory pipe must survive: {fds:?}");
+    assert!(!fds.contains(&(leaked as u32)), "fd {leaked} leaked into the command: {fds:?}");
+}

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use crate::job_sys::{hand_over_fds, peek_exit, pipe, reported_directory};
 use crate::jobs::{JobId, JobState, Limits, RunAnswer, Shared};
 use crate::retained::Retained;
 use crate::sealed::Sealed;
@@ -63,6 +64,8 @@ pub(crate) struct Job {
     /// Start order across all agents; decides whose directory wins (see the crate doc).
     pub seq: u64,
     pub started: Instant,
+    /// The sandbox a sealed command runs in: what it may spend and where it is allowed to write.
+    pub sealed: Option<Sealed>,
     /// The command's `bash`: session leader, so also the process group's id.
     pub pid: i32,
     /// `/dev/pts/N`, for telling a read on this terminal from any other read.
@@ -111,6 +114,18 @@ pub(crate) fn spawn(
         .find(|p| Path::new(p).exists())
         .ok_or_else(|| "the command was not started: this machine has no bash".to_string())?;
     let write_fd = pwd_write.as_raw_fd();
+    // A sealed command carries a syscall filter on fd 4, and starts only if the sandbox can be
+    // built and the disk has room for it.
+    let filter = match sealed {
+        Some(s) => {
+            if let Some(why) = crate::sealed_disk::verdict(&s.workshop, &s.caps) {
+                return Err(format!("the command was not started: {why}."));
+            }
+            Some(crate::seccomp::as_pipe().map_err(|e| format!("the command was not started: {e}"))?)
+        }
+        None => None,
+    };
+    let filter_fd = filter.as_ref().map(|f| f.as_raw_fd());
     // A sealed command is the same wrapper inside the sandbox; one the sandbox cannot be built
     // for is not started at all.
     let (program, args, env): (String, Vec<String>, Vec<(String, String)>) = match sealed {
@@ -129,11 +144,12 @@ pub(crate) fn spawn(
         .env_clear()
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(&cwd);
-    // Safety: only async-signal-safe calls (dup2, fcntl) between fork and exec.
-    let builder = unsafe { builder.pre_exec(move || hand_over_pwd_pipe(write_fd)) };
+    // Safety: only async-signal-safe calls (dup2, fcntl, close_range) between fork and exec.
+    let builder = unsafe { builder.pre_exec(move || hand_over_fds(write_fd, filter_fd)) };
     let child = builder.spawn(pts).map_err(|e| refuse("bash would not start", &e))?;
     // Ours closed, so the command's copy is the only writer.
     drop(pwd_write);
+    drop(filter);
 
     let pid = child.id() as i32;
     let tty = std::fs::read_link(format!("/proc/{pid}/fd/0")).unwrap_or_default();
@@ -153,6 +169,7 @@ pub(crate) fn spawn(
         cwd,
         seq,
         started: Instant::now(),
+        sealed: sealed.cloned(),
         pid,
         tty,
         state: Mutex::new(State::default()),
@@ -179,85 +196,6 @@ pub(crate) fn spawn(
         return Err(refuse("no thread to watch it", &e));
     }
     Ok(job)
-}
-
-/// In the child, between fork and exec: put the directory pipe on fd 3, open across exec.
-fn hand_over_pwd_pipe(fd: RawFd) -> std::io::Result<()> {
-    unsafe {
-        if fd == 3 {
-            let flags = libc::fcntl(3, libc::F_GETFD);
-            if flags < 0 || libc::fcntl(3, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-        } else if libc::dup2(fd, 3) < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
-fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0 as RawFd; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
-}
-
-/// Whether the leader has ended, without reaping it.
-///
-/// `WNOWAIT` is the point: while the leader is an unreaped zombie its pid — which is the group's
-/// id — cannot be handed to anyone else, so a `SIGKILL` sent to the group after the grace period
-/// can only reach this job's processes.
-fn peek_exit(pid: i32) -> Option<End> {
-    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    let done = unsafe {
-        libc::waitid(
-            libc::P_PID,
-            pid as libc::id_t,
-            &mut info,
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-        )
-    };
-    if done != 0 {
-        // ECHILD: something else reaped it. The command is over and how it ended is lost.
-        return (std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD))
-            .then_some(End::Exited(-1));
-    }
-    if unsafe { info.si_pid() } == 0 {
-        return None;
-    }
-    let status = unsafe { info.si_status() };
-    match info.si_code {
-        libc::CLD_EXITED => Some(End::Exited(status)),
-        libc::CLD_KILLED | libc::CLD_DUMPED => Some(End::Signalled(status)),
-        _ => None,
-    }
-}
-
-/// The last complete directory the wrapper wrote, if it is still a directory.
-fn reported_directory(pipe: &OwnedFd) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let raw = pipe.as_raw_fd();
-    unsafe {
-        let flags = libc::fcntl(raw, libc::F_GETFL);
-        libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
-    }
-    let mut file = File::from(pipe.try_clone().ok()?);
-    let mut bytes = Vec::new();
-    let mut buf = [0u8; 4096];
-    while let Ok(n) = file.read(&mut buf) {
-        if n == 0 || bytes.len() > 64 * 1024 {
-            break;
-        }
-        bytes.extend_from_slice(&buf[..n]);
-    }
-    // Only NUL-terminated records count; take the last. Anything after the last NUL is a record
-    // cut short and says nothing.
-    let complete = &bytes[..bytes.iter().rposition(|b| *b == 0)?];
-    let last = complete.rsplit(|b| *b == 0).next()?;
-    let path = PathBuf::from(std::ffi::OsStr::from_bytes(last));
-    (path.is_absolute() && path.is_dir()).then_some(path)
 }
 
 /// Every row the emulator still holds — scrollback, then the screen — with wrapped rows joined
@@ -513,6 +451,7 @@ fn worker(
     let mut open = true;
     let mut escalated = false;
     let mut last_probe: Option<Instant> = None;
+    let mut last_disk: Option<Instant> = None;
 
     loop {
         pending.append(&mut lock(&job.pending_input));
@@ -569,7 +508,16 @@ fn worker(
                     }
                     open = read_available(&mut master, &job, &shared, &mut buf);
                 }
-                let cwd_after = reported_directory(&pwd).unwrap_or_else(|| job.cwd.clone());
+                // A sealed command's `$PWD` is written by the sandbox, so it is its word and nothing
+                // more: it never moves the Mind's directory for its next unsealed command (#1124,
+                // L3). What it left in the workshop is marked, before anyone is told it ended.
+                let cwd_after = match &job.sealed {
+                    Some(s) => {
+                        crate::planted::mark_tree(&s.workshop, 300_000);
+                        job.cwd.clone()
+                    }
+                    None => reported_directory(&pwd).unwrap_or_else(|| job.cwd.clone()),
+                };
                 {
                     let mut state = lock(&job.state);
                     state.end = Some(end);
@@ -579,7 +527,7 @@ fn worker(
                 }
                 job.waiting.store(false, Ordering::Release);
                 tracing::info!(agent = %job.agent, job = %job.id, ?end, "agent command ended");
-                {
+                if job.sealed.is_none() {
                     let mut dirs = lock(&shared.dirs);
                     let newer = dirs.get(&job.agent).is_none_or(|(_, seq)| *seq < job.seq);
                     if newer {
@@ -606,6 +554,18 @@ fn worker(
                 }
             } else {
                 last_probe = None;
+            }
+        }
+
+        // A sealed job is held to the disk it may fill: the scope cannot (#1124, L1).
+        if let (false, true, Some(s)) = (ended, kill_requested.is_none(), &job.sealed) {
+            if last_disk.is_none_or(|t| t.elapsed() >= crate::sealed_disk::EVERY) {
+                last_disk = Some(Instant::now());
+                if let Some(why) = crate::sealed_disk::verdict(&s.workshop, &s.caps) {
+                    tracing::warn!(agent = %job.agent, job = %job.id, "sealed command stopped: {why}");
+                    job.feed(format!("\r\n[stopped by the desktop: {why}]\r\n").as_bytes(), &shared);
+                    job.terminate();
+                }
             }
         }
 

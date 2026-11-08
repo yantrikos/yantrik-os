@@ -287,6 +287,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // Who the notification below names: the verified asker, never `requester`, which
                 // is only what the request called itself (security review of #614).
                 let asker = verified.who();
+                // A workshop grant's card names the Mind that asked, from what the shell verified
+                // of the caller and not from anything the request says (#1124, L4).
+                let explained = crate::control_workshop::name_the_mind(
+                    &app,
+                    &action,
+                    &explained,
+                    if agent.is_empty() { &asker } else { &agent },
+                );
 
                 // And one line beside the arguments saying what their handles are, from the same
                 // `describe` the grade came from (#54) — empty for a call that names nothing by

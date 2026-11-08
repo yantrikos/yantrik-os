@@ -17,6 +17,19 @@
 //! The same rules run again, minus the emptiness, every time a command is started: a folder
 //! swapped for a link, or moved, after the grant is refused then.
 //!
+//! # The grant is the folder, not its name (#1124, M2)
+//!
+//! A grant records the folder's device and inode, and the marker the shell put on it
+//! (`yantrik_agent_terminal::planted`). Every start checks all three. A folder that was deleted
+//! and made again, or unzipped over, under the same name is another folder: the grant is deleted
+//! and nothing runs. A folder that is gone revokes the grant too ("revoked by deleting the
+//! folder"), and `list` drops such grants as it reads. The window between this check and the
+//! sandbox's mount is closed by the same fact: only a process outside the sandbox can rename the
+//! folder, and that is the person's own account, which already holds everything the grant could give.
+//!
+//! One folder is one Mind's: a second grant of a folder another Mind holds is refused, so no
+//! folder is shared between two conversations (#1124, L2, and the channel M1 closes).
+//!
 //! # The grant
 //!
 //! One workshop per Mind, in `~/.local/share/yantrik/workshops.json`, written by the shell only
@@ -39,6 +52,24 @@ pub struct Grant {
     /// The folder's realpath when it was granted.
     pub folder: String,
     pub granted_unix: u64,
+    /// The folder's device and inode when it was granted (0 in a record that predates them, which
+    /// matches nothing).
+    #[serde(default)]
+    pub dev: u64,
+    #[serde(default)]
+    pub ino: u64,
+    /// When the folder was born (nanoseconds since the epoch; 0 where the filesystem does not
+    /// say). A filesystem may hand a deleted folder's inode number to the next one made, and the
+    /// birth time tells those two apart.
+    #[serde(default)]
+    pub born: u64,
+    /// Whether the shell could put its marker on the folder, which must then still be there.
+    #[serde(default)]
+    pub marked: bool,
+    /// Whether a conversation that had read private state ran a command here: what is in it may
+    /// carry that, and a conversation that reads it is tainted (#1124, M1).
+    #[serde(default)]
+    pub tainted: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -91,12 +122,29 @@ fn save(path: &Path, grants: Vec<Grant>) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("cannot write the workshop record: {e}"))
 }
 
-/// Record `folder` (already checked) as `agent`'s workshop, replacing its earlier one.
+/// Record `folder` (already checked) as `agent`'s workshop, replacing its earlier one. Refused when
+/// another Mind holds the folder (by name or by inode).
 pub fn grant(path: &Path, agent: &str, folder: &Path, now: u64) -> Result<Grant, String> {
+    use std::os::unix::fs::MetadataExt;
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut grants = load(path)?;
+    let meta = std::fs::metadata(folder).map_err(|e| format!("{} cannot be read: {e}", folder.display()))?;
+    let (dev, ino, born) = (meta.dev(), meta.ino(), born_of(&meta));
+    if grants.iter().any(|g| g.agent != agent && (Path::new(&g.folder) == folder || (g.dev == dev && g.ino == ino && g.ino != 0))) {
+        return Err("that folder is already another Mind's workshop; each Mind has a folder of its own.".into());
+    }
     grants.retain(|g| g.agent != agent);
-    let made = Grant { agent: agent.to_string(), folder: folder.display().to_string(), granted_unix: now };
+    let marked = yantrik_agent_terminal::mark(folder);
+    let made = Grant {
+        agent: agent.to_string(),
+        folder: folder.display().to_string(),
+        granted_unix: now,
+        dev,
+        ino,
+        born,
+        marked,
+        tainted: false,
+    };
     grants.push(made.clone());
     save(path, grants)?;
     Ok(made)
@@ -119,7 +167,9 @@ pub fn revoke(path: &Path, agent: &str) -> Result<bool, String> {
 /// first-grant rules (the folder is new, or empty) and creates the last component when missing.
 pub fn check_folder(home: &Path, raw: &str, for_grant: bool) -> Result<PathBuf, String> {
     let raw = raw.trim();
-    if raw.is_empty() || raw.len() > 400 || raw.chars().any(char::is_control) {
+    // No control character and no format character (bidi controls, zero-width, tags): a name that
+    // draws differently on the card than it reads on disk is a name nobody can approve (#1124, L4).
+    if raw.is_empty() || raw.len() > 400 || raw.chars().any(|c| c.is_control() || crate::approvals::is_format_char(c)) {
         return Err("`folder` is a plain path like ~/Documents/sitcom.".into());
     }
     let home_real = home.canonicalize().map_err(|e| format!("the home folder cannot be resolved: {e}"))?;
@@ -202,16 +252,69 @@ fn set_private(dir: &Path) {
     let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
 }
 
+fn born_of(meta: &std::fs::Metadata) -> u64 {
+    meta.created()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos() as u64)
+}
+
+/// Is the folder a grant names still the folder that was granted: there, the same device and
+/// inode, and still carrying the shell's marker? `Err` says which of these failed.
+fn still_the_folder(g: &Grant) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(&g.folder).map_err(|_| "the workshop folder is gone, so its grant was deleted.".to_string())?;
+    if g.ino == 0 || meta.dev() != g.dev || meta.ino() != g.ino || (g.born != 0 && born_of(&meta) != g.born) {
+        return Err("the workshop folder was replaced by another one with the same name, so its grant was deleted.".into());
+    }
+    if g.marked && !yantrik_agent_terminal::is_marked(Path::new(&g.folder)) {
+        return Err("the workshop folder lost the marker the shell put on it, so its grant was deleted.".into());
+    }
+    Ok(())
+}
+
+/// Delete every grant whose folder is gone or is not the folder granted. The grants left.
+pub fn prune(path: &Path) -> Result<Vec<Grant>, String> {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let all = load(path)?;
+    let (live, dead): (Vec<Grant>, Vec<Grant>) = all.into_iter().partition(|g| still_the_folder(g).is_ok());
+    if !dead.is_empty() {
+        save(path, live.clone())?;
+    }
+    Ok(live)
+}
+
+/// Note that a conversation which had read private state ran a command in `agent`'s workshop.
+pub fn mark_tainted(path: &Path, agent: &str) -> Result<(), String> {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut grants = load(path)?;
+    match grants.iter_mut().find(|g| g.agent == agent) {
+        Some(g) if !g.tainted => {
+            g.tainted = true;
+            save(path, grants)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The workshops (every Mind's) that hold what a tainted conversation wrote.
+pub fn tainted_folders(path: &Path) -> Vec<String> {
+    prune(path).unwrap_or_default().into_iter().filter(|g| g.tainted).map(|g| g.folder).collect()
+}
+
 /// The workshop `agent` was granted, if it is `named` (the `workshop` argument, checked here and
-/// never believed): the record names it, and it still passes the folder rules. The one place a
-/// command becomes sealed.
+/// never believed): the record names it, it still passes the folder rules, and it is the folder
+/// that was granted (device, inode, marker). The one place a command becomes sealed.
 pub fn granted_for(path: &Path, home: &Path, agent: &str, named: &str) -> Result<PathBuf, String> {
-    let grants = load(path)?;
+    let grants = prune(path)?;
+    let Some(g) = grants.iter().find(|g| g.agent == agent) else {
+        return Err("this Mind has no workshop: ask for one with `workshop_create`, and the person decides. Nothing was run.".into());
+    };
     let real = check_folder(home, named, false)?;
-    match grants.iter().find(|g| g.agent == agent) {
-        Some(g) if Path::new(&g.folder) == real => Ok(real),
-        Some(_) => Err("that is not the workshop this Mind was granted, so nothing was run.".into()),
-        None => Err("this Mind has no workshop: ask for one with `workshop_create`, and the person decides. Nothing was run.".into()),
+    if Path::new(&g.folder) == real {
+        Ok(real)
+    } else {
+        Err("that is not the workshop this Mind was granted, so nothing was run.".into())
     }
 }
 
@@ -360,5 +463,93 @@ mod tests {
         // A sibling that merely shares the prefix.
         std::fs::create_dir(h.path().join("Documents/shop2")).unwrap();
         assert!(cwd_inside(&shop, Some(&h.path().canonicalize().unwrap().join("Documents/shop2"))).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod grant_tests {
+    use super::*;
+
+    fn home() -> tempfile::TempDir {
+        let h = tempfile::tempdir().unwrap();
+        std::fs::create_dir(h.path().join("Documents")).unwrap();
+        h
+    }
+
+    /// #1124 M2: the grant is the folder. Deleting it revokes the grant, and a new folder that
+    /// takes the same name, with the person's own files in it, gets nothing.
+    #[test]
+    fn a_folder_deleted_and_made_again_under_the_same_name_is_not_the_granted_folder() {
+        let h = home();
+        let rec = h.path().join("workshops.json");
+        let shop = check_folder(h.path(), "~/Documents/project", true).unwrap();
+        grant(&rec, "hermes", &shop, 1).unwrap();
+        assert!(granted_for(&rec, h.path(), "hermes", shop.to_str().unwrap()).is_ok());
+        // Gone: the grant is deleted as the record is read.
+        std::fs::remove_dir(&shop).unwrap();
+        assert!(granted_for(&rec, h.path(), "hermes", shop.to_str().unwrap()).is_err());
+        assert!(load(&rec).unwrap().is_empty(), "deleting the folder revoked the grant");
+        // Replaced: the person unzips their own project there, dotfiles and all.
+        grant_again(&rec, h.path(), "hermes");
+        let shop = h.path().canonicalize().unwrap().join("Documents/project");
+        std::fs::remove_dir(&shop).unwrap();
+        std::fs::create_dir(&shop).unwrap();
+        std::fs::write(shop.join(".env"), "KEY=secret").unwrap();
+        let why = granted_for(&rec, h.path(), "hermes", shop.to_str().unwrap()).unwrap_err();
+        // The grant is deleted as it is read, so the Mind is told it has none.
+        assert!(why.contains("no workshop"), "{why}");
+        assert!(load(&rec).unwrap().is_empty(), "the replaced folder's grant was deleted");
+    }
+
+    fn grant_again(rec: &Path, home: &Path, agent: &str) {
+        let shop = check_folder(home, "~/Documents/project", true).unwrap();
+        grant(rec, agent, &shop, 2).unwrap();
+    }
+
+    #[test]
+    fn a_record_without_an_inode_matches_no_folder() {
+        let h = home();
+        let rec = h.path().join("workshops.json");
+        let shop = check_folder(h.path(), "~/Documents/old", true).unwrap();
+        let old = format!(r#"{{"grants":[{{"agent":"hermes","folder":"{}","granted_unix":1}}]}}"#, shop.display());
+        std::fs::write(&rec, old).unwrap();
+        assert!(granted_for(&rec, h.path(), "hermes", shop.to_str().unwrap()).is_err());
+    }
+
+    /// #1124 L2: a folder belongs to one Mind.
+    #[test]
+    fn a_second_mind_cannot_take_a_folder_the_first_holds() {
+        let h = home();
+        let rec = h.path().join("workshops.json");
+        let shop = check_folder(h.path(), "~/Documents/shared", true).unwrap();
+        grant(&rec, "hermes", &shop, 1).unwrap();
+        // Still empty, so it passes the folder rules for a second grant; the record refuses it.
+        let again = check_folder(h.path(), "~/Documents/shared", true).unwrap();
+        assert!(grant(&rec, "pi", &again, 2).unwrap_err().contains("another Mind's"));
+        assert!(grant(&rec, "hermes", &again, 3).is_ok(), "the holder may ask again");
+    }
+
+    /// #1124 L4: nothing that draws differently from how it reads.
+    #[test]
+    fn bidi_and_other_format_characters_in_a_folder_name_are_refused() {
+        let h = home();
+        for bad in ["\u{202E}gpj.x", "a\u{200B}b", "a\u{2066}b", "a\u{FEFF}b", "a\u{00AD}b"] {
+            let raw = format!("~/Documents/{bad}");
+            assert!(check_folder(h.path(), &raw, true).is_err(), "{bad:?}");
+        }
+        assert!(check_folder(h.path(), "~/Documents/sitcom-épisode", true).is_ok());
+    }
+
+    #[test]
+    fn a_tainted_run_marks_the_workshop_and_only_that_one() {
+        let h = home();
+        let rec = h.path().join("workshops.json");
+        let a = check_folder(h.path(), "~/Documents/a", true).unwrap();
+        let b = check_folder(h.path(), "~/Documents/b", true).unwrap();
+        grant(&rec, "hermes", &a, 1).unwrap();
+        grant(&rec, "pi", &b, 1).unwrap();
+        assert!(tainted_folders(&rec).is_empty());
+        mark_tainted(&rec, "hermes").unwrap();
+        assert_eq!(tainted_folders(&rec), vec![a.display().to_string()]);
     }
 }
