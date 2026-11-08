@@ -61,7 +61,7 @@ pub fn send_input(m: &mut Model, fx: &mut Fx, text: String) {
     });
 }
 
-pub fn open_directory(m: &mut Model, fx: &mut Fx, given: String, outside: bool) {
+pub fn open_directory(m: &mut Model, fx: &mut Fx, given: String, owner: Option<crate::owner::Owner>) {
     let given = given.trim().to_string();
     if given.is_empty() {
         return refuse(m, fx, "`open_directory` needs `directory`: an absolute path to a folder.");
@@ -78,7 +78,7 @@ pub fn open_directory(m: &mut Model, fx: &mut Fx, given: String, outside: bool) 
     if let Some(full) = tabs_full(m.tabs.len() + m.spawning) {
         return refuse(m, fx, full);
     }
-    tabs::start(m, fx, Why::Directory(given), Some(dir), outside);
+    tabs::start(m, fx, Why::Directory(given), Some(dir), owner);
 }
 
 /// A worker that waited for a shell never answered: a panic, or the pool at its bound.

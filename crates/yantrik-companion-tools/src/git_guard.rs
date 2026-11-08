@@ -21,7 +21,7 @@ pub fn command(dir: &str) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(dir).args(NO_PROGRAMS);
     if let Some(home) = std::env::var_os("HOME") {
-        let root = yantrik_ipc_contracts::home_paths::workshops::root(Path::new(&home));
+        let root = yantrik_ipc_contracts::home_paths::workshops::base(Path::new(&home));
         cmd.env("GIT_CEILING_DIRECTORIES", root);
     }
     cmd

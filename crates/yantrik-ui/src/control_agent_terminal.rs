@@ -268,7 +268,7 @@ pub(crate) fn specs() -> [Action; 4] {
                  `cwd_after` and the `tail` of its output; if it is still going after `wait` seconds \
                  it answers `running: true` with a `job` id. The directory carries to your next \
                  command; exported variables and other shell state do not. The environment is \
-                 HOME, USER, PATH, LANG and TERM only.{WHO}"
+                 HOME, USER, PATH, LANG and TERM only. The command runs in a view with no session:                  the person's runtime folder (the bus, `systemd/private`, the Yantrik sockets) and                  the Minds' workshops are not there, so it cannot call `yos`; you reach the desktop                  through your own tool calls.{WHO}"
             ),
         )
         .risk("sensitive")

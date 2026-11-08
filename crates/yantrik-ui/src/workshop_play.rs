@@ -6,7 +6,13 @@
 //! under `bwrap`:
 //!
 //! - no network and no home (`--unshare-all`, a tmpfs over `$HOME`), no capability, a new session;
-//! - the system read-only, the display and sound sockets bound in, and nothing else;
+//! - the system read-only, the display socket bound in, and nothing else. **No sound**: neither
+//!   `pipewire-0` nor `pulse/native` is bound (#1124, round 5, finding 3). A native PipeWire client
+//!   can record the microphone, and the pulse protocol can `load-module` into the person's
+//!   `pipewire-pulse` (a network tunnel, a pipe sink that makes files), so either socket is a way out
+//!   of the sandbox for a decoder bug. `workshop_present` plays without sound (`--ao=null`) until a
+//!   safer audio path exists (a socket that refuses `load-module`, or the shell playing the audio);
+//!   Stage needs that follow-up;
 //! - the file as an inherited descriptor (`fd://3`), never a path;
 //! - the demuxer pinned to the sniffed type (`workshop_out::demuxer`), playlists and references
 //!   off, no configuration, no scripts, no `ytdl`, no resume file.
@@ -31,6 +37,8 @@ pub fn mpv_args(media: &str, line: &str) -> Vec<String> {
         "--sub-auto=no",
         "--audio-file-auto=no",
         "--demuxer=lavf",
+        // No audio output: no sound socket is in the sandbox, so none is tried.
+        "--ao=null",
     ]
     .map(String::from)
     .into_iter()
@@ -45,7 +53,7 @@ pub fn mpv_args(media: &str, line: &str) -> Vec<String> {
 }
 
 /// The `bwrap` words that wrap `mpv`, up to and including its name. `runtime` is
-/// `$XDG_RUNTIME_DIR` and `home` the home folder; the sockets are bound only where they are.
+/// `$XDG_RUNTIME_DIR` and `home` the home folder; the display socket is bound only where it is.
 pub fn sandbox_args(home: &Path, runtime: Option<&Path>, wayland: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> = [
         "--die-with-parent", "--new-session", "--unshare-all", "--cap-drop", "ALL", "--clearenv",
@@ -61,7 +69,7 @@ pub fn sandbox_args(home: &Path, runtime: Option<&Path>, wayland: Option<&str>) 
     if let Some(run) = runtime {
         let r = run.display().to_string();
         a.extend(["--dir".into(), r.clone(), "--setenv".into(), "XDG_RUNTIME_DIR".into(), r]);
-        let mut sockets = vec!["pipewire-0".to_string(), "pulse/native".to_string()];
+        let mut sockets: Vec<String> = Vec::new();
         if let Some(w) = wayland.filter(|w| !w.is_empty() && !w.contains('/') && *w != "..") {
             sockets.push(w.to_string());
             a.extend(["--setenv".into(), "WAYLAND_DISPLAY".into(), w.to_string()]);
@@ -143,6 +151,9 @@ mod tests {
             assert!(!["/run/user/1000", "/home/p", "/"].contains(&w[1].as_str()), "{}", w[1]);
         }
         assert!(has(&a, &["--ro-bind-try", "/run/user/1000/wayland-0", "/run/user/1000/wayland-0"]));
+        // Finding 3: no sound socket, so the decoder cannot reach the microphone or `load-module`.
+        assert!(!a.iter().any(|x| x.contains("pipewire") || x.contains("pulse")), "{a:?}");
+        assert!(mpv_args("audio/mpeg", "x").contains(&"--ao=null".to_string()));
         assert_eq!(&a[a.len() - 2..], ["--", "mpv"]);
         // A socket name that climbs out of the runtime folder is not bound.
         let bad = sandbox_args(Path::new("/home/p"), Some(Path::new("/run/user/1000")), Some("../../../etc/passwd"));

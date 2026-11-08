@@ -17,7 +17,7 @@
 //! # The grant
 //!
 //! `workshop_create` is `sensitive`, declares `always_asks` and explains each call on the card
-//! ("Give <the Mind> a workshop at ~/.local/share/yantrik/workshops/<the Mind>/x"). That declaration is the shell's way of forcing
+//! ("Give <the Mind> a workshop at /var/lib/yantrik/workshops/<uid>/<the Mind>/x"). That declaration is the shell's way of forcing
 //! a card whatever the mode: `gate::decide` refuses the call without a grant in every mode (full
 //! bypass included, no session or standing rule answering), `request_approval` asks whatever its
 //! table says (`taint_ask::resolve`, the path the taint already uses to ask in every mode), and
@@ -44,7 +44,7 @@ fn args_name(args: &Value) -> String {
 }
 
 fn explain_in(name: &str) -> String {
-    let at = format!("~/{}/the Mind asking/{name}", yantrik_ipc_contracts::home_paths::workshops::ROOT_UNDER_HOME);
+    let at = format!("{}/the Mind asking/{name}", workshops::root(&workshop::home()).display());
     match workshop::plain_name("`name`", name) {
         Ok(()) => format!("Give the Mind asking a workshop at {at}."),
         Err(e) => format!("Give the Mind asking a workshop called {name:?}. This will be refused: {e}"),
@@ -87,7 +87,7 @@ pub(crate) fn specs() -> [Action; 6] {
         // whatever its table says.
         .always_asks()
         .arg(Param::text("name").describe(
-            "A plain name for the workshop, e.g. sitcom: no `/`, no leading dot. The shell makes              ~/.local/share/yantrik/workshops/<you>/<name>",
+            "A plain name for the workshop, e.g. sitcom: no `/`, no leading dot. The shell makes /var/lib/yantrik/workshops/<uid>/<you>/<name>",
         ))
         .explain(explain_grant),
         Action::new(
@@ -176,6 +176,8 @@ fn workshop_create(args: &Value, home: &Path, record: &Path) -> Result<Value, St
     // A workshop is hidden from the programs a Mind drives by `bwrap`; with none here there is
     // nothing to keep it hidden with, so none is made (#1124, L3).
     workshops::find_bwrap().ok_or("this machine has no bubblewrap (bwrap), which keeps a workshop out of the programs a Mind runs, so no workshop is made.")?;
+    // The root is the installer's and the updater's to make; a missing or misowned one refuses here.
+    workshop::require_root(home)?;
     let folder = workshop::folder_for(home, &agent, &args_name(args), true)?;
     let made = workshop::grant(record, &agent, &folder, now())?;
     Ok(json!({
@@ -208,6 +210,7 @@ fn workshop_revoke(args: &Value, record: &Path, mind: Option<String>, person: bo
 }
 
 fn workshop_list(record: &Path) -> Result<Value, String> {
+    workshop::require_root(&workshop::home())?;
     // Grants whose folder is gone or replaced are dropped as the record is read.
     let all = workshop::prune(record)?;
     let own = mind()?;
@@ -289,7 +292,7 @@ fn export_dest(home: &Path, to: &str, last: &str, make: bool) -> Result<PathBuf,
 fn explain_export(args: &Value) -> String {
     let (path, to) = (text(args, "path"), text(args, "to"));
     let shown: String = path.trim().chars().filter(|c| !c.is_control() && !crate::approvals::is_format_char(*c)).take(120).collect();
-    let said = format!("Copy {shown} out of the workshop of the Mind asking, as plain files with no repository, no links and no startup files, into");
+    let said = format!("Copy {shown} out of the workshop of the Mind asking, as plain files of kinds that are read (no repository, no links, no scripts or tool settings), into");
     let dest = landing_name(&path).and_then(|last| export_dest(&workshop::home(), &to, &last, false));
     match dest {
         Ok(dir) => format!("{said} {}.", dir.display()),
@@ -304,7 +307,7 @@ fn workshop_export(args: &Value) -> Result<Value, String> {
     later(move || {
         let (_, shop) = held_by(&call, &named)?;
         let dest = export_dest(&workshop::home(), &to, &landing_name(&path)?, true)?;
-        let (at, done) = crate::workshop_export::export(&shop, Path::new(path.trim()), &dest)?;
+        let (at, done) = crate::workshop_export::export(&shop, Path::new(path.trim()), &workshop::home(), &dest)?;
         Ok(json!({ "exported": at.display().to_string(), "files": done.files, "bytes": done.bytes, "left_out": done.dropped }))
     })
 }
@@ -320,9 +323,14 @@ mod tests {
         real
     }
 
+    /// A home with its root made the way the installer makes it: the person's, 0700.
     fn home() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        workshops::roots_under_home_for_tests();
         let h = tempfile::tempdir().unwrap();
         std::fs::create_dir(h.path().join("Documents")).unwrap();
+        std::fs::create_dir_all(workshops::root(h.path())).unwrap();
+        std::fs::set_permissions(workshops::root(h.path()), std::fs::Permissions::from_mode(0o700)).unwrap();
         h
     }
 
@@ -381,8 +389,10 @@ mod tests {
         for bad in ["../x", "a/b", ".hidden", "", "a\nb", "a\u{202E}b"] {
             assert!(explain_in(bad).contains("refused"), "{bad:?}");
         }
+        workshops::roots_under_home_for_tests();
         let said = explain_in("new");
-        assert!(said.starts_with("Give the Mind asking a workshop at ~/.local/share/yantrik/workshops/the Mind asking/new"), "{said}");
+        let root = workshops::root(&workshop::home()).display().to_string();
+        assert!(said.starts_with(&format!("Give the Mind asking a workshop at {root}/the Mind asking/new")), "{said}");
         assert_eq!(args_name(&json!({ "name": "  new " })), "new");
     }
 
@@ -393,7 +403,7 @@ mod tests {
     fn the_card_names_the_mind_that_asked_and_the_folder_it_gets() {
         let said = explain_in("new");
         let named = name_the_mind("shell", "workshop_create", &said, "hermes:main");
-        assert!(named.starts_with("Give hermes:main a workshop at ~/.local/share/yantrik/workshops/hermes:main/new"), "{named}");
+        assert!(named.starts_with("Give hermes:main a workshop at ") && named.contains("/hermes:main/new"), "{named}");
         let tricked = name_the_mind("shell", "workshop_create", &said, &format!("her{}mes{}:main", char::from_u32(0x202E).unwrap(), char::from_u32(10).unwrap()));
         assert!(tricked.starts_with("Give hermes:main a workshop"), "{tricked}");
         // Another action's sentence is left alone, and an empty asker leaves the words as they were.

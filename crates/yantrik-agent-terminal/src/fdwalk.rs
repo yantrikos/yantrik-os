@@ -64,6 +64,28 @@ fn names(dir: RawFd) -> Vec<CString> {
     out
 }
 
+/// A directory a job set to mode 000 holds files that still count, and the job (the same account)
+/// can undo it any time, so the walk may too: the directory it saw is opened `O_PATH`, checked to
+/// be that one (device and inode), given back the owner's access through its descriptor, and
+/// opened again (#1124, L4). No link is followed at any step. `-1` when it cannot be done.
+fn open_after_chmod(dir: RawFd, name: &CStr, seen: &libc::stat, flags: i32) -> RawFd {
+    let held = unsafe { libc::openat(dir, name.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if held < 0 {
+        return -1;
+    }
+    let mut now: libc::stat = unsafe { std::mem::zeroed() };
+    let mut fd = -1;
+    if unsafe { libc::fstat(held, &mut now) } == 0 && now.st_ino == seen.st_ino && now.st_dev == seen.st_dev && now.st_uid == unsafe { libc::geteuid() } {
+        let magic = CString::new(format!("/proc/self/fd/{held}")).unwrap_or_default();
+        let mode = (now.st_mode & 0o7777) | 0o700;
+        if unsafe { libc::chmod(magic.as_ptr(), mode) } == 0 {
+            fd = unsafe { libc::openat(dir, name.as_ptr(), flags) };
+        }
+    }
+    unsafe { libc::close(held) };
+    fd
+}
+
 fn descend(dir: RawFd, dev: libc::dev_t, depth: usize, limit: usize, seen: &mut usize, visit: &mut Visit) -> bool {
     if depth >= MAX_DEPTH {
         return true;
@@ -88,7 +110,10 @@ fn descend(dir: RawFd, dev: libc::dev_t, depth: usize, limit: usize, seen: &mut 
                 continue;
             }
         };
-        let fd = unsafe { libc::openat(dir, name.as_ptr(), flags) };
+        let mut fd = unsafe { libc::openat(dir, name.as_ptr(), flags) };
+        if fd < 0 && kind == libc::S_IFDIR {
+            fd = open_after_chmod(dir, &name, &st, flags);
+        }
         let mut now: libc::stat = unsafe { std::mem::zeroed() };
         // What opened must be what was seen: same device and inode, same kind. Else it was swapped.
         let same = fd >= 0
@@ -150,5 +175,27 @@ mod tests {
         // A root that is itself a link is refused.
         assert_eq!(walk(&shop.join("d"), 1000, &mut |_, _| true), 0);
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// L4: a folder a job made unreadable still counts, and is not a way to hide what is in it.
+    #[test]
+    fn a_folder_set_to_mode_zero_is_counted_all_the_same() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("yantrik-fdwalk-000-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("hidden/inner")).unwrap();
+        std::fs::write(root.join("hidden/inner/big"), vec![1u8; 8192]).unwrap();
+        std::fs::set_permissions(root.join("hidden"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut files = 0;
+        let seen = walk(&root, 100, &mut |_, st| {
+            if st.st_mode & libc::S_IFMT == libc::S_IFREG {
+                files += 1;
+            }
+            true
+        });
+        std::fs::set_permissions(root.join("hidden"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        // As root, mode 000 stops nothing and the count is the same.
+        assert_eq!((files, seen), (1, 3), "hidden, inner and big were all seen");
     }
 }

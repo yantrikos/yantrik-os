@@ -152,6 +152,12 @@ impl Fixture {
         self.settled(pending)
     }
 
+    /// A call as another agent: `token` names which Mind.
+    pub fn agent_as(&self, token: &str, name: &str, args: Value) -> Result<Value, String> {
+        let pending = self.app.act_as(Call::new(name, args).as_agent(token))?;
+        self.settled(pending)
+    }
+
     pub fn settled(&self, pending: Pending) -> Result<Value, String> {
         self.quiet();
         pending.settle()

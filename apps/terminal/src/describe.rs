@@ -26,6 +26,17 @@ pub fn view(m: &Model) -> View {
             .with("execution", "interactive_pty")
             .with("notice", notice);
     };
+    // Another Mind's shell is that Mind's: its screen and history are not read through this
+    // one's describe (#1124, round 5, finding 7). The person's own shell is shown as it was.
+    if let (Some(owner), Some(reader)) = (tab.owner, crate::owner::of_caller()) {
+        if owner != reader {
+            return View::new("Terminal - the active tab was opened by another Mind; `new_tab` starts one of yours")
+                .with("alive", true)
+                .with("tabs", m.tabs.len())
+                .with("execution", "interactive_pty")
+                .with("notice", m.notice.clone());
+        }
+    }
     let session = &tab.session;
     let snap = session.snapshot();
     let busy = tab.facts.running.clone();

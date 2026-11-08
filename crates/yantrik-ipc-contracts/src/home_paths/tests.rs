@@ -574,19 +574,21 @@ fn a_protected_place_moved_behind_a_link_is_protected_where_it_really_is() {
 #[test]
 fn a_minds_workshops_are_out_of_reach_of_every_door() {
     let (_d, home) = home();
-    let shop = workshops::root(&home).join("hermes/shop");
+    workshops::roots_under_home_for_tests();
+    let (shop, r) = (workshops::root(&home).join("hermes/shop"), workshops::root(&home).display().to_string());
+    let back = r.strip_prefix(&format!("{}/", home.display())).unwrap().to_string();
     std::fs::create_dir_all(&shop).unwrap();
     std::fs::write(shop.join("notes.md"), "calendar").unwrap();
     symlink(&shop, home.join("notes/alias")).unwrap();
     symlink(workshops::root(&home), home.join("to-root")).unwrap();
     for asked in [
-        "~/.local/share/yantrik/workshops/hermes/shop/notes.md",
-        "~/.local/share/yantrik/workshops/hermes/shop/not-yet.md",
-        "~/notes/alias/notes.md",
-        "~/to-root/hermes/shop/notes.md",
-        "~/notes/../.local/share/yantrik/workshops/hermes/shop/notes.md",
+        format!("{r}/hermes/shop/notes.md"),
+        format!("{r}/hermes/shop/not-yet.md"),
+        "~/notes/alias/notes.md".to_string(),
+        "~/to-root/hermes/shop/notes.md".to_string(),
+        format!("~/notes/../{back}/hermes/shop/notes.md"),
     ] {
-        let asked_for = if asked.contains("..") { home.join(&asked[2..]).display().to_string() } else { asked.to_string() };
+        let asked_for = if asked.contains("..") { home.join(&asked[2..]).display().to_string() } else { asked.clone() };
         assert!(may_read_file(&asked_for, &home).is_err(), "read {asked}");
         assert!(may_write_file(&asked_for, &home).is_err(), "write {asked}");
         assert!(may_create(&asked_for, &home).is_err(), "create {asked}");

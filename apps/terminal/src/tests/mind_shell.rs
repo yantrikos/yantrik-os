@@ -26,11 +26,38 @@ fn a_mind_never_types_into_the_persons_shell_and_its_own_tab_is_an_outside_one()
     assert!(f.act("run", json!({ "command": "echo PERSON_OK" })).unwrap()["output"].as_str().unwrap().contains("PERSON_OK"));
 }
 
+/// Finding 7: a tab belongs to the Mind that opened it. Another Mind's `run`, `send_input` and
+/// `describe` neither type into it nor read it.
+#[test]
+fn a_tab_belongs_to_the_mind_that_opened_it() {
+    let f = open();
+    f.agent_as("tok-mind-a", "new_tab", json!({})).unwrap();
+    let a_tab = f.app.model(|m| m.active);
+    assert!(f.agent_as("tok-mind-a", "run", json!({ "command": "echo SECRET_OF_A" })).unwrap()["output"].as_str().unwrap().contains("SECRET_OF_A"));
+    for (name, args) in [("run", json!({ "command": "echo B_TYPES" })), ("send_input", json!({ "text": "echo B_TYPES
+" }))] {
+        let why = f.agent_as("tok-mind-b", name, args).unwrap_err();
+        assert_eq!(why, crate::update::NOT_THE_SAME_MIND, "{name}");
+    }
+    f.quiet();
+    // B's describe of A's active tab shows none of its screen or history.
+    let seen = f.app.describe_as_agent("tok-mind-b").to_string();
+    assert!(!seen.contains("SECRET_OF_A") && !seen.contains("B_TYPES"), "{seen}");
+    // A still reads and types into its own, and B's own tab is its own.
+    assert!(f.app.describe_as_agent("tok-mind-a").to_string().contains("SECRET_OF_A"));
+    f.agent_as("tok-mind-b", "new_tab", json!({})).unwrap();
+    assert_ne!(f.app.model(|m| m.active), a_tab);
+    assert!(f.agent_as("tok-mind-b", "run", json!({ "command": "echo B_OWN" })).unwrap()["output"].as_str().unwrap().contains("B_OWN"));
+    f.app.run(Command::SelectTab(a_tab as i32));
+    f.quiet();
+    assert!(f.agent_as("tok-mind-b", "run", json!({ "command": "echo NOT_IN_A" })).is_err());
+}
+
 #[test]
 fn no_shell_is_opened_in_a_workshop_for_anyone() {
     let f = open();
     let home = std::env::var("HOME").unwrap_or_default();
-    let shop = format!("{home}/.local/share/yantrik/workshops/hermes/shop");
+    let shop = yantrik_ipc_contracts::home_paths::workshops::base(std::path::Path::new(&home)).join("1000/hermes/shop").display().to_string();
     let before = f.tabs();
     for who in [true, false] {
         let args = json!({ "directory": shop });

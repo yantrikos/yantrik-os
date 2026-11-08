@@ -51,6 +51,7 @@ mod intents;
 mod keys;
 mod model;
 mod outside;
+mod owner;
 mod probe;
 pub mod session;
 mod update;

@@ -72,8 +72,8 @@ pub enum Why {
 #[derive(Clone)]
 pub struct Spawned {
     pub why: Why,
-    /// The shell runs in the outside view (a Mind opened it).
-    pub outside: bool,
+    /// The Mind that opened the shell, which runs in the outside view; `None` for the person's own.
+    pub owner: Option<crate::owner::Owner>,
     pub result: Result<(Arc<Session>, Facts), String>,
 }
 
@@ -105,7 +105,7 @@ pub enum Command {
     OpenDirectory(String),
     /// A surface action a Mind raised. Its shell is only ever one started in the outside view
     /// (`update/mind.rs`); the person's own typing is never wrapped.
-    FromMind(Box<Command>),
+    FromMind(crate::owner::Owner, Box<Command>),
 
     // ── What the workers and the shells found ──
     Spawned(Box<Spawned>),

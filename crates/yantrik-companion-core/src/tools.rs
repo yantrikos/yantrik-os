@@ -894,6 +894,10 @@ mod path_root_tests {
             "~/.local/share/yantrik/workshops/hermes/shop/notes.md",
             "~/.local/share/yantrik/workshops/hermes",
             "~/.local/share/yantrik/workshops/hermes/shop/../shop/notes.md",
+            "/var/lib/yantrik/workshops/1000/hermes/shop/notes.md",
+            "/var/lib/yantrik/workshops/1000/hermes",
+            "/var/lib/yantrik/workshops/1000/hermes/shop/../shop/notes.md",
+            "/var/lib/yantrik/workshops",
         ] {
             assert!(validate_path(p).is_err(), "{p}");
         }

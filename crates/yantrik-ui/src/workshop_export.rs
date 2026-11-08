@@ -1,29 +1,43 @@
-//! The carded copy out of a workshop (#1120, #1124, H2 and M3).
+//! The carded copy out of a workshop (#1120, #1124, H2, M3 and round 5, findings 2, 5 and 6).
 //!
 //! Plain bytes, and nothing that a program reads as configuration or runs:
 //!
 //! - **regular files by content**: no link, pipe, socket or device, no mode bits (0644), no
 //!   extended attributes, never over a name that is there;
+//! - **an allow list** ([`carried`]): a file is carried only when its name is not hidden (no
+//!   leading dot, at any depth) and it is a kind of file that is read and not run: a document,
+//!   a picture, a sound or a video, text, data, source. Everything else (`.mise.toml`,
+//!   `.tool-versions`, `.devcontainer`, `.idea`, `.direnv`, a `.desktop` file, a script) is left
+//!   out and counted in `dropped`. A deny list names what someone thought of; this names what is
+//!   taken;
 //! - **no repository**, by what a thing is and not what it is called. A folder is refused, and
 //!   with it the whole export, when it is named `.git`, `.hg`, `.jj`, `.svn` or `.bzr` (any case),
-//!   when it holds a `gitdir` or `commondir` file, or when what was copied into it has a git
-//!   directory's own shape (`HEAD` a file, `objects` and `refs` folders): `git` takes such a
-//!   folder for a repository wherever it sits, and its `config` can name a program to run;
-//! - **no startup file**: a leading dot on the name that lands is refused, and a few files that
-//!   tools run or obey on sight are left out (`dropped` says how many).
+//!   when it holds a `gitdir` or `commondir` file, or when it has a git directory's own shape
+//!   (`HEAD` a file, `objects` and `refs` folders): `git` takes such a folder for a repository
+//!   wherever it sits, and its `config` can name a program to run.
 //!
-//! The shape is judged on the *copy*, which the sealed job cannot touch, after the entries of
-//! each folder are in: a file that vanishes from the source after it was copied does not hide it.
+//! # Order of work (finding 5)
 //!
-//! Everything lands relative to a descriptor for the destination folder, opened without following
-//! a link, so a link swapped in between the card and the copy is never followed.
+//! 1. The destination is opened **by descriptor**: the home, then each name below it with
+//!    `openat(O_DIRECTORY|O_NOFOLLOW)`. A link anywhere on the way is refused, and a link swapped
+//!    in afterwards is never reached, because nothing is looked up by path again.
+//! 2. The *source* is judged first, before one byte is written ([`preflight`]): a repository by
+//!    name or shape refuses the export with nothing made.
+//! 3. The copy is built under a fresh hidden name inside the destination descriptor, and is judged
+//!    again on the copy, which a running job cannot touch.
+//! 4. Only then is it `renameat2(RENAME_NOREPLACE)`d to its name, after the destination is shown to
+//!    still be where it was approved. On any failure the half copy is removed with `unlinkat`
+//!    relative to the descriptor, never by path (finding 2).
+//!
+//! So `~/Projects/<name>` never exists until it is whole and clean, and there is no window in
+//! which a companion's `git status` or a prompt can find a repository in it.
 
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::workshop_out::{below, kind_of, open_below, open_workshop, own};
 
@@ -35,18 +49,35 @@ const MAX_DEPTH: usize = 32;
 /// Version control state: a folder or file by one of these names makes the whole export refused.
 const REPOSITORY_NAMES: [&str; 5] = [".git", ".hg", ".jj", ".svn", ".bzr"];
 
-/// Files that a tool runs or obeys on sight in a folder, which are left out of a copy.
-const LEFT_OUT: [&str; 14] = [
-    ".gitattributes", ".gitmodules", ".gitconfig", ".hgrc", ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".cargo", ".vscode",
-    ".husky", ".pre-commit-config.yaml", ".bashrc", ".zshrc",
+/// Files carried by their (lowercased) extension: read, never run.
+const CARRIED_EXTENSIONS: &[&str] = &[
+    "txt", "md", "rst", "pdf", "csv", "tsv", "json", "xml", "css", "png", "jpg", "jpeg", "gif", "webp", "bmp", "mp4", "m4v", "mkv",
+    "webm", "avi", "mov", "mp3", "m4a", "ogg", "opus", "flac", "wav", "srt", "vtt", "rs", "py", "js", "ts", "c", "h", "cpp", "go", "java",
+    "toml", "yaml", "yml", "lock", "log",
 ];
+
+/// Files with no extension that are carried by name.
+const CARRIED_NAMES: &[&str] = &["readme", "license", "licence", "notice", "copying", "authors", "changelog", "contributing"];
+
+/// Is the file `name` one an export carries? Not hidden, and either a known kind or a known name.
+/// A leading dot is refused at every depth; `mise.toml`, `Makefile` and the like are not on the list.
+pub fn carried(name: &[u8]) -> bool {
+    let n = lower(name);
+    if n.starts_with('.') || n == "mise.toml" {
+        return false;
+    }
+    match n.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => CARRIED_EXTENSIONS.contains(&ext),
+        _ => CARRIED_NAMES.contains(&n.as_str()),
+    }
+}
 
 /// What an export carried.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Exported {
     pub files: usize,
     pub bytes: u64,
-    /// Entries left out because a tool would run or obey them (`LEFT_OUT`).
+    /// Entries left out because the allow list does not take them.
     pub dropped: usize,
 }
 
@@ -66,7 +97,7 @@ fn barred(name: &[u8]) -> Option<String> {
     REPOSITORY_NAMES.contains(&n.as_str()).then(|| format!("{} is version-control state, which can name a program to run; a workshop's repository is not exported.", String::from_utf8_lossy(name)))
 }
 
-fn names_in(dir: RawFd) -> Vec<CString> {
+pub(crate) fn names_in(dir: RawFd) -> Vec<CString> {
     let dup = unsafe { libc::fcntl(dir, libc::F_DUPFD_CLOEXEC, 3) };
     if dup < 0 {
         return Vec::new();
@@ -76,6 +107,8 @@ fn names_in(dir: RawFd) -> Vec<CString> {
         unsafe { libc::close(dup) };
         return Vec::new();
     }
+    // The duplicate shares its offset with the descriptor it came from: read from the start.
+    unsafe { libc::rewinddir(stream) };
     let mut out = Vec::new();
     loop {
         let entry = unsafe { libc::readdir(stream) };
@@ -92,7 +125,7 @@ fn names_in(dir: RawFd) -> Vec<CString> {
 }
 
 /// What `name` in `dir` is, without following a link.
-fn kind_at(dir: RawFd, name: &CStr) -> Option<libc::mode_t> {
+pub(crate) fn kind_at(dir: RawFd, name: &CStr) -> Option<libc::mode_t> {
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     (unsafe { libc::fstatat(dir, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } == 0).then_some(st.st_mode & libc::S_IFMT)
 }
@@ -104,7 +137,9 @@ pub fn repository_shape(dir: RawFd) -> bool {
     git_dir || at("commondir", libc::S_IFREG) || at("gitdir", libc::S_IFREG)
 }
 
-const OPEN_DIR: i32 = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+const SHAPE_REFUSED: &str = "a folder in the copy is shaped like a git repository (HEAD, objects, refs, or a gitdir file); its config could name a program to run, so nothing was exported.";
+
+pub(crate) const OPEN_DIR: i32 = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
 /// A new file `name` in `dir`, never over one, mode 0644, with none of a source's attributes.
 fn create_at(dir: RawFd, name: &CStr) -> Result<File, String> {
@@ -118,11 +153,26 @@ fn create_at(dir: RawFd, name: &CStr) -> Result<File, String> {
 }
 
 /// A new folder `name` in `dir`, opened.
-fn mkdir_at(dir: RawFd, name: &CStr) -> Result<OwnedFd, String> {
-    if unsafe { libc::mkdirat(dir, name.as_ptr(), 0o755) } != 0 {
+pub(crate) fn mkdir_at(dir: RawFd, name: &CStr, mode: libc::mode_t) -> Result<OwnedFd, String> {
+    if unsafe { libc::mkdirat(dir, name.as_ptr(), mode) } != 0 {
         return Err(format!("{} could not be made ({})", name.to_string_lossy(), std::io::Error::last_os_error()));
     }
     own(unsafe { libc::openat(dir, name.as_ptr(), OPEN_DIR) })
+}
+
+/// Remove `name` in `dir` and everything under it, relative to descriptors and without following a
+/// link: what is removed is what is there, never what a path now leads to.
+pub(crate) fn remove_at(dir: RawFd, name: &CStr, depth: usize) {
+    if kind_at(dir, name) == Some(libc::S_IFDIR) && depth < MAX_DEPTH + 2 {
+        if let Ok(sub) = own(unsafe { libc::openat(dir, name.as_ptr(), OPEN_DIR) }) {
+            for child in names_in(sub.as_raw_fd()) {
+                remove_at(sub.as_raw_fd(), &child, depth + 1);
+            }
+        }
+        unsafe { libc::unlinkat(dir, name.as_ptr(), libc::AT_REMOVEDIR) };
+    } else {
+        unsafe { libc::unlinkat(dir, name.as_ptr(), 0) };
+    }
 }
 
 /// Copy the content of a regular file into `out`: the bytes and nothing else.
@@ -145,6 +195,32 @@ fn copy_file(src: OwnedFd, mut out: File, budget: &mut Budget) -> Result<(), Str
     Ok(())
 }
 
+/// Judge the source folder `src` before anything is written: a repository by name or by shape, at
+/// any depth, refuses the export. Nothing is made.
+fn preflight(src: RawFd, depth: usize, seen: &mut usize) -> Result<(), String> {
+    if depth >= MAX_DEPTH {
+        return Err("the folders are nested deeper than one export carries.".into());
+    }
+    if repository_shape(src) {
+        return Err(SHAPE_REFUSED.into());
+    }
+    for name in names_in(src) {
+        if let Some(why) = barred(name.to_bytes()) {
+            return Err(why);
+        }
+        *seen += 1;
+        if *seen > MAX_ENTRIES {
+            return Err("there are more files than one export carries.".into());
+        }
+        if kind_at(src, &name) == Some(libc::S_IFDIR) {
+            if let Ok(sub) = own(unsafe { libc::openat(src, name.as_ptr(), OPEN_DIR) }) {
+                preflight(sub.as_raw_fd(), depth + 1, seen)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn copy_dir(src: RawFd, dest: RawFd, depth: usize, budget: &mut Budget) -> Result<(), String> {
     if depth >= MAX_DEPTH {
         return Err("the folders are nested deeper than one export carries.".into());
@@ -152,10 +228,6 @@ fn copy_dir(src: RawFd, dest: RawFd, depth: usize, budget: &mut Budget) -> Resul
     for name in names_in(src) {
         if let Some(why) = barred(name.to_bytes()) {
             return Err(why);
-        }
-        if LEFT_OUT.contains(&lower(name.to_bytes()).as_str()) {
-            budget.out.dropped += 1;
-            continue;
         }
         budget.entries += 1;
         if budget.entries > MAX_ENTRIES {
@@ -165,7 +237,10 @@ fn copy_dir(src: RawFd, dest: RawFd, depth: usize, budget: &mut Budget) -> Resul
         if unsafe { libc::fstatat(src, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
             continue;
         }
+        let hidden = name.to_bytes().first() == Some(&b'.');
         match st.st_mode & libc::S_IFMT {
+            libc::S_IFREG if !carried(name.to_bytes()) => budget.out.dropped += 1,
+            libc::S_IFDIR if hidden => budget.out.dropped += 1,
             libc::S_IFREG => {
                 let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
                 let Ok(fd) = own(unsafe { libc::openat(src, name.as_ptr(), flags) }) else { continue };
@@ -178,7 +253,7 @@ fn copy_dir(src: RawFd, dest: RawFd, depth: usize, budget: &mut Budget) -> Resul
             }
             libc::S_IFDIR => {
                 let Ok(fd) = own(unsafe { libc::openat(src, name.as_ptr(), OPEN_DIR) }) else { continue };
-                let sub = mkdir_at(dest, &name)?;
+                let sub = mkdir_at(dest, &name, 0o755)?;
                 copy_dir(fd.as_raw_fd(), sub.as_raw_fd(), depth + 1, budget)?;
             }
             // A link, a pipe, a socket, a device: not bytes, and not taken.
@@ -187,14 +262,71 @@ fn copy_dir(src: RawFd, dest: RawFd, depth: usize, budget: &mut Budget) -> Resul
     }
     // Judged on the copy, which a running job cannot change.
     match repository_shape(dest) {
-        true => Err("a folder in the copy is shaped like a git repository (HEAD, objects, refs, or a gitdir file); its config could name a program to run, so nothing was exported.".into()),
+        true => Err(SHAPE_REFUSED.into()),
         false => Ok(()),
     }
 }
 
-/// Copy what is at `path` in `workshop` into the existing folder `into`, as a new entry of the
+/// The destination folder `to` (a path below `home`), opened a name at a time without following a
+/// link, and where it really is. Nothing but the home itself is looked up by path.
+fn open_dest(home: &Path, to: &Path) -> Result<(OwnedFd, PathBuf), String> {
+    let real_home = home.canonicalize().map_err(|e| format!("the home folder cannot be resolved ({e})"))?;
+    let rel = to
+        .strip_prefix(home)
+        .or_else(|_| to.strip_prefix(&real_home))
+        .map_err(|_| format!("{} is not in the home folder.", to.display()))?;
+    let gone = |p: &Path| format!("{} is not a folder that is there (a link is not followed).", p.display());
+    let home_c = CString::new(real_home.as_os_str().as_bytes()).map_err(|_| "a folder with a NUL in it".to_string())?;
+    let mut held = own(unsafe { libc::open(home_c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) }).map_err(|_| gone(&real_home))?;
+    for c in rel.components() {
+        let Component::Normal(name) = c else { return Err(format!("{} has no `..` or `.` in it.", to.display())) };
+        let name = CString::new(name.as_bytes()).map_err(|_| "a folder with a NUL in it".to_string())?;
+        held = own(unsafe { libc::openat(held.as_raw_fd(), name.as_ptr(), OPEN_DIR) }).map_err(|_| gone(to))?;
+    }
+    let at = std::fs::read_link(format!("/proc/self/fd/{}", held.as_raw_fd())).map_err(|_| gone(to))?;
+    Ok((held, at))
+}
+
+/// The destination judged as a place to make `last` in: the same rule the card applied.
+fn may_land(at: &Path, last: &str, home: &Path) -> Result<(), String> {
+    yantrik_ipc_contracts::home_paths::may_create(&format!("{}/{last}", at.display()), home)
+}
+
+/// `renameat2(old -> new)` inside `dir`, failing if `new` is there.
+fn rename_noreplace(dir: RawFd, old: &CStr, new: &CStr) -> Result<(), String> {
+    let done = unsafe { libc::syscall(libc::SYS_renameat2, dir, old.as_ptr(), dir, new.as_ptr(), libc::RENAME_NOREPLACE) };
+    if done == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EEXIST) | Some(libc::ENOTEMPTY) => Err(format!("{} could not be made (it is there already)", new.to_string_lossy())),
+        // A filesystem with no such flag: look first, then rename.
+        Some(libc::EINVAL) | Some(libc::ENOSYS) if kind_at(dir, new).is_none() => {
+            match unsafe { libc::renameat(dir, old.as_ptr(), dir, new.as_ptr()) } {
+                0 => Ok(()),
+                _ => Err(format!("{} could not be made ({})", new.to_string_lossy(), std::io::Error::last_os_error())),
+            }
+        }
+        _ => Err(format!("{} could not be made ({err})", new.to_string_lossy())),
+    }
+}
+
+/// A name that is not taken and that no program treats as a project: hidden, and this call's.
+fn scratch_name() -> CString {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    CString::new(format!(".yantrik-export-{}-{nanos}", std::process::id())).unwrap()
+}
+
+/// Copy what is at `path` in `workshop` into the folder `to` (below `home`), as a new entry of the
 /// same name (it never replaces one). A regular file by content, or a folder of them.
-pub fn export(workshop: &Path, path: &Path, into: &Path) -> Result<(PathBuf, Exported), String> {
+pub fn export(workshop: &Path, path: &Path, home: &Path, to: &Path) -> Result<(PathBuf, Exported), String> {
+    export_with(workshop, path, home, to, &|| {})
+}
+
+/// [`export`], calling `between` once the destination is open and the source has been judged, and
+/// before the first byte is copied. A test uses it to do to the destination what a job could.
+pub fn export_with(workshop: &Path, path: &Path, home: &Path, to: &Path, between: &dyn Fn()) -> Result<(PathBuf, Exported), String> {
     let names = below(workshop, path)?;
     let Some(last) = names.last() else { return Err("name a file or folder inside the workshop.".into()) };
     if let Some(why) = barred(last.as_bytes()) {
@@ -204,200 +336,51 @@ pub fn export(workshop: &Path, path: &Path, into: &Path) -> Result<(PathBuf, Exp
         return Err(format!("{} starts with a dot, which is a name programs read settings from; it is not exported.", last.to_string_lossy()));
     }
     let name = CString::new(last.as_bytes()).map_err(|_| "a name with a NUL in it".to_string())?;
-    let to = CString::new(into.as_os_str().as_bytes()).map_err(|_| "a folder with a NUL in it".to_string())?;
-    let dest = own(unsafe { libc::open(to.as_ptr(), OPEN_DIR) }).map_err(|_| format!("{} is not a folder that is there (a link is not followed).", into.display()))?;
+    let shown = last.to_string_lossy().into_owned();
+    // 1. The destination, by descriptor, judged where it really is.
+    let (dest, approved) = open_dest(home, to)?;
+    may_land(&approved, &shown, home)?;
+    if kind_at(dest.as_raw_fd(), &name).is_some() {
+        return Err(format!("{shown} could not be made (it is there already)"));
+    }
+    // 2. The source, judged before a byte is written.
     let root = open_workshop(workshop)?;
     let fd = open_below(root.as_raw_fd(), &names, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)?;
     let kind = kind_of(fd.as_raw_fd())?.st_mode & libc::S_IFMT;
-    let target = into.join(last);
-    let mut budget = Budget { entries: 0, bytes: 0, out: Exported::default() };
-    let done = match kind {
-        // A name that is taken is refused here, before anything is made, so nothing is removed below.
-        libc::S_IFREG => {
-            let out = create_at(dest.as_raw_fd(), &name)?;
-            copy_file(fd, out, &mut budget)
-        }
-        libc::S_IFDIR => {
-            let sub = mkdir_at(dest.as_raw_fd(), &name)?;
-            copy_dir(fd.as_raw_fd(), sub.as_raw_fd(), 0, &mut budget)
-        }
+    match kind {
+        libc::S_IFREG if !carried(last.as_bytes()) => return Err(format!("{shown} is not a kind of file an export carries (documents, pictures, sound, video, text, data and source are).")),
+        libc::S_IFREG => {}
+        libc::S_IFDIR => preflight(fd.as_raw_fd(), 0, &mut 0)?,
         _ => return Err("only a regular file or a folder of them is exported.".into()),
-    };
-    if let Err(e) = done {
-        // Only what this call made: the name was new, so a half copy is removed.
-        let _ = if kind == libc::S_IFDIR { std::fs::remove_dir_all(&target) } else { std::fs::remove_file(&target) };
+    }
+    between();
+    // 3. Built under a hidden name of this call's, and judged again on the copy.
+    let scratch = scratch_name();
+    let mut budget = Budget { entries: 0, bytes: 0, out: Exported::default() };
+    let built = (|| -> Result<(), String> {
+        if kind == libc::S_IFDIR {
+            let sub = mkdir_at(dest.as_raw_fd(), &scratch, 0o700)?;
+            copy_dir(fd.as_raw_fd(), sub.as_raw_fd(), 0, &mut budget)?;
+            unsafe { libc::fchmod(sub.as_raw_fd(), 0o755) };
+        } else {
+            copy_file(fd, create_at(dest.as_raw_fd(), &scratch)?, &mut budget)?;
+        }
+        // 4. Still where it was approved? Then, and only then, it takes its name.
+        let now = std::fs::read_link(format!("/proc/self/fd/{}", dest.as_raw_fd())).unwrap_or_default();
+        if now != approved {
+            return Err(format!("the destination was moved to {} while the copy ran; nothing was exported.", now.display()));
+        }
+        may_land(&now, &shown, home)?;
+        rename_noreplace(dest.as_raw_fd(), &scratch, &name)
+    })();
+    if let Err(e) = built {
+        // Only what this call made, by descriptor: never a path that may lead somewhere else now.
+        remove_at(dest.as_raw_fd(), &scratch, 0);
         return Err(e);
     }
-    Ok((target, budget.out))
+    Ok((approved.join(last), budget.out))
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::{symlink, PermissionsExt};
-
-    fn shop() -> (tempfile::TempDir, PathBuf) {
-        let h = tempfile::tempdir().unwrap();
-        let shop = h.path().canonicalize().unwrap().join("shop");
-        std::fs::create_dir(&shop).unwrap();
-        (h, shop)
-    }
-
-    fn fifo(at: &Path) {
-        let c = CString::new(at.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-    }
-
-    fn dest(h: &tempfile::TempDir) -> PathBuf {
-        let d = h.path().join("Videos");
-        std::fs::create_dir(&d).unwrap();
-        d
-    }
-
-    #[test]
-    fn export_copies_regular_files_by_content_and_nothing_else() {
-        let (h, shop) = shop();
-        let secret = h.path().join("secret");
-        std::fs::write(&secret, "host secret").unwrap();
-        let src = shop.join("pkg");
-        std::fs::create_dir_all(src.join("sub/deep")).unwrap();
-        std::fs::write(src.join("a.txt"), "alpha").unwrap();
-        std::fs::write(src.join("sub/deep/b.txt"), "beta").unwrap();
-        std::fs::write(src.join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
-        std::fs::set_permissions(src.join("run.sh"), std::fs::Permissions::from_mode(0o4755)).unwrap();
-        symlink(&secret, src.join("leak")).unwrap();
-        symlink(h.path(), src.join("dir-leak")).unwrap();
-        fifo(&src.join("pipe"));
-        // Settings a tool obeys on sight are left out, and said so.
-        std::fs::write(src.join(".npmrc"), "script-shell=/tmp/x").unwrap();
-        std::fs::create_dir_all(src.join(".cargo")).unwrap();
-        std::fs::write(src.join(".cargo/config.toml"), "[build]\nrustc-wrapper='x'").unwrap();
-        // An extended attribute, where the filesystem takes one.
-        let name = CString::new("user.mark").unwrap();
-        let path = CString::new(src.join("a.txt").as_os_str().as_bytes()).unwrap();
-        let tagged = unsafe { libc::setxattr(path.as_ptr(), name.as_ptr(), b"1".as_ptr().cast(), 1, 0) } == 0;
-        let dest = dest(&h);
-        let (at, done) = export(&shop, Path::new("pkg"), &dest).unwrap();
-        assert_eq!(at, dest.join("pkg"));
-        assert_eq!(done, Exported { files: 3, bytes: 5 + 4 + 18, dropped: 2 });
-        assert_eq!(std::fs::read_to_string(at.join("a.txt")).unwrap(), "alpha");
-        assert_eq!(std::fs::read_to_string(at.join("sub/deep/b.txt")).unwrap(), "beta");
-        for gone in ["leak", "dir-leak", "pipe", ".npmrc", ".cargo"] {
-            assert!(at.join(gone).symlink_metadata().is_err(), "{gone} must not be copied");
-        }
-        // Plain bytes: no setuid or execute bit, no attribute, a regular file.
-        let mode = std::fs::metadata(at.join("run.sh")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o7000, 0, "{mode:o}");
-        assert_eq!(mode & 0o111, 0, "{mode:o}");
-        if tagged {
-            let copy = CString::new(at.join("a.txt").as_os_str().as_bytes()).unwrap();
-            assert!(unsafe { libc::getxattr(copy.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) } < 0, "the attribute was copied");
-        }
-        // It never replaces what is there.
-        assert!(export(&shop, Path::new("pkg"), &dest).unwrap_err().contains("could not be made"));
-        assert_eq!(std::fs::read_to_string(at.join("a.txt")).unwrap(), "alpha");
-    }
-
-    #[test]
-    fn export_refuses_links_pipes_outside_paths_and_a_missing_folder() {
-        let (h, shop) = shop();
-        let dest = dest(&h);
-        std::fs::write(h.path().join("outside.txt"), "x").unwrap();
-        symlink(h.path().join("outside.txt"), shop.join("link.txt")).unwrap();
-        symlink(h.path(), shop.join("dir-link")).unwrap();
-        fifo(&shop.join("pipe"));
-        for bad in ["link.txt", "dir-link", "dir-link/outside.txt", "pipe", "../outside.txt", "missing", "", "/etc/passwd"] {
-            assert!(export(&shop, Path::new(bad), &dest).is_err(), "{bad:?}");
-        }
-        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "nothing landed");
-        std::fs::write(shop.join("ok.txt"), "ok").unwrap();
-        assert!(export(&shop, Path::new("ok.txt"), &dest.join("nowhere")).is_err());
-        assert!(export(&shop, Path::new("ok.txt"), &dest).is_ok());
-    }
-
-    /// H2: a repository is what it looks like, not what it is called. Every one of these is
-    /// refused whole, and nothing is left behind.
-    #[test]
-    fn export_refuses_a_repository_by_its_shape_at_every_level_and_by_name_in_any_case() {
-        let (h, shop) = shop();
-        let dest = dest(&h);
-        // `git init --bare meta` and then `core.bare=false`, `core.worktree=..`, `core.fsmonitor`.
-        let bare = |at: &Path| {
-            std::fs::create_dir_all(at.join("objects")).unwrap();
-            std::fs::create_dir_all(at.join("refs/heads")).unwrap();
-            std::fs::write(at.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-            std::fs::write(at.join("config"), "[core]\n\tbare = false\n\tworktree = ..\n\tfsmonitor = touch /tmp/PWNED; false\n").unwrap();
-        };
-        bare(&shop.join("proj/meta"));
-        std::fs::write(shop.join("proj/readme"), "hi").unwrap();
-        bare(&shop.join("whole"));
-        bare(&shop.join("deep/er/still/inside"));
-        std::fs::create_dir_all(shop.join("worktree/sub")).unwrap();
-        std::fs::write(shop.join("worktree/sub/gitdir"), "/elsewhere/.git\n").unwrap();
-        std::fs::create_dir_all(shop.join("linked")).unwrap();
-        std::fs::write(shop.join("linked/commondir"), "../..\n").unwrap();
-        for (i, n) in [".git", ".GIT", ".Hg", ".jj", ".svn", ".bzr"].iter().enumerate() {
-            std::fs::create_dir_all(shop.join(format!("named{i}"))).unwrap();
-            std::fs::write(shop.join(format!("named{i}/{n}")), "gitdir: /x\n").unwrap();
-            std::fs::create_dir_all(shop.join(format!("dirnamed{i}/{n}"))).unwrap();
-        }
-        for bad in ["proj", "proj/meta", "whole", "deep", "worktree", "linked", "named0", "named1", "named2", "named3", "named4", "named5", "dirnamed0", "dirnamed2", "dirnamed3"] {
-            let why = export(&shop, Path::new(bad), &dest).unwrap_err();
-            assert!(why.contains("repository") || why.contains("version-control"), "{bad}: {why}");
-        }
-        for bad in [".git", ".HG", ".jj"] {
-            assert!(export(&shop, Path::new(bad), &dest).is_err(), "{bad}");
-        }
-        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "a refused export leaves nothing behind");
-        // A folder that only has a file called HEAD is not a repository.
-        std::fs::create_dir_all(shop.join("notes")).unwrap();
-        std::fs::write(shop.join("notes/HEAD"), "head").unwrap();
-        assert!(export(&shop, Path::new("notes"), &dest).is_ok());
-    }
-
-    /// H2, end to end where git is installed: what is not refused is not a repository to git.
-    #[test]
-    fn a_refused_export_leaves_nothing_for_git_to_run() {
-        let git = |args: &[&str], dir: &Path| std::process::Command::new("git").args(args).current_dir(dir).output();
-        let (h, shop) = shop();
-        let dest = dest(&h);
-        std::fs::create_dir_all(shop.join("pkg")).unwrap();
-        let marker = h.path().join("PWNED");
-        let init = git(&["init", "--bare", "-q", "meta"], &shop.join("pkg"));
-        if init.map_or(true, |o| !o.status.success()) {
-            return; // no git here
-        }
-        let cfg = format!("touch {}; false", marker.display());
-        for kv in [["core.bare", "false"], ["core.worktree", ".."], ["core.fsmonitor", cfg.as_str()]] {
-            git(&["config", kv[0], kv[1]], &shop.join("pkg/meta")).unwrap();
-        }
-        assert!(export(&shop, Path::new("pkg"), &dest).is_err());
-        let _ = git(&["status"], &dest);
-        assert!(!marker.exists(), "git ran the marker");
-    }
-
-    /// M3: the name that lands is judged like the folder it lands in, and a link in the place of
-    /// the folder is not followed.
-    #[test]
-    fn export_refuses_a_startup_name_and_a_destination_that_is_a_link() {
-        let (h, shop) = shop();
-        let dest = dest(&h);
-        for n in [".bash_profile", ".zshenv", ".gitconfig", ".pam_environment", ".npmrc"] {
-            std::fs::write(shop.join(n), "x").unwrap();
-            assert!(export(&shop, Path::new(n), &dest).unwrap_err().contains("starts with a dot"), "{n}");
-            assert!(dest.join(n).symlink_metadata().is_err(), "{n} landed");
-        }
-        std::fs::write(shop.join("x.desktop"), "[Desktop Entry]\nExec=sh").unwrap();
-        let autostart = h.path().join("autostart");
-        std::fs::create_dir(&autostart).unwrap();
-        let videos_link = h.path().join("Videos-link");
-        symlink(&autostart, &videos_link).unwrap();
-        let why = export(&shop, Path::new("x.desktop"), &videos_link).unwrap_err();
-        assert!(why.contains("not a folder that is there"), "{why}");
-        assert_eq!(std::fs::read_dir(&autostart).unwrap().count(), 0, "nothing landed through the link");
-        // A name that is a link made after the card is not written through either.
-        symlink(h.path().join("elsewhere"), dest.join("x.desktop")).unwrap();
-        assert!(export(&shop, Path::new("x.desktop"), &dest).is_err());
-        assert!(!h.path().join("elsewhere").exists());
-    }
-}
+#[path = "workshop_export_tests.rs"]
+mod tests;

@@ -469,6 +469,11 @@ mod tests {
             "find /home/p/.local/share/yantrik/workshops -name '*.md' -type f",
             "du -sh ~/.local/share/yantrik/workshops/hermes",
             "stat ~/.local/share/yantrik/workshops",
+            // The root moved out of the home (round 5): the whole base is held, every account's.
+            "ls -la /var/lib/yantrik/workshops",
+            "ls -la /var/lib/yantrik/workshops/1000/hermes/shop",
+            "find /var/lib/yantrik/workshops -name '*.md' -type f",
+            "du -sh /var/lib/yantrik/workshops/1000/hermes",
             "sh -c id",
             "bash",
         ] {

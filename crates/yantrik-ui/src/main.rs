@@ -110,6 +110,7 @@ mod control_agent_terminal;
 mod control_workshop;
 mod workshop;
 mod workshop_export;
+mod workshop_move;
 mod workshop_out;
 mod workshop_play;
 /// A recipe on the shell's surface: answer_recipe / pause_recipe / resume_recipe / cancel_recipe.

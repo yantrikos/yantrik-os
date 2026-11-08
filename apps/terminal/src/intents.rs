@@ -84,9 +84,10 @@ type Parse = fn(&Args<'_>) -> Command;
 
 /// A Mind's call is marked as one, so that it only ever reaches a shell in the outside view.
 fn from_caller(command: Command) -> Command {
-    match yantrik_app::control::agent_is_calling() {
-        true => Command::FromMind(Box::new(command)),
-        false => command,
+    match (yantrik_app::control::agent_is_calling(), crate::owner::of_caller()) {
+        // A call with a token is a Mind's; the token names which one.
+        (true, owner) => Command::FromMind(owner.unwrap_or(0), Box::new(command)),
+        _ => command,
     }
 }
 
@@ -102,7 +103,7 @@ pub fn actions() -> Vec<(Action, Parse)> {
                  after, `running` names anything still going, and `describe` shows the rest as it \
                  arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`. A Mind's \
                  `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that \
-                 cannot see Minds' workshops and has no sudo.",
+                 cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view).",
             )
             .risk("sensitive")
             .defers()

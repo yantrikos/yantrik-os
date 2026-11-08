@@ -26,20 +26,20 @@ type Fx = Effects<Terminal>;
 pub const NOT_STARTED: &str = "Terminal could not start the shell. Try again.";
 
 /// Start a shell beside the active one, in the folder it is sitting in.
-pub fn new_tab(m: &mut Model, fx: &mut Fx, why: Why, outside: bool) {
+pub fn new_tab(m: &mut Model, fx: &mut Fx, why: Why, owner: Option<crate::owner::Owner>) {
     if let Some(full) = tabs_full(m.tabs.len() + m.spawning) {
         return refuse(m, fx, full);
     }
-    start(m, fx, why, None, outside);
+    start(m, fx, why, None, owner);
 }
 
 /// Start a shell, in `dir` if one is given, else where the active shell is.
-pub fn start(m: &mut Model, fx: &mut Fx, why: Why, dir: Option<PathBuf>, outside: bool) {
+pub fn start(m: &mut Model, fx: &mut Fx, why: Why, dir: Option<PathBuf>, owner: Option<crate::owner::Owner>) {
     m.spawning += 1;
     let (rows, cols, notify) = (m.rows, m.cols, m.hub.notifier());
     let active = m.session().cloned();
     fx.spawn_or(Command::SpawnLost, move |_| {
-        Command::Spawned(Box::new(Spawned { why, outside, result: spawn(dir, active, rows, cols, notify, outside) }))
+        Command::Spawned(Box::new(Spawned { why, owner, result: spawn(dir, active, rows, cols, notify, owner.is_some()) }))
     });
 }
 
@@ -47,7 +47,7 @@ pub fn start(m: &mut Model, fx: &mut Fx, why: Why, dir: Option<PathBuf>, outside
 pub fn first(m: &Model, fx: &mut Fx) {
     let (rows, cols, notify): (u16, u16, Arc<dyn Fn() + Send + Sync>) = (m.rows, m.cols, m.hub.notifier());
     fx.spawn_or(Command::SpawnLost, move |_| {
-        Command::Spawned(Box::new(Spawned { why: Why::First, outside: false, result: spawn(None, None, rows, cols, notify, false) }))
+        Command::Spawned(Box::new(Spawned { why: Why::First, owner: None, result: spawn(None, None, rows, cols, notify, false) }))
     });
 }
 
@@ -78,7 +78,7 @@ fn spawn(
 /// caller, the answer is that shell's own.
 pub fn spawned(m: &mut Model, fx: &mut Fx, spawned: Spawned) {
     m.spawning = m.spawning.saturating_sub(1);
-    let Spawned { why, outside, result } = spawned;
+    let Spawned { why, owner, result } = spawned;
     let (session, facts) = match result {
         Ok(started) => started,
         Err(sentence) => return refuse(m, fx, sentence),
@@ -98,7 +98,7 @@ pub fn spawned(m: &mut Model, fx: &mut Fx, spawned: Spawned) {
     m.serial += 1;
     let id = m.serial;
     let revision = session.revision();
-    m.tabs.push(Tab { id, session: session.clone(), facts: facts.clone(), probing: false, due: false, revision, outside });
+    m.tabs.push(Tab { id, session: session.clone(), facts: facts.clone(), probing: false, due: false, revision, outside: owner.is_some(), owner });
     m.active = m.tabs.len() - 1;
     reset_view(m, fx);
     m.notice.clear();
@@ -191,5 +191,5 @@ pub fn restart(m: &mut Model, fx: &mut Fx) {
     if let Some(id) = m.tab().map(|t| t.id) {
         remove(m, fx, id);
     }
-    new_tab(m, fx, Why::Restart, false);
+    new_tab(m, fx, Why::Restart, None);
 }
