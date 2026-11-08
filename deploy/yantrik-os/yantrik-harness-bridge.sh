@@ -232,9 +232,18 @@ harness_bridge_stamp_file() {
   owner="$(harness_bridge_owner)" && uid="$(id -u "$owner" 2>/dev/null)" || return 1
   printf '/run/user/%s/yantrik-hermes-bridge-signalled' "$uid"
 }
+# Written as the desktop's account, never as root: the directory is that person's, so anything in
+# it (a link to /etc/shadow, say) is theirs to plant, and root following it would hand them a root
+# write (review of #1110). As them, `touch` can reach only what they could already touch. No chmod:
+# root reads the mtime whatever the mode.
 harness_bridge_stamp_write() {
-  local f; f="$(harness_bridge_stamp_file)" || return 0
-  rm -f "$f" 2>/dev/null; : > "$f" 2>/dev/null && chmod 0644 "$f" 2>/dev/null
+  local f owner; f="$(harness_bridge_stamp_file)" || return 0
+  if [ "$(id -u)" = 0 ]; then
+    owner="$(harness_bridge_owner)" || return 0
+    runuser -u "$owner" -- touch -- "$f" 2>/dev/null
+  else
+    touch -- "$f" 2>/dev/null
+  fi
   return 0
 }
 # Was the gateway signalled, or the note written, within the last 30 minutes?
