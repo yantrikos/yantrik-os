@@ -251,11 +251,15 @@ fn rename(args: &Value) -> Result<Value, String> {
     let home = home();
     mind::rename_verdict(&parent, &name, &new, &home)?;
     deferred(move || {
-        // Again on the worker, on what the folder is now.
-        mind::rename_verdict(&parent, &name, &new, &home)?;
+        // The folder is opened once and the entry resolved inside it, and the verdict below and
+        // the rename are about that one entry: nothing is walked from the root a second time (#1078).
         let dir = crate::filebrowser::expand_home(&parent);
-        crate::fileops::rename_no_replace(&dir.join(&name), &dir.join(&new))?;
-        Ok(json!({ "renamed": dir.join(&name).display().to_string(), "to": dir.join(&new).display().to_string() }))
+        let entry = crate::fileops::Held::open(&dir, &name)?;
+        // Again on the worker, on what the folder holds now.
+        mind::rename_verdict(&parent, &name, &new, &home)?;
+        entry.rename_in(&new)?;
+        let from = entry.leaf();
+        Ok(json!({ "renamed": from.display().to_string(), "to": dir.join(&new).display().to_string() }))
     })
 }
 
@@ -265,9 +269,13 @@ fn delete(args: &Value) -> Result<Value, String> {
     let home = home();
     mind::entry_verdict(&parent, &name, &home)?;
     deferred(move || {
+        // Held from here on: the verdict and the move to Trash are about the entry this fd names,
+        // and the folder is not walked again (#1078).
+        let dir = crate::filebrowser::expand_home(&parent);
+        let entry = crate::fileops::Held::open(&dir, &name)?;
         mind::entry_verdict(&parent, &name, &home)?;
-        let path: PathBuf = crate::filebrowser::expand_home(&parent).join(&name);
-        crate::fileops::trash(&path, &crate::fileops::trash_root())?;
+        let path = entry.leaf();
+        crate::fileops::trash_held(&entry, &crate::fileops::trash_root())?;
         Ok(json!({ "requested_trash": name, "trashed": path.display().to_string() }))
     })
 }
