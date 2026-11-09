@@ -211,6 +211,7 @@ pub fn check_folder(home: &Path, raw: &str, for_grant: bool) -> Result<PathBuf, 
     if parts.len() != 2 {
         return Err(nowhere());
     }
+    use std::os::unix::fs::MetadataExt;
     let mut cur = root.clone();
     for name in parts {
         let name = name.to_str().ok_or("`folder` has a name that is not text.")?;
@@ -222,6 +223,9 @@ pub fn check_folder(home: &Path, raw: &str, for_grant: bool) -> Result<PathBuf, 
         match std::fs::symlink_metadata(&seen) {
             Ok(m) if m.file_type().is_symlink() => return Err(format!("{} is a symlink; a workshop is never reached through one.", cur.display())),
             Ok(m) if !m.is_dir() => return Err(format!("{} is not a folder.", cur.display())),
+            Ok(m) if m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 => {
+                return Err(format!("{} is not the person's alone (owned by them, mode 0700); refused.", cur.display()));
+            }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && for_grant => {
                 std::fs::create_dir(&seen).map_err(|e| format!("cannot make {}: {e}", cur.display()))?;

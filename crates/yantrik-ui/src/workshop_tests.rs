@@ -98,12 +98,15 @@ fn symlinks_are_refused_at_every_step() {
 
 #[test]
 fn a_folder_with_files_is_not_new() {
+    use std::os::unix::fs::PermissionsExt;
     let h = home();
     let at = root_str(&h);
     let shop = check_folder(h.path(), &format!("{at}/hermes/old"), true).unwrap();
     std::fs::write(shop.join(".env"), "k=v").unwrap();
     assert!(refused(&h, &format!("{at}/hermes/old")).contains("already holds"));
-    std::fs::create_dir(workshops::root(&h.path().canonicalize().unwrap()).join("hermes/empty")).unwrap();
+    let empty = workshops::root(&h.path().canonicalize().unwrap()).join("hermes/empty");
+    std::fs::create_dir(&empty).unwrap();
+    std::fs::set_permissions(&empty, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(check_folder(h.path(), &format!("{at}/hermes/empty"), true).is_ok());
     // Not made for a card's sentence, or for a run.
     assert!(check_folder(h.path(), &format!("{at}/hermes/never"), false).unwrap_err().contains("does not exist"));
@@ -234,4 +237,24 @@ fn the_grant_record_is_inside_the_root_where_no_view_of_a_mind_reaches() {
         assert!(folder_for(&home, "hermes", name, true).is_err(), "{name}");
     }
     assert!(!workshops::base(&home).join("workshops.json").exists(), "not beside the root");
+}
+
+/// Round 6, finding 3: a Mind's folder or a workshop that is already there is taken only when it
+/// is the person's alone; one a Mind's job made before the grant (or another account made) is not.
+#[test]
+fn a_folder_that_is_already_there_must_be_the_persons_and_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = home();
+    let at = root_str(&h);
+    let root = workshops::root(&h.path().canonicalize().unwrap());
+    std::fs::create_dir_all(root.join("hermes/open")).unwrap();
+    for what in ["hermes", "hermes/open"] {
+        std::fs::set_permissions(root.join(what), std::fs::Permissions::from_mode(0o755)).unwrap();
+        for for_grant in [true, false] {
+            let why = check_folder(h.path(), &format!("{at}/hermes/open"), for_grant).unwrap_err();
+            assert!(why.contains("not the person's alone"), "{what} {for_grant}: {why}");
+        }
+        std::fs::set_permissions(root.join(what), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    assert!(check_folder(h.path(), &format!("{at}/hermes/open"), true).is_ok());
 }

@@ -3293,6 +3293,20 @@ workshops_login_accounts() { # [passwd file]
     | awk -F: '$3 >= 1000 && $3 < 60000 && $4 ~ /^[0-9]+$/ && $1 != "yantrik-mind" && $7 !~ /(nologin|false)$/ && $7 != "" { print $3, $4 }'
 }
 
+# <path> as a folder of exactly <uid>:<gid> and <mode> (as stat prints it, "700"). A missing one is
+# made, with mkdir and never -p, then given its owner: its parent is already root's, so the name
+# cannot be swapped between the two. One that is there is only looked at, never chowned or chmodded
+# through its name: a person, or a Mind's job, may have put it there, as a link or as a folder
+# holding things.
+workshops_folder() { # path uid gid mode
+  local p="$1" uid="$2" gid="$3" mode="$4"
+  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+    mkdir -m "$mode" "$p" && chown -h "$uid:$gid" "$p"
+    return
+  fi
+  [ ! -L "$p" ] && [ -d "$p" ] && [ "$(stat -c '%u:%g:%a' "$p")" = "$uid:$gid:$mode" ]
+}
+
 reconcile_workshops() {
   [ "$(id -u)" = 0 ] || return 0
   tree_is_roots || return 0
@@ -3302,17 +3316,19 @@ reconcile_workshops() {
     rm -f "$WORKSHOPS_TMPFILES" && printf '%s\n' "$want" > "$WORKSHOPS_TMPFILES" && chmod 0644 "$WORKSHOPS_TMPFILES" \
       || { warn "could not write $WORKSHOPS_TMPFILES; the Minds' workshops root is not set up"; return 0; }
   fi
-  # A link where the root should be is not followed, and not replaced: a person put it there.
-  for dir in /var/lib/yantrik "$WORKSHOPS_BASE"; do
-    [ -L "$dir" ] && { warn "$dir is a link; the Minds' workshops root is not set up"; return 0; }
-  done
-  install -d -o root -g root -m 0755 /var/lib/yantrik "$WORKSHOPS_BASE" \
-    || { warn "could not make $WORKSHOPS_BASE"; return 0; }
+  # /var/lib/yantrik was the person's on machines that cloud-init made. Its parent is root's, so
+  # the name cannot be swapped: it is taken for root first, and everything in it is looked at
+  # after, when the person can no longer change it.
+  if [ -d /var/lib/yantrik ] && [ ! -L /var/lib/yantrik ]; then
+    chown -h root:root /var/lib/yantrik && chmod 0755 /var/lib/yantrik \
+      || { warn "could not take /var/lib/yantrik for root; the Minds' workshops root is not set up"; return 0; }
+  fi
+  workshops_folder /var/lib/yantrik 0 0 755 && workshops_folder "$WORKSHOPS_BASE" 0 0 755 \
+    || { warn "/var/lib/yantrik or $WORKSHOPS_BASE is a link, or not root's 0755 folder; the Minds' workshops root is not set up"; return 0; }
   while read -r uid gid; do
     [ -n "$uid" ] || continue
     dir="$WORKSHOPS_BASE/$uid"
-    [ -L "$dir" ] && { warn "$dir is a link; left alone"; continue; }
-    install -d -o "$uid" -g "$gid" -m 0700 "$dir" || warn "could not make $dir"
+    workshops_folder "$dir" "$uid" "$gid" 700 || warn "$dir is not a folder of $uid:$gid, mode 0700 (a link, or someone else's); left alone"
   done <<EOF
 $(workshops_login_accounts)
 EOF
@@ -7260,6 +7276,24 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
     info "no yantrik-update-selftest-bridge.sh beside the updater: the bridge checks did not run"
   fi
   declare -F selftest_args >/dev/null && selftest_args  # the arguments of each subcommand: yantrik-update-args
+
+  # The Minds' workshops folders (#1124): made when missing; an existing one is looked at, never
+  # chowned or chmodded through its name; a link is never followed.
+  local wf="$root/workshops-folders" wme wgid; wme="$(id -u)"; wgid="$(id -g)"
+  mkdir -p "$wf/scratch"
+  workshops_folder "$wf/new" "$wme" "$wgid" 700
+  is "workshops folder: a missing one is made, with its owner and mode" "$wme:$wgid:700" "$(stat -c '%u:%g:%a' "$wf/new")"
+  is "workshops folder: one that is right is accepted" "ok" "$(workshops_folder "$wf/new" "$wme" "$wgid" 700 && echo ok)"
+  chmod 0755 "$wf/new"
+  is "workshops folder: a wrong mode is refused, and not changed" "refused 755" \
+    "$(workshops_folder "$wf/new" "$wme" "$wgid" 700 || echo "refused $(stat -c %a "$wf/new")")"
+  ln -s "$wf/scratch" "$wf/link"
+  chmod 0700 "$wf/scratch"
+  is "workshops folder: a link is refused, and what it names is not changed" "refused 700" \
+    "$(workshops_folder "$wf/link" "$wme" "$wgid" 755 || echo "refused $(stat -c %a "$wf/scratch")")"
+  mkdir -p "$wf/plain/hermes"
+  is "workshops folder: a folder of someone else's is refused" "refused" \
+    "$(workshops_folder "$wf/plain" "$((wme + 1))" "$wgid" 755 || echo refused)"
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"

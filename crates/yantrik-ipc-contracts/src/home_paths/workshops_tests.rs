@@ -217,3 +217,18 @@ fn the_root_is_pinned_by_device_and_inode_and_a_rename_of_any_ancestor_exposes_n
     std::fs::rename(&moved, base(&home)).unwrap();
     assert!(open_root(&home).is_ok());
 }
+
+/// Round 6, finding 3: a folder above the workshops that group or others can write to, or that is
+/// not root's, lets whoever owns it rename what is below it.
+#[test]
+fn a_folder_above_the_workshops_that_is_not_roots_is_named() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Tmp::new();
+    let top = h.path().canonicalize().unwrap();
+    std::fs::create_dir_all(top.join("a/b")).unwrap();
+    for mode in [0o777, 0o775, 0o757, 0o755] {
+        std::fs::set_permissions(top.join("a"), std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(writable_ancestor(&top.join("a/b/c")).is_some(), "{mode:o}: the test's folders are not root's");
+    }
+    assert!(writable_ancestor(Path::new("/nonexistent-yantrik/x")).is_some(), "an ancestor that cannot be read is not safe");
+}

@@ -209,6 +209,15 @@ fn open_path(path: &Path) -> Result<OwnedFd, std::io::Error> {
     }
 }
 
+/// The first folder above `path` that is not root's, or that group or others can write to: someone
+/// who can write there can rename what is below it.
+fn writable_ancestor(path: &Path) -> Option<PathBuf> {
+    path.ancestors().skip(1).filter(|a| !a.as_os_str().is_empty()).find_map(|a| {
+        let m = std::fs::metadata(a).ok();
+        m.is_none_or(|m| m.uid() != 0 || m.mode() & 0o022 != 0).then(|| a.to_path_buf())
+    })
+}
+
 /// The person's root, held. Names are resolved relative to the descriptor ([`OpenRoot::via`]).
 pub struct OpenRoot {
     path: PathBuf,
@@ -251,6 +260,9 @@ pub fn open_root(home: &Path) -> Result<OpenRoot, String> {
         let st = stat_fd(b.as_raw_fd())?;
         if st.st_uid != 0 || st.st_mode & 0o022 != 0 {
             return Err(unready(Path::new(BASE), "is not root's, or others can write to it"));
+        }
+        if let Some(above) = writable_ancestor(Path::new(BASE)) {
+            return Err(unready(&above, "is above the workshops and is not root's, or others can write to it"));
         }
     }
     let fd = open_path(&path).map_err(|e| unready(&path, &format!("is missing or is a link ({e})")))?;
