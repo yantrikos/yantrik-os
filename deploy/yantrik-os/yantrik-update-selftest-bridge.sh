@@ -225,6 +225,36 @@ PY
   is "bridge: ... a signal leaves its stamp, for the person's own check" "yes" \
     "$( ( unset HARNESS_BRIDGE_TRIED; hb_env; rm -f "$hb/stamp" "$hb/restart"; export HARNESS_BRIDGE_RESTART="$hb/restart"
           harness_bridge_signal reload; [ -f "$hb/stamp" ] && echo yes || echo no ) )"
+  # The other side of the same write, said first so that it is never said when it need not be: the
+  # failure is read off the mtime coming out newer, and a comparison that never came true would put
+  # the line below on every apply that went fine. So a stamp on a path it can reach is asked to fail
+  # quietly, with an existing file re-written rather than a fresh one.
+  is "bridge: ... a stamp that was written says nothing of itself" "rc=0|said=none" \
+    "$( ( unset HARNESS_BRIDGE_TRIED; hb_env; : > "$hb/stamp"; rm -f "$hb/said"
+          rc=0; harness_bridge_stamp_write 2>"$hb/said" || rc=$?
+          [ -s "$hb/said" ] && said=words || said=none
+          printf 'rc=%s|said=%s' "$rc" "$said" ) )"
+  # A stamp that could not be written says so, and is a failure of its own (2, not 1). Kept quiet it
+  # was how a retry came back for a second reload while the first was still draining: the half hour
+  # is read off this file, and no file meant no wait. The ask still happened, so both are asserted.
+  is "bridge: ... a stamp that cannot be written still signals, says which path, and fails by itself" \
+    "did=reload hermes-gateway.service as $hb_owner|rc=2|said=yes" \
+    "$( ( unset HARNESS_BRIDGE_TRIED; hb_env; rm -f "$hb/restart"; export HARNESS_BRIDGE_RESTART="$hb/restart"
+          export HARNESS_BRIDGE_STAMP="$hb/no/dir/stamp"
+          rc=0; harness_bridge_signal reload 2>"$hb/said" || rc=$?
+          grep -q "no stamp of the new bridge at $hb/no/dir/stamp" "$hb/said" && said=yes || said=no
+          printf 'did=%s|rc=%s|said=%s' "$(cat "$hb/restart" 2>/dev/null)" "$rc" "$said" ) )"
+  # Where that stamp lives, for a `check` the person runs. The shell runs it through the updater's
+  # sudo rule, and the account running it was turned back into root's number -- /run/user/0, which
+  # is no one's runtime dir but root's -- so the write was refused out on the person's screen. `id`
+  # is stood in for an account whose own name resolves to root's number, the one step between the
+  # path that is the person's and the one that was reported.
+  is "bridge: ... a person of their own account takes the stamp in their own runtime dir" \
+    "/run/user/$hb_uid/yantrik-hermes-bridge-signalled" \
+    "$( ( hb_env; unset HARNESS_BRIDGE_STAMP
+          id() { [ "${1:-}" = -u ] || { command id "$@"; return 0; }
+                 case "${2:-}" in "$hb_owner") command id -u root ;; *) command id -u ;; esac; }
+          harness_bridge_stamp_file ) )"
   is "bridge: ... and does not signal again within the half hour a reload may spend draining" "did=|there" \
     "$(HB_FRESH=1 hb_retry "$hb/restart" hermes=done)"
 
