@@ -577,8 +577,7 @@ fn a_moved_hermes_is_sent_its_settings_not_a_file() {
 
 #[test]
 fn revert_after_hermes_moved_skips_the_config_it_had_in_the_persons_home_but_nothing_else() {
-    // L3: "Use Yantrik models" was applied before the move; the marker names ~/.hermes/config.yaml, which
-    // is now .hermes.yantrik-moved. The revert must still reach the token, so that entry is not an error.
+    // L3: applied before the move, the marker names ~/.hermes/config.yaml (now .hermes.yantrik-moved): not an error.
     let home = Home::new("hermes-before-move");
     let adapter = adapter_for("hermes").unwrap();
     let config = home.0.join(".hermes/config.yaml");
@@ -589,7 +588,7 @@ fn revert_after_hermes_moved_skips_the_config_it_had_in_the_persons_home_but_not
         at: String::new(),
         files: vec![Touched { path: config.clone(), backup: Some(backup_path(&config)) }],
     };
-    assert!(apply::files_to_restore(&m, adapter, &home.0, true).unwrap().is_empty(), "nothing to put back, no refusal");
+    assert!(apply::files_to_restore(&m, adapter, &home.0, true).unwrap().is_empty(), "nothing to put back");
     // A marker naming anything else is still refused, moved or not.
     m.files.push(Touched { path: home.0.join("important.txt"), backup: None });
     let err = apply::files_to_restore(&m, adapter, &home.0, true).unwrap_err();
