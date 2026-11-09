@@ -80,6 +80,7 @@ fn symlinks_are_refused_at_every_step() {
     let real = h.path().canonicalize().unwrap();
     let root = workshops::root(&real);
     std::fs::create_dir_all(root.join("hermes")).unwrap();
+    std::fs::set_permissions(root.join("hermes"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     std::os::unix::fs::symlink(outside.path(), root.join("hermes/link")).unwrap();
     std::os::unix::fs::symlink(outside.path(), root.join("pi")).unwrap();
     assert!(refused(&h, &format!("{at}/hermes/link")).contains("symlink"));
