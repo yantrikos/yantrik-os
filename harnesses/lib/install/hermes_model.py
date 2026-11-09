@@ -11,7 +11,8 @@ environment, and never printed.
 `model:`, leaving every other key in the file as it was (above all `platform_toolsets`, the allowlist
 that keeps Hermes's own terminal, file, code, browser and web tools off). The model section the file
 had is kept once, beside it, and `revert` puts it back (or removes `model:` when there was none).
-The address must be this machine's own gateway, so a caller cannot use this to send Hermes's calls, or
+The address must be this machine's own gateway (http, a loopback name, port 7460, no userinfo: the
+host of `http://127.0.0.1:@evil/` is `evil`), so a caller cannot use this to send Hermes's calls, or
 the token, anywhere else.
 """
 
@@ -19,6 +20,7 @@ import json
 import os
 import stat
 import sys
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hermes_config  # noqa: E402  (Hermes's own Python has PyYAML; this file's neighbour reads and writes the config)
@@ -26,8 +28,20 @@ import hermes_config  # noqa: E402  (Hermes's own Python has PyYAML; this file's
 KEYS = ("default", "provider", "base_url", "api_key")
 KEPT_SUFFIX = ".model-before-yantrik.json"
 MAX_BODY = 8192
-# The desktop's model gateway listens on this machine only.
-LOCAL_PREFIXES = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
+# The desktop's model gateway listens on this machine only, on this port.
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+GATEWAY_PORT = 7460
+
+
+def is_gateway(url):
+    """True only for http://<loopback>:7460/...: parsed, so userinfo, a lookalike host or another port
+    cannot pass a prefix test (`http://127.0.0.1:@evil/` starts with a loopback prefix)."""
+    try:
+        parts = urlsplit(url)
+        return (parts.scheme == "http" and parts.username is None and parts.password is None
+                and "@" not in parts.netloc and parts.hostname in LOCAL_HOSTS and parts.port == GATEWAY_PORT)
+    except ValueError:
+        return False
 
 
 class ModelError(Exception):
@@ -43,7 +57,7 @@ def parse(raw):
         raise ModelError("the model settings are not JSON")
     if not isinstance(spec, dict) or set(spec) != set(KEYS) or not all(isinstance(spec[k], str) and spec[k].strip() for k in KEYS):
         raise ModelError("the model settings must be exactly: %s" % ", ".join(KEYS))
-    if not spec["base_url"].startswith(LOCAL_PREFIXES):
+    if not is_gateway(spec["base_url"]):
         raise ModelError("the model address is not this machine's gateway; not writing it")
     return {k: spec[k].strip() for k in KEYS}
 
@@ -86,7 +100,7 @@ def revert(path):
         with open(kept, encoding="utf-8") as f:
             before = json.load(f)
     except FileNotFoundError:
-        raise ModelError("Hermes was not given Yantrik models here; nothing to put back")
+        return _revert_from_before_the_move(path)
     data, text = hermes_config._read(path)
     if before.get("had"):
         data["model"] = before.get("model")
@@ -94,6 +108,23 @@ def revert(path):
         data.pop("model", None)
     hermes_config._write(path, data, text)
     os.unlink(kept)
+
+
+def _revert_from_before_the_move(path):
+    """Revert with no kept section: "Use Yantrik models" was applied before Hermes moved here, so the
+    copied config carries the gateway's settings (and its token) with no record of the section they
+    replaced, which stayed in the person's `.hermes.yantrik-moved`. The four keys come out, so Hermes is
+    no longer pointed at the gateway and the token is gone from the file; the model is then Hermes's
+    to ask for again (`hermes model`). A model that is not the gateway's is left alone."""
+    data, text = hermes_config._read(path)
+    model = data.get("model")
+    if not isinstance(model, dict) or not is_gateway(str(model.get("base_url", ""))):
+        raise ModelError("Hermes was not given Yantrik models here; nothing to put back")
+    for key in KEYS:
+        model.pop(key, None)
+    if not model:
+        del data["model"]
+    hermes_config._write(path, data, text)
 
 
 def main(argv):

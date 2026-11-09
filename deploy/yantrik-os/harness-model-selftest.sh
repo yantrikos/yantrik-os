@@ -20,20 +20,25 @@ id() { if [ "${1:-}" = -u ] && [ -z "${2:-}" ]; then printf '%s' "${FAKE_UID:-0}
 selftest_standins() { true; }
 export YANTRIK_SELFTEST=1 HI_STATE="$work/state" HI_BASE="$work/mind/harness" HI_USER=yk411m
 mkdir -p "$work/state" "$PREFIX/share/harnesses/lib/install" "$work/mind/harness/hermes"
-: > "$PREFIX/share/harnesses/lib/install/hermes-model.sh"
+: > "$PREFIX/share/harnesses/lib/install/hermes-model.sh"; : > "$PREFIX/share/harnesses/lib/install/hermes-guard.sh"
 # shellcheck source=deploy/yantrik-os/harness-isolation.sh
 . "$here/harness-isolation.sh"
 # shellcheck source=deploy/yantrik-os/yantrik-harness-bridge.sh
 . "$here/yantrik-harness-bridge.sh"
 hi_relay() { cat >/dev/null; }
 # The account's tool: records what it was run with and what it read on stdin.
-hi_task() { printf '%s\n' "$*" > "$work/task-args"; cat > "$work/task-stdin"; return "${FAKE_TASK_RC:-0}"; }
+hi_task() {
+  case "$*" in
+    *hermes-guard.sh*) printf '%s\n' "$*" >> "$work/guard-args"; cat >/dev/null; return "${FAKE_GUARD_RC:-0}" ;;
+  esac
+  printf '%s\n' "$*" > "$work/task-args"; cat > "$work/task-stdin"; return "${FAKE_TASK_RC:-0}"
+}
 systemctl() { printf '%s\n' "$*" >> "$work/systemctl"; return "${FAKE_SYSTEMCTL_RC:-0}"; }
 
 TOKEN='ygw-SECRET-token-123'
 BODY="{\"default\":\"picked\",\"provider\":\"custom\",\"base_url\":\"http://127.0.0.1:7460/v1\",\"api_key\":\"$TOKEN\"}"
 run() { ( "$@" ) >/dev/null 2>&1; echo $?; }
-reset() { rm -f "$work/task-args" "$work/task-stdin" "$work/systemctl" "$work/said"; }
+reset() { rm -f "$work/task-args" "$work/task-stdin" "$work/systemctl" "$work/said" "$work/guard-args"; }
 
 echo "== harness model hermes"
 reset
@@ -60,6 +65,30 @@ is "an empty body is refused for apply" "1" "$(run hi_model hermes apply </dev/n
 is "not root: refused" "1" "$(FAKE_UID=1000; export FAKE_UID; printf '%s' "$BODY" | run hi_model hermes apply)"
 is "an oversized body is cut at 8 KiB, not passed whole" "8192" "$(reset; head -c 20000 /dev/zero | tr '\0' 'a' | ( hi_model hermes apply ) >/dev/null 2>&1; wc -c < "$work/task-stdin")"
 is "the verb list has model" "yes" "$(grep -q 'install|restart|reload|model|run|status' "$here/harness-isolation.sh" && echo yes || echo no)"
+
+echo "== L4: the toolset allowlist is held after anything that could rewrite the file"
+reset
+printf '%s' "$BODY" | run hi_model hermes apply >/dev/null
+is "apply: the guard ran after the model change, as the account's tool" "1" "$(grep -c 'hermes-guard.sh after' "$work/guard-args")"
+reset
+is "apply, allowlist could not be held: refused, the gateway is stopped and not reloaded" "1 stop hermes-gateway.service" \
+  "$(printf '%s' "$BODY" | FAKE_GUARD_RC=1 run hi_model hermes apply) $(cat "$work/systemctl")"
+reset
+printf '%s' "$BODY" | FAKE_GUARD_RC=3 run hi_model hermes apply >/dev/null
+is "apply, allowlist had been widened and is put right: still reloaded" "reload-or-restart hermes-gateway.service" "$(cat "$work/systemctl")"
+reset
+( hi_run hermes model ) >/dev/null 2>&1
+is "run hermes model: the guard ran after it" "1" "$(grep -c 'hermes-guard.sh after' "$work/guard-args")"
+reset
+( FAKE_GUARD_RC=3 hi_run hermes model ) >/dev/null 2>&1
+is "... widened by it and put right: the gateway is reloaded onto the right file" "try-reload-or-restart hermes-gateway.service" "$(cat "$work/systemctl")"
+reset
+is "... not put right: the gateway is stopped, and the command fails" "1 stop hermes-gateway.service" "$(FAKE_GUARD_RC=1 run hi_run hermes model) $(cat "$work/systemctl")"
+reset
+( hi_run hermes status ) >/dev/null 2>&1
+is "run hermes status: no guard (it cannot write the file)" "no" "$([ -e "$work/guard-args" ] && echo yes || echo no)"
+unit_text="$(cat "$here/../../config/systemd/hermes-gateway.service")"
+has "the gateway checks the allowlist before every start, as the account" "ExecStartPre=/bin/sh /opt/yantrik/share/harnesses/lib/install/hermes-guard.sh start" "$unit_text"
 
 echo "== harness reload hermes"
 reset

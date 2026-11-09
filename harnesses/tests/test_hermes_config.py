@@ -393,6 +393,23 @@ class HermesConfigTests(unittest.TestCase):
         self.assertTrue(any("kanban" in line for line in found), found)
         self.assertEqual(left, [])
 
+    def test_reassert_command_exit_codes(self):
+        # L4: 0 held, 3 widened and put right (a running gateway must restart), 1 could not be put right.
+        self.write(LIVED_IN)
+        hermes_config.apply(self.path, ["spotify_like"])
+        args = ["hermes_config.py", "reassert", self.path]
+        run = lambda: hermes_config.main(args, lambda: ["spotify_like"], lambda: stand_in())
+        self.assertEqual(run(), 0)
+        widened = self.read()
+        widened["platform_toolsets"]["yantrik"] = WANTED + ["terminal"]
+        with open(self.path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(widened, f)
+        self.assertEqual(run(), hermes_config.REASSERT_REPAIRED)
+        self.assertEqual(self.read()["platform_toolsets"]["yantrik"], WANTED)
+        self.assertEqual(run(), 0)
+        self.write("[not: yaml")
+        self.assertEqual(run(), hermes_config.REASSERT_UNFIXED)
+
     def test_a_gateway_start_on_a_file_it_cannot_read_is_a_problem_not_a_pass(self):
         self.write("[not: yaml")
         found, left = hermes_config.reassert(self.path, lambda: [], lambda: stand_in())

@@ -32,20 +32,23 @@
 # Needs from yantrik-update: PREFIX, say info warn fail, tree_is_roots, desktop_owner, and the
 # mind account's own reconcile_* (the account, the door, the egress table, the units).
 
-HI_USER="${HI_USER:-yantrik-mind}"
-HI_BASE="${HI_BASE:-/var/lib/yantrik-mind/harness}"
-HI_DOOR="${HI_DOOR:-/run/yantrik-minds}"
-HI_PROXY="${HI_PROXY:-http://127.0.0.1:7450}"
-HI_UNIT_DIR="${HI_UNIT_DIR:-/etc/systemd/system}"
-HI_GROUP="${HI_GROUP:-yantrik-minds}"
+# These paths are root's. They are read from the environment only under the selftest (YANTRIK_SELFTEST=1),
+# so nothing a caller exports can steer a root-run verb; sudo's env_reset was the only thing that did.
+hi_knob() { if [ "${YANTRIK_SELFTEST:-}" = 1 ]; then printf '%s' "${!1:-$2}"; else printf '%s' "$2"; fi; }
+HI_USER="$(hi_knob HI_USER yantrik-mind)"
+HI_BASE="$(hi_knob HI_BASE /var/lib/yantrik-mind/harness)"
+HI_DOOR="$(hi_knob HI_DOOR /run/yantrik-minds)"
+HI_PROXY="$(hi_knob HI_PROXY http://127.0.0.1:7450)"
+HI_UNIT_DIR="$(hi_knob HI_UNIT_DIR /etc/systemd/system)"
+HI_GROUP="$(hi_knob HI_GROUP yantrik-minds)"
 # Root's own record of what has moved. Not in the account's home, which the harness can write.
-HI_STATE="${HI_STATE:-/var/lib/yantrik-harness}"
+HI_STATE="$(hi_knob HI_STATE /var/lib/yantrik-harness)"
 # PrivatePIDs= (the unit's PID namespace) is systemd 257's; an older systemd would ignore the line
 # in a unit, so nothing is installed or started without it.
-HI_MIN_SYSTEMD="${HI_MIN_SYSTEMD:-257}"
-HI_COPY_TIMEOUT="${HI_COPY_TIMEOUT:-1200}"
-HI_LOCK="${HI_LOCK:-/run/yantrik-harness.lock}"
-HI_PROC="${HI_PROC:-/proc}"
+HI_MIN_SYSTEMD="$(hi_knob HI_MIN_SYSTEMD 257)"
+HI_COPY_TIMEOUT="$(hi_knob HI_COPY_TIMEOUT 1200)"
+HI_LOCK="$(hi_knob HI_LOCK /run/yantrik-harness.lock)"
+HI_PROC="$(hi_knob HI_PROC /proc)"
 # What a person who migrated keeps: their old Hermes, whole, renamed. Never deleted by this.
 HI_KEEP=".yantrik-moved"
 # The installer carries this word when it understands the two phases. An older installer (a rolled
@@ -261,7 +264,8 @@ hi_shim_text() {
 }
 hi_write_shim() { # <name> <home>
   local bin="$2/.local/bin/$1" keep="$2/$(hi_person_dir "$1")$HI_KEEP"
-  if [ -f "$bin" ] && grep -q yantrik-harness-shim "$bin" 2>/dev/null; then return 0; fi
+  # Read as the person, whose path it is: root does not open a file the person can link.
+  if hi_as_owner sh -c '[ -f "$1" ] && grep -q yantrik-harness-shim "$1"' sh "$bin" 2>/dev/null; then return 0; fi
   hi_as_owner sh -c '
     set -e; bin="$1"; keep="$2"; shim="$3"
     mkdir -p "$(dirname "$bin")"
@@ -500,6 +504,21 @@ hi_reload() { # <name>
 # stdin (never an argument: they hold the gateway token), and the account's own tool writes them
 # inside the gateway's sandbox (hermes_model.py: only the `model` keys, only a local address).
 # Then Hermes drains and restarts onto them. `revert` puts its earlier model section back.
+# Hermes can rewrite its own config.yaml (its `model` and `update` commands write the whole file, and a
+# terminal toolset on another platform can edit it), so the allowlist is re-asserted by the account's
+# own tool (hermes-guard.sh: hermes_config.py reassert) after anything that could have changed it, and
+# before every gateway start (the unit's ExecStartPre=). 0 it held, 3 it had been widened and is put
+# right, else it could not be put right: then the gateway is stopped, not reloaded onto it.
+hi_guard_toolsets() { # <name>: sets nothing; returns the tool's status
+  local name="$1" dir rc
+  dir="$(dirname "$(hi_installer "$name")")"
+  [ -f "$dir/$name-guard.sh" ] || { warn "this build has no $name-guard.sh: $name's toolset allowlist was not re-checked"; return 1; }
+  hi_task 300 0 "$name" /bin/sh "$dir/$name-guard.sh" after </dev/null 2>&1 | hi_relay
+  rc="${PIPESTATUS[0]}"
+  [ "$rc" = 0 ] || [ "$rc" = 3 ] || systemctl stop "$(hi_unit "$name")" >/dev/null 2>&1 || true
+  return "$rc"
+}
+
 hi_model() { # <name> <apply|revert>; the settings on stdin for apply
   local name="${1:-}" op="${2:-}" body="" dir
   hi_known "$name" || fail "usage: yantrik-update harness model hermes apply|revert"
@@ -511,6 +530,7 @@ hi_model() { # <name> <apply|revert>; the settings on stdin for apply
   if [ "$op" = apply ]; then body="$(head -c 8192)"; [ -n "$body" ] || fail "no model settings on stdin"; fi
   printf '%s' "$body" | hi_task 120 0 "$name" /usr/bin/env "HERMES_HOME=$(hi_home "$name")/.hermes" /bin/sh "$dir/$name-model.sh" "$op" 2>&1 | hi_relay
   [ "${PIPESTATUS[1]}" = 0 ] || fail "$name's model settings were not changed (the line above says why)"
+  local g=0; hi_guard_toolsets "$name" || g=$?; case "$g" in 0|3) ;; *) fail "$name's toolset allowlist could not be held after the model change; $(hi_unit "$name") is stopped, not reloaded" ;; esac
   # A drain-aware restart where the unit can reload, a plain restart where it cannot: Hermes reads
   # its config as it starts.
   systemctl reload-or-restart "$(hi_unit "$name")" >/dev/null 2>&1 \
@@ -529,7 +549,18 @@ hi_run() { # <name> <args...>
   [ "$#" = 1 ] && case "$1" in model|status|--version) true ;; *) false ;; esac \
     || fail "$name: only model, status and --version, alone, are run for you"
   [ "$(id -u)" = 0 ] || fail "run as root"
-  hi_task 1800 1 "$name" "$(hi_home "$name")/.local/bin/$name" "$@"
+  local rc=0
+  hi_task 1800 1 "$name" "$(hi_home "$name")/.local/bin/$name" "$@" || rc=$?
+  # `hermes model` rewrites the whole file: hold the allowlist before the gateway reads it again.
+  if [ "$1" = model ]; then
+    local g=0; hi_guard_toolsets "$name" || g=$?
+    case "$g" in
+      0) ;;
+      3) systemctl try-reload-or-restart "$(hi_unit "$name")" >/dev/null 2>&1 || true ;;
+      *) warn "$name's toolset allowlist could not be held after \`model\`; $(hi_unit "$name") is stopped"; [ "$rc" != 0 ] || rc=1 ;;
+    esac
+  fi
+  return "$rc"
 }
 
 cmd_harness() {

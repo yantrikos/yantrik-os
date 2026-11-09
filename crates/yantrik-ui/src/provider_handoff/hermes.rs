@@ -34,6 +34,12 @@ pub(crate) fn moved() -> bool {
     std::fs::symlink_metadata(MOVED_MARK).is_ok_and(|m| m.file_type().is_file())
 }
 
+/// Is `path` the config Hermes had in the person's home (the caller knows it has moved)? A marker written by
+/// "Use Yantrik models" before the move names it.
+pub(crate) fn was_before_the_move(home: &Path, path: &Path) -> bool {
+    path == config(home)
+}
+
 /// The settings the account's tool writes: what `hermes model` writes for a custom endpoint.
 fn model_body(offer: &Offer) -> String {
     serde_json::json!({

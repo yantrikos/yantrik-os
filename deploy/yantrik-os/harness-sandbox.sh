@@ -89,7 +89,7 @@ hi_task() {
   systemd-run --quiet --wait --collect "${mode[@]}" -p "User=$HI_USER" -p "Group=$HI_GROUP" \
     -p After=yantrik-mind-egress.service -p Requires=yantrik-mind-egress.service \
     -p "WorkingDirectory=$(hi_home "$name")" -p "RuntimeMaxSec=$secs" -p TimeoutStopSec=10 \
-    "${HI_PROPS[@]}" -- "$BIN_DIR/yantrik-init" "$@"
+    "${HI_PROPS[@]}" -- "$BIN_DIR/yantrik-init" --scope-abstract-unix "$@"
 }
 hi_task_relay() { # <seconds> <name> <command...>: output relayed, no terminal
   local secs="$1" name="$2" rc; shift 2

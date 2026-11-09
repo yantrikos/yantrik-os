@@ -50,7 +50,7 @@ migrate_if_needed() { :; }
 elevate() { :; }
 reconcile_minds() { :; }; reconcile_mind_egress_units() { :; }; reconcile_mind_units() { :; }
 reconcile_egress() { :; }; reconcile_mind_egress() { :; }
-export HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harness" HI_USER=yk411m HI_GROUP=yk411g HI_STATE="$work/state" HI_LOCK="$work/lock" HI_PROC="$work/proc"
+export YANTRIK_SELFTEST=1 HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harness" HI_USER=yk411m HI_GROUP=yk411g HI_STATE="$work/state" HI_LOCK="$work/lock" HI_PROC="$work/proc"
 # shellcheck source=deploy/yantrik-os/harness-isolation.sh
 . "$here/harness-isolation.sh"
 
@@ -121,6 +121,27 @@ has "hermes_config writes the drain keys" "agent[\"restart_drain_timeout\"]" "$(
 lacks "no comment says a stop is a kill with or without a handler any more" "with or without a SIGTERM handler" "$(cat "$unit" "$repo/config/systemd/yantrik-mind.service" "$repo/harnesses/hermes/README.md")"
 has "the Mind's measured stop on the VM is stated" "30.13" "$(cat "$repo/config/systemd/yantrik-mind.service")"
 init="$here/yantrik-init"
+has "the gateway's init scopes the abstract sockets, and fails closed" "--scope-abstract-unix /var/lib" "$live"
+has "... and so does every task" "yantrik-init\" --scope-abstract-unix" "$(cat "$here/harness-sandbox.sh")"
+# M1: the person's Xwayland listens on an abstract socket. Either the kernel can scope it (the
+# connect is refused) or it cannot (nothing is run, exit 126); never "ran, and connected".
+cat > "$work/abs.py" <<'PY'
+import os, socket, subprocess, sys
+name = "\0yantrik-selftest-%d" % os.getpid()
+srv = socket.socket(socket.AF_UNIX)
+srv.bind(name)
+srv.listen(1)
+child = ("import socket, sys\n"
+         "s = socket.socket(socket.AF_UNIX)\n"
+         "try:\n s.connect(sys.argv[1]); print('CONNECTED')\n"
+         "except OSError:\n print('DENIED')\n")
+r = subprocess.run([sys.executable, sys.argv[1], "--scope-abstract-unix", sys.executable, "-c", child, name],
+                   capture_output=True, text=True)
+print(r.returncode, r.stdout.strip())
+PY
+r="$(python3 "$work/abs.py" "$init" 2>/dev/null)"
+case "$r" in "0 DENIED" | "126 ") r="refused" ;; esac
+is "yantrik-init --scope-abstract-unix: the connect is refused, or nothing is run" "refused" "$r"
 if unshare --pid --fork --mount-proc true >/dev/null 2>&1; then
   zombies() { unshare --pid --fork --mount-proc "$@" 2>/dev/null; }
   z="$(zombies python3 "$init" sh -c '(sleep 0.3 &) ; sleep 1.5; ps -eo stat= | grep -c "^Z"')"
@@ -160,6 +181,15 @@ no "... not beside one that does not mask harness/ (a rollback below this releas
 no "... not beside one without PrivatePIDs" gate FAKE_MIND_PIDS=no
 no "... not beside a running Mind in PID 1's namespace" gate FAKE_MIND_MAINPID=$$
 no "... not with a drop-in on its own unit" gate FAKE_DROPIN=/etc/systemd/system/hermes-gateway.service.d/x.conf
+# L2: the namespace gate fails closed. /proc as the check reads it: the Mind's link readable, PID 1's not.
+mkdir -p "$work/fakeproc/1/ns" "$work/fakeproc/4242/ns"
+ln -sf 'pid:[4026539999]' "$work/fakeproc/4242/ns/pid"
+gate_proc() { ( env "$@" PATH="$work/fakebin2:$PATH" sh -c "$(printf '%s' "$preline" | sed -e "s/^\/bin\/sh -c '//" -e "s/'$//" -e "s#/proc/#$work/fakeproc/#g")" ) >/dev/null 2>&1; }
+no "... not when PID 1's namespace cannot be read (it cannot be told apart from the Mind's)" gate_proc FAKE_MIND_MAINPID=4242
+ln -sf 'pid:[4026531836]' "$work/fakeproc/1/ns/pid"
+yes "... control: with both readable and different it starts" gate_proc FAKE_MIND_MAINPID=4242
+rm -f "$work/fakeproc/4242/ns/pid"
+no "... not when the Mind's own namespace cannot be read" gate_proc FAKE_MIND_MAINPID=4242
 
 echo "== A. the person's hermes command"
 mkdir -p "$work/shimbin"

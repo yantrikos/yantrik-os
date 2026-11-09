@@ -574,3 +574,27 @@ fn a_moved_hermes_is_sent_its_settings_not_a_file() {
     let file = hermes::plan_gateway_as(&hermes::Hermes, &home.0, &o, false).unwrap();
     assert_eq!((file.writes.len(), file.moved_post.is_none()), (1, true));
 }
+
+#[test]
+fn revert_after_hermes_moved_skips_the_config_it_had_in_the_persons_home_but_nothing_else() {
+    // L3: "Use Yantrik models" was applied before the move; the marker names ~/.hermes/config.yaml, which
+    // is now .hermes.yantrik-moved. The revert must still reach the token, so that entry is not an error.
+    let home = Home::new("hermes-before-move");
+    let adapter = adapter_for("hermes").unwrap();
+    let config = home.0.join(".hermes/config.yaml");
+    let mut m = Marker {
+        provider_id: GATEWAY_ID.into(),
+        provider_name: "Yantrik".into(),
+        model: "picked".into(),
+        at: String::new(),
+        files: vec![Touched { path: config.clone(), backup: Some(backup_path(&config)) }],
+    };
+    assert!(apply::files_to_restore(&m, adapter, &home.0, true).unwrap().is_empty(), "nothing to put back, no refusal");
+    // A marker naming anything else is still refused, moved or not.
+    m.files.push(Touched { path: home.0.join("important.txt"), backup: None });
+    let err = apply::files_to_restore(&m, adapter, &home.0, true).unwrap_err();
+    assert!(err.contains("never writes"), "{err}");
+    // And a Hermes that has not moved keeps writing its file back.
+    m.files.pop();
+    assert_eq!(apply::files_to_restore(&m, adapter, &home.0, false).unwrap().len(), 1);
+}

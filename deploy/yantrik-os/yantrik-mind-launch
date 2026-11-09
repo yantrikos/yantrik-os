@@ -31,6 +31,8 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
 MIND = "/opt/yantrik-mind/bin/yantrik-mind"
 KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 # The name the desktop's mind picker gives this Mind.
@@ -99,6 +101,20 @@ def fill_defaults(env, passwd="/etc/passwd"):
             env["YM_OPERATOR"] = name
 
 
+def close_abstract_sockets():
+    """The Mind may not connect to the person's Xwayland by its abstract socket (#411, M1).
+
+    Unlike Hermes's gateway, which is not started without this, the Mind has run without it since
+    before the scope existed, so a kernel that cannot do it (before 6.12) warns and goes on.
+    """
+    import yantrik_landlock
+    try:
+        yantrik_landlock.scope_abstract_unix()
+    except OSError as exc:
+        sys.stderr.write("Yantrik Mind: abstract sockets stay open (%s)
+" % exc.strerror)
+
+
 def main():
     if os.getuid() == 0:
         sys.exit("yantrik-mind-launch runs as the mind's own account, never as root")
@@ -114,6 +130,7 @@ def main():
             with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
                 apply_settings(os.environ, parse(f.read(1 << 20)))
     fill_defaults(os.environ)
+    close_abstract_sockets()
     os.execv(MIND, [MIND] + sys.argv[1:])
 
 

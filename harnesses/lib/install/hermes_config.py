@@ -155,8 +155,9 @@ def _read(path):
         text = f.read()
     try:
         data = load(text)
-    except YAMLError as exc:
-        raise ConfigError("%s is not YAML Hermes could read either: %s" % (path, exc))
+    except YAMLError:
+        # Not the parser's message: it quotes the offending line, which may be the `api_key:` one.
+        raise ConfigError("%s is not YAML Hermes could read either" % path)
     if data is None:
         return {}, text
     if not isinstance(data, dict):
@@ -352,6 +353,13 @@ def problems(path, resolve):
     return wrong
 
 
+# `hermes_config.py reassert` exits with: 0 the allowlist held; REASSERT_REPAIRED it had been widened
+# and is put right (a gateway that read it before then must restart); REASSERT_UNFIXED it could not be
+# put right (nothing may attach).
+REASSERT_REPAIRED = 3
+REASSERT_UNFIXED = 1
+
+
 def reassert(path, plugin_toolsets=hermes_plugin_toolsets, resolver=hermes_resolver):
     """What a gateway start does: say what was wrong with the file as it found it, then put it right.
 
@@ -382,10 +390,15 @@ def main(argv, plugin_toolsets=hermes_plugin_toolsets, resolver=hermes_resolver)
             print(exc, file=sys.stderr)
             return 1
         return 0
-    if len(argv) != 3 or argv[1] not in ("apply", "check", "memory"):
-        print("usage: hermes_config.py apply|check|memory CONFIG, or manifest SRC DEST", file=sys.stderr)
+    if len(argv) != 3 or argv[1] not in ("apply", "check", "memory", "reassert"):
+        print("usage: hermes_config.py apply|check|memory|reassert CONFIG, or manifest SRC DEST", file=sys.stderr)
         return 2
     path = argv[2]
+    if argv[1] == "reassert":
+        found, left = reassert(path, plugin_toolsets, resolver)
+        for line in left or found:
+            print(line, file=sys.stderr)
+        return REASSERT_UNFIXED if left else (REASSERT_REPAIRED if found else 0)
     if argv[1] == "memory":
         try:
             memory(path)

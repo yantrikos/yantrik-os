@@ -63,12 +63,16 @@ ExecStartPre=+/bin/sh -c 'h=/var/lib/yantrik-mind/harness/hermes; [ -d "$$h" ] &
 # (not PID 1's), and this unit must have no drop-in. A rollback below this release brings back a
 # Mind unit that has neither, and then Hermes's keys at rest are readable by it whatever this unit
 # does, so this unit refuses to start (and the updater stops a running one at the next reconcile).
-ExecStartPre=+/bin/sh -c 'u=yantrik-mind.service; { systemctl show -p InaccessiblePaths --value $$u | grep -q /var/lib/yantrik-mind/harness && [ "$$(systemctl show -p PrivatePIDs --value $$u)" = yes ]; } || { echo "Hermes: the Mind unit does not mask harness/ and have its own PID namespace (as a build from before this release does); not started" >&2; exit 1; }; p=$$(systemctl show -p MainPID --value $$u); if [ "$${p:-0}" != 0 ]; then [ "$$(readlink /proc/$$p/ns/pid)" != "$$(readlink /proc/1/ns/pid)" ] || { echo "Hermes: the running Mind shares PID 1 namespace; not started" >&2; exit 1; }; fi; [ -z "$$(systemctl show -p DropInPaths --value hermes-gateway.service)" ] || { echo "Hermes: this unit has a drop-in; not started" >&2; exit 1; }'
+ExecStartPre=+/bin/sh -c 'u=yantrik-mind.service; { systemctl show -p InaccessiblePaths --value $$u | grep -q /var/lib/yantrik-mind/harness && [ "$$(systemctl show -p PrivatePIDs --value $$u)" = yes ]; } || { echo "Hermes: the Mind unit does not mask harness/ and have its own PID namespace (as a build from before this release does); not started" >&2; exit 1; }; p=$$(systemctl show -p MainPID --value $$u); if [ "$${p:-0}" != 0 ]; then a=$$(readlink /proc/$$p/ns/pid); b=$$(readlink /proc/1/ns/pid); { [ -n "$$a" ] && [ -n "$$b" ] && [ "$$a" != "$$b" ]; } || { echo "Hermes: the running Mind shares PID 1 namespace, or its namespace cannot be read; not started" >&2; exit 1; }; fi; [ -z "$$(systemctl show -p DropInPaths --value hermes-gateway.service)" ] || { echo "Hermes: this unit has a drop-in; not started" >&2; exit 1; }'
+# The toolset allowlist is put right before Hermes reads its config (Hermes can rewrite its own file,
+# and `hermes model` / `hermes update` do): as the account, in this unit's sandbox. Not started if it
+# cannot be (hermes-guard.sh start).
+ExecStartPre=/bin/sh /opt/yantrik/share/harnesses/lib/install/hermes-guard.sh start
 # The launcher, not a Python path: a newer Hermes rebuilds its venv as a new generation on an update.
 # Under yantrik-init, which is PID 1 of this unit's namespace and reaps what Hermes's tools orphan
 # (otherwise they stay zombies, and Hermes warns about it on every start), passes SIGTERM and
 # SIGUSR1 on to Hermes, and ends with it.
-ExecStart=/opt/yantrik/bin/yantrik-init /var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run --replace
+ExecStart=/opt/yantrik/bin/yantrik-init --scope-abstract-unix /var/lib/yantrik-mind/harness/hermes/.local/bin/hermes gateway run --replace
 StandardInput=null
 Restart=always
 RestartSec=5
@@ -125,8 +129,11 @@ InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yam
 PrivateTmp=yes
 PrivateDevices=yes
 # /dev/shm stays the host's even with PrivateDevices, and one uid can read the other unit's segments in
-# it: a private tmpfs here. (Abstract AF_UNIX sockets are still shared: neither unit has its own
-# network namespace.)
+# it: a private tmpfs here.
+# Abstract AF_UNIX sockets are shared too (no network namespace of its own), and the person's
+# Xwayland listens on one, which no file property hides. yantrik-init --scope-abstract-unix puts
+# Hermes and everything it runs in a Landlock domain that is refused a connect to an abstract socket
+# made outside it (kernel 6.12); on a kernel without that, nothing is started.
 TemporaryFileSystem=/dev/shm:mode=1777
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

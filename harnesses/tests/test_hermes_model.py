@@ -95,6 +95,51 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(Path(self.path).read_text(), THEIRS)
         self.assertNotIn(TOKEN, out + err)
 
+    def test_only_the_gateway_itself_passes_userinfo_and_lookalikes_do_not(self):
+        # L1: the old prefix test took http://127.0.0.1:@evil.example/v1, whose host is evil.example.
+        for url in ("http://127.0.0.1:@evil.example/v1", "http://127.0.0.1:7460@evil.example/v1",
+                    "http://localhost:x@evil.example:7460/v1", "http://user:pw@127.0.0.1:7460/v1",
+                    "http://127.0.0.1:7460:@evil.example/", "https://127.0.0.1:7460/v1",
+                    "http://127.0.0.1:7461/v1", "http://127.0.0.1/v1", "http://127.0.0.1.evil.example:7460/v1",
+                    "http://[::1]:7460@evil.example/v1", "http://127.0.0.1:7460\@evil.example/v1", "ftp://127.0.0.1:7460/"):
+            self.assertFalse(hermes_model.is_gateway(url), url)
+            Path(self.path).write_text(THEIRS)
+            code, out, err = run(["apply", self.path], json.dumps(dict(SPEC, base_url=url)))
+            self.assertEqual(code, 1, url)
+            self.assertEqual(Path(self.path).read_text(), THEIRS, url)
+        for url in ("http://127.0.0.1:7460/v1", "http://localhost:7460/v1", "http://[::1]:7460/v1"):
+            self.assertTrue(hermes_model.is_gateway(url), url)
+
+    def test_revert_after_a_pre_move_apply_removes_the_gateway_keys_and_the_token(self):
+        # L3: the copied config has the gateway's model section and no kept copy beside it.
+        Path(self.path).write_text("model:
+  default: picked
+  provider: custom
+  base_url: http://127.0.0.1:7460/v1
+"
+                                   "  api_key: %s
+memory:
+  provider: yantrikdb
+" % TOKEN)
+        code, out, err = run(["revert", self.path])
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("model", self.load())
+        self.assertNotIn(TOKEN, Path(self.path).read_text())
+        self.assertEqual(self.load()["memory"], {"provider": "yantrikdb"})
+        # A model of the person's own is not Yantrik's to remove.
+        Path(self.path).write_text(THEIRS)
+        self.assertEqual(run(["revert", self.path])[0], 1)
+        self.assertEqual(Path(self.path).read_text(), THEIRS)
+
+    def test_a_malformed_file_is_reported_without_quoting_it(self):
+        # The YAML library quotes the offending line, which may be the api_key one.
+        Path(self.path).write_text("api_key: %s
+model: [unclosed
+" % TOKEN)
+        code, out, err = run(["apply", self.path], json.dumps(SPEC))
+        self.assertEqual(code, 1)
+        self.assertNotIn(TOKEN, out + err)
+
     def test_other_shapes_are_refused(self):
         for body in ("not json", json.dumps({**SPEC, "extra": "x"}), json.dumps({"default": "picked"}), json.dumps(dict(SPEC, api_key=5))):
             Path(self.path).write_text(THEIRS)

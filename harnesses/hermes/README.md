@@ -48,7 +48,13 @@ no approval card. Now:
   host's devpts and owned by the account, so the Mind could open it and read what you type;
   `/dev/pts` is hidden from the Mind's unit (it is headless). Its output still reaches your terminal
   as it is: a modified Hermes could send escape sequences (title, clipboard) while it runs.
-- **Still shared:** the network namespace, so loopback TCP/UDP and abstract AF_UNIX sockets: either
+- **The person's Xwayland** listens on an abstract socket, which no file property hides and
+  `RestrictAddressFamilies=AF_UNIX` does not stop. Hermes starts under `yantrik-init
+  --scope-abstract-unix` (Landlock scope, kernel 6.12): it and its children cannot connect to an
+  abstract socket made outside the unit, and on a kernel without that it is not started. The Mind's
+  launcher applies the same scope and, being older than the scope, warns and goes on without it on
+  a kernel that cannot. (Before this the Mind could reach it too.)
+- **Still shared:** the network namespace, so loopback TCP/UDP: either
   side could connect to a listener of the other. Nothing here makes Hermes listen, but a moved
   `config.yaml` that enables a listening Hermes platform (an API server, a webhook) would let the
   Mind drive it. No listener check is made: the Mind has the same uid, so its own listeners cannot
