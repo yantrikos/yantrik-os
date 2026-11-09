@@ -111,8 +111,7 @@ def close_abstract_sockets():
     try:
         yantrik_landlock.scope_abstract_unix()
     except OSError as exc:
-        sys.stderr.write("Yantrik Mind: abstract sockets stay open (%s)
-" % exc.strerror)
+        print("Yantrik Mind: abstract sockets stay open (%s)" % exc.strerror, file=sys.stderr)
 
 
 def main():
