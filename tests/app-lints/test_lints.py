@@ -670,15 +670,15 @@ class RealRepo(unittest.TestCase):
 
     Each lint must keep at least one entry that is not network-manager's, or the day Network
     Manager is finished is the day this test stops looking at anything. What is left, on 17
-    October 2026: Download Manager's agent and proposal properties and System Monitor's CPU and
-    AI ones, which Rust never sets, and Container Manager's `ct_tab`, the only dead handler in the
+    October 2026: Download Manager's agent and proposal properties and System Monitor's AI ones,
+    which Rust never sets, and Container Manager's `ct_tab`, the only dead handler in the
     tree, fixed on 21 October 2026 (below). When those are fixed too, the fixtures above are what
     proves the lints still see.
     """
 
     MUST_FLAG_PROPERTIES = {
         "download-manager": ["agent-context", "proposal", "proposal-working"],
-        "system-monitor": ["cpu-model", "cpu-frequency", "ai-model-name"],
+        "system-monitor": ["ai-model-name"],
     }
     # Empty since 21 October 2026: Container Manager's `ct_tab` was the last dead handler in the
     # tree, and it tells the app's model of a tab switch now (the app moved onto YantrikApp, and
