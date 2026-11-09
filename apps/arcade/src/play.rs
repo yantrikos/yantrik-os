@@ -275,6 +275,29 @@ pub fn verdict(name: &str, seen: &Seen, fallback: Option<&Result<PathBuf, String
     }
 }
 
+/// The person's Browser has no DevTools port (#1137), so a game is not opened there by CDP and not
+/// watched: the shell opens (or focuses) the Browser, and the file is handed to it as any browser
+/// is handed a file. Says what was not checked.
+fn play_in_persons_browser(abs: &Path) -> Result<String, String> {
+    ask_shell_for_browser()?;
+    let program = installed_browser().ok_or("no web browser is installed")?;
+    // A second launch of a browser already running hands the address to it and exits.
+    std::thread::sleep(Duration::from_secs(2));
+    std::process::Command::new(program)
+        .arg(file_url(abs))
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("the Browser could not be handed the game: {e}"))?;
+    let name = abs.file_name().and_then(|n| n.to_str()).unwrap_or("the game");
+    Ok(format!("opened {name} in the desktop Browser; whether it draws was not checked (the Browser has no debugging port)"))
+}
+
+fn installed_browser() -> Option<&'static str> {
+    ["chromium", "chromium-browser", "google-chrome-stable", "google-chrome", "firefox", "firefox-esr"]
+        .into_iter()
+        .find(|name| std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file())))
+}
+
 /// Open a built game in the desktop Browser and watch it start. The whole sequence
 /// has one honest refusal per thing that can go wrong, because every one of them is
 /// something a person needs to hear: the shell is not running, the browser did not
@@ -285,6 +308,9 @@ pub fn play(html: &Path, fallback_shot: &Path, by_mind: bool) -> Result<String, 
     let abs = std::fs::canonicalize(html)
         .map_err(|e| format!("cannot read {}: {e}", html.display()))?;
     let side = side(by_mind);
+    if side == Side::Person {
+        return play_in_persons_browser(&abs);
+    }
     let base = debugger(side);
     vet_now(side)?;
     if !debugger_alive(&base) {

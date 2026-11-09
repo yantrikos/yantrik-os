@@ -4,10 +4,11 @@ Who is calling picks the port, deterministically and never by who answers first:
 
   a mind (an agent token, the mind account, a caller the shell says descends from an attached
   mind, or anyone not shown to be the person)  ->  Mind View's browser, its port and its profile
-  the person (their own `yos web`, `yos act browser`)  ->  their Browser, on the person's port
+  the person (their own `yos web`, `yos act browser`)  ->  their Browser, over its pipe (#1137)
 
-Then the port is checked by what holds it (listener.py): Mind View's port must be held by a
-browser run by this account on Mind View's profile; the person's must not be a mind's. A call is
+Then it is checked by what holds it (listener.py): Mind View's port must be held by a browser run
+by this account on Mind View's profile; the person's pipe must be held for a live browser that is
+not a mind's. A call is
 never sent to a browser it was not meant for, and a refusal says what is true.
 """
 
@@ -159,10 +160,11 @@ class Guard:
     """Decides, and checks, which browser a call uses. The parts that read the machine are
     arguments, so a test can stand in for them."""
 
-    def __init__(self, identify=None, uid=None, side_of=None, starter=None, old_address=None, watch=None):
+    def __init__(self, identify=None, uid=None, side_of=None, starter=None, watch=None,
+                 pipes=None):
         self._watch = watch
+        self.pipes = pipes
         self.starter = starter or shell_open_mind_browser
-        self.old_address = old_address or listener.on_old_address
         self.identify = identify or listener.identify
         self.uid = uid if uid is not None else os.getuid()
         self.side_of = side_of or side_of_caller
@@ -181,22 +183,19 @@ class Guard:
 
     def vet(self, side):
         """The listener on `side`'s port if it is the right browser; None when nothing listens;
-        Denied (with the sentence) when something else does or it cannot be established."""
+        Denied (with the sentence) when something else does or it cannot be established. The
+        person's side is not a port: see `vet_person`."""
+        if side == ports.PERSON:
+            return self.vet_person()
         port = ports.port_of(side)
         try:
             held = self.identify(port)
         except listener.Unidentified as e:
             if e.nobody:
-                if side == ports.PERSON and self.old_address(port):
-                    raise Denied(
-                        "Nothing was done. Your Browser is open, but on an old address ([::1]) that an "
-                        "earlier version gave it, so it cannot be reached from here. Close it and open "
-                        "it again.") from None
                 return None
             raise Denied(self._unclear(side, port, str(e))) from None
         if held.uid != self.uid:
             raise Denied(self._unclear(side, port, "it runs as another account"))
-        mind_side = listener.is_mind_side(held.place)
         if side == ports.MIND and not (held.place == listener.MIND_VIEW):
             raise Denied(
                 "Nothing was done. Mind View's browser port (%d) is held by a browser that is not "
@@ -204,12 +203,30 @@ class Guard:
                 "does not use it: no page was opened, read or changed and no tab list is shown. "
                 "Only the person can change this: they can close that browser, or do this part "
                 "themselves. Trying again will not change it." % port)
-        if side == ports.PERSON and mind_side:
-            raise Denied(
-                "Nothing was done. The person's Browser port (%d) is held by Mind View's own "
-                "browser (left running by an earlier version), not by your Browser. Close Mind "
-                "View's browser or restart the desktop, then open your Browser again." % port)
         return held
+
+    def vet_person(self):
+        """The person's Browser, held over its pipe: a Listener (port 0, the hand-over's serial)
+        if the browser the shell handed over still runs, as this account, owning no mind's
+        profile. None when no Browser has been handed over. Never a port: a browser an older
+        build left on the person's old port is refused by name, not used."""
+        held = self.pipes.current() if self.pipes is not None else None
+        if held is None:
+            try:
+                old = self.identify(ports.PERSON_PORT)
+            except listener.Unidentified:
+                return None
+            raise Denied(
+                "Nothing was done. A browser started before this update still listens on a DevTools "
+                "port (%d), which is no longer used: your Browser is driven over a pipe the desktop "
+                "opens it with. Close it and open your Browser again." % old.port)
+        if self.pipes.uid_of(held.pid) != self.uid:
+            raise Denied(self._unclear(ports.PERSON, 0, "it runs as another account"))
+        if listener.is_mind_side(listener.place_of_pid(self.pipes.proc, held.pid)):
+            raise Denied(
+                "Nothing was done. The browser the desktop handed over as your Browser is Mind View's "
+                "own. Close it and open your Browser again.")
+        return listener.Listener(0, self.uid, held.serial, (held.pid,), listener.PERSON)
 
     def start_mind_browser(self, wait=START_WAIT):
         """Mind View's browser was wanted and is not open: ask the shell for it and wait for its port.
@@ -232,6 +249,7 @@ class Guard:
     @staticmethod
     def _unclear(side, port, why):
         whose = "Mind View's browser" if side == ports.MIND else "the person's Browser"
-        return ("Nothing was done. Which browser holds port %d, where %s should be, could not be "
+        where = "port %d" % port if port else "its pipe"
+        return ("Nothing was done. Which browser holds %s, where %s should be, could not be "
                 "established (%s), so it is not used. Only the person can change this: they can "
-                "close that browser, or do this part themselves." % (port, whose, why))
+                "close that browser, or do this part themselves." % (where, whose, why))

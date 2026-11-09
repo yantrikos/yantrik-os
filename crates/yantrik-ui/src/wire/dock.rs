@@ -892,9 +892,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
             }
             // A browser is a window like any other, so it goes through the one launcher: the
-            // registry learns it is open, the reaper notices if it dies at once, and it gets the
-            // session's display environment. The old arm set WAYLAND_DISPLAY and XDG_RUNTIME_DIR
-            // by hand, for uid 1000 only.
+            // registry, the reaper and the session's display environment are all its.
             Launch::Browser => match find_browser() {
                 Some((bin, args)) => super::already_open::focus_or_start("browser", Some(bin), move || {
                     let _ = super::browser_launch::preflight(yantrik_browser_ports::Side::Person);
@@ -1247,6 +1245,7 @@ pub(super) fn launch(
 ) {
     let path = resolve_app_binary(bin);
     let mut command = launch_command(&path, args, dir, seat);
+    let pipe = super::browser_pipe::attach_for(&mut command, args, seat.is_some()); // #1137
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
         // inherits the environment, and an app that inherits that variable opens fullscreen too.
@@ -1259,6 +1258,7 @@ pub(super) fn launch(
         Ok(mut child) => {
             let pid = child.id();
             tracing::info!(app = app_id, bin, pid, path = %path.display(), "App launched");
+            pipe.map(|pipe| pipe.offer(pid));
             // The shell now knows this window is open without asking the compositor. Recorded
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.

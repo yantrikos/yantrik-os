@@ -34,7 +34,8 @@ def code_of(text):
 class TheDefinition(unittest.TestCase):
     def test_the_ports_are_the_decided_ones(self):
         self.assertEqual((ports.PERSON_PORT, ports.MIND_VIEW_PORT), (9222, 9223))
-        self.assertEqual(ports.port_of(ports.PERSON), 9222)
+        with self.assertRaises(ValueError):
+            ports.port_of(ports.PERSON)       # the person's Browser has a pipe, not a port (#1137)
         self.assertEqual(ports.port_of(ports.MIND), 9223)
 
     def test_the_browsers_never_share_a_port_or_a_profile(self):

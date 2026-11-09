@@ -1,8 +1,9 @@
 //! How the desktop starts a Chromium-family browser, for the person and for a mind (#1085).
 //!
-//! The person's Browser runs on the person's port with its own default profile, named nowhere
+//! The person's Browser runs with a DevTools pipe (#1137: no port; `browser_pipe` hands the stream
+//! to the browser service) and its own default profile, named nowhere
 //! (Chrome 136 and later refuse DevTools on the default directory when `--user-data-dir` names it,
-//! so naming the person's own profile would take their port away). A browser started for a mind runs in Mind View on Mind View's port with Mind View's
+//! so naming the person's own profile would take their DevTools away). A browser started for a mind runs in Mind View on Mind View's port with Mind View's
 //! profile, whatever flags the caller passed. The two never share a port or a profile, so a mind's
 //! web tools have nothing of the person's to reach, and the person's tools nothing of a mind's.
 //! Ports and paths are `yantrik_browser_ports`'s, which reads `browsers.conf`.
@@ -23,7 +24,7 @@ pub fn is_chromium(program: &Path) -> bool {
     matches!(program_name(program).as_str(), "chromium" | "chromium-browser" | "google-chrome" | "google-chrome-stable" | "chrome")
 }
 
-/// The Browser pin's arguments for the person: the program's own, then its port. A Chromium only:
+/// The Browser pin's arguments for the person: the program's own, then its DevTools pipe. A Chromium only:
 /// Firefox has no DevTools port to name and would refuse the switches.
 pub fn person_args(program: &str, own: &[&str]) -> Vec<String> {
     let mut args: Vec<String> = own.iter().map(|a| a.to_string()).collect();
@@ -102,7 +103,8 @@ mod tests {
     #[test]
     fn the_persons_browser_names_their_port_and_no_profile() {
         let args = person_args("chromium", &["--no-first-run"]);
-        assert_eq!(flag(&args, "--remote-debugging-port="), vec!["--remote-debugging-port=9222"]);
+        assert_eq!(flag(&args, "--remote-debugging-"), vec!["--remote-debugging-pipe"], "the pipe, never a port");
+        assert!(!args.iter().any(|a| a.contains("9222") || a.contains("remote-allow-origins")), "{args:?}");
         assert!(flag(&args, "--user-data-dir").is_empty(), "their own profile is the default, named nowhere: {args:?}");
         assert!(args.contains(&"--no-first-run".to_string()));
         // A program the desktop does not start as the Browser gets nothing it cannot honour.
@@ -121,7 +123,7 @@ mod tests {
         let profile = flag(&args, "--user-data-dir=");
         assert_eq!(profile.len(), 1, "{args:?}");
         assert!(profile[0].ends_with("yantrik/mind-view-browser/chromium"), "{profile:?}");
-        assert!(!args.iter().any(|a| a.contains("9222")), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("9222") || a.ends_with("-pipe")), "a mind never gets the person's pipe: {args:?}");
         assert!(args.contains(&"--no-first-run".to_string()));
     }
 
