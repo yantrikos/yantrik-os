@@ -222,6 +222,7 @@ impl Session {
                         match master.read(&mut bytes) {
                             Ok(0) => break 'worker,
                             Ok(n) => {
+                                shared.tty.note_shell();
                                 shared.parser.lock().unwrap().process(&bytes[..n]);
                                 shared.revision.fetch_add(1, Ordering::Release);
                                 changed();

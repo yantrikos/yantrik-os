@@ -53,6 +53,18 @@ fn a_tab_belongs_to_the_mind_that_opened_it() {
     assert!(f.agent_as("tok-mind-b", "run", json!({ "command": "echo NOT_IN_A" })).is_err());
 }
 
+/// Finding 6: the person's own shell can show a workshop file, and any Mind's `describe` reads the
+/// screen, so a Mind reading it is told whose it is; the person's own describe is as it was.
+#[test]
+fn a_mind_reading_the_persons_shell_is_told_whose_it_is() {
+    let f = open();
+    let seen = f.app.describe_as_agent("tok-mind-a").to_string();
+    assert!(seen.contains("this is the person's own shell"), "{seen}");
+    f.agent_as("tok-mind-a", "new_tab", json!({})).unwrap();
+    let own = f.app.describe_as_agent("tok-mind-a").to_string();
+    assert!(!own.contains("the person's own shell"), "a Mind's own tab carries no such note: {own}");
+}
+
 #[test]
 fn no_shell_is_opened_in_a_workshop_for_anyone() {
     let f = open();

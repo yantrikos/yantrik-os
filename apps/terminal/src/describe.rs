@@ -64,6 +64,11 @@ pub fn view(m: &Model) -> View {
     if !notice.is_empty() {
         summary.push_str(&format!(" \u{b7} {notice}"));
     }
+    // The person's own shell runs as the person, so a workshop file they `cat` there is on its
+    // screen, and `recent_output` hands the screen to whichever Mind asks (round 6, finding 6).
+    if tab.owner.is_none() && crate::owner::of_caller().is_some() {
+        summary.push_str(" \u{b7} this is the person's own shell: `recent_output` is whatever they have shown in it, workshop files they opened included");
+    }
     View::new(summary)
         .with("directory", cwd)
         .with("alive", snap.alive)

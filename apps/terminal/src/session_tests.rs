@@ -102,3 +102,20 @@ fn a_job_in_front_of_the_pty_is_seen_however_it_started() {
     assert!(s.has_children(), "the background job is still there");
     s.shutdown();
 }
+#[test]
+fn a_shell_behind_a_wrapper_is_not_always_busy() {
+    // `sh -c` does not exec its last command here (the `; true`), so the shell is a child with a
+    // group of its own, as it is under `bwrap`.
+    let s = Session::spawn_shell("/bin/sh", &["-c", "bash -i; true"], Path::new("/tmp"), 24, 80, Arc::new(|| {})).unwrap();
+    s.write(b"printf 'UP
+'
+").unwrap();
+    wait(|| s.snapshot().text.contains("UP"));
+    assert!(!s.job_in_front(), "a shell at its prompt has no job in front");
+    s.write(b"sleep 30
+").unwrap();
+    wait(|| s.job_in_front());
+    s.write(&[3]).unwrap();
+    wait(|| !s.job_in_front());
+    s.shutdown();
+}
