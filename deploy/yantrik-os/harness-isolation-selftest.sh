@@ -140,7 +140,7 @@ r = subprocess.run([sys.executable, sys.argv[1], "--scope-abstract-unix", sys.ex
 print(r.returncode, r.stdout.strip())
 PY
 r="$(python3 "$work/abs.py" "$init" 2>/dev/null)"
-case "$r" in "0 DENIED" | "126") r="refused" ;; esac
+case "$r" in "0 DENIED" | "126" | "126 ") r="refused" ;; esac
 is "yantrik-init --scope-abstract-unix: the connect is refused, or nothing is run" "refused" "$r"
 if unshare --pid --fork --mount-proc true >/dev/null 2>&1; then
   zombies() { unshare --pid --fork --mount-proc "$@" 2>/dev/null; }
