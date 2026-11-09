@@ -73,7 +73,7 @@ jobs:
   # commit — a day where nothing was merged does not need a second identical image.
   decide:
     name: is there anything to build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       channel: ${{ steps.plan.outputs.channel }}
       publish: ${{ steps.plan.outputs.publish }}
@@ -139,7 +139,7 @@ jobs:
     name: build, boot, publish
     needs: decide
     if: needs.decide.outputs.build == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
     # contents: write is for the GitHub release a published image gets (below); nothing else in
     # this job uses the token.
