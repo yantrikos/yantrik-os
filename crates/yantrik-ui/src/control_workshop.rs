@@ -289,13 +289,21 @@ fn export_dest(home: &Path, to: &str, last: &str, make: bool) -> Result<PathBuf,
     dir.is_dir().then_some(dir).ok_or_else(|| format!("{to} is not a folder that is there."))
 }
 
+/// What the card must say about the bytes: a Mind made them, and what opens them afterwards does so
+/// as the person, outside any sandbox (round 6, finding 5).
+const DECODED_AS_YOU: &str = "A Mind made these files: the Files app, the image viewer and your players will open them as you, and their previews are made as you.";
+
 fn explain_export(args: &Value) -> String {
+    explain_export_in(&workshop::home(), args)
+}
+
+fn explain_export_in(home: &Path, args: &Value) -> String {
     let (path, to) = (text(args, "path"), text(args, "to"));
     let shown: String = path.trim().chars().filter(|c| !c.is_control() && !crate::approvals::is_format_char(*c)).take(120).collect();
     let said = format!("Copy {shown} out of the workshop of the Mind asking, as plain files of kinds that are read (no repository, no links, no scripts or tool settings), into");
-    let dest = landing_name(&path).and_then(|last| export_dest(&workshop::home(), &to, &last, false));
+    let dest = landing_name(&path).and_then(|last| export_dest(home, &to, &last, false));
     match dest {
-        Ok(dir) => format!("{said} {}.", dir.display()),
+        Ok(dir) => format!("{said} {}. {DECODED_AS_YOU}", dir.display()),
         Err(e) => format!("{said} {}. This will be refused: {e}", to.trim()),
     }
 }
@@ -394,6 +402,13 @@ mod tests {
         let root = workshops::root(&workshop::home()).display().to_string();
         assert!(said.starts_with(&format!("Give the Mind asking a workshop at {root}/the Mind asking/new")), "{said}");
         assert_eq!(args_name(&json!({ "name": "  new " })), "new");
+    }
+
+    #[test]
+    fn the_export_card_says_who_opens_the_copy() {
+        let h = home();
+        let said = explain_export_in(&h.path().canonicalize().unwrap(), &json!({ "path": "shop/notes.md", "to": "videos" }));
+        assert!(said.contains("Copy shop/notes.md") && said.contains(DECODED_AS_YOU), "{said}");
     }
 
     /// #1124 L4 and N7: the card says which Mind asks, from the verified asker, with nothing invisible in it.
