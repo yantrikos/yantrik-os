@@ -31,7 +31,7 @@ env:
 jobs:
   test:
     name: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
@@ -104,7 +104,7 @@ jobs:
   # later be promoted to blocking; that is a later decision, not this job's.
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     # The setup below is a copy of the test job's, not a YAML anchor pointing at it. This
@@ -166,7 +166,7 @@ jobs:
   # tools/xtask/architecture-baseline.txt, and that list may only shrink.
   architecture:
     name: architecture
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -194,7 +194,7 @@ jobs:
   # list what is there, and the job becomes blocking once that list is worked down.
   dependencies:
     name: dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -211,7 +211,7 @@ jobs:
 
   shell-scripts:
     name: shell scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
