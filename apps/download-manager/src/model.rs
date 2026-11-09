@@ -36,6 +36,11 @@ pub struct Model {
     pub form_done: bool,
     /// Why the AI button has nothing to ask, in place of an answer.
     pub ai_hint: Option<String>,
+    /// The header's AI panel's copy of the rail's card, so the answer shows where it was asked.
+    pub ai_answer: Option<String>,
+    /// What the panel was last set to for the rail's working. The wait shows and ends on the
+    /// panel with no text of its own, so only the copy of it says when the panel must change.
+    pub ai_working: bool,
     pub rail: Rail,
 
     // ── The app's life ──
@@ -62,6 +67,8 @@ impl Model {
             banner_info: false,
             form_done: false,
             ai_hint: None,
+            ai_answer: None,
+            ai_working: false,
             rail,
             closing: false,
             ending: false,

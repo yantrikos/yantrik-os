@@ -59,8 +59,9 @@ pub fn render(ui: &DownloadManagerApp, m: &Model, changed: &Changed) {
         ui.set_add_checksum_text("".into());
     }
     if changed.has(PART_AI) {
-        ui.set_ai_is_working(false);
-        ui.set_ai_response(m.ai_hint.clone().unwrap_or_default().into());
+        ui.set_ai_is_working(m.rail.is_working());
+        let text = m.ai_answer.as_ref().or(m.ai_hint.as_ref()).cloned().unwrap_or_default();
+        ui.set_ai_response(text.into());
     }
     if changed.has(rail::PART) {
         ui.render_rail(&m.rail);
