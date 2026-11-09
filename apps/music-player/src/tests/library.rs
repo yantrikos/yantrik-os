@@ -111,6 +111,30 @@ fn a_first_run_lists_nothing_it_was_not_given_and_writes_nothing() {
     assert_eq!(err, "Nothing to play: the library is empty. Add a folder that holds music under Folders.");
 }
 
+/// An agent's start for a `describe` (no window) writes nothing on the person's disk: no
+/// imported record, no settings file of its own, the old file left where it is (#1043). The
+/// person's own start still brings the old file across once, as the test above shows.
+#[test]
+fn a_start_for_an_agent_writes_nothing_and_leaves_the_old_file_as_it_was() {
+    let paths = yantrik_app::Paths::temporary(<crate::Music as yantrik_app::App>::ID);
+    let former = paths.former_config_file("music.json").unwrap();
+    std::fs::create_dir_all(former.parent().unwrap()).unwrap();
+    let old = json!({"folders": [], "volume": 40.0});
+    std::fs::write(&former, serde_json::to_vec(&old).unwrap()).unwrap();
+    let app = yantrik_testing::TestApp::<crate::Music>::start_service_at(paths.clone());
+    for _ in 0..32 {
+        app.tick();
+        if app.jobs_waiting() == 0 {
+            break;
+        }
+        app.run_jobs();
+    }
+    let paths = app.paths();
+    assert!(!paths.imported_record().exists(), "an agent's start writes no imported record");
+    assert!(!paths.config_file().exists(), "an agent's start writes no settings file");
+    assert_eq!(serde_json::from_slice::<Value>(&std::fs::read(&former).unwrap()).unwrap(), old, "the old file is untouched");
+}
+
 #[test]
 fn the_settings_file_edited_outside_the_app_is_adopted() {
     let Some(f) = open("outside") else { return };
