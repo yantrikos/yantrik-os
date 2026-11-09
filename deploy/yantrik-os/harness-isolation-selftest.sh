@@ -133,9 +133,9 @@ srv.bind(name)
 srv.listen(1)
 child = ("import socket, sys\n"
          "s = socket.socket(socket.AF_UNIX)\n"
-         "try:\n s.connect(sys.argv[1]); print('CONNECTED')\n"
+         "try:\n s.connect(chr(0) + sys.argv[1]); print('CONNECTED')\n"
          "except OSError:\n print('DENIED')\n")
-r = subprocess.run([sys.executable, sys.argv[1], "--scope-abstract-unix", sys.executable, "-c", child, name],
+r = subprocess.run([sys.executable, sys.argv[1], "--scope-abstract-unix", sys.executable, "-c", child, name[1:]],
                    capture_output=True, text=True)
 print(r.returncode, r.stdout.strip())
 PY
