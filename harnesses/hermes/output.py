@@ -116,6 +116,8 @@ class OutputMixin:
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        if reply_to in self._stopped:
+            return SendResult(success=True)  # said to a run the person stopped: not theirs to read
         turn = self._ledger.route(chat_id, self._carried.get(reply_to or "", reply_to))
         if _is_status(content, metadata):
             # Kept out of the answer, and given an id so Hermes edits it rather than sending anew.

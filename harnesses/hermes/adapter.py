@@ -49,6 +49,7 @@ from .steering import PLATFORM_HINT
 from .question import Card as _Card  # noqa: F401  (named in a type comment)
 from .output import CONFIRMED_BY_ASKING, OutputMixin  # noqa: F401
 from .questions import QuestionsMixin, _approval_pending, _question_pending
+from .stop import STOP_SUFFIX, StopMixin
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ def _detail() -> str:
     return " · ".join(parts)
 
 
-class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
+class YantrikAdapter(StopMixin, QuestionsMixin, OutputMixin, BasePlatformAdapter):
     """The desktop's chat, as a Hermes platform."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
@@ -144,6 +145,9 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
         # the desktop's protocol has no way to say something unasked, so it is shown, labelled, at
         # the top of the next reply instead of being thrown away.
         self._late: List[Tuple[datetime, str]] = []
+        # Runs the person stopped, and the /stop sent for each: whatever Hermes still says in reply
+        # to them is not shown, or it would land in the next turn the person starts.
+        self._stopped: set[str] = set()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
@@ -235,6 +239,8 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
                     continue
                 if isinstance(got, dict):
                     self._take_answers(got.get("answers") or [])
+                    # Before a new turn is taken, so a Stop is never queued behind the next work.
+                    await self._stop_runs(got.get("cancelled") or [])
                 if isinstance(got, dict) and got.get("turn_id") is not None:
                     asyncio.create_task(self._on_turn(got))
                     continue
@@ -291,16 +297,19 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
 
     # ── Turns in ───────────────────────────────────────────────────────────────────────────────
 
-    async def _on_turn(self, assignment: Dict[str, Any]) -> None:
-        turn_id = str(assignment["turn_id"])
-        text = str(assignment.get("text") or "")
-        source = self.build_source(
+    def _desktop_source(self):
+        return self.build_source(
             chat_id=CHAT_ID,
             chat_name="Yantrik desktop",
             chat_type="dm",
             user_id=OWNER_ID,
             user_name=self._owner,
         )
+
+    async def _on_turn(self, assignment: Dict[str, Any]) -> None:
+        turn_id = str(assignment["turn_id"])
+        text = str(assignment.get("text") or "")
+        source = self._desktop_source()
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -396,6 +405,7 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
             return
         # A run that asked a question ends in the turn that answered it.
         turn_id = self._carried.pop(event.message_id, None) or event.message_id
+        self._stopped -= {event.message_id, turn_id, f"{event.message_id}{STOP_SUFFIX}"}
         self._asked = {k: v for k, v in self._asked.items() if v != event.message_id}
         self._asked_ids = {k: v for k, v in self._asked_ids.items() if k in self._asked}
         # A card still waiting when its run ends will not be answered by it; the desktop closes it.

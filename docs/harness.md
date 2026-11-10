@@ -310,7 +310,7 @@ front of the person's message, which is what pi does.
 **Stopping.** When the person stops an agent, the turns waiting for it are failed, the one in
 flight is settled for the reader at once, and the harness's next poll carries `cancelled: [turn_id]`
 (stop working on it) and, for a harness with conversations, `ended: [conversation]` (let go of its
-process and history). Both are advisory. Whatever the harness still sends for a cancelled turn is
+process and history). Both are advisory to the protocol, not to the person: a harness polls while it works so it hears a `cancelled` within a poll, interrupts the run with its own stop, and lets go of anything the run is waiting on (a question it asked), so the next message is an ordinary turn. Hermes does this (`harnesses/hermes/stop.py`: its `/stop`, and the pending clarify cleared first). A harness that cannot be told, or does not, is not claimed to have stopped: the desktop only says it stopped waiting. Whatever the harness still sends for a cancelled turn is
 answered `{"dropped": true}`, and closing it is accepted. A harness that attaches again — it
 restarted, or the desktop did — gets new agents; the old conversations and their tokens are gone.
 
