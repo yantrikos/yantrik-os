@@ -28,7 +28,8 @@ use crate::workshop_out::own;
 /// What the move did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Moved {
-    pub workshops: usize,
+    /// `<mind>/<name>` of each workshop copied into the root.
+    pub landed: Vec<String>,
     /// Entries left where they were, and why.
     pub left: Vec<String>,
 }
@@ -106,7 +107,7 @@ fn move_all(chain: &[OwnedFd], new_fd: RawFd, done: &mut Moved) {
             match copy_tree(from.as_raw_fd(), &shop, to.as_raw_fd(), &shop, 0) {
                 Ok(()) => {
                     remove_at(from.as_raw_fd(), &shop, 0);
-                    done.workshops += 1;
+                    done.landed.push(format!("{mind_name}/{shop_name}"));
                 }
                 Err(e) => {
                     remove_at(to.as_raw_fd(), &shop, 0);
@@ -173,6 +174,44 @@ fn copy_tree(src: RawFd, src_name: &CString, dst: RawFd, dst_name: &CString, dep
     }
 }
 
+/// How many landed workshops the notice names before it says "and N more".
+const NAMED: usize = 5;
+
+impl Moved {
+    /// What the person is told, once: where the folders landed, that they carry no grant, and how
+    /// to get a workshop a Mind can use. `None` when the move found nothing.
+    pub fn notice(&self, home: &Path) -> Option<(String, String)> {
+        if self.landed.is_empty() && self.left.is_empty() {
+            return None;
+        }
+        let mut body = String::new();
+        if !self.landed.is_empty() {
+            let shown: Vec<&str> = self.landed.iter().take(NAMED).map(String::as_str).collect();
+            let more = self.landed.len().saturating_sub(NAMED);
+            body = format!(
+                "{} old workshop folder(s) moved to {}: {}{}. They carry no grant, so no Mind can use them. \
+                 `workshop_create` makes a new workshop (you approve it on a card); copy what you want into it by hand.",
+                self.landed.len(),
+                workshops::root_shown(home),
+                shown.join(", "),
+                if more > 0 { format!(" and {more} more") } else { String::new() },
+            );
+        }
+        if !self.left.is_empty() {
+            let left: Vec<&str> = self.left.iter().take(NAMED).map(String::as_str).collect();
+            body.push_str(&format!(" Left where they were, because something in them was not a plain file or folder of yours: {}.", left.join(", ")));
+        }
+        Some(("Your old workshops were moved".to_string(), body.trim().to_string()))
+    }
+}
+
+/// Run the move at the shell's start, off the caller's thread, so the notice does not wait for a
+/// workshop tool to be called.
+pub fn at_start() {
+    let home = crate::workshop::home();
+    let _ = std::thread::Builder::new().name("yos-workshop-move".into()).spawn(move || once(&home));
+}
+
 /// Run the move until this account has been through it.
 pub fn once(home: &Path) {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -188,10 +227,14 @@ pub fn once(home: &Path) {
         Ok(Some(m)) => {
             tracing::info!(
                 "workshops: copied {} workshop(s) into {}, with no grant (grant each again with workshop_create); left in place: {:?}",
-                m.workshops,
+                m.landed.len(),
                 workshops::root(home).display(),
                 m.left
             );
+            // The marker is already written, so this goes out once, here, and never again.
+            if let Some((title, body)) = m.notice(home) {
+                yantrik_app_runtime::notify::send(yantrik_app_runtime::notify::Notification::new("Yantrik", title).body(body));
+            }
             DONE.store(true, Ordering::SeqCst);
         }
         // No usable root yet: the old content stays where it is, and the grants refuse meanwhile.

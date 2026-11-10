@@ -41,7 +41,7 @@ fn old_workshops_are_copied_once_with_no_grant_and_modes_cut_back() {
     forged_record(&old, "hermes", &old.join("hermes/shop"));
 
     let moved = migrate(&home).unwrap().expect("there was an old root");
-    assert_eq!(moved.workshops, 2, "{moved:?}");
+    assert_eq!(moved.landed.len(), 2, "{moved:?}");
     let new = workshops::root(&home);
     assert_eq!(std::fs::read_to_string(new.join("hermes/shop/sub/a.txt")).unwrap(), "alpha");
     assert_eq!(std::fs::metadata(new.join("hermes/shop/sub/a.txt")).unwrap().permissions().mode() & 0o7777, 0o700, "no setuid, no group or other bits");
@@ -61,7 +61,7 @@ fn the_move_is_one_time_and_the_old_path_is_never_read_again() {
     let (_h, home) = home();
     make_root(&home);
     std::fs::create_dir_all(old_root(&home)).unwrap();
-    assert_eq!(migrate(&home).unwrap().unwrap().workshops, 0, "the first run is the move");
+    assert_eq!(migrate(&home).unwrap().unwrap().landed.len(), 0, "the first run is the move");
     assert!(workshops::root(&home).join(".moved").is_file());
     // A Mind plants a workshop, a stray file (which used to keep the move alive) and a record.
     let old = old_root(&home);
@@ -125,7 +125,7 @@ fn one_odd_entry_keeps_its_workshop_where_it_was() {
     std::fs::create_dir_all(old.join("evil\u{202e}name/shop")).unwrap();
 
     let moved = migrate(&home).unwrap().unwrap();
-    assert_eq!(moved.workshops, 1, "{moved:?}");
+    assert_eq!(moved.landed.len(), 1, "{moved:?}");
     let new = workshops::root(&home);
     assert!(new.join("m/clean/d/f").is_file());
     for name in ["link", "fifo", "second", "bell"] {
@@ -148,4 +148,54 @@ fn nothing_moves_without_a_root_that_is_the_persons_and_nothing_makes_one() {
     // No old root at all, and no root: nothing to do.
     let (_h2, home2) = self::home();
     assert_eq!(migrate(&home2).unwrap(), None);
+}
+
+/// Decision, 9 Nov: a moved workshop is not adopted. Its name is occupied and holds files, so
+/// `workshop_create` refuses it; a fresh name is made.
+#[test]
+fn a_moved_workshop_is_not_adopted_and_a_fresh_name_is_made() {
+    let (_h, home) = home();
+    make_root(&home);
+    let old = old_root(&home);
+    std::fs::create_dir_all(old.join("hermes/shop")).unwrap();
+    std::fs::write(old.join("hermes/shop/notes.md"), "mine").unwrap();
+    migrate(&home).unwrap().unwrap();
+    let moved = workshops::root(&home).join("hermes/shop");
+    assert!(moved.join("notes.md").is_file());
+    let why = crate::workshop::check_folder(&home, &moved.to_string_lossy(), true).unwrap_err();
+    assert!(why.contains("already holds files"), "{why}");
+    let fresh = workshops::root(&home).join("hermes/fresh");
+    assert!(crate::workshop::check_folder(&home, &fresh.to_string_lossy(), true).is_ok());
+}
+
+/// The notice names where the folders landed, says they carry no grant and how to get a new
+/// workshop. It is made from the move's own result, which only the first run returns.
+#[test]
+fn the_move_leaves_one_notice_and_only_the_first_time() {
+    let (_h, home) = home();
+    make_root(&home);
+    let old = old_root(&home);
+    std::fs::create_dir_all(old.join("hermes/shop")).unwrap();
+    std::fs::create_dir_all(old.join("pi/draft")).unwrap();
+    let first = migrate(&home).unwrap().unwrap();
+    let (title, body) = first.notice(&home).expect("something moved");
+    assert!(title.contains("moved"), "{title}");
+    assert!(body.contains(&workshops::root_shown(&home)) && body.contains("hermes/shop") && body.contains("pi/draft"), "{body}");
+    assert!(body.contains("no grant") && body.contains("workshop_create"), "{body}");
+    // The second start finds the marker and has nothing to say.
+    assert_eq!(migrate(&home).unwrap(), None);
+}
+
+#[test]
+fn nothing_moved_means_no_notice_and_a_refused_workshop_is_named() {
+    let (_h, home) = home();
+    make_root(&home);
+    assert_eq!(migrate(&home).unwrap().unwrap().notice(&home), None);
+    let (_h2, home2) = self::home();
+    make_root(&home2);
+    let old = old_root(&home2);
+    std::fs::create_dir_all(old.join("m/odd")).unwrap();
+    symlink("/etc", old.join("m/odd/link")).unwrap();
+    let (_, body) = migrate(&home2).unwrap().unwrap().notice(&home2).expect("one was left");
+    assert!(body.contains("Left where they were") && body.contains("m/odd"), "{body}");
 }
