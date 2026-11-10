@@ -62,6 +62,7 @@ use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
 mod erase;
 mod notice;
+pub mod stop;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
 
 /// The summary a call gets when its turn ended before it did.
@@ -1422,29 +1423,6 @@ impl Host {
     /// poll to stop working on it and, for a harness with conversations, to let the conversation
     /// go. The agent is no longer live, its token no longer names it, and its place under the
     /// cap is free. Returns whether there was anything to stop.
-    /// Interrupt what `agent` is doing, without ending it (#234): the turn in flight in its
-    /// conversation is cancelled (the harness hears on its next poll, the listener is settled, the
-    /// run ends `cancelled`), but the agent, its conversation and its token stay, so the next turn
-    /// (the person's word to a stuck task) goes to the same mind with its context. Unlike
-    /// [`Host::stop_agent`], nothing is ended. `false` when it had nothing in flight.
-    pub fn interrupt(&self, agent: &AgentId) -> bool {
-        let mut state = self.lock();
-        self.reap(&mut state);
-        let Some(harness) = state.attached.get_mut(agent.harness()) else { return false };
-        let conversation = agent.conversation();
-        let mut cancelled = Vec::new();
-        for (turn_id, flight) in harness.in_flight.iter_mut() {
-            if flight.conversation == conversation && flight.tx.is_some() {
-                flight.abandon(Some(INTERRUPTED_TO_TELL.to_string()));
-                harness.cancelled.push(*turn_id);
-                cancelled.push(*turn_id);
-            }
-        }
-        drop(state);
-        self.end_runs(&cancelled, RunState::Cancelled);
-        !cancelled.is_empty()
-    }
-
     pub fn stop_agent(&self, agent: &AgentId) -> bool {
         let mut state = self.lock();
         self.reap(&mut state);
@@ -1466,15 +1444,8 @@ impl Host {
             let _ = waiting.tx.send(Chunk::Failed(STOPPED.to_string()));
             stopped = true;
         }
-        let mut cancelled = Vec::new();
-        for (turn_id, flight) in harness.in_flight.iter_mut() {
-            if flight.conversation == conversation && flight.tx.is_some() {
-                flight.abandon(Some(STOPPED.to_string()));
-                harness.cancelled.push(*turn_id);
-                cancelled.push(*turn_id);
-                stopped = true;
-            }
-        }
+        let cancelled = Self::drop_flights(harness, conversation, STOPPED, None);
+        stopped |= !cancelled.is_empty();
         if existed && harness.announced.conversations {
             harness.ended.push(conversation.to_string());
         }
