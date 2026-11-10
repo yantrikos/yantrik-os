@@ -3,6 +3,7 @@ use super::*;
 fn call(account: &str, model: &str, lane_for: Option<&str>) -> Call {
     Call {
         at: 50,
+        rid: 0,
         harness: "hermes".into(),
         account: account.into(),
         model: model.into(),
@@ -111,8 +112,43 @@ fn every_face_asks_for_what_the_minds_config_asks() {
 #[test]
 fn a_detail_line_names_the_answering_model_whatever_the_mind_announced() {
     for announced in [Some("Hermes 0.14.0"), Some("Hermes 0.14.0 \u{b7} deepseek-v4.1-flash"), Some("Hermes 0.14.0 \u{b7} picked")] {
-        assert_eq!(detail_with_model(announced, "Hermes", "qwen3.8:27b"), "Hermes 0.14.0 \u{b7} qwen3.8:27b");
+        assert_eq!(detail_with_model(announced, "Hermes Agent", Some("qwen3.8:27b")), "Hermes 0.14.0 \u{b7} qwen3.8:27b");
     }
-    assert_eq!(detail_with_model(None, "Hermes", "qwen3.8:27b"), "Hermes \u{b7} qwen3.8:27b");
-    assert_eq!(detail_with_model(Some("  "), "Hermes", "m"), "Hermes \u{b7} m");
+    assert_eq!(detail_with_model(None, "Hermes", Some("qwen3.8:27b")), "Hermes \u{b7} qwen3.8:27b");
+    assert_eq!(detail_with_model(Some("  "), "Hermes", Some("m")), "Hermes \u{b7} m");
+}
+
+/// #1162 L1: Pi and DeepSeek announce their model first. It is never the head, and what they say
+/// after it (Pi's version, DeepSeek's host and who picks) stays.
+#[test]
+fn a_mind_that_announces_its_model_first_keeps_its_name_and_the_rest() {
+    assert_eq!(detail_with_model(Some("picked \u{b7} pi 1.2"), "Pi", Some("qwen3.8:27b")), "Pi \u{b7} qwen3.8:27b \u{b7} pi 1.2");
+    assert_eq!(
+        detail_with_model(Some("aig/qwen3.8:27b \u{b7} pi 1.2"), "Pi", Some("qwen3.8:27b")),
+        "Pi \u{b7} qwen3.8:27b \u{b7} pi 1.2",
+        "a model set in the session is not shown beside the shell's"
+    );
+    assert_eq!(
+        detail_with_model(Some("picked \u{b7} aig.example.cyou \u{b7} gate picks"), "DeepSeek", Some("deepseek-v4.1-flash")),
+        "DeepSeek \u{b7} deepseek-v4.1-flash \u{b7} aig.example.cyou \u{b7} gate picks"
+    );
+    assert!(!detail_with_model(Some("picked \u{b7} pi 1.2"), "Pi", Some("m")).starts_with("picked"));
+}
+
+/// #1162 L2: a refused route names no model, and the mind's stale one does not stand.
+#[test]
+fn a_refused_route_names_no_model_on_the_detail_line() {
+    assert_eq!(detail_with_model(Some("Hermes 0.14.0 \u{b7} deepseek-v4.1-flash"), "Hermes", None), "Hermes 0.14.0");
+    assert_eq!(detail_with_model(Some("picked \u{b7} pi 1.2"), "Pi", None), "Pi \u{b7} pi 1.2");
+    assert!(REFUSED.contains("refuses"));
+}
+
+/// #1162 note: the head a harness announced goes through the host's sanitiser, and a look-alike
+/// of the separator cannot join two segments into one.
+#[test]
+fn a_harness_head_is_sanitised_and_cannot_fake_the_separator() {
+    let line = detail_with_model(Some("Hermes \u{2219} gpt-5\u{202E}\n\u{200B}x"), "Hermes", Some("qwen3.8:27b"));
+    assert_eq!(line, "Hermes - gpt-5 x \u{b7} qwen3.8:27b");
+    let long = detail_with_model(Some(&format!("Hermes {}", "y".repeat(5000))), "Hermes", Some("m"));
+    assert!(line.chars().all(|c| !c.is_control()) && long.split(" \u{b7} ").next().unwrap().chars().count() <= 120, "{long}");
 }

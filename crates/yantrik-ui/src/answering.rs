@@ -66,29 +66,60 @@ pub fn answering(mind: &str) -> Result<Answer, Refusal> {
     resolve(crate::gateway::log().last_ok_for(mind), planned, account_name)
 }
 
-/// A mind's detail line with the model the shell says answers it: the mind's own first words
-/// ("Hermes 0.14.0"), then the model. What the mind announced after those words is dropped, since
-/// it may be from before a restart or a pick change.
-pub(crate) fn detail_with_model(announced: Option<&str>, name: &str, model: &str) -> String {
-    let head = announced.and_then(|d| d.split(" \u{b7} ").next()).map(str::trim).filter(|h| !h.is_empty()).unwrap_or(name);
-    format!("{head} \u{b7} {model}")
+/// What a refused route is said as, in place of a model, on a mind's detail line.
+const REFUSED: &str = "the gateway refuses its calls";
+
+/// A look-alike of the ` · ` separator, which a harness could put in its own words to make two
+/// segments read as one.
+const LOOKALIKES: &[char] = &['\u{2219}', '\u{2022}', '\u{22c5}', '\u{2027}', '\u{30fb}', '\u{ff65}', '\u{b7}'];
+
+/// A piece of a harness's own words as it may be drawn: the host's one sanitiser (a single line,
+/// at most 120 characters, no bidi or control characters, no sign-in in an address), and no
+/// separator look-alikes.
+fn plain(text: &str) -> String {
+    let flat: String = text.chars().map(|c| if LOOKALIKES.contains(&c) { '-' } else { c }).collect();
+    yantrik_harness::host::detail::shown_detail(&flat).unwrap_or_default()
 }
 
-/// What the host lists as `mind`'s detail: for a mind on the gateway, the model `answering` says
-/// (the called one, or the route's own before any call). `None` for a mind that is not, or whose
-/// calls the gateway would refuse: its own line stands.
-pub(crate) fn model_line(mind: &str, announced: Option<&str>) -> Option<String> {
+/// A mind's detail line with the model the shell says answers it (`None`: none does).
+///
+/// The head is the mind's own name, with its version when it announced one first (Hermes:
+/// "Hermes 0.14.0 - <model>"). Harnesses that announce their model first (Pi: "<model> - pi 1.2",
+/// DeepSeek: "<model> - <host> - X picks") keep what follows that model, and the model they
+/// named is dropped: it may be from before a restart or a pick change, and it is never the head.
+/// Everything taken from the mind passes [`plain`].
+pub(crate) fn detail_with_model(announced: Option<&str>, name: &str, model: Option<&str>) -> String {
+    let parts: Vec<&str> = announced.map(|d| d.split(" \u{b7} ").map(str::trim).filter(|p| !p.is_empty()).collect()).unwrap_or_default();
+    let word = |s: &str| s.split_whitespace().next().unwrap_or("").to_lowercase();
+    let (head, rest): (String, &[&str]) = match parts.split_first() {
+        Some((first, _)) if !word(name).is_empty() && word(first) == word(name) => (plain(first), &[]),
+        Some((_, rest)) => (plain(name), rest),
+        None => (plain(name), &[]),
+    };
+    let mut line = if head.is_empty() { plain(name) } else { head };
+    if let Some(model) = model {
+        line = format!("{line} \u{b7} {}", plain(model));
+    }
+    for part in rest {
+        line = format!("{line} \u{b7} {}", plain(part));
+    }
+    line
+}
+
+/// What the host lists as `mind`'s detail (`name` is what it is listed under): for a mind on the
+/// gateway, the model `answering` says (the called one, or the route's own before any call). When
+/// the gateway would refuse its calls, no model: the refusal, as the panel and the Lens say it,
+/// not the mind's own report of the pick. `None` for a mind that is not on the gateway: its own
+/// line stands.
+pub(crate) fn model_line(mind: &str, name: &str, announced: Option<&str>) -> Option<String> {
     let home = crate::wire::harness_provider::home_dir();
     if !crate::provider_handoff::uses_gateway(&home, mind) {
         return None;
     }
-    let answer = answering(mind).ok()?;
-    Some(detail_with_model(announced, &mind_name_or(mind), &answer.model))
-}
-
-fn mind_name_or(mind: &str) -> String {
-    let mut chars = mind.chars();
-    chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+    Some(match answering(mind) {
+        Ok(answer) => detail_with_model(announced, name, Some(&answer.model)),
+        Err(_) => format!("{} \u{b7} {REFUSED}", detail_with_model(announced, name, None)),
+    })
 }
 
 /// The call that was answered wins over the plan while the plan still points where it went; a plan
