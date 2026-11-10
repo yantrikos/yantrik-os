@@ -37,7 +37,7 @@ import time
 
 # yos_mcp_web.py ships beside this file (/opt/yantrik/bin): found from wherever yos-mcp was loaded.
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-from yos_mcp_web import WEB_TOOLS, web_ref  # noqa: E402
+from yos_mcp_web import BROWSER_NAMES, BROWSER_WRITES, SILENT_KEYS, WEB_TOOLS, picture_items, web_ref  # noqa: E402
 
 # How `yos` ends when it made no call because the app it is for is starting (try again) or could
 # not be started (deploy/yantrik-os/yos: EX_STARTING, EX_NOT_STARTED).
@@ -980,11 +980,13 @@ def run_agent_tool(tool, args):
 
 def present_browser(out):
     """The browser's answer, as the page `yos` renders — one renderer for the command line and
-    for a mind. The raw JSON only when yos cannot be loaded here to render it."""
+    for a mind. The raw JSON only when yos cannot be loaded here to render it. A picture the
+    answer carries (web_screenshot) goes beside the text, as image content (`serve_call`)."""
     reply = result_object(out)
     if not isinstance(reply, dict):
         return out
     result = reply.get("result", reply)
+    _LOCAL.pictures = picture_items(result)
     module = _yos_module()
     render = getattr(module, "render_browser", None) if module is not None else None
     shown = render(result) if render else None
@@ -1003,16 +1005,6 @@ def run_browser_tool(tool, args):
     act = {"app": "browser", "action": action, "args": inner}
     full = dict(BY_NAME["os_act"], argv=lambda a: ["act", a["app"], a["action"]] + act_pairs(a) + ["--full"])
     return run_tool(full, act, present=present_browser)
-
-
-BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
-# The browser's actions that put the caller's words into a page, whatever they are called: typing,
-# a key that types a character, a prompt's answer, a choice in a list. Each is web_type to the taint.
-BROWSER_WRITES = {"type", "press", "key_down", "dialog", "select"}
-# Keys that carry no text: pressing them says nothing.
-SILENT_KEYS = {"enter", "return", "tab", "escape", "esc", "backspace", "delete", "arrowup", "up",
-               "arrowdown", "down", "arrowleft", "left", "arrowright", "right", "pageup",
-               "pagedown", "home", "end"}
 
 
 def browser_args(args):
@@ -2890,6 +2882,7 @@ def run_tool(tool, args, present=None):
     """
     _LOCAL.start_deadline = None
     _LOCAL.go_approved = None
+    _LOCAL.pictures = []
     if "browser_action" in tool:
         # Every web tool is an act on the browser's surface (#477): made there, through os_act.
         return run_browser_tool(tool, args)
@@ -3402,7 +3395,8 @@ def serve_call(msg_id, tool, arguments):
     except Exception as e:  # a malformed argument must not take the server down
         text, is_error = "could not run %s: %s" % (tool["name"], e), True
     text = going_round(tool["name"], arguments, text, is_error)
-    result = {"content": [{"type": "text", "text": scrub(text)}], "isError": is_error}
+    pictures = [] if is_error else getattr(_LOCAL, "pictures", [])
+    result = {"content": [{"type": "text", "text": scrub(text)}] + pictures, "isError": is_error}
     if meta is not None:
         result["_meta"] = {"yantrik/command": json.loads(scrub(json.dumps(meta)))}
     reply(msg_id, result)

@@ -7,11 +7,44 @@ meets, and the answer is the page as `yos` renders it. Until #477 these ran `yos
 which drove the page over DevTools itself, with the commitment check in this process.
 """
 
+import base64
+import binascii
+
+BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
+# The browser's actions that put the caller's words into a page, whatever they are called: typing,
+# a key that types a character, a prompt's answer, a choice in a list. Each is web_type to the taint.
+BROWSER_WRITES = {"type", "press", "key_down", "dialog", "select"}
+# Keys that carry no text: pressing them says nothing.
+SILENT_KEYS = {"enter", "return", "tab", "escape", "esc", "backspace", "delete", "arrowup", "up",
+               "arrowdown", "down", "arrowleft", "left", "arrowright", "right", "pageup",
+               "pagedown", "home", "end"}
+# The picture web_screenshot's answer carries: the surface's own cap (shot.INLINE_LIMIT), held
+# here too, and nothing but a PNG is passed on — the bridge reads no file for it.
+PICTURE_LIMIT = 2 * 1024 * 1024
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
 
 def web_ref(ref):
     """`12`, `e12` or `[e12]` as the ref the browser hands out."""
     r = str(ref if ref is not None else "").strip().strip("[]")
     return "e" + r if r.isdigit() else r
+
+
+def picture_items(result):
+    """The picture a browser answer carries (web_screenshot asks for it inline), as MCP image
+    content for a mind that can look at it — or nothing. The bytes come from the surface's answer,
+    never from a path: the bridge runs as the mind and cannot read the person's home, and must
+    not be led to read anything else. Passed on only as a PNG within the cap, re-encoded here."""
+    data = result.get("png") if isinstance(result, dict) else None
+    if not isinstance(data, str) or len(data) > PICTURE_LIMIT * 4 // 3 + 4:
+        return []
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error):
+        return []
+    if len(raw) > PICTURE_LIMIT or not raw.startswith(PNG_MAGIC):
+        return []
+    return [{"type": "image", "data": base64.b64encode(raw).decode("ascii"), "mimeType": "image/png"}]
 
 
 WEB_TOOLS = [
@@ -54,14 +87,15 @@ WEB_TOOLS = [
     {
         "name": "web_screenshot",
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "A picture (PNG) of the current tab's page, saved under the person's "
-                       "~/Pictures/Screenshots/Browser; answers with its path. Of this tab only, as "
-                       "the browser draws it — never the screen or another tab. full=true captures "
-                       "the whole page, not only what is in view.",
+        "description": "A picture (PNG) of the current tab's page: the picture itself, to look at, "
+                       "beside its path under the person's ~/Pictures/Screenshots/Browser. Of this "
+                       "tab only, as the browser draws it — never the screen or another tab. "
+                       "full=true captures the whole page, not only what is in view; a picture over "
+                       "2 MB or 8000 px a side is in the file only, and the answer says so.",
         "inputSchema": {"type": "object", "properties": {
             "full": {"type": "boolean", "description": "the whole page, not only the viewport"}}},
         "browser_action": "screenshot",
-        "browser_args": lambda a: {"full": bool(a.get("full"))},
+        "browser_args": lambda a: {"full": bool(a.get("full")), "inline": True},
     },
     {
         "name": "web_find",
