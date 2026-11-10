@@ -31,8 +31,7 @@ fn names(id: &str) -> String {
 
 #[test]
 fn the_call_log_wins_over_what_the_config_asks_for() {
-    // picker.json asked for qwen3.5 on AIG; every call went to Ollama Cloud (520, 9 Nov).
-    let said = resolve(Some(call("ollama-cloud", "deepseek-v4.1-flash", None)), plan("aig", "qwen3.5:27b"), names).unwrap();
+    let said = resolve(Some(call("ollama-cloud", "deepseek-v4.1-flash", None)), plan("ollama-cloud", "deepseek-v4.1-flash"), names).unwrap();
     assert_eq!(said.words(), "answering \u{b7} Ollama Cloud \u{b7} deepseek-v4.1-flash");
     assert_eq!(said.id(), "ollama-cloud/deepseek-v4.1-flash");
 }
@@ -68,4 +67,19 @@ fn the_sentence_for_a_gone_pick_names_the_default_and_never_a_slug() {
     assert!(none.starts_with("Your pick, qwen3.5:27b, isn't offered by any of your accounts any more."), "{none}");
     assert!(none.contains("no default pick") && none.contains("Hermes"), "{none}");
     assert!(!none.contains("included-model"));
+}
+
+#[test]
+fn a_new_pick_is_said_as_will_send_until_a_call_to_it_succeeds() {
+    // The newest ok call went to Ollama Cloud; the person has since picked qwen on AIG.
+    let old = call("ollama-cloud", "deepseek-v4.1-flash", None);
+    let said = resolve(Some(old.clone()), plan("aig", "qwen3.8:27b"), names).unwrap();
+    assert_eq!(said.words(), "will send to AIG \u{b7} qwen3.8:27b");
+    assert_eq!(said.called_at, None);
+    // Same account, another model: also a change.
+    let said = resolve(Some(old), plan("ollama-cloud", "gpt-oss"), names).unwrap();
+    assert_eq!(said.words(), "will send to Ollama Cloud \u{b7} gpt-oss");
+    // Once a call to the new route is logged, it reads "answering" again.
+    let said = resolve(Some(call("aig", "qwen3.8:27b", None)), plan("aig", "qwen3.8:27b"), names).unwrap();
+    assert_eq!(said.words(), "answering \u{b7} AIG \u{b7} qwen3.8:27b");
 }

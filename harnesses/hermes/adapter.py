@@ -128,6 +128,7 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
         self._tasks: list[asyncio.Task] = []
         self._owner = os.environ.get("USER") or getpass.getuser() or OWNER_ID
         self._said_no_desktop = False
+        self._detail_said = ""
         # A run that asked the person a question goes on in the turn that answered it. The gateway
         # still knows the run by the turn that started it, so: the turn that started a run -> the
         # turn now carrying it, and the session whose question is waiting -> the run that asked.
@@ -201,13 +202,14 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
                 self._said_no_desktop = True
             return False
         self._address = address
+        self._detail_said = _detail()
         try:
             result = await self._call(
                 desktop.ATTACH,
                 {
                     "id": HARNESS_ID,
                     "name": HARNESS_NAME,
-                    "detail": _detail(),
+                    "detail": self._detail_said,
                     "tools": True,
                     "memory": True,
                 },
@@ -295,8 +297,20 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
 
     # ── Turns in ───────────────────────────────────────────────────────────────────────────────
 
+    async def _refresh_detail(self) -> None:
+        """The model `picked` names can change while attached, so each turn says it again if it did
+        (one loopback read; `harness.detail` changes the line without attaching again)."""
+        try:
+            detail = await asyncio.to_thread(_detail)
+            if detail != self._detail_said and self._session:
+                await self._call(desktop.DETAIL, {"session": self._session, "detail": detail}, timeout=3.0)
+                self._detail_said = detail
+        except Exception as exc:
+            logger.debug("[yantrik] could not refresh the detail: %s", exc)
+
     async def _on_turn(self, assignment: Dict[str, Any]) -> None:
         turn_id = str(assignment["turn_id"])
+        await self._refresh_detail()
         text = str(assignment.get("text") or "")
         source = self.build_source(
             chat_id=CHAT_ID,

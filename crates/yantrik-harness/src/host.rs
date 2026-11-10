@@ -60,6 +60,7 @@ use crate::protocol::{self, Assignment, Attach};
 use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
+mod detail;
 mod erase;
 mod notice;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
@@ -1516,6 +1517,7 @@ impl Host {
             protocol::CHUNK => self.chunk(params, peer),
             protocol::EVENT => self.event(params, peer),
             protocol::NOTICE => self.notice(params, peer),
+            protocol::DETAIL => self.set_detail(params, peer),
             protocol::COMPLETE => self.finish(params, peer, None),
             protocol::FAIL => {
                 let why = params["error"].as_str().unwrap_or("the harness reported a failure");

@@ -64,10 +64,13 @@ pub(crate) fn answering_asking(mind: &str, asked: &str) -> Result<Answer, Refusa
     resolve(crate::gateway::log().last_ok_for(mind), planned, account_name)
 }
 
-/// The call that was answered wins over the plan; a plan that is refused wins over both, because
-/// the next call would be.
+/// The call that was answered wins over the plan while the plan still points where it went; a plan
+/// that is refused wins over both, because the next call would be. A plan that points elsewhere
+/// means the pick (or its route) changed after that call, so the new route is said ("will send
+/// to") until a call to it succeeds.
 fn resolve(last_ok: Option<Call>, planned: Result<Plan, Refusal>, name_of: impl Fn(&str) -> String) -> Result<Answer, Refusal> {
     let planned = planned?;
+    let last_ok = last_ok.filter(|c| c.account == planned.account_id && c.model == planned.model);
     Ok(match last_ok {
         Some(c) => Answer { account: name_of(&c.account), account_id: c.account, model: c.model, lane: c.lane_for.is_some(), called_at: Some(c.at) },
         None => Answer { account: name_of(&planned.account_id), account_id: planned.account_id, model: planned.model, lane: planned.lane, called_at: None },

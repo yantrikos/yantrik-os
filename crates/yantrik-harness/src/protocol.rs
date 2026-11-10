@@ -103,8 +103,12 @@ pub use crate::event::EVENT;
 /// A card for the person, outside any turn. See [`crate::notice`].
 pub use crate::notice::NOTICE;
 
+/// Correct the line shown under this harness's name, without attaching again (the model it
+/// thinks with changed). See `host/detail.rs`.
+pub const DETAIL: &str = "harness.detail";
+
 /// Every method this service answers, for the error when something else is called.
-pub const METHODS: &[&str] = &[ATTACH, POLL, CHUNK, EVENT, NOTICE, COMPLETE, FAIL, DETACH];
+pub const METHODS: &[&str] = &[ATTACH, POLL, CHUNK, EVENT, NOTICE, DETAIL, COMPLETE, FAIL, DETACH];
 
 /// The most one [`EVENT`] may weigh, as JSON. A command's output travels as many small
 /// `tool_output` events, not one large one; an event past this is refused and counted, and the
