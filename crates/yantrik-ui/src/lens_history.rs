@@ -18,8 +18,28 @@ use crate::{App, ContentBlock, MessageData, ToolCallData};
 pub const RESTORED_TURNS: usize = 12;
 
 /// The bubbles for the last `limit` turns of a conversation, oldest first, each reply signed by
-/// `mind`, whose conversation it is.
+/// `mind`, whose conversation it is. No reply names a model here: see [`bubbles_answered_by`].
+#[cfg(test)]
 pub fn bubbles(turns: &[Turn], limit: usize, mind: &str) -> Vec<MessageData> {
+    bubbles_answered_by(turns, limit, mind, |_| String::new())
+}
+
+/// How long after a turn ended its last call may still have been logged (the log is written when
+/// the call finishes, the turn when Hermes says it is done).
+const CALL_SLACK_SECS: i64 = 30;
+
+/// The model that answered a turn, from the gateway's call log: the newest call the gateway
+/// answered for this mind between the turn's start and its end. Empty when the log holds none (a
+/// turn older than the log, or one that never ended), so a bubble never names a guess.
+pub fn model_of_turn(calls: &[yantrik_gateway::log::Call], mind: &str, turn: &Turn) -> String {
+    let Some(ended) = turn.ended else { return String::new() };
+    let (from, to) = (turn.started as i64, ended as i64 + CALL_SLACK_SECS);
+    calls.iter().rev().find(|c| c.harness == mind && c.ok() && (from..=to).contains(&c.at)).map(|c| c.model.clone()).unwrap_or_default()
+}
+
+/// [`bubbles`], each reply naming the model `model_of` says answered its turn: a past answer keeps
+/// the model that answered it, across a restart (#1162).
+pub fn bubbles_answered_by(turns: &[Turn], limit: usize, mind: &str, model_of: impl Fn(&Turn) -> String) -> Vec<MessageData> {
     let start = turns.len().saturating_sub(limit);
     let mut out = Vec::new();
     for turn in &turns[start..] {
@@ -43,7 +63,7 @@ pub fn bubbles(turns: &[Turn], limit: usize, mind: &str) -> Vec<MessageData> {
                 is_streaming: false,
                 blocks: ModelRc::new(VecModel::from(blocks)),
                 mind: mind.into(),
-                model: Default::default(),
+                model: model_of(turn).into(),
             });
         }
     }
@@ -126,8 +146,13 @@ pub fn restore_if_empty(ui: &App) -> usize {
         return 0;
     };
     let agent = crate::agents::feed::main_agent(&host.active_id());
-    let restored =
-        crate::agents::store().read(|s| s.agent(&agent).map(|a| bubbles(&a.turns, RESTORED_TURNS, &a.meta.mind))).unwrap_or_default();
+    // A reply keeps the model that answered it, read from the gateway's call log (it is on disk, so
+    // it survives the restart this is for). A mind off the gateway has no rows, and names none.
+    let calls = crate::gateway::log().recent();
+    let mind_id = host.active_id();
+    let restored = crate::agents::store()
+        .read(|s| s.agent(&agent).map(|a| bubbles_answered_by(&a.turns, RESTORED_TURNS, &a.meta.mind, |t| model_of_turn(&calls, &mind_id, t))))
+        .unwrap_or_default();
     for bubble in &restored {
         model.push(bubble.clone());
     }
@@ -217,5 +242,49 @@ mod tests {
         let turns = vec![turn(1, "hello", vec![Item::Thinking(capped("hmm"))], true)];
         let b = bubbles(&turns, RESTORED_TURNS, "Yantrik Mind");
         assert_eq!(b.len(), 1, "the request alone; thinking is not a reply");
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+    use yantrik_gateway::log::Call;
+
+    fn call(at: i64, harness: &str, model: &str, status: u16) -> Call {
+        Call { at, harness: harness.into(), account: "ollama-cloud".into(), model: model.into(), effort: None, status, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+    }
+
+    fn turn_at(started: u64, ended: Option<u64>) -> Turn {
+        Turn { n: 1, prompt: "hi".into(), started, ended, ok: ended.map(|_| true), lost: false, origin: Default::default(), items: Vec::new(), events: false, trail_seq: 0 }
+    }
+
+    /// #1162: after a restart the bubbles of earlier answers lost their model. Each turn is matched
+    /// to the call that answered it, so two answers by two models each keep their own.
+    #[test]
+    fn a_past_answer_keeps_the_model_that_answered_it() {
+        let calls = vec![call(110, "hermes", "deepseek-v4.1-flash", 200), call(210, "hermes", "qwen3.8:27b", 200), call(215, "pi", "other", 200)];
+        assert_eq!(model_of_turn(&calls, "hermes", &turn_at(100, Some(120))), "deepseek-v4.1-flash");
+        assert_eq!(model_of_turn(&calls, "hermes", &turn_at(200, Some(220))), "qwen3.8:27b");
+    }
+
+    #[test]
+    fn a_turn_the_log_holds_no_answer_for_names_no_model() {
+        let calls = vec![call(110, "hermes", "deepseek-v4.1-flash", 404), call(500, "hermes", "late", 200)];
+        assert_eq!(model_of_turn(&calls, "hermes", &turn_at(100, Some(120))), "", "a refused call answered nothing");
+        assert_eq!(model_of_turn(&calls, "hermes", &turn_at(100, None)), "", "a turn that never ended");
+    }
+
+    #[test]
+    fn restored_replies_carry_the_model_and_the_requests_do_not() {
+        let mut t = turn_at(100, Some(120));
+        t.items.push(Item::Text({
+            let mut c = crate::agents::model::Capped::new(4096, 65536);
+            c.push(b"Done.");
+            c
+        }));
+        let calls = vec![call(110, "hermes", "deepseek-v4.1-flash", 200)];
+        let b = bubbles_answered_by(&[t], RESTORED_TURNS, "Hermes Agent", |t| model_of_turn(&calls, "hermes", t));
+        assert_eq!((b[0].role.as_str(), b[0].model.as_str()), ("user", ""));
+        assert_eq!((b[1].role.as_str(), b[1].model.as_str(), b[1].mind.as_str()), ("assistant", "deepseek-v4.1-flash", "Hermes Agent"));
     }
 }
