@@ -97,7 +97,7 @@ pub fn open_with_apps(b: &Bench) -> Vec<(String, String, bool)> {
     let Some(name) = b.model.selection.iter().next() else { return Vec::new() };
     let defaults = crate::mime_dispatch::MimeDefaults::read();
     let installed = b.catalogue.get();
-    let browser = crate::wire::dock::find_browser().map(|(bin, _)| format!("{bin}.desktop"));
+    let browser = crate::wire::browser_launch::find_browser().map(|(bin, _)| format!("{bin}.desktop"));
     crate::mime_dispatch::open_with(name, &defaults, &installed, browser.as_deref())
         .into_iter()
         .map(|r| (r.id, r.name, r.is_default))

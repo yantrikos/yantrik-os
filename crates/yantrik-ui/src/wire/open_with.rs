@@ -73,7 +73,7 @@ pub fn launch(action: &FileAction, name: &str, full: &Path, ui: Option<&App>) {
             // The browser the Browser pin opens, with the file as its argument: the same
             // launcher, so the registry and the reaper see the window, and Chromium gets the
             // DevTools flags that let `yos web` drive the page a person just double-clicked.
-            match super::dock::find_browser() {
+            match super::browser_launch::find_browser() {
                 Some((bin, flags)) => {
                     let target = full.to_string_lossy().to_string();
                     let mut argv: Vec<&str> = flags.to_vec();
