@@ -440,7 +440,7 @@ impl Tool for NetworkTracerouteTool {
             vec!["-m", &hops_str, host]
         };
 
-        match std::process::Command::new(cmd)
+        match std::process::Command::new(cmd)  // fixed-program: traceroute|tracepath
             .args(&cmd_args)
             .output()
         {

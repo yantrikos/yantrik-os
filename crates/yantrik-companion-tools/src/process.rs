@@ -56,19 +56,15 @@ impl Tool for ListProcessesTool {
             _ => "-%cpu",
         };
 
-        let ps_args = format!(
-            "ps aux --sort={} | head -n {}",
-            sort_key,
-            limit + 1 // +1 for header
-        );
-
-        match std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&ps_args)
+        // `ps` as its own argv, no shell; the header and the first `limit` lines are kept here.
+        match std::process::Command::new("ps")
+            .args(["aux", &format!("--sort={sort_key}")])
             .output()
         {
             Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
+                let all = String::from_utf8_lossy(&output.stdout);
+                let text: String = all.lines().take(limit + 1).collect::<Vec<_>>().join("
+"); // +1 for header
                 if filter.is_empty() {
                     text.to_string()
                 } else {

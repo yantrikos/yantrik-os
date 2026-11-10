@@ -1,7 +1,8 @@
 //! How the companion's own Chromium is started (#1124, round 8, finding 1): always through
 //! `workshops::browser_command`, so the browser a Mind drives, and whose DevTools port a job can
 //! reach on loopback, has no view of the workshops (`file://` included). The two spawns in
-//! `browser.rs` build their command here and nowhere else.
+//! `browser.rs` build their command here and nowhere else. That no other file starts a Chromium
+//! is held by `xtask check-architecture` (rule `mind-spawn`), not by a test of one file.
 
 use std::path::Path;
 use std::process::Command;
@@ -90,17 +91,5 @@ mod tests {
             (Err(e), Err(w)) => assert_eq!(e, w),
             other => panic!("{other:?}"),
         }
-    }
-
-    /// No `Command::new(&binary)` or `Command::new("chromium")` is left in the browser tools'
-    /// non-test code: every Chromium they start is built by [`walled`].
-    #[test]
-    fn no_chromium_is_spawned_outside_the_view() {
-        let src = include_str!("browser.rs");
-        let code = &src[..src.find("#[cfg(test)]").unwrap()];
-        for banned in ["Command::new(&binary)", "Command::new(binary", "Command::new(\"chromium\")", "Command::new(\"chrome"] {
-            assert!(!code.contains(banned), "{banned}");
-        }
-        assert!(code.contains("browser_spawn::headless(") && code.contains("browser_spawn::walled("));
     }
 }

@@ -623,25 +623,14 @@ fn strip_html_tags(html: &str) -> String {
     cleaned.join("\n")
 }
 
-/// Simple base64 decode.
+/// Simple base64 decode, in this process: no program and no shell is started for it.
 fn base64_decode(input: &str) -> Option<String> {
-    let clean: String = input.chars().filter(|c| !c.is_whitespace()).collect();
-    // Use base64 decoding via shell
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("echo -n '{}' | base64 -d 2>/dev/null", clean.replace('\'', "")))
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let decoded = String::from_utf8_lossy(&output.stdout).to_string();
-        if !decoded.is_empty() {
-            Some(decoded)
-        } else {
-            None
-        }
-    } else {
-        None
-    }
+    use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
+    let clean: String = input.chars().filter(|c| !c.is_whitespace() && *c != ''').collect();
+    // Padding is optional, as `base64 -d` was lenient about it.
+    let bytes = STANDARD_NO_PAD.decode(clean.trim_end_matches('=')).ok()?;
+    let decoded = String::from_utf8_lossy(&bytes).to_string();
+    (!decoded.is_empty()).then_some(decoded)
 }
 
 /// Simple URL decode.

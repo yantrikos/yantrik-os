@@ -123,11 +123,14 @@ impl Tool for ClaudeCodeTool {
 fn run_claude(prompt: &str, _verbose: bool) -> String {
     // Options first, then `--`, then the prompt: `-p` is print mode and the prompt is a positional
     // argument, so a prompt beginning with `-` would otherwise be parsed as more options.
-    let result = std::process::Command::new("claude")
-        .arg("-p")
-        .arg("--no-input")
-        .arg("--")
-        .arg(prompt)
+    // Through the Mind door like every claude start (a program a Mind steers: its prompt is the
+    // whole of what it does), so it too runs where the workshops root does not exist.
+    let words = ["-p", "--no-input", "--", prompt].map(String::from);
+    let mut command = match crate::spawn::mind_command(&crate::spawn::home(), "claude", &words) {
+        Ok(c) => c,
+        Err(e) => return format!("Error: {e}"),
+    };
+    let result = command
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -168,13 +171,11 @@ fn run_claude_code(task: &str, cwd: &str) -> String {
     // `--dangerously-skip-permissions`, say, or a wider `--allowedTools`. Claude Code runs Bash, so
     // it starts in the outside view, where the workshops root does not exist.
     let words = ["-p", "--allowedTools", "Bash,Read,Write,Glob,Grep", "--no-input", "--", task].map(String::from);
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-    let (program, argv) = match workshops::outside_command(&home, "claude", &words) {
-        Ok(v) => v,
+    let mut command = match crate::spawn::mind_command(&crate::spawn::home(), "claude", &words) {
+        Ok(c) => c,
         Err(e) => return format!("Error: {e}"),
     };
-    let result = std::process::Command::new(program)
-        .args(argv)
+    let result = command
         .current_dir(cwd)
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(std::process::Stdio::null())

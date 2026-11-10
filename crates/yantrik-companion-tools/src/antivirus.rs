@@ -83,7 +83,7 @@ impl Tool for AntivirusScanTool {
         // Prefer clamdscan (daemon, faster) over clamscan
         let scanner = if has_clamd() { "clamdscan" } else { "clamscan" };
 
-        let mut cmd = std::process::Command::new(scanner);
+        let mut cmd = std::process::Command::new(scanner);  // fixed-program: clamdscan|clamscan
         cmd.arg("--infected")
            .arg("--no-summary");  // We'll build our own summary
 

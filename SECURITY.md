@@ -34,13 +34,20 @@ is in scope too.
 A Mind's workshop (`/var/lib/yantrik/workshops/<uid>/<mind>/<name>`, granted on a card) is sealed
 on the program. A sealed job sees only its workshop and has no network. Unsealed jobs, Mind tabs,
 browsers and Mind View apps see no workshop. Bytes leave only by `workshop_present` and the carded
-export. An unsealed job runs as your account, so it can change your files, including what your
+export. A program a Mind chooses starts only through three doors (the outside view, the browser
+view, or the shell's `open_app`), and `xtask check-architecture` fails the build on any other
+spawn in the companion's tools. An unsealed job runs as your account, so it can change your files, including what your
 session runs at login, and under a session rule it needs no card to do so. Giving jobs an account
 of their own (#1137, step 3) comes after launch. Until then, these are known and open:
 
 - **The DevTools route (#1137).** A job shares the host's loopback, so it can drive Mind View's
   browser on 9223. That browser, and the companion's own headless browser and Arcade's verifier, start in a view with no
   workshops, but a job can still drive them.
+- **Browsers you start yourself can start unwrapped (fixed after launch).** `xdg-open` from Lens
+  and For You, the onboarding and free-AI browser (`open_apart`) and a `.desktop` launch from Lens
+  or chat can start a Chromium with no view when no Browser is running. A Mind cannot trigger
+  these. They carry no DevTools port, but a Chromium started this way is the one your next dock
+  launch is handed to. The Browser you open from the dock is the wrapped one; open it first.
 - **The startup-file route (#1137, step 3).** A job can append to `~/.bashrc`, `~/.bash_profile`,
   `~/.config/labwc/*`, `~/.config/systemd/user`, `~/.local/share/applications`, `mimeapps.list` or
   a browser profile. What those run later runs in no view. The acceptance for the fix is that
