@@ -44,7 +44,7 @@ protocol and prints what came back.
     yos web find <words>                where is the thing I want, anywhere on the page
     yos web all                         every interactive element, not just the viewport
     yos web console [all]               the page's console errors and uncaught exceptions
-    yos web go <url>                    navigate, wait for it, and show the new page
+    yos web go <url | ~/path>           navigate (or open a file under the home), and show the new page
     yos web click <ref>                 press it; answers with what changed on the page
     yos web type <ref> <text> [--enter] type into a field
     yos web press <key> [ref]           Enter, Tab, Escape, PageDown, ctrl+a …
@@ -2140,7 +2140,7 @@ def browser_act(action, args=None):
 WEB_USAGE = """usage: yos web [all]                      what is on the page, with refs
        yos web text [limit] | find <words> | tabs | media
        yos web console [all]                  the page's console errors and uncaught exceptions
-       yos web go <url> [--new-tab] | back | forward | reload
+       yos web go <url | ~/path> [--new-tab] | back | forward | reload
        yos web click <ref> | type <ref> <text> [--enter] [--keep] | press <key> [ref]
        yos web select <ref> <option> | scroll [down|up|top|bottom|<ref>] | wait [secs] [text]
        yos web tab <id> | close <id> | dialog accept|dismiss [text]

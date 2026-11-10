@@ -123,7 +123,8 @@ def build(driver=None, **surface_options):
 
     @s.action(grade="standard", expected_seconds=4)
     def go(url: str, new_tab: bool = False, tab: Tab = "") -> dict:
-        """Open a web page, and wait for it to load; answers with what is on it"""
+        """Open a web page (http, https) or a local file under the home (file:///home/you/site/index.html,
+        or the path itself), and wait for it to load; answers with what is on it"""
         return later(lambda: d.go(url, tab or None, new_tab))
 
     @s.action(grade="standard", expected_seconds=3)

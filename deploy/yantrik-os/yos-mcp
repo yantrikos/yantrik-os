@@ -599,7 +599,9 @@ TOOLS = [
         "name": "web_go",
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
         "description": "Open a URL in the browser and wait for it to load; answers with what is "
-                       "on the new page. new_tab opens it beside the current one.",
+                       "on the new page. A local file under the home opens too (file:///home/you/"
+                       "site/index.html, or the path itself): the way to run a build just written. "
+                       "new_tab opens it beside the current one.",
         "inputSchema": {"type": "object", "properties": {
             "url": {"type": "string"},
             "new_tab": {"type": "boolean"}}, "required": ["url"]},
