@@ -38,11 +38,15 @@ for name in systemctl head cut stat grep readlink nft tr sed awk cat id dirname 
 done
 for f in "$repo"/config/systemd/*.service; do
   u="$(basename "$f")"
-  grep -q -E '^Exec[A-Za-z]+=[-:!@]*\+' "$f" || continue
+  # `!`/`!!` also run with full privileges and keep Environment=; none is allowed (L6).
+  is "$u: no ! or !! Exec line (root with the unit's environment)" "" "$(grep -E '^Exec[A-Za-z]+=[-:@+]*!' "$f")"
+  grep -q -E '^Exec[A-Za-z]+=[-:@]*\+' "$f" || continue
   lacks "$u: no EnvironmentFile (systemd would read it as root through the account's link)" "EnvironmentFile" "$(grep -v '^#' "$f")"
   n=0
   while IFS= read -r line; do
-    n=$((n + 1)); cmd="${line#*=+}"
+    # Strip the whole leading prefix run (-, :, @, + in any order), not just one + (L6).
+    n=$((n + 1)); cmd="${line#*=}"
+    while :; do case "$cmd" in [-:@+]*) cmd="${cmd#?}" ;; *) break ;; esac; done
     case "$cmd" in
       *.local/bin*|*"source "*) bad=yes ;;
       *) bad=no ;;
@@ -58,7 +62,7 @@ for f in "$repo"/config/systemd/*.service; do
     env -i HOME="$plusdirs/home" PATH="$plusdirs/home/.local/bin:/usr/local/bin:/usr/bin:/bin" /bin/sh -c "$run" </dev/null >/dev/null 2>&1
     ran=""; for r in "$plusdirs"/ran-*; do [ -e "$r" ] && ran="$ran${r##*/} "; done
     is "$u + line $n: no command planted in the account's ~/.local/bin ran as root" "" "$ran"
-  done < <(grep -E '^Exec[A-Za-z]+=\+' "$f")
+  done < <(grep -E '^Exec[A-Za-z]+=[-:@]*\+' "$f")
 done
 # The test sees what it should: a bare-name + line is caught.
 # shellcheck disable=SC2016  # the text of a command, not an expansion
