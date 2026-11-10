@@ -78,3 +78,28 @@ fn no_shell_is_opened_in_a_workshop_for_anyone() {
     }
     assert_eq!(f.tabs(), before);
 }
+
+/// Decision, 9 Nov: the person's own tab is the person's act, and a Mind reads it to help with
+/// their errors, with a note saying whose it is. Another Mind's tab is not read. The person reads
+/// every tab whole.
+#[test]
+fn describe_shows_a_minds_the_persons_tab_with_a_note_and_never_another_minds() {
+    let f = open();
+    f.act("run", json!({ "command": "echo PERSONS_OWN_LINE" })).unwrap();
+    f.quiet();
+    let a_sees = f.app.describe_as_agent("tok-mind-a").to_string();
+    assert!(a_sees.contains("PERSONS_OWN_LINE") && a_sees.contains("this is the person's own shell"), "{a_sees}");
+
+    f.agent_as("tok-mind-a", "new_tab", json!({})).unwrap();
+    f.agent_as("tok-mind-a", "run", json!({ "command": "echo A_PRIVATE_LINE" })).unwrap();
+    f.quiet();
+    let b_sees = f.app.describe_as_agent("tok-mind-b").to_string();
+    assert!(!b_sees.contains("A_PRIVATE_LINE"), "{b_sees}");
+
+    let person_sees = f.app.describe().to_string();
+    assert!(person_sees.contains("A_PRIVATE_LINE") && !person_sees.contains("another Mind"), "{person_sees}");
+    f.app.run(Command::SelectTab(0));
+    f.quiet();
+    let person_first = f.app.describe().to_string();
+    assert!(person_first.contains("PERSONS_OWN_LINE") && !person_first.contains("this is the person's own shell"), "{person_first}");
+}
