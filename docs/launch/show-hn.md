@@ -133,8 +133,9 @@ Alpine and moved; the docs say so.) [`docs/getting-started.md`; `docs/hardware-r
 
 ### 8. "Why Rust and Slint?"
 
-One language from the shell to the control surface to the memory engine, with no Electron, no
-Python runtime and no Docker needed to run the desktop. Slint renders in software, which is what
+One language from the shell to the control surface to the memory engine. No Electron and no Docker;
+the desktop and its apps are Rust. Python is in the image: `yos`, `yos-mcp`, the harness adapters,
+and Hermes. Slint renders in software, which is what
 lets it run on a VM with no GPU: the project's measurement on the 2409 nightly (VM 542, 10 Nov, lock screen,
 no model attached) was the shell idling at about 2% of a core and about 250 MB of memory (PSS)
 for the shell and about 265 MB with its services; `docs/footprint.md`'s 186 MB was WSL2 in
