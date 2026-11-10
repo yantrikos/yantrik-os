@@ -141,7 +141,7 @@ FAKE
 chmod 755 "$work/fakebin2/systemctl"
 preline="$(grep '^ExecStartPre=+.*u=yantrik-mind.service' "$unit" | sed -e 's/^ExecStartPre=+//' -e 's/\$\$/$/g')"
 gate() { # env assignments...: the unit's check against a Mind unit that answers as told; its exit status
-  ( env "$@" PATH="$work/fakebin2:$PATH" sh -c "$(printf '%s' "$preline" | sed -e "s/^\/bin\/sh -c '//" -e "s/'$//")" ) >/dev/null 2>&1
+  ( env "$@" PATH="$work/fakebin2:$PATH" sh -c "$(printf '%s' "$preline" | sed -e "s/^\/usr\/bin\/env -i PATH=[^ ]* \/bin\/sh -c '//" -e "s/'$//")" ) >/dev/null 2>&1
 }
 yes "the gateway starts beside a Mind unit that masks harness/ and has its own namespace (not running)" gate FAKE_MIND_MAINPID=0
 no "... not beside one that does not mask harness/ (a rollback below this release)" gate FAKE_MASK=
@@ -151,7 +151,7 @@ no "... not with a drop-in on its own unit" gate FAKE_DROPIN=/etc/systemd/system
 # L2: the namespace gate fails closed. /proc as the check reads it: the Mind's link readable, PID 1's not.
 mkdir -p "$work/fakeproc/1/ns" "$work/fakeproc/4242/ns"
 ln -sf 'pid:[4026539999]' "$work/fakeproc/4242/ns/pid"
-gate_proc() { ( env "$@" PATH="$work/fakebin2:$PATH" sh -c "$(printf '%s' "$preline" | sed -e "s/^\/bin\/sh -c '//" -e "s/'$//" -e "s#/proc/#$work/fakeproc/#g")" ) >/dev/null 2>&1; }
+gate_proc() { ( env "$@" PATH="$work/fakebin2:$PATH" sh -c "$(printf '%s' "$preline" | sed -e "s/^\/usr\/bin\/env -i PATH=[^ ]* \/bin\/sh -c '//" -e "s/'$//" -e "s#/proc/#$work/fakeproc/#g")" ) >/dev/null 2>&1; }
 no "... not when PID 1's namespace cannot be read (it cannot be told apart from the Mind's)" gate_proc FAKE_MIND_MAINPID=4242
 ln -sf 'pid:[4026531836]' "$work/fakeproc/1/ns/pid"
 yes "... control: with both readable and different it starts" gate_proc FAKE_MIND_MAINPID=4242
@@ -452,6 +452,7 @@ for want in --wait --collect --pipe User=yk411m Group=yk411g RuntimeMaxSec=30 Pr
   has "a task is a transient unit with $want" "$want" "$args"
 done
 lacks "... and has no terminal of the caller's" "--pty" "$args"
+has "... and runs its command under the abstract-socket scope (L5)" "--scope-abstract-unix" "$args"
 passed="$(awk '/^-p$/{getline; print}' "$FAKE_RUN_LOG" | grep -vE '^(User|Group|WorkingDirectory|RuntimeMaxSec|TimeoutStopSec|After|Requires)=')"
 is "the sandbox it gets is exactly the gateway unit's block (one list, shared)" "$block" "$passed"
 : > "$FAKE_RUN_LOG"
@@ -462,6 +463,7 @@ lacks "... not the caller's pipe or terminal" "--pipe" "$args"
 has "... the account's launcher, with its one word" "$(hi_home hermes)/.local/bin/hermes" "$args"
 has "... and every task runs under the reaping init, not as a bare PID 1" "$BIN_DIR/yantrik-init" "$args"
 has "... and a time limit and a cgroup that is collected" "--collect" "$args"
+has "... and a pty task is scoped too (L5)" "--scope-abstract-unix" "$args"
 : > "$FAKE_RUN_LOG"
 echo 'id -un > "$HOME/refreshed"' > "$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"; chmod a+r "$PREFIX/share/harnesses/lib/install/refresh-plugins.sh"
 ( hi_refresh hermes ) >/dev/null 2>&1

@@ -23,6 +23,50 @@ has "the guard before the start is one of them, scoped" "ExecStartPre=${want}/bi
 has "... and the gateway itself" "ExecStart=${want}" "$(cat "$unit")"
 is "the only other Exec line is the reload, a kill by root's /bin" "ExecReload=/bin/kill -USR1 \$MAINPID" "$(grep -E '^Exec(Reload)=' "$unit")"
 
+# hi_task runs the installer, the plugin refresh, `hermes model` and the guard's `after`: Hermes's code.
+has "hi_task puts every task under the scope (L5)" 'yantrik-init" --scope-abstract-unix "$@"' "$(cat "$here/harness-sandbox.sh")"
+
+echo "== every + line (root, unsandboxed) runs only root-owned code (H1)"
+# `+` drops User= and the namespaces but keeps Environment=, so the unit's PATH (the account's
+# ~/.local/bin first) reaches a root shell. Each + line must reset it to root's directories, run
+# absolute programs, and source/read nothing the account can write; then it is run with a planted
+# command for each name in an account-writable PATH, and no plant may run.
+rootpath='(/usr/sbin|/usr/bin|/sbin|/bin)'
+plusdirs="$work/plus"; mkdir -p "$plusdirs/home/.local/bin"
+for name in systemctl head cut stat grep readlink nft tr sed awk cat id dirname basename ls find xargs env sh bash python3 test; do
+  printf '#!/bin/sh\n/usr/bin/touch "%s/ran-%s"\n' "$plusdirs" "$name" > "$plusdirs/home/.local/bin/$name"; chmod 755 "$plusdirs/home/.local/bin/$name"
+done
+for f in "$repo"/config/systemd/*.service; do
+  u="$(basename "$f")"
+  grep -q -E '^Exec[A-Za-z]+=[-:!@]*\+' "$f" || continue
+  lacks "$u: no EnvironmentFile (systemd would read it as root through the account's link)" "EnvironmentFile" "$(grep -v '^#' "$f")"
+  n=0
+  while IFS= read -r line; do
+    n=$((n + 1)); cmd="${line#*=+}"
+    case "$cmd" in
+      *.local/bin*|*"source "*) bad=yes ;;
+      *) bad=no ;;
+    esac
+    is "$u + line $n names nothing of the account's and sources nothing" "no" "$bad"
+    printf '%s' "$cmd" | grep -q -E "^/usr/bin/env -i PATH=$rootpath(:$rootpath)* /" && ok=yes || ok=no
+    is "$u + line $n starts /usr/bin/env -i PATH=<root dirs only> /absolute-program" "yes" "$ok"
+    printf '%s' "$cmd" | grep -q -E '(^|[;&|{(][[:space:]]*)\.[[:space:]]' && src=yes || src=no
+    is "$u + line $n has no '. file' source" "no" "$src"
+    rm -f "$plusdirs"/ran-*
+    run="$(printf '%s' "$cmd" | sed -e 's/\$\$/$/g' -e 's/%%/%/g')"
+    # The unit's own PATH, as the + line inherits it, with the account's directory first.
+    env -i HOME="$plusdirs/home" PATH="$plusdirs/home/.local/bin:/usr/local/bin:/usr/bin:/bin" /bin/sh -c "$run" </dev/null >/dev/null 2>&1
+    ran=""; for r in "$plusdirs"/ran-*; do [ -e "$r" ] && ran="$ran${r##*/} "; done
+    is "$u + line $n: no command planted in the account's ~/.local/bin ran as root" "" "$ran"
+  done < <(grep -E '^Exec[A-Za-z]+=\+' "$f")
+done
+# The test sees what it should: a bare-name + line is caught.
+# shellcheck disable=SC2016  # the text of a command, not an expansion
+bare='v=$(systemctl --version | head -n 1)'
+rm -f "$plusdirs"/ran-*
+env -i PATH="$plusdirs/home/.local/bin:/usr/bin:/bin" /bin/sh -c "$bare" >/dev/null 2>&1
+is "control: the same planted dir does catch a + line that looks commands up by name" "yes" "$([ -e "$plusdirs/ran-systemctl" ] && echo yes || echo no)"
+
 echo "== the scripts run in it look nothing up in what the account wrote"
 for f in hermes-guard.sh hermes-model.sh; do
   body="$(grep -v '^[[:space:]]*#' "$install_lib/$f")"

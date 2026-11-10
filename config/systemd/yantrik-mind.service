@@ -63,8 +63,8 @@ Environment=NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1
 # that silently forgot everything. Run as root (+), the only one that can look there.
 # And never without the table that holds it to the proxy: a hand `nft flush ruleset` leaves the
 # unit above active and the table gone.
-ExecStartPre=+/bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/dev/null 2>&1 || { echo "Yantrik Mind: the egress table (inet yantrik_mind_egress) is not loaded. Run: sudo yantrik-update mind-egress apply" >&2; exit 1; }'
-ExecStartPre=+/bin/sh -c 'for d in /home/*/.local/share/yantrik-mind/mind.db; do if [ -e "$$d" ] && [ ! -e /var/lib/yantrik-mind/mind.db ]; then echo "Yantrik Mind: its memory is still at $$d. Run: sudo yantrik-update migrate-minds" >&2; exit 1; fi; done; exit 0'
+ExecStartPre=+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/dev/null 2>&1 || { echo "Yantrik Mind: the egress table (inet yantrik_mind_egress) is not loaded. Run: sudo yantrik-update mind-egress apply" >&2; exit 1; }'
+ExecStartPre=+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh -c 'for d in /home/*/.local/share/yantrik-mind/mind.db; do if [ -e "$$d" ] && [ ! -e /var/lib/yantrik-mind/mind.db ]; then echo "Yantrik Mind: its memory is still at $$d. Run: sudo yantrik-update migrate-minds" >&2; exit 1; fi; done; exit 0'
 # The Mind's settings are read by the mind itself, not by systemd as root (see the launcher).
 ExecStart=/opt/yantrik/bin/yantrik-mind-launch
 # stdin is not a terminal, which is how the mind knows to run headless.
