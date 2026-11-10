@@ -106,6 +106,7 @@ impl Wiring {
         g.set_clean_rows(ModelRc::new(VecModel::from(clean)));
         g.set_trains_rows(ModelRc::new(VecModel::from(trains)));
         g.set_rows(ModelRc::new(VecModel::from(rows)));
+        g.set_ready_count(card.rows.iter().filter(|r| r.state == "ready").count() as i32);
         g.set_summary(card.summary.into());
         g.set_next_line(card.next_line.into());
         g.set_next_id(card.next_id.into());

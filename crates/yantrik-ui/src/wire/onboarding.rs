@@ -1985,7 +1985,7 @@ mod tests {
             assert!(!shown.contains(word), "a screen says \"{word}\"");
         }
         for want in ["Welcome to Yantrik.", "Make text bigger", "Read this to me", "Get started", "Who should do the thinking?",
-                     "Connect account", "Paste a key", "Show me where to find it", "Advanced", "What's shared?",
+                     "Connect account", "Paste a key", "Show me where to find it", "Advanced", "What's shared",
                      "For your other Minds, use your private model instead", "Yantrik Companion talks to ", " directly; this choice applies to your other Minds that use Yantrik models.", "Your other Minds that use Yantrik models will still answer", "Getting your minds ready", "Your minds", "Add another mind"] {
             assert!(slint.contains(want), "{want}");
         }

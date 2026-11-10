@@ -26,6 +26,7 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
         beside_macos(window, output, w, h)?;
     }
     keyboard_only(window, output, 1280, 800)?;
+    crate::installer_keys_tests::run(window)?;
     println!("PASS: installer welcome, you, disk, review, installing and installed at 1280x800 and 800x600");
     println!("PASS: installing beside macOS: the disk's bar, the placeholder chosen, nothing chosen until something may be");
     println!("PASS: the installer with the keyboard alone: the layout picker, the disk cards and the encryption tick take Tab, Enter continues, and the step's action comes before Back");

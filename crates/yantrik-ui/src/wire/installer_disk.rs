@@ -17,9 +17,9 @@ use super::installer::{chroot_cmd, run_cmd, sudo_write};
 pub const CRYPT_NAME: &str = "yantrik-root";
 /// The root filesystem's label, encrypted or not. A name for people: fstab and GRUB find the
 /// root by its UUID, since a placeholder or another Yantrik disk may carry the same label.
-const ROOT_LABEL: &str = "YANTRIK";
+pub(super) const ROOT_LABEL: &str = "YANTRIK";
 const BOOT_LABEL: &str = "YANTRIK_BOOT";
-const CRYPT_LABEL: &str = "YANTRIK_CRYPT";
+pub(super) const CRYPT_LABEL: &str = "YANTRIK_CRYPT";
 
 /// Which partitions to make, in order, as `parted` arguments after `-s <disk>`, and which
 /// number each ends up as.

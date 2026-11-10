@@ -112,6 +112,7 @@ pub mod command_palette;
 pub mod installer;
 pub mod installer_boot;
 pub mod installer_disk;
+pub mod installer_existing;
 pub mod installer_partition;
 pub mod installer_probe;
 pub mod installer_locale;

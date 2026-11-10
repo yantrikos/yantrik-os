@@ -244,6 +244,7 @@ fn prepare(ui: &App) {
     ui.set_onboard_keyboards(ModelRc::new(VecModel::from(choices)));
     ui.set_onboard_keyboard(detected.clone().into());
     tracing::info!(layout = %detected, "Installer: keyboard layout detected");
+    super::installer_existing::wire(ui);
 
     // Disks, and what the installer itself runs from, for the Installed screen's last word.
     let weak = ui.as_weak();
@@ -258,6 +259,7 @@ fn prepare(ui: &App) {
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };
             ui.set_onboard_install_media_hint(crate::installer_medium::finish_hint(medium).into());
+            ui.set_onboard_install_media_removable(crate::installer_medium::must_remove(medium));
             // A disk is preselected only when there is nothing to guess: exactly one internal
             // disk without macOS that the installer is not running from (on the machine most
             // people install on there is one). Never a USB or removable disk, which may be a

@@ -181,6 +181,19 @@ fn private_context_is_off_for_every_account_until_the_person_chooses() {
 }
 
 #[test]
+fn continuing_with_the_box_unticked_saves_off_not_share() {
+    use super::consent::{self, Sharing};
+    let dir = std::env::temp_dir().join(format!("ai-consent-unticked-{}", std::process::id()));
+    let path = dir.join("ai-accounts.json");
+    let _ = std::fs::remove_dir_all(&dir);
+    consent::agree_at_onboarding(&path, false).unwrap();
+    let c = consent::load(&path);
+    assert_eq!(c.default, Some(Sharing::Off));
+    assert_eq!(c.sharing_for(&saved_account("openai", false, false)), Sharing::Off);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_earlier_allow_list_reads_as_share_and_is_never_deleted() {
     use super::consent::{self, Sharing};
     let dir = std::env::temp_dir().join(format!("ai-consent-old-{}", std::process::id()));
@@ -257,4 +270,17 @@ fn each_account_is_listed_with_its_providers_own_key_header() {
     assert_eq!(super::keys::auth_for(&of("openai"), Some(KEY)), "bearer");
     assert_eq!(super::keys::auth_for(&of("custom"), Some(KEY)), "bearer", "a custom address is assumed bearer");
     assert_eq!(super::keys::auth_for(&of("anthropic"), None), "none");
+}
+
+/// Sending what the minds remember and where the person is leaves only on an opt-in: the box
+/// starts unticked on the screen and in the window that hosts it, and the list of what goes is
+/// there without a click (#1165).
+#[test]
+fn the_sharing_box_starts_unticked_and_the_list_is_always_shown() {
+    let screen = include_str!("../../../yantrik-ui-slint/ui/onboarding_first_run.slint");
+    let window = include_str!("../../../yantrik-ui-slint/ui/app.slint");
+    assert!(screen.contains("in-out property <bool> share: false;"));
+    assert!(window.contains("in-out property <bool> fr-share: false;"));
+    assert!(!screen.contains("show-shared") && !window.contains("show-shared"), "no click is needed to see what is shared");
+    assert!(screen.contains("for item in root.shared-items"));
 }

@@ -12,7 +12,7 @@
 //                         person to pick; Advanced for an endpoint (its models listed for the
 //                         person to pick, or an id typed), and for a provider whose address has
 //                         a part to fill in
-//   3  What minds share   the pre-checked sentence naming the provider, "What's shared?", and
+//   3  What minds share   the unchecked sentence naming the provider, "What's shared" listed under it, and
 //                         "For your other Minds, use your private model instead" (Share / Private lane / Off)
 //   4  Getting ready      three factual rows per mind, each Not checked yet → Checking (started
 //                         h:mm) → Passed / Needs attention: <reason>. No percentages, no spinners.
@@ -33,6 +33,7 @@
 // here and to the rest of the shell, live and on every later start.
 
 import { Theme, TextScale } from "theme.slint";
+import { FreeAiCard, FreeAiState } from "components/free_ai_card.slint";
 
 export struct FirstRunProvider {
     id: string,
@@ -137,6 +138,16 @@ component FrButton inherits Rectangle {
             }
             reject
         }
+    }
+    // The accent ring stands off the button, so it shows on the accent-filled primary as well.
+    if fs.has-focus : Rectangle {
+        x: -4px;
+        y: -4px;
+        width: parent.width + 8px;
+        height: parent.height + 8px;
+        border-radius: Theme.r-md + 4px;
+        border-width: Theme.focus-ring-width;
+        border-color: Theme.accent;
     }
     ta := TouchArea {
         enabled: root.enabled;
@@ -487,9 +498,8 @@ export component FirstRunScreen inherits Rectangle {
     in property <bool> chosen-key-help: false;
 
     // ── 3: what your minds share ──
-    in-out property <bool> share: true;
+    in-out property <bool> share: false;
     in-out property <bool> private-lane: false;
-    in-out property <bool> show-shared: false;
     in property <[string]> shared-items: [];
     // "Uses a 2.5 GB model on this computer. Answers may be slower." Empty: none is here or
     // downloadable, and the offer says so rather than pretending.
@@ -649,6 +659,10 @@ export component FirstRunScreen inherits Rectangle {
                 x: max(24px, (root.width - self.width) / 2);
                 y: 24px;
                 width: min(root.width - 48px, 640px + 160px * (root.s - 1.0));
+                // Its own height, not the window's: a taller page than the window scrolls. Left to
+                // the Flickable's height, the layout squeezed its rows to fit, and a long model list
+                // ran under Not now and Continue (#1165).
+                height: self.preferred-height;
                 alignment: start;
                 spacing: 16px;
 
@@ -738,6 +752,42 @@ export component FirstRunScreen inherits Rectangle {
                         color: Theme.text-secondary;
                         font-size: Theme.fs-title-2;
                         wrap: word-wrap;
+                    }
+                    // The first way: the free accounts helper Settings → AI has, the same component.
+                    // Nothing is connected for the person; each option needs an account or a GPU.
+                    if root.connect-mode == "" : VerticalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: "Every option needs a free account (Groq takes about 2 minutes) or your own GPU.";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-2;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                        }
+                        FreeAiCard { }
+                        if FreeAiState.ready-count > 0 : HorizontalLayout {
+                            alignment: start;
+                            FrButton {
+                                primary: true;
+                                label: "Continue with my free account";
+                                clicked => {
+                                    if root.in-installer { root.finished(); }
+                                    else { root.chosen-name = "your free AI account"; root.step = 3; }
+                                }
+                            }
+                        }
+                        Text {
+                            text: "The desktop and its apps work without a model. You can connect a Mind later in Settings.";
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-body;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "Or connect another way:";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-2;
+                            font-weight: 600;
+                        }
                     }
                     // A model already running on the network is looked for only when the person
                     // says so: the look tries two ports on each address of this network, briefly.
@@ -1032,16 +1082,14 @@ export component FirstRunScreen inherits Rectangle {
                         enabled: !root.private-lane;
                         init => { self.focus-me(); }
                     }
-                    HorizontalLayout {
-                        alignment: start;
-                        FrButton {
-                            link: true;
-                            label: root.show-shared ? "Hide what's shared" : "What's shared?";
-                            clicked => { root.show-shared = !root.show-shared; }
-                        }
-                    }
-                    if root.show-shared : VerticalLayout {
+                    VerticalLayout {
                         spacing: 4px;
+                        Text {
+                            text: "What's shared";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-title-2;
+                            font-weight: 600;
+                        }
                         padding-left: 16px;
                         for item in root.shared-items : Text {
                             text: "• " + item;

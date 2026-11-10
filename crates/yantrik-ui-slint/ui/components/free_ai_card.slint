@@ -45,6 +45,8 @@ export global FreeAiState {
     in-out property <string> next-id;
     in-out property <string> next-name;
     in-out property <bool> vault-locked;
+    // How many rows are ready: the first run goes on once there is one.
+    in-out property <int> ready-count;
     in-out property <bool> expanded: true;
     // The status bar's paste chip, while a key is awaited: "Paste Groq key", and the value it is for.
     in-out property <string> chip-label;

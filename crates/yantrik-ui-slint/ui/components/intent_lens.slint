@@ -2406,7 +2406,7 @@ export component IntentLens inherits Rectangle {
                             width: retry-text.preferred-width + 2 * Theme.sp-3;
                             border-radius: Theme.r-md;
                             border-width: retry-fs.has-focus ? Theme.focus-ring-width : 1px;
-                            border-color: retry-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+                            border-color: retry-fs.has-focus ? Theme.accent : Theme.chat-border;
                             accessible-role: button;
                             accessible-label: "Try again";
                             accessible-action-default => { root.first-run-retry(); }
@@ -2450,7 +2450,7 @@ export component IntentLens inherits Rectangle {
                             width: done-text.preferred-width + 2 * Theme.sp-3;
                             border-radius: Theme.r-md;
                             border-width: done-fs.has-focus ? Theme.focus-ring-width : 1px;
-                            border-color: done-fs.has-focus ? Theme.focus-ring : Theme.chat-border;
+                            border-color: done-fs.has-focus ? Theme.accent : Theme.chat-border;
                             accessible-role: button;
                             accessible-label: "Done";
                             accessible-action-default => { root.first-run-done(); }
