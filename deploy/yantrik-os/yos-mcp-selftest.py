@@ -1612,8 +1612,8 @@ with tempfile.TemporaryDirectory() as d:
     reads = {t["name"] for t in module.TOOLS if t["name"].startswith("web_")
              and t["annotations"].get("readOnlyHint")}
     check("the web tools that only look say so, and no tool that acts does",
-          reads == {"web_read", "web_text", "web_find", "web_scroll", "web_tabs", "web_wait", "web_listen"},
-          sorted(reads))
+          reads == {"web_read", "web_text", "web_find", "web_scroll", "web_tabs", "web_wait", "web_listen",
+                    "web_console", "web_screenshot"}, sorted(reads))
     module, state = case(tmp, "web-page-refusal", mode="auto")
     text, is_error = module.run_tool(module.BY_NAME["web_click"], {"ref": "e404"})
     check("the page's own no is a policy answer: nothing was run, and not a failure to retry",
