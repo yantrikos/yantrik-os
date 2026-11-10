@@ -7,10 +7,16 @@
 //! SCM_RIGHTS and then closed here. A socket pair, not two pipes: a pipe can be opened again
 //! through /proc/<pid>/fd by any process of the same account, a socket cannot.
 //!
+//! Chromium may close itself when its stream ends, so the shell keeps its own end open for as long
+//! as the browser runs, and the hand-over connection stays open as a lease: when the service goes
+//! (an update, a crash) the lease ends and the shell offers the stream to the next one. The service
+//! is checked before anything is sent (`browser_peer`): the socket's directory belongs to the
+//! person's account, so whoever binds the path is asked who it is.
+//!
 //! Only the person's Browser gets one. A Mind View browser is launched with its own port, and
 //! `browser_launch::mind_view_args` drops the pipe flag from whatever a caller passed.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -18,10 +24,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use super::browser_peer::{ServiceIdentity, Verdict};
+
 pub use yantrik_browser_ports::PIPE_FLAG;
 
-/// How long the shell keeps offering the stream to a service that is not answering yet.
-const OFFER_FOR: Duration = Duration::from_secs(30);
+/// How long an offer may go unanswered before the shell says so; it keeps offering while the
+/// browser runs, because closing its end would close the Browser.
+const SAY_AFTER: Duration = Duration::from_secs(30);
+const RETRY: Duration = Duration::from_millis(500);
+/// How often a lease is checked for a browser that has gone.
+const LEASE_LOOK: Duration = Duration::from_secs(2);
 /// A second copy of a browser already open hands over and exits within this; it is not offered.
 const SETTLE: Duration = Duration::from_millis(1500);
 
@@ -94,26 +106,18 @@ fn alive(pid: u32) -> bool {
 
 impl Handoff {
     /// The browser is running as `pid`: close the browser's end here and offer ours to the
-    /// service, on a thread, retrying while it is not up. A browser that is gone by then (a
+    /// service, on a thread that lives as long as the browser. A browser that is gone by then (a
     /// second copy that handed over to the first) is not offered.
     pub fn offer(self, pid: u32) {
         let Handoff { mine, theirs } = self;
         drop(theirs);
         let spawned = std::thread::Builder::new().name("browser-pipe".into()).spawn(move || {
             std::thread::sleep(SETTLE);
-            let deadline = Instant::now() + OFFER_FOR;
-            while alive(pid) {
-                match send(&socket_path(), &mine, pid) {
-                    Ok(()) => return tracing::info!(pid, "The Browser's DevTools pipe is with the browser service"),
-                    Err(e) if Instant::now() < deadline => {
-                        tracing::debug!(error = %e, "The browser service did not take the pipe yet");
-                        std::thread::sleep(Duration::from_millis(500));
-                    }
-                    Err(e) => {
-                        return tracing::warn!(pid, error = %e, "The browser service never took the Browser's DevTools pipe; the Browser cannot be driven until it is opened again")
-                    }
-                }
-            }
+            let identity = match ServiceIdentity::installed() {
+                Ok(identity) => identity,
+                Err(e) => return tracing::error!(error = %e, "Cannot tell which process is the browser service; the Browser's pipe is not offered"),
+            };
+            keep_offered(&socket_path(), &mine, pid, &identity);
         });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "Could not start the thread that hands the Browser's pipe over");
@@ -121,9 +125,68 @@ impl Handoff {
     }
 }
 
-/// One hand-over: the JSON line `{"pid":N}` with `fd` in SCM_RIGHTS, then the service's reply line.
-pub fn send(path: &Path, fd: &OwnedFd, pid: u32) -> Result<(), String> {
-    let stream = UnixStream::connect(path).map_err(|e| format!("{}: {e}", path.display()))?;
+/// Offer `mine` to the service until the browser exits; each time the service lets go, again.
+fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, identity: &ServiceIdentity) {
+    let started = Instant::now();
+    let mut said = false;
+    while alive(pid) {
+        match send(path, mine, pid, identity) {
+            Ok(lease) => {
+                tracing::info!(pid, "The Browser's DevTools pipe is with the browser service");
+                said = false;
+                wait_for_lease_end(&lease, pid);
+                tracing::info!(pid, "The browser service let go of the Browser's pipe; offering it again");
+            }
+            Err(Refusal::Final(why)) => {
+                return tracing::warn!(pid, %why, "The Browser's DevTools pipe was not handed over, and will not be offered again; the Browser cannot be driven until it is opened again")
+            }
+            Err(Refusal::Retry(why)) => {
+                if !said && started.elapsed() > SAY_AFTER {
+                    said = true;
+                    tracing::warn!(pid, %why, "The browser service has not taken the Browser's DevTools pipe yet; still offering it");
+                }
+                tracing::debug!(%why, "The browser service did not take the pipe yet");
+            }
+        }
+        std::thread::sleep(RETRY);
+    }
+}
+
+/// Block until the service closes the hand-over connection, or the browser is gone.
+fn wait_for_lease_end(lease: &UnixStream, pid: u32) {
+    lease.set_read_timeout(Some(LEASE_LOOK)).ok();
+    let mut reader = lease;
+    let mut one = [0u8; 1];
+    while alive(pid) {
+        match reader.read(&mut one) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(_) => return,
+        }
+    }
+}
+
+/// Why an offer did not succeed: worth another try, or not.
+#[derive(Debug)]
+pub enum Refusal {
+    Retry(String),
+    Final(String),
+}
+
+/// One hand-over: connect, check who answers, then the JSON line `{"pid":N}` with `fd` in
+/// SCM_RIGHTS, then the service's reply line. The connection is returned: it is the lease, and
+/// stays open while the service holds the stream.
+pub fn send(path: &Path, fd: &OwnedFd, pid: u32, identity: &ServiceIdentity) -> Result<UnixStream, Refusal> {
+    let retry = |e: String| Refusal::Retry(e);
+    let stream = UnixStream::connect(path).map_err(|e| retry(format!("{}: {e}", path.display())))?;
+    match identity.check(&stream) {
+        Ok(()) => {}
+        Err(Verdict::Unreadable(why)) => return Err(retry(why)),
+        Err(Verdict::Impostor(why)) => {
+            return Err(Refusal::Final(format!("what answers on {} is not the browser service ({why}); nothing was sent", path.display())))
+        }
+    }
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
     let line = format!("{{\"pid\":{pid}}}\n");
@@ -147,20 +210,20 @@ pub fn send(path: &Path, fd: &OwnedFd, pid: u32) -> Result<(), String> {
         libc::sendmsg(stream.as_raw_fd(), &msg, 0)
     };
     if sent < 0 {
-        return Err(std::io::Error::last_os_error().to_string());
+        return Err(retry(std::io::Error::last_os_error().to_string()));
     }
     let mut reply = String::new();
-    BufReader::new(&stream).read_line(&mut reply).map_err(|e| e.to_string())?;
+    BufReader::new(&stream).read_line(&mut reply).map_err(|e| retry(e.to_string()))?;
     match reply.trim() {
-        "ok" => Ok(()),
-        other => Err(format!("the browser service answered: {other}")),
+        "ok" => Ok(stream),
+        other => Err(Refusal::Final(format!("the browser service answered: {other}"))),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
+    use super::super::browser_peer::tests::{this_process_is_not_the_service, this_process_is_the_service};
     use std::os::unix::net::UnixListener;
 
     #[test]
@@ -187,54 +250,105 @@ mod tests {
         assert_eq!(out, b"{\"got\":\"ping\"}\0");
     }
 
+    /// What a service does with one connection: the header line and the fd, from one recvmsg.
+    fn receive(conn: &UnixStream) -> (String, OwnedFd) {
+        let mut buf = [0u8; 64];
+        // SAFETY: CMSG_SPACE is arithmetic.
+        let mut control = vec![0u8; unsafe { libc::CMSG_SPACE(4) } as usize];
+        let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+        // SAFETY: buffers outlive the call; the message is read with the CMSG macros.
+        let (n, fd) = unsafe {
+            let mut msg: libc::msghdr = std::mem::zeroed();
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = control.len() as _;
+            let n = libc::recvmsg(conn.as_raw_fd(), &mut msg, 0);
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            assert_eq!((*cmsg).cmsg_type, libc::SCM_RIGHTS);
+            (n, std::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<RawFd>()))
+        };
+        // SAFETY: the kernel gave us this fd.
+        (String::from_utf8_lossy(&buf[..n as usize]).to_string(), unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    fn temp_socket(name: &str) -> (PathBuf, UnixListener) {
+        let dir = std::env::temp_dir().join(format!("yb-pipe-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("browser-pipe.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        (path, listener)
+    }
+
     /// The service receives the pid and a working fd, and the shell reads its "ok".
     #[test]
     fn the_stream_reaches_the_service_over_its_socket() {
-        let dir = std::env::temp_dir().join(format!("yb-pipe-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("browser-pipe.sock");
-        let listener = UnixListener::bind(&path).unwrap();
+        let (path, listener) = temp_socket("reach");
         let (mine, theirs) = socketpair().unwrap();
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 64];
-            // SAFETY: CMSG_SPACE is arithmetic.
-            let mut control = vec![0u8; unsafe { libc::CMSG_SPACE(4) } as usize];
-            let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
-            // SAFETY: buffers outlive the call; the message is read with the CMSG macros.
-            let (n, fd) = unsafe {
-                let mut msg: libc::msghdr = std::mem::zeroed();
-                msg.msg_iov = &mut iov;
-                msg.msg_iovlen = 1;
-                msg.msg_control = control.as_mut_ptr().cast();
-                msg.msg_controllen = control.len() as _;
-                let n = libc::recvmsg(conn.as_raw_fd(), &mut msg, 0);
-                let cmsg = libc::CMSG_FIRSTHDR(&msg);
-                assert_eq!((*cmsg).cmsg_type, libc::SCM_RIGHTS);
-                (n, std::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<RawFd>()))
-            };
-            let mut conn = conn;
-            conn.write_all(b"ok\n").unwrap();
-            // SAFETY: the kernel gave us this fd.
-            (String::from_utf8_lossy(&buf[..n as usize]).to_string(), unsafe { OwnedFd::from_raw_fd(fd) })
+            let got = receive(&conn);
+            (&conn).write_all(b"ok\n").unwrap();
+            (got, conn)
         });
-        send(&path, &mine, 4242).unwrap();
-        let (line, received) = server.join().unwrap();
+        let lease = send(&path, &mine, 4242, &this_process_is_the_service("handover")).unwrap();
+        let ((line, received), _conn) = server.join().unwrap();
         assert_eq!(line.trim(), "{\"pid\":4242}");
+        drop(lease);
         // The received fd is the same stream: a write on it arrives at `theirs`.
         UnixStream::from(received).write_all(b"x").unwrap();
         let mut one = [0u8; 1];
         UnixStream::from(theirs).read_exact(&mut one).unwrap();
         assert_eq!(&one, b"x");
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H1: a process that bound the path is not given the stream unless it is the service.
+    #[test]
+    fn a_listener_that_is_not_the_service_is_sent_nothing() {
+        let (path, listener) = temp_socket("impostor");
+        let (mine, _theirs) = socketpair().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            conn.read_to_end(&mut seen).unwrap();
+            seen
+        });
+        let err = send(&path, &mine, 4242, &this_process_is_not_the_service("impostor")).unwrap_err();
+        assert!(matches!(&err, Refusal::Final(why) if why.contains("not the browser service")), "{err:?}");
+        assert!(server.join().unwrap().is_empty(), "not a byte, and no fd, reached the impostor");
+    }
+
+    /// M3: when the service lets go (it restarted), the shell offers the same stream again, so the
+    /// Browser is never left on a pipe nobody holds; it stops when the browser exits.
+    #[test]
+    fn the_stream_is_offered_again_when_the_service_lets_go() {
+        let (path, listener) = temp_socket("lease");
+        let (mine, theirs) = socketpair().unwrap();
+        let mut browser = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = browser.id();
+        let identity = this_process_is_the_service("lease");
+        let shell = std::thread::spawn(move || keep_offered(&path, &mine, pid, &identity));
+        // The first service takes the stream and goes away; the second takes it again and stays.
+        let (first, _) = listener.accept().unwrap();
+        let (_, one) = receive(&first);
+        (&first).write_all(b"ok\n").unwrap();
+        drop((first, one));
+        let (second, _) = listener.accept().unwrap();
+        let (_, two) = receive(&second);
+        (&second).write_all(b"ok\n").unwrap();
+        UnixStream::from(two).write_all(b"y").unwrap();
+        let mut got = [0u8; 1];
+        UnixStream::from(theirs).read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"y", "the second service holds the browser's own stream");
+        browser.kill().unwrap();
+        browser.wait().unwrap();
+        shell.join().unwrap();
     }
 
     #[test]
     fn a_refusal_is_an_error_the_shell_logs() {
-        let dir = std::env::temp_dir().join(format!("yb-pipe-no-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("s.sock");
-        let listener = UnixListener::bind(&path).unwrap();
+        let (path, listener) = temp_socket("refusal");
         let (mine, _theirs) = socketpair().unwrap();
         let server = std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
@@ -242,9 +356,8 @@ mod tests {
             let _ = conn.read(&mut buf);
             conn.write_all(b"refused: only the desktop's shell hands over a browser\n").unwrap();
         });
-        let err = send(&path, &mine, 1).unwrap_err();
+        let err = send(&path, &mine, 1, &this_process_is_the_service("refusal")).unwrap_err();
         server.join().unwrap();
-        assert!(err.contains("refused"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(&err, Refusal::Final(why) if why.contains("refused")), "{err:?}");
     }
 }
