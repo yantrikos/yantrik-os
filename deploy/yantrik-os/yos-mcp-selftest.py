@@ -3675,6 +3675,10 @@ with tempfile.TemporaryDirectory() as d:
           all(w in " ".join(module.AGENT_BY_NAME["run_sealed_command"]["description"].split())
               for w in ("runs as the person's account", "startup files included", "#1137 step 3")), None)
 
+    check("run_command, the tool that runs agent_run, says the same: loopback and startup files",
+          all(w in " ".join(module.AGENT_BY_NAME["run_command"]["description"].split())
+              for w in ("7450", "7460", "11434", "9223", "runs as the person's account", "startup files included", "#1137 step 3")), None)
+
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed
     # call learning it was not a surface (#190). Run through the real `yos`, against sockets: the

@@ -230,7 +230,8 @@ fn writable_ancestor(path: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Where the installer and the updater leave a note that the machine must restart to finish.
+/// Where first-boot setup (cloud-init's kernel swap) leaves a note that the machine must restart to
+/// finish. The updater does not write it: an update is covered by the folder's birth time.
 pub const REBOOT_MARKER: &str = "/var/lib/yantrik/.reboot-needed";
 
 thread_local! {
@@ -284,7 +285,13 @@ fn gate(fd: i32) -> Result<(), String> {
         None => Some((session_start_ns(euid()), Path::new(REBOOT_MARKER).exists())),
     };
     let Some((session, marker)) = inputs else { return Ok(()) };
-    session_gate(born_ns(fd), session, marker)
+    let born = born_ns(fd);
+    // It lets a grant through when it cannot read a time. Said once, so the person can tell.
+    static SAID: std::sync::Once = std::sync::Once::new();
+    if born.is_none() || session.is_none() {
+        SAID.call_once(|| eprintln!("workshops: no {} to compare, so the login-session check cannot run (no grant is refused for it)", if born.is_none() { "folder birth time" } else { "logind session record" }));
+    }
+    session_gate(born, session, marker)
 }
 
 /// The person's root, held. Names are resolved relative to the descriptor ([`OpenRoot::via`]).

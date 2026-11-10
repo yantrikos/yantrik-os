@@ -776,7 +776,13 @@ AGENT_TOOLS = [
                        "command_status waits for it again, command_input types into it, "
                        "command_kill stops it; if it finishes later you are told at the start of "
                        "your next turn. It runs as the person, so it is graded sensitive: in `ask` "
-                       "mode the person sees a card with the command and allows it first.",
+                       "mode the person sees a card with the command and allows it first. "
+                       "It shares the host's network and loopback: it reaches the egress ports 7450 "
+                       "and 7451, the gateway on 7460 (with a token), the local model on 11434, "
+                       "Mind View's browser on 9223 (until jobs run as their own account) and anything "
+                       "the person runs. A job runs as the person's account and can change the "
+                       "person's own files, startup files included; what those run later is in no "
+                       "view (until jobs run as their own account, #1137 step 3).",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -39,7 +39,8 @@ session runs at login, and under a session rule it needs no card to do so. Givin
 of their own (#1137, step 3) comes after launch. Until then, these are known and open:
 
 - **The DevTools route (#1137).** A job shares the host's loopback, so it can drive Mind View's
-  browser on 9223. That browser has no view of the workshops, but it is a browser a job controls.
+  browser on 9223. That browser, and the companion's own headless browser and Arcade's verifier, start in a view with no
+  workshops, but a job can still drive them.
 - **The startup-file route (#1137, step 3).** A job can append to `~/.bashrc`, `~/.bash_profile`,
   `~/.config/labwc/*`, `~/.config/systemd/user`, `~/.local/share/applications`, `mimeapps.list` or
   a browser profile. What those run later runs in no view. The acceptance for the fix is that
@@ -49,8 +50,8 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
   on the machine.
 - **No sound in `workshop_present`.** The player runs with no audio path until a safer one exists.
 - **Programs already running when the workshops folder was made** do not have it hidden. No
-  workshop is granted until you log out and back in after the folder is made or an update asks
-  for a restart.
+  workshop is granted until you log out and back in after the folder is made (an update that makes it starts a new session) or first-boot setup
+  asks for a restart.
 
 ## Supported versions
 
