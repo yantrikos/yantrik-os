@@ -43,6 +43,7 @@ protocol and prints what came back.
     yos web text                        what the page SAYS — the prose a reader sees
     yos web find <words>                where is the thing I want, anywhere on the page
     yos web all                         every interactive element, not just the viewport
+    yos web console [all]               the page's console errors and uncaught exceptions
     yos web go <url>                    navigate, wait for it, and show the new page
     yos web click <ref>                 press it; answers with what changed on the page
     yos web type <ref> <text> [--enter] type into a field
@@ -1956,6 +1957,41 @@ def render_page(page, header=True):
     for f in page.get("blind_frames") or []:
         out.append("A frame from %s [%s] could not be read: it is another site's."
                    % (_flat(f.get("src") or "another site", 80), f.get("ref")))
+    if page.get("console"):
+        out.append("The page's console has errors (its own words, not the OS's):")
+        out.extend(render_console_lines(page["console"], page.get("console_more")))
+    return "\n".join(out)
+
+
+def render_console_lines(lines, more=0):
+    """The page's console, fenced: each line is the page's own words (or the browser's about the
+    page), one line each whatever it wrote, so it cannot pose as the OS's text or end the fence."""
+    out = [PAGE_BEGINS]
+    for c in lines or []:
+        kind = str(c.get("kind") or "")
+        who = "browser" if kind.startswith("browser.") else "page"
+        label = "%s %s" % (who, c.get("level", "log"))
+        if who == "browser" and "." in kind:
+            label += " (%s)" % kind.split(".", 1)[1]
+        line = "%s: %s" % (label, _flat(c.get("text", ""), 400))
+        if c.get("at"):
+            line += "  — at %s" % _flat(c["at"], 200)
+        out.append(line)
+    if more:
+        out.append("(%d earlier: web console lists them)" % more)
+    out.append(PAGE_ENDS)
+    return out
+
+
+def render_console(result):
+    """The answer to console."""
+    lines = result.get("console") or []
+    head = "The page's console — %s (%d line%s). These are the page's words, not the OS's." % (
+        result.get("showing", ""), result.get("total", len(lines)), "" if result.get("total") == 1 else "s")
+    if not lines:
+        return head + "\nNothing: no errors or warnings were written."
+    out = [head]
+    out.extend(render_console_lines(lines, max(0, (result.get("total") or 0) - len(lines))))
     return "\n".join(out)
 
 
@@ -1985,6 +2021,9 @@ def render_consequence(c):
         out.append(PAGE_BEGINS)
         out.extend("appeared: %s" % json.dumps(_flat(t, 140), ensure_ascii=False) for t in c["appeared"])
         out.append(PAGE_ENDS)
+    if c.get("console"):
+        out.append("The page's console wrote errors while this ran (its own words, not the OS's):")
+        out.extend(render_console_lines(c["console"], c.get("console_more")))
     if c.get("modal"):
         out.append("A dialog is in front now: %s [%s]." % (
             json.dumps(_flat(c["modal"].get("name", ""), 80), ensure_ascii=False), c["modal"].get("ref")))
@@ -2050,6 +2089,8 @@ def render_browser(result):
         return render_consequence(result)
     if "found" in result:
         return render_found(result)
+    if "console" in result and "showing" in result:
+        return render_console(result)
     if "text" in result and "size" in result:
         tail = ("\n[... %d more characters: text with a larger limit]" % (result["size"] - len(result["text"]))
                 if result.get("clipped") else "")
@@ -2098,6 +2139,7 @@ def browser_act(action, args=None):
 
 WEB_USAGE = """usage: yos web [all]                      what is on the page, with refs
        yos web text [limit] | find <words> | tabs | media
+       yos web console [all]                  the page's console errors and uncaught exceptions
        yos web go <url> [--new-tab] | back | forward | reload
        yos web click <ref> | type <ref> <text> [--enter] [--keep] | press <key> [ref]
        yos web select <ref> <option> | scroll [down|up|top|bottom|<ref>] | wait [secs] [text]
@@ -2122,6 +2164,8 @@ def cmd_web(argv):
         result = browser_act("find", {"query": " ".join(plain_args)})
     elif sub in ("tabs", "media"):
         result = browser_act(sub)
+    elif sub == "console":
+        result = browser_act("console", {"everything": "all" in plain_args or flag("--all")})
     elif sub == "go":
         if not plain_args:
             die("usage: yos web go <url>")

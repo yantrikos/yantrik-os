@@ -37,6 +37,11 @@ class PageRefused(Refused):
 
 BUSY_WAIT = 20.0      # seconds an act waits for the one before it to finish
 
+# The page's console (#1152): what `read` and every act carry of it, and what `console` lists.
+CONSOLE_IN_READ = 8       # recent errors and warnings a reading or an act's answer carries
+CONSOLE_LIMIT = 30        # lines `console` lists at once
+ERRORS = ("error", "warning")
+
 # Controls that Enter or Space presses when they have the focus.
 PRESSED_BY_KEYS = {"button", "link", "clickable", "menuitem", "menuitemcheckbox", "menuitemradio",
                    "tab", "switch", "checkbox", "radio", "option", "treeitem"}
@@ -73,6 +78,13 @@ def commitment_of(element):
             and not element.get("scripted") and word in commit.LINK_WORDS):
         return None
     return word
+
+
+def _favicon_noise(entry):
+    """The one error a clean page produces: the browser asking for /favicon.ico and not finding
+    it. Left out of the errors a reading carries (it says nothing about the page's code); kept
+    where `everything` is asked for."""
+    return entry.get("kind") == "browser.network" and str(entry.get("at", "")).endswith("/favicon.ico")
 
 
 class Driver:
@@ -167,6 +179,7 @@ class Driver:
         before_nav = tab.navigations
         before_url = tab.url
         before_tabs = {t.id for t in self.browser.pages()}
+        before_console = tab.console_seq
         if watch:
             self._run(tab, "watch")
         work()
@@ -175,9 +188,11 @@ class Driver:
             # A click that started a page load is given a page load's time, not a click's.
             more, why = hands.settle(self.browser, tab, NAVIGATE_LIMIT - limit, since_navigations=before_nav)
             took = round(took + more, 2)
-        return self._consequence(tab, doing, before_nav, before_url, before_tabs, took, why, watch)
+        return self._consequence(tab, doing, before_nav, before_url, before_tabs, took, why, watch,
+                                 before_console)
 
-    def _consequence(self, tab, doing, before_nav, before_url, before_tabs, took, why, watched):
+    def _consequence(self, tab, doing, before_nav, before_url, before_tabs, took, why, watched,
+                     before_console=0):
         out = {"did": doing, "settled_in": took}
         if why == "limit":
             out["still_loading"] = True
@@ -193,7 +208,7 @@ class Driver:
         if tab.dialog:
             out["dialog"] = dict(tab.dialog)
             out["url"] = tab.url
-            return out
+            return self._with_console(out, tab, before_console)
         navigated = tab.navigations > before_nav or tab.url != before_url
         if not navigated and watched and not new:
             try:
@@ -210,7 +225,9 @@ class Driver:
             out["page"] = page
         elif page.get("modal"):
             out["modal"] = page["modal"]
-        return out
+        # The page's errors and warnings that appeared while this ran (#1152): a click whose
+        # handler threw, a page whose script did not parse. The run-and-look loop's one reading.
+        return self._with_console(out, tab, before_console)
 
     # ── reading ──
 
@@ -263,6 +280,44 @@ class Driver:
                     e["commitment"] = word
         return page
 
+    # ── the page's console ──
+
+    @staticmethod
+    def _console_lines(tab, since=0, this_page=True, levels=ERRORS, limit=CONSOLE_IN_READ):
+        """The console lines kept for `tab` after entry `since`: of this page only (since its
+        last navigation) unless told otherwise, at the `levels` given (None for all). Every line
+        is marked `from: page`: these are the page's words, or the browser's about the page, and
+        never the OS's. Returns (the last `limit` of them, how many there were)."""
+        now = time.monotonic()
+        picked = [e for e in tab.console
+                  if e["seq"] > since and (not this_page or e["nav"] == tab.navigations)
+                  and (levels is None or (e["level"] in levels and not _favicon_noise(e)))]
+        lines = [{"level": e["level"], "kind": e["kind"], "text": e["text"], "at": e["at"],
+                  "from": "page", "ago": round(now - e["when"], 1)} for e in picked[-limit:]]
+        return lines, len(picked)
+
+    def _with_console(self, out, tab, since=0):
+        """Put the page's recent errors and warnings (after `since`) on an answer, when there are any."""
+        lines, total = self._console_lines(tab, since)
+        if lines:
+            out["console"] = lines
+            if total > len(lines):
+                out["console_more"] = total - len(lines)
+        return out
+
+    def console(self, tab=None, everything=False, limit=CONSOLE_LIMIT):
+        """What the page wrote to its console and the exceptions nobody caught: its errors and
+        warnings since it was last loaded, or with `everything` its logs too and the lines kept
+        from the pages before it in this tab."""
+        limit = max(1, min(int(limit or CONSOLE_LIMIT), 200))
+        with self.held():
+            t = self._tab(tab)
+            lines, total = self._console_lines(t, 0, this_page=not everything,
+                                               levels=None if everything else ERRORS, limit=limit)
+            return {"console": lines, "total": total, "url": t.url, "title": t.title, "tab": short(t.id),
+                    "showing": ("every line kept for this tab, logs included"
+                                if everything else "errors and warnings since this page was loaded")}
+
     def read(self, tab=None, all=False):
         with self.held():
             t = self._tab(tab)
@@ -270,7 +325,7 @@ class Driver:
             page["tab"] = short(t.id)
             if t.dialog:
                 page["dialog"] = dict(t.dialog)
-            return page
+            return self._with_console(page, t)
 
     def media(self, tab=None):
         with self.held():

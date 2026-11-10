@@ -9,6 +9,7 @@ Thread-safe: calls come from the surface's connection threads; one reader thread
 and keeps the event state (tabs, dialogs, requests in flight) the waits read.
 """
 
+import collections
 import json
 import os
 import threading
@@ -20,6 +21,8 @@ from . import ports
 
 WORLD = "yantrik-browser"
 CALL_TIMEOUT = 20.0
+CONSOLE_KEEP = 80          # console lines kept per tab: errors, warnings, logs and uncaught exceptions
+CONSOLE_LINE = 600         # characters kept of one line
 
 _PAGE_JS = None
 
@@ -41,6 +44,80 @@ class CdpError(Exception):
     """The browser refused a command."""
 
 
+def _line(text, cap=CONSOLE_LINE):
+    """One line of a page's words: whitespace (newlines included) folded to single spaces, other
+    control characters dropped, and cut at `cap`. A page's console is the page's to write, and a
+    newline in it would start a line of its own in whatever reads this back — a fake fence, a
+    fake instruction. So nothing a page writes ever reaches a reader as more than one line."""
+    text = "".join(c for c in str(text or "") if c.isprintable() or c in " \t\n\r")
+    text = " ".join(text.split())
+    return text if len(text) <= cap else text[:cap - 1] + "…"
+
+
+def _place(url, line, column):
+    """`url:line:col` as a person reads it (DevTools counts from 0; editors from 1)."""
+    if not url and line is None:
+        return ""
+    out = str(url or "")
+    if isinstance(line, int):
+        out += ":%d" % (line + 1)
+        if isinstance(column, int):
+            out += ":%d" % (column + 1)
+    return out
+
+
+def _value_of(arg):
+    """One console argument (a RemoteObject) as text."""
+    if "value" in arg:
+        v = arg["value"]
+        return v if isinstance(v, str) else json.dumps(v)
+    if arg.get("unserializableValue"):
+        return str(arg["unserializableValue"])
+    return str(arg.get("description") or arg.get("type") or "")
+
+
+def exception_entry(details):
+    """A `Runtime.exceptionThrown`: "Uncaught SyntaxError: Unexpected token ';'" and where."""
+    exc = details.get("exception") or {}
+    described = str(exc.get("description") or "").splitlines()
+    head = described[0] if described else str(exc.get("value") or "")
+    text = " ".join(w for w in (str(details.get("text") or "").strip(), head) if w)
+    url, line, col = details.get("url"), details.get("lineNumber"), details.get("columnNumber")
+    frames = (details.get("stackTrace") or {}).get("callFrames") or []
+    if not url and frames:
+        url, line, col = frames[0].get("url"), frames[0].get("lineNumber"), frames[0].get("columnNumber")
+    return {"level": "error", "kind": "exception", "text": _line(text or "an uncaught exception"),
+            "at": _line(_place(url, line, col), 300)}
+
+
+CONSOLE_LEVELS = {"error": "error", "assert": "error", "warning": "warning"}
+
+
+def console_entry(p):
+    """A `Runtime.consoleAPICalled`: console.error / warn / log / info / debug and the rest, or
+    None for the calls that say nothing (clear, group ends, timers, profiles)."""
+    kind = str(p.get("type") or "log")
+    if kind in ("clear", "endGroup", "startGroup", "startGroupCollapsed", "profile", "profileEnd",
+                "timeEnd", "count"):
+        return None
+    text = " ".join(_value_of(a) for a in (p.get("args") or []) if isinstance(a, dict))
+    frames = (p.get("stackTrace") or {}).get("callFrames") or []
+    at = _place(frames[0].get("url"), frames[0].get("lineNumber"), frames[0].get("columnNumber")) if frames else ""
+    return {"level": CONSOLE_LEVELS.get(kind, "log"), "kind": "console." + kind,
+            "text": _line(text), "at": _line(at, 300)}
+
+
+def log_entry(entry):
+    """A `Log.entryAdded`: the browser's own report about the page — a resource that failed to
+    load (404), a security or deprecation notice — with the resource it is about."""
+    level = str(entry.get("level") or "info")
+    text = str(entry.get("text") or "")
+    source = str(entry.get("source") or "browser")
+    at = _place(entry.get("url"), entry.get("lineNumber"), None)
+    return {"level": {"error": "error", "warning": "warning"}.get(level, "log"),
+            "kind": "browser." + source, "text": _line(text), "at": _line(at, 300)}
+
+
 class Tab:
     """What the connection knows about one page target."""
 
@@ -57,6 +134,12 @@ class Tab:
         self.loaded = True
         self.navigations = 0
         self.opened_by = None      # the tab this one was opened from, if any
+        # What the page wrote to its console and the exceptions nobody caught (#1152): the
+        # page's own words, kept so a reader can see "Uncaught SyntaxError at line 4091"
+        # without DevTools. Each entry is numbered (`console_seq`) so an act can say which
+        # lines appeared while it ran, and carries the navigation it belongs to.
+        self.console = collections.deque(maxlen=CONSOLE_KEEP)
+        self.console_seq = 0
 
 
 class Browser:
@@ -275,6 +358,21 @@ class Browser:
         elif method in ("Network.loadingFinished", "Network.loadingFailed"):
             tab.inflight.pop(p.get("requestId"), None)
             tab.last_network = time.monotonic()
+        elif method == "Runtime.exceptionThrown":
+            self._console(tab, exception_entry(p.get("exceptionDetails") or {}))
+        elif method == "Runtime.consoleAPICalled":
+            entry = console_entry(p)
+            if entry is not None:
+                self._console(tab, entry)
+        elif method == "Log.entryAdded":
+            self._console(tab, log_entry(p.get("entry") or {}))
+
+    def _console(self, tab, entry):
+        tab.console_seq += 1
+        entry["seq"] = tab.console_seq
+        entry["nav"] = tab.navigations
+        entry["when"] = time.monotonic()
+        tab.console.append(entry)
 
     # ── tabs ──
 
@@ -303,7 +401,7 @@ class Browser:
         got = self.call("Target.attachToTarget", {"targetId": tab.id, "flatten": True})
         tab.session = got["sessionId"]
         self.by_session[tab.session] = tab
-        for method in ("Page.enable", "Runtime.enable", "Network.enable"):
+        for method in ("Page.enable", "Runtime.enable", "Network.enable", "Log.enable"):
             self.call(method, session=tab.session)
         tree = self.call("Page.getFrameTree", session=tab.session)
         tab.main_frame = tree["frameTree"]["frame"]["id"]
