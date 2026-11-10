@@ -23,6 +23,8 @@ mod colour_roles;
 #[cfg(test)]
 mod slint_source;
 #[cfg(test)]
+mod selectable_chat;
+#[cfg(test)]
 mod design_lint;
 
 #[cfg(test)]

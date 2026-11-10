@@ -18,6 +18,8 @@ import { YButton } from "components/y_button.slint";
 import { YInput } from "components/y_input.slint";
 import { YNoticeBar } from "components/notice_bar.slint";
 import { ToolCallData, ToolCallCard } from "components/tool_call.slint";
+import { SelectableText } from "components/selectable_text.slint";
+import { CodeBlock } from "components/code_block.slint";
 import { ApprovalRequest, ApprovalCard } from "components/intent_lens.slint";
 import { QuestionCard } from "components/question_card.slint";
 import { ContentBlock } from "components/message_bubble.slint";
@@ -331,7 +333,7 @@ component ItemView inherits Rectangle {
                     color: Theme.text-dim;
                     font-size: Theme.fs-caption;
                 }
-                Text {
+                SelectableText {
                     text: root.item.text;
                     color: Theme.text-primary;
                     font-size: Theme.fs-body;
@@ -353,32 +355,20 @@ component ItemView inherits Rectangle {
             default-font-size: Theme.fs-body;
             link-color: Theme.accent;
         }
-        if root.item.kind == "text" && root.item.block == "heading" : Text {
+        if root.item.kind == "text" && root.item.block == "heading" : SelectableText {
             text: root.item.text;
             color: Theme.amber-light;
             font-size: Theme.font-title;
             font-weight: 600;
             wrap: word-wrap;
         }
-        if root.item.kind == "text" && root.item.block == "code" : Rectangle {
-            background: Theme.bg-input;
-            border-radius: 6px;
-            border-width: 1px;
-            border-color: Theme.border-subtle;
-            height: code.preferred-height + 16px;
-            code := Text {
-                x: 10px;
-                y: 8px;
-                width: parent.width - 20px;
-                text: root.item.text;
-                color: Theme.cyan-light;
-                font-family: Theme.font-mono;
-                font-size: Theme.font-small;
-                wrap: word-wrap;
-            }
+        if root.item.kind == "text" && root.item.block == "code" : CodeBlock {
+            text: root.item.text;
+            card: Theme.bg-input;
+            font-family: Theme.font-mono;
         }
         // Text with no block: drawn as it is.
-        if root.item.kind == "text" && root.item.block == "" : Text {
+        if root.item.kind == "text" && root.item.block == "" : SelectableText {
             text: root.item.text;
             color: Theme.text-primary;
             font-size: Theme.fs-body;
