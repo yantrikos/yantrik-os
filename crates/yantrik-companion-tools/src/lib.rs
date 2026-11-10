@@ -19,6 +19,7 @@ pub mod bluetooth;
 pub mod browser;
 pub mod browser_lifecycle;
 pub mod browser_side;
+mod browser_spawn;
 pub mod calculator;
 pub mod canvas;
 pub mod claude;
