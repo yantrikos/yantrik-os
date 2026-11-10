@@ -131,11 +131,9 @@ impl Handoff {
         drop(theirs);
         let spawned = std::thread::Builder::new().name("browser-pipe".into()).spawn(move || {
             std::thread::sleep(SETTLE);
-            let identity = match ServiceIdentity::installed(service_pid()) {
-                Ok(identity) => identity,
-                Err(e) => return tracing::error!(error = %e, "Cannot tell which process is the browser service; the Browser's pipe is not offered"),
-            };
-            keep_offered(&socket_path(), &mine, pid, &identity);
+            // Read afresh for every offer: a restarted service has a new pid, and the service
+            // manager records the current one on every start it performs.
+            keep_offered(&socket_path(), &mine, pid, || ServiceIdentity::installed(service_pid()));
         });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "Could not start the thread that hands the Browser's pipe over");
@@ -144,11 +142,16 @@ impl Handoff {
 }
 
 /// Offer `mine` to the service until the browser exits; each time the service lets go, again.
-fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, identity: &ServiceIdentity) {
+/// `identity` is asked for before each offer, so the pid it expects is the service's current one.
+fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, identity: impl Fn() -> std::io::Result<ServiceIdentity>) {
     let started = Instant::now();
     let mut said = false;
     while alive(pid) {
-        match send(path, mine, pid, identity) {
+        let identity = match identity() {
+            Ok(identity) => identity,
+            Err(e) => return tracing::error!(pid, error = %e, "Cannot tell which process is the browser service; the Browser's pipe is not offered"),
+        };
+        match send(path, mine, pid, &identity) {
             Ok(lease) => {
                 tracing::info!(pid, "The Browser's DevTools pipe is with the browser service");
                 said = false;
@@ -347,8 +350,7 @@ mod tests {
         let (mine, theirs) = socketpair().unwrap();
         let mut browser = Command::new("sleep").arg("30").spawn().unwrap();
         let pid = browser.id();
-        let identity = this_process_is_the_service("lease");
-        let shell = std::thread::spawn(move || keep_offered(&path, &mine, pid, &identity));
+        let shell = std::thread::spawn(move || keep_offered(&path, &mine, pid, || Ok(this_process_is_the_service("lease"))));
         // The first service takes the stream and goes away; the second takes it again and stays.
         let (first, _) = listener.accept().unwrap();
         let (_, one) = receive(&first);
@@ -363,6 +365,68 @@ mod tests {
         assert_eq!(&got, b"y", "the second service holds the browser's own stream");
         browser.kill().unwrap();
         browser.wait().unwrap();
+        shell.join().unwrap();
+    }
+
+    /// M3 with a real restart: the second service is another process, with another pid, which
+    /// the service manager has recorded by the time the shell offers again. The check reads the
+    /// current pid, so the restarted service is accepted (the first one was the test process).
+    #[test]
+    fn a_restarted_service_with_a_new_pid_is_offered_the_stream() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        let (path, listener) = temp_socket("restart");
+        let (mine, _theirs) = socketpair().unwrap();
+        let mut browser = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = browser.id();
+        let recorded = Arc::new(AtomicU32::new(std::process::id()));
+        let identity = {
+            let recorded = recorded.clone();
+            move || {
+                let mut now = this_process_is_the_service("restart");
+                now.service_pid = Some(recorded.load(Ordering::SeqCst));
+                Ok(now)
+            }
+        };
+        let offered = path.clone();
+        let shell = std::thread::spawn(move || keep_offered(&offered, &mine, pid, identity));
+        let (first, _) = listener.accept().unwrap();
+        let _ = receive(&first);
+        (&first).write_all(b"ok
+").unwrap();
+        // The service goes away; a new process takes its place, and the manager records its pid.
+        drop((first, listener));
+        let _ = std::fs::remove_file(&path);
+        let script = r#"
+import socket, sys
+sys.stdin.readline()
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.listen(1)
+c, _ = s.accept()
+c.recvmsg(64, 64)
+c.sendall(b"ok" + bytes([10]))
+print("held", flush=True)
+c.recv(1)
+"#;
+        let mut service = Command::new("python3")
+            .args(["-c", script, path.to_str().unwrap()])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let new_pid = service.id();
+        super::super::browser_peer::tests::fake_proc_for(new_pid, "restart", super::super::browser_peer::tests::SHELL, Path::new("/bin/sh"), &["python3", this_process_is_the_service("restart").script.to_str().unwrap()]);
+        recorded.store(new_pid, Ordering::SeqCst);
+        service.stdin.as_mut().unwrap().write_all(b"go
+").unwrap();
+        let mut held = String::new();
+        BufReader::new(service.stdout.take().unwrap()).read_line(&mut held).unwrap();
+        assert_eq!(held.trim(), "held", "the restarted service (pid {new_pid}) was handed the stream");
+        browser.kill().unwrap();
+        browser.wait().unwrap();
+        service.kill().unwrap();
+        service.wait().unwrap();
         shell.join().unwrap();
     }
 

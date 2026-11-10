@@ -154,7 +154,7 @@ pub(crate) mod tests {
     use std::os::unix::net::UnixListener;
 
     const ME: u32 = 1000;
-    const SHELL: u32 = 500;
+    pub(crate) const SHELL: u32 = 500;
     const SERVICE: u32 = 700;
 
     /// A fake /proc with one process whose parent, program and command line are as given.
@@ -162,7 +162,7 @@ pub(crate) mod tests {
         fake_proc_for(SERVICE, name, parent, exe, cmdline)
     }
 
-    fn fake_proc_for(pid: u32, name: &str, parent: u32, exe: &Path, cmdline: &[&str]) -> PathBuf {
+    pub(crate) fn fake_proc_for(pid: u32, name: &str, parent: u32, exe: &Path, cmdline: &[&str]) -> PathBuf {
         let root = std::env::temp_dir().join(format!("yb-peer-{name}-{}", std::process::id()));
         let at = root.join(pid.to_string());
         fs::create_dir_all(&at).unwrap();
