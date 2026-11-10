@@ -35,11 +35,11 @@ browser_cleanup safe fixed
 browser_click standard fixed
 browser_click_element standard fixed
 browser_click_xy standard fixed
+browser_login sensitive fixed
 browser_read safe fixed
 browser_screenshot safe fixed
 browser_scroll safe fixed
 browser_search standard fixed
-browser_see safe fixed
 browser_snapshot safe fixed
 browser_status safe fixed
 browser_tabs safe fixed
@@ -108,6 +108,14 @@ list_workspace_templates safe none
 manage_files dangerous none
 memory_stats safe none
 mount_info safe fixed
+network_diagnose safe fixed
+network_dns safe none
+network_dns_set sensitive none
+network_interfaces safe none
+network_ping safe fixed
+network_ports safe fixed
+network_traceroute safe fixed
+network_vpn_status safe fixed
 open_url standard browser
 package_info safe fixed
 package_install dangerous fixed

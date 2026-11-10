@@ -63,8 +63,7 @@ impl Tool for ListProcessesTool {
         {
             Ok(output) if output.status.success() => {
                 let all = String::from_utf8_lossy(&output.stdout);
-                let text: String = all.lines().take(limit + 1).collect::<Vec<_>>().join("
-"); // +1 for header
+                let text: String = all.lines().take(limit + 1).collect::<Vec<_>>().join("\n"); // +1 for header
                 if filter.is_empty() {
                     text.to_string()
                 } else {

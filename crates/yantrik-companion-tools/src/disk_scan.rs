@@ -80,8 +80,8 @@ pub fn extension_counts(dir: &Path) -> Vec<(usize, String)> {
 mod tests {
     use super::*;
 
-    fn tree() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("yantrik-disk-scan-{}", std::process::id()));
+    fn tree(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("yantrik-disk-scan-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("big/deep/deeper")).unwrap();
         std::fs::create_dir_all(dir.join(".hidden")).unwrap();
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn the_biggest_items_leave_dotfiles_out_and_sort_by_size() {
-        let dir = tree();
+        let dir = tree("items");
         let items = largest_items(&dir);
         assert_eq!(items.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(), ["big", "small.rs"]);
         assert!(items[0].0 >= 5010);
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn extensions_count_two_levels_and_old_files_need_thirty_days() {
-        let dir = tree();
+        let dir = tree("ext");
         // depth 1: small.rs; depth 2: big/a.txt and the .hidden/h.md; depth 3 is not looked at.
         let ext = extension_counts(&dir);
         assert_eq!(ext, vec![(1, "md".to_string()), (1, "rs".to_string()), (1, "txt".to_string())]);

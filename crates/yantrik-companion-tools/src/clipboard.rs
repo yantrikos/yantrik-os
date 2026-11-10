@@ -626,7 +626,7 @@ fn strip_html_tags(html: &str) -> String {
 /// Simple base64 decode, in this process: no program and no shell is started for it.
 fn base64_decode(input: &str) -> Option<String> {
     use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
-    let clean: String = input.chars().filter(|c| !c.is_whitespace() && *c != ''').collect();
+    let clean: String = input.chars().filter(|c| !c.is_whitespace() && *c != '\'').collect();
     // Padding is optional, as `base64 -d` was lenient about it.
     let bytes = STANDARD_NO_PAD.decode(clean.trim_end_matches('=')).ok()?;
     let decoded = String::from_utf8_lossy(&bytes).to_string();
