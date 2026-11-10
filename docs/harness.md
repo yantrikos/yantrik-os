@@ -308,11 +308,20 @@ nothing else of the context should show it these: `turn.notes_before(turn.text)`
 front of the person's message, which is what pi does.
 
 **Stopping.** When the person stops an agent, the turns waiting for it are failed, the one in
-flight is settled for the reader at once, and the harness's next poll carries `cancelled: [turn_id]`
-(stop working on it) and, for a harness with conversations, `ended: [conversation]` (let go of its
-process and history). Both are advisory. Whatever the harness still sends for a cancelled turn is
-answered `{"dropped": true}`, and closing it is accepted. A harness that attaches again — it
-restarted, or the desktop did — gets new agents; the old conversations and their tokens are gone.
+flight is settled for the reader at once, and the harness is told on its next poll:
+`cancelled: [turn_id]` (stop working on it) and, for a harness with conversations,
+`ended: [conversation]` (let go of its process and history). A harness that is mid-turn and only
+sending learns the same from the answer to its chunk, `{"dropped": true}`; one that polls while it
+works (Hermes does) hears it within a poll. Either way the desktop has only *told* the harness:
+nothing in the protocol stops the agent. The harness interrupts the run with its own stop and lets
+go of anything the run is waiting on (a question it asked), so the next message is an ordinary
+turn. Hermes does this in `harnesses/hermes/stop.py`: the pending clarify is cleared, its `/stop`
+is sent and waited for, and the turn is closed only once `/stop` has returned; a `/stop` that
+failed or did not return closes the turn saying Hermes did not stop. A harness that cannot be
+told, or does not act, is not claimed to have stopped: the desktop only says it stopped waiting.
+Whatever the harness still sends for a cancelled turn is answered `{"dropped": true}`, and closing
+it is accepted. A harness that attaches again — it restarted, or the desktop did — gets new
+agents; the old conversations and their tokens are gone.
 
 **Runs and questions (#25).** Every turn a harness takes is kept as a *run*: its state and a
 sequenced log of what it streamed, written before the call that sent it is answered, in
