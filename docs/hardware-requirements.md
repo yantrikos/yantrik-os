@@ -15,7 +15,7 @@ telling people to install Alpine Linux.
 
 | | |
 |---|---|
-| Size | **1,411,915,776 bytes — about 1.31 GiB** (measured: `bytes` in `https://iso.yantrikos.com/nightly/latest.json`, build `v0.1.0-304`, 2026-09-22) |
+| Size | **1,973,063,680 bytes — about 1.84 GiB** (measured: `bytes` in `https://iso.yantrikos.com/nightly/latest.json`, build `v0.1.0-2409`, 2026-11-08). About 0.5 GiB more once Hermes is baked in (PR #1169) |
 | Format | Hybrid BIOS + EFI ISO, `grub-mkrescue`. Write it to a USB stick or attach it to a VM |
 | Channel | **nightly only.** `beta` and `stable` are names the updater knows; nothing has ever been published to either |
 
@@ -67,7 +67,10 @@ desktop is fully usable on it.
 
 - **Real hardware of any kind.** No published image has been booted on a physical machine by
   this project.
-- **The UEFI boot path.** It is built into every image and CI boots the BIOS path.
+- **The UEFI boot path on real firmware.** It is built into every image and CI boots the BIOS
+  path. By hand, on 9 Nov 2026, it installed to and booted from a Proxmox VM with OVMF (EDK II)
+  firmware, an EFI system partition and an encrypted root (measured on that VM: `/sys/firmware/efi`
+  present, `lsblk` shows `/boot/efi` and a LUKS root). One VM is not a hardware matrix.
 - **Any GPU other than QEMU's virtio-vga.** NVIDIA, AMD and Intel hardware acceleration are
   untested here.
 - **Wi-Fi on real adapters.**
@@ -88,7 +91,7 @@ Start from what is known to work rather than from a guess:
 | RAM | 8 GB | 4 GB (CI) |
 | Disk | 32 GB | none, if you only boot live |
 | GPU | none needed | none needed |
-| Firmware | BIOS | BIOS |
+| Firmware | BIOS or UEFI (OVMF) | BIOS (CI); UEFI by hand, once |
 
 Below 4 GB is **not measured** — it may well work, and no one has tried it, so this page is
 not going to print a number.

@@ -3,7 +3,8 @@
 **Draft only. Nothing here has been posted.** Post one place at a time, a day or more apart, and
 read each community's self-promotion rules first; several of the places below limit it. The angle
 changes with the audience, and so does the first sentence. The honest limits (no model in the
-image, unsigned update manifest, QEMU-only hardware testing) belong in every post, because each
+image, an unsigned ISO, a plain-text mail password in the companion's own mail account (#1022),
+QEMU-only hardware testing) belong in every post, because each
 audience will find them within minutes.
 
 Every post links to the repo and the nightly, and asks one specific question.
@@ -18,11 +19,12 @@ Every post links to the repo and the nightly, and asks one specific question.
 
 ### r/LocalLLaMA (the local-model lane)
 - **Angle:** an agent desktop that does not need a cloud. Point it at Ollama or llama.cpp and
-  nothing you type leaves your network; a status-bar chip says whether the answering Mind is
-  local or cloud. Small local models are the hard case. The project has open work on them
+  nothing you type leaves your network; the Mind panel says what the answering Mind runs on, and
+  the Lens names the Mind (the top bar has no local-or-cloud chip today; #1162 is in review).
+  Small local models are the hard case. The project has open work on them
   (compact tool schemas #452, escalating a stalled step #453); only say what ships.
-- **Say plainly:** the image has no model. A GPU on the LAN or a provider key is needed for a
-  usable one. CPU-only gives a token or two a second.
+- **Say plainly:** the image has no model. A GPU on the LAN or a provider account (a free one
+  works) is needed for a usable one. CPU-only gives a token or two a second.
 - **Ask:** which local models drive the control surface well, and where they fail.
 - **Format:** a short text post with the demo GIF, not a link drop.
 
@@ -38,7 +40,8 @@ Every post links to the repo and the nightly, and asks one specific question.
 - **Angle:** a Debian 13 desktop (labwc, Wayland) with a typed control interface. Read the
   subreddit rules first, since it is strict about AI posts. Lead with the desktop and the
   protocol, not with "AI". Be ready for "I don't want AI in my OS": the desktop is fully usable
-  without a model, and no Mind is started until you configure it.
+  without a model. Hermes, the default Mind, installs itself in the background after first run
+  (it downloads, about four minutes); the other Minds start only when you configure them.
 - **Ask:** hardware reports. This is the thing we cannot test ourselves.
 
 ### Lobsters
@@ -71,8 +74,8 @@ Every post links to the repo and the nightly, and asks one specific question.
 - **Action:** submit to Slint's showcase following their current contribution instructions; post
   in Slint Discussions; for r/rust, use the community's show-off thread if one is running rather
   than a standalone post.
-- **Ask:** advice on very large generated UI crates (`yantrik-ui-slint` is one 55k-line generated
-  module) and on window handling.
+- **Ask:** advice on very large generated UI crates (`yantrik-ui-slint` compiles about 52,000
+  lines of Slint markup into one crate) and on window handling.
 
 ### DistroWatch
 - **Angle:** a new distribution submission, written factually: Debian 13 based, labwc on
@@ -89,7 +92,8 @@ Working title: "Giving agents a typed desktop instead of a screenshot".
 3. The gate: grades, modes, the approval card (screenshot), the audit log.
 4. Minds and egress: why the built-in Mind has its own account and what that does and does not
    cover. Say that third-party harnesses currently run as you.
-5. What is not done: the unsigned manifest, the vault migrations, QEMU-only testing.
+5. What is not done: the unsigned ISO, the companion's plain-text mail password (#1022), the
+   open Browser route (#1137), QEMU-only testing.
 6. Where help is wanted, linking the help-wanted issues.
 Publish on a personal blog or the project's own site; cross-post only after HN.
 

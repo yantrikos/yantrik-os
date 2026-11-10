@@ -13,8 +13,9 @@ Before anything else, what you are getting into: this is early software publishe
 **nightly** channel and nothing else. Things break. The audits of what does not work — app by
 app, screen by screen — are in [`design/`](../design/) in this repository, written down at
 the time rather than after somebody complained. Read
-[`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) for two apps that were
-taken out of the build for being drawings of apps.
+[`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) for two apps (Music and
+ySheets) that were taken out of the build for being drawings of apps, and for how they came
+back.
 
 ---
 
@@ -46,11 +47,13 @@ Piped straight into a shell with no flag it explains and does nothing else — i
 file, installs nothing and wants no privilege. That is deliberate: an installer that runs the
 moment it is piped into `sh` is asking you to trust bytes you have not read.
 
-The image is about **1.7 GiB**. If you want to keep the exact build you tested, keep the file:
+The image is **1.84 GiB** at v0.1.0-2409 (8 Nov 2026), and will be about 0.5 GiB larger once
+Hermes is built into it (PR #1169); `bytes` in `latest.json` is the exact size of the build you
+are about to fetch. If you want to keep the exact build you tested, keep the file:
 the `latest` name will mean the next build tomorrow.
 
 **Verify the checksum before you boot it.** The point is not that someone is attacking you;
-it is that a 1.3 GiB download that ends at 98% gives you an image that boots halfway and
+it is that a download of nearly 2 GiB that ends at 98% gives you an image that boots halfway and
 fails in a way you will spend an afternoon on.
 
 Only the **nightly** channel has builds. `beta` and `stable` exist as names in the updater
@@ -69,8 +72,10 @@ QEMU by [`boottest.py`](../deploy/yantrik-os/boottest.py), which waits for the m
 reach its login on the serial console and answer for itself. An image that does not boot is
 not published. Nobody's laptop is in that path.
 
-That test is a BIOS boot under QEMU with a virtio display. The UEFI path is built and is not
-booted by CI; real hardware of any kind is not tested at all.
+That test is a BIOS boot under QEMU with a virtio display. The UEFI path is built and CI does
+not boot it, but it has been run by hand: on 9 Nov the installer wrote a UEFI install (EFI
+system partition, encrypted root) to a Proxmox VM with OVMF firmware, and the installed machine
+booted. Real hardware of any kind is not tested at all.
 
 ---
 
@@ -87,7 +92,7 @@ This is the recommended way to meet it, and it is what the project develops agai
 | RAM | 8 GB |
 | Disk | 32 GB |
 | GPU | none — virtio-gpu, software rendering through Mesa's llvmpipe |
-| Firmware | BIOS (SeaBIOS). The UEFI path is built into the image and is untested |
+| Firmware | BIOS (SeaBIOS) in CI and on the project's test VM. UEFI also works: installed and booted on Proxmox OVMF (9 Nov) |
 
 CI's automated boot test is smaller and still works: QEMU with **4 GB of RAM, 4 CPUs** and
 `-device virtio-vga`, KVM when the runner has `/dev/kvm` and plain emulation when it does
@@ -103,16 +108,17 @@ qemu-system-x86_64 -enable-kvm -m 4096 -smp 4 \
 
 VirtualBox ought to work — this is an ordinary Debian live ISO — but nobody here has checked
 it against a current build, so it is not on the list above. If you try it, say how it went.
-The settings this repository's own tools give it (configured, not measured):
+The one setting this repository gives it (configured, not measured):
 [`build-debian-iso.sh`](../deploy/yantrik-os/build-debian-iso.sh) says to import the ISO as
-boot media with **4 GB of RAM and EFI enabled**, and
-[`build-vbox-image.sh`](../deploy/yantrik-os/build-vbox-image.sh) creates its VM with the
-**VMSVGA** graphics controller and **128 MB** of video memory.
+boot media with **4 GB of RAM and EFI enabled**. (`build-vbox-image.sh` builds an Alpine-era VM
+and is history; no current path uses it.)
 
-On Proxmox, [`proxmox-deploy.sh`](../deploy/yantrik-os/proxmox-deploy.sh) provisions
-8 GB / 4 cores / a 24 GB disk, with **`vga: virtio`**. The virtio display is the one setting
-there that is not cosmetic: with Proxmox's default the machine boots, reports a healthy
-session, and shows a black screen forever, because there is no `/dev/dri` for labwc to find.
+On Proxmox, give the VM a **VirtIO display** (`vga: virtio`) and, for UEFI, an OVMF firmware
+with an EFI disk. The display is the setting that is not cosmetic: with Proxmox's default the
+machine boots, reports a healthy session, and shows a black screen forever, because there is no
+`/dev/dri` for labwc to find. (The repository's
+[`proxmox-deploy.sh`](../deploy/yantrik-os/proxmox-deploy.sh) is a different path: it turns a
+Debian cloud image into Yantrik OS on first boot, with 8 GB / 4 cores / a 24 GB disk.)
 
 ## 3. …or write it to a USB stick
 
@@ -153,14 +159,30 @@ network:
 
 ### What you see first
 
-First-run setup, as a sequence of full-screen questions: your name, what you are interested
-in, where you are, a hardware scan, how the assistant should behave, and then **the AI
-provider**, which is the one that matters — see below. It ends on a summary of your answers;
-if you booted an "Install" entry, that last screen also picks the disk and offers to install
-to it.
+Setup happens in two parts, one on each side of the install.
 
-Behind it is the shell: a status bar, a dock, and the Lens at the bottom, which is where you
-type to the mind.
+**The installer** (the "Install" entries) is four screens, then the install:
+
+1. **Welcome**, where you pick the keyboard layout.
+2. **About you**: your name, a username and a password. The computer's name is worked out from
+   the username and sits behind a small **More** link if you want to change it.
+3. **Where to install**: the disk, and **encryption, which is on by default** ("Encrypt with my
+   password"). With it on, the password is asked for every time the computer starts, and
+   without it nobody can read the disk, you included: a forgotten password means an unreadable
+   disk. Untick it and the screen says anyone who takes the disk out can read everything.
+4. **Ready to install**: every answer and the disk together, before anything is written.
+
+Then it installs (about six minutes on the test VM) and asks you to restart. **Take the ISO out
+first** (detach it in a VM): on the 2409 nightly a machine that still has it attached boots the
+installer again.
+
+**The first run** is on the installed machine's first boot, after you unlock it with the
+password you chose: a welcome, **who should do the thinking** (the AI provider, the one that
+matters — see below), **what your minds share** (a screen about what other Minds may know of
+you, with the provider named), then a readiness check of the minds. It is optional and
+skippable; the desktop works without a model.
+
+Behind it is the shell: a status bar, a dock, and the Lens, which is where you type to the mind.
 
 The keys are the ones Windows, GNOME and Ubuntu agree on, so they are probably already in your
 fingers. The full set is in [`config/labwc/rc.xml`](../config/labwc/rc.xml); these are the ones
@@ -200,16 +222,25 @@ you have three shapes of answer:
    type goes to that provider, as it would from any other client.
 3. **A separate agent that attaches to the desktop.** Yantrik Mind, Hermes, Pi, DeepSeek and
    OpenClaw all do this; the last four ship as source in [`harnesses/`](../harnesses/). The
-   OS never holds your endpoint, model name or key — the harness dials in and keeps its own
-   configuration. See **[harness.md](harness.md)** for the protocol and how to write one.
+   OS does not hold the harness's endpoint, model name or key — the harness dials in and keeps its
+   own configuration (the one exception is "use a saved provider" in Settings, which copies a key
+   from the credential vault into that harness's settings, and can be reverted). See **[harness.md](harness.md)** for the protocol and how to write one.
 
-Whichever you pick, the status bar says which mind is answering and whether it is local or
-cloud, with the provider or model named. That chip is not decoration: it is there so that
-"where is what I am typing going" is never a question you have to go and look up.
+Whichever you pick, the desktop says which mind is answering: the Lens's conversation names it,
+and the Mind panel (hidden until you pin it, for instance with `yos act shell set_mind_panel shape=pinned`) shows
+"Answering: <mind>" and what it runs on, the provider and model, for instance "Ollama Cloud ·
+deepseek-v4.1-flash". The top bar does **not** carry a chip for this on the 2409 nightly; a
+single "answering · account · model" line used everywhere is in review (PR #1162). The point of
+all of it is that "where is what I am typing going" is never a question you have to go and
+look up.
 
 ### How much it may do without asking
 
-Also in the status bar, to the left of the mind chip, is the **mode**:
+The **mode chip** is in the right-hand group of the top bar, to the left of the network and sound marks. It
+reads "Mind · " and a phrase: **Suggests only** (`plan`), **Asks first** (`ask`), **Acts within
+limits** (`auto`), or a bypass's own label with its countdown ("Full bypass · …"); a mind in
+private mode shows **Private**. Click it for the menu, which includes "See what it did without
+asking". The modes:
 
 | mode | the mind may… |
 |---|---|
@@ -225,6 +256,14 @@ the mind's commands after it run without asking until the shell restarts.
 
 Everything that ran without you being asked is written down in
 `~/.local/share/yantrik/mind-audit.jsonl` and readable from the mode menu.
+
+### Stopping a mind
+
+Type **`/stop`** in the Lens: it is never queued as a message, it goes straight to the running
+turn and ends it, and closes any question the mind was waiting on. On the 2409 nightly there is
+**no Stop button**, and a Hermes run that is already working may carry on after the desktop has
+stopped waiting for it. A Stop button (PR #1072) and Hermes honouring Stop (PR #1161) are in
+review; remove this paragraph's caveats when they merge.
 
 ---
 
@@ -242,8 +281,8 @@ about to install to.
 
 Two ways in, and they do the same work:
 
-- **The graphical installer.** Boot the "Install Yantrik OS" entry and first-run setup ends
-  with the install screen — username, password, hostname, disk.
+- **The graphical installer.** Boot the "Install Yantrik OS" entry: the four screens described
+  under "What you see first" (welcome, you, disk and encryption, review).
 - **The text installer.** In a terminal in the live session:
 
   ```bash
@@ -265,8 +304,10 @@ waits for you to type `yes`. Then it partitions (GPT, EFI or BIOS depending on h
 booted), copies the live filesystem to the disk, removes the live-boot packages, creates your
 account, installs GRUB and reboots.
 
-After that the machine boots straight to the desktop with no login screen and no display
-manager, and onboarding does not run again.
+After that the machine boots to the desktop with no display manager, and the shell starts
+locked: unlock it with your password. (If you left encryption on, that password is also asked
+at the very start, to open the disk.) The first run described above happens once, on that first
+boot.
 
 ---
 
@@ -287,8 +328,11 @@ build even though it is older than the one here), `--reboot` (instead of restart
 session) and `--no-restart`. `check` and `status` take `--porcelain`, which is what the
 desktop's About screen reads.
 
-What it does for you: the bundle is verified against the manifest's sha256 before a single
-file is replaced, the current binaries and shared files are backed up first, and if the new
+What it does for you: the update information is a signed file (ed25519; the public keys ship
+with the build and are scoped per channel), checked before any field of it is read — an
+unsigned, expired or older-serial file is refused and nothing is installed (`check` says
+"not signed by Yantrik" and exits 14). The bundle is then verified against the signed
+manifest's sha256 before a single file is replaced, the current binaries and shared files are backed up first, and if the new
 shell does not answer its control socket after the restart the update rolls itself back. The
 restart goes through the session unit rather than respawning the shell by hand, so the
 desktop comes back exactly as it does on boot.

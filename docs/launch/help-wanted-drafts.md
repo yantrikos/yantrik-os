@@ -2,7 +2,7 @@
 
 **Drafts. None of these has been filed.** Each is a bigger, well-bounded area an outside
 contributor could own. Before filing, re-check that the files named still exist and that no open
-issue already covers it (the references were current on 29 Oct 2026). Suggested labels are in each
+issue already covers it (the references were current on 29 Oct 2026; the paths and issue numbers were re-checked on 10 Nov). Suggested labels are in each
 header.
 
 ---
@@ -30,8 +30,9 @@ wears the shared `AppHeader`, has a `.desktop` file, passes `tests/app-lints`, a
 `tools/xtask/layers.txt`. Open the issue first with a one-paragraph proposal, so we can say
 whether it overlaps with work in flight.
 
-**Not in scope.** Anything that stores or handles credentials (the vault work is in progress:
-#537, #538, #1015), or that changes the permission gate.
+**Not in scope.** Anything that stores or handles credentials (mail and provider keys are in the
+vault since #538 and #1015, and it is a security boundary: ask first), or that changes the
+permission gate.
 
 ---
 
@@ -57,8 +58,9 @@ real findings (`design/ui-sweep-2026-10-17.md` shows the method).
 
 **Labels:** `help wanted`, `area/installer`, `parity`
 
-**What.** Every published image is booted in QEMU with BIOS firmware, and that is all that is
-measured. Real hardware, UEFI, GPUs and Wi-Fi chips are untested
+**What.** Every published image is booted in QEMU with BIOS firmware, and one Proxmox VM has installed and
+booted it under UEFI (OVMF); that is all that is measured. Real hardware, UEFI on real firmware,
+GPUs and Wi-Fi chips are untested
 (`docs/hardware-requirements.md`). We would like a compatibility table filled in by people with
 real machines.
 

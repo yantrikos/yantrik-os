@@ -34,21 +34,24 @@ is the GitHub repository, not the ISO.
 > connects (and can restrict it). Agents attach to the desktop and keep their own model and key: Hermes, Pi,
 > OpenClaw, DeepSeek and the built-in Mind all work that way.
 >
-> Trade-offs, honestly: the image ships no model, so you need a cloud key or a local GPU for the
-> agents to be useful. The update manifest is not signed yet (#537), and mail passwords and
-> provider keys are still being moved into the credential vault (#538, #1015). An agent you start
-> in a terminal runs as you, so the gate holds it only where it goes through `yos`. Applications
-> are not sandboxed. It's nightly-quality: CI boots every image in QEMU, but real hardware and UEFI
-> are untested.
+> Trade-offs, honestly: the image ships no model, so you need a provider account (a free one
+> works) or a local GPU for the agents to be useful. The update manifest is signed (ed25519), but
+> the ISO you first download is only checked against a sha256 from the same host, and the nightly
+> signing key is a CI secret. The Email app's passwords and your saved provider keys are in the
+> credential vault; the built-in companion's own mail account still keeps a password in plain
+> text (#1022). An agent you start in a terminal runs as you, so the gate holds it only where it
+> goes through `yos`. Applications are not sandboxed. It's nightly-quality: CI boots every image
+> in QEMU, a fresh-install test run installed it under UEFI on Proxmox, and real hardware is untested.
 >
-> It's Rust and Slint, GPL-3.0, no telemetry. Images: https://iso.yantrikos.com/nightly/
+> It's Rust and Slint, GPL-3.0, no telemetry (it does look up its own location once, from your IP,
+> unless you set `YANTRIK_NO_GEOLOCATE=1`). Images: https://iso.yantrikos.com/nightly/
 >
 > What I'd like from you: try it in a VM and tell me where the approval model is annoying or
 > wrong, try to break the gate (SECURITY.md has the private route), and tell me what app you'd
 > want an agent to drive. Writing a YantrikApp or attaching your own agent is a good first
 > contribution (CONTRIBUTING.md). I'll be here all day.
 
-(About 345 words, counting the comment only. Trim the last paragraph first if it needs to be shorter.)
+(About 405 words, counting the comment only. Trim the last paragraph first if it needs to be shorter.)
 
 ## Prepared answers: the ten hardest questions
 
@@ -63,8 +66,9 @@ can run at all, even in bypass, and nothing on the control surface can grant a p
 loosen the mode. What ran without asking is logged. The built-in Mind runs as its own system
 account with its egress held by the kernel to a local proxy. The limits: an agent you start
 yourself runs as you, so the gate holds it only where it goes through `yos`/`yos-mcp`; apps are
-not sandboxed; and several security issues are open and public. [README modes table; `docs/app-control.md`;
-`design/mind-egress-2026-09-29.md`; issues #411, #537, #538, #1015]
+not sandboxed; and several security issues are open and public (#1022, #1027, #548 among them).
+[README modes table; `docs/app-control.md`; `design/mind-egress-2026-09-29.md`; issues #411,
+#1022, #1027, #548]
 
 ### 2. "Why not just use Omarchy?"
 
@@ -87,28 +91,38 @@ promises. That is also why the SDK is usable on plain Debian apps without the re
 
 ### 4. "What model do I need? Does my data leave the machine?"
 
-The image ships no model. You need either a cloud key (any OpenAI-compatible endpoint, or the
-Claude CLI) or a local GPU with Ollama or llama.cpp. Without a GPU it works but inference is a
-token or two a second. Point it at local Ollama or llama.cpp and what you type stays on your
-network; point it at a provider and it goes to that provider, as with any client. A status-bar chip
-says which Mind is answering and whether it's local or cloud. [`docs/getting-started.md` section 5]
+The image ships no model. You need either an account with a provider (a free one works; any
+OpenAI-compatible endpoint, or the Claude CLI) or a local GPU with Ollama or llama.cpp. Without a
+GPU it works but inference is a token or two a second. Point it at local Ollama or llama.cpp and
+what you type stays on your network; point it at a provider and it goes to that provider, as with
+any client. The Lens names the Mind that is answering and the Mind panel shows what it runs on;
+the top bar has no such chip today (#1162 is the fix in review). [`docs/getting-started.md`
+section 5]
 
 ### 5. "Telemetry?"
 
-None from the OS: no analytics, no phone-home. It reaches out in three places you chose: the
-update check against `releases.yantrikos.com`, whatever your weather, mail and calendar are
-configured against, and a problem report that you can read first and that only leaves when you
-press Send. Crash records are scrubbed locally. A Mind you point at a cloud model talks to that
-model's provider. [README "Privacy"; `docs/getting-started.md`]
+No analytics, and nothing of yours is sent in the background. But it is not silent: when it knows
+no location it asks ipinfo.io once, which tells that service your public IP (`YANTRIK_NO_GEOLOCATE=1`
+turns it off; the installers ask ip-api.com the same way), and after first run it downloads and
+installs Hermes from the internet. Otherwise it reaches out where you pointed it: the update
+check against `releases.yantrikos.com`, whatever your weather, mail and calendar are configured
+against, and a problem report that you can read first and that only leaves when you press Send.
+Crash records are scrubbed locally. A Mind you point at a cloud model talks to that model's
+provider. [README "Privacy"; `crates/yantrik-ui/src/wire/location.rs`; `docs/getting-started.md`]
 
 ### 6. "Are updates signed?"
 
-No, not yet. `yantrik-update` verifies the bundle's sha256 against the manifest, backs up the
-current binaries and rolls back if the new shell doesn't answer its control socket, but the
-manifest itself is unsigned, so anyone who can answer for `releases.yantrikos.com` could point a
-machine at a build. Signing it (ed25519, compiled-in keys, a serial that refuses rollback) is
-planned and tracked in #537. I'd call this the most important thing to fix before anyone depends
-on the updater. [issue #537]
+The update information is, since 30 Oct (#537, PR #1020). Each channel serves one signed envelope
+(ed25519); `yantrik-update` checks it before it reads a single field, and refuses one that is
+unsigned, signed by a key not allowed for that channel, expired (60 days) or carrying an older
+serial than the last one accepted. Then it checks the bundle's sha256 against that manifest,
+backs up the current binaries, and rolls back if the new shell doesn't answer its control socket.
+The limits: the public keys come with the build you already have, so the first image you
+download is trusted only through the sha256 in `latest.json` on the same host (the ISO itself is
+not signed); the nightly signing key is a CI secret, so whoever controls that CI can sign a
+nightly; beta and stable have no CI key and nothing has been published to them. A fresh install (VM 542, 10 Nov) runs `yantrik-update check` against the live signed nightly and
+reports it up to date. [issue #537; PR #1020;
+`deploy/yantrik-os/yantrik-update-verify`]
 
 ### 7. "Why Debian?"
 
@@ -121,10 +135,11 @@ Alpine and moved; the docs say so.) [`docs/getting-started.md`; `docs/hardware-r
 
 One language from the shell to the control surface to the memory engine, with no Electron, no
 Python runtime and no Docker needed to run the desktop. Slint renders in software, which is what
-lets it run on a VM with no GPU: the project's measurement was a shell idling at around 2% of a
-core, and about 186 MB for the shell and a few services (measured September 2026, on an older
-build, so treat it as indicative). The cost is that Slint is a smaller ecosystem than GTK or Qt,
-and the generated UI crate is large. [`docs/footprint.md`; README; `Cargo.toml`]
+lets it run on a VM with no GPU: the project's measurement on the 2409 nightly (VM 542, 10 Nov, lock screen,
+no model attached) was the shell idling at about 2% of a core and about 250 MB of memory (PSS)
+for the shell and about 265 MB with its services; `docs/footprint.md`'s 186 MB was WSL2 in
+September and is out of date. The cost is that Slint is a smaller ecosystem than GTK or Qt,
+and the generated UI crate is large. [`docs/footprint.md`; `Cargo.toml`]
 
 ### 9. "What's the business model? And the license?"
 
@@ -147,7 +162,8 @@ that publish a surface, and today that is ours plus Blender and a LibreOffice ad
 
 ## Likely follow-ups to be ready for
 
-- **"Does it run on my laptop?"** Unknown. Only QEMU is measured. Say so and ask for reports.
+- **"Does it run on my laptop?"** Unknown. Only QEMU (BIOS in CI) and one Proxmox VM under UEFI
+  are measured. Say so and ask for reports.
 - **"Why isn't there a stable release?"** Only the nightly channel has ever been published to.
 - **"Is the ISO reproducible?"** Not claimed; do not answer yes.
 - **"The Discord is a red flag."** It's optional; issues and GitHub discussions are the record.

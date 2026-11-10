@@ -26,8 +26,8 @@ Pick whichever fits what you know:
   `harnesses/tests`.
 - **Add a tool to the built-in companion** (Rust), or a **YAML plugin / theme** (no Rust): see
   [Recipes](#recipes) below.
-- **Run it on real hardware.** Every image is boot-tested in QEMU, and real machines and UEFI are
-  untested ([`docs/hardware-requirements.md`](docs/hardware-requirements.md)). A report of what worked
+- **Run it on real hardware.** Every image is boot-tested in QEMU (BIOS), UEFI has been run once on
+  a Proxmox VM, and real machines are untested ([`docs/hardware-requirements.md`](docs/hardware-requirements.md)). A report of what worked
   and what did not on your laptop is a real contribution: open an issue with the machine, the
   image version and what you saw.
 - **Docs.** If something here or in `docs/` was wrong or unclear when you tried it, a fix to the
@@ -41,8 +41,8 @@ assembled elsewhere; you never need to build an image to contribute.) The memory
 inference library are git dependencies on public repositories, pinned in `Cargo.lock`, so a clean
 clone resolves with no extra checkouts.
 
-You need Linux (Debian or Ubuntu; WSL2 on Windows works) and stable Rust 1.92 or newer (Slint 1.17
-requires it). The system libraries are the ones CI installs:
+You need Linux (Debian or Ubuntu; WSL2 on Windows works) and Rust 1.92.0, which
+`rust-toolchain.toml` pins and `rustup` fetches for you (Slint 1.17 requires 1.92). The system libraries are the ones CI installs:
 
 ```bash
 sudo apt-get install -y --no-install-recommends \
@@ -68,7 +68,7 @@ says how to point the build at a local checkout of it.
 ### Seeing it run
 
 The quickest way to see a change is to boot the published image in QEMU and work against it,
-rather than to build an image (a full ISO build takes about an hour):
+rather than to build an image (a full ISO build took about 94 minutes on CI on 8 and 10 Nov):
 
 ```bash
 sh install.sh --download                       # the current nightly image, with its checksum
@@ -125,9 +125,12 @@ need the framework: publish a surface, following [`docs/sdk/README.md`](docs/sdk
 
 ## What CI checks
 
-Every pull request runs two jobs, and both must pass:
+Every pull request runs five jobs: test, architecture and shell scripts, which fail the run, and
+clippy and dependencies, which report warnings and do not (`continue-on-error` in `ci.yml`).
 
 - **test**: `cargo build --workspace --locked` and `cargo test --workspace --locked`.
+- **clippy** and **dependencies**: the lint run, and `cargo-deny` against `deny.toml`. Read their
+  warnings anyway.
 - **architecture**: `cargo run -q -p xtask -- check-architecture`, the layer, file-size and
   structure rules in [`docs/architecture.md`](docs/architecture.md). Run it before you push.
 - **shell scripts**: every script with a `#!` line is executable and parses, and the tools written
