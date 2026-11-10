@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.parse
 
-from . import cdp, commit, guard, hands, judgement, sides
+from . import cdp, commit, guard, hands, holds, judgement, sides
 from .cdp import short
 from .commit import commitment_of, fold_site
 from .console import ConsoleMixin
@@ -312,12 +312,13 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
                           "(file:///home/you/... or the path itself); `%s:` is not one" % scheme)
         with self.held():
             if new_tab:
-                self._tab(None, leaving=True)
+                holds.release_all(self.browser, self._tab(None, leaving=True))
                 before = {t.id for t in self.browser.pages()}
                 t = self.browser.new_tab(url)
                 took, why = hands.settle(self.browser, t, NAVIGATE_LIMIT)
                 return self._consequence(t, "opened %s in a new tab" % url, -1, "", before, took, why, False)
             t = self._tab(tab, leaving=True)
+            holds.release_all(self.browser, t)
             return self._act(t, "went to %s" % url,
                              lambda: self._call("Page.navigate", {"url": url}, t),
                              limit=NAVIGATE_LIMIT, watch=False)
@@ -331,6 +332,7 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
             if not 0 <= index < len(entries):
                 raise Refused("there is no page %s this one in this tab's history"
                               % ("before" if step < 0 else "after"))
+            holds.release_all(self.browser, t)
             return self._act(t, "went %s to %s" % ("back" if step < 0 else "forward", entries[index].get("url")),
                              lambda: self._call("Page.navigateToHistoryEntry", {"entryId": entries[index]["id"]}, t),
                              limit=NAVIGATE_LIMIT, watch=False)
@@ -342,6 +344,7 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
         with self.held():
             t = self._tab(tab)
             before = t.cache_hits
+            holds.release_all(self.browser, t)
             out = self._act(t, "reloaded %s" % t.url, lambda: self._call("Page.reload", {"ignoreCache": True}, t),
                             limit=NAVIGATE_LIMIT, watch=False)
             hits = t.cache_hits - before
@@ -542,6 +545,8 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
     def switch(self, tab):
         with self.held():
             t = self._tab(tab)
+            if self.browser.active is not None and self.browser.active is not t:
+                holds.release_all(self.browser, self.browser.active)
             self._call("Target.activateTarget", {"targetId": t.id})
             self.browser.active = t
             return {"did": "switched to tab %s" % short(t.id), "url": t.url, "title": t.title}
@@ -551,6 +556,7 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
             t = self._tab(tab)
             if len(self.browser.pages()) <= 1:
                 raise Refused("that is the browser's last tab; closing it would close the browser")
+            holds.release_all(self.browser, t)
             self._call("Target.closeTarget", {"targetId": t.id})
             if self.browser.active is t:
                 self.browser.active = None

@@ -7,10 +7,13 @@ Mind needs to test the window manager, the game and the menu it wrote.
 One browser and one site for the run, from test_live; skips without a browser, as it does.
 """
 
+import time
 import unittest
+from unittest import mock
 
 from test_live import Bench, setUpModule, tearDownModule  # noqa: F401  (the bench, started for this module too)
 from yantrik_browser import driver as drv  # noqa: E402  (on the path once test_live is imported)
+from yantrik_browser import hands, holds, inputs  # noqa: E402
 
 
 class Input(unittest.TestCase):
@@ -85,6 +88,73 @@ class Input(unittest.TestCase):
         out = self.d.context_click(self.ref("Plain"))
         self.assertIn("no menu of its own", out["menu"], out)
         self.assertIn("plain saw contextmenu", self.d.text()["text"])
+
+    # ── the security review of #1170: attacks from its scenarios ──
+
+    def test_a_drag_cannot_press_into_another_sites_frame_that_click_refuses(self):
+        self.d.go(self.site + "/pages/framepay.html")
+        time.sleep(0.5)
+        frame = self.d.read(all=True)["blind_frames"][0]["ref"]
+        with self.assertRaises(drv.PageRefused) as caught:
+            self.d.click(frame)
+        self.assertIn("another site", str(caught.exception))
+        with self.assertRaises(drv.PageRefused) as caught:
+            self.d.drag(frame, 2, 0)        # mousedown and mouseup on the same element make a click
+        self.assertIn("another site", str(caught.exception))
+        self.assertNotIn("PAID", self.d.text()["text"])
+
+    def test_a_drag_cannot_be_released_inside_another_sites_frame(self):
+        self.d.go(self.site + "/pages/framepay.html")
+        time.sleep(0.5)
+        with self.assertRaises(drv.PageRefused) as caught:
+            self.d.drag(self.ref("Drag me"), 320, 30)        # lets go over the payment frame
+        self.assertIn("frame from another site", str(caught.exception))
+        self.assertIn("Nothing was moved", str(caught.exception))
+        out = self.d.drag(self.ref("Drag me"), 0, 150)        # the same box, to open ground, still moves
+        self.assertEqual(out["moved"], [0, 150], out)
+
+    def test_a_drag_cannot_press_a_commitment_that_acts_on_mousedown(self):
+        send = self.ref("Send report")
+        with self.assertRaises(drv.PageRefused) as caught:
+            self.d.drag(send, 0, 100)
+        self.assertIn("commit ref=", str(caught.exception))
+        self.assertNotIn("SENT-ON-MOUSEDOWN", self.d.text()["text"])
+
+    def test_a_right_click_cannot_press_a_commitment_that_acts_on_mousedown(self):
+        with self.assertRaises(drv.PageRefused) as caught:
+            self.d.context_click(self.ref("Send report"))
+        self.assertIn("commit ref=", str(caught.exception))
+        self.assertNotIn("SENT-ON-MOUSEDOWN", self.d.text()["text"])
+
+    def test_a_key_held_with_nobody_to_release_it_is_released_after_the_limit(self):
+        with mock.patch.object(holds, "HOLD_MAX", 2.0):
+            out = self.d.key_down("ArrowRight")
+            self.assertEqual(out["held"], ["arrowright"])
+            time.sleep(3.0)
+        self.assertIn("ArrowRight up", self.d.text()["text"])
+        self.assertEqual(self.d.browser.tab().held_keys, set())
+
+    def test_a_timed_hold_that_fails_midway_still_releases_the_key(self):
+        with mock.patch.object(inputs.time, "sleep", side_effect=RuntimeError("the page went away")):
+            with self.assertRaises(RuntimeError):
+                self.d.key_down("ArrowRight", seconds=1)
+        self.assertIn("ArrowRight up", self.d.text()["text"])
+        self.assertEqual(self.d.browser.tab().held_keys, set())
+
+    def test_a_held_key_gets_its_keyup_before_a_reload_and_before_the_tab_is_left(self):
+        self.d.key_down("ArrowRight")
+        sent = []
+        with mock.patch.object(hands, "key_up", wraps=hands.key_up) as up:
+            self.d.reload()
+            sent.extend(c.args[2] for c in up.call_args_list)
+        self.assertIn("arrowright", sent, "the keyUp was sent, not only forgotten")
+        self.d.key_down("ArrowLeft")
+        here = next(t["tab"] for t in self.d.tabs()["tabs"] if t["active"])
+        self.d.go(self.site + "/pages/blue.html", new_tab=True)
+        blue = next(t["tab"] for t in self.d.tabs()["tabs"] if t["url"].endswith("blue.html"))
+        self.d.switch(here)
+        self.assertIn("ArrowLeft up", self.d.text()["text"], "leaving the tab let the key go")
+        self.d.close_tab(blue)
 
 
 if __name__ == "__main__":

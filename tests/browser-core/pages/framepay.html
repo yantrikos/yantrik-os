@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Checkout</title><link rel="icon" href="data:,">
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  #box { position: absolute; left: 20px; top: 20px; width: 120px; height: 40px; background: #cde; line-height: 40px; text-align: center; }
+  #pay { position: absolute; left: 300px; top: 20px; width: 300px; height: 100px; border: 0; }
+  #status { position: absolute; left: 20px; top: 200px; }
+</style></head>
+<body>
+  <div id="box" role="button" tabindex="0">Drag me</div>
+  <iframe id="pay" title="Payment frame"></iframe>
+  <div id="status">status: waiting</div>
+<script>
+  // The payment widget is another site's (localhost beside 127.0.0.1): it cannot be read from here,
+  // and tells this page only that it was pressed.
+  document.getElementById('pay').src = location.href.replace('127.0.0.1', 'localhost').replace('framepay', 'pay_inner');
+  window.addEventListener('message', (e) => { if (e.data === 'paid') document.getElementById('status').textContent = 'status: PAID'; });
+  const box = document.getElementById('box');
+  let drag = null;
+  box.addEventListener('mousedown', (e) => { drag = { x: e.clientX - box.offsetLeft, y: e.clientY - box.offsetTop }; });
+  window.addEventListener('mousemove', (e) => { if (drag) { box.style.left = (e.clientX - drag.x) + 'px'; box.style.top = (e.clientY - drag.y) + 'px'; } });
+  window.addEventListener('mouseup', () => { drag = null; });
+</script>
+</body></html>

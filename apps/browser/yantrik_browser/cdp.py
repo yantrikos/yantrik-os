@@ -150,6 +150,7 @@ class Tab:
         self.console = collections.deque(maxlen=CONSOLE_KEEP)
         self.console_seq = 0
         self.held_keys = set()     # keys key_down put down and key_up has not released (hands.py)
+        self.hold_timers = {}      # key -> the timer that releases it if nobody does (holds.py)
         self.cache_hits = 0        # responses the browser took from a cache rather than the network
         self.cached_requests = set()   # their request ids, so one is not counted twice
         self.document_cached = False   # the last main document came from a cache

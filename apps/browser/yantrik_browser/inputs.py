@@ -2,16 +2,17 @@
 needs to test the window manager, the game and the menu it wrote (a part of driver.py, moved
 out of it).
 
-A drag begins with a press, so it gets the same visibility and cover checks as `click`, and its
-drop target is judged by the same words and decision model: "drag to Trash" is refused and
-nothing moves. Held Enter and Space go through `_key_is_safe` exactly as `press`. The browser's
+A drag begins with a press and ends with a release, so both are judged as `click` judges a press:
+the element pressed by `_pressable` (visible, uncovered, enabled, a control, not a frame from
+another site, not a commitment), and the point released at by the same words and decision model
+and never inside such a frame: "drag to Trash" is refused and nothing moves. Held Enter and Space go through `_key_is_safe` exactly as `press`. The browser's
 own context menu is never shown (nothing on this surface could read or close it); the page's
 own, if it makes one, is what `read` lists.
 """
 
 import time
 
-from . import hands
+from . import hands, holds
 from .commit import commitment_of, fold_site
 from .refusals import PageRefused, Refused
 
@@ -60,11 +61,13 @@ class InputsMixin:
                                      else "; nothing was pressed", c.get("ref"), c.get("name"), fold_site(t.url)))
 
     def context_click(self, ref, tab=None):
-        """A right click on an element. The browser's own menu is never shown (nothing on this
-        surface could read or close it); the page's own, if it makes one, is what read lists."""
+        """A right click on an element, held to the rules of click: a control that reads as a
+        commitment is refused, since many handlers act on mousedown whichever button it is. The
+        browser's own menu is never shown (nothing on this surface could read or close it); the
+        page's own, if it makes one, is what read lists."""
         with self.held():
             t = self._tab(tab)
-            target = self._pressable(t, ref, allow_commitment=True)
+            target = self._pressable(t, ref)       # mousedown fires for the right button too
             out = self._act(t, "right-clicked %s \"%s\" (%s)" % (target["role"], target["name"], ref),
                             lambda: hands.context_click(self.browser, t, target["x"], target["y"]))
             menu = out.pop("menu", None)
@@ -89,17 +92,13 @@ class InputsMixin:
             raise Refused("drag moves at most %d pixels either way" % DRAG_LIMIT)
         with self.held():
             t = self._tab(tab)
-            target = self._target(t, ref)
-            if target.get("invisible"):
-                raise PageRefused("%s (%s \"%s\") has no size on the page: it cannot be dragged. Read the "
-                                  "page again." % (ref, target["role"], target["name"]))
-            cover = target.get("covered_by")
-            if cover:
-                raise PageRefused("%s (\"%s\") is covered by %s \"%s\" (%s): pressing there would press that "
-                                  "instead. Deal with it first. Nothing was moved."
-                                  % (ref, target["name"], cover.get("role"), cover.get("name"), cover.get("ref")))
+            target = self._pressable(t, ref)        # a press, judged as click judges it
             x, y = target["x"], target["y"]
             landing = self._run(t, "at", x + dx, y + dy)
+            if landing and landing.get("frame_element"):
+                raise PageRefused("dropping %s there would release the button inside a frame from another "
+                                  "site, which cannot be read, so it is not released blind. Nothing was "
+                                  "moved." % ref)
             why = self._why_commitment(landing, t) if landing else None
             if why:
                 raise PageRefused("dropping %s there would land on %s \"%s\" (%s), which %s: what a drop "
@@ -138,11 +137,16 @@ class InputsMixin:
             def work():
                 self._key_is_safe(t, ref, k[0])
                 hands.key_down(self.browser, t, key)
-                if seconds:
+                if not seconds:
+                    holds.expire_later(self.browser, t, key)
+                    return
+                try:
                     time.sleep(seconds)
-                    hands.key_up(self.browser, t, key)
+                finally:
+                    holds.release(self.browser, t, key)
             doing = ("held %s for %.1f s%s" % (key, seconds, (" in %s" % ref) if ref else "") if seconds
-                     else "pressed %s down%s; it stays down until key_up" % (key, (" in %s" % ref) if ref else ""))
+                     else "pressed %s down%s; it stays down until key_up, or for at most %d s" % (
+                         key, (" in %s" % ref) if ref else "", holds.HOLD_MAX))
             out = self._act(t, doing, work, limit=hands.NAVIGATE_LIMIT if k[0] == "Enter" else hands.ACT_LIMIT)
             out["held"] = sorted(t.held_keys)
             return out
@@ -160,7 +164,7 @@ class InputsMixin:
 
             def work():
                 for name in keys:
-                    hands.key_up(self.browser, t, name)
+                    holds.release(self.browser, t, name)
             out = self._act(t, "released %s" % ", ".join(keys), work)
             out["held"] = sorted(t.held_keys)
             return out

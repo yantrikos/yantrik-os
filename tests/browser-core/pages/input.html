@@ -19,6 +19,7 @@
     <div id="pos">at 100,100</div>
     <button id="send">Send</button>
   </div>
+  <button id="msend" style="position:absolute;left:100px;top:420px">Send report</button>
   <div id="zone" role="button">Right-click zone</div>
   <div id="plain" role="button">Plain</div>
   <ul id="menu" role="menu"><li role="menuitem" tabindex="0">Rename</li><li role="menuitem" tabindex="0">Duplicate</li></ul>
@@ -44,5 +45,7 @@
   zone.addEventListener('contextmenu', (e) => { e.preventDefault(); menu.style.left = e.clientX + 'px'; menu.style.top = e.clientY + 'px'; menu.setAttribute('data-open', ''); });
   document.getElementById('plain').addEventListener('contextmenu', () => { log.textContent = 'plain saw contextmenu'; });
   document.getElementById('send').addEventListener('click', () => { log.textContent = 'SENT'; });
+  // Acts on mousedown, whichever button: a handler that never asked which.
+  document.getElementById('msend').addEventListener('mousedown', () => { log.textContent = 'SENT-ON-MOUSEDOWN'; });
 </script>
 </body></html>

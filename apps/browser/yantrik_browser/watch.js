@@ -12,9 +12,11 @@
   const { clean, deepHit, controlOf, describeControl } = yb;
 
   // The control a press at this point of the top viewport would land on, described for a judge:
-  // where a drag would drop.
+  // where a drag would drop. A frame from another site is no control, but a press into it is
+  // one that cannot be read: it is named as a frame.
   function at(x, y) {
     const hit = deepHit(x, y);
+    if (hit && (hit.tagName === 'IFRAME' || hit.tagName === 'FRAME')) return { frame_element: true };
     const landing = hit && controlOf(hit, window);
     return landing ? describeControl(landing) : null;
   }
