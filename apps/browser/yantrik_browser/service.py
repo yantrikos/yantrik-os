@@ -147,7 +147,8 @@ def build(driver=None, **surface_options):
 
     @s.action(grade="standard", expected_seconds=3)
     def reload(tab: Tab = "") -> dict:
-        """Load the page again"""
+        """Load the page again, from the network and not the cache; says if the browser still
+        served part of it from a cache it could not bypass"""
         return later(lambda: d.reload(tab or None))
 
     @s.action(grade="standard", expected_seconds=2)

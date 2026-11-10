@@ -141,6 +141,9 @@ class Tab:
         self.console = collections.deque(maxlen=CONSOLE_KEEP)
         self.console_seq = 0
         self.held_keys = set()     # keys key_down put down and key_up has not released (hands.py)
+        self.cache_hits = 0        # responses the browser took from a cache rather than the network
+        self.cached_requests = set()   # their request ids, so one is not counted twice
+        self.document_cached = False   # the last main document came from a cache
 
 
 class Browser:
@@ -342,6 +345,7 @@ class Browser:
                 tab.world = None
                 tab.navigations += 1
                 tab.held_keys.clear()      # a new document starts with nothing held
+                tab.cached_requests.clear()
         elif method == "Page.frameStartedLoading":
             if p.get("frameId") == tab.main_frame:
                 tab.loaded = False
@@ -360,6 +364,20 @@ class Browser:
         elif method in ("Network.loadingFinished", "Network.loadingFailed"):
             tab.inflight.pop(p.get("requestId"), None)
             tab.last_network = time.monotonic()
+        elif method == "Network.requestServedFromCache":
+            # The browser's memory or disk cache answered instead of the network (the one event
+            # Chromium sends for it; responseReceived may follow with fromDiskCache, or not).
+            tab.cache_hits += 1
+            tab.cached_requests.add(p.get("requestId"))
+        elif method == "Network.responseReceived":
+            r = p.get("response") or {}
+            cached = bool(r.get("fromDiskCache") or r.get("fromPrefetchCache") or r.get("fromServiceWorker")
+                          or p.get("requestId") in tab.cached_requests)
+            if cached and p.get("requestId") not in tab.cached_requests:
+                tab.cache_hits += 1
+                tab.cached_requests.add(p.get("requestId"))
+            if p.get("type") == "Document" and p.get("frameId") == tab.main_frame:
+                tab.document_cached = cached
         elif method == "Runtime.exceptionThrown":
             self._console(tab, exception_entry(p.get("exceptionDetails") or {}))
         elif method == "Runtime.consoleAPICalled":

@@ -401,12 +401,26 @@
   }
 
   // Every match on the whole document, not only the viewport. `count` keeps going past `limit`
-  // so the total is true; the wait loop asks for one and stops there.
+  // so the total is true; the wait loop asks for one and stops there. The words are taken as
+  // written, a single punctuation mark included (a calculator's "+" is a name like any other);
+  // exact names come first, then names that start with the words, then the rest, each group in
+  // page order — so find "+" answers with the "+" key before every label that merely holds one.
   function search(query, limit, count) {
     const q = (query || '').toLowerCase();
     const cap = limit || 40;
     const found = [];
     let total = 0;
+    const rank = (e) => {
+      const name = (e.name || '').toLowerCase().trim();
+      return name === q.trim() ? 0 : name.startsWith(q.trim()) ? 1 : 2;
+    };
+    const place = (e) => {
+      // Insert keeping the groups ordered and page order within a group.
+      const r = rank(e);
+      let i = found.length;
+      while (i > 0 && rank(found[i - 1]) > r) i--;
+      found.splice(i, 0, e);
+    };
     for (const [el, frame] of walk(document.documentElement, TOP)) {
       let role = roleOf(el);
       let interactive = INTERACTIVE_ROLES.has(role);
@@ -419,10 +433,13 @@
       const hay = (e.name + ' ' + (e.value || '') + ' ' + (e.href || '')).toLowerCase();
       if (!hay.includes(q)) continue;
       total++;
+      e.in_view = inView(e.box);
+      e.place = placeOf(e.box);
       if (found.length < cap) {
-        e.in_view = inView(e.box);
-        e.place = placeOf(e.box);
-        found.push(e);
+        place(e);
+      } else if (rank(e) < rank(found[found.length - 1])) {
+        found.pop();
+        place(e);
       } else if (!count) break;
     }
     return { found, total, text: found.length || !q ? [] : textHits(q),

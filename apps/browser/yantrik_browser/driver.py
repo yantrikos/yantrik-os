@@ -560,10 +560,25 @@ class Driver:
                              limit=NAVIGATE_LIMIT, watch=False)
 
     def reload(self, tab=None):
+        """Load the page again, from the network and not the cache (a Mind editing a file and
+        reloading must see the edit); and say so when the browser still served part of it from a
+        cache it could not bypass (a service worker's, a prefetch)."""
         with self.held():
             t = self._tab(tab)
-            return self._act(t, "reloaded %s" % t.url, lambda: self._call("Page.reload", {}, t),
-                             limit=NAVIGATE_LIMIT, watch=False)
+            before = t.cache_hits
+            out = self._act(t, "reloaded %s" % t.url, lambda: self._call("Page.reload", {"ignoreCache": True}, t),
+                            limit=NAVIGATE_LIMIT, watch=False)
+            hits = t.cache_hits - before
+            out["from_cache"] = hits
+            out["cache_bypassed"] = hits == 0 and not t.document_cached
+            if out["cache_bypassed"]:
+                out["did"] += ", bypassing the cache: everything came from the network"
+            else:
+                out["did"] += (", asking the browser to bypass its cache — but %d response%s still came "
+                               "from a cache (a service worker's, or prefetched)%s, so the page may not "
+                               "be fresh" % (hits, "" if hits == 1 else "s",
+                                             "; the page itself did" if t.document_cached else ""))
+            return out
 
     # ── hands ──
 
