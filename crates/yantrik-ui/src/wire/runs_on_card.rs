@@ -43,7 +43,7 @@ fn gateway_fact(harness: &str, detail: Option<&str>) -> Option<GatewayFact> {
         Ok(answer) => {
             let account = crate::ai_accounts::accounts().into_iter().find(|a| a.id == answer.account_id);
             let (base_url, provider_kind) = account.map(|a| (a.base_url, a.provider_type)).unwrap_or_default();
-            GatewayFact::Sends { base_url, provider_kind, model: answer.model, lane: answer.lane }
+            GatewayFact::Sends { account: answer.account.clone(), base_url, provider_kind, model: answer.model, lane: answer.lane }
         }
         Err(r) if r.message == yantrik_gateway::server::NO_PICK => no_pick(harness),
         Err(r) => GatewayFact::Refused { code: r.code.to_string(), message: r.message },
