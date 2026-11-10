@@ -604,7 +604,7 @@ pub fn load_saved(path: &Path) -> Saved {
     std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
-fn update_saved(path: &Path, f: impl FnOnce(&mut Saved)) {
+pub(super) fn update_saved(path: &Path, f: impl FnOnce(&mut Saved)) {
     let mut s = load_saved(path);
     f(&mut s);
     if let Some(dir) = path.parent() {
@@ -743,16 +743,6 @@ fn catalogue_account(entry: &ProviderStoreEntry) -> String {
         .unwrap_or_else(|| account_id(entry))
 }
 
-/// Make the person's model the one pick for every mind (#675): the catalogue is listed again
-/// first, so the account added a moment ago is in it. The plain reason when it did not take.
-fn make_the_pick(entry: &ProviderStoreEntry) -> Result<(), String> {
-    if let Some(bridge) = BRIDGE.get() {
-        crate::ai_accounts::refresh_now(bridge);
-    }
-    let id = crate::ai_accounts::models::gateway_id(&catalogue_account(entry), &entry.model);
-    crate::ai_accounts::onboarding::choose_model(&id)
-}
-
 struct State {
     rows: Vec<MindRows>,
     local: Option<LocalModel>,
@@ -862,6 +852,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             let chosen = ui.get_fr_connect_status() == "connected";
             let name = match ProviderStore::load().primary() {
                 Some(p) if chosen => card_name_for(&p.provider_type, &p.name),
+                // A free account saves no provider: the screen's own name for it ("Groq (free)").
+                _ if chosen => ui.get_fr_chosen_name().to_string(),
                 _ => String::new(),
             };
             ui.set_fr_installer_choice(name.into());
@@ -881,6 +873,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let state = state.clone();
         move |id| {
             let Some(ui) = weak.upgrade() else { return };
+            if id == super::onboarding_free_account::FREE_ACCOUNT {
+                *lock(&PENDING) = None;
+                return super::onboarding_free_account::continue_with(&ui);
+            }
             let (local, found) = {
                 let st = lock(&state);
                 (st.local.clone(), st.found.clone())
@@ -1302,7 +1298,7 @@ fn prove_and_pick(ui: &App) {
         let picked = match &result {
             Ok(()) => {
                 update_saved(&saved_path(), |s| s.provider_chosen = true);
-                make_the_pick(&entry)
+                super::onboarding_free_account::pick_for_every_mind(&catalogue_account(&entry), &entry.model)
             }
             Err(_) => Ok(()),
         };
@@ -1340,7 +1336,7 @@ fn prove_and_pick(ui: &App) {
 /// (the chat composer's line, the AI page, the picker) reads it again from the one place it is
 /// resolved (`ai_status::refresh`). Without this the composer said "Where message text goes is
 /// not known" beside a companion already answering from the new endpoint (13 Oct).
-fn show_new_backend(ui: &App) {
+pub(super) fn show_new_backend(ui: &App) {
     let store = ProviderStore::load();
     crate::wire::settings::push_providers_to_ui(ui, &store);
     crate::wire::ai_status::refresh(ui, &store);
@@ -1350,7 +1346,7 @@ fn show_new_backend(ui: &App) {
 /// through the job Settings → Minds runs. The first run does not wait on it; the built-in
 /// answers until it is proven (`crate::default_mind`). Not from the installer's own screens: what
 /// the live image downloads is gone at reboot, and the first boot starts it instead.
-fn set_up_default_mind(ui: &App) {
+pub(super) fn set_up_default_mind(ui: &App) {
     if ui.get_fr_in_installer() {
         return;
     }
@@ -1366,7 +1362,7 @@ fn retry_pick(ui: &App) {
     ui.set_fr_connect_words(format!("Checking (started {})", clock(chrono::Local::now())).into());
     let weak = ui.as_weak();
     std::thread::spawn(move || {
-        let picked = make_the_pick(&entry);
+        let picked = super::onboarding_free_account::pick_for_every_mind(&catalogue_account(&entry), &entry.model);
         let model = entry.model.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };

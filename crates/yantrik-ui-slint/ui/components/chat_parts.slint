@@ -13,6 +13,8 @@ export component ChatPill inherits Rectangle {
     in property <string> label;
     in property <bool> primary: false;
     in property <bool> enabled: true;
+    /// Whether the keyboard focus is on this button (the ring shows, Enter and Space press).
+    out property <bool> focused: pill-key.has-focus;
     callback clicked();
 
     height: 32px;
@@ -31,7 +33,7 @@ export component ChatPill inherits Rectangle {
     pill-key := FocusScope {
         enabled: root.enabled;
         key-pressed(event) => {
-            if (event.text == "\n" || event.text == " ") {
+            if (event.text == Key.Return || event.text == " ") {
                 if (!event.repeat) { root.clicked(); }
                 return accept;
             }
@@ -59,6 +61,7 @@ export component ChatIconButton inherits Rectangle {
     in property <string> label;
     in property <string> commands;
     in property <bool> enabled: true;
+    out property <bool> focused: icon-key.has-focus;
     callback clicked();
 
     width: 32px;
@@ -75,7 +78,7 @@ export component ChatIconButton inherits Rectangle {
     icon-key := FocusScope {
         enabled: root.enabled;
         key-pressed(event) => {
-            if (event.text == "\n" || event.text == " ") {
+            if (event.text == Key.Return || event.text == " ") {
                 if (!event.repeat) { root.clicked(); }
                 return accept;
             }

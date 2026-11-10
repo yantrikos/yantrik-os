@@ -6,6 +6,7 @@ mod production_models;
 mod installer_rules;
 mod installer_tests;
 mod installer_keys_tests;
+mod chat_parts_tests;
 mod files_tests;
 mod settings_tests;
 // The lock screen's blur, the production file: the lock scene blurs the same way the shell does.
@@ -126,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-taskbar-menu") { return taskbar_menu_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-cards-waiting") { return cards_waiting_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-kit-controls") { return kit_controls_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-chat-parts") { return chat_parts_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-icons") { return icon_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-labels") { return label_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-colour-system") { return colour_system_tests::run(&window, output); }

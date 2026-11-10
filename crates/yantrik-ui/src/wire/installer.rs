@@ -6,6 +6,7 @@
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::process::Command;
 
+use super::installer_carry::{holds_no_key, CARRIED_CHOICES, COPY_EXCLUDES};
 use crate::app_context::AppContext;
 use crate::control_installer::step;
 use crate::installer_rules;
@@ -911,35 +912,6 @@ fi
     Ok(())
 }
 
-/// The first run's choices, carried from the live session to the new home: the sharing choice
-/// (ai-accounts.json), the text size (first-run.json) and the one model pick for every mind
-/// (picker.json). Choices only: no key in any of them.
-pub(crate) const CARRIED_CHOICES: [&str; 3] = ["ai-accounts.json", "first-run.json", "picker.json"];
-
-/// Whether a choices file is free of anything key-like: a field named like a secret with a value,
-/// or a value shaped like a provider key. A file that is not JSON is not carried either.
-pub(crate) fn holds_no_key(text: &str) -> bool {
-    fn clean(v: &serde_json::Value) -> bool {
-        match v {
-            serde_json::Value::Object(map) => map.iter().all(|(k, v)| {
-                let k = k.to_ascii_lowercase();
-                let secret_name = ["key", "token", "secret", "password", "authorization"]
-                    .iter()
-                    .any(|w| k == *w || k.ends_with(&format!("_{w}")) || k.ends_with(&format!("-{w}")) || k == "apikey");
-                let empty = v.is_null() || v.as_str().is_some_and(|s| s.is_empty());
-                (!secret_name || empty) && clean(v)
-            }),
-            serde_json::Value::Array(a) => a.iter().all(clean),
-            serde_json::Value::String(s) => {
-                let s = s.trim();
-                !["sk-", "nvapi-", "gsk_", "hf_", "AIza", "Bearer "].iter().any(|p| s.starts_with(p))
-            }
-            _ => true,
-        }
-    }
-    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| clean(&v))
-}
-
 /// Write AI provider config and user_name into the installed system's config.yaml,
 /// and the provider entry — key included — into the new user's providers.yaml.
 fn configure_ai(mount_dir: &str, state: &InstallerState) {
@@ -971,7 +943,8 @@ fn configure_ai(mount_dir: &str, state: &InstallerState) {
 
     // ── The sharing choice, the text size and the model the person picked with the provider,
     // so the first boot does not ask again (wire/onboarding.rs). None holds a key, and one that
-    // somehow did would not be carried: the key travels only in providers.yaml, mode 600.
+    // somehow did would not be carried: a saved key travels only in providers.yaml, mode 600, and
+    // a free account's key in the vault, inside the copied system (installer_carry.rs).
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
     for file in CARRIED_CHOICES {
         if let Ok(text) = std::fs::read_to_string(format!("{home}/.config/yantrik/{file}")) {
@@ -1260,26 +1233,11 @@ fn copy_system(mount_dir: &str, progress: &ProgressFn) -> Result<(), String> {
     progress(START, "Scanning the live system...");
 
     let target = format!("{mount_dir}/");
-    let mut child = Command::new("sudo")
-        .args([
-            "rsync",
-            "-aAXH",
-            "--info=progress2",
-            "--no-inc-recursive",
-            "--exclude=/proc/*",
-            "--exclude=/sys/*",
-            "--exclude=/dev/*",
-            "--exclude=/run/*",
-            "--exclude=/tmp/*",
-            "--exclude=/mnt/*",
-            "--exclude=/live/*",
-            "--exclude=/cdrom/*",
-            // The EFI partition is mounted there, and installed into a partition it is shared
-            // with macOS or Windows: only installer_boot.rs writes to it (GRUB and the \EFI\BOOT set).
-            "--exclude=/boot/efi/*",
-            "/",
-            &target,
-        ])
+    let mut rsync = Command::new("sudo");
+    rsync.args(["rsync", "-aAXH", "--info=progress2", "--no-inc-recursive"]);
+    rsync.args(COPY_EXCLUDES.map(|e| format!("--exclude={e}")));
+    let mut child = rsync
+        .args(["/", &target])
         .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1663,29 +1621,6 @@ fn grub_defaults(encrypted: bool, themed: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_install_carries_the_pick_with_the_other_choices_and_no_key() {
-        assert!(CARRIED_CHOICES.contains(&"picker.json"), "the person's model pick reaches the new home");
-        assert!(CARRIED_CHOICES.contains(&"ai-accounts.json") && CARRIED_CHOICES.contains(&"first-run.json"));
-        // Each file as its own module writes it, with a choice in it: no key.
-        let mut picks = crate::picker::choices::Choices::default();
-        picks.pick_model("", "anthropic/claude-sonnet-4-5");
-        let picker = serde_json::to_string(&picks).unwrap();
-        assert!(picker.contains("anthropic/claude-sonnet-4-5"));
-        let first_run = serde_json::to_string(&crate::wire::onboarding::Saved { text_scale: 1.25, sharing: "share".into(), ..Default::default() }).unwrap();
-        let mut consent = crate::ai_accounts::consent::Consent::default();
-        consent.lane = Some("on-this-computer/qwen".into());
-        let accounts = serde_json::to_string(&consent).unwrap();
-        for text in [&picker, &first_run, &accounts] {
-            assert!(holds_no_key(text), "{text}");
-        }
-        // And one that somehow held a key is not carried.
-        assert!(!holds_no_key(r#"{"model":"a/b","api_key":"x"}"#));
-        assert!(!holds_no_key(r#"{"minds":{"m":{"model":"sk-ant-api03-abc"}}}"#));
-        assert!(!holds_no_key("not json"));
-        assert!(holds_no_key(r#"{"api_key":""}"#), "an empty field holds nothing");
-    }
 
     /// The image's own /opt/yantrik/config.yaml, as shipped: it names no model.
     const IMAGE_CONFIG: &str = include_str!("../../../../deploy/yantrik-os/config-default.yaml");

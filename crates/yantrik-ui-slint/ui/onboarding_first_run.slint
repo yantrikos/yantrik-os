@@ -770,10 +770,9 @@ export component FirstRunScreen inherits Rectangle {
                             FrButton {
                                 primary: true;
                                 label: "Continue with my free account";
-                                clicked => {
-                                    if root.in-installer { root.finished(); }
-                                    else { root.chosen-name = "your free AI account"; root.step = 3; }
-                                }
+                                // Only asks: the account is proven first, and the screen goes on from
+                                // "Connected" through the Continue below, as it does for a key.
+                                clicked => { root.connect-mode = "free"; root.chosen-id = "free-account"; root.choose-provider("free-account"); }
                             }
                         }
                         Text {

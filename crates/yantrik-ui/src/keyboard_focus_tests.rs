@@ -1,6 +1,7 @@
 //! Source checks that the first screens a person meets can be used with the keyboard alone
 //! (#1165). The behaviour itself is driven by tests/ui-preview (installer_keys_tests.rs,
-//! first_run_tests.rs); these keep the pieces it relies on from being edited away.
+//! first_run_tests.rs, chat_parts_tests.rs for the Lens buttons); these keep the pieces it relies
+//! on from being edited away.
 
 const KIT: &str = include_str!("../../yantrik-ui-slint/ui/components/onboard_kit.slint");
 const FIRST_RUN: &str = include_str!("../../yantrik-ui-slint/ui/onboarding_first_run.slint");
@@ -31,7 +32,7 @@ fn the_first_run_buttons_show_an_accent_ring_when_focused() {
 fn the_lens_buttons_take_tab_and_enter_and_show_the_ring() {
     let src = code(CHAT_PARTS);
     assert_eq!(src.matches("FocusScope {").count(), 2, "ChatPill and ChatIconButton each take focus");
-    assert_eq!(src.matches("event.text == \"\n\"").count(), 2, "Enter presses them");
+    assert_eq!(src.matches("event.text == Key.Return || event.text == \" \"").count(), 2, "Enter and Space press them");
     assert!(src.contains("pill-key.has-focus ? Theme.accent") && src.contains("icon-key.has-focus"));
 }
 

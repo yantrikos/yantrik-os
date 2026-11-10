@@ -1,0 +1,33 @@
+// ChatPill and ChatIconButton beside a text field, for verify-chat-parts
+// (src/chat_parts_tests.rs): Tab reaches them, Enter and Space press them, and a mouse click on
+// one leaves the caret where it was, as the ask bar's Send must.
+import { Theme } from "theme.slint";
+import { ChatPill, ChatIconButton } from "components/chat_parts.slint";
+
+export component ChatPartsProbe inherits Window {
+    width: 400px;
+    height: 120px;
+    background: Theme.bg-deep;
+    in-out property <int> pill-presses: 0;
+    in-out property <int> icon-presses: 0;
+    out property <bool> field-focused: field.has-focus;
+    out property <bool> pill-focused: pill.focused;
+    out property <bool> icon-focused: icon.focused;
+
+    field := TextInput {
+        x: 10px; y: 10px; width: 300px; height: 30px;
+        color: white;
+    }
+    pill := ChatPill {
+        x: 10px; y: 60px; width: 80px;
+        label: "Send";
+        primary: true;
+        clicked => { root.pill-presses += 1; }
+    }
+    icon := ChatIconButton {
+        x: 120px; y: 60px;
+        label: "Close";
+        commands: "M 0 0 L 8 8";
+        clicked => { root.icon-presses += 1; }
+    }
+}
