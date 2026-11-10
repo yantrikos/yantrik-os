@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import ports
+from . import fence, ports
 
 WORLD = "yantrik-browser"
 CALL_TIMEOUT = 20.0
@@ -173,6 +173,7 @@ class Browser:
         self.tabs = {}                         # target id -> Tab, in the order they appeared
         self.by_session = {}
         self.active = None                     # the tab actions go to unless told otherwise
+        self.fence = fence.Fence(self.call)    # decides every `file:` request a tab makes (fence.py)
         self.reader = None
         self.alive = False
 
@@ -333,6 +334,9 @@ class Browser:
             if tab:
                 tab.session = tab.world = None
             return
+        if method == "Fetch.requestPaused":
+            self.fence.paused(msg.get("sessionId"), p)      # decided off the reader's thread
+            return
         tab = self.by_session.get(msg.get("sessionId"))
         if tab is None:
             return
@@ -432,12 +436,20 @@ class Browser:
         self.by_session[tab.session] = tab
         for method in ("Page.enable", "Runtime.enable", "Network.enable", "Log.enable"):
             self.call(method, session=tab.session)
+        self.call("Fetch.enable", {"patterns": fence.PATTERNS}, session=tab.session)
         tree = self.call("Page.getFrameTree", session=tab.session)
         tab.main_frame = tree["frameTree"]["frame"]["id"]
+        if str(tab.url).lower().startswith("file:"):
+            # A local page that loaded before the fence was up (a window the page opened) drew
+            # whatever it embedded unvetted: load it again, behind the fence.
+            self.call("Page.reload", session=tab.session)
         return tab
 
     def new_tab(self, url):
-        got = self.call("Target.createTarget", {"url": url or "about:blank"})
+        # A local page is opened blank and navigated once the fence is up: made with its address,
+        # it would load, and draw what it embeds, before anything could vet it.
+        local = str(url or "").lower().startswith("file:")
+        got = self.call("Target.createTarget", {"url": "about:blank" if local else url or "about:blank"})
         deadline = time.monotonic() + 5
         with self.cond:
             while got["targetId"] not in self.tabs and time.monotonic() < deadline:
@@ -445,6 +457,8 @@ class Browser:
         tab = self.tabs.get(got["targetId"]) or Tab(got["targetId"], url)
         self.tabs.setdefault(tab.id, tab)
         self.active = self.attach(tab)
+        if local:
+            self.call("Page.navigate", {"url": url}, session=tab.session)
         return tab
 
     # ── the reader ──

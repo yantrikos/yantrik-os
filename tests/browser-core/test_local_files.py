@@ -10,9 +10,11 @@ One browser and one site for the run, from test_live; skips without a browser, a
 import os
 import shutil
 import tempfile
+import time
 import unittest
 
 from test_live import Bench, setUpModule, tearDownModule  # noqa: F401  (the bench, started for this module too)
+from test_screenshot import png_pixel  # noqa: E402
 from yantrik_browser import driver as drv  # noqa: E402  (on the path once test_live is imported)
 
 
@@ -88,7 +90,9 @@ class LocalFiles(unittest.TestCase):
                               "protected places; %s is protected_place" % path)
         d = drv.Driver(Bench.d.sides.fixed, judge=False, file_rule=rule, home=lambda: self.home)
         d.go(self.home + "/site/index.html")
-        self.assertEqual(asked, [self.home + "/site/index.html"])
+        # Asked with the path as written, and again at every act and every request: never once per address.
+        self.assertEqual(set(asked), {self.home + "/site/index.html"})
+        self.assertGreater(len(asked), 1)
         with self.assertRaises(drv.PageRefused) as caught:
             d.go(self.home + "/site/other.html")
         self.assertIn("protected_place", str(caught.exception))
@@ -116,6 +120,116 @@ class LocalFiles(unittest.TestCase):
         d = drv.Driver(Bench.d.sides.fixed, judge=False, home=lambda: self.home)
         self.assertEqual(d.go(self.home + "/site/index.html")["title"], "My Build")
         self.assertIn("outside", self.refused(d.go, "/etc/hostname"))
+
+
+RED = (255, 0, 0)
+
+
+class LocalPagesAreFenced(unittest.TestCase):
+    """The security review of #1170, finding 1, 3 and 9: a local page shows only itself and what is
+    inside an allowed tree. A protected file, a hidden place and anything outside the home are
+    never drawn — not as a frame, an object or an embed — so a screenshot of the page never holds
+    them. A link swapped behind a page is vetted again at every act, every reload and every step
+    of the history. Each is red in the page it is hidden in, so a leak is a red pixel."""
+
+    @classmethod
+    def setUpClass(cls):
+        from yantrik_surface.surface import Refusal
+        cls.home = tempfile.mkdtemp(prefix="yb-home-")
+        cls.outside = tempfile.mkdtemp(prefix="yb-outside-")
+        red = "<body style=\"margin:0;background:#f00\"><p>SECRET-KEY-MATERIAL-1234</p>"
+        green = "<body style=\"margin:0;background:#0f0\"><p>fine</p>"
+        for folder in ("site", ".ssh", "vault", "w"):
+            os.makedirs(os.path.join(cls.home, folder))
+        for rel, body in (("site/ok.html", green), (".ssh/key.html", red), ("vault/private.html", red),
+                          ("w/ok.html", "<title>ok page</title><p>ok page</p>"), ("w/other.html", "<p>other</p>"),
+                          ("site/notes.pem", "-----BEGIN PRIVATE KEY-----"), ("site/.env", "TOKEN=1")):
+            with open(os.path.join(cls.home, rel), "w") as f:
+                f.write(body)
+        with open(os.path.join(cls.outside, "secret.html"), "w") as f:
+            f.write(red.replace("SECRET-KEY-MATERIAL-1234", "secret text"))
+        frames = [("iframe", "src", "file://%s/secret.html" % cls.outside),     # outside the home
+                  ("iframe", "src", "file://%s/.ssh/key.html" % cls.home),      # a hidden place
+                  ("iframe", "src", "file://%s/vault/private.html" % cls.home),  # the OS rule's protected place
+                  ("iframe", "src", "file://%s/site/ok.html" % cls.home),       # fine: inside, allowed
+                  ("object", "data", "file://%s/secret.html" % cls.outside),
+                  ("embed", "src", "file://%s/.ssh/key.html" % cls.home),
+                  ("iframe", "src", "file://%s/.ssh/" % cls.home)]               # a folder listing
+        cells = "".join("<%s %s=\"%s\" type=\"text/html\" style=\"position:absolute;border:0;left:%dpx;"
+                        "top:%dpx;width:300px;height:300px\"></%s>" % (tag, attr, url, (i % 4) * 320, (i // 4) * 320, tag)
+                        for i, (tag, attr, url) in enumerate(frames))
+        with open(os.path.join(cls.home, "site", "embed.html"), "w") as f:
+            f.write("<title>Embedder</title><body style=\"margin:0\">" + cells)
+
+        def rule(path):
+            if "/vault/" in path:
+                raise Refusal("an agent reads and writes files only in the person's home, outside its "
+                              "protected places; %s is protected_place" % path)
+        cls.d = drv.Driver(Bench.d.sides.fixed, judge=False, file_rule=rule, home=lambda: cls.home)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.home, ignore_errors=True)
+        shutil.rmtree(cls.outside, ignore_errors=True)
+
+    def seen(self, fn, *args):
+        """Everything an act answers with, or the refusal, as one string: where a secret would show."""
+        try:
+            return repr(fn(*args))
+        except drv.Refused as e:
+            return str(e)
+
+    def test_nothing_protected_or_outside_is_drawn_into_a_local_page_or_its_screenshot(self):
+        self.d.go(self.home + "/site/embed.html")
+        time.sleep(1.0)
+        shot = self.d.screenshot()
+        cell = lambda i: png_pixel(shot["path"], (i % 4) * 320 + 150, (i // 4) * 320 + 150)  # noqa: E731
+        self.assertEqual(cell(3), (0, 255, 0), "the allowed file inside the home is drawn")
+        for i, what in ((0, "an iframe of a file outside the home"), (1, "an iframe of a hidden place"),
+                        (2, "an iframe of a protected place"), (4, "an object of a file outside the home"),
+                        (5, "an embed of a hidden place"), (6, "an iframe of a folder")):
+            self.assertNotEqual(cell(i), RED, what + " was drawn")
+        self.assertNotIn("SECRET-KEY-MATERIAL", self.d.text()["text"])
+
+    def test_a_link_swapped_behind_a_vetted_page_opens_nothing_on_reload_or_read(self):
+        link = os.path.join(self.home, "w", "l.html")
+        for target, why in ((os.path.join(self.outside, "secret.html"), "a file outside the home"),
+                            (os.path.join(self.home, ".ssh", "key.html"), "a hidden place")):
+            if os.path.lexists(link):
+                os.unlink(link)
+            os.symlink(os.path.join(self.home, "w", "ok.html"), link)
+            self.d.go(link)
+            self.assertIn("ok page", self.d.text()["text"])
+            os.unlink(link)
+            os.symlink(target, link)                 # the link is re-pointed after it was vetted
+            reloaded = self.seen(self.d.reload)
+            self.assertNotIn("secret text", reloaded, why)
+            self.assertNotIn("SECRET-KEY-MATERIAL", reloaded, why)
+            self.assertIn("about:blank", reloaded + self.d.read()["url"], why)
+            self.assertNotIn("secret", self.d.text()["text"], why)
+
+    def test_a_link_swapped_behind_a_page_is_refused_on_a_plain_read_too(self):
+        link = os.path.join(self.home, "w", "r.html")
+        os.symlink(os.path.join(self.home, "w", "ok.html"), link)
+        self.d.go(link)
+        os.unlink(link)
+        os.symlink(os.path.join(self.outside, "secret.html"), link)
+        self.assertNotIn("secret text", self.seen(self.d.text))
+        self.assertEqual(self.d.read()["url"], "about:blank")
+
+    def test_a_link_swapped_behind_the_history_opens_nothing_on_back(self):
+        link = os.path.join(self.home, "w", "h.html")
+        os.symlink(os.path.join(self.home, "w", "ok.html"), link)
+        self.d.go(link)
+        self.d.go(self.home + "/w/other.html")
+        os.unlink(link)
+        os.symlink(os.path.join(self.outside, "secret.html"), link)
+        self.assertNotIn("secret text", self.seen(self.d.history, -1) + self.seen(self.d.text))
+
+    def test_hidden_places_and_files_that_are_not_web_files_are_not_opened(self):
+        for path in (self.home + "/.ssh/key.html", self.home + "/site/notes.pem", self.home + "/site/.env"):
+            with self.assertRaises(drv.PageRefused, msg=path):
+                self.d.go(path)
 
 
 if __name__ == "__main__":

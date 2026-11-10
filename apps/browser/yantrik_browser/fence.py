@@ -1,0 +1,58 @@
+"""What a `file:` page may draw: every `file:` request of a tab is held until it is vetted.
+
+Chromium lets one local file embed another as an image, a frame, an object, a stylesheet or a
+font, and the renderer draws it; a screenshot of the tab then carries what the page was never
+allowed to name (a key under `.ssh`, a file outside the home). Script cannot read such a file,
+but the picture can. A flag cannot close this, since the browser is already running when the
+surface meets it, and a loopback server would be one more thing listening. So the tab's own
+DevTools session pauses each `file:` request (`Fetch.requestPaused`) and this decides it: the
+gate (driver.py, from local_files.py) answers with the URL of the real path it vetted, which is
+what loads — a link swapped after the vetting is not followed — or with nothing, and the request
+fails as access denied. The page itself is held to the same gate as everything it embeds. Nothing
+is decided on the reader's thread, which must stay free to read the answer to the decision.
+"""
+
+import queue
+import threading
+
+PATTERNS = [{"urlPattern": "file://*"}]
+
+
+class Fence:
+    """The decider of one browser's paused `file:` requests. `call` is the browser's `call`;
+    `gate(url)` is set by the driver for the call in hand and is `None` until it is, which
+    refuses everything: a fence with no rule is shut."""
+
+    def __init__(self, call):
+        self.call = call
+        self.gate = None
+        self.queue = queue.Queue()
+        self.worker = None
+        self.lock = threading.Lock()
+
+    def paused(self, session, params):
+        """A request the browser holds, from the reader's thread: queued, never decided here."""
+        with self.lock:
+            if self.worker is None:
+                self.worker = threading.Thread(target=self._run, name="file-fence", daemon=True)
+                self.worker.start()
+        self.queue.put((session, params))
+
+    def _run(self):
+        while True:
+            session, params = self.queue.get()
+            try:
+                self._decide(session, params)
+            except Exception:  # noqa: BLE001 - the browser went away: nobody is left to answer
+                pass
+
+    def _decide(self, session, params):
+        try:
+            load = self.gate((params.get("request") or {}).get("url", "")) if self.gate else None
+        except Exception:  # noqa: BLE001 - a gate that fails is a gate that refuses
+            load = None
+        if load:
+            self.call("Fetch.continueRequest", {"requestId": params["requestId"], "url": load}, session=session)
+        else:
+            self.call("Fetch.failRequest", {"requestId": params["requestId"], "errorReason": "AccessDenied"},
+                      session=session)
