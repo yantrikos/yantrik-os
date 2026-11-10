@@ -44,7 +44,7 @@ from gateway.platforms.base import (
 )
 from gateway.session import build_session_key
 
-from . import desktop
+from . import desktop, gateway_model
 from .steering import PLATFORM_HINT
 from .question import Card as _Card  # noqa: F401  (named in a type comment)
 from .output import CONFIRMED_BY_ASKING, OutputMixin  # noqa: F401
@@ -90,7 +90,7 @@ def check_requirements() -> bool:
 def _detail() -> str:
     """What the mind picker shows under the name: Hermes' version and the model it thinks with.
 
-    Read for display only, and only as Hermes itself reports it.
+    Read for display only: Hermes' own setting, and for `picked` the gateway's answer.
     """
     parts = []
     try:
@@ -102,7 +102,11 @@ def _detail() -> str:
     try:
         from hermes_cli.config import load_config
 
-        model = (load_config().get("model") or {}).get("default")
+        model_config = load_config().get("model") or {}
+        model = model_config.get("default")
+        # `picked` names nothing: the gateway says which model it is.
+        if model == gateway_model.PICKED:
+            model = gateway_model.real_model(model_config)
         if model:
             parts.append(str(model))
     except Exception:
