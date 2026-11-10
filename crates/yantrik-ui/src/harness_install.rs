@@ -82,6 +82,12 @@ pub fn busy() -> bool {
     with_board(|board| board.jobs.values().any(|j| j.running))
 }
 
+/// The home a job runs in: this shell's own, because a job is an `sh -lc` child of the shell with
+/// its environment.
+pub fn job_home() -> std::path::PathBuf {
+    std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/root"))
+}
+
 /// `true` while a job this shell started for `id` is running.
 pub fn running(id: &str) -> bool {
     with_board(|board| board.jobs.get(id).is_some_and(|j| j.running))

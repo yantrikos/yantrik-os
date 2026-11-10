@@ -17,9 +17,13 @@ use crate::wire::settings::DEFAULT_MIND;
 /// About how long a fresh install takes (4 min 40 s on VM 541, rounded up to a whole minute).
 pub const MINUTES: u32 = 5;
 
-/// Said once when the install starts and the Companion is the one answering.
-pub fn getting_ready() -> String {
-    format!("Hermes is getting ready (about {MINUTES} minutes); the Companion is answering for now.")
+/// Said once when the install starts and the Companion is the one answering. On an image that
+/// ships Hermes the install only wires it up, so no minutes are promised.
+pub fn getting_ready(baked: bool) -> String {
+    match baked {
+        true => "Hermes is getting ready; the Companion is answering for now.".to_string(),
+        false => format!("Hermes is getting ready (about {MINUTES} minutes); the Companion is answering for now."),
+    }
 }
 
 /// Said once when the conversation has moved to Hermes after the above.
@@ -36,6 +40,8 @@ pub struct Facts {
     pub installing: bool,
     /// The default mind is the one answering.
     pub answering: bool,
+    /// Its install runs from the image, not from a download ([`crate::default_mind::baked`]).
+    pub baked: bool,
 }
 
 /// What has been said, so each sentence is said once per wait.
@@ -55,7 +61,7 @@ pub fn next(told: &mut Told, facts: Facts) -> Option<String> {
     }
     if facts.installing && !facts.proven && !facts.answering && !told.waiting {
         told.waiting = true;
-        return Some(getting_ready());
+        return Some(getting_ready(facts.baked));
     }
     // An install that ended without Hermes ready: the next try says it again.
     if told.waiting && !facts.installing && !facts.proven {
@@ -82,8 +88,9 @@ pub fn tick(ui: &crate::App, host: &yantrik_harness::Host) {
     let facts = Facts {
         chose_a_mind: !crate::wire::settings::chosen_mind().is_empty(),
         proven: crate::default_mind::proven(),
-        installing: crate::harness_install::running(DEFAULT_MIND),
+        installing: crate::default_mind::installing(),
         answering: host.active_id() == DEFAULT_MIND,
+        baked: crate::default_mind::baked(),
     };
     let said = next(&mut TOLD.lock().unwrap_or_else(|e| e.into_inner()), facts);
     if let Some(words) = said {
@@ -96,7 +103,17 @@ mod tests {
     use super::*;
 
     fn waiting() -> Facts {
-        Facts { chose_a_mind: false, proven: false, installing: true, answering: false }
+        Facts { chose_a_mind: false, proven: false, installing: true, answering: false, baked: false }
+    }
+
+    /// An image that ships Hermes still wires it up at first run; that wait is said without a
+    /// promise of minutes that was measured on a download.
+    #[test]
+    fn a_baked_image_says_the_wait_without_minutes() {
+        let mut told = Told::default();
+        let said = next(&mut told, Facts { baked: true, ..waiting() }).expect("said when the install starts");
+        assert_eq!(said, "Hermes is getting ready; the Companion is answering for now.");
+        assert!(!said.contains("minutes"));
     }
 
     #[test]
