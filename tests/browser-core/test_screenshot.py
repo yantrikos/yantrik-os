@@ -81,12 +81,13 @@ class Screenshot(unittest.TestCase):
     def test_a_screenshot_is_a_png_of_the_viewport_saved_under_the_home(self):
         self.d.go(self.site + "/pages/red.html")
         out = self.d.screenshot()
-        self.assertTrue(out["path"].startswith(os.path.join(self.home, "Pictures", "Screenshots", "Browser")), out)
+        self.assertTrue(out["path"].startswith(os.path.join(self.home, *shot.SHOTS_DIR)), out)
         self.assertTrue(os.path.basename(out["path"]).startswith("Page "), out["path"])
         self.assertEqual(os.stat(out["path"]).st_mode & 0o777, 0o600)
         self.assertEqual(out["size"][0], self.d.read()["viewport"][0])
         self.assertEqual(png_pixel(out["path"], out["size"][0] // 2, out["size"][1] // 2), (255, 0, 0))
         self.assertIn("not the screen", out["of"])
+        self.assertNotIn("not another tab", out["of"], "every mind shares one browser; the words do not promise more")
 
     def test_each_tab_gets_its_own_picture_and_never_anothers(self):
         self.d.go(self.site + "/pages/red.html")
@@ -138,8 +139,8 @@ class Screenshot(unittest.TestCase):
         self.assertIn("png", view)
 
     def test_a_planted_link_at_the_next_name_is_not_followed(self):
-        folder = os.path.join(self.home, "Pictures", "Screenshots", "Browser")
-        os.makedirs(folder, exist_ok=True)
+        folder = os.path.join(self.home, *shot.SHOTS_DIR)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
         victim = os.path.join(self.home, "victim.txt")
         with open(victim, "w") as f:
             f.write("keep me")
@@ -153,6 +154,49 @@ class Screenshot(unittest.TestCase):
         with open(victim) as f:
             self.assertEqual(f.read(), "keep me")
         self.assertFalse(os.path.islink(out["path"]))
+
+    # ── the security review of #1170, finding 6 ──
+
+    def test_pictures_are_kept_apart_from_the_persons_own_captures_in_a_private_folder(self):
+        self.d.go(self.site + "/pages/red.html")
+        out = self.d.screenshot()
+        self.assertNotIn(os.path.join("Pictures", "Screenshots"), out["path"])
+        self.assertEqual(os.stat(os.path.dirname(out["path"])).st_mode & 0o777, 0o700)
+        self.assertFalse(os.path.exists(os.path.join(self.home, "Pictures")), "nothing among the desktop captures")
+
+    def test_a_full_page_picture_is_capped_in_width_and_pixels_before_it_is_drawn(self):
+        self.d.go(self.site + "/pages/wide.html")        # 200000 px wide
+        out = self.d.screenshot(full=True)
+        self.assertLessEqual(out["size"][0], shot.FULL_WIDTH, out)
+        self.assertLessEqual(out["size"][0] * out["size"][1], shot.FULL_PIXELS, out)
+
+    def test_only_so_many_pictures_are_kept(self):
+        home = tempfile.mkdtemp(prefix="yb-keep-")
+        try:
+            d = drv.Driver(Bench.d.sides.fixed, judge=False, file_rule=False, home=lambda: home)
+            d.go(self.site + "/pages/red.html")
+            with mock.patch.object(shot, "KEEP_FILES", 3):
+                paths = [d.screenshot()["path"] for _ in range(6)]
+            kept = os.listdir(os.path.dirname(paths[0]))
+            self.assertEqual(len(kept), 3, kept)
+            self.assertTrue(os.path.exists(paths[-1]), "the newest is kept")
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_a_folder_that_is_a_link_is_refused_and_nothing_is_written_through_it(self):
+        home, elsewhere = tempfile.mkdtemp(prefix="yb-link-"), tempfile.mkdtemp(prefix="yb-elsewhere-")
+        try:
+            os.makedirs(os.path.join(home, *shot.SHOTS_DIR[:-1]))
+            os.symlink(elsewhere, os.path.join(home, *shot.SHOTS_DIR))
+            d = drv.Driver(Bench.d.sides.fixed, judge=False, file_rule=False, home=lambda: home)
+            d.go(self.site + "/pages/red.html")
+            with self.assertRaises(drv.Refused) as caught:
+                d.screenshot()
+            self.assertIn("link", str(caught.exception))
+            self.assertEqual(os.listdir(elsewhere), [])
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+            shutil.rmtree(elsewhere, ignore_errors=True)
 
 
 if __name__ == "__main__":
