@@ -56,9 +56,11 @@ HI_KEEP=".yantrik-moved"
 HI_CAPABILITY="YANTRIK_HARNESS_ISOLATED"
 
 # shellcheck source=deploy/yantrik-os/harness-sandbox.sh
-. "$(dirname "${BASH_SOURCE[0]}")/harness-sandbox.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/harness-sandbox.sh" || return 1
 # shellcheck source=deploy/yantrik-os/harness-isolation-room.sh
-. "$(dirname "${BASH_SOURCE[0]}")/harness-isolation-room.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/harness-isolation-room.sh" || return 1
+# A missing helper must refuse the move, never skip its checks ("command not found" is not a failure).
+hi_parts_ok() { type hi_abort hi_room_check hi_task hi_discard_unfinished hi_auto_blocked >/dev/null 2>&1; }
 
 hi_known() { case "$1" in hermes) return 0 ;; *) return 1 ;; esac; }
 hi_unit() { case "$1" in hermes) printf 'hermes-gateway.service' ;; esac; }
@@ -374,6 +376,7 @@ hi_install() { # <name>
   local name="$1" unit who owner home was=none shown
   hi_known "$name" || fail "unknown harness '$name' (known here: hermes)"
   [ "$(id -u)" = 0 ] || fail "run as root"
+  hi_parts_ok || fail "this install is missing a harness-isolation helper (an update that did not finish?); nothing was changed. Run: sudo yantrik-update"
   tree_is_roots || fail "this machine's tree is not root's yet; run: sudo yantrik-update migrate-ownership"
   # One move at a time: the button and the detached update-time move would interleave otherwise.
   [ -n "${HI_LOCKED:-}" ] || { exec 8>"$HI_LOCK" && flock -n 8 && HI_LOCKED=1; }     || fail "another harness move is running (journalctl -u yantrik-harness-migrate); try again when it ends"
@@ -388,7 +391,7 @@ hi_install() { # <name>
     was="$(hi_stop_person_unit "$name" "$owner" "$home")"
     HI_NOW="$name $owner $was"
     trap hi_interrupted TERM INT HUP
-    hi_discard_unfinished "$name" "left by an earlier try"
+    hi_discard_unfinished "$name" "left by an earlier try" || hi_abort "$name" "$was" "$owner" "an earlier try's files could not be removed"
     hi_copy_data "$name" "$owner" "$home" || hi_abort "$name" "$was" "$owner" "its files could not be copied and counted"
   fi
   HI_NOW="$name $owner $was"
@@ -572,6 +575,7 @@ cmd_migrate_harnesses() {
 # unit (one at a time, by name) and the update goes on.
 reconcile_harness_isolation() {
   [ "$(id -u)" = 0 ] || return 0
+  hi_parts_ok || { warn "harness moves are off: a harness-isolation helper is missing from this install"; return 0; }
   tree_is_roots || return 0
   local who owner home name todo=0
   who="$(hi_owner_home)" || return 0

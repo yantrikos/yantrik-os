@@ -10,6 +10,7 @@
 # No root and no accounts: the person and the mind account are both this user, `systemctl`, `df`,
 # `systemd-run` and `getent` are recorders. Fake data only.
 set -u
+[ "$(command id -u)" != 0 ] || { echo "run as a normal user (the test fakes root itself)"; exit 2; }
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/selftest-lib.sh"
 work="$(mktemp -d)"
@@ -73,6 +74,15 @@ disk "$need";       ( hi_room_check hermes "$H" yes ) >/dev/null 2>&1; is "exact
 reset; mkdir -p "$HI_BASE/hermes.failed"; head -c 4194304 /dev/zero > "$HI_BASE/hermes.failed/x"
 disk $((need - 1024)); ( hi_room_check hermes "$H" yes ) >/dev/null 2>&1
 is "a full copy an older build kept counts as room it is about to give back" "0" "$?"
+no "... and is freed by the check itself, on every path (not only where the move discards it)" test -e "$HI_BASE/hermes.failed"
+reset; mkdir -p "$HI_BASE/hermes.failed/d"; head -c 4194304 /dev/zero > "$HI_BASE/hermes.failed/d/x"; chmod 555 "$HI_BASE/hermes.failed/d"
+disk $((need - 1024)); ( hi_room_check hermes "$H" yes ) >/dev/null 2>&1
+is "a copy with a read-only directory is freed too" "0" "$?"
+no "... really gone" test -e "$HI_BASE/hermes.failed"
+reset; mkdir -p "$HI_BASE/hermes.failed"; head -c 4194304 /dev/zero > "$HI_BASE/hermes.failed/x"
+( hi_as_mind() { case "$1" in rm) return 1 ;; esac; "$@"; }; disk $((need - 1024)); hi_room_check hermes "$H" yes ) >/dev/null 2>&1
+is "a stale copy that cannot be removed is NOT counted as room: the check refuses" "1" "$?"
+has "... with the room sentence" "it needs about" "$(said)"
 reset; disk 1000; ( hi_room_check hermes "$H" no ) >/dev/null 2>&1
 is "a fresh install (no Hermes of the person's) is checked too, for the install headroom" "1" "$?"
 echo "-- through hi_install: before hi_ready, copying or installing"
@@ -92,6 +102,40 @@ has "the person is told it was removed, and why that is safe" "it was a copy the
 has "... and that their own files were not touched" "Your own files were not touched" "$(said)"
 is "the person's Hermes is untouched" "yes" "$([ -f "$H/.hermes/state.db" ] && [ -f "$H/.hermes/config.yaml" ] && echo yes || echo no)"
 
+# L-3: the sentence is true
+reset; mkdir -p "$M/.hermes/ro"; printf x > "$M/.hermes/ro/f"; chmod 555 "$M/.hermes/ro"
+hi_discard_unfinished hermes "its installer stopped"; is "a read-only directory in the copy is removed anyway" "0" "$?"
+is "... and the account's home is empty" "0" "$(ls -A "$M" | wc -l | tr -d ' ')"
+reset; mkdir -p "$M/.hermes"; printf x > "$M/.hermes/f"
+( hi_as_mind() { case "$1" in rm) return 1 ;; esac; "$@"; }; hi_discard_unfinished hermes "its installer stopped" ); is "a removal that fails returns failure" "1" "$?"
+has "... and says it is still there" "it is still there and the disk may stay full" "$(said)"
+lacks "... and never says removed" "removed the unfinished copy" "$(said)"
+yes "... the copy is indeed still there" test -f "$M/.hermes/f"
+rm -rf "$M/.hermes"
+
+echo "-- L-4: unmeasurable data fails closed"
+reset; disk 99999999
+( hi_room_check hermes "$work/nohome" yes ) >/dev/null 2>&1; is "a home that cannot be entered refuses, however roomy the disk" "1" "$?"
+has "... with a sentence saying why" "could not be measured" "$(said)"
+has "... and that nothing was changed" "Nothing was changed" "$(said)"
+has "... and a note" "could not measure" "$(cat "$HI_STATE/hermes.failed")"
+reset; mkdir -p "$work/fakepy"; printf '#!/bin/sh\nexit 1\n' > "$work/fakepy/python3"; chmod 755 "$work/fakepy/python3"
+( PATH="$work/fakepy:$PATH"; hi_room_check hermes "$H" yes ) >/dev/null 2>&1; is "a failing measurement step (python3) refuses" "1" "$?"
+reset; ( hi_room_check hermes "$work/nohome" no ) >/dev/null 2>&1; is "a person with no data is not measured, and passes on a roomy disk" "0" "$?"
+
+echo "-- L-1: a missing helper refuses"
+mkdir -p "$work/partial"; cp "$here/harness-isolation.sh" "$here/harness-sandbox.sh" "$work/partial/"
+( . "$work/partial/harness-isolation.sh" ) >/dev/null 2>&1; is "sourcing without harness-isolation-room.sh fails (it is not skipped)" "1" "$?"
+bash -c '. "$1" >/dev/null 2>&1; type hi_install >/dev/null 2>&1' sh "$work/partial/harness-isolation.sh"; is "... and no move function is left defined" "1" "$?"
+reset; disk 99999999
+( unset -f hi_room_check; hi_install hermes ) >/dev/null 2>&1; is "hi_install refuses when a helper is undefined" "1" "$?"
+has "... saying a helper is missing" "missing a harness-isolation helper" "$(said)"
+is "... and installed nothing" "0" "$(wc -c < "$work/log/ready" | tr -d ' ')"
+: > "$work/log/run"
+( unset -f hi_abort; reconcile_harness_isolation ) >/dev/null 2>&1
+is "reconcile starts no move when a helper is missing" "0" "$(wc -c < "$work/log/run" | tr -d ' ')"
+reset
+
 echo "== 3. the person's gateway: said to run only when it does"
 # A user unit that behaves as the case says.
 : > "$work/log/sysctl"
@@ -99,12 +143,13 @@ systemctl() {
   printf '%s\n' "$*" >> "$work/log/sysctl"
   case "$*" in
     *--user*" start "*) [ "${GW:-ok}" != nostart ] ;;
-    *--user*is-active*) case "${GW:-ok}" in ok|restarts|deadlock) return 0 ;; flap) [ -e "$work/log/flapped" ] && return 1; : > "$work/log/flapped"; return 0 ;; *) return 1 ;; esac ;;
+    *--user*is-active*) case "${GW:-ok}" in ok|restarts|deadlock) return 0 ;; late) c="$(cat "$work/log/calls" 2>/dev/null || echo 0)"; echo $((c + 1)) > "$work/log/calls"; [ "$c" -lt 2 ] ;; flap) [ -e "$work/log/flapped" ] && return 1; : > "$work/log/flapped"; return 0 ;; *) return 1 ;; esac ;;
+    *--user*MainPID*) [ "${MP:-self}" = self ] && echo "$$" || echo 1 ;;
     *--user*NRestarts*) [ "${GW:-ok}" = restarts ] && echo 5 || echo 0 ;;
     *) true ;;
   esac
 }
-abort() { reset; rm -f "$work/log/flapped"; disk 1000; rm -f "$H/.hermes/gateway.pid"; ( hi_abort hermes active "$(command id -un)" "its installer stopped" ) >/dev/null 2>&1; echo $?; }
+abort() { reset; rm -f "$work/log/flapped" "$work/log/calls"; disk 1000; if [ -n "${NOPID:-}" ]; then rm -f "$H/.hermes/gateway.pid"; else printf '{"pid": %s}\n' "$$" > "$H/.hermes/gateway.pid"; fi; ( hi_abort hermes active "$(command id -un)" "its installer stopped" ) >/dev/null 2>&1; echo $?; }
 GW=ok;       is "an abort after a gateway that is up ends as a failure" "1" "$(abort)"
 has "... and says it is running again, as it was" "your own hermes gateway is running again, as it was" "$(said)"
 lacks "... without a warning" "NOT running" "$(said)"
@@ -126,9 +171,25 @@ has "a lock that names a process that is not running is reported" "its lock name
 lacks "... and not called running again" "running again, as it was" "$(said)"
 printf '{"pid": %s}\n' "$$" > "$H/.hermes/gateway.pid"
 reset; ( hi_abort hermes active "$(command id -un)" "its installer stopped" ) >/dev/null 2>&1
-has "a lock that names a live process counts" "running again, as it was" "$(said)"
+has "a lock that names the unit's main process counts" "running again, as it was" "$(said)"
+MP=other; abort >/dev/null
+has "a live pid that is not this unit's (not its MainPID, not in its cgroup) is reported" "which is not this unit's" "$(said)"
+lacks "... and not called running again" "running again, as it was" "$(said)"
+mkdir -p "$work/proc/$$"; printf '0::/user.slice/user-1.slice/hermes-gateway.service\n' > "$work/proc/$$/cgroup"
+abort >/dev/null
+has "... but a pid in the unit's cgroup counts" "running again, as it was" "$(said)"
+MP=self; rm -rf "$work/proc"
+NOPID=1 abort >/dev/null
+has "520's case: active, no restarts, and no lock at all is NOT running (could not be checked)" "its lock (gateway.pid) was not there after 0 s, so it could not be checked" "$(said)"
+lacks "... and not called running again" "running again, as it was" "$(said)"
+GW=late; HI_HOLD=2 abort >/dev/null
+has "a unit that is up at first and gone inside the hold is caught by the polling" "it started and then stopped" "$(said)"
+lacks "... and not called running again" "running again, as it was" "$(said)"
+GW=ok; HI_HOLD=0
+is "the default hold is longer than the restart interval 520 measured (29 s)" "yes" "$( (unset HI_HOLD; . "$here/harness-isolation-room.sh"; [ "$HI_HOLD" -ge 30 ] && echo yes || echo no) )"
 rm -f "$H/.hermes/gateway.pid"
 has "the warning gives the free space it saw" "MB free" "$(GW=nostart; abort >/dev/null; said)"
+GW=ok
 disk 1000; reset; mkdir -p "$M/.hermes"; head -c 1048576 /dev/zero > "$M/.hermes/state.db"
 GW=ok; ( hi_abort hermes active "$(command id -un)" "its installer stopped" ) >/dev/null 2>&1
 is "the unfinished copy was removed before the person's gateway started (it needs the room)" "yes" "$([ ! -e "$M/.hermes/state.db" ] && echo yes || echo no)"

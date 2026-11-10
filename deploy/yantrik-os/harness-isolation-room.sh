@@ -27,8 +27,10 @@ HI_HEADROOM_KB="$(hi_knob HI_HEADROOM_KB 3145728)"
 # What must still be free when the move is done: the journal, the person's own work, root's reserve.
 HI_RESERVE_KB="$(hi_knob HI_RESERVE_KB 524288)"
 HI_DF="$(hi_knob HI_DF df)"
-# How long the person's gateway must stay up to be called running (after it is first active).
-HI_HOLD="$(hi_knob HI_HOLD 6)"
+# How long the person's gateway must stay up to be called running (after it is first active). 520
+# measured a crash loop on a full disk: first exit 7 s after the start, then every ~29 s, so the
+# hold is longer than one restart interval plus a margin.
+HI_HOLD="$(hi_knob HI_HOLD 40)"
 
 # ── Room ───────────────────────────────────────────────────────────────────────────────
 
@@ -39,7 +41,8 @@ hi_free_kb() { # free KB on the disk the harnesses' home is on (the nearest dire
 }
 
 hi_data_kb() { # <name> <home>: KB of what the copy would write (the code is reinstalled, not copied)
-  hi_as_owner sh -c 'cd "$1" && python3 -I -c "$2" list "$1" "$3" "$4" "$5" | xargs -0 -r du -sk -- 2>/dev/null | awk "{s += \$1} END {print s + 0}"' \
+  # Fails (non-zero, nothing printed) when it cannot be measured: a guess of 0 would pass the check.
+  hi_as_owner bash -c 'set -o pipefail; cd "$1" && python3 -I -c "$2" list "$1" "$3" "$4" "$5" | xargs -0 -r du -sk -- 2>/dev/null | awk "{s += \$1} END {print s + 0}"' \
     sh "$2" "$HI_PY_TREE" "$(hi_person_tops "$1")" "$(hi_code_dirs "$1")" "$(hi_person_extra "$1")"
 }
 
@@ -51,16 +54,40 @@ hi_stale_kb() { # KB of unfinished copies an older build kept: freed before the 
   printf '%s' "$k"
 }
 
+hi_make_writable() { # <paths...>: a tree the account made may hold read-only directories (Go module caches)
+  hi_as_mind find "$@" -xdev -type d -exec chmod u+rwx {} + 2>/dev/null || true
+}
+
+hi_discard_stale() { # <name>: removes the full copies an older build kept; fails if one is still there
+  local home d; home="$(hi_home "$1")"
+  hi_make_writable "$home.failed" "$home.failed.new"
+  hi_as_mind rm -rf "$home.failed.new" "$home.failed" 2>/dev/null
+  for d in "$home.failed" "$home.failed.new"; do
+    ! hi_as_mind test -e "$d" && ! hi_as_mind test -L "$d" || return 1
+  done
+}
+
 # <name> <home> <person-has-one: yes|no>: refuses, in a sentence, when the disk cannot hold the move.
 # Nothing has been changed when this runs: it comes before the mind account's directory is made.
 hi_room_check() {
   local data=0 free stale need
-  [ "$3" != yes ] || data="$(hi_data_kb "$1" "$2")"
-  data="${data:-0}"
+  if [ "$3" = yes ]; then
+    data="$(hi_data_kb "$1" "$2")" && [ -n "$data" ] || {
+      hi_note_failure "$1" "could not measure your Hermes's data"
+      fail "$1 was not moved: your Hermes's data could not be measured, so there is no telling whether the disk can hold it. Nothing was changed. Run: sudo yantrik-update harness install $1 once $2 can be read"
+    }
+  fi
   free="$(hi_free_kb)"; free="${free:-0}"
   stale="$(hi_stale_kb "$1")"
   need=$((data + HI_HEADROOM_KB + HI_RESERVE_KB))
-  [ $((free + stale)) -lt "$need" ] || return 0
+  if [ $((free + stale)) -ge "$need" ]; then
+    # Stale copies count as room, so they are freed here on every path (not only where the move
+    # later discards them); if one cannot be freed it does not count.
+    [ "$stale" = 0 ] && return 0
+    hi_discard_stale "$1" && return 0
+    stale=0
+    [ "$free" -lt "$need" ] || return 0
+  fi
   hi_note_failure "$1" "not enough room: needs about $((need / 1024)) MB, $(((free + stale) / 1024)) MB free"
   fail "$1 was not moved: it needs about $((need / 1024)) MB free on this disk (your Hermes's data $((data / 1024)) MB, its install $((HI_HEADROOM_KB / 1024)) MB, and $((HI_RESERVE_KB / 1024)) MB left for the system) and $(((free + stale) / 1024)) MB is free. Nothing was changed. Free some room, then run: sudo yantrik-update harness install $1"
 }
@@ -85,7 +112,7 @@ hi_failure_text() { # <name>: "<time> <reason>" of the last failed move, if ther
 hi_auto_blocked() { # <name>: succeeds (and says why) when the last move failed and nobody asked since
   local t; t="$(hi_failure_text "$1")" || return 1
   [ -n "$t" ] || return 1
-  info "$1 stays the person's: the last move to the mind account failed ($t). An update does not retry it; when there is room and you want it, run: sudo yantrik-update harness install $1"
+  info "$1 stays the person's: the last move to the mind account failed ($t; a full disk, whoever filled it, is the usual reason). An update does not retry it; when there is room and you want it, run: sudo yantrik-update harness install $1"
 }
 
 # ── Leaving things as they were ─────────────────────────────────────────────────────────
@@ -94,31 +121,47 @@ hi_auto_blocked() { # <name>: succeeds (and says why) when the last move failed 
 # as <home>.failed. A copy, not the person's data, and gigabytes; nothing of it is kept.
 hi_discard_unfinished() { # <name> <why>
   local home; home="$(hi_home "$1")"
-  hi_as_mind rm -rf "$home.failed.new" "$home.failed"
+  hi_discard_stale "$1" || { warn "could not remove an old unfinished copy next to $home ($2): the disk may stay full"; return 1; }
   [ -n "$(hi_as_mind ls -A "$home" 2>/dev/null)" ] || return 0
-  hi_as_mind rm -rf "$home" || warn "could not remove the unfinished copy in $home ($2)"
+  hi_make_writable "$home"
+  hi_as_mind rm -rf "$home" 2>/dev/null
+  if [ -n "$(hi_as_mind ls -A "$home" 2>/dev/null)" ]; then
+    warn "could not remove the unfinished copy in $home ($2): it is still there and the disk may stay full. Your own files were not touched"
+    return 1
+  fi
   hi_as_mind sh -c 'umask 077; mkdir -p "$1"' sh "$home"
   info "removed the unfinished copy of $1 in $home ($2): it was a copy the mind account made, not your data, and a kept one would keep the disk full. Your own files were not touched"
 }
 
-# Is the person's own gateway really back? Active, still active after a hold with no restart in
-# between (a crash loop is active for a moment each time), and its lock naming a live process when it
-# has one. Prints the reason when not.
+# Is the person's own gateway really back? Active; still active at the end of a hold longer than a
+# restart interval, checked every second, with no restart counted (a crash loop is active for a
+# moment each time); and a lock (gateway.pid) naming a live process of THIS unit (its MainPID, or
+# one in its cgroup). No lock after the hold counts as not verified. Prints the reason when not.
+hi_gateway_steady() { # <unit> <owner>: fails, saying why, if the unit is down or has restarted
+  local nr
+  systemctl --user -M "$2@" is-active --quiet "$1" 2>/dev/null || { printf 'it started and then stopped'; return 1; }
+  nr="$(systemctl --user -M "$2@" show -p NRestarts --value "$1" 2>/dev/null)"
+  [ "${nr:-0}" = 0 ] || { printf 'it keeps restarting (%s times)' "$nr"; return 1; }
+}
 hi_person_gateway_back() { # <name> <owner> <home>
-  local unit n=0 nr pid; unit="$(hi_unit "$1")"
+  local unit n=0 t=0 pid mp; unit="$(hi_unit "$1")"
   systemctl --user -M "$2@" start "$unit" >/dev/null 2>&1 || { printf 'it would not start'; return 1; }
   while [ "$n" -lt 30 ]; do
     systemctl --user -M "$2@" is-active --quiet "$unit" 2>/dev/null && break
     sleep 1; n=$((n + 1))
   done
   [ "$n" -lt 30 ] || { printf 'it was not active after 30 s'; return 1; }
-  sleep "$HI_HOLD"
-  systemctl --user -M "$2@" is-active --quiet "$unit" 2>/dev/null || { printf 'it started and then stopped'; return 1; }
-  nr="$(systemctl --user -M "$2@" show -p NRestarts --value "$unit" 2>/dev/null)"
-  [ "${nr:-0}" = 0 ] || { printf 'it keeps restarting (%s times)' "$nr"; return 1; }
+  while [ "$t" -lt "$HI_HOLD" ]; do
+    sleep 1; t=$((t + 1))
+    hi_gateway_steady "$unit" "$2" || return 1
+  done
+  hi_gateway_steady "$unit" "$2" || return 1
   pid="$(hi_as_owner sh -c 'f="$1/$2/gateway.pid"; [ -f "$f" ] && grep -o "[0-9][0-9]*" "$f" | head -n 1' sh "$3" "$(hi_person_dir "$1")" 2>/dev/null)"
-  if [ -n "$pid" ] && ! hi_as_owner kill -0 "$pid" 2>/dev/null; then printf 'its lock names process %s, which is not running' "$pid"; return 1; fi
-  return 0
+  [ -n "$pid" ] || { printf 'its lock (gateway.pid) was not there after %s s, so it could not be checked' "$HI_HOLD"; return 1; }
+  hi_as_owner kill -0 "$pid" 2>/dev/null || { printf 'its lock names process %s, which is not running' "$pid"; return 1; }
+  mp="$(systemctl --user -M "$2@" show -p MainPID --value "$unit" 2>/dev/null)"
+  [ "$pid" = "$mp" ] || grep -q "/$unit\$" "$HI_PROC/$pid/cgroup" 2>/dev/null \
+    || { printf 'its lock names process %s, which is not this unit'"'"'s' "$pid"; return 1; }
 }
 
 # A failed install puts the person's own Hermes back as it was: the system unit off (unless it had
