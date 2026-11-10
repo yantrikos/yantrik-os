@@ -32,6 +32,8 @@ use std::path::PathBuf;
 use yantrik_companion::CompanionConfig;
 
 mod accounts;
+// Which model is answering a mind, said once for the panel, the bubble, the Lens and describe (#1114).
+mod answering;
 // The AI accounts the person added and their models (#673): Settings, the picker, the gateway.
 mod ai_accounts;
 // The local model gateway on 127.0.0.1:7460, which forwards a mind's calls to those accounts.

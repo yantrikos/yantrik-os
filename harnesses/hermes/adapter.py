@@ -44,7 +44,7 @@ from gateway.platforms.base import (
 )
 from gateway.session import build_session_key
 
-from . import bridge_token, desktop
+from . import bridge_token, desktop, gateway_model
 from .steering import PLATFORM_HINT
 from .question import Card as _Card  # noqa: F401  (named in a type comment)
 from .output import CONFIRMED_BY_ASKING, OutputMixin  # noqa: F401
@@ -90,7 +90,7 @@ def check_requirements() -> bool:
 def _detail() -> str:
     """What the mind picker shows under the name: Hermes' version and the model it thinks with.
 
-    Read for display only, and only as Hermes itself reports it.
+    Read for display only: Hermes' own setting, and for `picked` the gateway's answer.
     """
     parts = []
     try:
@@ -102,7 +102,11 @@ def _detail() -> str:
     try:
         from hermes_cli.config import load_config
 
-        model = (load_config().get("model") or {}).get("default")
+        model_config = load_config().get("model") or {}
+        model = model_config.get("default")
+        # `picked` names nothing: the gateway says which model it is.
+        if model == gateway_model.PICKED:
+            model = gateway_model.real_model(model_config)
         if model:
             parts.append(str(model))
     except Exception:
@@ -130,6 +134,8 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
         self._tokens: Optional[bridge_token.TokenService] = (
             bridge_token.TokenService() if os.environ.get("YANTRIK_MIND_RUN", "").strip() else None
         )
+        self._detail_said = ""
+        self._detail_task: Optional["asyncio.Task[None]"] = None
         # A run that asked the person a question goes on in the turn that answered it. The gateway
         # still knows the run by the turn that started it, so: the turn that started a run -> the
         # turn now carrying it, and the session whose question is waiting -> the run that asked.
@@ -210,13 +216,14 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
                 self._said_no_desktop = True
             return False
         self._address = address
+        self._detail_said = _detail()
         try:
             result = await self._call(
                 desktop.ATTACH,
                 {
                     "id": HARNESS_ID,
                     "name": HARNESS_NAME,
-                    "detail": _detail(),
+                    "detail": self._detail_said,
                     "tools": True,
                     "memory": True,
                     # The gateway's own agent (`hermes:gateway`) and its token, for the tools bridge.
@@ -310,8 +317,28 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
 
     # ── Turns in ───────────────────────────────────────────────────────────────────────────────
 
+    async def _refresh_detail(self) -> None:
+        """The model `picked` names can change while attached, so each turn says it again if it did
+        (one loopback read; `harness.detail` changes the line without attaching again)."""
+        try:
+            detail = await asyncio.to_thread(_detail)
+            if detail != self._detail_said and self._session:
+                await self._call(desktop.DETAIL, {"session": self._session, "detail": detail}, timeout=3.0)
+                self._detail_said = detail
+        except Exception as exc:
+            logger.debug("[yantrik] could not refresh the detail: %s", exc)
+
+    def _refresh_detail_soon(self) -> None:
+        """Say the model again without holding the turn: a slow gateway delays the line, never the
+        reply. One refresh at a time; a turn that finds one running leaves it to finish."""
+        running = self._detail_task
+        if running is not None and not running.done():
+            return
+        self._detail_task = asyncio.get_running_loop().create_task(self._refresh_detail())
+
     async def _on_turn(self, assignment: Dict[str, Any]) -> None:
         turn_id = str(assignment["turn_id"])
+        self._refresh_detail_soon()
         text = str(assignment.get("text") or "")
         source = self.build_source(
             chat_id=CHAT_ID,

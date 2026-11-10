@@ -24,6 +24,7 @@ harness.poll     {session, feedback_ack?}  → {turn_id, text, context, conversa
                                             answers: [{turn_id, request_id, answer}], initiative,
                                             notice_feedback: [{seq, notice_id, kind, seen_at, opened_at, at}]
 harness.notice   {session, notice}                     → {stored, notice_id, …}  (only when attach said notice_inbox_v1)
+harness.detail   {session, detail}                     → {}      (change the line under the name; no re-attach)
 harness.chunk    {session, turn_id, delta}             → {}
 harness.event    {session, turn_id, event}             → {}      (optional — see below)
 harness.complete {session, turn_id}                    → {}
