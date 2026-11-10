@@ -3669,6 +3669,8 @@ with tempfile.TemporaryDirectory() as d:
     # 25i. The tool text for the sealed command says what it cannot do.
     check("the tool text says there is no network mode",
           "NO network mode" in module.AGENT_BY_NAME["run_sealed_command"]["description"], None)
+    check("the tool text names what a job reaches on loopback",
+          all(w in module.AGENT_BY_NAME["run_sealed_command"]["description"] for w in ("7450", "7460", "11434", "9223")), None)
 
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed

@@ -35,6 +35,7 @@ use std::time::Duration;
 use serde_json::Value;
 use yantrik_app::control::{Action, Param};
 use yantrik_app::intents::{Args, Intent, Intents, Settle};
+use yantrik_ipc_contracts::home_paths::workshops;
 
 use crate::command::Command;
 use crate::model::{Model, MAX_TABS};
@@ -98,13 +99,16 @@ pub fn actions() -> Vec<(Action, Parse)> {
         (
             act(
                 "run",
-                "Type a command line into the active shell and press Return. It does not wait for \
+                format!(
+                    "Type a command line into the active shell and press Return. It does not wait for \
                  the command to finish: the answer carries what the shell printed in the moment \
                  after, `running` names anything still going, and `describe` shows the rest as it \
                  arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`. It is for \
                  interactive work: a long command (a render, a build) belongs in `shell.agent_run`. A Mind's \
                  `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that \
-                 cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view).",
+                 cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view). {}",
+                    workshops::LOOPBACK_REACH
+                ),
             )
             .risk("sensitive")
             .defers()

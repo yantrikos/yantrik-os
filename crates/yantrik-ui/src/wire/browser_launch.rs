@@ -7,7 +7,9 @@
 //! web tools have nothing of the person's to reach, and the person's tools nothing of a mind's.
 //! Ports and paths are `yantrik_browser_ports`'s, which reads `browsers.conf`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use yantrik_ipc_contracts::home_paths::workshops;
 
 use yantrik_browser_ports::{listener, procs, Place, Side};
 
@@ -31,6 +33,32 @@ pub fn person_args(program: &str, own: &[&str]) -> Vec<String> {
         args.extend(yantrik_browser_ports::launch_flags(Side::Person));
     }
     args
+}
+
+/// Whether `program` is a browser the desktop starts as the person's Browser or in Mind View.
+pub fn is_browser(program: &Path) -> bool {
+    is_chromium(program) || matches!(program_name(program).as_str(), "firefox" | "firefox-esr")
+}
+
+/// What an app is started with: for Mind View the arguments of [`mind_view_args`], and for a
+/// browser the outside view with the workshops hidden, so a browser that a job drives over its
+/// DevTools port cannot read them. Refuses (with the reason) when the machine holds workshops and
+/// cannot hide them from it.
+pub fn start_line(program: &Path, args: &[&str], mind_view: bool) -> Result<(PathBuf, Vec<String>), String> {
+    let args = match mind_view {
+        true => mind_view_args(program, args),
+        false => args.iter().map(|a| a.to_string()).collect(),
+    };
+    match is_browser(program) {
+        true => walled(program, args),
+        false => Ok((program.to_path_buf(), args)),
+    }
+}
+
+fn walled(program: &Path, args: Vec<String>) -> Result<(PathBuf, Vec<String>), String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let (program, args) = workshops::browser_command(&home, &program.to_string_lossy(), &args)?;
+    Ok((PathBuf::from(program), args))
 }
 
 /// A launch in Mind View: the caller's arguments, and for a browser the mind's own port and
@@ -131,5 +159,19 @@ mod tests {
         assert_eq!(&args[..2], ["--no-remote", "--profile"]);
         assert!(args[2].ends_with("firefox"), "{args:?}");
         assert!(mind_view_args(Path::new("/usr/bin/foot"), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_browser_is_walled_and_other_programs_are_not_browsers() {
+        assert!(is_browser(Path::new("/usr/bin/chromium")) && is_browser(Path::new("/usr/bin/firefox")));
+        assert!(!is_browser(Path::new("/usr/bin/blender")));
+        match walled(Path::new("/usr/bin/chromium"), vec!["--x".into()]) {
+            Ok((program, args)) if program.ends_with("bwrap") => {
+                assert_eq!(&args[args.len() - 2..], ["/usr/bin/chromium", "--x"]);
+                assert!(args.iter().any(|a| a == "--unshare-pid"));
+            }
+            Ok((program, args)) => assert_eq!((program, args), (PathBuf::from("/usr/bin/chromium"), vec!["--x".to_string()])),
+            Err(why) => assert!(why.contains("nothing was run"), "{why}"),
+        }
     }
 }

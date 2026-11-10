@@ -232,3 +232,29 @@ fn a_folder_above_the_workshops_that_is_not_roots_is_named() {
     }
     assert!(writable_ancestor(Path::new("/nonexistent-yantrik/x")).is_some(), "an ancestor that cannot be read is not safe");
 }
+
+/// Decision, 9 Nov: the person's Browser and Mind View's browser start in the outside view with
+/// the base hidden and nothing else, so a browser's Wayland, PipeWire and bus sockets stay.
+#[test]
+fn a_browser_is_wrapped_over_the_base_only() {
+    let (_h, home) = home_with_root();
+    let args = vec!["--no-first-run".to_string()];
+    match browser_command(&home, "/usr/bin/chromium", &args) {
+        Ok((bwrap, argv)) => {
+            assert!(bwrap.ends_with("bwrap"));
+            assert_eq!(&argv[argv.len() - 2..], ["/usr/bin/chromium", "--no-first-run"]);
+            let tmpfs: Vec<&String> = argv.windows(2).filter(|w| w[0] == "--tmpfs").map(|w| &w[1]).collect();
+            assert_eq!(tmpfs, [&base(&home).to_string_lossy().into_owned()], "the base and nothing else");
+            for kept in [["--unshare-pid"].as_slice(), &["--proc", "/proc"], &["--cap-drop", "ALL"]] {
+                assert!(argv.windows(kept.len()).any(|w| w == kept), "{kept:?} in {argv:?}");
+            }
+        }
+        Err(e) => assert!(e.contains("bwrap") && e.contains("nothing was run"), "{e}"),
+    }
+    // The job's view hides the runtime folder too; the browser's does not.
+    if let (Ok((_, job)), Ok((_, browser))) = (outside_command(&home, "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
+        let run = run_user(euid()).to_string_lossy().into_owned();
+        assert_eq!(job.contains(&run), run_user(euid()).is_dir());
+        assert!(!browser.contains(&run));
+    }
+}

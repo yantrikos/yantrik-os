@@ -27,6 +27,11 @@
 //!   interpreter) **cannot call `yos`**, which needs the shell's socket in `/run/user`. A token is
 //!   not bound back in. A Mind reaches the shell through its own tool calls, not through a job.
 //!
+//! The person's Browser and Mind View's browser run in a third view ([`browser_command`]): the
+//! outside view with only the base hidden, since a browser needs its sockets in `/run/user`. A job
+//! reaches a browser's DevTools port over loopback, so a driven browser must not be able to read
+//! a workshop either.
+//!
 //! The companion's own tools run in the shell's process and cannot be given a view. They refuse
 //! any path for which [`Root::holds`] is true, which is a prefix test on where the path really is
 //! and an inode test on every folder above it: one check, with no walk below the root and no
@@ -287,13 +292,30 @@ pub fn open_root(home: &Path) -> Result<OpenRoot, String> {
     Ok(OpenRoot { path, fd: held })
 }
 
+/// What a job still reaches on the host's loopback, for the text of every tool that starts one.
+pub const LOOPBACK_REACH: &str = "A job shares the host's network and loopback: it reaches the egress ports 7450 and 7451, \
+    the gateway on 7460 (with a token), the local model on 11434, Mind View's browser on 9223 \
+    (until jobs run as their own account) and anything the person runs on this machine.";
+
 /// `program` and `args` as a program a Mind drives should be started: in the outside view. The
 /// view hides the whole of [`BASE`] and the person's `/run/user/<uid>`, whichever is there. With
 /// no `bwrap`, a machine that holds workshops (anything in the root) starts nothing; one that
 /// holds none (`workshop_create` refuses without `bwrap`) starts the command as it was.
 pub fn outside_command(home: &Path, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
+    wrapped(home, &[base(home), run_user(euid())], program, args)
+}
+
+/// The same view for the person's Browser and Mind View's browser, with the base hidden and
+/// nothing else: a browser needs its Wayland, PipeWire and bus sockets in `/run/user/<uid>`. A
+/// browser's DevTools port is on the host's loopback where a job can drive it, and without this
+/// view the browser it drives could read every workshop (`file://`) as the person.
+pub fn browser_command(home: &Path, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
+    wrapped(home, &[base(home)], program, args)
+}
+
+fn wrapped(home: &Path, places: &[PathBuf], program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
     let is_dir = |p: &Path| p.symlink_metadata().is_ok_and(|m| m.is_dir());
-    let hidden: Vec<PathBuf> = [base(home), run_user(euid())].into_iter().filter(|p| is_dir(p)).collect();
+    let hidden: Vec<PathBuf> = places.iter().filter(|p| is_dir(p)).cloned().collect();
     let holds_any = std::fs::read_dir(root(home)).is_ok_and(|mut d| d.next().is_some());
     let Some(bwrap) = find_bwrap() else {
         return match holds_any {
