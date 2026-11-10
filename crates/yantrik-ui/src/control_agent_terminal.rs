@@ -271,8 +271,9 @@ pub(crate) fn specs() -> [Action; 4] {
                  HOME, USER, PATH, LANG and TERM only. The command runs in a view with no session: \
                  the person's runtime folder (the bus, `systemd/private`, the Yantrik sockets) and \
                  the Minds' workshops are not there, so it cannot call `yos`; you reach the desktop \
-                 through your own tool calls. {reach}{WHO}",
-            reach = yantrik_ipc_contracts::home_paths::workshops::LOOPBACK_REACH
+                 through your own tool calls. {reach} {startup}{WHO}",
+            reach = yantrik_ipc_contracts::home_paths::workshops::LOOPBACK_REACH,
+            startup = yantrik_ipc_contracts::home_paths::workshops::STARTUP_REACH
             ),
         )
         .risk("sensitive")

@@ -428,6 +428,15 @@ yantrik-os/
 - **Graded permissions.** Tools are safe, standard, sensitive or dangerous; the last two need
   explicit approval.
 - **Path sandboxing.** File tools refuse `.ssh`, `.gnupg` and similar.
+- **A Mind's workshop is sealed on the program, not on the Mind.** A Mind builds in a workshop
+  you grant on a card. A *sealed* job (`agent_run_sealed`) sees only its workshop and has no
+  network. Unsealed jobs, a Mind's Terminal tabs, the browsers and the apps a Mind opens in Mind
+  View see no workshop at all: the folder is empty in their view. Bytes leave a workshop only
+  through `workshop_present` (a video, song or picture shown in the OS's player) and the carded
+  export (`workshop_export`, a copy you approve). An unsealed job still runs as your account. It
+  can change your files, including what your session runs at login, and under a session rule it
+  does so with no card. Jobs that run as an account of their own (#1137) come after launch. The
+  limits are listed in [SECURITY.md](SECURITY.md).
 - **Applications are not sandboxed.** Software installed through the package manager runs with
   your own access, as on any ordinary Debian desktop. Said plainly here rather than left to be
   discovered.

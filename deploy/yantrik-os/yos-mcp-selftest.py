@@ -3671,6 +3671,9 @@ with tempfile.TemporaryDirectory() as d:
           "NO network mode" in module.AGENT_BY_NAME["run_sealed_command"]["description"], None)
     check("the tool text names what a job reaches on loopback",
           all(w in module.AGENT_BY_NAME["run_sealed_command"]["description"] for w in ("7450", "7460", "11434", "9223")), None)
+    check("the tool text names that a job can change the person's startup files",
+          all(w in " ".join(module.AGENT_BY_NAME["run_sealed_command"]["description"].split())
+              for w in ("runs as the person's account", "startup files included", "#1137 step 3")), None)
 
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed

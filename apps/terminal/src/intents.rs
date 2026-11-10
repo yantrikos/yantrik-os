@@ -106,8 +106,8 @@ pub fn actions() -> Vec<(Action, Parse)> {
                  arrives. There is no exit status \u{2014} ask for one with `; echo exit=$?`. It is for \
                  interactive work: a long command (a render, a build) belongs in `shell.agent_run`. A Mind's \
                  `run` goes only to a tab it opened with `new_tab` or `open_directory`: a shell that \
-                 cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view). {}",
-                    workshops::LOOPBACK_REACH
+                 cannot see Minds' workshops, has no sudo and cannot call `yos` (the person's session is not in its view). {} {}",
+                    workshops::LOOPBACK_REACH, workshops::STARTUP_REACH
                 ),
             )
             .risk("sensitive")
