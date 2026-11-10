@@ -44,6 +44,7 @@ protocol and prints what came back.
     yos web find <words>                where is the thing I want, anywhere on the page
     yos web all                         every interactive element, not just the viewport
     yos web console [all]               the page's console errors and uncaught exceptions
+    yos web screenshot [--full]         a PNG of this tab's page, under ~/Pictures/Screenshots/Browser
     yos web go <url | ~/path>           navigate (or open a file under the home), and show the new page
     yos web click <ref>                 press it; answers with what changed on the page
     yos web type <ref> <text> [--enter] type into a field
@@ -2103,6 +2104,11 @@ def render_browser(result):
         return render_found(result)
     if "console" in result and "showing" in result:
         return render_console(result)
+    if "path" in result and "of" in result:
+        return "%s\n%dx%d%s, %d bytes — %s. Of %s (%s)." % (
+            result["path"], result["size"][0], result["size"][1], " (whole page)" if result.get("full_page") else "",
+            result.get("bytes", 0), _flat(result.get("of", ""), 120),
+            json.dumps(_flat(result.get("title", ""), 80), ensure_ascii=False), _flat(result.get("url", ""), 120))
     if "text" in result and "size" in result:
         tail = ("\n[... %d more characters: text with a larger limit]" % (result["size"] - len(result["text"]))
                 if result.get("clipped") else "")
@@ -2152,6 +2158,7 @@ def browser_act(action, args=None):
 WEB_USAGE = """usage: yos web [all]                      what is on the page, with refs
        yos web text [limit] | find <words> | tabs | media
        yos web console [all]                  the page's console errors and uncaught exceptions
+       yos web screenshot [--full]            a PNG of this tab's page; prints its path
        yos web go <url | ~/path> [--new-tab] | back | forward | reload
        yos web click <ref> | type <ref> <text> [--enter] [--keep] | press <key> [ref]
        yos web rightclick <ref> | drag <ref> <dx> <dy>
@@ -2180,6 +2187,8 @@ def cmd_web(argv):
         result = browser_act(sub)
     elif sub == "console":
         result = browser_act("console", {"everything": "all" in plain_args or flag("--all")})
+    elif sub == "screenshot":
+        result = browser_act("screenshot", {"full": flag("--full") or "full" in plain_args})
     elif sub == "go":
         if not plain_args:
             die("usage: yos web go <url>")

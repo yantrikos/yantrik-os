@@ -586,6 +586,18 @@ TOOLS = [
         "browser_args": lambda a: {"everything": bool(a.get("everything"))},
     },
     {
+        "name": "web_screenshot",
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+        "description": "A picture (PNG) of the current tab's page, saved under the person's "
+                       "~/Pictures/Screenshots/Browser; answers with its path. Of this tab only, as "
+                       "the browser draws it — never the screen or another tab. full=true captures "
+                       "the whole page, not only what is in view.",
+        "inputSchema": {"type": "object", "properties": {
+            "full": {"type": "boolean", "description": "the whole page, not only the viewport"}}},
+        "browser_action": "screenshot",
+        "browser_args": lambda a: {"full": bool(a.get("full"))},
+    },
+    {
         "name": "web_find",
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
         "description": "Locate something anywhere on the page, including off screen: the "

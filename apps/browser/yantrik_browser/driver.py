@@ -11,7 +11,10 @@ that nothing covers it, that it is not disabled, and that its label does not rea
 commitment — which only `commit` presses, and `commit` asks the person.
 """
 
+import base64
+import errno
 import os
+import struct
 import threading
 import time
 import urllib.parse
@@ -24,6 +27,7 @@ from . import cdp, commit, guard, hands, judgement, sides
 NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
 ACT_LIMIT = 4.0           # seconds a click or a key is given
 HOLD_LIMIT = 10.0         # seconds key_down holds a key for when asked to hold and release
+SHOTS_DIR = ("Pictures", "Screenshots", "Browser")   # under the home, beside the shell's own captures
 DRAG_LIMIT = 4000         # pixels a drag may move in either direction
 TEXT_LIMIT = 20000
 
@@ -406,6 +410,58 @@ class Driver:
         with self.held():
             t = self._tab(tab)
             return {"media": self._run(t, "media"), "url": t.url, "title": t.title}
+
+    # ── a picture of the page ──
+
+    def _save_png(self, data):
+        """Write a capture under ~/Pictures/Screenshots/Browser as `Page <date> at <time>.png`,
+        the shell's own naming (capture/names.rs), and like it never through a link: the file is
+        made new (O_EXCL | O_NOFOLLOW, 0600), and a name already taken gets a (2), (3)…"""
+        folder = os.path.join(self.home(), *SHOTS_DIR)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d at %H.%M.%S")
+        for n in range(1, 100):
+            name = "Page %s%s.png" % (stamp, "" if n == 1 else " (%d)" % n)
+            path = os.path.join(folder, name)
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            except OSError as e:
+                if e.errno in (errno.EEXIST, errno.ELOOP):
+                    continue
+                raise Refused("the picture could not be saved in %s: %s" % (folder, e.strerror)) from None
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            return path
+        raise Refused("the picture could not be saved: too many taken this second")
+
+    def screenshot(self, tab=None, full=False):
+        """A PNG of this tab's page — what is in its viewport, or with `full` the whole page — saved
+        under the home; answers with the path. It is a picture of the page in the caller's own
+        browser's tab, drawn by the browser from the page alone: never the screen, never another
+        tab, never the person's browser for a mind."""
+        with self.held():
+            t = self._tab(tab)
+            params = {"format": "png"}
+            if full:
+                metrics = self._call("Page.getLayoutMetrics", tab=t)
+                size = metrics.get("cssContentSize") or metrics.get("contentSize") or {}
+                w, h = int(size.get("width") or 0), int(size.get("height") or 0)
+                if w and h:
+                    params["captureBeyondViewport"] = True
+                    params["clip"] = {"x": 0, "y": 0, "width": w, "height": min(h, 16384), "scale": 1}
+            try:
+                got = self._call("Page.captureScreenshot", params, t)
+            except Refused as e:
+                raise Refused("the browser could not draw this tab (%s). A tab in the background is not "
+                              "drawn: switch_tab brings it forward, then screenshot." % e) from None
+            data = base64.b64decode(got.get("data") or "")
+            if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+                raise Refused("the browser answered with no picture")
+            width, height = struct.unpack(">II", data[16:24])
+            path = self._save_png(data)
+            return {"path": path, "bytes": len(data), "size": [width, height], "full_page": bool(full),
+                    "url": t.url, "title": t.title, "tab": short(t.id),
+                    "of": "this tab's page only, drawn by the browser: not the screen, not another tab"}
 
     def find(self, query, tab=None):
         if not str(query or "").strip():
