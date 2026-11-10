@@ -27,6 +27,8 @@ import typing
 from yantrik_surface import Later, Refusal, Surface
 
 from . import driver as drv
+from .commit import host_of
+from .console import CONSOLE_LIMIT
 
 Ref = typing.Annotated[str, "an element's ref from read or find, like e12"]
 Tab = typing.Annotated[str, "optional: a tab's id from tabs; the active tab when left out"]
@@ -50,7 +52,7 @@ def build(driver=None, **surface_options):
         more = " · %d tabs" % len(tabs) if len(tabs) > 1 else ""
         dialog = " · a dialog is waiting" if s.get("dialog") else ""
         return "Browser — \"%s\" (%s)%s%s" % (active["title"][:70] or active["url"][:70],
-                                             drv.host_of(active["url"]) or active["url"][:40], more, dialog)
+                                             host_of(active["url"]) or active["url"][:40], more, dialog)
 
     s = Surface("browser", summary=summary, aliases=("chromium",), **surface_options)
 
@@ -89,7 +91,7 @@ def build(driver=None, **surface_options):
         return now(lambda: d.text(tab or None, limit))
 
     @s.action(grade="safe")
-    def console(tab: Tab = "", everything: bool = False, limit: int = drv.CONSOLE_LIMIT) -> dict:
+    def console(tab: Tab = "", everything: bool = False, limit: int = CONSOLE_LIMIT) -> dict:
         """What the page wrote to its console and the exceptions nobody caught — "Uncaught
         SyntaxError at line 4091" — since it was last loaded; with everything, its logs too and the
         lines kept from the pages before it. Every line is the page's own words (or the browser's

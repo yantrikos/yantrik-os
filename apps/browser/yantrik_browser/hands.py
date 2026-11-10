@@ -9,6 +9,9 @@ the value it holds is the value typed.
 
 import time
 
+NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
+ACT_LIMIT = 4.0           # seconds a click or a key is given
+
 # Keys a caller can name, as DevTools wants them: key, code, and the Windows key code the
 # browser's own handlers still read.
 KEYS = {

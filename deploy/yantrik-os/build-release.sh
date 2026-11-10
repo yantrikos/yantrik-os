@@ -179,7 +179,7 @@ cp -r "$PROJECT_ROOT/apps/browser/yantrik_browser" "$ROOT/share/browser/"   || f
 cp -r "$PROJECT_ROOT/sdk/python/yantrik_surface" "$ROOT/share/browser/"   || fail "sdk/python/yantrik_surface missing — the browser service would have no surface to serve"
 find "$ROOT/share/browser" -name __pycache__ -type d -prune -exec rm -rf {} +
 cp "$PROJECT_ROOT/crates/yantrik-browser-ports/browsers.conf" "$ROOT/share/browser/yantrik_browser/browsers.conf" || fail "browsers.conf (the browsers' ports and profiles) did not ship"
-[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] || fail "the browser service's page reader (page.js) did not ship"
+[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] && [ -f "$ROOT/share/browser/yantrik_browser/watch.js" ] || fail "the browser service's page reader (page.js, watch.js) did not ship"
 echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored in share/browser)"
 
 # The harnesses, staged by the same script as the image. The updater installs share/ with

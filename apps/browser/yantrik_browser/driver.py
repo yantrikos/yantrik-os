@@ -11,106 +11,27 @@ that nothing covers it, that it is not disabled, and that its label does not rea
 commitment — which only `commit` presses, and `commit` asks the person.
 """
 
-import base64
-import errno
 import os
-import struct
 import threading
 import time
 import urllib.parse
 
-from yantrik_surface import files as home_files
-from yantrik_surface.surface import Refusal as SurfaceRefusal
-
 from . import cdp, commit, guard, hands, judgement, sides
+from .cdp import short
+from .commit import commitment_of, fold_site
+from .console import ConsoleMixin
+from .inputs import InputsMixin
+from .local_files import LocalFilesMixin, file_rule_of
+from .refusals import PageRefused, Refused
+from .shot import ShotMixin
 
-NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
-ACT_LIMIT = 4.0           # seconds a click or a key is given
-HOLD_LIMIT = 10.0         # seconds key_down holds a key for when asked to hold and release
-SHOTS_DIR = ("Pictures", "Screenshots", "Browser")   # under the home, beside the shell's own captures
-DRAG_LIMIT = 4000         # pixels a drag may move in either direction
+NAVIGATE_LIMIT, ACT_LIMIT = hands.NAVIGATE_LIMIT, hands.ACT_LIMIT
 TEXT_LIMIT = 20000
-
-
-class Refused(Exception):
-    """An action declining, with the sentence the caller reads."""
-
-
-class PageRefused(Refused):
-    """The page said no and nothing was pressed or typed: a ref that is gone, a control covered
-    or disabled, a commitment. Answered with `PAGE:` in front, which the MCP bridge reads as a
-    policy answer — "REFUSED — nothing was run" — rather than a failure to try again."""
-
-    def __init__(self, sentence):
-        super().__init__("PAGE: " + sentence)
 
 
 BUSY_WAIT = 20.0      # seconds an act waits for the one before it to finish
 
-# The page's console (#1152): what `read` and every act carry of it, and what `console` lists.
-CONSOLE_IN_READ = 8       # recent errors and warnings a reading or an act's answer carries
-CONSOLE_LIMIT = 30        # lines `console` lists at once
-ERRORS = ("error", "warning")
-
-# Controls that Enter or Space presses when they have the focus.
-PRESSED_BY_KEYS = {"button", "link", "clickable", "menuitem", "menuitemcheckbox", "menuitemradio",
-                   "tab", "switch", "checkbox", "radio", "option", "treeitem"}
-
-
-def short(target_id):
-    return target_id[:8]
-
-
-def host_of(url):
-    try:
-        return (urllib.parse.urlsplit(url).hostname or "").lower()
-    except ValueError:
-        return ""
-
-
-def file_path_of(url):
-    """The absolute path a `file:` URL names, or a Refused saying why it names none: a host
-    (`file://server/share`), a relative path, an empty one. The query and fragment are not part
-    of the path (`?v=3` is a cache-buster, and Chromium ignores it for files)."""
-    parts = urllib.parse.urlsplit(url)
-    if parts.netloc not in ("", "localhost"):
-        raise Refused("a local file has no host: `file://%s` is not a file on this machine" % parts.netloc)
-    path = urllib.parse.unquote(parts.path or "")
-    if not path.startswith("/"):
-        raise Refused("a local file is named by its whole path, like file:///home/you/site/index.html")
-    return path
-
-
-def fold_site(site):
-    s = str(site or "").strip().lower()
-    if "://" in s:
-        s = host_of(s)
-    s = s.split("/")[0]
-    return s[4:] if s.startswith("www.") else s
-
-
-def commitment_of(element):
-    """The commitment a control's label carries.
-
-    A link with an address navigates, which Back undoes: Hacker News's "submit" opens the form, it
-    does not submit anything. So a link is let through on the soft words (commit.LINK_WORDS) —
-    and only when nothing but its address decides what it does. A link that says delete, pay or
-    unsubscribe, or one with data-method or an onclick on it, is judged like the button it is."""
-    word = commit.reads_as_commitment(element.get("name"))
-    if (word and element.get("role") == "link" and element.get("href")
-            and not element.get("scripted") and word in commit.LINK_WORDS):
-        return None
-    return word
-
-
-def _favicon_noise(entry):
-    """The one error a clean page produces: the browser asking for /favicon.ico and not finding
-    it. Left out of the errors a reading carries (it says nothing about the page's code); kept
-    where `everything` is asked for."""
-    return entry.get("kind") == "browser.network" and str(entry.get("at", "")).endswith("/favicon.ico")
-
-
-class Driver:
+class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
     """The browser surface's actions; `browser` is this call's: a mind's is Mind View's, the person's theirs."""
 
     def __init__(self, browser=None, judge=None, guard_=None, file_rule=None, home=None):
@@ -118,9 +39,7 @@ class Driver:
         # The person's decision model, asked when the words say nothing (judgement.py). `False`
         # turns it off (tests of the words alone); None is the shell's `decide`.
         self.judge = None if judge is False else (judge or judgement.Judgement())
-        # The OS's own rule for a file an agent names (yantrik_surface.files: in the home, outside
-        # its protected places, asked of the shell). `False` turns it off (a test's own home).
-        self.file_rule = None if file_rule is False else (file_rule or home_files.may_read_file)
+        self.file_rule = file_rule_of(file_rule)
         self.home = home or (lambda: os.path.expanduser("~"))
         self.lock = threading.RLock()
 
@@ -166,52 +85,6 @@ class Driver:
         if not leaving:
             self._still_allowed(t)
         return t
-
-    # ── local files ──
-
-    def _vet_local_file(self, url):
-        """The real path of the file a `file:` URL may open, or Refused: a regular file under the
-        home, reached through no link that leaves it — and, for an agent, one the OS's file rule
-        allows (the shell's `files_stat`: outside the home's protected places). The rule is asked
-        with the path as written; it walks the links itself."""
-        path = file_path_of(url)
-        home = os.path.realpath(self.home())
-        real = os.path.realpath(path)
-        if not (real == home or real.startswith(home.rstrip(os.sep) + os.sep)):
-            linked = "" if real == os.path.normpath(path) else " (it is a link to %s)" % real
-            raise Refused("go opens local files only under the home, %s; %s is outside it%s. "
-                          "Nothing was opened." % (home, path, linked))
-        if not os.path.lexists(real) and not os.path.exists(real):
-            raise Refused("there is no file at %s; nothing was opened" % path)
-        if os.path.isdir(real):
-            raise Refused("%s is a folder; go opens a file — name one inside it (index.html, say)" % path)
-        if not os.path.isfile(real):
-            raise Refused("%s is not a regular file; nothing was opened" % path)
-        if self.file_rule is not None:
-            try:
-                self.file_rule(path)
-            except SurfaceRefusal as e:
-                raise PageRefused("%s. Nothing was opened." % str(e).rstrip(".")) from None
-        return real
-
-    def _still_allowed(self, t):
-        """A tab that has gone to a local file (a link the page held, a window it opened) is held
-        to the same rule as `go`: outside the home, it is not read — it is sent to about:blank and
-        the act is refused saying so. Checked once per address; `go` passes `leaving` to skip it."""
-        url = str(t.url or "")
-        if not url.lower().startswith("file:") or getattr(t, "vetted_file", None) == url:
-            return
-        try:
-            self._vet_local_file(url)
-        except Refused as e:
-            try:
-                self._call("Page.navigate", {"url": "about:blank"}, t)
-                hands.settle(self.browser, t, 3.0)
-            except Refused:
-                pass
-            raise PageRefused("this tab had gone to %s, which the Browser does not open: %s It was "
-                              "taken to about:blank, and nothing of it was read." % (url, str(e))) from None
-        t.vetted_file = url
 
     def _run(self, tab, fn, *args):
         try:
@@ -359,44 +232,6 @@ class Driver:
                     e["commitment"] = word
         return page
 
-    # ── the page's console ──
-
-    @staticmethod
-    def _console_lines(tab, since=0, this_page=True, levels=ERRORS, limit=CONSOLE_IN_READ):
-        """The console lines kept for `tab` after entry `since`: of this page only (since its
-        last navigation) unless told otherwise, at the `levels` given (None for all). Every line
-        is marked `from: page`: these are the page's words, or the browser's about the page, and
-        never the OS's. Returns (the last `limit` of them, how many there were)."""
-        now = time.monotonic()
-        picked = [e for e in tab.console
-                  if e["seq"] > since and (not this_page or e["nav"] == tab.navigations)
-                  and (levels is None or (e["level"] in levels and not _favicon_noise(e)))]
-        lines = [{"level": e["level"], "kind": e["kind"], "text": e["text"], "at": e["at"],
-                  "from": "page", "ago": round(now - e["when"], 1)} for e in picked[-limit:]]
-        return lines, len(picked)
-
-    def _with_console(self, out, tab, since=0):
-        """Put the page's recent errors and warnings (after `since`) on an answer, when there are any."""
-        lines, total = self._console_lines(tab, since)
-        if lines:
-            out["console"] = lines
-            if total > len(lines):
-                out["console_more"] = total - len(lines)
-        return out
-
-    def console(self, tab=None, everything=False, limit=CONSOLE_LIMIT):
-        """What the page wrote to its console and the exceptions nobody caught: its errors and
-        warnings since it was last loaded, or with `everything` its logs too and the lines kept
-        from the pages before it in this tab."""
-        limit = max(1, min(int(limit or CONSOLE_LIMIT), 200))
-        with self.held():
-            t = self._tab(tab)
-            lines, total = self._console_lines(t, 0, this_page=not everything,
-                                               levels=None if everything else ERRORS, limit=limit)
-            return {"console": lines, "total": total, "url": t.url, "title": t.title, "tab": short(t.id),
-                    "showing": ("every line kept for this tab, logs included"
-                                if everything else "errors and warnings since this page was loaded")}
-
     def read(self, tab=None, all=False):
         with self.held():
             t = self._tab(tab)
@@ -410,58 +245,6 @@ class Driver:
         with self.held():
             t = self._tab(tab)
             return {"media": self._run(t, "media"), "url": t.url, "title": t.title}
-
-    # ── a picture of the page ──
-
-    def _save_png(self, data):
-        """Write a capture under ~/Pictures/Screenshots/Browser as `Page <date> at <time>.png`,
-        the shell's own naming (capture/names.rs), and like it never through a link: the file is
-        made new (O_EXCL | O_NOFOLLOW, 0600), and a name already taken gets a (2), (3)…"""
-        folder = os.path.join(self.home(), *SHOTS_DIR)
-        os.makedirs(folder, mode=0o700, exist_ok=True)
-        stamp = time.strftime("%Y-%m-%d at %H.%M.%S")
-        for n in range(1, 100):
-            name = "Page %s%s.png" % (stamp, "" if n == 1 else " (%d)" % n)
-            path = os.path.join(folder, name)
-            try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            except OSError as e:
-                if e.errno in (errno.EEXIST, errno.ELOOP):
-                    continue
-                raise Refused("the picture could not be saved in %s: %s" % (folder, e.strerror)) from None
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-            return path
-        raise Refused("the picture could not be saved: too many taken this second")
-
-    def screenshot(self, tab=None, full=False):
-        """A PNG of this tab's page — what is in its viewport, or with `full` the whole page — saved
-        under the home; answers with the path. It is a picture of the page in the caller's own
-        browser's tab, drawn by the browser from the page alone: never the screen, never another
-        tab, never the person's browser for a mind."""
-        with self.held():
-            t = self._tab(tab)
-            params = {"format": "png"}
-            if full:
-                metrics = self._call("Page.getLayoutMetrics", tab=t)
-                size = metrics.get("cssContentSize") or metrics.get("contentSize") or {}
-                w, h = int(size.get("width") or 0), int(size.get("height") or 0)
-                if w and h:
-                    params["captureBeyondViewport"] = True
-                    params["clip"] = {"x": 0, "y": 0, "width": w, "height": min(h, 16384), "scale": 1}
-            try:
-                got = self._call("Page.captureScreenshot", params, t)
-            except Refused as e:
-                raise Refused("the browser could not draw this tab (%s). A tab in the background is not "
-                              "drawn: switch_tab brings it forward, then screenshot." % e) from None
-            data = base64.b64decode(got.get("data") or "")
-            if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
-                raise Refused("the browser answered with no picture")
-            width, height = struct.unpack(">II", data[16:24])
-            path = self._save_png(data)
-            return {"path": path, "bytes": len(data), "size": [width, height], "full_page": bool(full),
-                    "url": t.url, "title": t.title, "tab": short(t.id),
-                    "of": "this tab's page only, drawn by the browser: not the screen, not another tab"}
 
     def find(self, query, tab=None):
         if not str(query or "").strip():
@@ -517,11 +300,7 @@ class Driver:
         url = str(url or "").strip()
         if not url:
             raise Refused("go needs a url")
-        if url.startswith("~/"):
-            url = os.path.join(self.home(), url[2:])
-        if url.startswith("/"):
-            # A path is a local file (#1152: a Mind opening the build it just wrote).
-            url = "file://" + urllib.parse.quote(url)
+        url = self._local_url(url)
         if "://" not in url and not url.startswith(("about:", "chrome:")):
             url = "https://" + url
         scheme = urllib.parse.urlsplit(url).scheme.lower()
@@ -626,112 +405,6 @@ class Driver:
             return self._act(t, "clicked %s \"%s\" (%s)" % (target["role"], target["name"], ref),
                              lambda: hands.click(self.browser, t, target["x"], target["y"]))
 
-    def context_click(self, ref, tab=None):
-        """A right click on an element. The browser's own menu is never shown (nothing on this
-        surface could read or close it); the page's own, if it makes one, is what read lists."""
-        with self.held():
-            t = self._tab(tab)
-            target = self._pressable(t, ref, allow_commitment=True)
-            out = self._act(t, "right-clicked %s \"%s\" (%s)" % (target["role"], target["name"], ref),
-                            lambda: hands.context_click(self.browser, t, target["x"], target["y"]))
-            menu = out.pop("menu", None)
-            out["menu"] = {"page": "the page showed a menu of its own: read lists what is in it",
-                           "none": "the page has no menu of its own here (the browser's own menu is not "
-                                   "shown to this surface)",
-                           "unknown": "the page stopped the event before it could be told; if the "
-                                      "browser's own menu opened, press Escape"}.get(menu, "no contextmenu "
-                                                                                       "event reached the page")
-            return out
-
-    def drag(self, ref, dx, dy, tab=None):
-        """Press on an element, move the pointer by (dx, dy) with the button held, release there:
-        a window moved by its title bar, a slider, a resize handle."""
-        try:
-            dx, dy = int(dx), int(dy)
-        except (TypeError, ValueError):
-            raise Refused("drag needs dx and dy in pixels") from None
-        if dx == 0 and dy == 0:
-            raise Refused("drag needs a distance: dx and dy are both 0, and a press that does not move is click")
-        if abs(dx) > DRAG_LIMIT or abs(dy) > DRAG_LIMIT:
-            raise Refused("drag moves at most %d pixels either way" % DRAG_LIMIT)
-        with self.held():
-            t = self._tab(tab)
-            target = self._target(t, ref)
-            if target.get("invisible"):
-                raise PageRefused("%s (%s \"%s\") has no size on the page: it cannot be dragged. Read the "
-                                  "page again." % (ref, target["role"], target["name"]))
-            cover = target.get("covered_by")
-            if cover:
-                raise PageRefused("%s (\"%s\") is covered by %s \"%s\" (%s): pressing there would press that "
-                                  "instead. Deal with it first. Nothing was moved."
-                                  % (ref, target["name"], cover.get("role"), cover.get("name"), cover.get("ref")))
-            x, y = target["x"], target["y"]
-            landing = self._run(t, "at", x + dx, y + dy)
-            why = self._why_commitment(landing, t) if landing else None
-            if why:
-                raise PageRefused("dropping %s there would land on %s \"%s\" (%s), which %s: what a drop "
-                                  "onto it does may not be undone, and that is the person's to do. Nothing "
-                                  "was moved." % (ref, landing["role"], landing["name"], landing["ref"], why))
-            before = target.get("box")
-            out = self._act(t, "dragged %s \"%s\" (%s) by (%d, %d)" % (target["role"], target["name"], ref, dx, dy),
-                            lambda: hands.drag(self.browser, t, x, y, dx, dy))
-            out["from"] = [x, y]
-            out["to"] = [x + dx, y + dy]
-            after = self._run(t, "target", ref)
-            if after and not after.get("gone") and after.get("box") and before:
-                out["box"] = after["box"]
-                out["moved"] = [after["box"][0] - before[0], after["box"][1] - before[1]]
-            return out
-
-    def key_down(self, key, ref=None, seconds=0, tab=None):
-        """Put a key down and leave it down — until key_up, or for `seconds` and then release
-        it (a game's held arrow). Enter and Space are held to the same rule as press."""
-        k = hands.key_named(key)
-        if k is None:
-            raise Refused("`%s` is not a key this knows. Keys: %s, a letter or digit, with ctrl+, "
-                          "shift+, alt+ or meta+ in front" % (key, ", ".join(sorted(hands.KEYS))))
-        try:
-            seconds = max(0.0, min(float(seconds or 0), HOLD_LIMIT))
-        except (TypeError, ValueError):
-            raise Refused("seconds is how long to hold the key, at most %d" % HOLD_LIMIT) from None
-        with self.held():
-            t = self._tab(tab)
-            if ref:
-                focused = self._run(t, "focus", ref, False)
-                if not focused or focused.get("gone"):
-                    raise PageRefused("%s is no longer on the page; read it again" % ref)
-            self._key_is_safe(t, ref, k[0])
-
-            def work():
-                self._key_is_safe(t, ref, k[0])
-                hands.key_down(self.browser, t, key)
-                if seconds:
-                    time.sleep(seconds)
-                    hands.key_up(self.browser, t, key)
-            doing = ("held %s for %.1f s%s" % (key, seconds, (" in %s" % ref) if ref else "") if seconds
-                     else "pressed %s down%s; it stays down until key_up" % (key, (" in %s" % ref) if ref else ""))
-            out = self._act(t, doing, work, limit=NAVIGATE_LIMIT if k[0] == "Enter" else ACT_LIMIT)
-            out["held"] = sorted(t.held_keys)
-            return out
-
-    def key_up(self, key=None, tab=None):
-        """Release a key key_down put down — the one named, or every one still down."""
-        with self.held():
-            t = self._tab(tab)
-            keys = [key] if key else sorted(t.held_keys)
-            if not keys:
-                raise Refused("no key is down in this tab")
-            for name in keys:
-                if hands.key_named(name) is None:
-                    raise Refused("`%s` is not a key this knows" % name)
-
-            def work():
-                for name in keys:
-                    hands.key_up(self.browser, t, name)
-            out = self._act(t, "released %s" % ", ".join(keys), work)
-            out["held"] = sorted(t.held_keys)
-            return out
-
     def commit(self, ref, label, site, tab=None):
         with self.held():
             t = self._tab(tab)
@@ -754,38 +427,6 @@ class Driver:
                               "since the person was asked." % (ref, target["name"], label))
             return self._act(t, "pressed %s \"%s\" (%s) on %s" % (target["role"], target["name"], ref, here),
                              lambda: hands.click(self.browser, t, target["x"], target["y"]))
-
-    def _key_is_safe(self, t, ref, key, typed=False):
-        """Refuse Enter or Space where it could press a commitment: on a focused control that reads
-        as one, or from a field whose form (or, with no form, whose surroundings — a chat box's
-        Send) has one. Asked again just before the key is sent, after any typing, since a label
-        can change as a field fills in."""
-        if key not in ("Enter", " "):
-            return
-        found = self._run(t, "pressables", ref) or {}
-        focused = found.get("focused") or {}
-        # A field's own label says nothing about what Enter does ("Order note" is a note): only a
-        # focused control that a key presses is judged by its own name.
-        why = self._why_commitment(focused, t) if focused.get("role") in PRESSED_BY_KEYS else None
-        if why:
-            raise PageRefused("%s would press %s \"%s\" (%s), which %s%s. It is pressed with commit ref=%s "
-                              "label=\"%s\" site=%s, which asks the person first."
-                              % ("Enter" if key == "Enter" else "Space", focused.get("role"), focused.get("name"),
-                                 focused.get("ref"), why, "; the text was typed and the key was not pressed"
-                                 if typed else "; nothing was pressed", focused.get("ref"), focused.get("name"),
-                                 fold_site(t.url)))
-        if key != "Enter":
-            return
-        # The buttons Enter could press: the words for all of them, the model for the first few.
-        for i, c in enumerate(found.get("around") or []):
-            why = (self._why_commitment(c, t) if i < 4 else
-                   ("reads as a commitment (\"%s\")" % commitment_of(c) if commitment_of(c) else None))
-            if why:
-                raise PageRefused("Enter here could press %s \"%s\" (%s), which %s%s. Press it with commit "
-                                  "ref=%s label=\"%s\" site=%s, which asks the person first."
-                                  % (c.get("role"), c.get("name"), c.get("ref"), why,
-                                     "; the text was typed and Enter was not pressed" if typed
-                                     else "; nothing was pressed", c.get("ref"), c.get("name"), fold_site(t.url)))
 
     def type(self, ref, text, clear=True, enter=False, tab=None):
         with self.held():

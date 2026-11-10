@@ -24,15 +24,19 @@ CALL_TIMEOUT = 20.0
 CONSOLE_KEEP = 80          # console lines kept per tab: errors, warnings, logs and uncaught exceptions
 CONSOLE_LINE = 600         # characters kept of one line
 
+# The reader, in the order its parts build on each other; evaluated as one expression.
+SCRIPTS = ("page.js", "watch.js")
 _PAGE_JS = None
 
 
 def page_js():
     global _PAGE_JS
     if _PAGE_JS is None:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page.js"),
-                  encoding="utf-8") as f:
-            _PAGE_JS = f.read()
+        parts = []
+        for name in SCRIPTS:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name), encoding="utf-8") as f:
+                parts.append(f.read())
+        _PAGE_JS = "\n;\n".join(parts)
     return _PAGE_JS
 
 
@@ -116,6 +120,11 @@ def log_entry(entry):
     at = _place(entry.get("url"), entry.get("lineNumber"), None)
     return {"level": {"error": "error", "warning": "warning"}.get(level, "log"),
             "kind": "browser." + source, "text": _line(text), "at": _line(at, 300)}
+
+
+def short(target_id):
+    """A target id as the surface names a tab: its first eight characters."""
+    return target_id[:8]
 
 
 class Tab:
