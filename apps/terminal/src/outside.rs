@@ -32,9 +32,15 @@ pub fn start_dir(home: &Path, dir: PathBuf) -> PathBuf {
 /// Start an interactive shell in the outside view.
 pub fn spawn(dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Session> {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
-    let (program, args) = command(&home, &Session::login_shell()).map_err(anyhow::Error::msg)?;
+    let shell = Session::login_shell();
+    let (program, args) = command(&home, &shell).map_err(anyhow::Error::msg)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    Session::spawn_shell(&program, &args, &start_dir(&home, dir.to_path_buf()), rows, cols, notify)
+    let dir = start_dir(&home, dir.to_path_buf());
+    // No bwrap and nothing to hide: the shell itself was returned, and leads the session.
+    match program == shell {
+        true => Session::spawn_shell(&program, &args, &dir, rows, cols, notify),
+        false => Session::spawn_behind(&program, &args, &dir, rows, cols, notify),
+    }
 }
 
 #[cfg(all(test, unix))]

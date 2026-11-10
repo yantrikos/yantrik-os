@@ -82,9 +82,21 @@ impl Session {
             })
     }
 
-    pub fn spawn_shell(
+    /// `shell` itself, started directly: it leads the session and owns the terminal.
+    pub fn spawn_shell(shell: &str, args: &[&str], dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Self> {
+        Self::spawn_program(shell, args, false, dir, rows, cols, notify)
+    }
+
+    /// `wrapper` (`bwrap`, or `sh -c` in a test), which leads the session and starts the shell as
+    /// a child with a process group of its own ([`crate::foreground::Tty::note_shell`]).
+    pub fn spawn_behind(wrapper: &str, args: &[&str], dir: &Path, rows: u16, cols: u16, notify: Notify) -> anyhow::Result<Self> {
+        Self::spawn_program(wrapper, args, true, dir, rows, cols, notify)
+    }
+
+    fn spawn_program(
         shell: &str,
         args: &[&str],
+        wrapped: bool,
         dir: &Path,
         rows: u16,
         cols: u16,
@@ -136,7 +148,7 @@ impl Session {
             exit: Mutex::new(None),
             error: Mutex::new(None),
             revision: AtomicU64::new(1),
-            tty: crate::foreground::Tty::new(raw),
+            tty: crate::foreground::Tty::new(raw, wrapped),
         });
         let (input, receiver) = sync_channel::<Input>(32);
         let shared = state.clone();
@@ -222,7 +234,7 @@ impl Session {
                         match master.read(&mut bytes) {
                             Ok(0) => break 'worker,
                             Ok(n) => {
-                                shared.tty.note_shell();
+                                shared.tty.note_shell(pid);
                                 shared.parser.lock().unwrap().process(&bytes[..n]);
                                 shared.revision.fetch_add(1, Ordering::Release);
                                 changed();
