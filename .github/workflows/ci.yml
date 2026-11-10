@@ -452,7 +452,8 @@ jobs:
       - name: The browser surface reads real pages and refuses every road to a commitment
         run: |
           sudo apt-get install -y -qq python3-websocket >/dev/null
-          for t in test_live test_ports test_listener test_guard test_ports_live; do python3 tests/browser-core/$t.py || exit 1; done
+          for t in test_live test_console test_local_files test_input test_screenshot test_reload_find test_tricks \
+                   test_ports test_listener test_guard test_ports_live; do python3 tests/browser-core/$t.py || exit 1; done
 
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the
