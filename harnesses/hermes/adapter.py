@@ -129,6 +129,7 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
         self._owner = os.environ.get("USER") or getpass.getuser() or OWNER_ID
         self._said_no_desktop = False
         self._detail_said = ""
+        self._detail_task: Optional["asyncio.Task[None]"] = None
         # A run that asked the person a question goes on in the turn that answered it. The gateway
         # still knows the run by the turn that started it, so: the turn that started a run -> the
         # turn now carrying it, and the session whose question is waiting -> the run that asked.
@@ -308,9 +309,17 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[yantrik] could not refresh the detail: %s", exc)
 
+    def _refresh_detail_soon(self) -> None:
+        """Say the model again without holding the turn: a slow gateway delays the line, never the
+        reply. One refresh at a time; a turn that finds one running leaves it to finish."""
+        running = self._detail_task
+        if running is not None and not running.done():
+            return
+        self._detail_task = asyncio.get_running_loop().create_task(self._refresh_detail())
+
     async def _on_turn(self, assignment: Dict[str, Any]) -> None:
         turn_id = str(assignment["turn_id"])
-        await self._refresh_detail()
+        self._refresh_detail_soon()
         text = str(assignment.get("text") or "")
         source = self.build_source(
             chat_id=CHAT_ID,

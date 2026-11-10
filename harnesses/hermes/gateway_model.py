@@ -18,6 +18,19 @@ PICKED = "picked"
 TIMEOUT_SECONDS = 2.0
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """The gateway never redirects; a reply that does is not followed, so the token goes nowhere else."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _direct_opener() -> urllib.request.OpenerDirector:
+    """An opener that ignores `http_proxy` and the like: the call is to this machine, and the token
+    must not travel to a proxy (Python only skips proxies for loopback when `no_proxy` says so)."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
 def _is_loopback_http(url: str) -> bool:
     """The token is only ever sent to the machine's own gateway: plain http, loopback, no user info."""
     try:
@@ -42,7 +55,7 @@ def real_model(model_config: Dict[str, Any]) -> Optional[str]:
         return None
     request = urllib.request.Request(base_url.rstrip("/") + "/models", headers={"Authorization": "Bearer " + token})
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as reply:
+        with _direct_opener().open(request, timeout=TIMEOUT_SECONDS) as reply:
             listing = json.loads(reply.read(1024 * 1024) or b"{}")
         entry = next(m for m in listing["data"] if m.get("id") == PICKED)
         picked = entry["yantrik"]["picked"]
