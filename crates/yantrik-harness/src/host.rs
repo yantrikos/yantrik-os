@@ -60,7 +60,7 @@ use crate::protocol::{self, Assignment, Attach};
 use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
-mod detail;
+pub mod detail;
 mod erase;
 mod notice;
 pub use erase::{Redactor, ShellErased, ShellErasure, ShellPlan, ShellRedactor};
@@ -979,7 +979,7 @@ impl Host {
                 says_id: a.announced.id.clone(),
             });
         }
-        rows
+        detail::displayed(state, rows)
     }
 
     pub fn active_id(&self) -> String {

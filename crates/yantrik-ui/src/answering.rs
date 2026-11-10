@@ -66,6 +66,31 @@ pub fn answering(mind: &str) -> Result<Answer, Refusal> {
     resolve(crate::gateway::log().last_ok_for(mind), planned, account_name)
 }
 
+/// A mind's detail line with the model the shell says answers it: the mind's own first words
+/// ("Hermes 0.14.0"), then the model. What the mind announced after those words is dropped, since
+/// it may be from before a restart or a pick change.
+pub(crate) fn detail_with_model(announced: Option<&str>, name: &str, model: &str) -> String {
+    let head = announced.and_then(|d| d.split(" \u{b7} ").next()).map(str::trim).filter(|h| !h.is_empty()).unwrap_or(name);
+    format!("{head} \u{b7} {model}")
+}
+
+/// What the host lists as `mind`'s detail: for a mind on the gateway, the model `answering` says
+/// (the called one, or the route's own before any call). `None` for a mind that is not, or whose
+/// calls the gateway would refuse: its own line stands.
+pub(crate) fn model_line(mind: &str, announced: Option<&str>) -> Option<String> {
+    let home = crate::wire::harness_provider::home_dir();
+    if !crate::provider_handoff::uses_gateway(&home, mind) {
+        return None;
+    }
+    let answer = answering(mind).ok()?;
+    Some(detail_with_model(announced, &mind_name_or(mind), &answer.model))
+}
+
+fn mind_name_or(mind: &str) -> String {
+    let mut chars = mind.chars();
+    chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+}
+
 /// The call that was answered wins over the plan while the plan still points where it went; a plan
 /// that is refused wins over both, because the next call would be. A plan that points elsewhere
 /// means the pick (or its route) changed after that call, so the new route is said ("will send

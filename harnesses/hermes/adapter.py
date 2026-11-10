@@ -221,6 +221,9 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
         self._session = (result or {}).get("session")
         self._said_no_desktop = False
         logger.info("[yantrik] attached to the desktop at %s as `%s`", address, HARNESS_ID)
+        # The attach line was read before the gateway could answer, perhaps (after a restart both
+        # start together): say the model again as soon as it can be told, not at the next turn.
+        self._refresh_detail_soon()
         return bool(self._session)
 
     async def _run(self) -> None:

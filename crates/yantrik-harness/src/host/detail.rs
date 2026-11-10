@@ -39,6 +39,36 @@ fn is_invisible(c: char) -> bool {
     matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
 }
 
+/// What the shell makes of a mind's detail before it is listed: `(mind id, what it announced)`,
+/// the line to show instead (`None`: show what it announced).
+type ModelLine = Box<dyn Fn(&str, Option<&str>) -> Option<String> + Send + Sync>;
+
+static MODEL_LINE: std::sync::RwLock<Option<ModelLine>> = std::sync::RwLock::new(None);
+
+/// The shell says which model a mind's detail line names. The shell routes the mind's calls, so it
+/// knows the model before the mind does: after a restart, before the mind's next turn, and after
+/// a pick changes. The mind's own detail still says the rest ("Hermes 0.14.0"). One per process,
+/// like the one host.
+pub fn set_model_line(line: impl Fn(&str, Option<&str>) -> Option<String> + Send + Sync + 'static) {
+    *MODEL_LINE.write().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(line));
+}
+
+/// `rows` with the shell's model line on each attached mind's detail. Takes the guard so that the
+/// state's lock is let go before the shell is asked: its answer reads files and logs and must not
+/// be able to wait on the host.
+pub(super) fn displayed(state: std::sync::MutexGuard<'_, super::State>, mut rows: Vec<crate::Entry>) -> Vec<crate::Entry> {
+    drop(state);
+    let hook = MODEL_LINE.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(line) = hook.as_ref() {
+        for row in rows.iter_mut().filter(|r| !r.builtin) {
+            if let Some(shown) = line(&row.id, row.detail.as_deref()).and_then(|l| shown_detail(&l)) {
+                row.detail = Some(shown);
+            }
+        }
+    }
+    rows
+}
+
 impl Host {
     /// `harness.detail`.
     pub(super) fn set_detail(&self, params: &serde_json::Value, peer: Peer) -> Result<serde_json::Value, String> {
@@ -62,6 +92,20 @@ mod tests {
         host.handle(protocol::DETAIL, &serde_json::json!({ "session": session, "detail": "Hermes 1 \u{b7} qwen3.8:27b" })).unwrap();
         let row = host.list().into_iter().find(|e| e.id == "hermes").unwrap();
         assert_eq!(row.detail.as_deref(), Some("Hermes 1 \u{b7} qwen3.8:27b"));
+    }
+
+    /// #1162: the shell's model line replaces what a mind announced, at once, with no turn and no
+    /// re-attach; a mind it says nothing of keeps its own words. The hook is global, so this mind has an id no other test uses.
+    #[test]
+    fn the_shells_model_line_is_what_a_listed_detail_says() {
+        let host = Host::new(Vec::new());
+        host.handle(protocol::ATTACH, &serde_json::json!({ "id": "shelled-1162", "name": "Hermes", "detail": "Hermes 0.14.0" })).unwrap();
+        host.handle(protocol::ATTACH, &serde_json::json!({ "id": "pi", "name": "Pi", "detail": "Pi 1" })).unwrap();
+        super::set_model_line(|id, announced| (id == "shelled-1162").then(|| format!("{} \u{b7} qwen3.8:27b", announced.unwrap_or("Hermes").split(" \u{b7} ").next().unwrap())));
+        let said = |id: &str| host.list().into_iter().find(|e| e.id == id).unwrap().detail;
+        assert_eq!(said("shelled-1162").as_deref(), Some("Hermes 0.14.0 \u{b7} qwen3.8:27b"));
+        assert_eq!(said("pi").as_deref(), Some("Pi 1"));
+        *super::MODEL_LINE.write().unwrap() = None;
     }
 
     fn list_detail(host: &Host) -> Option<String> {

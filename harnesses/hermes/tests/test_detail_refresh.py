@@ -24,6 +24,18 @@ class DetailRefreshTests(base.AdapterCase):
         self.assertEqual(sent, [{"session": "s1", "detail": "Hermes 1 · qwen3.8:27b"}])
         self.assertEqual(self.fake.of(base.desktop_mod.ATTACH), [], "the line changes without attaching again")
 
+    async def test_attaching_again_says_the_model_at_once_not_at_the_next_turn(self):
+        """After a shell restart the attach line may lack the model (#1162): the refresh follows it."""
+        said = iter(["Hermes 1", "Hermes 1 · qwen3.8:27b"])
+        self.adapter._session = None
+        with mock.patch.object(base.adapter_mod, "_detail", side_effect=lambda: next(said)), mock.patch.object(
+            base.desktop_mod, "socket_path", return_value="/nowhere"
+        ):
+            self.assertTrue(await self.adapter._attach())
+            await self.adapter._detail_task
+        self.assertEqual(self.fake.of(base.desktop_mod.ATTACH)[0]["detail"], "Hermes 1")
+        self.assertEqual(self.fake.of(base.desktop_mod.DETAIL), [{"session": "s1", "detail": "Hermes 1 · qwen3.8:27b"}])
+
     async def test_a_desktop_that_refuses_it_does_not_stop_the_turn(self):
         self.adapter._detail_said = "old"
         def refuse(*args, **kwargs):

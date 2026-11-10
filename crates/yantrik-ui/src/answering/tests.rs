@@ -105,3 +105,14 @@ fn every_face_asks_for_what_the_minds_config_asks() {
     assert_eq!(asked_for(&home, "hermes"), yantrik_gateway::PICKED);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// #1162: Hermes's own detail line named no model after a restart, and the old one after a pick
+/// changed, until its next turn. The shell says it: the head is Hermes's, the model is the route's.
+#[test]
+fn a_detail_line_names_the_answering_model_whatever_the_mind_announced() {
+    for announced in [Some("Hermes 0.14.0"), Some("Hermes 0.14.0 \u{b7} deepseek-v4.1-flash"), Some("Hermes 0.14.0 \u{b7} picked")] {
+        assert_eq!(detail_with_model(announced, "Hermes", "qwen3.8:27b"), "Hermes 0.14.0 \u{b7} qwen3.8:27b");
+    }
+    assert_eq!(detail_with_model(None, "Hermes", "qwen3.8:27b"), "Hermes \u{b7} qwen3.8:27b");
+    assert_eq!(detail_with_model(Some("  "), "Hermes", "m"), "Hermes \u{b7} m");
+}
