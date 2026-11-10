@@ -14,11 +14,14 @@ launch is the shell's everywhere else (browser_launch.rs, the same code that sta
 browser), and a browser started by the service would sit in the service's cgroup and die or
 restart with it. Handing one fd over costs nothing and keeps one owner for each fact.
 
-A browser lives on one stream, and Chromium may close itself when that stream ends. So the shell
-keeps its own end open for as long as the browser runs and stays on this socket as a lease: the
+A browser lives on one stream, and Chromium closes itself when that stream ends (measured on
+headless 153: it exits within about half a second of the other end closing). So the shell keeps
+its own end open for as long as the browser runs and stays on this socket as a lease: the
 connection it handed over on is held open here while the browser is held. If this service
 restarts, the lease ends, the browser is not told (the shell's end is still open), and the shell
-offers the stream again to the new service. The guard never falls back to a port.
+offers the stream again to the new service; what the browser wrote meanwhile (replies to the dead
+process's calls, events of sessions it attached) is read off and dropped before the stream is
+held, so a reply never lands on one of the new process's ids. The guard never falls back to a port.
 """
 
 import json
@@ -37,6 +40,20 @@ LEASE_POLL = 1.0
 
 def socket_path():
     return os.path.join(wire.socket_dir(), SOCKET_NAME)
+
+
+def _drain(sock):
+    """Read and drop whatever is queued on `sock`: after a service restart the browser's stream
+    carries the dead process's replies and events, which a new reader would file under its own
+    ids (review of aff60d15, L-a)."""
+    sock.setblocking(False)
+    try:
+        while sock.recv(65536):
+            pass
+    except (BlockingIOError, OSError):
+        pass
+    finally:
+        sock.setblocking(True)
 
 
 class Held:
@@ -67,6 +84,7 @@ class PipeHolder:
                 sock.close()
                 return False
             self._drop()
+            _drain(sock)
             self.serial += 1
             self.held = Held(sock, pid, self._start_of(pid), self.serial)
             return True

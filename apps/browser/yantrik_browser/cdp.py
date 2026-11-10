@@ -11,6 +11,7 @@ and keeps the event state (tabs, dialogs, requests in flight) the waits read.
 
 import json
 import os
+import random
 import threading
 import time
 import urllib.error
@@ -76,7 +77,9 @@ class Browser:
         self.replies = {}
         self.abandoned = set()                 # ids whose answer nobody waits for any more
         self.generation = 0                    # which connection is the current one
-        self.ids = 0
+        # High and random: a reply the browser wrote to a process before this one (a service
+        # restart on the held pipe) must not carry an id this process will send (aff60d15, L-a).
+        self.ids = random.randrange(1 << 20, 1 << 30)
         self.tabs = {}                         # target id -> Tab, in the order they appeared
         self.by_session = {}
         self.active = None                     # the tab actions go to unless told otherwise

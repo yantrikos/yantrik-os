@@ -8,7 +8,10 @@ record of who is at the other end of the socket).
 
 A process of the person's own account can still be made to look like these with effort (it can
 rewrite its own argv); what this closes is the cheap routes: a renamed copy, a made-up pid, a
-stream that is not the browser's.
+stream that is not the browser's. The copy made inside a private mount namespace, placed at the
+installed path and unlinked so that `exe` reads `(deleted)` (review of aff60d15, N2), is closed
+by reading the file behind `exe` itself: it must be root's and writable by nobody else, and the
+caller must share this service's mount and user namespaces.
 """
 
 import os
@@ -28,24 +31,38 @@ class NotProvable(Exception):
     """A fact about a process could not be read; the hand-over is refused, never allowed."""
 
 
-def shell_is_installed(pid, installed=INSTALLED_SHELL, proc="/proc"):
+def shell_is_installed(pid, installed=INSTALLED_SHELL, proc="/proc", owner=0):
     """None when `pid` runs the installed shell; otherwise why not. A shell whose file an update
-    has since replaced reads `<path> (deleted)`: that is the installed path, and still the shell."""
+    has since replaced reads `<path> (deleted)`: that is the installed path, and still the shell,
+    as long as the file behind `exe` is `owner`'s (root's) and nobody else may write it, which
+    a copy an account made for itself is not."""
+    at = os.path.join(proc, str(pid))
     try:
-        exe = os.readlink(os.path.join(proc, str(pid), "exe"))
+        exe = os.readlink(os.path.join(at, "exe"))
     except OSError as e:
         return "the caller (pid %d) could not be identified (%s)" % (pid, e)
     replaced = exe.endswith(_DELETED)
     if (exe[:-len(_DELETED)] if replaced else exe) != installed:
         return "the caller (pid %d) runs %s, not the installed shell" % (pid, exe)
-    if replaced:
-        return None
     try:
-        theirs, ours = os.stat(os.path.join(proc, str(pid), "exe")), os.stat(installed)
+        theirs = os.stat(os.path.join(at, "exe"))   # the file itself, deleted or not
     except OSError as e:
-        return "the caller's program could not be compared with the installed shell (%s)" % e
-    if (theirs.st_dev, theirs.st_ino) != (ours.st_dev, ours.st_ino):
-        return "the caller (pid %d) is not the installed shell's file" % pid
+        return "the caller's program could not be read (%s)" % e
+    if theirs.st_uid != owner or theirs.st_mode & 0o022:
+        return "the caller (pid %d) runs a program that is not the installer's alone" % pid
+    if not replaced:
+        try:
+            ours = os.stat(installed)
+        except OSError as e:
+            return "the installed shell could not be read (%s)" % e
+        if (theirs.st_dev, theirs.st_ino) != (ours.st_dev, ours.st_ino):
+            return "the caller (pid %d) is not the installed shell's file" % pid
+    for ns in ("mnt", "user"):
+        try:
+            if os.readlink(os.path.join(at, "ns", ns)) != os.readlink(os.path.join(proc, "self", "ns", ns)):
+                return "the caller (pid %d) is in another %s namespace" % (pid, ns)
+        except OSError as e:
+            return "the caller's namespaces could not be read (%s)" % e
     return None
 
 

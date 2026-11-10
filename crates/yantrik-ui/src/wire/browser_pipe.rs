@@ -13,8 +13,11 @@
 //! is checked before anything is sent (`browser_peer`): the socket's directory belongs to the
 //! person's account, so whoever binds the path is asked who it is.
 //!
-//! Only the person's Browser gets one. A Mind View browser is launched with its own port, and
-//! `browser_launch::mind_view_args` drops the pipe flag from whatever a caller passed.
+//! Only the person's Browser gets one, and only the launch the dock's `Launch::Browser` arm makes
+//! (`dock::spawn_persons_browser`): a catalogue entry or a `.desktop` file whose arguments carry
+//! the pipe switch is started like any other app, with no pipe (review of aff60d15, N3). A Mind
+//! View browser is launched with its own port, and `browser_launch::mind_view_args` drops the pipe
+//! flag from whatever a caller passed.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -27,6 +30,19 @@ use std::time::{Duration, Instant};
 use super::browser_peer::{ServiceIdentity, Verdict};
 
 pub use yantrik_browser_ports::PIPE_FLAG;
+
+/// The shell's service manager, once it is up: it knows the pid it started `yantrik-browser` as.
+static SERVICES: std::sync::OnceLock<yantrik_shell_core::service_manager::ServiceManager> = std::sync::OnceLock::new();
+
+/// Tell this module which service manager starts the browser service (`main`, once).
+pub fn note_service_manager(manager: yantrik_shell_core::service_manager::ServiceManager) {
+    let _ = SERVICES.set(manager);
+}
+
+/// The pid the service manager has `yantrik-browser` running as, if it started one.
+fn service_pid() -> Option<u32> {
+    SERVICES.get().and_then(|m| m.pid("browser"))
+}
 
 /// How long an offer may go unanswered before the shell says so; it keeps offering while the
 /// browser runs, because closing its end would close the Browser.
@@ -84,19 +100,21 @@ pub fn attach(command: &mut Command) -> std::io::Result<Handoff> {
     Ok(Handoff { mine, theirs })
 }
 
-/// The launcher's one call: if this launch is the person's Browser asking for a pipe, its fds 3 and
-/// 4 are made here and the shell's end is returned, to be offered once the browser runs. A pipe
-/// that cannot be made is logged and the browser starts without one (it cannot then be driven).
-pub fn attach_for(command: &mut Command, args: &[&str], mind_view: bool) -> Option<Handoff> {
-    if !wants(args, mind_view) {
+/// The launcher's one call: if this launch is the person's Browser (`persons_browser`, said by the
+/// one arm that starts it, never read off the arguments) asking for a pipe, its fds 3 and 4 are
+/// made here and the shell's end is returned, to be offered once the browser runs. A pipe that
+/// cannot be made is logged and the browser starts without one (it cannot then be driven).
+pub fn attach_for(command: &mut Command, args: &[&str], persons_browser: bool) -> Option<Handoff> {
+    if !wants(args, persons_browser) {
         return None;
     }
     attach(command).map_err(|e| tracing::warn!(error = %e, "No DevTools pipe for the Browser")).ok()
 }
 
-/// Whether a launch with these arguments is the person's Browser asking for a pipe.
-pub fn wants(args: &[&str], mind_view: bool) -> bool {
-    !mind_view && args.contains(&PIPE_FLAG)
+/// Whether this launch is the person's Browser asking for a pipe: the Browser arm's own launch
+/// (a Firefox there asks for none), never another launch that happens to carry the flag.
+pub fn wants(args: &[&str], persons_browser: bool) -> bool {
+    persons_browser && args.contains(&PIPE_FLAG)
 }
 
 fn alive(pid: u32) -> bool {
@@ -113,7 +131,7 @@ impl Handoff {
         drop(theirs);
         let spawned = std::thread::Builder::new().name("browser-pipe".into()).spawn(move || {
             std::thread::sleep(SETTLE);
-            let identity = match ServiceIdentity::installed() {
+            let identity = match ServiceIdentity::installed(service_pid()) {
                 Ok(identity) => identity,
                 Err(e) => return tracing::error!(error = %e, "Cannot tell which process is the browser service; the Browser's pipe is not offered"),
             };
@@ -183,7 +201,7 @@ pub fn send(path: &Path, fd: &OwnedFd, pid: u32, identity: &ServiceIdentity) -> 
     match identity.check(&stream) {
         Ok(()) => {}
         Err(Verdict::Unreadable(why)) => return Err(retry(why)),
-        Err(Verdict::Impostor(why)) => {
+        Err(Verdict::Impostor(why)) | Err(Verdict::Unprovable(why)) => {
             return Err(Refusal::Final(format!("what answers on {} is not the browser service ({why}); nothing was sent", path.display())))
         }
     }
@@ -226,11 +244,13 @@ mod tests {
     use super::super::browser_peer::tests::{this_process_is_not_the_service, this_process_is_the_service};
     use std::os::unix::net::UnixListener;
 
+    /// N3: the pipe goes with the Browser arm's own launch; a catalogue entry, a `.desktop` file
+    /// or a Mind View launch whose arguments carry the flag is not the person's Browser.
     #[test]
     fn only_the_persons_browser_asks_for_a_pipe() {
-        assert!(wants(&["--no-first-run", PIPE_FLAG], false));
-        assert!(!wants(&[PIPE_FLAG], true), "Mind View's browser is never given the person's pipe");
-        assert!(!wants(&["--no-first-run"], false));
+        assert!(wants(&["--no-first-run", PIPE_FLAG], true));
+        assert!(!wants(&[PIPE_FLAG], false), "the flag in a launch's arguments is not what makes it the Browser");
+        assert!(!wants(&["--no-first-run"], true), "a Firefox there asks for no pipe");
     }
 
     /// The child's fd 4 is the stream's other end, and what it writes there arrives NUL-ended.

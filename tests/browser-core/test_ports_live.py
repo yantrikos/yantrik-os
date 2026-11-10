@@ -17,6 +17,7 @@ is started with its profile and a port. In every start order a mind lands in Min
 browser and the person in theirs.
 """
 
+import fcntl
 import functools
 import http.server
 import os
@@ -102,13 +103,19 @@ class Fixture:
         log = open(os.path.join(self.home, "%s-%s.log" % (who, port or "pipe")), "wb")
         if pipe:
             mine, theirs = socket.socketpair()
-            keep = theirs.fileno()
+            # As browser_pipe::attach does it: the end duplicated above 4 (so dup2 onto 3 and 4
+            # cannot land on itself) and inheritable, then dup2 in the child. Python's own close
+            # pass runs after preexec_fn and would close the 3 and 4 made there, so it is off; every
+            # other descriptor of this process is non-inheritable anyway (PEP 446).
+            keep = fcntl.fcntl(theirs.fileno(), fcntl.F_DUPFD, 10)
+            os.set_inheritable(keep, True)
 
             def fds_3_and_4():
                 os.dup2(keep, 3)
                 os.dup2(keep, 4)
             proc = subprocess.Popen(args, stdout=log, stderr=log, env=env, stdin=subprocess.DEVNULL,
-                                    preexec_fn=fds_3_and_4, pass_fds=(keep,))
+                                    preexec_fn=fds_3_and_4, close_fds=False)
+            os.close(keep)
             theirs.close()
             self.procs[(who, "pipe")] = proc
             mine.settimeout(60)

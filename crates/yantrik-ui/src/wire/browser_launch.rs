@@ -10,6 +10,53 @@
 
 use std::path::Path;
 
+/// The web browsers the Browser pin will open, in order of preference, with what each needs.
+///
+/// Chromium first: it is what this OS installs, and the browser tools drive it. The flags keep
+/// what the old hardcoded launch had — native Wayland, no first-run wizard, no default-browser
+/// nag. The rest open as they are.
+///
+/// The profile is the browser's own. The visible browser used to run from
+/// `--user-data-dir=/tmp/chromium-visible`, because a headless instance might hold the default
+/// profile's lock; the browser tools now keep every profile under ~/.local/share/yantrik/browsers,
+/// so that reason is gone, and a /tmp profile forgot every login and bookmark at each reboot.
+pub const BROWSERS: &[(&str, &[&str])] = &[
+    ("chromium", CHROMIUM_FLAGS),
+    ("chromium-browser", CHROMIUM_FLAGS),
+    ("google-chrome-stable", CHROMIUM_FLAGS),
+    ("google-chrome", CHROMIUM_FLAGS),
+    ("firefox", &[]),
+    ("firefox-esr", &[]),
+    ("epiphany-browser", &[]),
+    ("epiphany", &[]),
+];
+
+/// How the desktop starts a Chromium-family browser.
+///
+/// The debugging port, its allowed origin and the profile are not here: they differ for the
+/// person's Browser and for a mind's, and `browser_launch` adds each (#1085). The port is what
+/// makes the browser one of this desktop's apps rather than a window a mind can only look at:
+/// `yos web` drives the page over the DevTools protocol. Loopback only, and only the origin `yos`
+/// itself presents. What it grants is what it sounds like (a process running as this user can
+/// drive this browser), which such a process could already do by reading the profile on disk.
+const CHROMIUM_FLAGS: &[&str] = &[
+    "--ozone-platform=wayland",
+    "--no-first-run",
+    "--no-default-browser-check",
+    // No "--disable-gpu": it also switches off SwiftShader, the software renderer, and cost
+    // every machine WebGL (#133).
+];
+
+/// The first browser from `BROWSERS` this machine has.
+pub fn find_browser() -> Option<(&'static str, &'static [&'static str])> {
+    BROWSERS.iter().copied().find(|(name, _)| super::dock::find_program(name).is_some())
+}
+
+/// The names looked for, for a message that says none was found.
+pub fn browser_names() -> String {
+    BROWSERS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
+}
+
 use yantrik_browser_ports::{listener, procs, Place, Side};
 
 /// The switches that name a debugging port, its allowed origin, or a profile. A caller's own are
@@ -63,10 +110,10 @@ pub fn open_in_mind_view() -> Result<(), String> {
     if !crate::wire::settings::minds_open_in_mind_view() {
         return Err("the setting \"minds open apps in Mind View\" is off, so a mind has no browser of its own".into());
     }
-    let (bin, args) = super::dock::find_browser().ok_or("there is no web browser on this machine")?;
+    let (bin, args) = find_browser().ok_or("there is no web browser on this machine")?;
     let seat = crate::mind_view::ensure().map_err(|why| format!("Mind View is not available ({why})"))?;
     preflight(Side::MindView)?;
-    super::dock::launch("browser", bin, args, None, None, Some(&seat), false);
+    super::dock::launch("browser", bin, args, None, None, Some(&seat), false, false);
     Ok(())
 }
 
@@ -95,6 +142,20 @@ pub fn preflight(side: Side) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Browser pin's list, whichever browser answers it.
+    #[test]
+    fn the_browser_list_has_chromium_first_and_flags_only_for_chromium() {
+        assert!(BROWSERS.iter().any(|(name, _)| *name == "chromium"));
+        assert!(BROWSERS.iter().any(|(name, _)| name.starts_with("firefox")));
+        // Only the Chromium family gets Chromium's flags; Firefox would refuse to start on them.
+        for (name, flags) in BROWSERS {
+            let chromium = name.contains("chrom");
+            assert_eq!(!flags.is_empty(), chromium, "{name}");
+            assert!(!flags.iter().any(|f| f.contains("/tmp")), "{name}: a /tmp profile forgets everything");
+        }
+        assert!(browser_names().starts_with("chromium, "));
+    }
 
     fn flag(args: &[String], name: &str) -> Vec<String> {
         args.iter().filter(|a| a.starts_with(name)).cloned().collect()

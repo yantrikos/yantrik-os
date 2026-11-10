@@ -4,10 +4,12 @@
 //! opened there by CDP and not watched. Only the shell starts it: a Chromium started from here
 //! while none is open would become the primary instance, without a pipe, and the shell's own
 //! launch would then forward to it and leave a Browser nothing can drive. So the shell is asked,
-//! and the game is handed to the Browser only once it runs with its pipe.
+//! and the game is handed to the Browser only once it runs with its pipe and holds the profile's
+//! singleton lock: the pipe switch shows from the moment of exec, seconds before a cold Chromium
+//! takes the lock, and a second launch in that window would win it (review of aff60d15, L7).
 
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::play::{ask_shell_for_browser, file_url};
@@ -20,9 +22,11 @@ const LOOK_EVERY: Duration = Duration::from_millis(300);
 pub fn play(abs: &Path) -> Result<String, String> {
     ask_shell_for_browser()?;
     let program = installed_browser().ok_or("no web browser is installed")?;
-    wait_until(BROWSER_UP_WITHIN, || a_browser_has_the_pipe(Path::new("/proc"))).map_err(|()| {
+    let profile = profile_of(program, &config_home());
+    let ready = || browser_with_the_pipe(Path::new("/proc")).is_some_and(|pid| profile.as_deref().is_none_or(|p| singleton_is(p, pid)));
+    wait_until(BROWSER_UP_WITHIN, ready).map_err(|()| {
         format!(
-            "the desktop's Browser did not come up with its DevTools pipe within {} s, so the game was not handed to it",
+            "the desktop's Browser did not come up with its DevTools pipe and its profile's lock within {} s, so the game was not handed to it",
             BROWSER_UP_WITHIN.as_secs()
         )
     })?;
@@ -47,15 +51,42 @@ fn wait_until(budget: Duration, mut ready: impl FnMut() -> bool) -> Result<(), (
     Ok(())
 }
 
-/// Whether a process of this account runs with the DevTools pipe switch: the shell's Browser.
-fn a_browser_has_the_pipe(proc: &Path) -> bool {
-    let Ok(me) = std::fs::metadata(proc.join("self")).map(|m| m.uid()) else { return false };
-    let Ok(entries) = std::fs::read_dir(proc) else { return false };
-    entries.flatten().any(|entry| {
-        entry.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit())
-            && entry.metadata().is_ok_and(|m| m.uid() == me)
-            && std::fs::read(entry.path().join("cmdline")).is_ok_and(|c| c.split(|b| *b == 0).any(|arg| arg == PIPE_FLAG))
+/// The pid of a process of this account that runs with the DevTools pipe switch: the shell's Browser.
+fn browser_with_the_pipe(proc: &Path) -> Option<u32> {
+    let me = std::fs::metadata(proc.join("self")).map(|m| m.uid()).ok()?;
+    std::fs::read_dir(proc).ok()?.flatten().find_map(|entry| {
+        let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+        let mine = entry.metadata().is_ok_and(|m| m.uid() == me);
+        let piped = std::fs::read(entry.path().join("cmdline")).is_ok_and(|c| c.split(|b| *b == 0).any(|arg| arg == PIPE_FLAG));
+        (mine && piped).then_some(pid)
     })
+}
+
+/// Whether Chromium's `SingletonLock` in `profile` names `pid`: a symlink to `<host>-<pid>`, made
+/// once that browser is the profile's primary instance. Only then does a second launch hand its
+/// address to it instead of becoming a primary of its own.
+fn singleton_is(profile: &Path, pid: u32) -> bool {
+    std::fs::read_link(profile.join("SingletonLock"))
+        .ok()
+        .and_then(|target| target.to_str()?.rsplit('-').next()?.parse::<u32>().ok())
+        == Some(pid)
+}
+
+/// Where `program` keeps its default profile under the XDG config home, for the browsers whose
+/// lock is such a symlink. None for the others (Firefox): the pipe switch alone is then the sign.
+fn profile_of(program: &str, config: &Path) -> Option<PathBuf> {
+    match program {
+        "chromium" | "chromium-browser" => Some(config.join("chromium")),
+        "google-chrome-stable" | "google-chrome" => Some(config.join("google-chrome")),
+        _ => None,
+    }
+}
+
+/// `$XDG_CONFIG_HOME`, or `~/.config`: where Chromium puts its default profile.
+fn config_home() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config"))
 }
 
 fn installed_browser() -> Option<&'static str> {
@@ -82,14 +113,30 @@ mod tests {
     #[test]
     fn the_browser_the_shell_started_has_the_pipe_switch() {
         let proc = proc_with("pipe", &[("11", "bash"), ("12", "/usr/lib/chromium/chromium --remote-debugging-pipe --no-first-run")]);
-        assert!(a_browser_has_the_pipe(&proc));
+        assert_eq!(browser_with_the_pipe(&proc), Some(12));
     }
 
     /// A Browser started outside the shell has no pipe, and Mind View's has a port: neither counts.
     #[test]
     fn a_browser_without_the_pipe_does_not_count() {
         let proc = proc_with("nopipe", &[("11", "bash"), ("12", "chromium file:///g/index.html"), ("13", "chromium --remote-debugging-port=9223")]);
-        assert!(!a_browser_has_the_pipe(&proc));
+        assert_eq!(browser_with_the_pipe(&proc), None);
+    }
+
+    /// L7: the lock names the primary instance; until it names the piped browser, a second launch
+    /// could win the profile.
+    #[test]
+    fn the_singleton_lock_must_name_the_piped_browser() {
+        let profile = std::env::temp_dir().join(format!("arcade-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile);
+        std::fs::create_dir_all(&profile).unwrap();
+        assert!(!singleton_is(&profile, 12), "no lock yet: Chromium is still starting");
+        std::os::unix::fs::symlink("yantrik-box-12", profile.join("SingletonLock")).unwrap();
+        assert!(singleton_is(&profile, 12));
+        assert!(!singleton_is(&profile, 13), "another instance holds the profile");
+        assert_eq!(profile_of("chromium", Path::new("/home/p/.config")), Some(PathBuf::from("/home/p/.config/chromium")));
+        assert_eq!(profile_of("google-chrome", Path::new("/home/p/.config")), Some(PathBuf::from("/home/p/.config/google-chrome")));
+        assert_eq!(profile_of("firefox", Path::new("/home/p/.config")), None);
     }
 
     #[test]

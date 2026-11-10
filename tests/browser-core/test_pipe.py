@@ -286,11 +286,18 @@ class TheHandOverChecksWhoIsGivingWhat(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="ident-")
         self.addCleanup(lambda: shutil.rmtree(self.tmp, True))
 
-    def proc_of(self, pid, exe=None, cmdline=(), parent=1, fd3=None):
+    def proc_of(self, pid, exe=None, cmdline=(), parent=1, fd3=None, mnt="mnt:[4026531841]"):
         at = os.path.join(self.tmp, str(pid))
         os.makedirs(os.path.join(at, "fd"), exist_ok=True)
         if exe:
             os.symlink(exe, os.path.join(at, "exe"))
+        # The namespaces: the caller's, and this service's own under `self`, alike unless said.
+        for who, target in ((str(pid), mnt), ("self", "mnt:[4026531841]")):
+            ns = os.path.join(self.tmp, who, "ns")
+            os.makedirs(ns, exist_ok=True)
+            for name, link in (("mnt", target), ("user", "user:[4026531837]")):
+                if not os.path.lexists(os.path.join(ns, name)):
+                    os.symlink(link, os.path.join(ns, name))
         with open(os.path.join(at, "cmdline"), "wb") as f:
             f.write(b"".join(a.encode() + b"\0" for a in cmdline))
         with open(os.path.join(at, "stat"), "w") as f:
@@ -299,15 +306,38 @@ class TheHandOverChecksWhoIsGivingWhat(unittest.TestCase):
             os.symlink(fd3, os.path.join(at, "fd", "3"))
         return self.tmp
 
+    ROOT_OWNED = "/bin/sh"
+
     def test_the_installed_shell_is_the_shell(self):
-        installed = os.path.join(self.tmp, "yantrik-ui")
-        open(installed, "w").close()
-        proc = self.proc_of(10, exe=installed)
-        self.assertIsNone(handover.shell_is_installed(10, installed=installed, proc=proc))
+        proc = self.proc_of(10, exe=self.ROOT_OWNED)
+        self.assertIsNone(handover.shell_is_installed(10, installed=self.ROOT_OWNED, proc=proc))
+
+    def replaced_shell(self, pid):
+        """A tree where the installed shell's file was unlinked under the running one: `exe`
+        reads `<installed> (deleted)`, and the file behind it is this account's (a test cannot
+        make root's)."""
+        installed = os.path.join(self.tmp, "opt", "yantrik", "bin", "yantrik-ui")
+        os.makedirs(os.path.dirname(installed))
+        gone = installed + " (deleted)"
+        shutil.copy(os.path.realpath(sys.executable), gone)
+        os.chmod(gone, 0o755)
+        return installed, self.proc_of(pid, exe=gone)
 
     def test_a_shell_whose_file_was_replaced_by_an_update_is_still_the_shell(self):
-        proc = self.proc_of(11, exe="/opt/yantrik/bin/yantrik-ui (deleted)")
-        self.assertIsNone(handover.shell_is_installed(11, proc=proc))
+        installed, proc = self.replaced_shell(11)
+        self.assertIsNone(handover.shell_is_installed(11, installed=installed, proc=proc, owner=os.getuid()))
+
+    def test_a_deleted_copy_the_caller_owns_is_not_the_shell(self):
+        """The review's demonstration (N2): a copy of python3 at the installed path inside a private
+        mount namespace, unlinked, reads `(deleted)` too. Its file is the caller's, not root's."""
+        installed, proc = self.replaced_shell(12)
+        self.assertIn("not the installer's alone", handover.shell_is_installed(12, installed=installed, proc=proc))
+
+    def test_a_caller_in_another_mount_namespace_is_not_the_shell(self):
+        proc = self.proc_of(13, exe=self.ROOT_OWNED, mnt="mnt:[4026532999]")
+        self.assertIn("another mnt namespace", handover.shell_is_installed(13, installed=self.ROOT_OWNED, proc=proc))
+        os.makedirs(os.path.join(self.tmp, "14"))
+        self.assertIn("could not be identified", handover.shell_is_installed(14, installed=self.ROOT_OWNED, proc=self.tmp))
 
     def test_a_copy_of_python_named_yantrik_ui_is_not_the_shell(self):
         """The review's demonstration: the old rule compared the file name only."""
@@ -337,6 +367,16 @@ class TheHandOverChecksWhoIsGivingWhat(unittest.TestCase):
         proc = self.proc_of(30, fd3="socket:[%d]" % os.fstat(browsers_end.fileno()).st_ino)
         self.assertIsNone(handover.stream_is_the_browsers(sent, 30, proc))
         self.assertIn("not the one pid 30", handover.stream_is_the_browsers(stranger, 30, proc))
+
+    def test_what_the_browser_wrote_while_nobody_held_the_stream_is_dropped_on_give(self):
+        holder = pipes.PipeHolder(start_of=lambda pid: 7)
+        mine, browsers_end = socket.socketpair()
+        browsers_end.sendall(b'{"id":1,"result":{"stale":true}}\0')
+        self.assertTrue(holder.give(mine, 4242))
+        mine.setblocking(False)
+        with self.assertRaises(BlockingIOError):
+            mine.recv(1)
+        browsers_end.close()
 
     def test_take_refuses_a_copied_python_end_to_end(self):
         copy = os.path.join(self.tmp, "yantrik-ui")
