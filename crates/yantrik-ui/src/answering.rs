@@ -69,7 +69,7 @@ pub fn answering(mind: &str) -> Result<Answer, Refusal> {
 /// What a refused route is said as, in place of a model, on a mind's detail line.
 const REFUSED: &str = "the gateway refuses its calls";
 
-/// A look-alike of the ` · ` separator, which a harness could put in its own words to make two
+/// A look-alike of the ` - ` separator, which a harness could put in its own words to make two
 /// segments read as one.
 const LOOKALIKES: &[char] = &['\u{2219}', '\u{2022}', '\u{22c5}', '\u{2027}', '\u{30fb}', '\u{ff65}', '\u{b7}'];
 
