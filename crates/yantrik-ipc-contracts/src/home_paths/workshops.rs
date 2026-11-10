@@ -172,12 +172,19 @@ pub fn refuse(dir: &str) -> Result<(), String> {
 /// place in `hidden` with nothing bound back, a fresh `/proc` of a pid namespace so no host
 /// process's `/proc/<pid>/root` shows them, and no capability left to take a tmpfs off. Up to and
 /// including the `--`.
-pub fn outside_args(hidden: &[PathBuf]) -> Vec<String> {
+pub fn outside_args(hidden: &[PathBuf], die_with_parent: bool) -> Vec<String> {
     let mut a: Vec<String> = ["--dev-bind", "/", "/"].map(String::from).to_vec();
     for h in hidden {
         a.extend(["--tmpfs".to_string(), h.to_string_lossy().into_owned()]);
     }
-    a.extend(["--proc", "/proc", "--unshare-pid", "--die-with-parent", "--cap-drop", "ALL", "--"].map(String::from));
+    a.extend(["--proc", "/proc", "--unshare-pid"].map(String::from));
+    // A job ends with the shell that started it. The person's Browser and Mind View's do not: a
+    // shell restart (an update, a crash) must not close the window they are using, and the pid
+    // namespace still ends with its init (round 7, finding 8).
+    if die_with_parent {
+        a.push("--die-with-parent".to_string());
+    }
+    a.extend(["--cap-drop", "ALL", "--"].map(String::from));
     a
 }
 
@@ -223,6 +230,63 @@ fn writable_ancestor(path: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Where the installer and the updater leave a note that the machine must restart to finish.
+pub const REBOOT_MARKER: &str = "/var/lib/yantrik/.reboot-needed";
+
+thread_local! {
+    /// A test's own login-session start (ns since the epoch) and reboot marker.
+    static GATE_FOR_TESTS: std::cell::Cell<Option<(Option<u64>, bool)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Called by tests only: this thread's session began at the first value, and the reboot marker is
+/// the second. `None` ends it.
+#[doc(hidden)]
+pub fn gate_for_tests(gate: Option<(Option<u64>, bool)>) {
+    GATE_FOR_TESTS.set(gate);
+}
+
+/// When the folder `fd` was born (ns since the epoch), if the filesystem says.
+fn born_ns(fd: i32) -> Option<u64> {
+    let mut stx: libc::statx = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::statx(fd, c"".as_ptr(), libc::AT_EMPTY_PATH, libc::STATX_BTIME, &mut stx) };
+    let ok = r == 0 && stx.stx_mask & libc::STATX_BTIME != 0;
+    ok.then(|| (stx.stx_btime.tv_sec.max(0) as u64) * 1_000_000_000 + stx.stx_btime.tv_nsec as u64)
+}
+
+/// When this login session began (ns since the epoch), from logind's own record of it.
+fn session_start_ns(uid: u32) -> Option<u64> {
+    let read = |path: String| {
+        let text = std::fs::read_to_string(path).ok()?;
+        text.lines().find_map(|l| l.strip_prefix("REALTIME=")?.trim().parse::<u64>().ok())
+    };
+    let id = std::env::var("XDG_SESSION_ID").ok().filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()));
+    let usec = id.and_then(|id| read(format!("/run/systemd/sessions/{id}"))).or_else(|| read(format!("/run/systemd/users/{uid}")))?;
+    usec.checked_mul(1000)
+}
+
+/// The one rule behind round 7, finding 2: a program started before the workshops folder was
+/// there has no mask over it, and the folder shows up in it once made. So no workshop is granted
+/// while the account's folder is younger than the login session, or the machine needs a restart.
+/// What cannot be read (no birth time, no logind record) does not refuse by itself.
+pub fn session_gate(root_born_ns: Option<u64>, session_start_ns: Option<u64>, reboot_needed: bool) -> Result<(), String> {
+    let younger = matches!((root_born_ns, session_start_ns), (Some(born), Some(session)) if born > session);
+    match (younger, reboot_needed) {
+        (false, false) => Ok(()),
+        (true, _) => Err("the workshops folder was made after you logged in, so programs that are already running (the browser, Terminal tabs) may not have it hidden. No workshop is granted until you log out and back in.".to_string()),
+        (false, true) => Err("an update is waiting for a restart, so programs that are already running may not have the workshops hidden. No workshop is granted until you log out and back in (or restart).".to_string()),
+    }
+}
+
+fn gate(fd: i32) -> Result<(), String> {
+    let inputs = match GATE_FOR_TESTS.get() {
+        Some(t) => Some(t),
+        None if UNDER_HOME.load(Ordering::SeqCst) => None,
+        None => Some((session_start_ns(euid()), Path::new(REBOOT_MARKER).exists())),
+    };
+    let Some((session, marker)) = inputs else { return Ok(()) };
+    session_gate(born_ns(fd), session, marker)
+}
+
 /// The person's root, held. Names are resolved relative to the descriptor ([`OpenRoot::via`]).
 pub struct OpenRoot {
     path: PathBuf,
@@ -257,7 +321,8 @@ impl OpenRoot {
 /// - `BASE` is not root's, or is writable by anyone else;
 /// - the root is missing, is a link, is not the person's, or has any group or other permission;
 /// - the root is not the folder it was the first time (device and inode), or is not where its
-///   descriptor says it is: it was moved, or replaced.
+///   descriptor says it is: it was moved, or replaced;
+/// - the root is younger than the login session, or the machine needs a restart ([`session_gate`]).
 pub fn open_root(home: &Path) -> Result<OpenRoot, String> {
     let path = root(home);
     if !UNDER_HOME.load(Ordering::SeqCst) {
@@ -279,6 +344,7 @@ pub fn open_root(home: &Path) -> Result<OpenRoot, String> {
     if here != path {
         return Err(unready(&path, &format!("is not where it was (it is at {})", here.display())));
     }
+    gate(fd.as_raw_fd())?;
     let id = (st.st_dev as u64, st.st_ino as u64);
     let mut pins = PINS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, pinned, held)) = pins.iter().find(|(p, _, _)| *p == path) {
@@ -297,12 +363,17 @@ pub const LOOPBACK_REACH: &str = "A job shares the host's network and loopback: 
     the gateway on 7460 (with a token), the local model on 11434, Mind View's browser on 9223 \
     (until jobs run as their own account) and anything the person runs on this machine.";
 
+/// What a job can still do to the person's own files, for the text of every tool that starts one.
+/// Said at merge (Fable, 10 Nov, round 7, finding 1) and fixed by #1137 step 3, not before.
+pub const STARTUP_REACH: &str = "A job runs as the person's account and can change the person's own files, startup files \
+    included; what those run later is in no view (until jobs run as their own account, #1137 step 3).";
+
 /// `program` and `args` as a program a Mind drives should be started: in the outside view. The
 /// view hides the whole of [`BASE`] and the person's `/run/user/<uid>`, whichever is there. With
 /// no `bwrap`, a machine that holds workshops (anything in the root) starts nothing; one that
 /// holds none (`workshop_create` refuses without `bwrap`) starts the command as it was.
 pub fn outside_command(home: &Path, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
-    wrapped(home, &[base(home), run_user(euid())], program, args)
+    wrapped(home, &[base(home), run_user(euid())], true, program, args)
 }
 
 /// The same view for the person's Browser and Mind View's browser, with the base hidden and
@@ -310,10 +381,10 @@ pub fn outside_command(home: &Path, program: &str, args: &[String]) -> Result<(S
 /// browser's DevTools port is on the host's loopback where a job can drive it, and without this
 /// view the browser it drives could read every workshop (`file://`) as the person.
 pub fn browser_command(home: &Path, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
-    wrapped(home, &[base(home)], program, args)
+    wrapped(home, &[base(home)], false, program, args)
 }
 
-fn wrapped(home: &Path, places: &[PathBuf], program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
+fn wrapped(home: &Path, places: &[PathBuf], die_with_parent: bool, program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
     let is_dir = |p: &Path| p.symlink_metadata().is_ok_and(|m| m.is_dir());
     let hidden: Vec<PathBuf> = places.iter().filter(|p| is_dir(p)).cloned().collect();
     let holds_any = std::fs::read_dir(root(home)).is_ok_and(|mut d| d.next().is_some());
@@ -323,7 +394,7 @@ fn wrapped(home: &Path, places: &[PathBuf], program: &str, args: &[String]) -> R
             false => Ok((program.to_string(), args.to_vec())),
         };
     };
-    let mut argv = outside_args(&hidden);
+    let mut argv = outside_args(&hidden, die_with_parent);
     argv.push(program.to_string());
     argv.extend(args.iter().cloned());
     Ok((bwrap.to_string(), argv))

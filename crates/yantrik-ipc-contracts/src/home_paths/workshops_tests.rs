@@ -114,7 +114,7 @@ fn an_account_a_mind_and_a_workshop_are_known_by_inode_as_well_as_the_base() {
 #[test]
 fn the_outside_argv_masks_both_places_and_binds_nothing_back() {
     let hidden = [PathBuf::from("/var/lib/yantrik/workshops"), PathBuf::from("/run/user/1000")];
-    let a = outside_args(&hidden);
+    let a = outside_args(&hidden, true);
     for h in &hidden {
         assert!(a.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == h), "{}", h.display());
     }
@@ -257,4 +257,64 @@ fn a_browser_is_wrapped_over_the_base_only() {
         assert_eq!(job.contains(&run), run_user(euid()).is_dir());
         assert!(!browser.contains(&run));
     }
+}
+
+/// Round 7, finding 8: a job ends with the shell; a browser does not.
+#[test]
+fn only_a_job_dies_with_the_shell() {
+    let hidden = [PathBuf::from("/var/lib/yantrik/workshops")];
+    assert!(outside_args(&hidden, true).iter().any(|x| x == "--die-with-parent"));
+    let b = outside_args(&hidden, false);
+    assert!(!b.iter().any(|x| x == "--die-with-parent"));
+    assert!(b.iter().any(|x| x == "--unshare-pid") && b.windows(2).any(|w| w == ["--cap-drop", "ALL"]));
+    let (_h, home) = home_with_root();
+    if let (Ok((_, job)), Ok((_, browser))) = (outside_command(&home, "/bin/true", &[]), browser_command(&home, "/bin/true", &[])) {
+        assert!(job.iter().any(|x| x == "--die-with-parent"));
+        assert!(!browser.iter().any(|x| x == "--die-with-parent"));
+    }
+}
+
+/// Round 7, finding 2: a program started while the base was missing hides nothing, and the base
+/// made since shows up in it. So the folder made after the login session is not granted from
+/// until the next login.
+#[test]
+fn a_root_made_after_the_login_session_is_refused_until_the_next_login() {
+    use std::os::unix::fs::PermissionsExt;
+    roots_under_home_for_tests();
+    let h = Tmp::new();
+    let home = h.path().canonicalize().unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    // The session began a minute ago, and no base was there: a browser started now has no mask.
+    gate_for_tests(Some((Some(now - 60_000_000_000), false)));
+    if let Ok((_, argv)) = browser_command(&home, "/bin/true", &[]) {
+        assert!(!argv.iter().any(|a| a == "--tmpfs"), "no base yet, so nothing was hidden: {argv:?}");
+    }
+    // The updater makes it now.
+    std::fs::create_dir_all(root(&home)).unwrap();
+    std::fs::set_permissions(root(&home), std::fs::Permissions::from_mode(0o700)).unwrap();
+    // A filesystem that keeps no birth time cannot show this; the rule then does not refuse.
+    if born_ns(open_path(&root(&home)).unwrap().as_raw_fd()).is_none() {
+        return gate_for_tests(None);
+    }
+    let why = open_root(&home).err().expect("younger than the session");
+    assert!(why.contains("log out and back in"), "{why}");
+    // A session that began after the folder was made (the next login) may use it.
+    gate_for_tests(Some((Some(now + 60_000_000_000), false)));
+    assert!(open_root(&home).is_ok());
+    gate_for_tests(None);
+}
+
+#[test]
+fn the_reboot_marker_refuses_whatever_the_age_and_a_missing_record_does_not() {
+    let (_h, home) = home_with_root();
+    gate_for_tests(Some((Some(u64::MAX), true)));
+    let why = open_root(&home).err().expect("marker set");
+    assert!(why.contains("log out and back in") && why.contains("restart"), "{why}");
+    gate_for_tests(Some((Some(u64::MAX), false)));
+    assert!(open_root(&home).is_ok());
+    // No birth time or no logind record: not a reason by itself.
+    assert!(session_gate(None, Some(5), false).is_ok() && session_gate(Some(9), None, false).is_ok());
+    assert!(session_gate(Some(9), Some(5), false).is_err() && session_gate(Some(5), Some(9), false).is_ok());
+    assert!(session_gate(None, None, true).is_err());
+    gate_for_tests(None);
 }

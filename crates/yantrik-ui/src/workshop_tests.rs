@@ -230,7 +230,7 @@ fn the_grant_record_is_inside_the_root_where_no_view_of_a_mind_reaches() {
     assert!(rec.is_file() && workshops::holds(&rec, &home), "the tools that refuse the root refuse the record");
     // The outside view is a tmpfs over the root, so the record is not in it; the sealed view has
     // only the one workshop.
-    let masked = workshops::outside_args(&[workshops::base(&home)]);
+    let masked = workshops::outside_args(&[workshops::base(&home)], true);
     assert!(masked.windows(2).any(|w| w[0] == "--tmpfs" && rec.starts_with(&w[1])), "the record is under the masked base");
     assert!(!masked.iter().any(|a| a.contains(".grants")), "nothing re-exposes it");
     for name in [".grants.json", ".grants"] {
