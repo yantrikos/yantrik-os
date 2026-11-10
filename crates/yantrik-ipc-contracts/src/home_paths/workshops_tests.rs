@@ -305,16 +305,25 @@ fn a_root_made_after_the_login_session_is_refused_until_the_next_login() {
 }
 
 #[test]
-fn the_reboot_marker_refuses_whatever_the_age_and_a_missing_record_does_not() {
+fn the_reboot_marker_refuses_whatever_the_age() {
     let (_h, home) = home_with_root();
     gate_for_tests(Some((Some(u64::MAX), true)));
     let why = open_root(&home).err().expect("marker set");
     assert!(why.contains("log out and back in") && why.contains("restart"), "{why}");
     gate_for_tests(Some((Some(u64::MAX), false)));
     assert!(open_root(&home).is_ok());
-    // No birth time or no logind record: not a reason by itself.
-    assert!(session_gate(None, Some(5), false).is_ok() && session_gate(Some(9), None, false).is_ok());
     assert!(session_gate(Some(9), Some(5), false).is_err() && session_gate(Some(5), Some(9), false).is_ok());
     assert!(session_gate(None, None, true).is_err());
     gate_for_tests(None);
+}
+
+#[test]
+fn a_missing_birth_time_or_logind_record_refuses_and_names_the_input() {
+    let birth = session_gate(None, Some(5), false).expect_err("no birth time");
+    assert!(birth.contains("birth time") && !birth.contains("log out and back in"), "{birth}");
+    let logind = session_gate(Some(9), None, false).expect_err("no logind record");
+    assert!(logind.contains("logind") && !logind.contains("log out and back in"), "{logind}");
+    let both = session_gate(None, None, false).expect_err("neither");
+    assert!(both.contains("birth time") && both.contains("logind"), "{both}");
+    assert!(session_gate(Some(5), Some(9), false).is_ok());
 }

@@ -268,8 +268,19 @@ fn session_start_ns(uid: u32) -> Option<u64> {
 /// The one rule behind round 7, finding 2: a program started before the workshops folder was
 /// there has no mask over it, and the folder shows up in it once made. So no workshop is granted
 /// while the account's folder is younger than the login session, or the machine needs a restart.
-/// What cannot be read (no birth time, no logind record) does not refuse by itself.
+/// It fails closed: what cannot be read (no birth time, no logind record) refuses, naming the
+/// input. The gate exists for the one case it cannot see without them, and every supported image
+/// has both (`PAMName=login`, an ext4 root); a machine without logind gets no workshop.
 pub fn session_gate(root_born_ns: Option<u64>, session_start_ns: Option<u64>, reboot_needed: bool) -> Result<(), String> {
+    let missing = match (root_born_ns, session_start_ns) {
+        (None, None) => Some("the workshops folder's birth time and logind's record of this login session"),
+        (None, Some(_)) => Some("the workshops folder's birth time (this filesystem does not report one)"),
+        (Some(_), None) => Some("logind's record of this login session"),
+        _ => None,
+    };
+    if let Some(what) = missing {
+        return Err(format!("no workshop is granted because {what} could not be read, so the check that the running programs have the workshops hidden cannot be made."));
+    }
     let younger = matches!((root_born_ns, session_start_ns), (Some(born), Some(session)) if born > session);
     match (younger, reboot_needed) {
         (false, false) => Ok(()),
@@ -286,11 +297,6 @@ fn gate(fd: i32) -> Result<(), String> {
     };
     let Some((session, marker)) = inputs else { return Ok(()) };
     let born = born_ns(fd);
-    // It lets a grant through when it cannot read a time. Said once, so the person can tell.
-    static SAID: std::sync::Once = std::sync::Once::new();
-    if born.is_none() || session.is_none() {
-        SAID.call_once(|| eprintln!("workshops: no {} to compare, so the login-session check cannot run (no grant is refused for it)", if born.is_none() { "folder birth time" } else { "logind session record" }));
-    }
     session_gate(born, session, marker)
 }
 
