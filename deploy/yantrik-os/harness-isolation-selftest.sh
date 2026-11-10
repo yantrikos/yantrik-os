@@ -17,19 +17,7 @@
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
-fails=0
-is() { # <name> <expected> <actual>
-  if [ "$2" = "$3" ]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n       want: %s\n       got:  %s\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi
-}
-has() { # <name> <needle> <haystack>
-  case "$3" in *"$2"*) printf '  ok   %s\n' "$1" ;; *) printf '  FAIL %s\n       missing: %s\n' "$1" "$2"; fails=$((fails + 1)) ;; esac
-}
-lacks() { # <name> <needle> <haystack>
-  case "$3" in *"$2"*) printf '  FAIL %s\n       found: %s\n' "$1" "$2"; fails=$((fails + 1)) ;; *) printf '  ok   %s\n' "$1" ;; esac
-}
-yes() { if "${@:2}" >/dev/null 2>&1; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
-no() { if "${@:2}" >/dev/null 2>&1; then printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); else printf '  ok   %s\n' "$1"; fi; }
-
+. "$here/selftest-lib.sh"
 work="$(mktemp -d)"
 chmod 755 "$work"
 cleanup() {
@@ -121,27 +109,6 @@ has "hermes_config writes the drain keys" "agent[\"restart_drain_timeout\"]" "$(
 lacks "no comment says a stop is a kill with or without a handler any more" "with or without a SIGTERM handler" "$(cat "$unit" "$repo/config/systemd/yantrik-mind.service" "$repo/harnesses/hermes/README.md")"
 has "the Mind's measured stop on the VM is stated" "30.13" "$(cat "$repo/config/systemd/yantrik-mind.service")"
 init="$here/yantrik-init"
-has "the gateway's init scopes the abstract sockets, and fails closed" "--scope-abstract-unix /var/lib" "$live"
-has "... and so does every task" "yantrik-init\" --scope-abstract-unix" "$(cat "$here/harness-sandbox.sh")"
-# M1: the person's Xwayland listens on an abstract socket. Either the kernel can scope it (the
-# connect is refused) or it cannot (nothing is run, exit 126); never "ran, and connected".
-cat > "$work/abs.py" <<'PY'
-import os, socket, subprocess, sys
-name = "\0yantrik-selftest-%d" % os.getpid()
-srv = socket.socket(socket.AF_UNIX)
-srv.bind(name)
-srv.listen(1)
-child = ("import socket, sys\n"
-         "s = socket.socket(socket.AF_UNIX)\n"
-         "try:\n s.connect(chr(0) + sys.argv[1]); print('CONNECTED')\n"
-         "except OSError:\n print('DENIED')\n")
-r = subprocess.run([sys.executable, sys.argv[1], "--scope-abstract-unix", sys.executable, "-c", child, name[1:]],
-                   capture_output=True, text=True)
-print(r.returncode, r.stdout.strip())
-PY
-r="$(python3 "$work/abs.py" "$init" 2>/dev/null)"
-case "$r" in "0 DENIED" | "126" | "126 ") r="refused" ;; esac
-is "yantrik-init --scope-abstract-unix: the connect is refused, or nothing is run" "refused" "$r"
 if unshare --pid --fork --mount-proc true >/dev/null 2>&1; then
   zombies() { unshare --pid --fork --mount-proc "$@" 2>/dev/null; }
   z="$(zombies python3 "$init" sh -c '(sleep 0.3 &) ; sleep 1.5; ps -eo stat= | grep -c "^Z"')"
@@ -260,7 +227,13 @@ mkdir -p "$work/home/yk411p"; chown yk411p "$work/home/yk411p"; chmod 700 "$work
 chown yk411m:yk411g "$work/mind"; chmod 750 "$work/mind"
 mkdir -p "$HI_UNIT_DIR" "$HI_DOOR" "$PREFIX/share/harnesses/lib/install" "$PREFIX/share/harnesses/hermes"
 cp "$unit" "$HI_UNIT_DIR/"
-mkdir -p "$BIN_DIR"; cp "$here/yantrik-init" "$BIN_DIR/yantrik-init"; chmod 755 "$BIN_DIR/yantrik-init"
+mkdir -p "$BIN_DIR"; for f in yantrik-init yantrik_landlock.py; do [ -f "$here/$f" ] || { echo "FAIL: the fixture needs $here/$f (yantrik-init imports it)"; exit 1; }; cp "$here/$f" "$BIN_DIR/$f"; chmod 755 "$BIN_DIR/$f"; done
+# Below Landlock ABI 6 the real init refuses every scoped run (126, checked in harness-scope-selftest.sh), so
+# the tasks here use an init that only drops the flag; said out loud, never silently.
+if ! scope_supported; then echo "  note: this kernel cannot scope abstract sockets: tasks below run under an init without the flag"; printf '#!/bin/sh
+[ "$1" = --scope-abstract-unix ] && shift
+exec "$@"
+' > "$BIN_DIR/yantrik-init"; fi
 printf '# %s\n' "$HI_CAPABILITY" > "$PREFIX/share/harnesses/lib/install/hermes.sh"
 chmod -R a+rX "$work/opt" 2>/dev/null
 

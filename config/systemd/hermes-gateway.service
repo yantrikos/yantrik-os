@@ -66,8 +66,10 @@ ExecStartPre=+/bin/sh -c 'h=/var/lib/yantrik-mind/harness/hermes; [ -d "$$h" ] &
 ExecStartPre=+/bin/sh -c 'u=yantrik-mind.service; { systemctl show -p InaccessiblePaths --value $$u | grep -q /var/lib/yantrik-mind/harness && [ "$$(systemctl show -p PrivatePIDs --value $$u)" = yes ]; } || { echo "Hermes: the Mind unit does not mask harness/ and have its own PID namespace (as a build from before this release does); not started" >&2; exit 1; }; p=$$(systemctl show -p MainPID --value $$u); if [ "$${p:-0}" != 0 ]; then a=$$(readlink /proc/$$p/ns/pid); b=$$(readlink /proc/1/ns/pid); { [ -n "$$a" ] && [ -n "$$b" ] && [ "$$a" != "$$b" ]; } || { echo "Hermes: the running Mind shares PID 1 namespace, or its namespace cannot be read; not started" >&2; exit 1; }; fi; [ -z "$$(systemctl show -p DropInPaths --value hermes-gateway.service)" ] || { echo "Hermes: this unit has a drop-in; not started" >&2; exit 1; }'
 # The toolset allowlist is put right before Hermes reads its config (Hermes can rewrite its own file,
 # and `hermes model` / `hermes update` do): as the account, in this unit's sandbox. Not started if it
-# cannot be (hermes-guard.sh start).
-ExecStartPre=/bin/sh /opt/yantrik/share/harnesses/lib/install/hermes-guard.sh start
+# cannot be (hermes-guard.sh start). Under the same abstract-socket scope as ExecStart: it runs
+# Hermes's own Python, which the account can replace, and an unscoped one would reach the person's
+# Xwayland and could leave a process behind in the unit's cgroup.
+ExecStartPre=/opt/yantrik/bin/yantrik-init --scope-abstract-unix /bin/sh /opt/yantrik/share/harnesses/lib/install/hermes-guard.sh start
 # The launcher, not a Python path: a newer Hermes rebuilds its venv as a new generation on an update.
 # Under yantrik-init, which is PID 1 of this unit's namespace and reaps what Hermes's tools orphan
 # (otherwise they stay zombies, and Hermes warns about it on every start), passes SIGTERM and

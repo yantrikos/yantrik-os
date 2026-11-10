@@ -12,9 +12,11 @@
 #          restart it), 1 it could not be put right.
 set -eu
 . "$(dirname "$0")/common.sh"
+# common.sh puts the account's ~/.local/bin first; nothing the account wrote is looked up by name here.
+PATH=/usr/bin:/bin
 [ $# -eq 1 ] && { [ "$1" = start ] || [ "$1" = after ]; } || fail "usage: hermes-guard.sh start|after"
 [ -n "${HERMES_HOME:-}" ] || fail "HERMES_HOME is not set"
-hermes_python=$(python3 "$HARNESS_LIB/hermes_runtime.py" </dev/null) \
+hermes_python=$(/usr/bin/python3 -I "$HARNESS_LIB/hermes_runtime.py" </dev/null) \
     || fail "cannot find the Python Hermes runs on"
 rc=0
 "$hermes_python" "$INSTALL_LIB/hermes_config.py" reassert "$HERMES_HOME/config.yaml" || rc=$?

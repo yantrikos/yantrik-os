@@ -88,7 +88,7 @@ reset
 ( hi_run hermes status ) >/dev/null 2>&1
 is "run hermes status: no guard (it cannot write the file)" "no" "$([ -e "$work/guard-args" ] && echo yes || echo no)"
 unit_text="$(cat "$here/../../config/systemd/hermes-gateway.service")"
-has "the gateway checks the allowlist before every start, as the account" "ExecStartPre=/bin/sh /opt/yantrik/share/harnesses/lib/install/hermes-guard.sh start" "$unit_text"
+has "the gateway checks the allowlist before every start, as the account, in the scope" "ExecStartPre=/opt/yantrik/bin/yantrik-init --scope-abstract-unix /bin/sh /opt/yantrik/share/harnesses/lib/install/hermes-guard.sh start" "$unit_text"
 
 echo "== harness reload hermes"
 reset
