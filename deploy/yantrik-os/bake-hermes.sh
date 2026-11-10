@@ -40,7 +40,11 @@ chroot "$rootfs" install -d -o yantrik-mind -g yantrik-minds -m 0700 /var/lib/ya
 
 # The installer needs the network: the build host's resolv.conf is in the chroot while it builds.
 # umask 077 as the harness installs run, and a clean environment, as harness-isolation.sh runs them.
-chroot "$rootfs" runuser -u yantrik-mind -- env -i HOME="$home" USER=yantrik-mind LOGNAME=yantrik-mind \
+# In a pid namespace of its own, with a fresh /proc over the chroot's: what the fetched code runs
+# as the image's `yantrik-mind` uid then sees and signals none of the build host's processes, whose
+# uid that number may belong to there (review of #1169, L1). The network stays: it is the fetch.
+unshare --fork --pid --mount-proc="$rootfs/proc" \
+    chroot "$rootfs" runuser -u yantrik-mind -- env -i HOME="$home" USER=yantrik-mind LOGNAME=yantrik-mind \
     LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin TERM=dumb \
     sh -c 'umask 077; exec sh /opt/yantrik/share/harnesses/lib/install/hermes-bake.sh' \
     || fail "Hermes did not bake; the image build stops (YANTRIK_ISO_WITHOUT_HERMES=1 builds without it on purpose)"

@@ -115,6 +115,24 @@ class HermesBakeTests(unittest.TestCase):
         text = (INSTALL / "hermes-bake.sh").read_text()
         self.assertRegex(text, r'rev-parse HEAD[\s\S]*"\$got" = "\$HERMES_COMMIT"')
         self.assertRegex(text, r"rm -rf .*tools\"/ffmpeg-")
+        # The licence gate reads the tree last, after every command Hermes runs in the bake.
+        self.assertGreater(text.index("hermes_licences.py"), text.index("plugins enable yantrik-desktop"))
+
+    def test_the_bake_proves_the_first_run_owes_no_sync(self):
+        # Review of #1169, H1: the plugin is enabled in the bake, the next command must fetch no
+        # ffmpeg, and the venv must be current after it, or the image build stops.
+        text = (INSTALL / "hermes-bake.sh").read_text()
+        enable = text.index("hermes plugins enable yantrik-desktop")
+        self.assertGreater(enable, text.index("hermes config path"), "after Hermes's own setup")
+        after = text[enable:]
+        self.assertIn("hermes config path", after, "the command the first run would run next")
+        self.assertRegex(after, r'ls -d "\$HOME/.hermes/tools"/ffmpeg-\*[\s\S]*\|\| fail')
+        self.assertRegex(after, r"pm\.venv_is_current\(project_root=[\s\S]*\|\| fail")
+
+    def test_the_fetched_code_runs_in_its_own_pid_namespace(self):
+        # Review of #1169, L1: a fresh /proc over the chroot's, so nothing of the host is seen.
+        text = BAKE_ISO.read_text()
+        self.assertRegex(text, r'unshare --fork --pid --mount-proc="\$rootfs/proc"[\s\S]*chroot "\$rootfs" runuser')
 
     def test_an_image_built_without_hermes_on_purpose_touches_nothing(self):
         rootfs = self.root / "rootfs"
