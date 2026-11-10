@@ -134,6 +134,7 @@ mod harness_catalogue;
 mod harness_install;
 // Hermes as the mind for a person who has not chosen one, until Yantrik Mind is ready.
 mod default_mind;
+mod default_mind_notice;
 mod config_store;
 mod models;
 mod focus;

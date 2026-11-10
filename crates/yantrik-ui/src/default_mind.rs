@@ -28,6 +28,11 @@ use crate::wire::settings::DEFAULT_MIND;
 pub const SETTING_UP: &str = "Setting up Hermes, your mind, about 4 minutes. It needs the internet.";
 /// What the desktop says once, when Hermes takes over, and what the first run says after.
 pub const READY: &str = "Hermes is ready; it answers from now on.";
+/// What the first run says while an image that ships Hermes sets it up: nothing is fetched.
+pub const SETTING_UP_BAKED: &str = "Setting up Hermes, your mind, from this computer. It does not need the internet.";
+/// Written by the image build (`deploy/yantrik-os/bake-hermes.sh`) when Hermes is in the image. A
+/// root-owned file outside the mind account's home, which the person's desktop cannot open.
+pub const BAKED_MARKER: &str = "/opt/yantrik/hermes/BAKED";
 /// The row's reason when the internet was not there to install from.
 pub const NO_INTERNET: &str =
     "Hermes was not set up: this computer cannot reach the internet. Press Install again once it can.";
@@ -87,6 +92,8 @@ pub trait Machine {
     /// An install of it is running: a job on this shell's board, or an installer an earlier shell
     /// started that is still going.
     fn installing(&self) -> bool;
+    /// The image carries Hermes: the install fetches nothing, so it needs no internet.
+    fn baked(&self) -> bool;
     fn online(&self) -> bool;
     fn install(&self) -> Result<(), String>;
     /// Say on the row why it was not installed.
@@ -121,7 +128,7 @@ pub fn begin(machine: &dyn Machine, when: When) -> Outcome {
     // fresh try out of it at the next boot.
     record.tries += 1;
     machine.keep(&record);
-    if !machine.online() {
+    if !machine.baked() && !machine.online() {
         machine.refuse(NO_INTERNET);
         return Outcome::Offline;
     }
@@ -136,14 +143,15 @@ pub fn begin(machine: &dyn Machine, when: When) -> Outcome {
 
 /// What the first run says about the default mind: nothing before it was started, then the
 /// row's own words.
-pub fn words(record: &Record, proven: bool, job: Option<&JobView>) -> String {
+pub fn words(record: &Record, proven: bool, baked: bool, job: Option<&JobView>) -> String {
+    let setting_up = if baked { SETTING_UP_BAKED } else { SETTING_UP };
     if proven {
         return if record.tries > 0 { READY.to_string() } else { String::new() };
     }
     match job {
-        Some(job) if job.running => SETTING_UP.to_string(),
+        Some(job) if job.running => setting_up.to_string(),
         Some(job) if !job.error.is_empty() => job.error.clone(),
-        _ if record.tries > 0 => SETTING_UP.to_string(),
+        _ if record.tries > 0 => setting_up.to_string(),
         _ => String::new(),
     }
 }
@@ -158,6 +166,11 @@ fn home() -> PathBuf {
 /// three proofs pass (harnesses/lib/install/common.sh, `harness_state`).
 pub fn proven_marker(home: &Path, id: &str) -> PathBuf {
     home.join(".local/state/yantrik/harnesses").join(id).join("installed")
+}
+
+/// Whether this image ships Hermes (see [`BAKED_MARKER`]).
+pub fn baked() -> bool {
+    Path::new(BAKED_MARKER).exists()
 }
 
 /// Whether the default mind is installed and proven on this machine.
@@ -235,6 +248,9 @@ impl Machine for Here {
     fn installing(&self) -> bool {
         crate::harness_install::running(DEFAULT_MIND) || installer_running(Path::new("/proc"), DEFAULT_MIND)
     }
+    fn baked(&self) -> bool {
+        baked()
+    }
     fn online(&self) -> bool {
         reachable(WAIT_FOR_INTERNET)
     }
@@ -278,7 +294,7 @@ pub fn start(when: When) {
 pub fn words_now() -> String {
     let home = home();
     let job = crate::harness_install::views().remove(DEFAULT_MIND);
-    words(&load_record(&record_path(&home)), proven_marker(&home, DEFAULT_MIND).exists(), job.as_ref())
+    words(&load_record(&record_path(&home)), proven_marker(&home, DEFAULT_MIND).exists(), baked(), job.as_ref())
 }
 
 /// The desktop has just handed the conversation to the default mind, which nobody chose: say so,
@@ -306,6 +322,7 @@ mod tests {
         proven: bool,
         installing: Cell<bool>,
         offline: bool,
+        baked: bool,
         fails: bool,
         installs: Cell<u32>,
         refused: RefCell<Vec<String>>,
@@ -321,6 +338,9 @@ mod tests {
         }
         fn installing(&self) -> bool {
             self.installing.get()
+        }
+        fn baked(&self) -> bool {
+            self.baked
         }
         fn online(&self) -> bool {
             !self.offline
@@ -384,6 +404,22 @@ mod tests {
     }
 
     #[test]
+    fn an_image_with_hermes_in_it_installs_without_the_internet() {
+        let m = Fake { picked: true, offline: true, baked: true, ..Default::default() };
+        assert_eq!(begin(&m, When::FirstRun), Outcome::Started, "nothing is downloaded, so being offline is no reason to refuse");
+        assert_eq!(m.installs.get(), 1);
+        assert!(m.refused.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_image_with_hermes_in_it_does_not_say_it_needs_the_internet() {
+        let started = Record { tries: 1, announced: false };
+        let running = JobView { running: true, ..Default::default() };
+        assert_eq!(words(&started, false, true, Some(&running)), SETTING_UP_BAKED);
+        assert!(!SETTING_UP_BAKED.contains("needs the internet"));
+    }
+
+    #[test]
     fn a_reboot_mid_install_starts_it_once_more_and_a_proven_one_is_left_alone() {
         let m = picked();
         begin(&m, When::FirstRun);
@@ -431,12 +467,12 @@ mod tests {
         let started = Record { tries: 1, announced: false };
         let running = JobView { running: true, ..Default::default() };
         let failed = JobView { error: "install failed: it exited 1".into(), ..Default::default() };
-        assert_eq!(words(&fresh, false, None), "", "nothing is said before it starts");
-        assert_eq!(words(&started, false, Some(&running)), SETTING_UP);
-        assert_eq!(words(&started, false, None), SETTING_UP, "after a reboot, before the job is back");
-        assert_eq!(words(&started, false, Some(&failed)), "install failed: it exited 1");
-        assert_eq!(words(&started, true, None), READY);
-        assert_eq!(words(&fresh, true, None), "", "a Hermes the first run did not set up is not news here");
+        assert_eq!(words(&fresh, false, false, None), "", "nothing is said before it starts");
+        assert_eq!(words(&started, false, false, Some(&running)), SETTING_UP);
+        assert_eq!(words(&started, false, false, None), SETTING_UP, "after a reboot, before the job is back");
+        assert_eq!(words(&started, false, false, Some(&failed)), "install failed: it exited 1");
+        assert_eq!(words(&started, true, false, None), READY);
+        assert_eq!(words(&fresh, true, false, None), "", "a Hermes the first run did not set up is not news here");
     }
 
     #[test]

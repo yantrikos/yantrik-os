@@ -14,38 +14,18 @@
 set -eu
 . "$(dirname "$0")/common.sh"
 . "$(dirname "$0")/hermes-launcher.sh"
+. "$(dirname "$0")/hermes-pin.sh"
 . "$(dirname "$0")/hermes-plugins.sh"
 
 [ $# -eq 1 ] || fail "usage: hermes.sh PLUGIN_DIR"
 plugin=$1
 [ -f "$plugin/plugin.yaml" ] || fail "no desktop plugin at $plugin"
 
-# The commit this was last tried against, on Hermes's main line, which is what Hermes's own
-# instructions install. The installer is fetched from that commit and told to check out that
-# commit, so the script and the tree it sets up always match; `hermes update` moves it on
-# afterwards, as it would for anyone. (Release tags carry an older installer that stops on a
-# machine with no C++ compiler, which this image is.)
-HERMES_COMMIT=38d3dbce4adbb9074a34214eb330237a129e5904
-INSTALLER="https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_COMMIT/scripts/install.sh"
-# That commit's install.sh, hashed when the pin was moved. Both are bumped together, by hand.
-INSTALLER_SHA256=9ed50b51fe072df4ece6dc9a72c1ec8d78bc7907eec16a61d8a2a0ef4ec45884
-
 if ! command -v hermes >/dev/null 2>&1; then
-    command -v git >/dev/null 2>&1 || fail "Hermes needs git"
-    command -v bash >/dev/null 2>&1 || fail "Hermes's installer needs bash"
     say "fetching Hermes"
-    tmp=$(mktemp -d) || fail "no temporary directory"
-    trap 'rm -rf "$tmp"' EXIT
-    curl -fsSL --retry 3 -o "$tmp/install.sh" "$INSTALLER" \
-        || fail "could not download Hermes's installer"
-    [ "$(sha256sum "$tmp/install.sh" | cut -d' ' -f1)" = "$INSTALLER_SHA256" ] \
-        || fail "Hermes's installer did not match its checksum"
-    bash "$tmp/install.sh" --commit "$HERMES_COMMIT" --non-interactive \
-        --skip-browser --skip-computer-use </dev/null \
-        || fail "Hermes's own installer stopped; its last lines are above"
+    hermes_run_installer "$HERMES_INSTALLER_URL" "$HERMES_INSTALLER_SHA256" "$HERMES_COMMIT"
     command -v hermes >/dev/null 2>&1 || fail "Hermes installed, but there is no hermes in ~/.local/bin"
     heal_hermes_launcher "$HOME" || fail "Hermes's launcher still points into /tmp"
-    rm -rf "$tmp"; trap - EXIT
     hermes --version >/dev/null 2>&1 || fail "Hermes installed, but hermes will not run"
 fi
 heal_hermes_launcher "$HOME" || fail "Hermes's launcher still points into /tmp"

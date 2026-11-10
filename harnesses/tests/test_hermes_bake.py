@@ -1,0 +1,142 @@
+"""Hermes in the image (#1166): the pin it shares with the runtime install, the checksum that stops
+a bad fetch, and the first run that finds Hermes already there.
+
+The real installer is a gigabyte-sized download, so a fake `curl`, a fake `hermes` and a fake
+installer stand in; what is under test is the shell around them. POSIX sh only, offline.
+"""
+
+import os
+import re
+import shutil
+import stat
+import subprocess
+import tempfile
+import unittest
+from hashlib import sha256
+from pathlib import Path
+
+import support
+
+INSTALL = support.HARNESSES / "lib" / "install"
+BAKE_ISO = support.ROOT / "deploy" / "yantrik-os" / "bake-hermes.sh"
+FAKE_INSTALLER = "#!/bin/bash\necho \"$@\" > \"$INSTALLER_RAN\"\n"
+
+
+def script(path, body):
+    path.write_bytes(("#!/bin/sh\n" + body).encode())
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+@unittest.skipUnless(shutil.which("sh") and shutil.which("bash"), "POSIX sh and bash")
+class HermesBakeTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.curl_log = self.root / "curl.log"
+        self.ran = self.root / "installer-ran"
+        self.served = self.root / "served"
+
+    def env(self):
+        return {
+            "PATH": "%s:/usr/bin:/bin" % self.bin,
+            "HOME": str(self.home),
+            "INSTALLER_RAN": str(self.ran),
+            "CURL_LOG": str(self.curl_log),
+            "SERVED": str(self.served),
+        }
+
+    def fake_curl(self):
+        script(self.bin / "git", "exit 0\n")  # only asked to be there, as the installer needs it
+        # The last argument is the URL, the one before the -o target; writes what SERVED holds.
+        script(self.bin / "curl", 'echo "$@" >> "$CURL_LOG"\n'
+               'while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done\n'
+               'cp "$SERVED" "$out"\n')
+
+    def install_with(self, served, sha):
+        self.served.write_bytes(served.encode())
+        self.fake_curl()
+        return subprocess.run(
+            ["sh", "-c", '. "$1"; . "$2"; hermes_run_installer http://x/install.sh "$3" abc123',
+             "sh", str(INSTALL / "common.sh"), str(INSTALL / "hermes-pin.sh"), sha],
+            capture_output=True, text=True, env=self.env(),
+        )
+
+    def test_an_installer_that_does_not_match_its_checksum_is_never_run(self):
+        result = self.install_with(FAKE_INSTALLER, "0" * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not match its checksum", result.stderr)
+        self.assertFalse(self.ran.exists(), "a file that failed its check must not run")
+
+    def test_an_installer_that_matches_runs_for_the_pinned_commit_without_a_terminal(self):
+        result = self.install_with(FAKE_INSTALLER, sha256(FAKE_INSTALLER.encode()).hexdigest())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.ran.read_text().split()
+        self.assertEqual(args[:2], ["--commit", "abc123"])
+        for flag in ("--non-interactive", "--skip-browser", "--skip-computer-use"):
+            self.assertIn(flag, args)
+
+    def test_the_first_run_skips_the_download_when_hermes_is_present(self):
+        script(self.bin / "hermes", 'case "$1" in --version) echo "Hermes Agent v0.21";; *) exit 1;; esac\n')
+        self.fake_curl()
+        self.served.write_bytes(b"never read")
+        result = subprocess.run(
+            ["sh", str(INSTALL / "hermes.sh"), str(support.HARNESSES / "hermes")],
+            capture_output=True, text=True, env=self.env(), input="",
+        )
+        self.assertNotIn("fetching Hermes", result.stdout)
+        self.assertIn("is here", result.stdout)
+        self.assertFalse(self.curl_log.exists(), "nothing was downloaded")
+
+    def test_the_first_run_downloads_when_hermes_is_missing(self):
+        self.fake_curl()
+        self.served.write_bytes(b"not the installer")
+        result = subprocess.run(
+            ["sh", str(INSTALL / "hermes.sh"), str(support.HARNESSES / "hermes")],
+            capture_output=True, text=True, env=self.env(), input="",
+        )
+        self.assertIn("fetching Hermes", result.stdout)
+        self.assertIn("did not match its checksum", result.stderr)
+
+    def test_the_image_and_the_runtime_install_use_the_one_pin(self):
+        pin = (INSTALL / "hermes-pin.sh").read_text()
+        self.assertRegex(pin, r"(?m)^HERMES_COMMIT=[0-9a-f]{40}$")
+        self.assertRegex(pin, r"(?m)^HERMES_INSTALLER_SHA256=[0-9a-f]{64}$")
+        for name in ("hermes.sh", "hermes-bake.sh"):
+            text = (INSTALL / name).read_text()
+            self.assertIn("hermes-pin.sh", text, name)
+            self.assertNotRegex(text, r"(?m)^HERMES_COMMIT=|^HERMES_INSTALLER_SHA256=", "%s has its own pin" % name)
+
+    def test_the_bake_checks_the_commit_it_got_and_leaves_out_what_is_not_permissive(self):
+        text = (INSTALL / "hermes-bake.sh").read_text()
+        self.assertRegex(text, r'rev-parse HEAD[\s\S]*"\$got" = "\$HERMES_COMMIT"')
+        self.assertRegex(text, r"rm -rf .*tools\"/ffmpeg-")
+
+    def test_an_image_built_without_hermes_on_purpose_touches_nothing(self):
+        rootfs = self.root / "rootfs"
+        rootfs.mkdir()
+        env = dict(self.env(), YANTRIK_ISO_WITHOUT_HERMES="1")
+        result = subprocess.run(["sh", str(BAKE_ISO), str(rootfs)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list(rootfs.iterdir()), [])
+
+    def test_the_image_build_stops_if_the_harnesses_are_not_staged(self):
+        rootfs = self.root / "rootfs"
+        rootfs.mkdir()
+        result = subprocess.run(["sh", str(BAKE_ISO), str(rootfs)], capture_output=True, text=True, env=self.env())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not staged", result.stderr)
+
+    def test_the_baked_scripts_are_staged_and_executable_where_they_have_a_shebang(self):
+        staged = (support.ROOT / "deploy" / "yantrik-os" / "stage-harnesses.sh").read_text()
+        self.assertIn("hermes-pin.sh hermes-bake.sh hermes_licences.py", staged)
+        for path in (INSTALL / "hermes-bake.sh", BAKE_ISO):
+            self.assertTrue(path.read_text().startswith("#!/bin/sh"), path)
+
+
+if __name__ == "__main__":
+    unittest.main()
