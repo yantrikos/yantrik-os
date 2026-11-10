@@ -18,6 +18,11 @@ from .cdp import short
 from .refusals import Refused
 
 SHOTS_DIR = ("Pictures", "Screenshots", "Browser")   # under the home, beside the shell's own captures
+# What an answer carries of the picture itself, when asked (`inline`): the MCP bridge runs as the
+# Mind and cannot read the file, so the bytes travel in the answer — bounded, since an answer is
+# one line on a socket, and a vision model takes a few MB and 8000 pixels a side at most.
+INLINE_LIMIT = 2 * 1024 * 1024
+INLINE_SIDE = 8000
 
 
 class ShotMixin:
@@ -44,11 +49,24 @@ class ShotMixin:
             return path
         raise Refused("the picture could not be saved: too many taken this second")
 
-    def screenshot(self, tab=None, full=False):
+    @staticmethod
+    def _inline(out, data, width, height):
+        """The picture itself on the answer, base64 PNG, for a caller that can look at it — within
+        the caps, or `png_withheld` says why not (the file is there either way)."""
+        if len(data) > INLINE_LIMIT:
+            out["png_withheld"] = ("the picture is %d bytes, more than the %d an answer carries; it is in "
+                                   "the file" % (len(data), INLINE_LIMIT))
+        elif max(width, height) > INLINE_SIDE:
+            out["png_withheld"] = ("the picture is %dx%d, more than %d pixels a side; it is in the file "
+                                   "(without full, the viewport alone fits)" % (width, height, INLINE_SIDE))
+        else:
+            out["png"] = base64.b64encode(data).decode("ascii")
+
+    def screenshot(self, tab=None, full=False, inline=False):
         """A PNG of this tab's page — what is in its viewport, or with `full` the whole page — saved
-        under the home; answers with the path. It is a picture of the page in the caller's own
-        browser's tab, drawn by the browser from the page alone: never the screen, never another
-        tab, never the person's browser for a mind."""
+        under the home; answers with the path, and with `inline` the picture itself too. It is a
+        picture of the page in the caller's own browser's tab, drawn by the browser from the page
+        alone: never the screen, never another tab, never the person's browser for a mind."""
         with self.held():
             t = self._tab(tab)
             params = {"format": "png"}
@@ -69,6 +87,9 @@ class ShotMixin:
                 raise Refused("the browser answered with no picture")
             width, height = struct.unpack(">II", data[16:24])
             path = self._save_png(data)
-            return {"path": path, "bytes": len(data), "size": [width, height], "full_page": bool(full),
-                    "url": t.url, "title": t.title, "tab": short(t.id),
-                    "of": "this tab's page only, drawn by the browser: not the screen, not another tab"}
+            out = {"path": path, "bytes": len(data), "size": [width, height], "full_page": bool(full),
+                   "url": t.url, "title": t.title, "tab": short(t.id),
+                   "of": "this tab's page only, drawn by the browser: not the screen, not another tab"}
+            if inline:
+                self._inline(out, data, width, height)
+            return out

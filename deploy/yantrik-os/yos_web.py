@@ -261,10 +261,11 @@ def render_browser(result):
     if "console" in result and "showing" in result:
         return render_console(result)
     if "path" in result and "of" in result:
-        return "%s\n%dx%d%s, %d bytes — %s. Of %s (%s)." % (
+        return "%s\n%dx%d%s, %d bytes — %s. Of %s (%s).%s" % (
             result["path"], result["size"][0], result["size"][1], " (whole page)" if result.get("full_page") else "",
             result.get("bytes", 0), _flat(result.get("of", ""), 120),
-            json.dumps(_flat(result.get("title", ""), 80), ensure_ascii=False), _flat(result.get("url", ""), 120))
+            json.dumps(_flat(result.get("title", ""), 80), ensure_ascii=False), _flat(result.get("url", ""), 120),
+            ("\nNo picture in the answer: %s." % _flat(result["png_withheld"], 200)) if result.get("png_withheld") else "")
     if "text" in result and "size" in result:
         tail = ("\n[... %d more characters: text with a larger limit]" % (result["size"] - len(result["text"]))
                 if result.get("clipped") else "")

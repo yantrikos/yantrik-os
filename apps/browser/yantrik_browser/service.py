@@ -99,11 +99,14 @@ def build(driver=None, **surface_options):
         return now(lambda: d.console(tab or None, everything, limit))
 
     @s.action(grade="safe", expected_seconds=2)
-    def screenshot(tab: Tab = "", full: typing.Annotated[bool, "the whole page, not only what is in view"] = False) -> dict:
+    def screenshot(tab: Tab = "", full: typing.Annotated[bool, "the whole page, not only what is in view"] = False,
+                   inline: typing.Annotated[bool, "the picture itself in the answer too, as base64 PNG, for a "
+                                            "caller that can look at it; within 2 MB and 8000 px a side, else "
+                                            "the answer says so"] = False) -> dict:
         """A picture (PNG) of this tab's page, saved under ~/Pictures/Screenshots/Browser; answers with
-        its path. Of the page in this tab only, as the browser draws it: not the screen, not another
-        tab, not the person's browser"""
-        return now(lambda: d.screenshot(tab or None, full))
+        its path, and with inline the picture itself. Of the page in this tab only, as the browser
+        draws it: not the screen, not another tab, not the person's browser"""
+        return now(lambda: d.screenshot(tab or None, full, inline))
 
     @s.action(grade="safe")
     def tabs() -> dict:

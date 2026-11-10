@@ -7,6 +7,7 @@ caller's own tab only, decoded here pixel by pixel.
 One browser and one site for the run, from test_live; skips without a browser, as it does.
 """
 
+import base64
 import os
 import shutil
 import struct
@@ -14,9 +15,11 @@ import tempfile
 import time
 import unittest
 import zlib
+from unittest import mock
 
 from test_live import Bench, setUpModule, tearDownModule  # noqa: F401  (the bench, started for this module too)
 from yantrik_browser import driver as drv  # noqa: E402  (on the path once test_live is imported)
+from yantrik_browser import shot  # noqa: E402
 
 
 def png_pixel(path, x, y):
@@ -105,6 +108,35 @@ class Screenshot(unittest.TestCase):
         self.assertTrue(out["full_page"])
         self.assertGreaterEqual(out["size"][1], 3000, out)
 
+    def test_inline_carries_the_very_bytes_of_the_file_and_plain_does_not(self):
+        self.d.go(self.site + "/pages/red.html")
+        out = self.d.screenshot(inline=True)
+        png = base64.b64decode(out["png"])
+        with open(out["path"], "rb") as f:
+            self.assertEqual(png, f.read())
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertNotIn("png_withheld", out)
+        plain = self.d.screenshot()
+        self.assertNotIn("png", plain)
+        self.assertNotIn("png_withheld", plain)
+
+    def test_a_picture_over_the_byte_cap_is_withheld_but_still_saved(self):
+        self.d.go(self.site + "/pages/red.html")
+        with mock.patch.object(shot, "INLINE_LIMIT", 100):
+            out = self.d.screenshot(inline=True)
+        self.assertNotIn("png", out)
+        self.assertIn("bytes", out["png_withheld"])
+        self.assertTrue(os.path.exists(out["path"]))
+
+    def test_a_picture_over_the_side_cap_is_withheld_and_the_viewport_alone_fits(self):
+        self.d.go(self.site + "/pages/blue.html")
+        with mock.patch.object(shot, "INLINE_SIDE", 2000):
+            whole = self.d.screenshot(full=True, inline=True)
+            view = self.d.screenshot(inline=True)
+        self.assertNotIn("png", whole)
+        self.assertIn("pixels a side", whole["png_withheld"])
+        self.assertIn("png", view)
+
     def test_a_planted_link_at_the_next_name_is_not_followed(self):
         folder = os.path.join(self.home, "Pictures", "Screenshots", "Browser")
         os.makedirs(folder, exist_ok=True)
@@ -112,7 +144,10 @@ class Screenshot(unittest.TestCase):
         with open(victim, "w") as f:
             f.write("keep me")
         stamp = time.strftime("%Y-%m-%d at %H.%M.%S")
-        os.symlink(victim, os.path.join(folder, "Page %s.png" % stamp))
+        taken = os.path.join(folder, "Page %s.png" % stamp)
+        if os.path.lexists(taken):  # an earlier test's picture, in the same second
+            os.remove(taken)
+        os.symlink(victim, taken)
         self.d.go(self.site + "/pages/red.html")
         out = self.d.screenshot()
         with open(victim) as f:
