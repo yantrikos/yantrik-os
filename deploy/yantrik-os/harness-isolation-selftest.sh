@@ -38,7 +38,7 @@ migrate_if_needed() { :; }
 elevate() { :; }
 reconcile_minds() { :; }; reconcile_mind_egress_units() { :; }; reconcile_mind_units() { :; }
 reconcile_egress() { :; }; reconcile_mind_egress() { :; }
-export YANTRIK_SELFTEST=1 HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harness" HI_USER=yk411m HI_GROUP=yk411g HI_STATE="$work/state" HI_LOCK="$work/lock" HI_PROC="$work/proc"
+export YANTRIK_SELFTEST=1 HI_HEADROOM_KB=0 HI_RESERVE_KB=0 HI_HOLD=0 HI_UNIT_DIR="$work/units" HI_DOOR="$work/door" HI_BASE="$work/mind/harness" HI_USER=yk411m HI_GROUP=yk411g HI_STATE="$work/state" HI_LOCK="$work/lock" HI_PROC="$work/proc"
 # shellcheck source=deploy/yantrik-os/harness-isolation.sh
 . "$here/harness-isolation.sh"
 
@@ -344,14 +344,14 @@ is "the embedder model its memory cached is carried, so the account needs no dow
 no "a runtime state file that names the person's home is not carried (gateway_state.json)" test -e "$M/.hermes/gateway_state.json"
 is "the person's own copy is untouched" "$before" "$(python3 -I -c "$HI_PY_TREE" digest "$P" .hermes "$(hi_code_dirs hermes)" "$(hi_person_extra hermes)")"
 no "no key was ever said or logged" grep -rq FAKE-KEY "$work/said" "$work/log"
-echo "-- setting aside, and doing it again"
-hi_set_aside hermes earlier
-yes "a retry keeps the unfinished directory, in one slot" test -d "$M.failed"
+echo "-- discarding an unfinished copy, and doing it again"
+hi_discard_unfinished hermes earlier
+no "a retry removes the unfinished directory, it keeps no copy" test -e "$M.failed"
 yes "... and starts with an empty one" test -z "$(sudo_m ls -A "$M")"
 hi_copy_data hermes yk411p "$P" && yes "the copy can be made again" true
-hi_set_aside hermes earlier; hi_set_aside hermes earlier
-is "setting aside again replaces the slot; an empty directory is a no-op: one copy, never a pile" "1" "$(ls -d "$M".failed* | wc -l | tr -d ' ')"
-has "... and the person is told what is kept and that their own files were not touched" "kept the last unfinished" "$(cat "$work/said")"
+hi_discard_unfinished hermes earlier; hi_discard_unfinished hermes earlier
+is "discarding again is a no-op: no copy kept, ever" "0" "$(ls -d "$M".failed* 2>/dev/null | wc -l | tr -d ' ')"
+has "... and the person is told what is removed and that their own files were not touched" "removed the unfinished copy" "$(cat "$work/said")"
 echo "-- the whole install, with a stand-in installer"
 rm -rf "$M" "$M".failed "$M".failed.new
 hi_ready hermes
@@ -375,7 +375,7 @@ is "... it is not marked as moved" "no" "$(hi_migrated hermes && echo yes || ech
 no "... and the unit was never enabled for boot" grep -q '^enable ' "$work/log/systemctl"
 yes "... the system unit was turned off" grep -q 'disable --now hermes-gateway.service' "$work/log/systemctl"
 yes "... the person's own gateway is running again" grep -q -e '--user -M yk411p@ start hermes-gateway.service' "$work/log/systemctl"
-yes "... what was half made is kept aside, in the one slot" test -d "$M.failed"
+no "... what was half made is removed, not kept (a kept copy keeps the disk full)" test -e "$M.failed"
 has "... and the reason is named" "its installer stopped" "$(cat "$work/said")"
 is "... and the person's copy is the same" "$before" "$(python3 -I -c "$HI_PY_TREE" digest "$P" .hermes "$(hi_code_dirs hermes)" "$(hi_person_extra hermes)")"
 
@@ -574,8 +574,8 @@ HI_NOW="hermes yk411p active"; saved_state="$HI_STATE"; HI_STATE="$work/state-is
 HI_STATE="$saved_state"
 is "a marker that cannot be written ends like any other failure (L5)" "1" "$rc"
 yes "... the person's gateway is given back" grep -q -e '--user -M yk411p@ start hermes-gateway.service' "$work/log/systemctl"
-# (the abort set the working home aside, as it should when nothing committed: put it back for what follows)
-rm -rf "$M"; mv "$M.failed" "$M"
+# (the abort removed the unfinished copy, as it should when nothing committed: put one back for what follows)
+sudo_m sh -c 'umask 077; mkdir -p "$1/.hermes" "$1/.local/bin"; printf k > "$1/.hermes/.env"' sh "$M"
 echo "-- again, and an update on a machine that has moved"
 before_files="$(find "$P" -maxdepth 2 | sort | md5sum)"
 ( hi_finish hermes yk411p "$P" ) >/dev/null 2>&1; ( hi_finish hermes yk411p "$P" ) >/dev/null 2>&1

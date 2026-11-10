@@ -334,7 +334,7 @@ jobs:
       # private, and that a failed install leaves the person's own Hermes as it was. systemd is a
       # recorder in it; the real unit is held by a VM gate. Fake keys only.
       - name: A harness running as the mind account cannot reach the person
-        run: sudo bash deploy/yantrik-os/harness-isolation-selftest.sh
+        run: sudo bash deploy/yantrik-os/harness-isolation-selftest.sh && bash deploy/yantrik-os/harness-isolation-room-selftest.sh
 
       # Every line of the gateway unit that runs as the account is under the abstract-socket scope, and the
       # scripts it runs look nothing up in what the account wrote (M1a). No root needed.

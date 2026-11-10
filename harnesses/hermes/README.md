@@ -99,8 +99,8 @@ account with the same `hermes.sh`, run twice as the account (`YANTRIK_HARNESS_IS
 copies your Hermes's data (config, `.env`, sessions, `state.db`, its YantrikDB file; not its code,
 which is reinstalled from the pinned commit) into the account's home, counts both sides, installs,
 starts the service, proves it, and only then masks your old user unit and renames `~/.hermes` to
-`~/.hermes.yantrik-moved`, with the old launcher and unit inside. Nothing is deleted; if any step
-fails, your own gateway is started again as it was and the half-made directory is kept aside. Your
+`~/.hermes.yantrik-moved`, with the old launcher and unit inside. Nothing of yours is deleted. Before any of it the updater checks the disk has room (your Hermes's data, about 3 GB for the install, 0.5 GB left over) and refuses, saying how much, if not. If a step
+fails, the half-made copy is removed (it is a copy, not your data, and a kept one would keep the disk full), your own gateway is started again and the updater says whether it is really running, and an update does not try the move again: `sudo yantrik-update harness install hermes` does. Your
 `hermes` command stays, and does `model`, `status` and `--version` against the account's Hermes.
 **An OS rollback to a build from before this release is NOT safe for Hermes's keys.** The service and
 its files stay where they are (they are not in `/opt/yantrik`), but that build's Mind unit neither

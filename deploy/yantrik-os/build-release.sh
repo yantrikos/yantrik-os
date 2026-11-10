@@ -218,8 +218,7 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   # The harnesses that run as the mind account (#411), sourced by the updater: without it a build
   # has no `yantrik-update harness` and Hermes would stay the person's.
   install -m 0644 "$SCRIPT_DIR/harness-isolation.sh" "$ROOT/bin/harness-isolation.sh"     || fail "no harness-isolation.sh: the updater could not move a harness to the mind account"
-  install -m 0644 "$SCRIPT_DIR/harness-sandbox.sh" "$ROOT/bin/harness-sandbox.sh" \
-    || fail "no harness-sandbox.sh: harness-isolation.sh sources it"
+  for f in harness-sandbox.sh harness-isolation-room.sh; do install -m 0644 "$SCRIPT_DIR/$f" "$ROOT/bin/$f" || fail "no $f: harness-isolation.sh sources it"; done
   # The bridge rule the updater sources to hand the mind a new yos-mcp after an update (#1102).
   # Missing would be tolerable by design — the updater warns and carries on — but a bundle that
   # never shipped it is a build that quietly gives every updated machine the old hint-only path.

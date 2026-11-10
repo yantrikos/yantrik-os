@@ -57,6 +57,8 @@ HI_CAPABILITY="YANTRIK_HARNESS_ISOLATED"
 
 # shellcheck source=deploy/yantrik-os/harness-sandbox.sh
 . "$(dirname "${BASH_SOURCE[0]}")/harness-sandbox.sh"
+# shellcheck source=deploy/yantrik-os/harness-isolation-room.sh
+. "$(dirname "${BASH_SOURCE[0]}")/harness-isolation-room.sh"
 
 hi_known() { case "$1" in hermes) return 0 ;; *) return 1 ;; esac; }
 hi_unit() { case "$1" in hermes) printf 'hermes-gateway.service' ;; esac; }
@@ -203,7 +205,8 @@ hi_migrated() { [ -f "$HI_STATE/$1.isolated" ] && [ ! -L "$HI_STATE/$1.isolated"
 hi_mark_migrated() { # <name>: root's file, written whole
   install -d -m 0755 -o root -g root "$HI_STATE" 2>/dev/null || [ -d "$HI_STATE" ] || return 1
   printf 'isolated %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HI_STATE/$1.isolated.new" \
-    && chmod 0644 "$HI_STATE/$1.isolated.new" && mv -f "$HI_STATE/$1.isolated.new" "$HI_STATE/$1.isolated"
+    && chmod 0644 "$HI_STATE/$1.isolated.new" && mv -f "$HI_STATE/$1.isolated.new" "$HI_STATE/$1.isolated" \
+    && hi_clear_failure "$1"
 }
 
 # The person's old gateway, off, for the person and for everyone the global enable reached, and
@@ -302,18 +305,6 @@ hi_ready() { # <name>
   hi_check_home "$1" || fail "$(hi_home "$1") is not the account's own directory; nothing was changed"
 }
 
-# A directory the mind account made, put aside whole (kept, never deleted) so a retry starts clean.
-hi_set_aside() { # <name> <why>
-  local home; home="$(hi_home "$1")"
-  [ -n "$(hi_as_mind ls -A "$home" 2>/dev/null)" ] || return 0
-  # One slot, replaced by the next: a failed attempt is a full copy (gigabytes), and five of them
-  # filled a disk. What it holds is a copy the account made; the person's own is never touched.
-  hi_as_mind rm -rf "$home.failed.new" && hi_as_mind mv "$home" "$home.failed.new" \
-    && hi_as_mind rm -rf "$home.failed" && hi_as_mind mv "$home.failed.new" "$home.failed" \
-    && info "kept the last unfinished $1 directory as $home.failed ($2); an earlier one it replaced is gone. Your own files were not touched"
-  hi_as_mind sh -c 'umask 077; mkdir -p "$1"' sh "$home"
-}
-
 # Copy the person's Hermes data into the mind account's home, as the person (reading) and as the
 # mind (writing, umask 077), then compare count and hash on both sides. The person's copy is not
 # touched; if the numbers differ, nothing is used.
@@ -349,22 +340,6 @@ hi_unit_wait() { # <unit> <seconds>: active for two checks in a row
   return 1
 }
 
-# A failed install puts the person's own Hermes back as it was: their gateway started again if it
-# was running, the mind account's half-made directory kept aside, the system unit off (unless it
-# had already moved: then its working gateway is left alone).
-hi_abort() { # <name> <was-active: active|idle|none> <owner> <reason>
-  local unit; unit="$(hi_unit "$1")"
-  trap - TERM INT HUP
-  warn "$1 was not moved: $4"
-  hi_migrated "$1" || { systemctl disable --now "$unit" >/dev/null 2>&1 || true; hi_set_aside "$1" failed; }
-  # Only a move that did not commit gives the person's gateway back: after the marker the system
-  # one is the gateway, and two would share the platform's tokens.
-  if [ "$2" = active ] && ! hi_migrated "$1"; then
-    systemctl --user -M "$3@" start "$(hi_unit "$1")" >/dev/null 2>&1 \
-      && info "your own $1 gateway is running again, as it was"
-  fi
-  fail "$1 is not isolated yet: $4"
-}
 # What a kill or a stop of the move does: the same as a failure, so no interrupted move leaves the
 # system gateway running beside the person's.
 HI_NOW=""
@@ -407,12 +382,13 @@ hi_install() { # <name>
   who="$(hi_owner_home)" || fail "cannot tell whose desktop this is; nothing was changed"
   owner="${who% *}"; home="${who#* }"
   say "Setting $name up under the mind account"
+  hi_room_check "$name" "$home" "$(hi_person_has "$name" "$home" && ! hi_migrated "$name" && echo yes || echo no)"
   hi_ready "$name"
   if hi_person_has "$name" "$home" && ! hi_migrated "$name"; then
     was="$(hi_stop_person_unit "$name" "$owner" "$home")"
     HI_NOW="$name $owner $was"
     trap hi_interrupted TERM INT HUP
-    hi_set_aside "$name" earlier
+    hi_discard_unfinished "$name" "left by an earlier try"
     hi_copy_data "$name" "$owner" "$home" || hi_abort "$name" "$was" "$owner" "its files could not be copied and counted"
   fi
   HI_NOW="$name $owner $was"
@@ -602,7 +578,9 @@ reconcile_harness_isolation() {
   owner="${who% *}"; home="${who#* }"
   hi_guard_mixed "$owner" "$home"
   for name in hermes; do
-    if hi_migrated "$name" || hi_person_has "$name" "$home"; then todo=1; fi
+    hi_migrated "$name" && { todo=1; continue; }
+    # A person's own: moved only when this build can, and not again after a failure nobody has asked to retry.
+    hi_person_has "$name" "$home" && hi_has_installer "$name" && ! hi_auto_blocked "$name" && todo=1
   done
   [ "$todo" = 1 ] || return 0
   command -v systemd-run >/dev/null 2>&1 || { hi_migrate_all; return 0; }
