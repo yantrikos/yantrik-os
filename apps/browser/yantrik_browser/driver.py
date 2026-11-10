@@ -23,6 +23,8 @@ from . import cdp, commit, guard, hands, judgement, sides
 
 NAVIGATE_LIMIT = 15.0     # seconds a navigation is given to settle
 ACT_LIMIT = 4.0           # seconds a click or a key is given
+HOLD_LIMIT = 10.0         # seconds key_down holds a key for when asked to hold and release
+DRAG_LIMIT = 4000         # pixels a drag may move in either direction
 TEXT_LIMIT = 20000
 
 
@@ -288,6 +290,8 @@ class Driver:
                 changes = None
             if changes and changes.get("appeared"):
                 out["appeared"] = changes["appeared"]
+            if changes and changes.get("context_menu"):
+                out["menu"] = changes["context_menu"]
         page = self._marked(self._run(tab, "snapshot", False))
         out["url"] = page.get("url")
         out["title"] = page.get("title")
@@ -550,6 +554,112 @@ class Driver:
             target = self._pressable(t, ref)
             return self._act(t, "clicked %s \"%s\" (%s)" % (target["role"], target["name"], ref),
                              lambda: hands.click(self.browser, t, target["x"], target["y"]))
+
+    def context_click(self, ref, tab=None):
+        """A right click on an element. The browser's own menu is never shown (nothing on this
+        surface could read or close it); the page's own, if it makes one, is what read lists."""
+        with self.held():
+            t = self._tab(tab)
+            target = self._pressable(t, ref, allow_commitment=True)
+            out = self._act(t, "right-clicked %s \"%s\" (%s)" % (target["role"], target["name"], ref),
+                            lambda: hands.context_click(self.browser, t, target["x"], target["y"]))
+            menu = out.pop("menu", None)
+            out["menu"] = {"page": "the page showed a menu of its own: read lists what is in it",
+                           "none": "the page has no menu of its own here (the browser's own menu is not "
+                                   "shown to this surface)",
+                           "unknown": "the page stopped the event before it could be told; if the "
+                                      "browser's own menu opened, press Escape"}.get(menu, "no contextmenu "
+                                                                                       "event reached the page")
+            return out
+
+    def drag(self, ref, dx, dy, tab=None):
+        """Press on an element, move the pointer by (dx, dy) with the button held, release there:
+        a window moved by its title bar, a slider, a resize handle."""
+        try:
+            dx, dy = int(dx), int(dy)
+        except (TypeError, ValueError):
+            raise Refused("drag needs dx and dy in pixels") from None
+        if dx == 0 and dy == 0:
+            raise Refused("drag needs a distance: dx and dy are both 0, and a press that does not move is click")
+        if abs(dx) > DRAG_LIMIT or abs(dy) > DRAG_LIMIT:
+            raise Refused("drag moves at most %d pixels either way" % DRAG_LIMIT)
+        with self.held():
+            t = self._tab(tab)
+            target = self._target(t, ref)
+            if target.get("invisible"):
+                raise PageRefused("%s (%s \"%s\") has no size on the page: it cannot be dragged. Read the "
+                                  "page again." % (ref, target["role"], target["name"]))
+            cover = target.get("covered_by")
+            if cover:
+                raise PageRefused("%s (\"%s\") is covered by %s \"%s\" (%s): pressing there would press that "
+                                  "instead. Deal with it first. Nothing was moved."
+                                  % (ref, target["name"], cover.get("role"), cover.get("name"), cover.get("ref")))
+            x, y = target["x"], target["y"]
+            landing = self._run(t, "at", x + dx, y + dy)
+            why = self._why_commitment(landing, t) if landing else None
+            if why:
+                raise PageRefused("dropping %s there would land on %s \"%s\" (%s), which %s: what a drop "
+                                  "onto it does may not be undone, and that is the person's to do. Nothing "
+                                  "was moved." % (ref, landing["role"], landing["name"], landing["ref"], why))
+            before = target.get("box")
+            out = self._act(t, "dragged %s \"%s\" (%s) by (%d, %d)" % (target["role"], target["name"], ref, dx, dy),
+                            lambda: hands.drag(self.browser, t, x, y, dx, dy))
+            out["from"] = [x, y]
+            out["to"] = [x + dx, y + dy]
+            after = self._run(t, "target", ref)
+            if after and not after.get("gone") and after.get("box") and before:
+                out["box"] = after["box"]
+                out["moved"] = [after["box"][0] - before[0], after["box"][1] - before[1]]
+            return out
+
+    def key_down(self, key, ref=None, seconds=0, tab=None):
+        """Put a key down and leave it down — until key_up, or for `seconds` and then release
+        it (a game's held arrow). Enter and Space are held to the same rule as press."""
+        k = hands.key_named(key)
+        if k is None:
+            raise Refused("`%s` is not a key this knows. Keys: %s, a letter or digit, with ctrl+, "
+                          "shift+, alt+ or meta+ in front" % (key, ", ".join(sorted(hands.KEYS))))
+        try:
+            seconds = max(0.0, min(float(seconds or 0), HOLD_LIMIT))
+        except (TypeError, ValueError):
+            raise Refused("seconds is how long to hold the key, at most %d" % HOLD_LIMIT) from None
+        with self.held():
+            t = self._tab(tab)
+            if ref:
+                focused = self._run(t, "focus", ref, False)
+                if not focused or focused.get("gone"):
+                    raise PageRefused("%s is no longer on the page; read it again" % ref)
+            self._key_is_safe(t, ref, k[0])
+
+            def work():
+                self._key_is_safe(t, ref, k[0])
+                hands.key_down(self.browser, t, key)
+                if seconds:
+                    time.sleep(seconds)
+                    hands.key_up(self.browser, t, key)
+            doing = ("held %s for %.1f s%s" % (key, seconds, (" in %s" % ref) if ref else "") if seconds
+                     else "pressed %s down%s; it stays down until key_up" % (key, (" in %s" % ref) if ref else ""))
+            out = self._act(t, doing, work, limit=NAVIGATE_LIMIT if k[0] == "Enter" else ACT_LIMIT)
+            out["held"] = sorted(t.held_keys)
+            return out
+
+    def key_up(self, key=None, tab=None):
+        """Release a key key_down put down — the one named, or every one still down."""
+        with self.held():
+            t = self._tab(tab)
+            keys = [key] if key else sorted(t.held_keys)
+            if not keys:
+                raise Refused("no key is down in this tab")
+            for name in keys:
+                if hands.key_named(name) is None:
+                    raise Refused("`%s` is not a key this knows" % name)
+
+            def work():
+                for name in keys:
+                    hands.key_up(self.browser, t, name)
+            out = self._act(t, "released %s" % ", ".join(keys), work)
+            out["held"] = sorted(t.held_keys)
+            return out
 
     def commit(self, ref, label, site, tab=None):
         with self.held():

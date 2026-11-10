@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Input Page</title><link rel="icon" href="data:,">
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  #box { position: absolute; left: 100px; top: 100px; width: 120px; height: 40px; background: #cde; cursor: move; line-height: 40px; text-align: center; }
+  #trash { position: absolute; left: 500px; top: 100px; width: 160px; height: 60px; background: #fcc; line-height: 60px; text-align: center; }
+  #hud { position: absolute; left: 100px; top: 200px; }
+  #zone { position: absolute; left: 100px; top: 300px; width: 200px; height: 60px; background: #dfd; cursor: pointer; line-height: 60px; text-align: center; }
+  #plain { position: absolute; left: 400px; top: 300px; width: 200px; height: 60px; background: #eee; cursor: pointer; line-height: 60px; text-align: center; }
+  #menu { position: absolute; display: none; background: #fff; border: 1px solid #999; list-style: none; padding: 4px; margin: 0; }
+  #menu[data-open] { display: block; }
+</style></head>
+<body>
+  <div id="box" role="button" tabindex="0">Drag me</div>
+  <div id="trash" role="button">Delete</div>
+  <div id="hud">
+    <div id="log">no key yet</div>
+    <div id="frames">ArrowUp held for 0 frames</div>
+    <div id="pos">at 100,100</div>
+    <button id="send">Send</button>
+  </div>
+  <div id="zone" role="button">Right-click zone</div>
+  <div id="plain" role="button">Plain</div>
+  <ul id="menu" role="menu"><li role="menuitem" tabindex="0">Rename</li><li role="menuitem" tabindex="0">Duplicate</li></ul>
+<script>
+  // Pointer drag by mousedown / mousemove / mouseup, like a window's title bar.
+  const box = document.getElementById('box'), pos = document.getElementById('pos');
+  let drag = null;
+  box.addEventListener('mousedown', (e) => { drag = { x: e.clientX - box.offsetLeft, y: e.clientY - box.offsetTop }; });
+  window.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    box.style.left = (e.clientX - drag.x) + 'px'; box.style.top = (e.clientY - drag.y) + 'px';
+    pos.textContent = 'at ' + box.offsetLeft + ',' + box.offsetTop;
+  });
+  window.addEventListener('mouseup', () => { if (drag) { drag = null; pos.textContent += ' (dropped)'; } });
+  // Keys: what is down, polled per frame as a game does.
+  const held = {}, log = document.getElementById('log'), frames = document.getElementById('frames');
+  let up = 0;
+  window.addEventListener('keydown', (e) => { if (e.target.tagName === 'BUTTON') return; held[e.code] = true; log.textContent = e.code + ' down'; });
+  window.addEventListener('keyup', (e) => { held[e.code] = false; log.textContent = e.code + ' up'; });
+  (function tick() { if (held.ArrowUp) { up++; frames.textContent = 'ArrowUp held for ' + up + ' frames'; } requestAnimationFrame(tick); })();
+  // A context menu of the page's own, on the zone only.
+  const zone = document.getElementById('zone'), menu = document.getElementById('menu');
+  zone.addEventListener('contextmenu', (e) => { e.preventDefault(); menu.style.left = e.clientX + 'px'; menu.style.top = e.clientY + 'px'; menu.setAttribute('data-open', ''); });
+  document.getElementById('plain').addEventListener('contextmenu', () => { log.textContent = 'plain saw contextmenu'; });
+  document.getElementById('send').addEventListener('click', () => { log.textContent = 'SENT'; });
+</script>
+</body></html>

@@ -612,11 +612,34 @@
              page: [doc.scrollWidth, doc.scrollHeight], viewport: [window.innerWidth, window.innerHeight] };
   }
 
+  // The control a press at this point of the top viewport would land on, described for a judge:
+  // where a drag would drop.
+  function at(x, y) {
+    const hit = deepHit(x, y);
+    const landing = hit && controlOf(hit, window);
+    return landing ? describeControl(landing) : null;
+  }
+
   // ── what changed ──
   let observer = null, appeared = [], mutations = 0;
+  // A right click: whether the page answered with a menu of its own (it called preventDefault
+  // on contextmenu) — and the browser's own menu is never let open, since nothing on this
+  // surface could read or close it, and in a window it would eat the next click.
+  let menuSeen = null, menuCapture = null, menuBubble = null;
+  const unwatchMenu = () => {
+    if (menuCapture) window.removeEventListener('contextmenu', menuCapture, true);
+    if (menuBubble) window.removeEventListener('contextmenu', menuBubble, false);
+    menuCapture = menuBubble = null;
+  };
   function watch() {
     if (observer) observer.disconnect();
     appeared = []; mutations = 0;
+    unwatchMenu();
+    menuSeen = null;
+    menuCapture = () => { menuSeen = 'unknown'; };
+    menuBubble = (e) => { menuSeen = e.defaultPrevented ? 'page' : 'none'; e.preventDefault(); };
+    window.addEventListener('contextmenu', menuCapture, true);
+    window.addEventListener('contextmenu', menuBubble, false);
     observer = new MutationObserver((list) => {
       for (const m of list) {
         mutations++;
@@ -637,9 +660,12 @@
   }
   function changes() {
     if (observer) { observer.takeRecords(); observer.disconnect(); observer = null; }
+    unwatchMenu();
     // Only what is still there and can be seen: a spinner that came and went is not news.
     const still = appeared.filter((t) => (document.body && document.body.innerText.includes(t.slice(0, 40))));
-    return { mutations, appeared: still.slice(0, 8) };
+    const out = { mutations, appeared: still.slice(0, 8) };
+    if (menuSeen) out.context_menu = menuSeen;
+    return out;
   }
 
   const where = () => ({ url: location.href, title: titleOf(document) });
@@ -661,6 +687,6 @@
   }
 
   globalThis.__yb = { __yantrik: true, snapshot, find, search, text, target, focus, pressables, pick,
-                      scrollBy, watch, changes, where, media };
+                      scrollBy, watch, changes, where, media, at };
   return 'installed';
 })()

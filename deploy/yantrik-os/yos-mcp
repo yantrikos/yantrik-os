@@ -646,6 +646,42 @@ TOOLS = [
         "browser_args": lambda a: {"key": a.get("key"), "ref": web_ref(a["ref"]) if a.get("ref") else None},
     },
     {
+        "name": "web_context_click",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+        "description": "Right-click an element by its ref. Answers with what changed and whether the "
+                       "page showed a menu of its own (then web_read lists its items). The browser's "
+                       "own menu is never shown to this surface.",
+        "inputSchema": {"type": "object", "properties": {"ref": {"type": "string"}}, "required": ["ref"]},
+        "browser_action": "context_click",
+        "browser_args": lambda a: {"ref": web_ref(a.get("ref"))},
+    },
+    {
+        "name": "web_drag",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+        "description": "Press on an element by its ref and move it with the pointer by dx, dy pixels, "
+                       "then release: a window by its title bar, a slider, a resize handle. Answers "
+                       "with how far it moved. A drop onto a control that reads as a commitment is refused.",
+        "inputSchema": {"type": "object", "properties": {
+            "ref": {"type": "string"}, "dx": {"type": "integer"}, "dy": {"type": "integer"}},
+            "required": ["ref", "dx", "dy"]},
+        "browser_action": "drag",
+        "browser_args": lambda a: {"ref": web_ref(a.get("ref")), "dx": a.get("dx"), "dy": a.get("dy")},
+    },
+    {
+        "name": "web_key",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+        "description": "Hold a key: down puts it down until up releases it; hold keeps it down for "
+                       "`seconds` (at most 10) and releases it — a game's held arrow. Enter and Space "
+                       "follow the same commitment rule as web_press.",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string"}, "action": {"type": "string", "enum": ["down", "up", "hold"]},
+            "seconds": {"type": "number"}, "ref": {"type": "string"}}, "required": ["action"]},
+        "browser_action": lambda a: "key_up" if a.get("action") == "up" else "key_down",
+        "browser_args": lambda a: ({"key": a.get("key")} if a.get("action") == "up" else
+                                   {"key": a.get("key"), "ref": web_ref(a["ref"]) if a.get("ref") else None,
+                                    "seconds": a.get("seconds") if a.get("action") == "hold" else None}),
+    },
+    {
         "name": "web_select",
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
         "description": "Choose an option, by its text, in a list (a select) by its ref.",
@@ -1212,7 +1248,7 @@ def run_browser_tool(tool, args):
 BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
 # The browser's actions that put the caller's words into a page, whatever they are called: typing,
 # a key that types a character, a prompt's answer, a choice in a list. Each is web_type to the taint.
-BROWSER_WRITES = {"type", "press", "dialog", "select"}
+BROWSER_WRITES = {"type", "press", "key_down", "dialog", "select"}
 # Keys that carry no text: pressing them says nothing.
 SILENT_KEYS = {"enter", "return", "tab", "escape", "esc", "backspace", "delete", "arrowup", "up",
                "arrowdown", "down", "arrowleft", "left", "arrowright", "right", "pageup",
@@ -1240,7 +1276,7 @@ def outbound_of(tool, args):
     if action == "go":
         return "web_go", inner
     if action in BROWSER_WRITES:
-        if action == "press" and str(inner.get("key") or "").strip().lower().split("+")[-1] in SILENT_KEYS:
+        if action in ("press", "key_down") and str(inner.get("key") or "").strip().lower().split("+")[-1] in SILENT_KEYS:
             return tool["name"], args
         if action == "dialog" and not inner.get("text"):
             return tool["name"], args

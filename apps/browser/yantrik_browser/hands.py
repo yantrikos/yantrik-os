@@ -70,21 +70,64 @@ def click(browser, tab, x, y):
                      until=_dialog_opened(tab))
 
 
-def press(browser, tab, name):
+def key_down(browser, tab, name):
+    """The key goes down and stays down: a game polls it, a shortcut's modifier waits for its
+    letter. `key_up` releases it. Named in `tab.held_keys` while it is down."""
     k = key_named(name)
     if k is None:
         raise ValueError(name)
     key, code, vk, text, mods = k
-    s = tab.session
     down = {"type": "keyDown" if text else "rawKeyDown", "key": key, "code": code,
             "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk, "modifiers": mods}
     if text:
         down["text"] = text
         down["unmodifiedText"] = text
-    browser.call("Input.dispatchKeyEvent", down, session=s, until=_dialog_opened(tab))
+    browser.call("Input.dispatchKeyEvent", down, session=tab.session, until=_dialog_opened(tab))
+    tab.held_keys.add(str(name).strip().lower())
+
+
+def key_up(browser, tab, name):
+    k = key_named(name)
+    if k is None:
+        raise ValueError(name)
+    key, code, vk, text, mods = k
     browser.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": key, "code": code,
                                             "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
-                                            "modifiers": mods}, session=s, until=_dialog_opened(tab))
+                                            "modifiers": mods}, session=tab.session, until=_dialog_opened(tab))
+    tab.held_keys.discard(str(name).strip().lower())
+
+
+def press(browser, tab, name):
+    key_down(browser, tab, name)
+    key_up(browser, tab, name)
+
+
+def drag(browser, tab, x, y, dx, dy, steps=12):
+    """Press at (x, y), move the pointer in `steps` to (x+dx, y+dy) with the button held, and
+    release there: the mousedown / mousemove / mouseup a window's title bar, a slider or a
+    resize handle listens for. (The HTML5 drag-and-drop events — dragstart, drop — are a
+    different mechanism the browser raises itself; they are not synthesised here.)"""
+    s = tab.session
+    browser.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session=s)
+    browser.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left",
+                                              "buttons": 1, "clickCount": 1}, session=s, until=_dialog_opened(tab))
+    for i in range(1, steps + 1):
+        browser.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": round(x + dx * i / steps),
+                                                  "y": round(y + dy * i / steps), "button": "left",
+                                                  "buttons": 1}, session=s)
+    browser.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x + dx, "y": y + dy,
+                                              "button": "left", "buttons": 0, "clickCount": 1},
+                 session=s, until=_dialog_opened(tab))
+
+
+def context_click(browser, tab, x, y):
+    """A right click: the pointer moves there, the secondary button presses and releases."""
+    s = tab.session
+    browser.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session=s)
+    browser.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "right",
+                                              "buttons": 2, "clickCount": 1}, session=s, until=_dialog_opened(tab))
+    browser.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "right",
+                                              "buttons": 0, "clickCount": 1}, session=s, until=_dialog_opened(tab))
 
 
 def insert_text(browser, tab, text):

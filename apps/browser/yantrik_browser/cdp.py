@@ -140,6 +140,7 @@ class Tab:
         # lines appeared while it ran, and carries the navigation it belongs to.
         self.console = collections.deque(maxlen=CONSOLE_KEEP)
         self.console_seq = 0
+        self.held_keys = set()     # keys key_down put down and key_up has not released (hands.py)
 
 
 class Browser:
@@ -340,6 +341,7 @@ class Browser:
                 tab.url = frame.get("url", tab.url)
                 tab.world = None
                 tab.navigations += 1
+                tab.held_keys.clear()      # a new document starts with nothing held
         elif method == "Page.frameStartedLoading":
             if p.get("frameId") == tab.main_frame:
                 tab.loaded = False

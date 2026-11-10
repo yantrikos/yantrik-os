@@ -48,6 +48,9 @@ protocol and prints what came back.
     yos web click <ref>                 press it; answers with what changed on the page
     yos web type <ref> <text> [--enter] type into a field
     yos web press <key> [ref]           Enter, Tab, Escape, PageDown, ctrl+a …
+    yos web hold <key> <secs> [ref]     hold a key that long (a game's arrow); keydown/keyup hold and release
+    yos web drag <ref> <dx> <dy>        move something with the pointer (a window, a slider)
+    yos web rightclick <ref>            the page's own context menu, if it has one
     yos web select <ref> <option>       choose in a list
     yos web scroll [down|up|top|bottom|<ref>]
     yos web back | forward | reload     the tab's history
@@ -2021,6 +2024,15 @@ def render_consequence(c):
         out.append(PAGE_BEGINS)
         out.extend("appeared: %s" % json.dumps(_flat(t, 140), ensure_ascii=False) for t in c["appeared"])
         out.append(PAGE_ENDS)
+    if c.get("moved") is not None:
+        out.append("It moved by (%d, %d)%s." % (c["moved"][0], c["moved"][1],
+                                              (", now at %s" % (c["box"],)) if c.get("box") else ""))
+    elif c.get("to") and "moved" not in c:
+        out.append("The pointer went from %s to %s; the element's box could not be read afterwards." % (c.get("from"), c["to"]))
+    if c.get("menu"):
+        out.append(_flat(c["menu"], 200))
+    if "held" in c:
+        out.append("Keys down now: %s." % (", ".join(c["held"]) if c["held"] else "none"))
     if c.get("console"):
         out.append("The page's console wrote errors while this ran (its own words, not the OS's):")
         out.extend(render_console_lines(c["console"], c.get("console_more")))
@@ -2142,6 +2154,8 @@ WEB_USAGE = """usage: yos web [all]                      what is on the page, wi
        yos web console [all]                  the page's console errors and uncaught exceptions
        yos web go <url | ~/path> [--new-tab] | back | forward | reload
        yos web click <ref> | type <ref> <text> [--enter] [--keep] | press <key> [ref]
+       yos web rightclick <ref> | drag <ref> <dx> <dy>
+       yos web hold <key> <secs> [ref] | keydown <key> [ref] | keyup [key]
        yos web select <ref> <option> | scroll [down|up|top|bottom|<ref>] | wait [secs] [text]
        yos web tab <id> | close <id> | dialog accept|dismiss [text]
        yos web commit <ref> <label> <site>     press a commitment — asks the person
@@ -2186,6 +2200,30 @@ def cmd_web(argv):
             die("usage: yos web press <key> [ref]")
         result = browser_act("press", {"key": plain_args[0],
                                        "ref": web_ref(plain_args[1]) if len(plain_args) > 1 else None})
+    elif sub in ("rightclick", "context_click"):
+        if not plain_args:
+            die("usage: yos web rightclick <ref>")
+        result = browser_act("context_click", {"ref": web_ref(plain_args[0])})
+    elif sub == "drag":
+        if len(plain_args) < 3:
+            die("usage: yos web drag <ref> <dx> <dy>")
+        try:
+            dx, dy = int(plain_args[1]), int(plain_args[2])
+        except ValueError:
+            die("usage: yos web drag <ref> <dx> <dy>  (dx and dy in pixels)")
+        result = browser_act("drag", {"ref": web_ref(plain_args[0]), "dx": dx, "dy": dy})
+    elif sub == "hold":
+        if len(plain_args) < 2 or not re.match(r"^\d+(\.\d+)?$", plain_args[1]):
+            die("usage: yos web hold <key> <seconds> [ref]")
+        result = browser_act("key_down", {"key": plain_args[0], "seconds": float(plain_args[1]),
+                                          "ref": web_ref(plain_args[2]) if len(plain_args) > 2 else None})
+    elif sub in ("keydown", "key_down"):
+        if not plain_args:
+            die("usage: yos web keydown <key> [ref]")
+        result = browser_act("key_down", {"key": plain_args[0],
+                                          "ref": web_ref(plain_args[1]) if len(plain_args) > 1 else None})
+    elif sub in ("keyup", "key_up"):
+        result = browser_act("key_up", {"key": plain_args[0] if plain_args else None})
     elif sub == "select":
         if len(plain_args) < 2:
             die("usage: yos web select <ref> <option>")

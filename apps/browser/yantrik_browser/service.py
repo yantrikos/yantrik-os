@@ -12,8 +12,9 @@ the mind door, under the same grades, mode and cards.
 
 Grades:
   safe       read, find, text, tabs, media, wait, scroll, console — looking
-  standard   go, back, forward, reload, click, type, press, select, new_tab, switch_tab,
-             close_tab, dialog                       — using a page as a person does
+  standard   go, back, forward, reload, click, context_click, drag, type, press, key_down,
+             key_up, select, new_tab, switch_tab, close_tab, dialog
+                                                     — using a page as a person does
   sensitive  commit                                  — the one press that cannot be taken back:
              a control whose label reads as buying, sending or deleting. Its description says it
              cannot be undone, which the gate reads on every door: it asks in every mode but
@@ -147,6 +148,34 @@ def build(driver=None, **surface_options):
         """Press an element as a person would, with the pointer, and answer with what changed. A
         control that reads as buying, sending or deleting is refused here: that is commit"""
         return later(lambda: d.click(ref, tab or None))
+
+    @s.action(grade="standard", expected_seconds=2)
+    def context_click(ref: Ref, tab: Tab = "") -> dict:
+        """Right-click an element, as a person would; answers with what changed and whether the page
+        showed a menu of its own (the browser's own menu is not shown to this surface)"""
+        return later(lambda: d.context_click(ref, tab or None))
+
+    @s.action(grade="standard", expected_seconds=3)
+    def drag(ref: Ref, dx: typing.Annotated[int, "pixels to the right (negative: left)"],
+             dy: typing.Annotated[int, "pixels down (negative: up)"], tab: Tab = "") -> dict:
+        """Press on an element and move it with the pointer by (dx, dy), then release — a window by
+        its title bar, a slider, a resize handle. Answers with how far it moved. A drop onto a
+        control that reads as a commitment is refused"""
+        return later(lambda: d.drag(ref, dx, dy, tab or None))
+
+    @s.action(grade="standard", expected_seconds=3)
+    def key_down(key: typing.Annotated[str, "ArrowUp, shift, a …"], ref: str = "",
+                 seconds: typing.Annotated[float, "hold this long then release; 0 holds until key_up (at most 10)"] = 0,
+                 tab: Tab = "") -> dict:
+        """Put a key down and keep it down: for `seconds` and then release it (a held arrow in a
+        game), or until key_up. Enter and Space are held to the same rule as press"""
+        return later(lambda: d.key_down(key, ref or None, seconds, tab or None))
+
+    @s.action(grade="standard", expected_seconds=2)
+    def key_up(key: typing.Annotated[str, "the key to release; every held key when left out"] = "",
+               tab: Tab = "") -> dict:
+        """Release a key key_down left down"""
+        return later(lambda: d.key_up(key or None, tab or None))
 
     @s.action(grade="standard", expected_seconds=2)
     def type(ref: Ref, text: str, clear: bool = True, enter: bool = False, tab: Tab = "") -> dict:
