@@ -79,6 +79,7 @@ global FileText {
     }
     public pure function place-icon(id: string) -> string {
         return id == "home" ? Icons.home
+             : id == "desktop" ? Icons.window
              : id == "documents" ? Icons.doc
              : id == "downloads" ? Icons.download
              : id == "pictures" ? Icons.image
@@ -409,6 +410,9 @@ export component FileBrowser inherits Rectangle {
     property <length> context-menu-y: 0;
     property <int> context-menu-index: -1;
     callback context-copy-path(string);
+    // "Move to Desktop" / "Copy to Desktop": the selection goes into the desktop folder through the
+    // same transfer a paste uses. The argument is "move" or "copy".
+    callback send-to-desktop(string);
     callback context-open-terminal();
     callback context-compress(string);
 
@@ -562,6 +566,8 @@ export component FileBrowser inherits Rectangle {
         else if id == "copy-path" { root.context-copy-path(root.selected-name); }
         else if id == "cut" { root.cut-selected(); }
         else if id == "paste" { root.file-paste(); }
+        else if id == "to-desktop-move" { root.send-to-desktop("move"); }
+        else if id == "to-desktop-copy" { root.send-to-desktop("copy"); }
         else if id == "trash" { root.delete-selected(); }
         else if id == "preview" && root.selected-index >= 0 { root.file-quick-look(root.selected-index); }
         else if id == "details" { root.detail-panel-visible = !root.detail-panel-visible; if root.detail-panel-visible { root.file-selection-changed(root.selected-name); } }
@@ -639,6 +645,8 @@ export component FileBrowser inherits Rectangle {
                     {id: "copy-path", label: "Copy path", icon: Icons.link, disabled: root.selection-count != 1 || root.file-trash-mode},
                     {id: "cut", label: "Cut", icon: Icons.arrow-right, disabled: root.selection-count == 0 || root.file-trash-mode},
                     {id: "paste", label: "Paste", icon: Icons.clipboard, disabled: !root.has-clipboard || root.operation-busy || root.file-trash-mode},
+                    {id: "to-desktop-copy", label: "Copy to Desktop", icon: Icons.window, disabled: root.selection-count == 0 || root.operation-busy || root.file-trash-mode},
+                    {id: "to-desktop-move", label: "Move to Desktop", icon: Icons.window, disabled: root.selection-count == 0 || root.operation-busy || root.file-trash-mode},
                     {id: "rename", label: "Rename", icon: Icons.editor, disabled: root.selection-count != 1 || root.operation-busy || root.file-trash-mode},
                     {id: "trash", label: "Move to Trash", icon: Icons.trash, disabled: root.selection-count == 0 || root.operation-busy || root.file-trash-mode},
                     {id: "open-with", label: "Open with…", icon: Icons.link, disabled: root.selection-count != 1 || root.file-trash-mode},

@@ -92,6 +92,8 @@ fn shelved_refusal(
 /// it, and `show_screen screen=launchpad`, because a listing that called it a screen taught
 /// every caller to try that next.
 fn open_launcher(ui: &crate::App) -> Result<serde_json::Value, String> {
+    // The grid comes up over the person's work (#1033).
+    crate::shell_view::refuse_for_mind("the launcher")?;
     // The launcher is drawn over whatever is on the screen, so it waits for a decision card like
     // every other thing that comes over the shell (card_watch).
     crate::card_watch::hold_windows("open_launcher")?;
@@ -1070,6 +1072,9 @@ pub fn publish(
                 .with("private", crate::private_mode::is_on())
                 // The theme in use and the ones to choose from (`set_theme`).
                 .with("theme", crate::wire::theme::for_describe(ui.get_settings_theme().as_str()))
+                // The desktop's icons: names, kinds and places, never what is in a file (`desktop_place`,
+                // `desktop_archive`). See `bench::describe`.
+                .with("desktop", crate::bench::describe::for_describe())
                 .with("settings", crate::control_settings::section(&ui, screen))
         }
     };
@@ -1128,6 +1133,7 @@ pub fn publish(
                  Once sent it cannot be undone.",
             )
             .risk("sensitive")
+            .leaves_machine()
             .defers()
             .arg(Param::text("record")
                 .describe("The record's file name from `problems`, e.g. 1790120000-yantrik-studio.json. Left out means the newest.")
@@ -1179,6 +1185,11 @@ pub fn publish(
                 // app whose program is not installed used to be answered "launching" as well.
                 let catalogue = installed.get();
                 check_launchable(&name, &catalogue)?;
+                // A screen of the shell is the person's view, and a Mind is never sent there: it
+                // reads it with `describe shell` and drives it with the shell's actions (#1033).
+                if let Some((screen, _)) = switches_the_shell(&name) {
+                    crate::shell_view::refuse_for_mind(screen)?;
+                }
                 // A mind launches Yantrik's own apps only; LibreOffice by name is closed (#942, #953).
                 crate::control_files_mind::may_launch(&name, &catalogue)?;
                 // The launcher is drawn by the shell itself and settles on return, so it is
@@ -1464,6 +1475,8 @@ pub fn publish(
                         .describe("Put this in the field, ready to edit. It is NOT submitted — use send_message to ask"),
                 ),
             move |args| {
+                // The ask bar comes up over the person's screen (#1033).
+                crate::shell_view::refuse_for_mind("the ask bar")?;
                 let ui = lens_ui()?;
                 let text = args["text"].as_str().unwrap_or_default().to_string();
 
@@ -1765,6 +1778,8 @@ pub fn publish(
             )
             .risk("safe"),
             move |_args| {
+                // Putting the person's windows away is moving their view (#1033).
+                crate::shell_view::refuse_for_mind("the desktop")?;
                 let ui = desk_ui()?;
                 // Putting everything away uncovers a card, so it is never held. The second press
                 // brings every window back over the shell, and with it over a waiting card
@@ -1787,6 +1802,8 @@ pub fn publish(
             move |args| {
                 let ui = screen_ui()?;
                 let want = args["screen"].as_str().unwrap_or_default().trim().to_lowercase();
+                // Before anything is applied, a screen name or not: it is the person's view (#1033).
+                crate::shell_view::refuse_for_mind(&want)?;
 
                 // The launcher is not a screen, but `yos ls` listed it among the screens of the
                 // desktop, so this is where a caller who read that arrives — and was refused
@@ -1885,6 +1902,8 @@ pub fn publish(
                     "The app, by the name you describe it by or open it by, e.g. presentation",
                 )),
             move |args| {
+                // A window brought over the person's work is their view moved (#1033).
+                crate::shell_view::refuse_for_mind("app windows")?;
                 let name = args["name"].as_str().unwrap_or_default().trim().to_string();
                 if name.is_empty() {
                     return Err("`name` is empty".into());
@@ -1913,6 +1932,8 @@ pub fn publish(
             .defers()
             .arg(Param::text("title").describe("Window title, or part of one")),
             move |args| {
+                // Raises the shell or any window over the person's work (#1033).
+                crate::shell_view::refuse_for_mind("windows")?;
                 let ui = focus_ui()?;
                 let want = args["title"].as_str().unwrap_or_default();
                 // The same list `describe` publishes under `windows`, plus the shell's own
@@ -1953,14 +1974,20 @@ pub fn publish(
             .arg(Param::text("title").describe("Window title, or part of one")),
             move |args| {
                 let want = args["title"].as_str().unwrap_or_default();
+                // The person's own windows are theirs to close (#1033): a Mind reaches only the
+                // windows of Mind View's own compositor, by name, app id or current title.
+                if crate::shell_view::asked_by_mind() {
+                    return crate::mind_view_close::close(want);
+                }
                 let open = crate::windows::addressable_titles();
-                let title = match crate::windows::window_to_close(want, &open) {
+                let resolved = crate::windows::window_to_close(want, &open);
+                let title = match resolved {
                     Ok(title) => title,
                     // Not on the person's desktop, but an app a mind opened is drawn in Mind View:
                     // close it there, as its × would.
                     Err(why) => match crate::mind_view::app_named(want) {
                         Some(app) => {
-                            let name = crate::mind_view::close_app(&app)?;
+                            let name = crate::mind_view_close::close_app(&app)?;
                             return Ok(serde_json::json!({
                                 "closing": name,
                                 "where": "Mind View",
@@ -1994,6 +2021,8 @@ pub fn publish(
             .defers()
             .arg(Param::text("title").describe("Window title, or part of one")),
             move |args| {
+                // Hides the person's window and uncovers another (#1033).
+                crate::shell_view::refuse_for_mind("windows")?;
                 let want = args["title"].as_str().unwrap_or_default();
                 let open = crate::windows::addressable_titles();
                 let title = crate::windows::window_named(want, &open)?;
@@ -2038,6 +2067,8 @@ pub fn publish(
             .defers()
             .arg(Param::text("title").describe("Window title, or part of one")),
             move |args| {
+                // Changes the layout of the person's desktop (#1033).
+                crate::shell_view::refuse_for_mind("windows")?;
                 let want = args["title"].as_str().unwrap_or_default();
                 let open = crate::windows::addressable_titles();
                 let title = crate::windows::window_named(want, &open)?;
@@ -2215,16 +2246,17 @@ pub fn publish(
             )
             .risk("safe"),
             move |_| {
+                // Replaces the person's view with the lock screen (#1033). Super+L is the
+                // person's call, which this does not touch.
+                crate::shell_view::refuse_for_mind("the lock screen")?;
                 let ui = lock_ui()?;
                 ui.invoke_lock_screen();
                 Ok(serde_json::json!({ "locked": true }))
             },
         );
 
-    // The installer and the updater keep their actions in their own modules: they are the
-    // riskiest things the shell can be asked to do (one erases a disk, the other replaces every
-    // binary and restarts) and they deserve to be read together, not buried at the end of a file
-    // about status bars.
+    // The installer and the updater keep their actions in their own modules: the riskiest things the
+    // shell can be asked to do (one erases a disk, the other replaces every binary) are read together.
     let surface = crate::control_installer::actions(surface, ui);
     let surface = crate::control_update::actions(surface, ui);
     let surface = crate::control_files::actions(surface, ui);
@@ -2243,6 +2275,8 @@ pub fn publish(
     let surface = crate::control_levels_actions::actions(surface, ui);
     // The desktop's theme: set_theme. See `control_theme`.
     let surface = crate::control_theme::actions(surface, ui);
+    // The desktop's icons: desktop_place and desktop_archive, both sensitive. See `control_bench`.
+    let surface = crate::control_bench::actions(surface, ui);
     // The network mark's popover as data: set_wifi, disconnect_network, connect_wifi. See
     // `control_network`, which also says why no action there takes a password.
     let surface = crate::control_network::actions(surface, ui);
@@ -2250,12 +2284,16 @@ pub fn publish(
     let surface = crate::control_wifi_reconnect::actions(surface, ui);
     // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
     let surface = crate::control_power::actions(surface, ui);
+    // The question "may this mail go out?": `send_mail` sends nothing, it is what a send's card is about.
+    let surface = crate::control_mail::actions(surface);
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,
     // agent_input, agent_kill. The agent comes from its token, never an argument. See
     // `control_agent_terminal` and design/agents-workspace-2026-09-23.md, decision 3.
     let surface = crate::control_agent_terminal::actions(surface);
+    // Whether a pid is the person's or a mind's, for the browser service's choice of browser.
+    let surface = crate::caller_class::actions(surface);
     // A recipe's question answered, and a recipe paused, resumed or cancelled — answer_recipe,
     // pause_recipe, resume_recipe, cancel_recipe. See `control_recipes`.
     let surface = crate::control_recipes::actions(surface, ctx.bridge.handle());
@@ -2269,12 +2307,15 @@ pub fn publish(
     // The chat in one read, for a client that is not the Lens: the Yantrik terminal. See
     // `control_chat`.
     let surface = crate::control_chat::actions(surface, ui);
-    // Which of the person's conversations a bridge is in, for the taint rule: taint_scope and
-    // taint_mark. Read and add only; the person's + in the Lens is the one thing that begins a
-    // scope. See `control_taint_scope` and `taint_scope`.
-    let surface = crate::control_taint_scope::actions(surface);
+    // Which of the person's conversations a bridge is in (taint_scope, taint_mark; read and add
+    // only: the person's + begins a scope, see `control_taint_scope`), and, beside them, the
+    // untainted read of the approvals-off test flag (`control_approvals_test_state`).
+    let surface = crate::control_approvals_test_state::actions(crate::control_taint_scope::actions(surface));
     // The workroom's own navigation: show_workroom. See `control_workroom`.
     let surface = crate::control_workroom::actions(surface, ui);
+    // What the Mind desk around Mind View reads, and the two things it may ask (#1023): answered to the
+    // one desk the shell started, and to nothing else.
+    let surface = crate::control_mind_desk::actions(surface, ui);
     crate::control_agents::actions(surface, ui).serve();
 }
 

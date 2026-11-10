@@ -2,6 +2,7 @@
 #
 #   /manifest.json                                   which build each channel is on, and its sha256
 #   /<channel>/yantrik-os-<version>-linux-amd64.tar.zst   the bundle, its .sha256, and a `latest` symlink
+#   /<channel>/release.signed                        the signed manifest current updaters believe (#537)
 #
 # Installed as /etc/nginx/sites-available/releases.yantrikos.com; certbot adds the 443 block.
 # The manifest must never be cached: a machine that is told yesterday's build is current does
@@ -16,6 +17,12 @@ server {
     location = /manifest.json {
         add_header Cache-Control "no-store";
         default_type application/json;
+    }
+
+    # The signed manifest is the one machines act on; a cached copy is yesterday's serial.
+    location ~ ^/(nightly|beta|stable)/release\.signed$ {
+        add_header Cache-Control "no-store";
+        default_type text/plain;
     }
 
     location / {

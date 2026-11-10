@@ -19,6 +19,8 @@ fn saved(id: &str, name: &str, kind: &str, url: &str, key: Option<&str>, model: 
         provider_type: kind.into(),
         base_url: url.into(),
         api_key: key.map(str::to_string),
+        api_key_ref: None,
+        unmigrated_key: None,
         auth_type: if key.is_some() { "bearer".into() } else { "none".into() },
         is_primary: false,
         is_fallback: false,
@@ -83,6 +85,23 @@ fn a_missing_key_or_a_shut_vault_is_said_not_guessed() {
     let groq = list.iter().find(|a| a.id == "free-groq").unwrap();
     assert_eq!(resolve(groq, &entries, &shut).unwrap_err(), Missing::Vault);
     assert_eq!(resolve(&list[0], &entries, &shut).unwrap().key.as_deref(), Some(KEY));
+}
+
+#[test]
+fn an_account_listed_while_the_vault_is_shut_is_listed_again_when_it_opens() {
+    // A saved provider whose key has moved into the vault: the file holds only the reference.
+    let mut moved = saved("a1", "OpenAI", "openai", "https://api.openai.com/v1", None, "m");
+    moved.api_key_ref = Some(crate::provider_vault::reference("a1"));
+    moved.auth_type = "bearer".into();
+    let entries = vec![moved];
+    let list = accounts(&entries, FREE_TIERS, &set(&["groq"]), &set(&[]));
+    let shut = |_: &str| None;
+    let (listed, waits) = super::list_one(&list[0], &entries, &shut);
+    assert!(waits, "a key the shut vault could not give asks for a listing at the opening");
+    assert!(matches!(listed.listing, Listing::Failed(_)));
+    let groq = list.iter().find(|a| a.id == "free-groq").unwrap();
+    let (_, waits) = super::list_one(groq, &entries, &shut);
+    assert!(!waits, "a free tier's list is not asked of the provider, so it waits for nothing");
 }
 
 #[test]

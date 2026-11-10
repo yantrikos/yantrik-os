@@ -21,28 +21,14 @@ pub fn exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 pub fn rename_no_replace(src: &Path, dst: &Path) -> Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    let a = std::ffi::CString::new(src.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-    let b = std::ffi::CString::new(dst.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-    if unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            a.as_ptr(),
-            libc::AT_FDCWD,
-            b.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    } == 0
-    {
-        return Ok(());
-    }
-    let e = std::io::Error::last_os_error();
-    if e.raw_os_error() == Some(libc::EXDEV) {
-        return Err(
-            "Cross-filesystem moves are not supported. The source was left in place.".into(),
-        );
-    }
-    Err(error(dst, e))
+    // The one renameat2 call lives in the bench crate, where the archive uses it too.
+    yantrik_bench::rename::rename_no_replace(src, dst).map_err(|e| {
+        if e.raw_os_error() == Some(libc::EXDEV) {
+            "Cross-filesystem moves are not supported. The source was left in place.".to_string()
+        } else {
+            error(dst, e)
+        }
+    })
 }
 pub fn create_file(dir: &Path, value: &str) -> Result<()> {
     let path = dir.join(name(value)?);

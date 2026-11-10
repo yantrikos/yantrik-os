@@ -31,7 +31,7 @@ env:
 jobs:
   test:
     name: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
@@ -104,7 +104,7 @@ jobs:
   # later be promoted to blocking; that is a later decision, not this job's.
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     # The setup below is a copy of the test job's, not a YAML anchor pointing at it. This
@@ -166,7 +166,7 @@ jobs:
   # tools/xtask/architecture-baseline.txt, and that list may only shrink.
   architecture:
     name: architecture
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -194,7 +194,7 @@ jobs:
   # list what is there, and the job becomes blocking once that list is worked down.
   dependencies:
     name: dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -211,7 +211,7 @@ jobs:
 
   shell-scripts:
     name: shell scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -277,6 +277,11 @@ jobs:
       # decides — runs in the `cargo test` job above.
       - name: The MCP bridge agrees with the shell about what the mind may do
         run: python3 deploy/yantrik-os/yos-mcp-selftest.py
+
+      # The release manifest is signed and the updater refuses what is not (#537): made, signed,
+      # tampered, replayed and expired here with throwaway keys, and then through `check`.
+      - name: The updater verifies the signed manifest
+        run: bash deploy/yantrik-os/yantrik-update-verify-selftest.sh
 
       - name: The update server's publish path
         run: python3 deploy/yantrik-os/server/publish_selftest.py
@@ -447,7 +452,7 @@ jobs:
       - name: The browser surface reads real pages and refuses every road to a commitment
         run: |
           sudo apt-get install -y -qq python3-websocket >/dev/null
-          python3 tests/browser-core/test_live.py
+          for t in test_live test_ports test_listener test_guard test_ports_live; do python3 tests/browser-core/$t.py || exit 1; done
 
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the

@@ -67,6 +67,96 @@ revision: <16 hex digits>
 surface through the MCP bridge (`os_apps`, `os_describe`, `os_act`) and the built-in companion's
 `list_apps`, `describe_app` and `app_action`.
 
+### What reading an app taints (the MCP bridge, #1062)
+
+`yos-mcp` keeps a conversation from carrying what it read out of the machine: once it has read
+something private, it will not type into a page, every command and hand-off asks the person, and
+an address it has not been to asks too. Most turns begin by describing an app to learn its
+actions, so what counts as a private read is as narrow as the data and no narrower:
+
+- **`os_apps` is not a private read.** Besides the open apps and services it lists every app on the
+  machine, running or not, as one JSON object per line: `name`, `for` (what it is for), `opens` (how
+  it opens) and `describe_as` (the name to describe it by), from the same list as `describe shell` >
+  `state.apps`. Only those four keys, as text, cut at 300 characters; nothing of any app's state.
+  The "Open now" lines name the running apps and nothing more: an app's one-line summary is its
+  state (a page's title and host, a note's title), so `os_apps` leaves it out and a mind that wants
+  it uses `os_describe`, which taints. A person's own `yos ls` still shows the summaries.
+- **A describe whose answer holds no state is not a private read.** `os_describe {app, actions:
+  "<prefix>"}` runs `yos describe --no-state`, which prints the action signatures behind a sentinel
+  line (`(action signatures only: this answer holds no state)`) and nothing else: no summary, no
+  `revision`, no state, not even as JSON. The bridge judges the *answer*, not the request: the
+  sentinel first and every other line indented, which a summary, a `revision:` line and a state
+  object (`{` in column zero) never are. A `yos` that does not know the flag prints the state, fails
+  the check, and taints.
+- **A describe of an app on the bridge's `NO_PERSON_DATA` list is not a private read.** The list is
+  explicit, and **empty today**: `mind-desk`'s describe holds none of the person's data, but any app
+  can declare the surface id `mind-desk` in its `.desktop` file and nothing reserves the name, so an
+  exemption by name would free that app's state. Every app taints, **including one nobody has
+  classified**:
+  Calendar, Notes, Email, Files, Weather (it holds the person's city), the shell, the terminals, and
+  the browser (its describe holds the page's title, host and tabs).
+- **Reading back an app a mind just changed is a read of its real state**, so it is private if the
+  app is.
+- **A tainted `web_go` is an access decision, not a dead end.** It raises the person's card, showing
+  the exact, whole address (the shell draws it whole or does not ask), asked whatever the mode, with
+  no "allow for this session". The address on the card is the form the browser will send, made by
+  `wire_address` in `yos-mcp` (the one shared function for any card that shows an address; word it
+  with `shown_url`): the host in punycode, every non-ASCII, control or whitespace character
+  percent-encoded, so nothing on the card is invisible and a look-alike host shows as `xn--…`. A
+  host with no valid name is not put to the person at all. Allow opens that address once: the grant is bound to its exact
+  arguments and spent by the browser's own dispatch. No answer, or no, opens nothing. Typing into a
+  page (`web_type`) stays refused, and an address the session has already been to, with nothing in
+  its query, fragment or userinfo, still opens unasked.
+
+The signatures-only answer trusts an app's action declarations (names, parameter text, enum values)
+to be static, as every first-party app's are; a third-party app that wrote state into them would not
+be caught.
+
+- **To look without tainting, pass `actions`** with the family word (`agent_`, `files_`): the prefix of
+  an action's name up to its first underscore, not an exact action name. An exact name is answered
+  with the family word to use instead.
+- **A tainted hand-off, command, fetched address or send raises the card in every mode, full bypass
+  included**, for a mind that reaches the desktop through the bridge. It is the one named exception to
+  `bypass_all` asking nothing, and the card is never skipped. **Not covered:** the built-in
+  companion's own mail send (`companion-tools/outward.rs`, gated by `gate::decide` alone), which
+  carries no taint, so in `bypass_all` it sends without a card; the mode panel says so. the bridge sends `tainted: true` on `request_approval` and the shell
+  (`taint_ask::resolve`) turns any `Run` into an `Ask`, whatever a session or standing rule says.
+  The shell honours the flag only for those classes (`taint_ask::is_sink`), and ORs in its own taint
+  record for a caller it follows (a believed `<harness>:main` token); a tokenless bridge or a
+  sub-agent is one it cannot place, so those get the card only from the bridge's flag. Plan
+  mode and the machine's ceiling still refuse first. If approvals are off for a test run
+  (`set_approvals_off_for_test`), or no card can be shown, the call is refused with that reason; it
+  is never run unasked. The grant the card mints is the store's: bound to the exact app, action and
+  arguments, spent once. An older shell that does not know `tainted` and answers `not_needed` is a
+  refusal at the bridge, not a go-ahead. Everything not tainted is decided as before, in every mode.
+- **A sink is declared on the action, not named in the bridge.** An action says in its published
+  purpose `.leaves_machine()` ("What it is given may leave this machine.") or
+  `.fetches_address("url")` ("It fetches the address in `url`."), as `.open_ended()` says it runs
+  what it is given. From a tainted conversation the first asks every time; the second is
+  visited-or-ask like the browser's `go`, with the address shown whole in its one ASCII form. An
+  action that takes an address parameter (`url`, `uri`, `link`, `href`, `webhook`, `endpoint`,
+  `address`) must declare `fetches_address` for that parameter: in a Rust app, `Action::schema`
+  panics in a debug build (every test) otherwise. That check is Rust and debug only, so the bridge
+  also treats an address-named parameter as a fetch at call time, from a tainted conversation, when
+  the action declares none (the Python SDK has no builder). Every check on a call's arguments reads
+  the one dict that is sent (`sent_args`); a declared fetch whose address is missing is refused. Free text that leaves the machine cannot be found by a
+  parameter name, so `leaves_machine` is a declaration an author makes; the sweep of every app's
+  actions is in #1080. Declared today: `download-manager.add`, `shell.report_problem`,
+  `studio.generate`; hand-offs and commands keep their lists.
+- **`YOS_MCP_NO_TAINT=1` turns the taint off only on a machine that declares it holds no person's
+  data**: `/etc/yantrik/no-person-data`, a regular file owned by root and not group- or
+  world-writable, in a root-owned directory the same (checked without following symlinks). The
+  variable alone does nothing, so a mind that sets it on a person's machine gains nothing, and it is
+  never a setting. A missing or too-open marker leaves the taint on (fail safe). A process in a user
+  namespace (its uid map is not the identity) is refused, since it can mount a `/etc` of its own; a
+  process that overmounts `/proc/self/uid_map` as well cannot be told apart in-process, and what
+  protects the machine is that the bridge a harness launches runs outside any mind's namespace. The live
+  instance's installer (`deploy/live/director/setup-director.sh`) writes it.
+
+Only the person's **+** in the Lens clears a scope, marks only add, an unreadable record is tainted,
+and no tool lets a mind clear its own taint. None of this is in the decision table
+(`mind_mode::decide`, `mind-mode-vectors.json`): it is the bridge's.
+
 ## Adding a surface to an app
 
 ```rust
@@ -306,6 +396,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `set_volume`, `set_mute`, `set_brightness` | standard | the machine's own output level and backlight, which the keys move too and the same slider takes back; nothing is written to the shell's settings. They answer with the level read back from PipeWire / the panel, and `set_brightness` refuses on a machine with no backlight |
 | shell | `set_theme` | sensitive | chooses the desktop's theme (lake, nightfall): the colours, accent, wallpaper and dark flag together, saved in the shell's settings, and it rewrites files outside the shell (labwc's themerc, foot's colours, GTK's scheme) on a worker. `describe shell` lists the themes under `theme`; the answer is the theme the shell reports back |
 | shell | `set_dark_style` | sensitive | switches between the dark and light appearance through the Quick Settings tile's own callback, which saves `dark_mode` into the shell's settings: still in force after a restart, the #48 rule `set_theme` and `set_do_not_disturb` are graded by. Nothing outside the shell is written. `describe shell` › `settings.dark` is the mode in use |
+| shell | `desktop_place`, `desktop_archive` | sensitive | the desktop's icons (#1030). `desktop_place` puts one icon in one free cell of its grid and the layout is saved in `~/.yantrik/desktop_layout.json`, so it is still there after a restart. `desktop_archive` moves one thing from the desktop to `~/Archive/<date>/` and **never deletes it**; the person gets an Undo toast. Both name an icon by the name `describe shell` lists under `desktop.items` (never a path, and never one outside the desktop folder), both refuse a desktop a mind may not look into (`control_files_mind`), and both answer with what was done, read back. `describe shell` › `desktop` carries the folder, the grid, `snap`, `icons_shown` and `items` — name, kind, x, y, cell, selected — and nothing from inside a file |
 | shell | `report_problem` | sensitive | sends what it carries out of the machine |
 | shell | `install_harness`, `start_harness` | sensitive | fetches software onto the machine; decides what it runs on every login |
 | shell | `set_mind_panel` | safe | showing: how much of one panel is drawn, remembered in the panel's own file; nothing sent, run or granted |
@@ -316,7 +407,7 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `screenshot_screen` | sensitive | a picture of the person's desktop; its purpose says it cannot be undone, word for word as `read_screen`'s, so it asks every time and no session rule covers it; the person is told which mind took it |
 | shell | `open_capture` | sensitive | opens a saved screenshot or recording in Mind View's viewer or player; each is a picture of the person's desktop, so its purpose says it cannot be undone, word for word as `read_screen`'s, it asks every time and taints as a screen read. `~/Pictures/Screenshots` and `~/Videos/Recordings` are protected places (`home_paths::PROTECTED`): Files, the apps' `open` and the file tools refuse them to every agent, and this is a mind's one way to one |
 | shell | `record_start`, `record_stop` | sensitive | recording Mind View only (`target` offers `mind_view` and nothing else): the person's desktop is never recorded for a mind. The red dot shows for every recording; locking stops it. A mind's ends after 30 minutes (`RuntimeMaxSec`) at a fifth of the default CPU weight, and the person starting their own stops it |
-| shell | `files_go`, `files_enter`, `files_open`, `files_up`, `files_new_folder`, `files_new_file`, `files_select`, `files_view`, `files_rename`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_refresh`, `files_cancel`, `files_terminal` | standard | driving the Files screen; what they change is content, taken back by the paired verb or recovered from Trash; `files_new_folder` and `files_new_file` answer the disk's own fact, **settled**, from the create call itself (`EEXIST`), not a stat beside it: `{"created": "<absolute path>", "kind": "directory"\; `files_go` answers, **settled**, what the folder holds (`{"path", "exists": true, "entries", "first": [up to 12 names, folders end in `/`], "more"}`), and a missing folder is refused with the `files_new_folder` call that makes it; `files_new_folder` takes a nested path (`a/b`, `~/a/b`), makes the missing parents (each level judged as a single make is, `..` refused) and lists them in `made_parents` |
+| shell | `files_go`, `files_enter`, `files_open`, `files_up`, `files_new_folder`, `files_new_file`, `files_select`, `files_view`, `files_rename`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_refresh`, `files_cancel`, `files_terminal` | standard | driving the Files screen; what they change is content, taken back by the paired verb or recovered from Trash; `files_new_folder` and `files_new_file` answer the disk's own fact, **settled**, from the create call itself (`EEXIST`), not a stat beside it: `{"created": "<absolute path>", "kind": "directory"\; `files_go` answers, **settled**, what the folder holds (`{"path", "exists": true, "entries", "first": [up to 12 names, folders end in `/`], "more"}`), and a missing folder is refused with the `files_new_folder` call that makes it; `files_new_folder` takes a nested path (`a/b`, `~/a/b`), makes the missing parents (each level judged as a single make is, `..` refused) and lists them in `made_parents`; `files_list` (safe) reads a folder with no screen involved. **A Mind never moves the person's screen (#1033):** its `files_go`, `files_enter`, `files_up` move a private per-caller cursor; `files_new_folder`, `files_new_file`, `files_rename`, `files_delete` take `path` (or `parent` + `name`) and act on it; `files_open`, `files_select`, `files_copy`, `files_cut`, `files_paste`, `files_trash_selected`, `files_undo_trash`, `files_toggle_trash`, `files_cancel`, `files_terminal` are refused for a Mind with a sentence; `open_app` and `show_screen` of a shell screen, the launcher, the ask bar, the workroom, the switcher, the panels and `show_desktop` are refused the same way |
 | shell | `files_delete` | dangerous | destroys without a trash |
 | shell | `check_update` | safe | reads |
 | shell | `set_update_channel` | sensitive | stored configuration: decides where every later update comes from |
@@ -329,14 +420,19 @@ content, and a content action a paired action takes back stays `standard` (`add_
 | shell | `new_agent`, `hand_off` | sensitive | starts an agent, with what that costs and whatever reach the role carries |
 | shell | `send_to_agent`, `stop_agent` | standard | talking to, or stopping, an agent the person started |
 | shell | `read_agent`, `show_agent`, `show_workroom` | safe | reads and showings; `show_workroom` changes the Agents page and nothing about any agent, and is held while an approval card waits |
+| shell | `mind_desk` | safe | what the Mind desk around Mind View shows (#1023): the Mind it follows by name and state, one tool's name, counts, a model label and a kind of account, and no line a Mind said it is doing. Reads, changes nothing, takes only how long to wait. Answered only to the one desk process the shell started (its pid and start time, from the kernel), and to nothing else |
+| shell | `mind_desk_stop` | standard | the desk asks the *person*, on their own desktop, whether to stop the Mind it shows; it stops nothing, and only that card's Allow runs `stop_agent`. Same peer rule, and only for the Mind the desk's snapshot shows |
+| shell | `mind_desk_open_agents` | safe | the person's Agents screen from the desk: same peer rule, only while Mind View is in front, at most once every ten seconds |
 | shell | `agent_run`, `agent_input` | sensitive | arbitrary commands; typing into a live shell |
 | shell | `agent_job`, `agent_kill` | standard | reading a job's state; ending a job the caller's token owns |
 | shell | `request_approval`, `approval_status`, `consume_approval`, `set_mind_mode`, `record_unasked_action`, `show_mind_audit`, `close_mind_menu` | safe | the approval machinery itself, which must never act; `set_mind_mode` refuses every loosening, so it can only tighten |
+| shell | `approvals_test_state` | safe | whether a test run has turned approval cards off, without `describe shell` (a mind's describe taints it): `{"on", "expires_in_secs", "means"}`, exactly what `describe shell` publishes under `approvals_off_for_test`. No arguments, holds nothing of the person's, any caller may read it, and it changes nothing; it is not a private read in `yos-mcp` |
 | shell | `open_switcher`, `switcher_move`, `switcher_cancel` | safe | drawing the window overview (Super+Tab; Alt+Tab is labwc's own cycling and not this), moving its selection, putting it away; nothing is switched. Cancel gives the previous window back only when no card waits |
 | shell | `switcher_commit` | standard | brings the selected window in front of the shell, as `focus_window` does; a window that has closed is taken off the card and the answer says so |
 | shell | `open_today`, `close_today`, `open_quick_settings`, `close_quick_settings`, `open_power_menu`, `close_power_menu`, `open_clipboard`, `close_clipboard`, `open_cheat_sheet`, `close_cheat_sheet` | safe | showing or putting away the bar's panels (Today, Quick Settings, the power menu, the clipboard) and the keyboard cheat sheet; opening the power menu powers nothing off, choosing an entry is the person's |
 | shell | `power_sleep` | sensitive, deferred | suspend, or hibernate where logind offers it (`describe shell` › `power.hibernate_offered`); the session is kept, the machine stops answering. Answers when logind has accepted the request |
 | shell | `power_off` | dangerous, deferred | log out, restart or shut down: ends every program and every mind at work. Refused while minds are working unless `even_if_minds_working` is true; the refusal says how many. Answers when logind has accepted the request, before anything has stopped |
+| shell | `send_mail` | sensitive | a question and not a way to send: the card for a mail leaving the machine (every recipient, the whole subject and the whole body, each quoted; a mail the card cannot show whole is refused, not clipped). The shell sends nothing; the mind asks, waits for the person's Allow, spends it with `consume_approval`, and sends the mail itself. Cannot be undone, so every mode but full bypass raises the card and plan refuses |
 | arcade | `new_character`, `new_game`, `update_game`, `update_character`, `build`, `play`, `verify`, `screenshot` | standard | editing and building library content, editable again |
 | arcade | `delete` | sensitive | destroys the one named game |
 | calendar | `events_between` | safe | a read: events from `from` to `to` (ISO dates, inclusive, at most 62 days) straight from the store, with date, start, end, title, location; no view changes |
@@ -504,7 +600,9 @@ calls `a11y.act`.
 | email | `email.list_messages` | read | — | |
 | email | `email.get_message` | read | — | |
 | email | `email.search` | read | — | |
-| email | `email.save_account` | change | none | writes the account configuration, password included. The app's settings screen calls it |
+| email | `email.save_account` | change | none | writes the account configuration and keeps its password in the credential vault (never in the file). The app's settings screen calls it |
+| email | `email.remove_account` | change | none | forgets an account and its password in the credential vault; a shut vault refuses, so nothing is left behind |
+| email | `email.vault_opened` | change | none | answers the shell only: the credential vault has opened, so the service retries what it was waiting for. Changes nothing a caller can choose |
 | email | `email.oauth_begin` | change | `begin_google_sign_in` (app) — sensitive | starts the OAuth dance: a browser opens on a full-access consent screen |
 | email | `email.oauth_cancel` | change | none | abandons a sign-in in flight |
 | email | `email.send_message` | change | none | **sends mail.** The app publishes `compose` and deliberately never `send` — mail that has gone cannot be taken back — but the method sends |
@@ -708,16 +806,16 @@ framework opens there at all any more; see the last section.)
   toolkit settings, so a dead socket fails the app instead of falling back to the person's X display.
 - Mind View down is a refusal that says so (`failed_launches`), never a fall back to the desktop.
   A failed start is tried again after 30 s.
-- `open_app` for a program already open on the person's desktop starts nothing: the answer says it was
-  not launched again and not raised, and the mind drives the open window through its surface.
+- `open_app` for a program open on the person's desktop starts nothing (not launched, not raised; the
+  mind drives the open window through its surface), except the Browser: a mind's is Mind View's own.
 - `open_app` and, for a mind, `files_open` answer after the window is seen: `window: appeared`
   with `where`, or an error that says only what was observed (a refusal; an exit; "no window listed
   within 8 s", which does not say where a slow start may still land). The answer is settled, and
   `open_app`'s also carries `app`: the opened app's own summary (`state`) and its actions with the
   arguments each takes (`actions`, e.g. `new {text?}`, `save_as {path}`), so the next call can act.
-- `open_url` and `launch_browser` open the companion's own browser in Mind View, or are refused.
-  A browser on the default debugging port that is not the companion's (the person's own) is not
-  attached to.
+- `open_url`, `launch_browser` and `open_app browser` open Mind View's browser (port 9223, its own
+  profile), or are refused; a mind's `web_*` and `browser_*` tools drive only it. The person's Browser
+  (9222, their profile) is theirs alone: the port is picked by who calls (`browsers.conf`).
 - `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
   and colours only (no screen clears, no carriage returns, no titles), capped per command; the
   answer and the Agents screen keep the full output.
@@ -740,6 +838,30 @@ framework opens there at all any more; see the last section.)
   Snippets shows "Code is hidden in this
   window." for its code, searches only titles, tags and language, offers no rail question, and
   refuses editing, Copy, AI Explain and the rail's "What does this do?".
+- The Mind desk (#1023, phase 1, `apps/mind-desk`) is one bar along the top of Mind View: a header
+  (the Mind's name and state, the tool it is running, Stop… and Open in Agents), a tool strip, and
+  a footer (the apps open, how the Mind is housed, the model it says it runs). It is a framework app
+  of one window that the shell starts (`mind_view_desk`, on the nested display, not through the
+  startup script) and `config/labwc-mind/rc.xml` keeps in a reserved top margin (always on top,
+  undecorated, full width at every size, out of
+  Alt+Tab, never force-maximised). A Mind acting there can read it and press its buttons, so:
+  - the shell answers its three actions to that one process (pid and start time recorded at start;
+    no executable path is trusted, since any Mind can run the binary);
+  - Stop… stops nothing: `mind_desk_stop` raises a card on the person's desktop, outside Mind View,
+    and only the person's Allow runs `stop_agent` (a direct stop would run as the person and let one
+    Mind end another's turn). The desk says "Stopped" only when the shell says it stopped the Mind;
+  - Open in Agents is held to once in ten seconds and to Mind View being in front;
+  - the bar is at the top and not above and below the apps because labwc 0.8 anchors a fixed-height
+    window at the top of a display that is resized and not at the bottom; where it really lands is
+    measured on pixels by `tests/mind-desk-placement/run.sh`;
+  - after a "Keep going" the shell does not put the same stop question in front of the person for two
+    minutes (`approvals::DENIAL_QUIET`), and the desk says so;
+  - it shows no line a Mind said it is doing (that is withheld from other Minds, and the desk is a
+    screen they all read); it returns with per-Mind attribution, phase 4;
+  - every string is display-safe by construction (`yantrik_ipc_contracts::mind_desk`), cleaned again
+    by the desk;
+  - which account a harness runs under comes from the kernel's word at attach, not a name list.
+  A copy started anywhere but a Mind's display refuses to run (`App::ON_MINDS_DISPLAY`).
 - Not changed by design: `open_app files|settings|launchpad` switches the person's own screen;
   `focus_window`/`close_window` act on the person's windows; a mind typing into the Terminal app
   drives whichever Terminal window is open, including the person's if that is the one open.

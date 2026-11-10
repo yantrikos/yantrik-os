@@ -16,6 +16,7 @@
 /// already the mail service's "no account".)
 pub const ERR_NO_MODEL: i32 = -32002;
 
+pub mod credentials;
 pub mod email;
 pub mod calendar;
 pub mod weather;
@@ -33,3 +34,4 @@ pub mod home_paths;
 pub mod framework_apps;
 pub mod mind_view;
 pub mod mind_view_displays;
+pub mod mind_desk;

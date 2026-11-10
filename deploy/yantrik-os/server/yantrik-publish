@@ -10,6 +10,7 @@ leaks the day somebody prints the wrong variable; this is what it is worth when 
 
     ssh publish@host  iso      <channel> <filename> <sha256>                       < file
     ssh publish@host  release  <channel> <filename> <sha256> <version> <git> <n>   < file
+    ssh publish@host  manifest <channel> release.signed <sha256>                   < file
 
 What it does with the bytes on stdin:
 
@@ -22,6 +23,13 @@ What it does with the bytes on stdin:
      (and, for a release, rewrites that channel's entry in manifest.json, atomically);
   4. prunes the channel to the newest KEEP builds. The one `latest` points at is never
      deleted, whatever its age.
+
+A `manifest` is the signed description of a channel's release that installed machines read
+(#537): one envelope made by deploy/yantrik-os/sign-manifest.sh. The server cannot check the
+signature (it holds no keys, deliberately) and does not pretend to; it checks that the file is
+the shape machines expect, that it names the channel it is stored under, and that its serial
+does not go backwards, then replaces `<channel>/release.signed` atomically. Machines verify
+the signature themselves; a forged file stored here is refused by every one of them.
 
 KEEP is 3 because the disk is shared with eighteen other sites and an ISO is 1.4 GB.
 """
@@ -41,9 +49,10 @@ ROOTS = {
     # `.changelog.md` in place of `.iso`, so a page that links the ISO can link the list of
     # what changed in it by string substitution and nothing else.
     "changelog": "/var/www/iso.yantrikos.com",
+    "manifest": "/var/www/releases.yantrikos.com",
 }
 CHANNELS = ("nightly", "beta", "stable")
-MAX_BYTES = {"iso": 6 * 1024**3, "release": 1 * 1024**3, "changelog": 1 * 1024**2}
+MAX_BYTES = {"iso": 6 * 1024**3, "release": 1 * 1024**3, "changelog": 1 * 1024**2, "manifest": 64 * 1024}
 # Names this script will create. Anchored, no slashes, no leading dot: the filename is the
 # one piece of client text that reaches the filesystem.
 NAME = {
@@ -56,6 +65,7 @@ LATEST = {
     "release": lambda name: "yantrik-os-latest-linux-amd64.tar." + name.rsplit(".", 1)[1],
     "changelog": lambda name: "yantrik-os-latest.changelog.md",
 }
+SIGNED_HEADER = re.compile(rb"^yantrik-manifest v1 ed25519 [A-Za-z0-9+/]{86}==\n")
 SHA = re.compile(r"^[0-9a-f]{64}$")
 WORD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,80}$")
 
@@ -102,16 +112,61 @@ def prune(directory, pattern, keep_name):
     return builds[:KEEP], removed
 
 
+def publish_manifest(argv):
+    """Store a channel's signed manifest. See the docstring: shape and serial, not the signature."""
+    channel, name, sha = argv[1], argv[2], argv[3].lower()
+    if channel not in CHANNELS:
+        die("unknown channel %r" % channel)
+    if name != "release.signed":
+        die("a manifest is published as release.signed, not %r" % name)
+    if not SHA.match(sha):
+        die("that is not a sha256")
+    data = sys.stdin.buffer.read(MAX_BYTES["manifest"] + 1)
+    if not data or len(data) > MAX_BYTES["manifest"]:
+        die("the manifest is empty or larger than any manifest should be", 3)
+    if hashlib.sha256(data).hexdigest() != sha:
+        die("sha256 mismatch: told %s, received %s" % (sha, hashlib.sha256(data).hexdigest()), 3)
+    found = SIGNED_HEADER.match(data)
+    if not found:
+        die("not a signed manifest: the first line is not a yantrik-manifest v1 signature", 3)
+    try:
+        body = json.loads(data[found.end():].decode("utf-8"))
+        serial = body["serial"]
+        if body["channel"] != channel or not isinstance(serial, int) or isinstance(serial, bool):
+            raise ValueError
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        die("the manifest does not name the channel %s and a serial" % channel, 3)
+    directory = os.path.join(ROOTS["manifest"], channel)
+    os.makedirs(directory, exist_ok=True)
+    final = os.path.join(directory, "release.signed")
+    try:
+        with open(final, "rb") as f:
+            older = f.read(MAX_BYTES["manifest"])
+        before = json.loads(older[SIGNED_HEADER.match(older).end():].decode("utf-8"))["serial"]
+    except (OSError, ValueError, KeyError, AttributeError, TypeError):
+        before = None  # nothing there yet, or something no machine would accept anyway
+    if isinstance(before, int) and serial < before:
+        die("serial %d is lower than the %d already published on %s" % (serial, before, channel), 3)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tmp-")
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, final)
+    print("published manifest/%s serial %d (%d bytes)" % (channel, serial, len(data)))
+
+
 def main():
     argv = os.environ.get("SSH_ORIGINAL_COMMAND", "").split()
     if not argv:
         die("this key publishes builds and does nothing else; no command was given")
     kind = argv[0]
     if kind not in ROOTS:
-        die("unknown kind %r (iso | release | changelog)" % kind)
+        die("unknown kind %r (iso | release | changelog | manifest)" % kind)
     want = 7 if kind == "release" else 4
     if len(argv) != want:
         die("%s takes %d arguments, got %d" % (kind, want - 1, len(argv) - 1))
+    if kind == "manifest":
+        return publish_manifest(argv)
     channel, name, sha = argv[1], argv[2], argv[3].lower()
     if channel not in CHANNELS:
         die("unknown channel %r" % channel)

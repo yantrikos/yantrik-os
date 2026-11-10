@@ -2283,7 +2283,9 @@ dependencies = [
  "sha2",
  "ureq 2.12.1",
  "yantrik-email-text",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
+ "yantrik-ipc-transport",
  "yantrik-service-sdk",
 ]
 
@@ -11191,12 +11193,28 @@ dependencies = [
  "ureq 2.12.1",
  "yantrik-app",
  "yantrik-app-build",
+ "yantrik-browser-ports",
  "yantrik-design-tokens",
  "yantrik-foundation",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-testing",
  "yantrik-ui-kit",
+]
+
+[[package]]
+name = "yantrik-bench"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "libc",
+ "png",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -11209,6 +11227,10 @@ dependencies = [
  "tracing",
  "uuid7",
 ]
+
+[[package]]
+name = "yantrik-browser-ports"
+version = "0.1.0"
 
 [[package]]
 name = "yantrik-calendar"
@@ -11346,6 +11368,7 @@ dependencies = [
  "tracing",
  "tungstenite",
  "ureq 2.12.1",
+ "yantrik-browser-ports",
  "yantrik-companion-core",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
@@ -11460,6 +11483,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
 ]
 
@@ -11485,6 +11509,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tracing",
+ "yantrik-bench",
  "yantrik-foundation",
 ]
 
@@ -11623,6 +11648,22 @@ dependencies = [
  "serde_json",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
+]
+
+[[package]]
+name = "yantrik-mind-desk"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "slint",
+ "tracing",
+ "yantrik-app",
+ "yantrik-app-build",
+ "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
+ "yantrik-services",
+ "yantrik-testing",
+ "yantrik-ui-kit",
 ]
 
 [[package]]
@@ -11799,6 +11840,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "yantrik-foundation",
  "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
  "yantrik-surface",
@@ -12034,6 +12076,8 @@ dependencies = [
  "sha2",
  "slint",
  "sysinfo",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
  "tracing",
@@ -12044,6 +12088,8 @@ dependencies = [
  "wayland-protocols-wlr",
  "yantrik-agent-terminal",
  "yantrik-app-runtime",
+ "yantrik-bench",
+ "yantrik-browser-ports",
  "yantrik-chat",
  "yantrik-companion",
  "yantrik-foundation",
@@ -12054,6 +12100,7 @@ dependencies = [
  "yantrik-ipc-transport",
  "yantrik-ml",
  "yantrik-os",
+ "yantrik-service-sdk",
  "yantrik-shell-core",
  "yantrik-ui-kit",
  "yantrik-ui-slint",

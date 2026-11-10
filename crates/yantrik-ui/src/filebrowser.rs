@@ -177,6 +177,11 @@ pub fn places(home: &Path) -> Vec<Place> {
         ("music", "Music", "XDG_MUSIC_DIR"),
         ("videos", "Videos", "XDG_VIDEOS_DIR"),
     ];
+    // The Bench lists this folder on the desktop; it is the first place after Home.
+    let desktop = desktop_dir(home);
+    if desktop.is_dir() {
+        out.push(Place { id: "desktop", label: "Desktop".into(), path: display_under(home, &desktop) });
+    }
     for (id, label, key) in standard {
         let dir = named
             .iter()
@@ -192,6 +197,19 @@ pub fn places(home: &Path) -> Vec<Place> {
         out.push(Place { id: "projects", label: "Projects".into(), path: display_under(home, &dir) });
     }
     out
+}
+
+/// The desktop folder: `XDG_DESKTOP_DIR` from `~/.config/user-dirs.dirs` when it names one, else
+/// `~/Desktop`. XDG points a folder the person never set at `$HOME` itself; that is not a desktop,
+/// so it falls back to `~/Desktop` too. The Bench lists this folder and the Files sidebar offers
+/// it, so both ask here and cannot disagree about which folder it is.
+pub fn desktop_dir(home: &Path) -> PathBuf {
+    user_dirs(home)
+        .into_iter()
+        .find(|(k, _)| k == "XDG_DESKTOP_DIR")
+        .map(|(_, p)| p)
+        .filter(|p| p != home)
+        .unwrap_or_else(|| home.join("Desktop"))
 }
 
 /// `~/x` for a folder under `home`, the full path otherwise.
@@ -903,6 +921,22 @@ mod tests {
             items: None,
             ..dir(name, None)
         }
+    }
+
+    #[test]
+    fn the_desktop_is_where_xdg_says_and_falls_back_to_desktop() {
+        let tmp = std::env::temp_dir().join(format!("desktop-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".config")).unwrap();
+        assert_eq!(desktop_dir(&tmp), tmp.join("Desktop"), "no user-dirs file");
+        std::fs::write(tmp.join(".config/user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n").unwrap();
+        assert_eq!(desktop_dir(&tmp), tmp.join("Schreibtisch"));
+        std::fs::write(tmp.join(".config/user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME/\"\n").unwrap();
+        assert_eq!(desktop_dir(&tmp), tmp.join("Desktop"), "XDG's way of saying there is none");
+        std::fs::create_dir_all(tmp.join("Desktop")).unwrap();
+        let ids: Vec<_> = places(&tmp).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["home", "desktop"], "Desktop is a place in the sidebar once it exists, and not before");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

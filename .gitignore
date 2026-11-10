@@ -160,3 +160,7 @@ Dockerfile.build
 !brand/yantrik-icon-48.png
 !brand/yantrik-icon-128.png
 !brand/yantrik-icon-256.png
+# YantrikDB's favicons are inputs to its site and README; its avatar and card are regenerated.
+!brand/yantrikdb-favicon-16.png
+!brand/yantrikdb-favicon-32.png
+!brand/yantrikdb-favicon-48.png

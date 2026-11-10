@@ -142,6 +142,7 @@ const SHELL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Where the desktop's sockets are and how long to wait for a person. The session's own in use;
 /// a test hands in a scratch directory and a shorter wait. `pub(crate)` because `window.rs`
 /// drives the shell's own window actions through the same desk and the same asking.
+#[derive(Clone)]
 pub(crate) struct Desk {
     pub(crate) dir: Option<std::path::PathBuf>,
     pub(crate) wait: Duration,
@@ -153,6 +154,15 @@ impl Desk {
         Desk { dir: None, wait: APPROVAL_WAIT, poll: APPROVAL_POLL }
     }
 
+    /// One call to the shell, which the approvals module lives in.
+    pub(crate) fn shell_call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, yantrik_ipc_transport::protocol::RpcError> {
+        self.client("app-shell", SHELL_TIMEOUT).call(method, params)
+    }
+
     fn client(&self, service: &str, timeout: Duration) -> SyncRpcClient {
         let address = match &self.dir {
             Some(dir) => dir.join(format!("{service}.sock")).to_string_lossy().to_string(),
@@ -160,6 +170,52 @@ impl Desk {
         };
         SyncRpcClient::new(&address).with_timeout(timeout)
     }
+}
+
+/// Put the card for `app.action` in front of the person: the shell's `request_approval`. The
+/// answer is the shell's own (`request_id` and `pending`, or `not_needed` where the mode runs the
+/// action unasked); an `Err` is a sentence for the model, and nothing was raised.
+pub(crate) fn raise_card(
+    desk: &Desk,
+    app: &str,
+    action: &str,
+    grade: &str,
+    args: &serde_json::Value,
+    purpose: &str,
+) -> Result<serde_json::Value, String> {
+    desk.client("app-shell", SHELL_TIMEOUT)
+        .call(
+            "app.act",
+            serde_json::json!({ "action": "request_approval", "args": {
+                "app": app, "action": action, "grade": grade, "args_json": args,
+                "purpose": purpose, "requester": REQUESTER,
+            }}),
+        )
+        .map_err(|e| {
+            format!("{app}.{action} needs the person's Allow and they could not be asked: {}", e.message)
+        })
+}
+
+/// Wait up to the desk's patience for the person's answer to card `request_id`: `granted`,
+/// `denied`, `consumed`, or `pending` when nobody answered in time. A poll that fails is not an
+/// answer; the card is still up, so it asks again.
+pub(crate) fn await_answer(desk: &Desk, request_id: &str) -> String {
+    let deadline = Instant::now() + desk.wait;
+    let mut status = "pending".to_string();
+    while Instant::now() < deadline {
+        std::thread::sleep(desk.poll.min(deadline.saturating_duration_since(Instant::now())));
+        let Ok(poll) = desk.client("app-shell", SHELL_TIMEOUT).call(
+            "app.act",
+            serde_json::json!({ "action": "approval_status", "args": { "request_id": request_id } }),
+        ) else {
+            continue;
+        };
+        status = poll["result"]["status"].as_str().unwrap_or("pending").to_string();
+        if status != "pending" {
+            break;
+        }
+    }
+    status
 }
 
 /// `app.act`, and when the app refuses for want of a grant, the person's Allow and `app.act` again.
@@ -191,18 +247,7 @@ pub(crate) fn act_asking(
         .and_then(|rest| rest.split('`').next())
         .filter(|g| gate::grade(g).is_some())
         .unwrap_or("sensitive");
-    let asked = desk
-        .client("app-shell", SHELL_TIMEOUT)
-        .call(
-            "app.act",
-            serde_json::json!({ "action": "request_approval", "args": {
-                "app": app, "action": action, "grade": grade, "args_json": args,
-                "purpose": purpose, "requester": REQUESTER,
-            }}),
-        )
-        .map_err(|e| {
-            format!("{app}.{action} needs the person's Allow and they could not be asked: {}", e.message)
-        })?;
+    let asked = raise_card(desk, app, action, grade, args, purpose)?;
     let answer = asked.get("result").cloned().unwrap_or_default();
     if answer["status"] == "not_needed" {
         return Err(format!(
@@ -219,22 +264,7 @@ pub(crate) fn act_asking(
         ));
     };
 
-    let deadline = Instant::now() + desk.wait;
-    let mut status = "pending".to_string();
-    while Instant::now() < deadline {
-        std::thread::sleep(desk.poll.min(deadline.saturating_duration_since(Instant::now())));
-        // A poll that fails is not an answer: the card is still up, so ask again.
-        let Ok(poll) = desk.client("app-shell", SHELL_TIMEOUT).call(
-            "app.act",
-            serde_json::json!({ "action": "approval_status", "args": { "request_id": request_id } }),
-        ) else {
-            continue;
-        };
-        status = poll["result"]["status"].as_str().unwrap_or("pending").to_string();
-        if status != "pending" {
-            break;
-        }
-    }
+    let status = await_answer(desk, &request_id);
 
     match status.as_str() {
         "granted" => {

@@ -459,6 +459,11 @@ pub fn set_prompt_error(message: impl Into<String>) {
 /// The engine's unlocked key and this module's caches are process-wide, and `cargo test` runs on
 /// threads of one process, so a test that does not start from a known state is a test that passes
 /// depending on what ran before it.
+/// Taken by every test that touches the engine's process-wide unlock state (here and in
+/// `vault_lane`), so one test's `vault::lock()` cannot land in the middle of another's unlock.
+#[cfg(test)]
+pub(crate) static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 fn reset_for_test() {
     vault::lock();
@@ -475,7 +480,7 @@ mod vault_unlock_tests {
 
     /// The process-globals below are shared by every test in this binary, so these tests take
     /// turns. Without it, one test's `vault::lock()` lands in the middle of another's unlock.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    use super::TEST_SERIAL as SERIAL;
 
     /// A real vault in a real SQLite file, with the real engine functions.
     ///

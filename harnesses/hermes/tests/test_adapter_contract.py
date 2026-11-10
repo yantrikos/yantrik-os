@@ -62,7 +62,8 @@ class AdapterContractTests(unittest.TestCase):
 
     def test_every_override_accepts_whatever_hermes_may_pass_it(self):
         checked = []
-        for name, ours in vars(self.ours).items():
+        # Everything the class has, the mixins' methods included (adapter.py is split across files).
+        for name, ours in inspect.getmembers(self.ours, predicate=callable):
             theirs = getattr(self.base, name, None)
             if not callable(ours) or theirs is None or name.startswith("__"):
                 continue

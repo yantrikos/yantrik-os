@@ -62,14 +62,7 @@ impl yantrik_gateway::Accounts for ShellAccounts {
             Keys::Read(bridge) => {
                 let saved = ProviderStore::load().entries;
                 let vault = |id: &str| ai_accounts::vault_value(bridge, id);
-                keys::resolve(a, &saved, &vault).map_err(|why| {
-                    let code = match why {
-                        keys::Missing::Key => "key_missing",
-                        keys::Missing::Vault => "vault_locked",
-                        keys::Missing::Address => "address_incomplete",
-                    };
-                    Refusal::new(503, code, format!("{} cannot be used now: {why}.", a.name))
-                })?
+                keys::resolve(a, &saved, &vault).map_err(|why| missing_key(why, &a.name))?
             }
             Keys::NotRead => keys::Resolved { base_url: a.base_url.clone(), key: None },
         };
@@ -102,5 +95,36 @@ impl yantrik_gateway::Accounts for ShellAccounts {
     fn effort_for(&self, harness: &str, model: &str) -> Option<yantrik_ml::model_caps::Effort> {
         let choice = crate::picker::choice_of(harness);
         (choice.model == model).then(|| yantrik_ml::model_caps::Effort::parse(&choice.effort)).flatten()
+    }
+}
+
+/// The refusal for an account whose key or address could not be had. A key the vault cannot give
+/// is 423 (Locked), so a Mind can tell it from a key that was never entered, which is 503 like
+/// an incomplete address.
+fn missing_key(why: keys::Missing, name: &str) -> Refusal {
+    match why {
+        keys::Missing::Vault => Refusal::new(
+            423,
+            "vault_locked",
+            format!("The key for {name} could not be read from the credential vault. If the vault is locked, unlock it; otherwise enter the key again."),
+        ),
+        keys::Missing::Key => Refusal::new(503, "key_missing", format!("{name} cannot be used now: {why}.")),
+        keys::Missing::Address => Refusal::new(503, "address_incomplete", format!("{name} cannot be used now: {why}.")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_key_the_vault_could_not_give_is_refused_as_423() {
+        let vault = missing_key(keys::Missing::Vault, "Mine");
+        assert_eq!((vault.status, vault.code), (423, "vault_locked"));
+        assert!(vault.message.starts_with("The key for Mine could not be read from the credential vault."));
+        for (why, code) in [(keys::Missing::Key, "key_missing"), (keys::Missing::Address, "address_incomplete")] {
+            let r = missing_key(why, "Mine");
+            assert_eq!((r.status, r.code), (503, code));
+        }
     }
 }

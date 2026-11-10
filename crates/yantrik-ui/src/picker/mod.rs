@@ -11,12 +11,15 @@
 //! model each turn; picking another before sending is how one message goes to another model.
 
 pub mod attach;
+pub mod blocked;
 pub mod choices;
 pub mod menu;
 pub mod status;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_blocked;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -304,6 +307,7 @@ fn render(ui: &App, bridge: &Arc<CompanionBridge>) {
             detail: r.detail.into(),
             disabled: r.disabled,
             reason: r.reason.into(),
+            fix: r.fix.into(),
             current: r.current,
         })
         .collect();
@@ -341,6 +345,16 @@ fn open_settings(ui: &App, section: i32) {
     ui.set_settings_category(section);
     ui.set_current_screen(SETTINGS_SCREEN);
     ui.invoke_navigate(SETTINGS_SCREEN);
+}
+
+/// The screen a held-back row's fix id names (`menu::Why::fix`), so pressing the row goes there.
+/// "" (Private mode: no screen here switches it off) presses nowhere.
+pub fn section_for_fix(fix: &str) -> Option<i32> {
+    match fix {
+        menu::FIX_AI_ACCOUNTS => Some(AI_SECTION),
+        menu::FIX_MINDS => Some(HARNESSES_SECTION),
+        _ => None,
+    }
 }
 
 fn save_choices() {
@@ -445,6 +459,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             Fix::None => {}
         }
         render(&ui, &b);
+    });
+    // A press of a disabled model row is not a pick; it opens the screen its reason names.
+    let w = ui.as_weak();
+    g.on_fix_model(move |fix| {
+        let Some(ui) = w.upgrade() else { return };
+        if let Some(section) = section_for_fix(&fix) {
+            open_settings(&ui, section);
+        }
     });
 
     // A file dragged from another program onto the window: the ask bar takes it.

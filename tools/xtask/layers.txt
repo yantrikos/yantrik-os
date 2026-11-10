@@ -11,10 +11,12 @@ L0  crates/yantrik-ipc-transport
 L0  crates/yantrik-version
 L0  crates/yantrik-manifest
 L0  crates/yantrik-shown-address
+L0  crates/yantrik-browser-ports
 L0  crates/yantrik-address-place
 L0  crates/yantrik-email-text
 L0  crates/yantrik-image-core
 L0  crates/yantrik-file-follow
+L0  crates/yantrik-bench
 L0  crates/yantrik-mind-view-title
 L0  crates/yantrik-install-target
 # L1 Design: the tokens and the kit.

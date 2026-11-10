@@ -227,6 +227,8 @@ fn offer_screen_secret_to_vault(bridge: &std::sync::Arc<crate::bridge::Companion
             Ok(reply) if matches!(reply.outcome, Some(Outcome::Unlocked)) => {
                 tracing::info!("The vault opened with the secret that unlocked the screen");
                 vault_unlock::dismiss();
+                // What waited for the vault (saved providers' keys, the companion's reload).
+                crate::provider_vault::opened();
             }
             // Silent on purpose. See the call site: this was not something the person asked for.
             _ => {}

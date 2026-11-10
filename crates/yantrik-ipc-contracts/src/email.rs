@@ -24,6 +24,14 @@ pub mod method {
     pub const TEST_ACCOUNT: &str = "email.test_account";
     /// Store an account the service will read from then on.
     pub const SAVE_ACCOUNT: &str = "email.save_account";
+    /// Forget an account: take it out of the accounts file and its password and tokens out of the
+    /// credential vault. A shut vault refuses, so a secret is never left behind by an account that
+    /// is gone from the list.
+    pub const REMOVE_ACCOUNT: &str = "email.remove_account";
+    /// The shell tells the service the credential vault has just been opened, so a service that
+    /// paused for it ([`super::WAITING_FOR_VAULT`]) moves what it was holding and resumes. Answers
+    /// the shell only.
+    pub const VAULT_OPENED: &str = "email.vault_opened";
     /// Start a Google sign-in: answers with the consent page to open, and a flow id.
     ///
     /// Three methods rather than one, because this flow cannot be a request and a reply. The
@@ -38,6 +46,10 @@ pub mod method {
     /// Give up on a started sign-in and stop the socket that is waiting for it.
     pub const OAUTH_CANCEL: &str = "email.oauth_cancel";
 }
+
+/// What mail says while the credential vault is shut, in the one wording the service, the app's
+/// notice and `describe` share. Mail is not checked until the vault opens: the passwords are in it.
+pub const WAITING_FOR_VAULT: &str = "Mail is waiting for the vault. Unlock it and mail will check again.";
 
 /// What the service will say about a configured account. There is no password on it, and there
 /// must never be: this travels to a window, into `app.describe`, and from there to whatever is
@@ -69,8 +81,15 @@ pub struct AccountsResult {
     pub accounts: Vec<EmailAccountSummary>,
     /// The file the service reads accounts from, absolute.
     pub config_path: String,
-    /// True while passwords are kept in that file rather than in a secret store.
+    /// True while any password or token is still in that file rather than in the credential
+    /// vault: an account saved by an older service, until the vault is open and it has been
+    /// moved. False once nothing secret is in the file.
     pub secrets_are_plaintext: bool,
+    /// True while the credential vault is shut and there are accounts whose secrets are in it.
+    /// Mail is not checked meanwhile, and the screen says [`WAITING_FOR_VAULT`] and asks again
+    /// until this is false. `#[serde(default)]` so an older service parses as "not waiting".
+    #[serde(default)]
+    pub waiting_for_vault: bool,
     /// Whether this build can start a Google sign-in at all, and what to say when it cannot.
     ///
     /// The screen has to know before it draws the button, because a "Sign in with Google" that

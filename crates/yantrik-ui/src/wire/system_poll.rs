@@ -81,6 +81,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             return;
         }
 
+        // 1-b. Something in the desktop folder changed: the Bench lists it again.
+        if let Some(ui) = ui_weak.upgrade() {
+            crate::bench::on_events(&ui, &events);
+        }
+
         // 1-. The volume follows what the audio server said, whoever changed it.
         if let Some(ui) = ui_weak.upgrade() {
             super::audio::apply_events(&ui, &events);

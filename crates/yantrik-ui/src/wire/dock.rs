@@ -683,31 +683,18 @@ const BROWSERS: &[(&str, &[&str])] = &[
 
 /// How the desktop starts a Chromium-family browser.
 ///
-/// The three debugging flags are what make the browser one of this desktop's apps rather than a
-/// window a mind can only look at. `yos web` — and through it a harness's `web_read`, `web_find`,
-/// `web_click` — drives the page over the DevTools protocol, and the browser this launcher
-/// started had no DevTools port: the first mind asked to research something was told "no browser
-/// with a debug port on 9222", on a desktop whose dock had a browser open. The built-in companion
-/// never hit it because it launches its own.
-///
-/// Loopback only, and only the origin `yos` itself presents: `--remote-allow-origins=*` would
-/// let any web page's script open the socket if it learned a target id. What this does grant is
-/// what it sounds like — a process running as this user can drive this browser — which such a
-/// process could already do by reading the profile on disk. The gates a MIND meets are at the
-/// bridge: plan mode, the taint rule, and the refusal to press anything that reads as a
-/// commitment.
+/// The debugging port, its allowed origin and the profile are not here: they differ for the
+/// person's Browser and for a mind's, and `browser_launch` adds each (#1085). The port is what
+/// makes the browser one of this desktop's apps rather than a window a mind can only look at:
+/// `yos web` drives the page over the DevTools protocol. Loopback only, and only the origin `yos`
+/// itself presents. What it grants is what it sounds like (a process running as this user can
+/// drive this browser), which such a process could already do by reading the profile on disk.
 const CHROMIUM_FLAGS: &[&str] = &[
     "--ozone-platform=wayland",
     "--no-first-run",
     "--no-default-browser-check",
-    // No "--disable-gpu". It was here on the reasoning that a VM has no GPU, and it cost every
-    // machine WebGL: the flag also switches off SwiftShader, the software renderer Chromium
-    // uses precisely when there is no GPU. The desktop Browser answered
-    // getContext("webgl") with null for every page, and no Arcade game could draw in it (#133).
-    // The browser tools already leave it out when headed, for the same reason.
-    "--remote-debugging-address=127.0.0.1",
-    "--remote-debugging-port=9222",
-    "--remote-allow-origins=http://127.0.0.1:9222",
+    // No "--disable-gpu": it also switches off SwiftShader, the software renderer, and cost
+    // every machine WebGL (#133).
 ];
 
 /// The first browser from `BROWSERS` this machine has.
@@ -910,7 +897,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             // by hand, for uid 1000 only.
             Launch::Browser => match find_browser() {
                 Some((bin, args)) => super::already_open::focus_or_start("browser", Some(bin), move || {
-                    spawn_app_with_args("browser", bin, args)
+                    let _ = super::browser_launch::preflight(yantrik_browser_ports::Side::Person);
+                    let args = super::browser_launch::person_args(bin, args);
+                    spawn_app_with_args("browser", bin, &args.iter().map(String::as_str).collect::<Vec<_>>())
                 }),
                 None => tracing::error!(
                     "Cannot open the browser: none is installed (looked for {})",
@@ -1193,6 +1182,12 @@ fn spawn_launch(
                 );
             }
             Ok(seat) => {
+                if app_id == "browser" {
+                    if let Err(why) = super::browser_launch::preflight(yantrik_browser_ports::Side::MindView) {
+                        let said = format!("{}{why}", crate::mind_landing::REFUSED);
+                        return crate::running::mark_launch_failed(&app_id, &bin, &said, 0);
+                    }
+                }
                 tracing::info!(app = %app_id, mind = %who, display = %seat.wayland, "Opening in Mind View");
                 launch(&app_id, &bin, &args, dir.as_deref(), adapter, Some(&seat), false);
             }
@@ -1222,12 +1217,10 @@ fn launch_command(
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    command.args(args);
     if seat.is_some() {
-        // A browser hands a second launch over to the one already running on its profile, and a
-        // window then appears wherever that one is: the person's desktop (PR #582, S3). A mind's
-        // browser has a profile of its own, so it is its own process in Mind View.
-        command.args(singleton_isolation(path, &mind_browser_profile()));
+        command.args(super::browser_launch::mind_view_args(path, args));
+    } else {
+        command.args(args);
     }
     for (key, value) in session_env() {
         command.env(key, value);
@@ -1242,34 +1235,8 @@ fn launch_command(
     command
 }
 
-/// Where a mind's browser keeps its profile in Mind View: not the person's.
-fn mind_browser_profile() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share")))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("yantrik").join("mind-view-browser")
-}
-
-/// The extra arguments that make a browser started for a mind a process of its own, by program.
-/// Empty for anything that is not a singleton browser.
-fn singleton_isolation(program: &std::path::Path, profile: &std::path::Path) -> Vec<String> {
-    let name = program.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
-    match name.as_str() {
-        "chromium" | "chromium-browser" | "google-chrome" | "google-chrome-stable" | "chrome" => {
-            let _ = std::fs::create_dir_all(profile.join("chromium"));
-            vec![format!("--user-data-dir={}", profile.join("chromium").display())]
-        }
-        "firefox" | "firefox-esr" => {
-            let _ = std::fs::create_dir_all(profile.join("firefox"));
-            vec!["--no-remote".into(), "--profile".into(), profile.join("firefox").display().to_string()]
-        }
-        _ => Vec::new(),
-    }
-}
-
 /// Start one app, on the person's desktop or on `seat`.
-fn launch(
+pub(super) fn launch(
     app_id: &str,
     bin: &str,
     args: &[&str],
@@ -1395,6 +1362,13 @@ mod tests {
     /// `.desktop` file beside a `src/`) must yield an id, so the next app to move onto the
     /// framework cannot drop out of these checks unnoticed. Blender is a Python add-on with no
     /// crate, and is not read.
+    /// Apps under `apps/` that are not apps a person opens: they run inside something else, are
+    /// started by it, have no launcher tile and are not a name an agent can open (`NoDisplay`
+    /// in their `.desktop` file, and `FRAMEWORK_APPS` lists them so no Mind is told they exist).
+    /// Held out of the checks that say every app is opened by its id and listed while closed.
+    /// The Mind desk (#1023) is the one: Mind View's startup script starts it.
+    const NOT_OPENED_BY_ANYONE: &[&str] = &["mind-desk"];
+
     fn published_ids() -> Vec<(String, String)> {
         let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");
         let Ok(entries) = std::fs::read_dir(&apps) else {
@@ -1405,6 +1379,9 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let dir = e.file_name().into_string().ok()?;
+                if NOT_OPENED_BY_ANYONE.contains(&dir.as_str()) {
+                    return None;
+                }
                 let read = |file: &str| std::fs::read_to_string(e.path().join(file)).unwrap_or_default();
                 published_id(&read("src/main.rs"))
                     .or_else(|| framework_id(&read("src/lib.rs")))
@@ -1427,7 +1404,7 @@ mod tests {
                 let dir = name.strip_prefix("yantrik-")?.strip_suffix(".desktop")?.to_string();
                 apps.join(&dir).join("src").is_dir().then_some(dir)
             })
-            .filter(|dir| !found.iter().any(|(d, _)| d == dir))
+            .filter(|dir| !found.iter().any(|(d, _)| d == dir) && !NOT_OPENED_BY_ANYONE.contains(&dir.as_str()))
             .collect();
         assert!(
             unread.is_empty(),
@@ -1895,19 +1872,6 @@ mod tests {
         let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None);
         assert_ne!(env_of(&person, "DISPLAY"), Some(None), "the person's own launch is untouched");
         assert_eq!(env_of(&person, "WAYLAND_DISPLAY"), None);
-    }
-
-    /// S3: a browser started for a mind is not the person's browser's second window.
-    #[test]
-    fn a_browser_for_a_mind_gets_a_profile_of_its_own() {
-        let profile = std::env::temp_dir().join(format!("yos-prof-{}", std::process::id()));
-        let chromium = singleton_isolation(std::path::Path::new("/usr/bin/chromium"), &profile);
-        assert!(chromium[0].starts_with("--user-data-dir=") && chromium[0].ends_with("chromium"), "{chromium:?}");
-        let firefox = singleton_isolation(std::path::Path::new("/usr/bin/firefox"), &profile);
-        assert_eq!(firefox[0], "--no-remote");
-        assert_eq!(firefox[1], "--profile");
-        assert!(singleton_isolation(std::path::Path::new("/usr/bin/foot"), &profile).is_empty());
-        let _ = std::fs::remove_dir_all(profile);
     }
 
     /// B2: a mind asking for an app open on the person's desktop starts nothing.

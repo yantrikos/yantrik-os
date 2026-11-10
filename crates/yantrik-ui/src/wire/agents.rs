@@ -2326,6 +2326,7 @@ mod tests {
             said: String::new(),
             caller_says: String::new(),
             can_session: true,
+            wording: Default::default(),
             status: crate::approvals::Status::Pending,
             record: String::new(),
             decided_at: String::new(),

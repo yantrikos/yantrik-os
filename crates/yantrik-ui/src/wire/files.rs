@@ -997,6 +997,25 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
         }
     });
+    // "Move to Desktop" / "Copy to Desktop": the selection goes into the desktop folder through the
+    // same transfer a paste runs, so it can be cancelled, never replaces a file and says what it did.
+    // Dragging from Files onto the desktop is not possible: Files is a screen of this same window,
+    // so the desktop is never drawn beside it to drop on (#1030).
+    bind!(on_file_send_to_desktop, |u, s, how| {
+        if s.trash {
+            return;
+        }
+        let paths = s.selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        let dir = fsview::desktop_dir(&fsview::expand_home("~"));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            set_notice(&u, &format!("The desktop folder cannot be made: {e}"), None);
+            return;
+        }
+        s.job(&u, Job::Transfer(Clipboard { paths, cut: how.as_str() == "move" }, dir));
+    });
     bind!(on_file_delete_selected, |u, s| {
         if !s.trash {
             let paths = s.selected_paths();

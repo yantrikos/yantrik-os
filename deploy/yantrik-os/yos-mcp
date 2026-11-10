@@ -51,16 +51,12 @@ PROTOCOL_VERSION = "2024-11-05"
 
 # ── How long one os_act can take ────────────────────────────────────────────────────────
 #
-# An os_act above this session's ceiling now asks the person and waits for them (see
-# `guard_act`). That wait happens HERE, in this process, between the tool call arriving and
-# `yos act` being run — so raising the `"timeout"` on os_act would not have covered it and would
-# only have delayed noticing a genuinely hung desktop. The subprocess budget stays at 60s; what
-# changed is the wall clock of the whole tool call, and the number a client has to allow for it.
+# An os_act above this session's ceiling asks the person and waits (see `guard_act`). The wait happens
+# HERE, between the call arriving and `yos act` being run, so raising os_act's `"timeout"` would not
+# cover it. A client that kills a tools/call before OS_ACT_MAX_SECONDS cuts the person off mid
+# decision and the mind reports a timeout for a machine that worked correctly.
 #
-# A client that kills a tools/call before OS_ACT_MAX_SECONDS will cut the person off mid
-# decision, and the mind will report a timeout for a machine that was working correctly.
-#
-# What the wait must NOT do is make the whole bridge unanswerable while it lasts — see `main`.
+# The wait must NOT make the whole bridge unanswerable while it lasts (see `main`).
 # On 22 September 2026 it did, and a client that pings for liveness killed the server out from
 # under a card that was still on the person's screen.
 ACT_TIMEOUT = 60             # the `yos act` subprocess itself, unchanged
@@ -91,21 +87,15 @@ def agent_call_max_seconds(wait=None):
 
 # ── The name a caller gives itself ──────────────────────────────────────────────────────
 #
-# The first cards read "the mind on this desktop is asking to use this machine", which is true
-# and useless: the person could not tell Hermes from anything else that might have opened this
-# bridge. Three sources, best first, and every one of them is SELF-DECLARED.
+# The first cards read "the mind on this desktop is asking to use this machine": true and useless.
+# Three SELF-DECLARED sources, best first: YOS_MCP_REQUESTER (an operator's setting outranks any
+# guess); the MCP client's own `clientInfo` from the `initialize` handshake (Hermes sends its name
+# and version there); the shell's own list of minds, whichever is `answering`.
 #
-#   1. YOS_MCP_REQUESTER — an operator setting this deliberately outranks anything guessed.
-#   2. The MCP client's own `clientInfo` from the `initialize` handshake. Hermes sends its name
-#      and version there; this is the specific thing that was being thrown away.
-#   3. The shell's own list of minds, whichever one is `answering`. A fallback for a client that
-#      sends no clientInfo at all, and it is the name the person already sees in the status bar.
-#
-# This is a LABEL and it is no longer the only thing the card has. Identity now comes from the
-# socket rather than from an argument: the shell reads the peer's pid and uid off the connection
-# with SO_PEERCRED — which the kernel stamps and the caller cannot write — and walks /proc up
-# past this bridge to the first program a person would recognise. The card prints the two apart,
-# `says the caller` over `verified by this machine`, and says so when they disagree.
+# This is a LABEL, and no longer the only thing the card has: the shell reads the peer's pid and uid
+# off the connection with SO_PEERCRED (the caller cannot write it) and walks /proc up past this
+# bridge to the first program a person would recognise. The card prints `says the caller` over
+# `verified by this machine`, and says so when they disagree.
 #
 # So keep sending the name (it is still the thing a person recognises), and do not describe it
 # to a mind as anything more than what the caller called itself. Nothing here needs to change
@@ -120,19 +110,15 @@ _CLIENT = {}
 # ── Which agent this bridge acts for ────────────────────────────────────────────────────
 #
 # A harness that runs one of the person's agents starts this bridge with that agent's token in
-# `YANTRIK_AGENT_TOKEN` (design/agents-workspace-2026-09-23.md, decision 3). Every `yos act` from
-# here then carries it BESIDE the arguments — `yos` reads the same variable and sends it as the
-# top-level `agent_token` of `app.act` — and the shell resolves it to the agent, checking that the
-# calling process descends from that agent's harness. Three rules about it, and all three are
-# about where a secret must not end up:
+# `YANTRIK_AGENT_TOKEN` (design/agents-workspace-2026-09-23.md, decision 3). Every `yos act` carries it
+# BESIDE the arguments (`yos` reads the same variable and sends it as the top-level `agent_token` of
+# `app.act`) and the shell resolves it to the agent, checking the calling process descends from that
+# agent's harness. Where a secret must not end up:
 #
-#   * It goes to `yos` through the ENVIRONMENT, never the command line. Any user on the machine
-#     can read another process's command line (/proc/<pid>/cmdline); only the same user can read
-#     its environment.
-#   * It is never an argument. `args` is what the approval card draws, what
-#     `record_unasked_action` writes to `mind-audit.jsonl` and what a grant is bound to; a token
-#     in any of them is a token anyone reading the screen or the log can replay. An `agent_token`
-#     a model puts into `args` is dropped (see `act_pairs`) rather than sent.
+#   * It goes to `yos` through the ENVIRONMENT, never the command line (/proc/<pid>/cmdline is
+#     readable by any user; the environment only by the same user).
+#   * It is never an argument: `args` is what the card draws, what `mind-audit.jsonl` records and what
+#     a grant is bound to. An `agent_token` a model puts into `args` is dropped (see `act_pairs`).
 #   * It is never shown. Nothing this bridge returns or logs repeats it (`scrub`).
 #
 # With a token, a command runs in the agent's own terminal in its pane — `shell.agent_run` —
@@ -269,7 +255,13 @@ OS_DESCRIBE_TAIL = (", or a service os_apps lists as answering. A Yantrik app th
                     "view. An app with a large family of related actions "
                     "lists that family as signatures and grades only — enough to see that an "
                     "action exists — and says so; pass that family's prefix as `actions` to get "
-                    "what each of them does.")
+                    "what each of them does. To find an action without reading state, pass "
+                    "`actions` with the family word (`agent_`, `files_`): a prefix of the "
+                    "names, up to the first underscore, not an exact action name. That answer "
+                    "holds the action signatures and nothing else, no state, so it is not a "
+                    "read of the person's data; describing an app without `actions` shows its "
+                    "state, and for an app that holds the person's data it counts as a "
+                    "private read.")
 SURFACE_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
@@ -405,24 +397,26 @@ TOOLS = [
                        "os_act on shell with open_app opens an app, and os_describe on shell "
                        "shows windows, files and the conversation. Use the names exactly as "
                        "listed — an app is sometimes opened under one name and described "
-                       "under another, and the listing says which. A service is read the same "
+                       "under another, and the listing says which. A section lists "
+                       "every app on this machine, running or not, with what it is for (`for`), "
+                       "how it opens (`opens`) and the name to describe it by (`describe_as`): "
+                       "it holds nothing of the person's, so reading it is free. A service is read the same "
                        "way as an app: os_describe system-monitor for CPU and memory, "
                        "os_describe weather for local conditions.",
         "inputSchema": {"type": "object", "properties": {}},
-        "argv": lambda a: ["ls"],
+        # `--catalog` adds every app the machine has — `for`, `opens`, `describe_as` — from the same
+        # list as `describe shell` > `state.apps`. It holds no state and no person data, and a
+        # call to it is not a private read (#1062).
+        "argv": lambda a: ["ls", "--catalog"],
         "timeout": 15,
     },
     {
         "name": "os_describe",
         "annotations": {"readOnlyHint": True, "openWorldHint": False},
-        # Named services, because a mind finds tools by the words in their descriptions: asked
-        # "how much memory and CPU is this machine using?", Yantrik Mind searched its tools
-        # three times, matched nothing here, and said it had no data.
-        # The names are this machine's, read when the tools are listed (`os_describe_text`): the
-        # apps whose .desktop files declare a surface, each with what it is for. This listed
-        # eight names typed in here, so an app installed later — anybody's — was one a mind
-        # could only find by reading os_apps first, and the words it searches tools by ("CPU",
-        # "weather") are the apps' own purposes now rather than this file's.
+        # A mind finds tools by the words in their descriptions ("how much memory and CPU is this
+        # machine using?" matched nothing here once). The names are this machine's, read when the tools
+        # are listed (`os_describe_text`): the apps whose .desktop files declare a surface, with what
+        # each is for, so an app installed later is found without reading os_apps first.
         "description": OS_DESCRIBE_HEAD + OS_DESCRIBE_TAIL,
         "inputSchema": {
             "type": "object",
@@ -438,17 +432,18 @@ TOOLS = [
             },
             "required": ["app"],
         },
-        # `--fold` is what makes a describe affordable to READ. Measured on the live desktop,
-        # `describe shell` cost a mind about 3,400 tokens that then sat in its conversation for
-        # the whole session; folded it is about 2,200 with nothing lost — the state object is
-        # printed one key per line instead of one bracket per line, and a family of twenty
-        # `files_*` actions is listed by signature with a line saying how to expand it. That
-        # expansion is `actions`. See `render_state` and `render_folded` in `yos`.
+        # `--fold` makes a describe affordable to READ: `describe shell` cost about 3,400 tokens that sat
+        # in the conversation all session, folded about 2,200 with nothing lost (the state one key per
+        # line, a family of `files_*` actions as signatures with a line saying how to expand it, which
+        # is `actions`). See `render_state` and `render_folded` in `yos`.
         #
         # This is the READER's form. Nothing the bridge parses for itself asks for it — see the
         # note on `action_detail`.
+        #
+        # With `actions` it is also `--no-state`: signatures alone, no summary and no state, so
+        # that the answer can be one that taints nothing (#1062; `describe_taint`).
         "argv": lambda a: ["describe", a["app"], "--fold"] + (
-            ["--actions", str(a["actions"])] if a.get("actions") else []),
+            ["--no-state", "--actions", str(a["actions"])] if a.get("actions") else []),
         "timeout": 20,
     },
     {
@@ -746,12 +741,10 @@ BY_NAME = {t["name"]: t for t in TOOLS}
 
 # ── The agent's own terminal, as tools ──────────────────────────────────────────────────
 #
-# Offered only to a bridge started with an agent token, because only an agent has a terminal of
-# its own: each command gets a fresh PTY the shell owns, drawn in the agent's pane, with its exit
-# code, the directory it ended in and its output. They are the shell's `agent_run`, `agent_job`,
-# `agent_input` and `agent_kill`, made with `os_act` underneath — so the grades, the mode, the
-# approval card and the audit are exactly `os_act`'s: `agent_run` and `agent_input` are
-# `sensitive`, and in `ask` mode the person sees a card first.
+# Offered only to a bridge started with an agent token: each command gets a fresh PTY the shell owns,
+# drawn in the agent's pane, with its exit code, the directory it ended in and its output. They are
+# the shell's `agent_run`, `agent_job`, `agent_input` and `agent_kill` made with `os_act`, so the
+# grades, mode, card and audit are `os_act`'s (`agent_run` and `agent_input` are `sensitive`).
 #
 # Clearer than `os_act terminal.run` for a mind, and not only by name: the answer comes back when
 # the command has ENDED, rather than whatever a terminal showed in the next 900 ms.
@@ -1029,7 +1022,7 @@ def agent_route(args):
     given = args.get("args")
     if isinstance(given, str):
         try:
-            parsed = json.loads(given)
+            parsed = json.loads(given, strict=False)
         except ValueError:
             parsed = None
         given = parsed if isinstance(parsed, dict) else {"command": given}
@@ -1213,21 +1206,12 @@ SILENT_KEYS = {"enter", "return", "tab", "escape", "esc", "backspace", "delete",
 
 
 def browser_args(args):
-    """An os_act's arguments as the object the browser will get — read the way `act_pairs` reads
-    them, so the taint judges exactly what is sent: an object, JSON that arrived as text, or one
-    bare value for the action's one argument that carries words."""
-    inner = args.get("args")
-    if isinstance(inner, str):
-        try:
-            parsed = json.loads(inner)
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, dict):
-            inner = parsed
-        else:
-            one = {"go": "url", "type": "text", "press": "key", "dialog": "text", "select": "option"}
-            inner = {one.get(str(args.get("action") or ""), "value"): inner}
-    return inner if isinstance(inner, dict) else {}
+    """An os_act's arguments as `yos` will receive them: the ONE parse (`sent_args`), so the taint
+    judges exactly what is sent. An argument that cannot be read is empty, and nothing is sent."""
+    try:
+        return sent_args(args)
+    except ValueError:
+        return {}
 
 
 def outbound_of(tool, args):
@@ -1296,7 +1280,20 @@ def bare_value_refusal(app, action, names, value):
 
 
 def act_pairs(a):
-    """Turn an os_act call's arguments into the key=value pairs `yos act` expects.
+    """The key=value pairs `yos act` is given: the arguments of `parsed_args`, stringified."""
+    return ["%s=%s" % (k, v if isinstance(v, str) else json.dumps(v)) for k, v in parsed_args(a).items()]
+
+
+def sent_args(a):
+    """The arguments as `yos` reads them back, each pair split at its first `=`. EVERY check on a
+    call's arguments (the taint, the card, the grant) reads this dict, never a second parse of the
+    call: a check made on one parse of the arguments and a send made on another is a bypass (review
+    of #1080, H1: a raw tab in JSON text hid a `url` from a strict parse that the send read)."""
+    return dict(pair.split("=", 1) for pair in act_pairs(a))
+
+
+def parsed_args(a):
+    """The arguments of an os_act call as an object: parameter name to value. Raises ValueError.
 
     A model asked to append a line will often send the line itself where an object was
     specified — `"args": "the text"` rather than `{"text": "the text"}`. That is a
@@ -1306,7 +1303,7 @@ def act_pairs(a):
     """
     args = a.get("args")
     if not args:
-        return []
+        return {}
 
     if isinstance(args, str):
         # It may simply be JSON that arrived as text. Not strictly: a model writing a note's lines
@@ -1336,8 +1333,7 @@ def act_pairs(a):
     # An `agent_token` among the arguments is dropped, never sent: which agent a call is for rides
     # beside the arguments, from this bridge's own environment (see AGENT_TOKEN), and `yos` would
     # otherwise lift an `agent_token=` pair out and use it in place of the real one.
-    return ["%s=%s" % (k, v if isinstance(v, str) else json.dumps(v)) for k, v in args.items()
-            if k != "agent_token"]
+    return {k: v for k, v in args.items() if k != "agent_token"}
 
 
 def yos(args, timeout):
@@ -1482,41 +1478,59 @@ def ambiguous(pair):
 # has none to spend. The moment it reads app state, machine events or machine audio, putting
 # data into a page stops being free.
 #
-# Scope is the person's conversation, as the DESKTOP counts it. This used to be the process, on
-# the reasoning that a harness spawns this bridge once and keeps it, so process lifetime is session
-# lifetime. For a gateway-shaped harness it is not: Hermes keeps one bridge across every Lens
-# "+ new conversation", so one calendar read tainted every conversation after it, and the person
-# had no way back short of restarting the harness — while the refusal told the mind to "start a
-# fresh session", and the mind told the person to start a new chat that would change nothing
-# (E.REF1, VM 541, 15 Oct 2026).
+# Scope is the person's conversation, as the DESKTOP counts it, not this process (a gateway-shaped
+# harness such as Hermes keeps one bridge across every Lens "+ new conversation", so one calendar read
+# tainted every later one: E.REF1, VM 541, 15 Oct 2026). The desktop keeps the scope
+# (`crates/yantrik-ui/src/taint_scope.rs`): one per harness's Lens conversation, begun only by the
+# person's + there, kept on disk, read here over the shell's own surface and never from the mind.
+# Every private read is marked to it and read back before every guarded decision (`sync_scope`). A
+# desktop that cannot say (down, older, a token not believed, a caller it cannot place) is the SAME
+# scope: nothing is cleared on a failure.
 #
-# So the desktop keeps the scope (`crates/yantrik-ui/src/taint_scope.rs`): one per harness's
-# conversation in the Lens, begun only by the person's press of + there, kept on disk across
-# restarts, and read here over the shell's own surface — never from the mind, which names
-# nothing in either call. Every private read is marked to it; before every guarded decision this
-# bridge reads it back (`sync_scope`). A desktop that cannot say — down, older than the action,
-# a token it does not believe, a caller it cannot place — is the SAME scope: nothing is cleared
-# on a failure, and a bridge that never hears from it keeps the process scope it always had.
+# Only a bridge the desktop ATTRIBUTES to the Lens conversation follows it: `follows: true` goes to a
+# believed `<harness>:main` token alone. A sub-agent's, a role's and every tokenless bridge (Hermes's,
+# OpenClaw's: the gateway's, serving cron jobs and background tasks too) hears `follows: false` and
+# keeps its taint for as long as it runs; following the Lens there would let the person's + clear a
+# background session that read private state (security review of #817, design point 1).
 #
-# Only a bridge the desktop ATTRIBUTES to the Lens conversation follows it. The desktop answers
-# `follows: true` only to a believed `<harness>:main` token: a bridge that serves that one
-# conversation. Every other bridge hears `follows: false`: a sub-agent's, a role's, and every
-# bridge with no token. A tokenless bridge (Hermes's, OpenClaw's) is the gateway's, and it serves
-# the gateway's cron jobs, background tasks and other platforms as well as the Lens. Nothing says
-# which of them a call came from. Following the Lens there would let the person's + clear a
-# background session that read private state, which could then send it to the web (security
-# review of #817, design point 1). Such a bridge keeps its taint for as long as it runs, the
-# process scope it always had, and once told so it never follows a scope again. A bridge the
-# desktop cannot attribute (no answer, an error, a token not believed) keeps its taint too: fail
-# closed.
+# There is deliberately NO tool to clear the taint: a caller that can untaint itself is not constrained.
 #
-# There is still deliberately NO tool to clear the taint, and no action a mind can call starts a
-# scope: a caller that can untaint itself is not constrained. A new conversation the person
-# starts is the person's decision rather than an agent's.
+# What counts as a private read is as narrow as the data, and no narrower (#1062; docs/app-control.md).
+# A describe taints unless, failing closed: (1) its answer holds no state (`os_describe {app,
+# actions}` is `yos describe --no-state`: a sentinel line, then only indented lines, judged on the
+# ANSWER, so an older `yos` that prints state taints); or (2) the app is on `NO_PERSON_DATA`
+# (empty today, below). A re-read of an app a mind just changed is a read of real state. The shell,
+# Calendar, Notes, Email, Files, Weather, the terminals and the browser are private and stay so.
 PRIVATE_READS = {"os_describe", "os_screen", "os_perception", "web_listen",
                  # Another agent's session: what it read, its commands' output.
                  "read_agent"}
 OUTBOUND = {"web_type", "web_go"}
+# The apps whose describe holds nothing of the person's, by the name `surface_name` folds to. EMPTY on
+# purpose: any app can declare the surface id `mind-desk` in its .desktop file and nothing reserves a
+# name, so an exemption by name would free that app's state. A name goes here only with a way to know
+# the app behind it is the one that was read, and only after reading its describe (browser, system-monitor,
+# containers, network, arcade, studio and every app that holds a document, mail, event, file or place hold data).
+NO_PERSON_DATA = frozenset()
+# What `yos describe --no-state` prints first. Mirrors `SIGNATURES_ONLY` in `yos`, and the selftest
+# holds the two together.
+SIGNATURES_ONLY = "(action signatures only: this answer holds no state)"
+
+
+def signatures_only(raw):
+    """Is this describe answer nothing but action signatures? Read from the answer itself.
+
+    The sentinel first, then only indented lines. Split on every separator Python knows, as `yos`
+    escapes them in what it prints, so a line that would start a line of its own is one."""
+    lines = str(raw or "").strip().splitlines()
+    return bool(lines) and lines[0] == SIGNATURES_ONLY and all(
+        not line.strip() or line.startswith(" ") for line in lines[1:])
+
+
+def describe_is_private(args, raw):
+    """Did this successful os_describe read private state? True unless it can be shown it did not."""
+    if signatures_only(raw):
+        return False
+    return surface_name(args.get("app")) not in NO_PERSON_DATA
 # Reads a mind makes through os_act, because they are the shell's actions: a display's text, read
 # from its pixels (#257). Private the way os_screen is — everything on the display is in them.
 # A picture of a display holds even more than its text (design/capture-2026-10-15.md), so the two
@@ -1534,7 +1548,48 @@ SCREEN_READS = {("shell", "read_screen"), ("shell", "read_mind_view"),
 PRIVATE_ACT_SURFACES = {"calendar"}
 
 _SAW_PRIVATE = []          # what tainted this conversation, in order, for the refusal message
-TAINT_OFF = os.environ.get("YOS_MCP_NO_TAINT") == "1"
+# `YOS_MCP_NO_TAINT=1` turns the taint off only on a machine that declares it holds no person's data: a
+# root-owned marker file. The variable alone is not enough, since anything that starts this bridge can
+# set it. Missing, or not as strict as below: the taint stays on. Not proof against a process that starts
+# its OWN bridge in a user and mount namespace it made: the identity uid map on a real procfs refuses
+# the plain case, and what protects the machine is that a harness's bridge runs outside any mind's
+# namespace, and a mind that can start its own has no need of this one.
+TAINT_MARKER = "/etc/yantrik/no-person-data"
+IDENTITY_UID_MAP = ["0", "0", "4294967295"]
+UID_MAP = "/proc/self/uid_map"
+
+
+def on_procfs(path):
+    """Is `path` on the kernel's procfs and not a file mounted over it (a bind from tmpfs is not)?"""
+    try:
+        import ctypes
+        buf = ctypes.create_string_buffer(256)
+        return ctypes.CDLL(None).statfs(path.encode(), buf) == 0 and int.from_bytes(buf.raw[:8], "little") == 0x9FA0
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def taint_off_declared(environ=None, marker=TAINT_MARKER, root=0, uid_map=UID_MAP):
+    """May the taint be off? Only if asked for AND the machine declares it (`root` is uid 0 here)."""
+    if (os.environ if environ is None else environ).get("YOS_MCP_NO_TAINT") != "1":
+        return False
+    try:
+        # A user namespace maps its own user to uid 0 and can mount a file of its choosing: not root's.
+        with open(uid_map, encoding="ascii") as f:
+            if f.read().split() != IDENTITY_UID_MAP or (uid_map == UID_MAP and not on_procfs(uid_map)):
+                raise OSError("this process runs in a user namespace")
+        # lstat, never stat: a symlink is not the marker. The directory is held to the same bar.
+        for path, kind in ((os.path.dirname(marker), 0o040000), (marker, 0o100000)):
+            st = os.lstat(path)
+            if st.st_mode & 0o170000 != kind or st.st_uid != root or st.st_mode & 0o022:
+                raise OSError("%s is not a root-owned %s writable by root alone" % (path, "file" if kind == 0o100000 else "directory"))
+    except OSError as e:
+        log("YOS_MCP_NO_TAINT ignored, so the private-read taint stays on: %s" % e)
+        return False
+    return True
+
+
+TAINT_OFF = taint_off_declared()
 # The desktop's id for the conversation `_SAW_PRIVATE` belongs to. None until the desktop has
 # said, which is the process — the scope this bridge always had.
 _SCOPE = {"id": None}
@@ -1686,12 +1741,10 @@ def payload_in_url(url):
     return False
 
 
-# A hand-off carries free text to another mind: a new agent's task, a message to one, a role's
-# task, a message put into the Lens. The session on the other end has read nothing private itself, so its own bridge is clean
-# and would type whatever it was handed into any page. From a session that has read private
-# state, then, a hand-off is how the taint would be laundered, and it asks the person every time,
-# whatever the mode, as putting data into a page is refused whatever the mode (found reviewing the
-# taint rule's sinks, 2026-09-27). Delegation still works; it is just never silent.
+# A hand-off carries free text to another mind: a new agent's task, a message to one, a role's task, a
+# message put into the Lens. That session has read nothing private, so its own bridge is clean and
+# would type whatever it was handed into any page: from a tainted session a hand-off is how the taint
+# would be laundered, so it asks every time, whatever the mode (2026-09-27). Delegation still works.
 HANDOFFS = {("shell", "new_agent"), ("shell", "send_to_agent"), ("shell", "hand_off"),
             # The Lens, as if typed: the mind answering there may be another one, its session clean.
             ("shell", "send_message")}
@@ -1709,60 +1762,233 @@ def surface_name(app):
     return name[len("app-"):] if name.startswith("app-") else name
 
 
-# A command is the other way out. The taint refused a tainted session's `web_go` to a new
-# address, and the mind's next move was `run_command curl https://api.open-meteo.com/...?lat=...`,
-# which went to the person as an ordinary shell.agent_run card that said nothing about the taint;
-# in `auto` or `bypass` one "Allow for this session" on such a card would have let every later
-# command run unasked (E.CMP1 run 2, VM 541, 14 Oct 2026). A command line can carry anything off
-# this machine — curl, wget, nc, a DNS lookup, a git push — so matching on its text is no
-# defence: the session is the unit. From a session that has read private state, then, every
-# action that runs in a shell what it is given is asked about every time, whatever the mode, as a
-# hand-off is. Not refused: commands stay usable, and the person decides.
+# A command is the other way out. A tainted session's `web_go` was refused, and its next move was
+# `run_command curl https://api.open-meteo.com/...?lat=...`: an ordinary card that said nothing about
+# the taint, and in `auto` one "Allow for this session" would have let every later command run
+# unasked (E.CMP1 run 2, VM 541, 14 Oct 2026). A command line can carry anything off this machine,
+# so the session is the unit, not the text: every action that runs what it is given asks every time,
+# whatever the mode, as a hand-off does. Not refused: the person decides.
 #
-# Named here as well as read from the app's own sentence (`runs_anything`), so that an app which
-# stops saying it runs anything does not quietly take its terminal out of the rule. `terminal.run`
-# routed to the agent's own terminal arrives here already as `shell.agent_run`.
+# Named here as well as read from the app's own sentence (`runs_anything`), so an app that stops saying
+# it runs anything does not take its terminal out of the rule. A routed `terminal.run` is `shell.agent_run`.
 COMMANDS = {("terminal", "run"), ("terminal", "send_input"),
             ("shell", "agent_run"), ("shell", "agent_input")}
 
 
-def carries_private(app, action, runs_anything=False):
-    """Why this hand-off or command must be asked about, from a tainted conversation. "" = no."""
-    if TAINT_OFF or not ((app, action) in HANDOFFS or (app, action) in COMMANDS or runs_anything):
+def is_go(app, action):
+    """Is this the browser's `go` — what `web_go` is, as an act on the browser's surface?"""
+    return surface_name(app) in BROWSER_NAMES and action == "go"
+
+
+def go_url(args):
+    """The address a `go` was asked to open, as the call spelled it. "" when it named none."""
+    url = browser_args(args).get("url")
+    return url if isinstance(url, str) else ""
+
+
+# Two more sinks, DECLARED by the action's own sentence in its published purpose, as OPEN_ENDED is: an
+# app says `.leaves_machine()` (what it is given may leave this machine) or `.fetches_address("url")`
+# (it fetches the address in that parameter) and is a sink here with no name added to this file. Held
+# to the Rust constants by the selftest; an action with an address parameter that does not declare it
+# does not publish (`ADDRESS_PARAMS` in control_surface.rs).
+LEAVES_MACHINE = "What it is given may leave this machine."
+FETCHES_ADDRESS = re.compile(r"It fetches the address in `([A-Za-z0-9_]+)`[.]")
+
+
+def leaves_machine(purpose):
+    return LEAVES_MACHINE.lower() in (purpose or "").lower()
+
+
+def fetch_param(purpose):
+    """The parameter holding the address an action fetches, as its purpose declares it. "" = none."""
+    found = FETCHES_ADDRESS.search(purpose or "")
+    return found.group(1) if found else ""
+
+
+ADDRESS_PARAMS = ("url", "uri", "link", "href", "webhook", "endpoint", "address")
+
+
+def inferred_fetch(app, action, purpose):
+    """`purpose`, saying it fetches the address in an address-named parameter when the action declares
+    none and this conversation has read private state: an app with no builder to declare it (the Python
+    SDK's) is a sink all the same. Read from the action's own published parameters."""
+    if TAINT_OFF or fetch_param(purpose) or is_go(app, action):
+        return purpose
+    sync_scope()
+    names = [n for n in action_parameters(app, action) if n in ADDRESS_PARAMS] if _SAW_PRIVATE else []
+    return join(purpose, "It fetches the address in `%s`." % names[0]) if names else purpose
+
+
+def go_is_free(url):
+    """May a tainted conversation open this address without asking? Only one it has already been
+    to, with nothing in it that carries data: the rule `taint_refusal` always had."""
+    return visited_form(url) in _VISITED and not payload_in_url(url)
+
+
+# ── The one form of an address a person is shown and a browser is sent (#1062) ──────────────
+#
+# SHARED: any card in this bridge that shows the person an address uses `wire_address` to make it and
+# `shown_url` to word it, and navigates to what it returned, never to the text it was given. An address
+# as typed can hold characters nobody can see (variation selectors, zero-width and bidi characters) and
+# the browser percent-encodes them into the request, so a secret could ride in what looked plain
+# (security review of #1065, M1); a Unicode host can pass for another, which punycode shows (L1).
+# The form is ASCII, printable, no whitespace: the host in punycode, every other unsafe character
+# percent-encoded as UTF-8; `%` and the URL's own delimiters as written. The card shows it, the grant
+# is bound to it and it is what is sent, byte for byte. None when no such form exists: then the person
+# is not asked.
+_WIRE_SAFE = "%/:@!$&'()*+,;=-._~?#[]"
+
+
+def wire_address(url):
+    """`url` in the form the browser will send, as ASCII; None when it has none."""
+    from urllib.parse import quote, urlsplit
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        userinfo, at, hostport = parts.netloc.rpartition("@")
+        if hostport.startswith("["):
+            host, bracket, port = hostport.partition("]")
+            host, port = host + bracket, port
+        else:
+            host, colon, port = hostport.partition(":")
+            port = colon + port
+        if not host.isascii() or any(not c.isprintable() or c.isspace() for c in host):
+            if host.startswith("["):
+                return None
+            # The IDNA codec applies nameprep (fullwidth forms fold, ignorable characters drop)
+            # and punycodes each label; a label it cannot make is not a host.
+            host = host.encode("idna").decode("ascii")
+        netloc = quote(userinfo, safe=_WIRE_SAFE) + at + quote(host, safe=_WIRE_SAFE) + quote(port, safe=_WIRE_SAFE)
+        rest = url.strip()[len(parts.scheme) + 1:] if parts.scheme else url.strip()
+        wire = "".join((
+            quote(parts.scheme, safe=_WIRE_SAFE) + ":" if parts.scheme else "",
+            "//" + netloc if (parts.netloc or rest.startswith("//")) else "",
+            quote(parts.path, safe=_WIRE_SAFE),
+            "?" + quote(parts.query, safe=_WIRE_SAFE) if parts.query else "",
+            "#" + quote(parts.fragment, safe=_WIRE_SAFE) if parts.fragment else ""))
+    except (UnicodeError, ValueError):
+        return None
+    return wire if wire and wire.isascii() and wire.isprintable() and not any(c.isspace() for c in wire) else None
+
+
+def shown_url(url):
+    """An address as the person's card spells it, whole. Callers pass `wire_address`'s form, which
+    is plain ASCII; anything else (it should not happen) is written as quoted, escaped text so it
+    cannot start a line of its own on the card or pass for a sentence of ours."""
+    return url if url.isascii() and url.isprintable() and not any(c.isspace() for c in url) else json.dumps(url)
+
+
+def address_for_card(args, param=None):
+    """For an os_act `go` from a tainted conversation: the call with its address replaced by
+    `wire_address`'s form, so that what is asked about, bound and opened are one string.
+
+    Returns `(args, refusal)`. An untainted conversation, or a call that names no address, is
+    returned as it is. A refusal is for an address with no wire form: it is not put to the person,
+    as a card could not show them what would be sent. `param` is the parameter of an action that
+    declares it fetches an address."""
+    if TAINT_OFF or not (param or is_go(args.get("app"), args.get("action"))):
+        return args, None
+    sync_scope()
+    url = str(browser_args(args).get(param) or "") if param else go_url(args)
+    if not _SAW_PRIVATE or (not url and not param):
+        return args, None
+    try:
+        given = parsed_args(args).get(param) if param else url
+    except ValueError:
+        given = None
+    if param and not (isinstance(given, str) and given.strip()):
+        return args, ("this conversation has already read private state, and %s names no address, as text, "
+                      "that a card can show, so nothing was fetched." % args.get("action"))
+    wire = wire_address(url)
+    if wire is None:
+        return args, ("this conversation has already read private state, and the address given is "
+                      "not one a card can show as the browser would send it (its host is not a "
+                      "valid name), so the person cannot be asked about it and nothing was opened. "
+                      "Not a fault, and not something to route around: use the ordinary form of "
+                      "the address.")
+    inner = dict(browser_args(args))
+    inner[param or "url"] = wire
+    return dict(args, args=inner), None
+
+
+def sink_address(app, action, args, purpose=""):
+    """For a call that opens or fetches an address (the browser's `go`, or an action that declares
+    `fetches_address`): `(verb, address)`, the address "" when none was named. `("", "")` otherwise."""
+    if is_go(app, action):
+        return "Opens", go_url(args or {})
+    param = fetch_param(purpose)
+    value = browser_args(args or {}).get(param) if param else None
+    return ("Fetches", value if isinstance(value, str) else "") if param else ("", "")
+
+
+def carries_private(app, action, runs_anything=False, args=None, purpose=""):
+    """Why this hand-off, command, send or address must be asked about, from a tainted conversation.
+    "" = no."""
+    verb, url = sink_address(app, action, args, purpose)
+    sends = leaves_machine(purpose)
+    if TAINT_OFF or not ((app, action) in HANDOFFS or (app, action) in COMMANDS or runs_anything
+                         or verb or sends):
         return ""
     sync_scope()
     if not _SAW_PRIVATE:
         return ""
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
+    if verb:
+        # An access decision, not a dead end (#1062): where it has been it goes back unasked; anywhere
+        # new, the person is shown the address, whole, and decides. Nothing here can tell an innocent
+        # address from one carrying what was read in its host or path, so it is asked, not guessed.
+        if not url or go_is_free(url):
+            # No address named is not a question for the person: `taint_refusal` and the app answer it.
+            return ""
+        return ("This conversation has already read private state (%s), and any address it has not "
+                "been to can carry that out of this machine in its host, its path or its query: "
+                "nothing here can tell an innocent address from one carrying a secret. %s %s "
+                "is asked about every time, whatever the mode and whatever this conversation was "
+                "allowed before: not a fault, and not something to route around. If the person "
+                "says no, or does not answer, nothing is done; do not look for another route "
+                "to the same address — a command, a script, a sub-agent or typing it into a page "
+                "is the same route." % (saw, "Opening" if verb == "Opens" else "Fetching", shown_url(url)))
     if (app, action) in HANDOFFS:
         return ("This conversation has already read private state (%s), and %s.%s carries text to "
                 "another mind whose own session has read nothing private and so could put it "
                 "anywhere. It is asked about whatever the mode, as typing into a page is refused "
                 "whatever the mode: not a fault, and not something to route around."
                 % (saw, app, action))
-    if (app, action) in COMMANDS or runs_anything:
-        return ("This conversation has already read private state (%s), and %s.%s runs a command, "
-                "which can carry anything off this machine — a fetch, a lookup, a push — and "
-                "nothing here can tell an innocent command line from one carrying a secret. It is "
-                "asked about every time, whatever the mode and whatever this conversation was allowed "
-                "before: not a fault. If the person says no, do not look for another route to the "
-                "same address or the same data — another command, a script, a sub-agent or the "
-                "browser is the same route." % (saw, app, action))
-    return ""
+    if sends and not ((app, action) in COMMANDS or runs_anything):
+        return ("This conversation has already read private state (%s), and %s.%s says what it is "
+                "given may leave this machine, with nothing here able to tell an innocent text from "
+                "one carrying a secret. It is asked about every time, whatever the mode: not a "
+                "fault, and not something to route around." % (saw, app, action))
+    return ("This conversation has already read private state (%s), and %s.%s runs a command, "
+            "which can carry anything off this machine — a fetch, a lookup, a push — and "
+            "nothing here can tell an innocent command line from one carrying a secret. It is "
+            "asked about every time, whatever the mode and whatever this conversation was allowed "
+            "before: not a fault. If the person says no, do not look for another route to the "
+            "same address or the same data — another command, a script, a sub-agent or the "
+            "browser is the same route." % (saw, app, action))
 
 
-def private_card_line(app, action):
-    """What the person's card says first, when the taint is why they are asked.
-
-    The card is where the person decides, so it names what this session read and why that
-    matters. It also says that what leaves cannot be undone, which is true, and which is the
-    sentence the shell reads (`approvals::unrecoverable`, over the caller's purpose as well as the
-    app's): it asks about it in `ask`, `auto` and `bypass` even where a session rule would have
-    answered, and offers no rule for it. Without that the shell would have answered `not_needed`
-    to a mode that runs the action anyway, and nobody would have been asked."""
+def private_card_line(app, action, args=None, purpose=""):
+    """What the person's card says first, when the taint is why they are asked: what this session
+    read, why that matters, and that what leaves cannot be undone. That sentence is also what makes
+    a shell that predates `tainted` ask in `ask`, `auto` and `bypass`, and offer no session rule."""
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
+    verb, url = sink_address(app, action, args, purpose)
+    if verb:
+        # The whole address, exactly: an address can carry what was read, and the person is
+        # deciding about that address and no other. The shell draws a value this long whole or
+        # does not ask (`approval_bounds`), never clipped.
+        return ("%s %s. This conversation has already read private state (%s), and an address "
+                "can carry it out in its host, its path or its query, so you are asked whatever "
+                "the mode. What leaves cannot be undone. %s"
+                % (verb, shown_url(url), saw, fresh_card_line()))
     if (app, action) in HANDOFFS:
         return ("Carries what this conversation has read (%s). Once it is handed on, that cannot be "
+                "undone. %s" % (saw, fresh_card_line()))
+    if leaves_machine(purpose) and (app, action) not in COMMANDS:
+        return ("This conversation has already read private state (%s), and what this is given may "
+                "leave this machine, so you are asked whatever the mode. What leaves cannot be "
                 "undone. %s" % (saw, fresh_card_line()))
     return ("This conversation has already read private state (%s), and a command can carry "
             "anything off this machine, so you are asked whatever the mode. What leaves cannot be "
@@ -1799,7 +2025,13 @@ def taint_refusal(name, args):
         return None
     sync_scope()
     if name == "web_go":
-        where = visited_form(args.get("url", ""))
+        raw = args.get("url", "")
+        approved, _LOCAL.go_approved = getattr(_LOCAL, "go_approved", None), None
+        if _SAW_PRIVATE and isinstance(raw, str) and approved and approved == raw:
+            # The person was shown this exact address, in full, and allowed it: `guard_act` set
+            # this for this call alone and it is spent here, so it is no leave for the next one.
+            return None
+        where = visited_form(raw)
         if not _SAW_PRIVATE:
             _VISITED.add(where)
             return None
@@ -1812,12 +2044,13 @@ def taint_refusal(name, args):
     elif not _SAW_PRIVATE:
         return None
     saw = ", ".join(dict.fromkeys(_SAW_PRIVATE))
-    what = "type into a page" if name == "web_type" else "open an address it has not been to (any new address can carry data out, in its host or its path)"
+    what = "type into a page" if name == "web_type" else "open an address it has not been to (any new address can carry data out, in its host or its path) without the person's allow"
     return ("this conversation has already read private state (%s), so it will not %s. "
             "Whatever is on this machine could be carried out that way, and nothing here "
-            "can tell an innocent string from a secret. A person has to do this part, or "
-            "%s. Tell the person exactly that; do not tell them a new chat will clear it "
-            "in any other way." % (saw, what, clean_scope()))
+            "can tell an innocent string from a secret. This is not a fault, and not something "
+            "to route around. A person has to do this part, or %s. Tell the person exactly "
+            "that; do not tell them a new chat will clear it in any other way."
+            % (saw, what, clean_scope()))
 
 
 
@@ -1827,16 +2060,9 @@ LADDER = ["safe", "standard", "sensitive", "dangerous"]
 # without a person being asked, so a harness that wants to be careful on a machine in `auto`
 # sets it to `standard` and gets cards back instead of silent runs.
 #
-# It binds only when it is actually SET, and that is the whole of why: the desktop now has a
-# real policy — the mode the person chose — and a default sitting here would quietly overrule
-# it. The historical default was `standard`, which is exactly what `ask` mode already does, so
-# leaving it unset changes nothing for the desktop this bridge shipped against and stops `auto`
-# from being neutered by a value nobody set.
-#
-# It can only ever TIGHTEN. The mode and the machine ceiling both outrank it, so setting it to
-# `dangerous` on a desktop in `ask` mode does not stop the asking. A value that is not on the
-# ladder is not a permission to do anything, so it is treated as unset rather than left to
-# whatever `LADDER.index` would have raised.
+# It binds only when it is actually SET: the desktop has a real policy (the mode the person chose) and a
+# default here would overrule it. It can only ever TIGHTEN: the mode and the machine ceiling outrank it.
+# A value not on the ladder is treated as unset.
 CEILING = os.environ.get("YOS_MCP_MAX_PERMISSION", "").strip()
 CEILING_SET = CEILING in LADDER
 if not CEILING_SET:
@@ -1999,10 +2225,9 @@ def shell_state():
 
 # ── What the mind may do without being asked ────────────────────────────────────────────
 #
-# One fixed policy — ask about everything sensitive — is wrong at both ends of a day's work. A
-# long trusted job becomes forty cards, and a person trained to click Allow forty times will
-# click it on the forty-first without reading; "just look, don't touch" had no expression at all.
-# So the desktop has a mode, the person sets it, and this bridge reads it.
+# One fixed policy is wrong at both ends of a day's work: a long trusted job becomes forty cards and
+# a person trained to click Allow clicks it on the forty-first unread, and "just look, don't touch"
+# had no expression. So the desktop has a mode, the person sets it, and this bridge reads it.
 #
 # The decision table below is a SECOND implementation of `mind_mode::Modes::decide` in
 # `crates/yantrik-ui/src/mind_mode.rs`, which is the definition and the one with the unit tests.
@@ -2101,7 +2326,7 @@ def open_ended(purpose):
 
 
 def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool="os_act",
-           runs_anything=False, standing=()):
+           runs_anything=False, standing=(), tainted=False):
     """Run it, ask about it, or refuse it — the whole table, as one pure function.
 
     Returns `(verdict, detail)`:
@@ -2115,30 +2340,23 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
         ("refuse_ceiling", why) above the machine's own `tool_permission`.
         ("refuse_mode", why)    plan mode.
 
-    `cannot_undo` is `unrecoverable()` over the action's own published purpose — the second
-    input, and the one that is not a grade. In `auto` it turns a quiet run into a card, exactly
-    as `dangerous` does, and in no mode does a session rule cover it. See the 21 September entry
-    in `design/mind-modes-2026-09-21.md`; the shell's `Modes::decide` takes the same flag in the
-    same position.
+    `cannot_undo` is `unrecoverable()` over the action's own published purpose, the input that is not a
+    grade: in `auto` it turns a quiet run into a card as `dangerous` does, and no session rule covers it
+    (design/mind-modes-2026-09-21.md; the shell's `Modes::decide` takes the same flag).
 
-    `why` is written to be relayed to a person as it stands.
+    `tainted` is a hand-off, command or new web address from a conversation that has read private
+    state: a `run` becomes `ask` in EVERY mode, full bypass included, whatever a rule covers. The
+    one named exception to `bypass_all` asking nothing. Refusals (plan, the ceiling) stand.
 
-    Order is the security argument. The machine's ceiling is consulted FIRST, so no mode — not
-    even full bypass — reaches past the owner's standing policy, and nothing above it is ever put in
-    front of a person either: a card no answer of theirs could satisfy teaches them that the card
-    is noise.
-
-    Everything the table decides is in here, so there is one function to check against the
-    vectors and no second copy for the selftest to agree with by accident. What is deliberately
-    NOT in here is everything that needs the world: reading the desktop (`shell_state`), grading
-    the action (`action_detail`), and putting the card up (`ask_the_person`).
+    `why` is written to be relayed to a person as it stands. Order is the security argument: the
+    machine's ceiling is consulted FIRST, so no mode reaches past the owner's standing policy, and
+    nothing above it is put in front of a person (a card no answer could satisfy teaches them cards
+    are noise). Everything the table decides is in here; what needs the world (`shell_state`,
+    `action_detail`, `ask_the_person`) is not.
     """
-    # The browser tools carry no grade and never meet the machine ceiling — `yos web` refuses any
-    # control whose label reads as a commitment, which is a different question and is enforced
-    # inside the same evaluation that would have pressed it. All the mode decides here is whether
-    # putting something INTO a page counts as looking. It does not; reading one does, which is
-    # why a plan a nobody could research would be worthless. WEB_WRITES is defined below, beside
-    # the guard that calls this for them.
+    # The browser tools carry no grade and never meet the machine ceiling (`yos web` refuses any control
+    # whose label reads as a commitment). All the mode decides here is whether putting something INTO a
+    # page counts as looking: it does not. WEB_WRITES is defined below, beside the guard that calls this.
     if tool != "os_act":
         if tool in WEB_WRITES and mode == "plan":
             return "refuse_mode", (
@@ -2222,10 +2440,8 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
         else:
             verdict, detail = "run", would_ask
     elif mode == "bypass_all":
-        # Full bypass: unchanged from what bypass used to be, and the one mode the app's own
-        # sentence does not touch. It does not ask, by definition and by what its confirmation
-        # says; a card after "asks nothing, not even those" would make that panel a lie. It is
-        # written down instead — `would_ask` is true here, so it lands in the audit.
+        # Full bypass: the one mode the app's own sentence does not touch. It does not ask, and
+        # says so, with ONE named exception: `tainted`, below. What runs is written down instead.
         verdict, detail = "run", would_ask
     elif mode == "auto":
         if rank >= LADDER.index("dangerous") or irreversible or opened:
@@ -2250,7 +2466,8 @@ def decide(level, app, action, cannot_undo, mode, rules, machine, cap=None, tool
     # decides, and then the harness may hold itself back further.
     if cap in LADDER and verdict == "run" and rank > LADDER.index(cap):
         return "ask", None
-    return verdict, detail
+    # Never unasked, in any mode: a card even where the mode, a rule or a standing rule says run.
+    return ("ask", None) if tainted and verdict == "run" else (verdict, detail)
 
 
 def decide_outcome(vector):
@@ -2348,33 +2565,41 @@ def shell_call(action, args, timeout=None):
 def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False):
     """Put one action in front of the person, wait, and report exactly what happened.
 
-    Returns `(allowed, message, grant)`. The message is the whole account the mind gets, and it
-    is written to be reported onwards as-is: a person who asked for something ordinary should
-    hear what their machine did, not a paraphrase of a status code. The grant is the request id
-    the person allowed, to be carried on the `yos act` that follows.
+    Returns `(allowed, message, grant)`. The message is the whole account the mind gets, written to
+    be reported onwards as-is. The grant is the request id the person allowed, carried on the
+    `yos act` that follows: the app's own dispatch spends it (issue #116). `request_approval` puts a
+    card up, `approval_status` reads an answer somebody else gave; nothing here grants.
 
-    The steps are the shell's, and none of them decides anything: `request_approval` puts a card
-    up, `approval_status` reads an answer somebody else gave. The grant is SPENT by the app's own
-    dispatch when the action runs (issue #116) — this bridge used to call `consume_approval`
-    itself, which put the check in the caller; now every door's call is checked the same way,
-    and this bridge's part is to carry the grant it was given. There is no action anywhere on
-    this desktop that grants.
-
-    `must_ask` is the taint's: this call is never run unasked, so a desktop that answers
-    `not_needed` to it is a refusal here, not a go-ahead.
+    `must_ask` is the taint's: this call is never run unasked. The shell is told (`tainted`) and
+    raises the card in every mode, full bypass included; a desktop that still answers `not_needed`
+    (an older shell) or cannot show a card is a refusal here, never a go-ahead.
     """
-    request, err = shell_call("request_approval", {
+    request, err = shell_call("request_approval", dict({
         "app": app,
         "action": action,
         "grade": grade,
         "purpose": purpose,
         "args_json": args,
         "requester": requester,
-    })
+    }, **({"tainted": True} if must_ask else {})))
     if request is None and "REACH:" in (err or ""):
         # This agent was started as a catalog role, and the act is outside its reach: the shell
         # will not put that question in front of the person. Its own words, naming the role.
         return False, re.sub(r"^yos: ", "", err.strip()), None
+    if request is None and must_ask and surface_name(app) in BROWSER_NAMES and action == "go":
+        # Not a grade above a ceiling: the person was never shown the address. Usually it is too
+        # long for a card to show whole, which the shell will not clip (`approval_bounds`).
+        return False, (
+            "the person could not be asked about opening this address, so nothing was opened: %s. "
+            "Tell them what you wanted to open and let them decide; a shorter address may be one "
+            "a card can show." % err), None
+    if request is None and must_ask:
+        # The reason is the shell's own: approvals off for a test run, no screen to show a card on.
+        return False, (
+            "the person could not be asked about %s.%s, and from a conversation that has read "
+            "private state it is never run unasked, so nothing was run: %s. Do not look for "
+            "another route to the same effect: tell them what you wanted to do and let them decide."
+            % (app, action, err)), None
     if request is None:
         return False, (
             "%s.%s is graded %s, above this session's %s ceiling, so it needs the person at the "
@@ -2382,16 +2607,16 @@ def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False)
             "was changed. Tell them what you were trying to do and let them decide."
             % (app, action, grade, CEILING, err)), None
 
-    # A hand-off or a command from a session that has read private state is never run unasked.
-    # Only full bypass answers `not_needed` to one: the card's own sentence asks in every other
-    # mode (see `private_card_line`). That mode raises no card by definition, so the answer is no.
+    # A hand-off, command or new address from a session that has read private state is never run
+    # unasked. A shell that knows `tainted` raises the card in every mode; one that answers
+    # `not_needed` anyway predates that, and the answer is no, not a go-ahead.
     if request.get("status") == "not_needed" and must_ask:
         return False, (
-            "the desktop's current mode (%s) puts no card in front of anybody, so the person could "
-            "not be asked about %s.%s — and from a conversation that has read private state it is never "
-            "run unasked. Nothing was run. Do not look for another route to the same effect: tell "
-            "the person what you wanted to do; they can switch the mode from the chip in the "
-            "status bar, or do this part themselves."
+            "the desktop (mode %s) raised no card, so the person could not be asked about %s.%s "
+            "— and from a conversation that has read private state it is never run unasked. "
+            "Nothing was run. Its shell predates the rule that asks in every mode; it needs an "
+            "update. Do not look for another route to the same effect: tell the person what you "
+            "wanted to do, or let them do this part themselves."
             % (request.get("mode", "full bypass"), app, action)), None
 
     # The desktop decided nobody needed asking. That is not a refusal and not a failure: it
@@ -2419,18 +2644,13 @@ def ask_the_person(app, action, grade, purpose, args, requester, must_ask=False)
     # Two things about this loop are the 22 September defect, and both are about a card that is
     # ALREADY on somebody's screen:
     #
-    #   * A poll that fails no longer ends the wait. It used to return "the desktop stopped
-    #     answering" on the first failure — while the card was still up and the person could
-    #     still press Allow, leaving a grant nobody would ever spend. One `yos` that took too
-    #     long, one transient non-zero exit, and a live question was abandoned. Now it is asked
-    #     again, until the wait is up, and each failure is written to stderr with why.
-    #   * Every poll is inside the budget. The wait is a promise to the mind — and to whatever
-    #     is counting seconds on the other end of it — so the sleep and the poll's own subprocess
-    #     timeout are both cut to what is left of it. The whole wait ends within APPROVAL_WAIT
-    #     plus the spawn of one last `yos`, whatever the desktop does.
+    #   * A poll that fails no longer ends the wait: it used to return "the desktop stopped answering"
+    #     on the first failure while the card was still up, leaving a grant nobody would spend. It is
+    #     asked again until the wait is up, and each failure is written to stderr with why.
+    #   * Every poll is inside the budget: the sleep and the poll's own timeout are cut to what is left,
+    #     so the whole wait ends within APPROVAL_WAIT plus the spawn of one last `yos`.
     #
-    # Nothing in here may raise. A wait that ends in an exception is a card in front of a person
-    # with nobody left waiting for their answer, so the poll is wrapped and the reason is kept.
+    # Nothing in here may raise: an exception is a card in front of a person with nobody waiting.
     deadline = time.monotonic() + APPROVAL_WAIT
     status = "pending"
     heard = False            # did the desktop answer a poll at all?
@@ -2509,13 +2729,7 @@ def guard_act(args):
     refusal, a note to carry back beside the action's own output, — when it ran without anybody
     being asked — the record to report to the shell once the outcome is known, and — when the
     person was asked and said yes — the grant to carry on the `yos act`, which the app's own
-    dispatch spends.
-
-    This used to be a wall. `delete_event` is graded `sensitive`, this bridge's ceiling is
-    `standard`, and somebody who typed "delete the dentist appointment from my calendar" was told
-    to raise an environment variable. Then it became a question. It is now a question the PERSON
-    has already answered in general — plan, ask, auto, bypass or full bypass — and this reads their answer per
-    call rather than applying one policy to a whole day's work.
+    dispatch spends. The person's mode (plan, ask, auto, bypass, full bypass) is read per call.
     """
     app, action = args.get("app"), args.get("action")
     if not app or not action:
@@ -2564,6 +2778,14 @@ def guard_act(args):
         unreadable = ("(this bridge could not read the desktop's mind-mode, so it fell back to "
                       "`ask` — the strict default — and nothing was assumed.)")
 
+    param = fetch_param(purpose)
+    if param:
+        # The address as the browser-like fetch will be sent it, asked about, bound and fetched alike.
+        wired, why = address_for_card(args, param)
+        if why:
+            return why, None, None, None
+        args.update(wired)
+
     try:
         bound = effective_args(args)
     except ValueError as e:
@@ -2573,17 +2795,17 @@ def guard_act(args):
     # It is an input to the table now: in `auto`, something the app says cannot be undone is
     # asked about exactly as a `dangerous` action is. `action_detail` already returned it — it
     # has always been read for the card's own words — so this costs nothing new.
+    purpose = inferred_fetch(app, action, purpose)
     cannot_undo = unrecoverable(purpose)
     runs_anything = open_ended(purpose)
     cap = CEILING if CEILING_SET else None
+    private = carries_private(app, action, runs_anything, args, purpose)
 
     # One call, one table — the harness's own cap included, so there is nothing here that the
     # vectors do not cover. See `decide`; `CEILING` is only a cap when somebody set it.
     verdict, detail = decide(level, app, action, cannot_undo, mode, rules, machine, cap=cap,
-                             runs_anything=runs_anything, standing=standing)
-    private = carries_private(app, action, runs_anything)
-    if private and verdict == "run":
-        verdict = "ask"
+                             runs_anything=runs_anything, standing=standing,
+                             tainted=bool(private))
 
     if verdict.startswith("refuse"):
         return join(unreadable, detail), None, None, None
@@ -2621,13 +2843,8 @@ def guard_act(args):
                    "card" % (app, action) if by_standing else ""))
         return None, join(unreadable, note), audit, None
 
-    # Why there is a card at all, when the mode the person chose would otherwise have run this.
-    #
-    # Without it the honest report a mind can make is "the desktop is in auto and it asked me
-    # anyway", which reads as a fault and is the shape of a thing somebody tries to work around.
-    # Asked of the table rather than restated here: run the same decision with the sentence
-    # taken away and see whether it would have gone through. One extra call to a pure function,
-    # and no second copy of the rule to drift.
+    # Why there is a card at all, when the mode the person chose would otherwise have run this: asked of
+    # the table (the same decision without the sentence), so a mind does not read it as a fault.
     asked_anyway = ""
     if cannot_undo and decide(level, app, action, False, mode, rules, machine, cap=cap)[0] == "run":
         asked_anyway = (
@@ -2639,9 +2856,13 @@ def guard_act(args):
 
     asked_anyway = join(asked_anyway, private)
     # The card says it too: the person is deciding whether what this session read goes on.
-    card_purpose = join(private_card_line(app, action), purpose) if private else purpose
+    card_purpose = join(private_card_line(app, action, args, purpose), purpose) if private else purpose
     allowed, message, grant = ask_the_person(
         app, action, level, card_purpose, bound, requester_name(state), must_ask=bool(private))
+    if allowed and private and is_go(app, action):
+        # Bound to this address, for this call: the grant itself is the shell's, bound to the exact
+        # arguments and spent once, and this is the bridge's own matching half (`taint_refusal`).
+        _LOCAL.go_approved = go_url(args)
     if allowed:
         return None, join(unreadable, join(asked_anyway, message)), None, grant
     return join(unreadable, join(asked_anyway, message)), None, None, None
@@ -2705,12 +2926,10 @@ def report_unasked(audit, outcome):
 
 # ── Reading the desktop without starting a process each time (#41) ─────────────────────────
 #
-# Every tool call used to start `yos` as a process: 132 ms of interpreter start-up for a
-# question the socket answers in about 1 ms, and a mind describes apps all the time. `yos` is
-# Python like this bridge, so the reading tools now run its command in this process instead:
-# the same code, the same output and the same exit status, without the process. `os_act` still
-# runs `yos` as a process. It can wait minutes on a person's approval, and a process is what
-# its timeout can end.
+# Every tool call used to start `yos` as a process (132 ms of start-up for a 1 ms answer). `yos` is
+# Python like this bridge, so the reading tools run its command in this process: the same code,
+# output and exit status. `os_act` still runs `yos` as a process, since it can wait minutes on a
+# person's approval and a process is what its timeout can end.
 #
 # `yos` is loaded only when it is a module that can be imported safely: its source must guard
 # its entry point with `if __name__ == "__main__":` and dispatch through `COMMANDS`. Anything
@@ -2860,6 +3079,7 @@ def run_tool(tool, args, present=None):
     server away from itself.
     """
     _LOCAL.start_deadline = None
+    _LOCAL.go_approved = None
     if "browser_action" in tool:
         # Every web tool is an act on the browser's surface (#477): made there, through os_act.
         return run_browser_tool(tool, args)
@@ -2906,6 +3126,9 @@ def run_tool(tool, args, present=None):
             present = present or routed_text
         agent_call = agent_call or (str(args.get("app")) in ("shell", "app-shell")
                                     and args.get("action", "").startswith("agent_"))
+        args, refusal = address_for_card(args)
+        if refusal is not None:
+            return policy_answer(refusal), False
         refusal, note, audit, grant = guard_act(args)
         if isinstance(refusal, StartAnswer):
             return str(refusal), refusal.failed
@@ -3028,8 +3251,10 @@ def run_tool(tool, args, present=None):
         # Not for a command in the agent's own terminal: it is drawn in the agent's pane, and
         # raising a window for it — the Terminal's, or anyone's — is what that pane replaces.
         follow(app)
-    if tool["name"] in PRIVATE_READS and p.returncode == 0:
-        # Recorded after the call, not before: a read that failed saw nothing.
+    if (tool["name"] in PRIVATE_READS and p.returncode == 0
+            and not (tool["name"] == "os_describe" and not describe_is_private(args, p.stdout))):
+        # Recorded after the call, not before: a read that failed saw nothing. A describe whose
+        # answer holds no state, or of an app that holds none of the person's, is not a read of it.
         saw_private(tool["name"])
     if tool["name"] == "os_act" and p.returncode == 0 and surface_name(app) in PRIVATE_ACT_SURFACES:
         saw_private("%s.%s" % (surface_name(app), args.get("action")))
@@ -3375,25 +3600,17 @@ def serve_call(msg_id, tool, arguments):
 
 # ── Reading the next request while the last one is still working ───────────────────────
 #
-# This loop used to run each request to completion before reading the next line, which is fine
-# for a bridge whose calls are a `yos` invocation and back — and wrong the moment one of them
-# waits for a PERSON. An os_act that raises an approval card sits here for up to APPROVAL_WAIT,
-# and for that whole time nothing else on this pipe was being read: not another tool call, and
-# not the client's own liveness check.
+# This loop used to run each request to completion before reading the next, which is wrong the moment
+# one waits for a PERSON: an os_act with a card sits here for up to APPROVAL_WAIT and nothing else on
+# this pipe was read, not another call and not the client's liveness check.
 #
-# On 22 September 2026 that cost somebody four minutes. A card went up at 06:48:18Z; 59 seconds
-# into the wait Hermes' keepalive gave up on a server that was simply busy ("keepalive failed,
-# triggering reconnect"), replaced the process two seconds later, and the os_act died with it —
-# unanswered, so Hermes waited out its own 300s timeout before reporting a machine that had been
-# working correctly the entire time. The card was still on the screen; nobody was left waiting
-# for the answer.
+# On 22 September 2026 that cost somebody four minutes: a card went up at 06:48:18Z, 59 seconds in
+# Hermes' keepalive gave up on a busy server and replaced the process, and the os_act died with it,
+# unanswered, while the card was still on screen.
 #
-# So the read loop now does nothing but read. `initialize`, `ping` and `tools/list` are answered
-# here because they are instant and cannot block; every tools/call goes to a thread of its own.
-# JSON-RPC ids are what pair a reply to its request, so answering out of order is what the
-# protocol is for. Threads are not pooled or capped: the concurrency is whatever the client asks
-# for, which for a stdio client is the tool calls of one turn, and a cap would only rebuild the
-# queue this exists to remove.
+# So the read loop only reads. `initialize`, `ping` and `tools/list` are instant and answered here;
+# every tools/call goes to a thread of its own (JSON-RPC ids pair replies, so out of order is what the
+# protocol is for). Threads are not pooled or capped: a cap would rebuild the queue this removes.
 def main():
     workers = []
     for line in sys.stdin:

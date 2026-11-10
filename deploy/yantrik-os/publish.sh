@@ -6,6 +6,7 @@
 #   publish.sh iso       <channel> <file.iso>
 #   publish.sh release   <channel> <bundle.tar.zst> <version> <git> <binaries>
 #   publish.sh changelog <channel> <yantrik-os-<version>.changelog.md>
+#   publish.sh manifest  <channel> <release.signed>   (made by sign-manifest.sh, #537)
 #
 # The other end is deploy/yantrik-os/server/yantrik-publish, installed as the forced command
 # of the key this uses. This script streams the file and says what it is; the server hashes
@@ -21,7 +22,7 @@
 # accepts whatever key answers will upload the release to whoever answers.
 set -euo pipefail
 
-KIND="${1:?iso, release or changelog}"; CHANNEL="${2:?channel}"; FILE="${3:?file}"
+KIND="${1:?iso, release, changelog or manifest}"; CHANNEL="${2:?channel}"; FILE="${3:?file}"
 shift 3
 HOST="${YANTRIK_PUBLISH_HOST:-15.204.233.63}"
 USER_="${YANTRIK_PUBLISH_USER:-ubuntu}"
@@ -36,6 +37,8 @@ printf '%s\n' "$HOSTKEY" > "$KNOWN"
 
 SHA="$(sha256sum "$FILE" | cut -d' ' -f1)"
 NAME="$(basename "$FILE")"
+# The signed manifest is stored under one fixed name, whatever the local file is called.
+[ "$KIND" != manifest ] || NAME=release.signed
 echo "publishing $KIND/$CHANNEL/$NAME"
 echo "  sha256 $SHA  ($(stat -c %s "$FILE") bytes)"
 
@@ -51,8 +54,14 @@ case "$KIND" in
   iso)       URL="https://iso.yantrikos.com/$CHANNEL/$NAME.sha256" ;;
   changelog) URL="https://iso.yantrikos.com/$CHANNEL/$NAME.sha256" ;;
   release)   URL="https://releases.yantrikos.com/$CHANNEL/$NAME.sha256" ;;
+  manifest)  URL="https://releases.yantrikos.com/$CHANNEL/release.signed" ;;
 esac
-SERVED="$(curl -fsS --max-time 30 "$URL" | cut -d' ' -f1)"
+if [ "$KIND" = manifest ]; then
+  # No .sha256 beside it: the file itself is what machines verify, so fetch that and hash it.
+  SERVED="$(curl -fsS --max-time 30 "$URL" | sha256sum | cut -d' ' -f1)"
+else
+  SERVED="$(curl -fsS --max-time 30 "$URL" | cut -d' ' -f1)"
+fi
 if [ "$SERVED" = "$SHA" ]; then
   echo "  verified over https: $URL"
 else

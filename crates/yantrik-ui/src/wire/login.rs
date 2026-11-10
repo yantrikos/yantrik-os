@@ -117,9 +117,11 @@ pub(crate) fn adopt_session_password(bridge: &Arc<crate::bridge::CompanionBridge
         Ok(reply) => match reply.outcome {
             Some(Outcome::Protected) => {
                 tracing::info!("The vault is now wrapped under this account's login password");
+                crate::provider_vault::opened();
             }
             Some(Outcome::Unlocked) => {
                 tracing::info!("The vault is open for this session");
+                crate::provider_vault::opened();
             }
             Some(Outcome::Wrong) => {
                 tracing::warn!(

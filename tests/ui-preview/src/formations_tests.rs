@@ -316,6 +316,7 @@ fn agents_row_and_card(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Bo
         identity_tag: "".into(),
         claim: "Claimed name: “deepseek 1.2”".into(),
         confirm_label: "Allow once".into(),
+        decline_label: "".into(),
         destructive: false,
         what: "Acts on: folder: release".into(),
         exactly: "folder: release".into(),

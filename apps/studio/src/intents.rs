@@ -71,6 +71,7 @@ pub fn actions() -> Vec<(Action, Parse)> {
                  may charge for each picture; graded `standard` on a ComfyUI server on your own network \
                  and on `fake`, the placeholder backend, where the prompt never leaves the building.",
             )
+            .leaves_machine()
             .defers()
             .arg(arg(
                 "prompt",
@@ -107,6 +108,7 @@ pub fn actions() -> Vec<(Action, Parse)> {
                  the job's id. Graded the same way as `generate`, because it sends the same prompt to \
                  the same backend.",
             )
+            .leaves_machine()
             .defers()
             .arg(arg(
                 "of",

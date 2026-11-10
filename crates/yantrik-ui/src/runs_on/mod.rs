@@ -57,6 +57,8 @@ pub enum GatewayFact {
     },
     /// Nothing is picked, and nothing usable is there to pick.
     NoPick,
+    /// Nothing is picked, and nothing is usable because sharing is off for every account (#1042).
+    NoneShared,
     /// The gateway refuses the call, so nothing is sent: its refusal's code and sentence.
     Refused { code: String, message: String },
 }
@@ -227,6 +229,8 @@ pub enum Via {
     /// Sends them to the row's `base_url` and `model`; `lane`: the private lane.
     Sends { lane: bool },
     NoPick,
+    /// As [`Via::NoPick`], because sharing is off for every account.
+    NoneShared,
     Refused { code: String, message: String },
 }
 
@@ -245,7 +249,7 @@ impl RunsOn {
             return "Nothing set up".to_string();
         }
         match &self.via_gateway {
-            Some(Via::NoPick) => return "No model picked yet".to_string(),
+            Some(Via::NoPick | Via::NoneShared) => return "No model picked yet".to_string(),
             Some(Via::Refused { .. }) => return "Nothing is sent: the gateway refuses it".to_string(),
             _ => {}
         }
@@ -293,6 +297,7 @@ impl RunsOn {
         let model = self.model.as_deref().filter(|m| !m.is_empty());
         match &self.via_gateway {
             Some(Via::NoPick) => return "No model picked yet: nothing is sent".to_string(),
+            Some(Via::NoneShared) => return "No model can be used yet: sharing is off for every account".to_string(),
             Some(Via::Refused { code, message }) => {
                 return match code.as_str() {
                     "private_context_not_shared" => format!(
@@ -397,6 +402,7 @@ fn one(m: &MindFact, companion: Option<&CompanionFact>) -> RunsOn {
                 via_gateway: Some(Via::Sends { lane: *lane }),
                 ..base(identity::from_url(base_url), Some(model.trim().to_string()).filter(|s| !s.is_empty()), SetIn::Gateway, false)
             },
+            GatewayFact::NoneShared => RunsOn { via_gateway: Some(Via::NoneShared), ..base(ProviderRef::NotReported, None, SetIn::Gateway, false) },
             GatewayFact::NoPick => RunsOn { via_gateway: Some(Via::NoPick), ..base(ProviderRef::NotReported, None, SetIn::Gateway, false) },
             GatewayFact::Refused { code, message } => RunsOn {
                 via_gateway: Some(Via::Refused { code: code.clone(), message: message.clone() }),

@@ -97,7 +97,7 @@ pub fn accounts(saved: &[ProviderStoreEntry], free: &[FreeTier], kept: &BTreeSet
             continue;
         }
         let base_url = crate::wire::provider_models::openai_base(&e.base_url);
-        let has_key = e.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+        let has_key = e.has_key();
         let slugged = slug(&e.name);
         out.push(Account {
             id: unique(if slugged.is_empty() { slug(&e.provider_type) } else { slugged }),
@@ -105,7 +105,12 @@ pub fn accounts(saved: &[ProviderStoreEntry], free: &[FreeTier], kept: &BTreeSet
             provider_type: e.provider_type.clone(),
             local: crate::runs_on::identity::is_local(&base_url),
             base_url,
-            key: if has_key && e.auth_type != "none" { KeyRef::Saved { entry: e.id.clone() } } else { KeyRef::None },
+            key: match (has_key && e.auth_type != "none", e.vault_key_id()) {
+                // A key in the vault is read the way a free tier's is, through the vault.
+                (true, Some(id)) => KeyRef::Vault { id, fill: None },
+                (true, None) => KeyRef::Saved { entry: e.id.clone() },
+                (false, _) => KeyRef::None,
+            },
             entry: Some(e.id.clone()),
             source: Source::Saved,
             trains_on_prompts: false,

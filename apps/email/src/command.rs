@@ -16,6 +16,9 @@ pub enum Look {
     Start,
     /// Sync, pressed or raised after a sign-in: the sync line counts what came.
     Sync,
+    /// Mail was waiting for the credential vault and this asks again, on a timer. Quiet: the
+    /// sync line is left as it is until the look finds something different.
+    Resume,
 }
 
 /// Why a folder is being listed, which decides what its landing answers.

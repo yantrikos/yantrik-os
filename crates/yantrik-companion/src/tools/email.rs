@@ -1045,10 +1045,16 @@ impl Tool for EmailReplyAllTool {
             }
         }
 
+        // The recipients come from the message's own headers, which its sender wrote: one card
+        // lists all of them, bound to exactly that set, and a no sends to none.
+        let outcomes = match smtp_client::send_email_to_each(&account, &recipients, &subject, body, reply_to) {
+            Ok(outcomes) => outcomes,
+            Err(refusal) => return format!("Reply-all failed: {}", refusal),
+        };
         let mut sent_to = Vec::new();
         let mut errors = Vec::new();
-        for recipient in &recipients {
-            match smtp_client::send_email(&account, recipient, &subject, body, reply_to) {
+        for (recipient, outcome) in &outcomes {
+            match outcome {
                 Ok(()) => sent_to.push(recipient.as_str()),
                 Err(e) => errors.push(format!("{}: {}", recipient, e)),
             }

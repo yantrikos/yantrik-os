@@ -14,11 +14,11 @@ use crate::ai_accounts::store::Catalogue;
 use crate::wire::provider_models::ListedModel;
 use crate::wire::settings::ProviderStoreEntry;
 
-fn mind(id: &str, on_gateway: bool, private_context: bool) -> MindSeen {
+pub(super) fn mind(id: &str, on_gateway: bool, private_context: bool) -> MindSeen {
     MindSeen { id: id.into(), name: id.to_uppercase(), attached: true, active: true, state: String::new(), on_gateway, private_context, builtin_runs_on: None }
 }
 
-fn fixture() -> (Catalogue, Vec<crate::ai_accounts::account::Account>) {
+pub(super) fn fixture() -> (Catalogue, Vec<crate::ai_accounts::account::Account>) {
     let saved = vec![
         ProviderStoreEntry {
             id: "a1".into(),
@@ -26,6 +26,8 @@ fn fixture() -> (Catalogue, Vec<crate::ai_accounts::account::Account>) {
             provider_type: "openai".into(),
             base_url: "https://api.openai.com/v1".into(),
             api_key: Some("sk-x".into()),
+            api_key_ref: None,
+            unmigrated_key: None,
             auth_type: "bearer".into(),
             is_primary: false,
             is_fallback: false,
@@ -37,6 +39,8 @@ fn fixture() -> (Catalogue, Vec<crate::ai_accounts::account::Account>) {
             provider_type: "ollama".into(),
             base_url: "http://127.0.0.1:11434".into(),
             api_key: None,
+            api_key_ref: None,
+            unmigrated_key: None,
             auth_type: "none".into(),
             is_primary: false,
             is_fallback: false,
@@ -119,6 +123,29 @@ fn models_a_mind_cannot_use_are_disabled_with_the_reason() {
     assert!(rows[0].kind == "note" && rows[0].name.contains("uses its own models"));
     assert!(rows.iter().filter(|r| r.kind == "model").all(|r| r.disabled && r.reason.contains("Use Yantrik models")));
     assert_eq!(caps_words(&catalogue.find("openai/o4-mini").unwrap().caps), "thinks · 200K context");
+}
+
+#[test]
+fn pressing_a_disabled_row_opens_the_screen_its_typed_fix_names() {
+    use super::{section_for_fix, AI_SECTION, HARNESSES_SECTION};
+    use crate::picker::menu::{FIX_AI_ACCOUNTS, FIX_MINDS};
+    assert_eq!(section_for_fix(FIX_AI_ACCOUNTS), Some(AI_SECTION));
+    assert_eq!(section_for_fix(FIX_MINDS), Some(HARNESSES_SECTION));
+    assert_eq!(section_for_fix(""), None, "Private mode: a press goes nowhere, no screen here fixes it");
+    assert_eq!(section_for_fix("a sentence"), None, "prose is never a route");
+    // The rows carry the id, whatever their words say.
+    let (catalogue, accounts) = fixture();
+    let rows = model_rows(&mind("mind", true, true), &catalogue, &accounts, &Consent::default(), false, "", &[], "");
+    assert!(rows.iter().filter(|r| r.disabled).all(|r| section_for_fix(r.fix) == Some(AI_SECTION)), "fresh install: every greyed row leads to AI accounts");
+    let rows = model_rows(&mind("hermes", false, true), &catalogue, &accounts, &Consent::default(), false, "", &[], "");
+    assert!(rows.iter().filter(|r| r.disabled).all(|r| section_for_fix(r.fix) == Some(HARNESSES_SECTION)), "its own models: every greyed row leads to Minds");
+    let rows = model_rows(&mind("pi", true, false), &catalogue, &accounts, &Consent::default(), true, "", &[], "");
+    assert!(rows.iter().filter(|r| r.disabled).all(|r| r.fix.is_empty()), "Private mode presses nowhere");
+    // A lane already kept: the per-row sentence no longer offers to set one up.
+    let lane = Consent { lane: Some("home/qwen3:8b".into()), ..Consent::default() };
+    let rows = model_rows(&mind("mind", true, true), &catalogue, &accounts, &lane, false, "", &[], "");
+    let o4 = rows.iter().find(|r| r.id == "openai/o4-mini").unwrap();
+    assert!(o4.disabled && !o4.reason.contains("Set up a private lane") && o4.reason.contains("Allow sharing with OpenAI"), "{}", o4.reason);
 }
 
 #[test]

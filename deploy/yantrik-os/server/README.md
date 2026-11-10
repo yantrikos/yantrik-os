@@ -44,6 +44,18 @@ upload whose hash does not match is deleted and changes nothing.
     gh secret set ISO_PUBLISH_KEY -R yantrikos/yantrik-os < ci_publish
     rm ci_publish ci_publish.pub
 
+## The signed manifest (#537)
+
+`<channel>/release.signed` is what current `yantrik-update` believes: one envelope, a signature
+and then the manifest it covers, made by `deploy/yantrik-os/sign-manifest.sh` and stored by
+`yantrik-publish manifest <channel> release.signed <sha256>` (`publish.sh manifest`). The server
+holds no signing key, on purpose, and cannot verify it; it checks the shape, that the file names
+the channel it is stored under and that its serial does not go backwards. Machines do the
+verifying, so a forged file stored here is refused by every one of them. `manifest.json` above
+is still written for machines whose updater predates this and reads nothing else; a current
+updater never believes it. Install the new `yantrik-publish` (below) **before** the first
+pipeline run that publishes a manifest, or that step fails.
+
 ## Installing or updating the receiver
 
     scp deploy/yantrik-os/server/yantrik-publish ubuntu@HOST:/tmp/

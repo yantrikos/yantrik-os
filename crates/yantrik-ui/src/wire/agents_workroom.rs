@@ -877,6 +877,7 @@ mod tests {
             said: String::new(),
             caller_says: String::new(),
             can_session: false,
+            wording: Default::default(),
             status: approvals::Status::Pending,
             record: String::new(),
             decided_at: String::new(),

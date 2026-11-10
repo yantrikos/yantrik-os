@@ -261,9 +261,16 @@ mod app_colour_tests {
             .collect();
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop-files");
         for entry in std::fs::read_dir(&dir).expect("apps/desktop-files is in the tree") {
-            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
             if let Some(stem) = name.strip_suffix(".desktop") {
-                ids.insert(icon_id_for(stem));
+                // An entry marked `NoDisplay` is no launcher tile (the Mind desk's, #1023), so it
+                // needs no colour.
+                let hidden = std::fs::read_to_string(entry.path())
+                    .is_ok_and(|text| text.lines().any(|l| l.trim() == "NoDisplay=true"));
+                if !hidden {
+                    ids.insert(icon_id_for(stem));
+                }
             }
         }
         ids.extend(crate::windows::APP_NAMES.iter().map(|(id, _)| id.to_string()));

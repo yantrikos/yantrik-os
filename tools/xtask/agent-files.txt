@@ -47,5 +47,10 @@ apps/text-editor/src/intents/documents.rs open path frameworks/yantrik-app/src/d
 apps/text-editor/src/intents/documents.rs save_as path frameworks/yantrik-app/src/documents/files/agent.rs
 crates/yantrik-ui/src/control.rs report_problem record - names one of the shell's own problem records (`wire/problem_report.rs`), never a path
 crates/yantrik-ui/src/control_agent_terminal.rs agent_run cwd - the working directory of a command the person sees on a card; the command itself reaches any file (open-ended)
+crates/yantrik-ui/src/control_files.rs files_delete path crates/yantrik-ui/src/control_files_mind.rs
 crates/yantrik-ui/src/control_files.rs files_go path crates/yantrik-ui/src/control_files_mind.rs
+crates/yantrik-ui/src/control_files.rs files_list path crates/yantrik-ui/src/control_files_mind.rs
+crates/yantrik-ui/src/control_files.rs files_new_file path crates/yantrik-ui/src/control_files_mind.rs
+crates/yantrik-ui/src/control_files.rs files_new_folder path crates/yantrik-ui/src/control_files_mind.rs
+crates/yantrik-ui/src/control_files.rs files_rename path crates/yantrik-ui/src/control_files_mind.rs
 crates/yantrik-ui/src/control_files.rs files_stat path crates/yantrik-ui/src/control_files.rs

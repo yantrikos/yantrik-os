@@ -132,7 +132,8 @@ your attention; see [docs/companion.md](docs/companion.md).
 
 ```bash
 yantrik-update check        # what is installed vs what the channel has
-yantrik-update apply        # download, verify the sha256, install, restart the session
+yantrik-update apply        # download, verify, install, restart the session
+                            # [--channel C] [--force] [--allow-downgrade] [--reboot] [--no-restart]
 yantrik-update rollback     # restore the previous build
 ```
 

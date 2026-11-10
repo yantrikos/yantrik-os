@@ -19,9 +19,12 @@ use crate::bridge::CompanionBridge;
 use crate::wire::provider_catalogue::{self, auth_type_for, default_model_for, provider_preset};
 use crate::wire::provider_models::{check_key, list_is_public, list_models, pick_model, KeyCheck, ListedModel};
 use crate::wire::settings::{
-    push_providers_to_ui, uuid_short, ProviderStore, ProviderStoreEntry,
+    push_providers_to_ui, ProviderStore, ProviderStoreEntry,
 };
 use crate::App;
+
+mod save;
+pub(crate) use save::{key_follows, save_form_with, Form};
 
 /// What the last Connect listed, for the search box to filter.
 #[derive(Default)]
@@ -91,7 +94,7 @@ pub(crate) fn wire(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStor
             .lock()
             .ok()
             .and_then(|s| s.entries.iter().find(|e| !editing.is_empty() && e.id == editing).cloned())
-            .is_some_and(|e| e.api_key.is_some() && !key_follows(&e.base_url, &url));
+            .is_some_and(|e| e.has_key() && !key_follows(&e.base_url, &url));
         ui.set_settings_provider_form_host_changed(moved);
     });
 
@@ -134,92 +137,63 @@ pub(crate) fn wire(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStor
             auth_type: auth,
             model: model.to_string(),
         };
-        let Ok(mut store) = ps.lock() else { return };
-        let before = store.clone();
-        let saved = apply_form(&mut store, &editing, form);
-        if store.save().is_err() {
-            *store = before;
-            return;
-        }
-        tracing::info!(
-            provider_type = %saved.provider_type,
-            model = %saved.model,
-            edited = !editing.is_empty(),
-            has_key = saved.api_key.is_some(),
-            "Saving provider"
-        );
-        ui.set_settings_editing_provider_id(SharedString::default());
-        push_providers_to_ui(&ui, &store);
-        crate::wire::ai_status::refresh(&ui, &store);
-        if saved.is_primary {
-            if !saved.model.is_empty() {
-                ui.set_settings_llm_api_model(saved.model.clone().into());
-            }
-            reload_primary(&bridge, &saved);
-        }
+        // The vault is asked on a thread of its own, and the list is not locked while it is.
+        let (ps, weak, bridge) = (ps.clone(), ui.as_weak(), bridge.clone());
+        std::thread::spawn(move || {
+            let outcome = save_form_with(&ps, &editing, form, crate::provider_vault::current(), &mut |s| s.save());
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                let saved = match outcome {
+                    Ok(saved) => saved,
+                    Err(sentence) => {
+                        ui.set_settings_provider_test_result(sentence.into());
+                        return;
+                    }
+                };
+                tracing::info!(
+                    provider_type = %saved.provider_type,
+                    model = %saved.model,
+                    edited = !editing.is_empty(),
+                    has_key = saved.has_key(),
+                    "Saving provider"
+                );
+                ui.set_settings_editing_provider_id(SharedString::default());
+                if let Ok(store) = ps.lock() {
+                    push_providers_to_ui(&ui, &store);
+                    crate::wire::ai_status::refresh(&ui, &store);
+                }
+                if saved.is_primary {
+                    if !saved.model.is_empty() {
+                        ui.set_settings_llm_api_model(saved.model.clone().into());
+                    }
+                    reload_primary_telling(&ui, &bridge, &saved);
+                }
+            });
+        });
     });
 }
 
-/// What the panel's form holds when Save is pressed.
-struct Form {
-    name: String,
-    provider_type: String,
-    base_url: String,
-    api_key: Option<String>,
-    auth_type: String,
-    model: String,
+/// What the companion is reloaded with.
+pub(crate) struct Reload {
+    pub provider_type: String,
+    pub base_url: String,
+    pub key: Option<String>,
+    pub model: String,
 }
 
-/// Whether a saved key may go to `new_url`: only while it is on the host the key was saved for.
-/// Changing the path or the port's scheme on the same host keeps it; a new host does not, so an
-/// edited address is never handed a key its person did not type for it.
-pub(crate) fn key_follows(saved_url: &str, new_url: &str) -> bool {
-    crate::provider_handoff::host(saved_url).eq_ignore_ascii_case(&crate::provider_handoff::host(new_url))
+/// Where a reload goes: the companion's bridge, or a test's list.
+pub(crate) type Sender = Arc<dyn Fn(Reload) + Send + Sync>;
+
+fn bridge_sender(bridge: &Arc<CompanionBridge>) -> Sender {
+    let bridge = bridge.clone();
+    Arc::new(move |r: Reload| bridge.reload_llm(r.provider_type, r.base_url, r.key, r.model))
 }
 
-/// Write the form into the store: over the entry being edited (keeping its
-/// saved key when the key field was left empty and the host is the same one),
-/// or as a new entry. A new entry is never the companion's by being the first one
-/// saved (#524): adding a provider is adding an option, and "Use for the companion"
-/// is the person's own choice. Returns the entry as saved.
-fn apply_form(store: &mut ProviderStore, editing: &str, form: Form) -> ProviderStoreEntry {
-    if let Some(e) = store.entries.iter_mut().find(|e| !editing.is_empty() && e.id == editing) {
-        let follows = key_follows(&e.base_url, &form.base_url);
-        e.name = form.name;
-        e.provider_type = form.provider_type;
-        e.base_url = form.base_url;
-        match form.api_key {
-            Some(k) => e.api_key = Some(k),
-            None if !follows => e.api_key = None,
-            None => {}
-        }
-        e.auth_type = form.auth_type;
-        e.model = form.model;
-        return e.clone();
-    }
-    let entry = ProviderStoreEntry {
-        id: format!("{}-{}", form.provider_type.to_lowercase(), uuid_short()),
-        name: form.name,
-        provider_type: form.provider_type,
-        base_url: form.base_url,
-        api_key: form.api_key,
-        auth_type: form.auth_type,
-        is_primary: false,
-        is_fallback: false,
-        model: form.model,
-    };
-    store.entries.push(entry.clone());
-    entry
-}
-
-/// Hot-reload the companion onto `entry`: its saved model, or the
-/// catalogue's guess when none was chosen.
-pub(crate) fn reload_primary(bridge: &CompanionBridge, entry: &ProviderStoreEntry) {
-    let model = if entry.model.is_empty() {
-        default_model_for(&entry.provider_type).to_string()
-    } else {
-        entry.model.clone()
-    };
+/// Reload the companion onto `entry`: its saved model, or the catalogue's guess when none was
+/// chosen. The key is read from the vault; a shut vault sends nothing and says why.
+pub(crate) fn reload_now(entry: &ProviderStoreEntry, send: &dyn Fn(Reload)) -> Result<(), crate::provider_vault::KeyError> {
+    let key = entry.resolve_key()?;
+    let model = if entry.model.is_empty() { default_model_for(&entry.provider_type).to_string() } else { entry.model.clone() };
     // Ollama's native address needs /v1 for the OpenAI-compatible client.
     let base_url = if entry.provider_type == "ollama" && !entry.base_url.contains("/v1") {
         format!("{}/v1", entry.base_url.trim_end_matches('/'))
@@ -227,7 +201,93 @@ pub(crate) fn reload_primary(bridge: &CompanionBridge, entry: &ProviderStoreEntr
         entry.base_url.clone()
     };
     tracing::info!(provider = %entry.provider_type, model = %model, "Hot-reloading LLM with the primary provider");
-    bridge.reload_llm(entry.provider_type.clone(), base_url, entry.api_key.clone(), model);
+    send(Reload { provider_type: entry.provider_type.clone(), base_url, key, model });
+    Ok(())
+}
+
+/// The companion's reload at start. Refused while the vault is shut, which it is until the
+/// person signs in, or while it does not answer; the reload is then done again the moment the vault opens
+/// (`provider_vault::opened`), from whatever the saved primary is by then, and not if the
+/// companion has been put on Yantrik models meanwhile.
+pub(crate) fn start_or_defer(
+    entry: &ProviderStoreEntry,
+    send: Sender,
+    primary_now: Arc<dyn Fn() -> Option<ProviderStoreEntry> + Send + Sync>,
+    on_gateway: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<(), crate::provider_vault::KeyError> {
+    let outcome = reload_now(entry, &*send);
+    // Shut, or not answering yet (the worker is still starting): either way the key may be had
+    // once the vault opens, and the replay re-reads the primary, so a changed one is not undone.
+    if matches!(outcome, Err(crate::provider_vault::KeyError::Locked | crate::provider_vault::KeyError::Unavailable)) {
+        crate::provider_vault::after_open(move || {
+            if on_gateway() {
+                return;
+            }
+            if let Some(primary) = primary_now() {
+                if let Err(why) = reload_now(&primary, &*send) {
+                    tracing::warn!(?why, "The companion was not moved onto the saved provider after the vault opened");
+                }
+            }
+        });
+    }
+    outcome
+}
+
+fn reload_primary_then(
+    bridge: &Arc<CompanionBridge>,
+    entry: &ProviderStoreEntry,
+    at_start: bool,
+    refused: impl FnOnce(crate::provider_vault::KeyError, &ProviderStoreEntry) + Send + 'static,
+) {
+    let (send, entry) = (bridge_sender(bridge), entry.clone());
+    let spawned = std::thread::Builder::new().name("reload-primary".into()).spawn(move || {
+        let outcome = if at_start {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/root"));
+            start_or_defer(
+                &entry,
+                send,
+                Arc::new(|| ProviderStore::load().primary().cloned()),
+                Arc::new(move || crate::provider_handoff::companion::companion_on_gateway(&home)),
+            )
+        } else {
+            reload_now(&entry, &*send)
+        };
+        if let Err(why) = outcome {
+            tracing::warn!(?why, "The companion was not moved onto the saved provider: its key could not be had");
+            refused(why, &entry);
+        }
+    });
+    if spawned.is_err() {
+        tracing::warn!("no thread to move the companion onto the saved provider");
+    }
+}
+
+/// [`reload_now`] on a thread of its own, for a caller with no screen to tell: a refusal is only
+/// logged.
+pub(crate) fn reload_primary(bridge: &Arc<CompanionBridge>, entry: &ProviderStoreEntry) {
+    reload_primary_then(bridge, entry, false, |_, _| {});
+}
+
+/// [`reload_primary`], telling the person on the Providers page when the key cannot be had.
+pub(crate) fn reload_primary_telling(ui: &App, bridge: &Arc<CompanionBridge>, entry: &ProviderStoreEntry) {
+    reload_primary_then(bridge, entry, false, tell(ui));
+}
+
+/// The reload at start: [`reload_primary_telling`], and replayed when the vault opens.
+pub(crate) fn reload_primary_at_start(ui: &App, bridge: &Arc<CompanionBridge>, entry: &ProviderStoreEntry) {
+    reload_primary_then(bridge, entry, true, tell(ui));
+}
+
+fn tell(ui: &App) -> impl FnOnce(crate::provider_vault::KeyError, &ProviderStoreEntry) + Send + 'static {
+    let weak = ui.as_weak();
+    move |why, entry| {
+        let sentence = why.to_use(&entry.name);
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_settings_provider_test_result(sentence.into());
+            }
+        });
+    }
 }
 
 fn clear_models(ui: &App, listing: &Arc<Mutex<Listing>>) {
@@ -258,8 +318,9 @@ fn start_connect(
         .ok()
         .and_then(|s| s.entries.iter().find(|e| !editing.is_empty() && e.id == editing).cloned());
     // The saved key only for the host it was saved for: Connect on an edited address with an
-    // empty key field asks without one rather than handing the old key to the new host.
-    let key = key.or_else(|| saved.as_ref().filter(|e| key_follows(&e.base_url, url)).and_then(|e| e.api_key.clone()));
+    // empty key field asks without one rather than handing the old key to the new host. It is
+    // read from the vault on the thread below, not here.
+    let saved_for_host = saved.clone().filter(|e| key_follows(&e.base_url, url));
     let auth = match (ProviderDescriptor::by_id(preset), &saved) {
         (Some(_), _) => auth_type_for(preset).to_string(),
         (None, Some(e)) => e.auth_type.clone(),
@@ -275,6 +336,26 @@ fn start_connect(
     let weak = ui.as_weak();
     let listing = listing.clone();
     std::thread::spawn(move || {
+        // A shut vault is a refusal: nothing is asked of the provider without its key.
+        let key = match (key, saved_for_host) {
+            (Some(typed), _) => Some(typed),
+            (None, Some(e)) => match e.resolve_key() {
+                Ok(k) => k,
+                Err(why) => {
+                    let sentence = why.to_use(&e.name);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if GENERATION.load(Ordering::SeqCst) != generation {
+                            return;
+                        }
+                        if let Some(ui) = weak.upgrade() {
+                            ui.set_settings_provider_test_result(sentence.into());
+                        }
+                    });
+                    return;
+                }
+            },
+            (None, None) => None,
+        };
         let result = list_models(&url, key.as_deref(), &auth);
         let pick = result
             .as_ref()
@@ -340,6 +421,7 @@ fn matching(models: &[ListedModel], query: &str) -> Vec<SharedString> {
 
 #[cfg(test)]
 mod tests {
+    use super::save::apply_form;
     use super::*;
 
     fn model(id: &str, name: &str) -> ListedModel {

@@ -15,7 +15,7 @@ mod ai;
 mod compose;
 pub(crate) mod drafts;
 pub(crate) mod google;
-mod mailbox;
+pub(crate) mod mailbox;
 mod message;
 mod pick;
 mod setup;

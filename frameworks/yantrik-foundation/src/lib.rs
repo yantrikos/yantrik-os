@@ -9,4 +9,5 @@ pub mod json_store;
 pub mod place;
 pub mod problems;
 pub mod time;
+pub mod vault;
 pub mod xdg;

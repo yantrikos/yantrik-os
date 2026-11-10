@@ -1,5 +1,8 @@
 """The browser as an app of this desktop: `app-browser`, served on the person's side of the door.
 
+Which browser a call drives is decided per call (guard.py, ports.py): a mind's web tools reach
+Mind View's browser and never the person's, and the person's own `yos web` reaches theirs (#1085).
+
 Until this, a mind drove the browser over its DevTools port directly, and every rule about what
 it may press lived in the mind's own process (the MCP bridge) — which any code running as the
 mind could step around, and which the port itself could not tell apart from anyone else on the
@@ -33,6 +36,10 @@ def build(driver=None, **surface_options):
 
     def summary():
         s = d.status()
+        if s.get("refused"):
+            return "Browser — not available to you here (it is not the browser kept for minds)"
+        if s.get("busy") and not s.get("open"):
+            return "Browser — busy"
         if not s.get("open"):
             return "Browser — not open"
         tabs = s.get("tabs") or []

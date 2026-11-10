@@ -53,16 +53,21 @@ mod bridge;
 /// Who is actually on the socket, as far as the kernel and `/proc` can say. See issue #43.
 mod caller_identity;
 mod companion_rpc;
+mod credential_door;
 mod control;
 mod control_approvals;
 mod control_overlays;
 mod control_settings;
 mod control_switcher;
 mod alt_tab;
+/// The Bench: the desktop's icons, where the person put them (#1030).
+mod bench;
 mod window_name;
 mod power_status;
 mod control_network;
+mod caller_class;
 mod control_wifi_reconnect;
+mod control_mail;
 mod control_power;
 mod control_installer;
 mod control_installer_consent;
@@ -70,6 +75,8 @@ mod control_installer_target;
 mod control_levels;
 mod control_levels_actions;
 mod control_theme;
+/// The desktop's icons on the control surface: desktop_place, desktop_archive (#1030).
+mod control_bench;
 mod boot_unlock;
 mod installer_medium;
 mod installer_rules;
@@ -104,11 +111,14 @@ mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.
 mod control_agents;
 mod control_workroom;
+mod control_mind_desk;
 // The chat in one read, for the Yantrik terminal (`chat_view`).
 mod control_chat;
 // Which of the person's conversations a bridge's private reads count against (`taint_scope`,
 // `taint_mark`), for yos-mcp's taint rule.
 mod control_taint_scope;
+// `approvals_test_state`: the one flag of the approvals-off test mode, readable without a taint.
+mod control_approvals_test_state;
 mod jobs;
 mod cards;
 mod card_watch;
@@ -141,12 +151,20 @@ mod markdown;
 /// What the mind may do without being asked: plan / ask / auto / bypass / bypass_all. See its module doc.
 mod mind_mode;
 mod never_ask;
+mod taint_ask;
 /// The right edge of every screen: the answering mind, what is at work, what it did.
 mod mind_panel;
 mod mind_panel_room;
 mod mind_panel_words;
 /// A desktop of the mind's own, inside one window: where the apps a mind opens are drawn (#239).
+mod mind_desk;
+mod mind_identity;
 mod mind_view;
+mod mind_view_close;
+mod shell_view;
+mod control_files_cursor;
+mod control_files_make;
+mod mind_view_desk;
 /// Whether the window a launch promised appeared, and where: `open_app`'s answer reads it back.
 mod mind_landing;
 mod app_glance;
@@ -196,11 +214,13 @@ mod toplevel_watch;
 // The compositor's window list from the stream `toplevel_watch` follows, for `windows`.
 mod live_windows;
 mod provider_handoff;
+mod provider_vault;
 mod private_file;
 mod programs;
 mod runs_on;
 mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
+mod vault_lane;
 mod vault_unlock;
 mod voice;
 mod dock_model;
@@ -337,6 +357,10 @@ fn main() {
     // Publish the companion so the apps under apps/ can use it. Without this their AI actions
     // are stubs: the model, the memory and the bond all live in this process.
     companion_rpc::serve(ctx.bridge.handle());
+
+    // The credential door: the mail service keeps its accounts' passwords in this process's vault
+    // through it, and not in a file (#538).
+    credential_door::serve(&ctx.bridge);
 
     // Adopt the windows that were already open.
     //

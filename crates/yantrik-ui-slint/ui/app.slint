@@ -12,6 +12,8 @@ import { Theme, ThemeMode, ThemeOverrides, AccentPreset, TextScale } from "theme
 import { AppColor } from "components/app_color.slint";
 // The letter on an unknown app's tile, answered from Rust (wire/mod.rs).
 export { AppInitial } from "app_tile.slint";
+// The desktop's icons, their menu and the Continue row (crates/yantrik-ui/src/bench).
+export { BenchState, BenchItem } from "components/bench_state.slint";
 import { GroundedDock, DockButton, DockWindow } from "components/grounded_dock.slint";
 import { StatusBar } from "components/status_bar.slint";
 import { ShellOverlays } from "components/shell_overlays.slint";
@@ -934,6 +936,8 @@ export component App inherits Window {
     callback file-copy-selected();
     callback file-cut-selected();
     callback file-context-copy-path(string);
+    // Files → "Move to Desktop" / "Copy to Desktop": "move" or "copy" (wire/files.rs).
+    callback file-send-to-desktop(string);
     callback file-context-open-terminal();
     callback file-context-compress(string);
     in-out property <int> file-selection-count: 0;
@@ -2347,6 +2351,7 @@ export component App inherits Window {
                 copy-selected => { root.file-copy-selected(); }
                 cut-selected => { root.file-cut-selected(); }
                 context-copy-path(name) => { root.file-context-copy-path(name); }
+                send-to-desktop(how) => { root.file-send-to-desktop(how); }
                 context-open-terminal => { root.file-context-open-terminal(); }
                 context-compress(name) => { root.file-context-compress(name); }
                 selection-count: root.file-selection-count;
