@@ -208,18 +208,13 @@ class Guard:
     def vet_person(self):
         """The person's Browser, held over its pipe: a Listener (port 0, the hand-over's serial)
         if the browser the shell handed over still runs, as this account, owning no mind's
-        profile. None when no Browser has been handed over. Never a port: a browser an older
-        build left on the person's old port is refused by name, not used."""
+        profile. None when no Browser has been handed over. Never a port: anything listening on
+        the person's old port is refused by name, whether or not a pipe is held, because a Browser
+        that has the pipe and a port too is being driven by something other than this service."""
+        self._refuse_the_old_port()
         held = self.pipes.current() if self.pipes is not None else None
         if held is None:
-            try:
-                old = self.identify(ports.PERSON_PORT)
-            except listener.Unidentified:
-                return None
-            raise Denied(
-                "Nothing was done. A browser started before this update still listens on a DevTools "
-                "port (%d), which is no longer used: your Browser is driven over a pipe the desktop "
-                "opens it with. Close it and open your Browser again." % old.port)
+            return None
         if self.pipes.uid_of(held.pid) != self.uid:
             raise Denied(self._unclear(ports.PERSON, 0, "it runs as another account"))
         if listener.is_mind_side(listener.place_of_pid(self.pipes.proc, held.pid)):
@@ -227,6 +222,18 @@ class Guard:
                 "Nothing was done. The browser the desktop handed over as your Browser is Mind View's "
                 "own. Close it and open your Browser again.")
         return listener.Listener(0, self.uid, held.serial, (held.pid,), listener.PERSON)
+
+    def _refuse_the_old_port(self):
+        try:
+            self.identify(ports.PERSON_PORT)
+        except listener.Unidentified as e:
+            if e.nobody:
+                return
+        raise Denied(
+            "Nothing was done. Something listens on a DevTools port (%d) that your Browser no longer "
+            "has: it is driven over a pipe the desktop opens it with, and a port beside the pipe "
+            "lets any process of this account drive it. A browser started before this update, or "
+            "outside the desktop, holds it. Close it and open your Browser again." % ports.PERSON_PORT)
 
     def start_mind_browser(self, wait=START_WAIT):
         """Mind View's browser was wanted and is not open: ask the shell for it and wait for its port.

@@ -238,6 +238,28 @@ class Vetting(unittest.TestCase):
         self.assertIn("started before this update", str(refused.exception))
         self.assertIn("Close it and open your Browser again", str(refused.exception))
 
+    def test_a_port_beside_the_pipe_is_refused_loudly_on_every_call(self):
+        """L6: a Browser that holds the pipe and a port too is not left to be driven."""
+        g, patch = persons_browser(FakePipes(held=True))
+        self.addCleanup(patch.stop)
+        g.identify = holding(**{str(ports.PERSON_PORT): listener.PERSON})
+        for _ in range(2):
+            with self.assertRaises(guard.Denied) as refused:
+                g.vet(ports.PERSON)
+            self.assertIn("lets any process of this account drive it", str(refused.exception))
+
+    def test_a_port_that_cannot_be_identified_is_refused_too(self):
+        g, patch = persons_browser(FakePipes(held=True))
+        self.addCleanup(patch.stop)
+        g.identify = holding(**{str(ports.PERSON_PORT): listener.Unidentified("two different sockets listen there")})
+        with self.assertRaises(guard.Denied):
+            g.vet(ports.PERSON)
+
+    def test_with_the_pipe_and_no_port_the_browser_is_used(self):
+        g, patch = persons_browser(FakePipes(held=True))
+        self.addCleanup(patch.stop)
+        self.assertIsNotNone(g.vet(ports.PERSON))
+
     def test_the_person_has_no_port_to_fall_back_to(self):
         with self.assertRaises(ValueError):
             ports.port_of(ports.PERSON)
@@ -442,12 +464,11 @@ class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
         self.addCleanup(patch.stop)
 
     def test_a_mind_gets_mind_views_port_and_the_person_their_pipe(self):
-        table = {ports.MIND_VIEW_PORT: listener.MIND_VIEW}
         patch = mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.PERSON)
         patch.start()
         self.addCleanup(patch.stop)
         for side, port in ((ports.MIND, 9223), (ports.PERSON, None)):
-            g = guard.Guard(identify=lambda p, t=table: listener.Listener(p, ME, 1, (1,), t[p]), uid=ME,
+            g = guard.Guard(identify=holding(**{str(ports.MIND_VIEW_PORT): listener.MIND_VIEW}), uid=ME,
                             side_of=lambda s=side: s, pipes=FakePipes())
             d = drv.Driver(judge=False, guard_=g)
             with mock.patch.object(cdp.Browser, "connect", lambda self: None):
