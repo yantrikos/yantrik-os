@@ -3,17 +3,22 @@
 The person's Chromium runs with `--remote-debugging-pipe` and listens on no TCP port at all. The
 shell starts it (it owns every launch: window, session environment, registry), makes the
 connected socket pair its fds 3 and 4 are, and hands the other end to this service over
-`browser-pipe.sock` (SCM_RIGHTS). From then on this service is the only holder of that stream:
-a process running as the person has no address to connect to, and the socket cannot be reopened
-through /proc/<pid>/fd as a pipe could.
+`browser-pipe.sock` (SCM_RIGHTS). The stream cannot be reopened through /proc/<pid>/fd as a pipe
+could. That is not a wall against a process of the same account: it can still bind a socket of
+its own at `browser-pipe.sock` (the shell therefore checks who answers before it sends anything,
+browser_pipe.rs), and until Minds run as another account it can start its own browser on the
+default profile with a port. See #1137 step 3 for the part that makes this a boundary.
 
 Why the shell launches and the service holds, rather than the service launching the browser: the
 launch is the shell's everywhere else (browser_launch.rs, the same code that starts Mind View's
 browser), and a browser started by the service would sit in the service's cgroup and die or
 restart with it. Handing one fd over costs nothing and keeps one owner for each fact.
 
-The price: a browser lives on one pipe, so if this service restarts the person's open Browser
-cannot be driven until it is opened again. The guard says so; it never falls back to a port.
+A browser lives on one stream, and Chromium may close itself when that stream ends. So the shell
+keeps its own end open for as long as the browser runs and stays on this socket as a lease: the
+connection it handed over on is held open here while the browser is held. If this service
+restarts, the lease ends, the browser is not told (the shell's end is still open), and the shell
+offers the stream again to the new service. The guard never falls back to a port.
 """
 
 import json
@@ -21,12 +26,13 @@ import os
 import socket
 import threading
 
-from yantrik_surface import gate, wire
+from yantrik_surface import wire
 
-from . import guard, listener, transport
+from . import guard, handover, listener, transport
 
 SOCKET_NAME = "browser-pipe.sock"
 HEADER_MAX = 4096
+LEASE_POLL = 1.0
 
 
 def socket_path():
@@ -158,15 +164,37 @@ class PipeHolder:
             try:
                 conn.sendall((reply + "\n").encode())
             except OSError:
-                pass
+                return
+            if reply == "ok":
+                self._hold_lease(conn)
+
+    def _hold_lease(self, conn):
+        """Keep the shell's connection open while its browser is held: the shell reads its end
+        closing as 'the service lost the pipe' and offers it again."""
+        serial = self.held.serial
+        conn.settimeout(LEASE_POLL)
+        while self.server is not None:
+            held = self.current()
+            if held is None or held.serial != serial:
+                return
+            try:
+                if conn.recv(1) == b"":
+                    return
+            except socket.timeout:
+                continue
+            except OSError:
+                return
 
     def take(self, conn, peer=None):
         """One hand-over on `conn`: a JSON line {"pid": N} and the stream's end as an SCM_RIGHTS
-        fd. Only the desktop's own shell may give a browser. Returns the reply line."""
+        fd. Only the installed shell may give a browser, only one it started with the pipe, and
+        only the stream that browser holds. Returns the reply line."""
         peer = peer if peer is not None else wire.peer_cred(conn)
-        why = gate.must_be_the_shell(peer)
-        if why is not None or peer.uid != os.getuid():
+        if peer is None or peer.uid != os.getuid():
             return "refused: only the desktop's shell hands over a browser"
+        why = handover.shell_is_installed(peer.pid, proc=self.proc)
+        if why is not None:
+            return "refused: only the desktop's shell hands over a browser (%s)" % why
         data, fds, _, _ = socket.recv_fds(conn, HEADER_MAX, 1)
         try:
             if len(fds) != 1:
@@ -180,10 +208,19 @@ class PipeHolder:
         finally:
             for fd in fds:
                 os.close(fd)
-        if self.uid_of(pid) != os.getuid():
+        why = self._not_the_persons_browser(sock, pid, peer.pid)
+        if why is not None:
             sock.close()
-            return "refused: that browser is not run by this account"
-        if listener.place_of_pid(self.proc, pid) != listener.PERSON:
-            sock.close()
-            return "refused: that is a mind's browser, not the person's"
+            return "refused: " + why
         return "ok" if self.give(sock, pid) else "refused: a Browser is already held"
+
+    def _not_the_persons_browser(self, sock, pid, shell_pid):
+        if self.uid_of(pid) != os.getuid():
+            return "that browser is not run by this account"
+        why = (handover.browser_is_the_callers(pid, shell_pid, self.proc)
+               or handover.stream_is_the_browsers(sock, pid, self.proc))
+        if why is not None:
+            return why
+        if listener.place_of_pid(self.proc, pid) != listener.PERSON:
+            return "that is a mind's browser, not the person's"
+        return None

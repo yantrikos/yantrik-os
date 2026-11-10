@@ -9,8 +9,10 @@ and 4); the browser service's own driver, guard, sides and pipes.py are the real
 test_ports_live.py and test_live.py cover real Chromiums where one is installed.
 """
 
+import contextlib
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -23,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 sys.path[:0] = [os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk", "python")]
 
-from yantrik_browser import cdp, driver as drv, guard, listener, pipes, ports, transport  # noqa: E402
+from yantrik_browser import cdp, driver as drv, guard, handover, listener, pipes, ports, transport  # noqa: E402
 
 ME = os.getuid()
 
@@ -194,12 +196,20 @@ class TheServiceDrivesThePersonsBrowserOverThePipe(unittest.TestCase):
         self.assertFalse(d.status()["open"])
 
 
+def the_identity_checks_pass():
+    """The three identity checks of handover.py stand aside, for tests of the rest of `take`."""
+    stack = contextlib.ExitStack()
+    for name in ("shell_is_installed", "browser_is_the_callers", "stream_is_the_browsers"):
+        stack.enter_context(mock.patch.object(pipes.handover, name, lambda *a, **k: None))
+    return stack
+
+
 class TheHandOver(unittest.TestCase):
-    """The shell gives the stream over browser-pipe.sock; only the shell may."""
+    """The shell gives the stream over browser-pipe.sock; only the installed shell may."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="pipe-")
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.dir, True))
+        self.addCleanup(lambda: shutil.rmtree(self.dir, True))
         patch = mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.PERSON)
         patch.start()
         self.addCleanup(patch.stop)
@@ -213,13 +223,14 @@ class TheHandOver(unittest.TestCase):
         conn.connect(self.path)
         socket.send_fds(conn, [json.dumps({"pid": pid or os.getpid()}).encode() + b"\n"], [(sock or theirs).fileno()])
         conn.settimeout(5)
+        self.addCleanup(conn.close)
         return conn.recv(200).decode().strip(), mine
 
     def test_the_socket_is_the_persons_alone(self):
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
     def test_the_shell_hands_over_and_the_service_holds_it(self):
-        with mock.patch.object(pipes.gate, "must_be_the_shell", lambda peer: None):
+        with the_identity_checks_pass():
             reply, mine = self.offer()
         self.assertEqual(reply, "ok")
         self.assertIsNotNone(self.holder.current())
@@ -230,20 +241,111 @@ class TheHandOver(unittest.TestCase):
         self.assertIsNone(self.holder.current())
 
     def test_a_minds_browser_is_not_taken_as_the_persons(self):
-        with mock.patch.object(pipes.gate, "must_be_the_shell", lambda peer: None), \
+        with the_identity_checks_pass(), \
                 mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.MIND_VIEW):
             reply, _ = self.offer()
         self.assertIn("mind's browser", reply)
         self.assertIsNone(self.holder.current())
 
     def test_a_live_browsers_pipe_is_not_taken_away_by_a_later_offer(self):
-        with mock.patch.object(pipes.gate, "must_be_the_shell", lambda peer: None):
+        with the_identity_checks_pass():
             self.assertEqual(self.offer()[0], "ok")
             self.assertIn("already held", self.offer()[0])
 
     def test_a_pid_that_is_gone_is_not_a_browser(self):
         holder = pipes.PipeHolder(start_of=lambda pid: None)
         holder.give(socket.socketpair()[0], 99999999)
+        self.assertIsNone(holder.current())
+
+    def test_the_hand_over_connection_is_a_lease_held_while_the_browser_is(self):
+        """M3: the shell reads the connection closing as 'the service lost the pipe'."""
+        alive = {"yes": True}
+        holder = pipes.PipeHolder(start_of=lambda pid: 1 if alive["yes"] else 2)
+        path = holder.serve(os.path.join(self.dir, "lease.sock"))
+        self.addCleanup(holder.stop)
+        mine, theirs = socket.socketpair()
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.connect(path)
+        self.addCleanup(conn.close)
+        with the_identity_checks_pass(), mock.patch.object(pipes, "LEASE_POLL", 0.05):
+            socket.send_fds(conn, [json.dumps({"pid": os.getpid()}).encode() + b"\n"], [theirs.fileno()])
+            conn.settimeout(5)
+            self.assertEqual(conn.recv(10), b"ok\n")
+            conn.settimeout(0.5)
+            with self.assertRaises(socket.timeout):
+                conn.recv(1)            # still open: the service holds the stream
+            alive["yes"] = False        # the browser is gone: the service lets go
+            conn.settimeout(5)
+            self.assertEqual(conn.recv(1), b"")
+
+
+class TheHandOverChecksWhoIsGivingWhat(unittest.TestCase):
+    """H1/M2 on the service side, against a /proc-shaped tree and real sockets."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="ident-")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, True))
+
+    def proc_of(self, pid, exe=None, cmdline=(), parent=1, fd3=None):
+        at = os.path.join(self.tmp, str(pid))
+        os.makedirs(os.path.join(at, "fd"), exist_ok=True)
+        if exe:
+            os.symlink(exe, os.path.join(at, "exe"))
+        with open(os.path.join(at, "cmdline"), "wb") as f:
+            f.write(b"".join(a.encode() + b"\0" for a in cmdline))
+        with open(os.path.join(at, "stat"), "w") as f:
+            f.write("%d (chromium x) S %d 1 1 0\n" % (pid, parent))
+        if fd3:
+            os.symlink(fd3, os.path.join(at, "fd", "3"))
+        return self.tmp
+
+    def test_the_installed_shell_is_the_shell(self):
+        installed = os.path.join(self.tmp, "yantrik-ui")
+        open(installed, "w").close()
+        proc = self.proc_of(10, exe=installed)
+        self.assertIsNone(handover.shell_is_installed(10, installed=installed, proc=proc))
+
+    def test_a_shell_whose_file_was_replaced_by_an_update_is_still_the_shell(self):
+        proc = self.proc_of(11, exe="/opt/yantrik/bin/yantrik-ui (deleted)")
+        self.assertIsNone(handover.shell_is_installed(11, proc=proc))
+
+    def test_a_copy_of_python_named_yantrik_ui_is_not_the_shell(self):
+        """The review's demonstration: the old rule compared the file name only."""
+        from yantrik_surface import gate
+        copy = os.path.join(self.tmp, "bin", "yantrik-ui")
+        os.makedirs(os.path.dirname(copy))
+        shutil.copy(os.path.realpath(sys.executable), copy)
+        proc = self.proc_of(12, exe=copy)
+        self.assertTrue(gate.is_shell_binary(copy), "the basename rule passes it")
+        self.assertIn("not the installed shell", handover.shell_is_installed(12, proc=proc))
+
+    def test_a_pid_is_the_callers_browser_only_with_the_pipe_no_port_and_the_caller_as_parent(self):
+        flag = "--remote-debugging-pipe"
+        proc = self.proc_of(20, cmdline=["chromium", flag], parent=500)
+        self.assertIsNone(handover.browser_is_the_callers(20, 500, proc))
+        self.assertIn("not a browser the caller started", handover.browser_is_the_callers(20, 501, proc))
+        proc = self.proc_of(21, cmdline=["chromium"], parent=500)
+        self.assertIn("DevTools pipe", handover.browser_is_the_callers(21, 500, proc))
+        proc = self.proc_of(22, cmdline=["chromium", flag, "--remote-debugging-port=9222"], parent=500)
+        self.assertIn("DevTools pipe", handover.browser_is_the_callers(22, 500, proc))
+        self.assertIn("could not be read", handover.browser_is_the_callers(23, 500, proc))
+
+    def test_the_stream_sent_is_the_browsers_only_if_the_kernel_says_its_other_end_is_fd_3(self):
+        sent, browsers_end = socket.socketpair()
+        stranger, _also = socket.socketpair()
+        self.assertEqual(handover.peer_inode(sent), os.fstat(browsers_end.fileno()).st_ino)
+        proc = self.proc_of(30, fd3="socket:[%d]" % os.fstat(browsers_end.fileno()).st_ino)
+        self.assertIsNone(handover.stream_is_the_browsers(sent, 30, proc))
+        self.assertIn("not the one pid 30", handover.stream_is_the_browsers(stranger, 30, proc))
+
+    def test_take_refuses_a_copied_python_end_to_end(self):
+        copy = os.path.join(self.tmp, "yantrik-ui")
+        shutil.copy(os.path.realpath(sys.executable), copy)
+        proc = self.proc_of(os.getpid(), exe=copy)
+        holder = pipes.PipeHolder(proc=proc)
+        a, _b = socket.socketpair()
+        peer = mock.Mock(pid=os.getpid(), uid=os.getuid())
+        self.assertIn("only the desktop's shell", holder.take(a, peer=peer))
         self.assertIsNone(holder.current())
 
 
@@ -268,6 +370,16 @@ class NothingListensOnThePersonsOldPort(unittest.TestCase):
     def test_the_persons_launch_gives_no_port_and_nothing_else_spells_9222_for_listening(self):
         flags = open(os.path.join(ROOT, "crates", "yantrik-browser-ports", "src", "lib.rs"), encoding="utf-8").read()
         self.assertIn('return vec![PIPE_FLAG.into()]', flags)
+
+    def test_nothing_in_the_deploy_tools_reaches_the_persons_browser_by_port(self):
+        """M4: release-check and yos drive the Browser through its service; no port is spelled."""
+        for tool in ("release-check", "yos"):
+            path = os.path.join(ROOT, "deploy", "yantrik-os", tool)
+            with open(path, encoding="utf-8") as f:
+                source = f.read()
+            compile(source, path, "exec")
+            for spelled in ("9222", "yos.CDP", "/json/version", "/json/new", "/json/list", "person_port"):
+                self.assertNotIn(spelled, source, "%s still reaches for %s" % (tool, spelled))
 
     def test_a_mind_is_sent_to_9223_whoever_is_open(self):
         for persons_open in (True, False):
