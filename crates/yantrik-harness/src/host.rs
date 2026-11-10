@@ -1543,7 +1543,7 @@ impl Host {
         // every face draws it: the Minds rows and Details, the status rail, `describe shell`, the
         // runs-on card. It is kept only as it may be drawn, here, so none of them can show the
         // sign-in details of an address in it (review of #856, finding 3).
-        announced.detail = announced.detail.as_deref().map(yantrik_shown_address::without_sign_in);
+        announced.detail = announced.detail.as_deref().and_then(detail::shown_detail);
         if announced.id.trim().is_empty() {
             return Err("`id` is what a person types to select this harness; it cannot be empty".into());
         }

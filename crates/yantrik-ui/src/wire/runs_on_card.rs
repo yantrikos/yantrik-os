@@ -38,8 +38,8 @@ fn gateway_fact(harness: &str, detail: Option<&str>) -> Option<GatewayFact> {
     if marker.provider_id != crate::provider_handoff::GATEWAY_ID || !crate::provider_handoff::still_on_gateway(harness, detail) {
         return None;
     }
-    let asked = crate::provider_handoff::adapter_for(harness)?.asks_gateway_for(&home)?;
-    Some(match crate::answering::answering_asking(harness, &asked) {
+    crate::provider_handoff::adapter_for(harness)?.asks_gateway_for(&home)?;
+    Some(match crate::answering::answering(harness) {
         Ok(answer) => {
             let account = crate::ai_accounts::accounts().into_iter().find(|a| a.id == answer.account_id);
             let (base_url, provider_kind) = account.map(|a| (a.base_url, a.provider_type)).unwrap_or_default();

@@ -83,3 +83,25 @@ fn a_new_pick_is_said_as_will_send_until_a_call_to_it_succeeds() {
     let said = resolve(Some(call("aig", "qwen3.8:27b", None)), plan("aig", "qwen3.8:27b"), names).unwrap();
     assert_eq!(said.words(), "answering \u{b7} AIG \u{b7} qwen3.8:27b");
 }
+
+/// M2 of #1162: the panel, the bubble, the Lens and `describe` all read `answering`, which asks the
+/// gateway for what the mind's own config asks (`asked_for`), so a config that names a model is
+/// followed everywhere and not only on the runs-on card.
+#[test]
+fn every_face_asks_for_what_the_minds_config_asks() {
+    let home = std::env::temp_dir().join(format!("answering-asked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".hermes")).unwrap();
+    let config = |default: &str| format!("model:\n  base_url: {}\n  default: {default}\n", yantrik_gateway::base_url());
+
+    std::fs::write(home.join(".hermes/config.yaml"), config("picked")).unwrap();
+    assert_eq!(asked_for(&home, "hermes"), yantrik_gateway::PICKED);
+
+    std::fs::write(home.join(".hermes/config.yaml"), config("aig/qwen3.8:27b")).unwrap();
+    assert_eq!(asked_for(&home, "hermes"), "aig/qwen3.8:27b");
+
+    // A config pointed elsewhere cannot name a model to the gateway: `picked`, as before.
+    std::fs::write(home.join(".hermes/config.yaml"), "model:\n  base_url: https://openrouter.ai/api/v1\n  default: x/y\n").unwrap();
+    assert_eq!(asked_for(&home, "hermes"), yantrik_gateway::PICKED);
+    let _ = std::fs::remove_dir_all(&home);
+}

@@ -221,7 +221,10 @@ fn status_now(minds: &[MindSeen]) -> status::Status {
 /// The sentence for a pick that has gone, while the default pick answers in its place.
 fn fallback_words(mind: &MindSeen) -> Option<String> {
     use crate::wire::harness_provider::{starting_model, Start};
-    match mind.on_gateway.then(|| starting_model(&mind.id)) {
+    // A pick that has gone is only the story of a mind that asks for `picked`: one whose config
+    // names a model is answered by that model, whatever the pick is.
+    let asks_picked = crate::answering::asked_for(&crate::wire::harness_provider::home_dir(), &mind.id) == yantrik_gateway::PICKED;
+    match (mind.on_gateway && asks_picked).then(|| starting_model(&mind.id)) {
         Some(Ok(Start::Fallback { asked, using })) => Some(crate::answering::gone_words(&mind.name, &asked, Some(&using))),
         _ => None,
     }

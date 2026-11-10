@@ -48,15 +48,17 @@ struct Plan {
     lane: bool,
 }
 
-/// The model answering `mind`. A refusal is what the gateway would say to its next call.
-pub fn answering(mind: &str) -> Result<Answer, Refusal> {
-    answering_asking(mind, yantrik_gateway::PICKED)
+/// What `mind`'s own config asks the gateway for: `picked`, or a model named there since. `picked`
+/// too when the config cannot say (the gateway is then asked as the mind's pick). Every face reads
+/// the answer through [`answering`], so every face follows the same route.
+pub(crate) fn asked_for(home: &std::path::Path, mind: &str) -> String {
+    crate::provider_handoff::adapter_for(mind).and_then(|a| a.asks_gateway_for(home)).unwrap_or_else(|| yantrik_gateway::PICKED.to_string())
 }
 
-/// [`answering`] for a mind whose own config asks the gateway for `asked` (`picked`, or a model
-/// named there).
-pub(crate) fn answering_asking(mind: &str, asked: &str) -> Result<Answer, Refusal> {
-    let planned = crate::gateway::route_for(mind, asked).map(|r| Plan {
+/// The model answering `mind`. A refusal is what the gateway would say to its next call.
+pub fn answering(mind: &str) -> Result<Answer, Refusal> {
+    let asked = asked_for(&crate::wire::harness_provider::home_dir(), mind);
+    let planned = crate::gateway::route_for(mind, &asked).map(|r| Plan {
         account_id: r.target.account,
         model: r.target.model,
         lane: r.lane_for.is_some(),
