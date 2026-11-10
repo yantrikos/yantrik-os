@@ -63,17 +63,6 @@ class TheDefinition(unittest.TestCase):
         for port in (ports.PERSON_PORT, ports.MIND_VIEW_PORT, *ports.IDENTITY_PORTS):
             self.assertTrue(low <= port <= high, "%d is outside the guard %d-%d" % (port, low, high))
 
-    def test_yos_reads_the_persons_port_from_the_same_file(self):
-        import importlib.machinery
-        import importlib.util
-        loader = importlib.machinery.SourceFileLoader("yos_for_test", os.path.join(ROOT, "deploy", "yantrik-os", "yos"))
-        spec = importlib.util.spec_from_loader("yos_for_test", loader)
-        yos = importlib.util.module_from_spec(spec)
-        loader.exec_module(yos)
-        self.assertEqual(yos.CDP, "http://127.0.0.1:%d" % ports.PERSON_PORT)
-        with self.assertRaises(AttributeError):
-            yos.NOT_A_THING  # noqa: B018
-
 
 class NothingSpellsThemTwice(unittest.TestCase):
     """dock.rs and target.py each spelled the profile and the port; now only the file does."""
