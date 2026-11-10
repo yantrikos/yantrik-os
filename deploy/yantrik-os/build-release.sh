@@ -162,7 +162,7 @@ cp "$TARGET_DIR/libyantrik_mind_view_title.so" "$ROOT/bin/libyantrik_mind_view_t
 
 # The agent surface is not compiled, so binary discovery cannot find it. Without these the
 # machine boots a desktop that no agent can see or drive — the exact failure the old ISO had.
-for f in yos yos_web.py yos-mcp release-check yantrik-mind-launch; do
+for f in yos yos_web.py yos-mcp yos_mcp_web.py release-check yantrik-mind-launch; do
   [ -f "$SCRIPT_DIR/$f" ] || fail "missing $SCRIPT_DIR/$f — the agent surface is not optional"
   cp "$SCRIPT_DIR/$f" "$ROOT/bin/$f"
   chmod +x "$ROOT/bin/$f"
