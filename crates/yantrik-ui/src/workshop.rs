@@ -88,7 +88,7 @@ pub fn record_path() -> PathBuf {
     #[cfg(not(test))]
     {
         // The old root's content moves into the new one before the record is read, once.
-        crate::workshop_move::once(&home());
+        crate::workshop_move::try_once(&home());
         record_in(&home())
     }
 }
