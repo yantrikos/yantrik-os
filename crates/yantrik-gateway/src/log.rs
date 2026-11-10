@@ -17,6 +17,11 @@ const KEEP_IN_MEMORY: usize = 256;
 pub struct Call {
     /// Seconds since the epoch.
     pub at: i64,
+    /// The call's own key, set by the gateway ([`new_rid`]) and never reused: what a turn is tied to
+    /// when it ends, so a past answer names the call that answered it and no other. 0 on a line
+    /// written before there was one.
+    #[serde(default)]
+    pub rid: u64,
     pub harness: String,
     pub account: String,
     pub model: String,
@@ -41,6 +46,21 @@ pub struct Call {
     /// (`temperature`): their names, never their values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<String>,
+}
+
+/// A key no other call has had, across restarts: the clock in nanoseconds, or one more than the last
+/// key handed out when two calls land in the same tick.
+pub fn new_rid() -> u64 {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
+    let mut last = LAST.load(std::sync::atomic::Ordering::SeqCst);
+    loop {
+        let next = now.max(last + 1);
+        match LAST.compare_exchange(last, next, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) {
+            Ok(_) => return next,
+            Err(seen) => last = seen,
+        }
+    }
 }
 
 impl Call {
@@ -148,7 +168,19 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+    }
+
+    /// #1162 M1: each call has a key of its own, which survives the log's round trip.
+    #[test]
+    fn every_call_has_a_key_no_other_call_has() {
+        let keys: std::collections::BTreeSet<u64> = (0..1000).map(|_| new_rid()).collect();
+        assert_eq!(keys.len(), 1000);
+        assert!(!keys.contains(&0));
+        let c = Call { rid: new_rid(), ..call("m") };
+        assert_eq!(serde_json::from_str::<Call>(&serde_json::to_string(&c).unwrap()).unwrap().rid, c.rid);
+        let old = r#"{"at":1,"harness":"pi","account":"a","model":"m","status":200,"ms":1}"#;
+        assert_eq!(serde_json::from_str::<Call>(old).unwrap().rid, 0, "a line from before keys is unkeyed");
     }
 
     #[test]

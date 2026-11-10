@@ -145,6 +145,7 @@ mod i18n;
 mod mime_dispatch;
 mod lens;
 /// The Lens's conversation put back from the saved session when it opens empty (#246).
+mod answered_turns;
 mod lens_history;
 mod lock;
 mod lock_wallpaper;

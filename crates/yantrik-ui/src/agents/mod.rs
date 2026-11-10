@@ -143,7 +143,15 @@ impl Agents {
     }
 
     pub fn close_turn(&self, id: &AgentId, ok: bool) {
-        self.lock().close_turn(id, ok)
+        let ended = {
+            let mut store = self.lock();
+            store.close_turn(id, ok);
+            store.agent(id).and_then(|a| a.turns.last()).filter(|t| !t.open()).map(|t| (t.n, t.started))
+        };
+        // The turn is tied to the call it ended on, so a restored bubble names that call's model.
+        if let Some((n, started)) = ended {
+            crate::answered_turns::stamp(id, n, started);
+        }
     }
 
     pub fn set_state(&self, id: &AgentId, state: State) {

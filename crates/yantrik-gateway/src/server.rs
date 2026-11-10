@@ -245,6 +245,7 @@ impl Gateway {
         let started = Instant::now();
         let mut call = Call {
             at: now(),
+            rid: crate::log::new_rid(),
             harness: grant.harness.clone(),
             account: String::new(),
             model: String::new(),
