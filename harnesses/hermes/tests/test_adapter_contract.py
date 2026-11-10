@@ -67,6 +67,8 @@ class AdapterContractTests(unittest.TestCase):
             theirs = getattr(self.base, name, None)
             if not callable(ours) or theirs is None or name.startswith("__"):
                 continue
+            if isinstance(inspect.getattr_static(self.base, name), staticmethod):
+                continue  # takes no self to bind; Hermes 0.14 made `_get_human_delay` one
             base_sig = inspect.signature(theirs)
             args, kwargs = _call_shaped_like(base_sig)
             with self.subTest(method=name):
