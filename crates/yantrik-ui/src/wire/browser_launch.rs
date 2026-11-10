@@ -40,16 +40,27 @@ pub fn is_browser(program: &Path) -> bool {
     is_chromium(program) || matches!(program_name(program).as_str(), "firefox" | "firefox-esr")
 }
 
+/// Blender, which a Mind drives through `run_python` wherever it was started.
+pub fn is_blender(program: &Path) -> bool {
+    program_name(program) == "blender"
+}
+
+/// Does this launch get the workshops hidden? Every browser, every app opened in Mind View (a
+/// Mind drives it) and Blender anywhere (its surface is Mind-drivable on the person's desk too).
+pub fn is_walled(program: &Path, mind_view: bool) -> bool {
+    mind_view || is_browser(program) || is_blender(program)
+}
+
 /// What an app is started with: for Mind View the arguments of [`mind_view_args`], and for a
-/// browser the outside view with the workshops hidden, so a browser that a job drives over its
-/// DevTools port cannot read them. Refuses (with the reason) when the machine holds workshops and
-/// cannot hide them from it.
+/// browser, a Mind View app or Blender the outside view with only the workshops hidden (a browser
+/// needs its sockets in `/run/user`), so a program a Mind drives cannot read them. Refuses (with
+/// the reason) when the machine holds workshops and cannot hide them from it.
 pub fn start_line(program: &Path, args: &[&str], mind_view: bool) -> Result<(PathBuf, Vec<String>), String> {
     let args = match mind_view {
         true => mind_view_args(program, args),
         false => args.iter().map(|a| a.to_string()).collect(),
     };
-    match is_browser(program) {
+    match is_walled(program, mind_view) {
         true => walled(program, args),
         false => Ok((program.to_path_buf(), args)),
     }
@@ -173,5 +184,40 @@ mod tests {
             Ok((program, args)) => assert_eq!((program, args), (PathBuf::from("/usr/bin/chromium"), vec!["--x".to_string()])),
             Err(why) => assert!(why.contains("nothing was run"), "{why}"),
         }
+    }
+
+    /// Round 7, finding 3: the argv of a launch is the base-only view in front of the program, or
+    /// (no bwrap, nothing held) the program as it was, or a refusal.
+    fn assert_walled_or_plain(launch: Result<(PathBuf, Vec<String>), String>, program: &str, rest: &[&str]) {
+        match launch {
+            Ok((bin, argv)) if bin.ends_with("bwrap") => {
+                let tail = [program].iter().chain(rest).map(|s| s.to_string()).collect::<Vec<_>>();
+                assert_eq!(argv[argv.len() - tail.len()..], tail[..], "{argv:?}");
+                let tmpfs: Vec<&String> = argv.windows(2).filter(|w| w[0] == "--tmpfs").map(|w| &w[1]).collect();
+                assert_eq!(tmpfs, [workshops::BASE], "the base only: {argv:?}");
+                assert!(argv.iter().any(|a| a == "--unshare-pid") && !argv.iter().any(|a| a == "--die-with-parent"), "{argv:?}");
+            }
+            Ok((bin, argv)) => {
+                assert_eq!(bin, PathBuf::from(program));
+                assert_eq!(argv, rest.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+            }
+            Err(why) => assert!(why.contains("nothing was run"), "{why}"),
+        }
+    }
+
+    #[test]
+    fn every_mind_view_launch_and_every_blender_launch_is_walled() {
+        assert!(is_walled(Path::new("/usr/bin/foot"), true), "a Mind View app is driven by a Mind");
+        assert!(is_walled(Path::new("/usr/bin/blender"), false), "Blender on the desk is Mind-drivable too");
+        assert!(is_walled(Path::new("/usr/bin/blender"), true) && is_walled(Path::new("/usr/bin/chromium"), false));
+        assert!(!is_walled(Path::new("/usr/bin/foot"), false), "the person's own apps are not");
+        assert_walled_or_plain(start_line(Path::new("/usr/bin/foot"), &["--x"], true), "/usr/bin/foot", &["--x"]);
+        assert_walled_or_plain(
+            start_line(Path::new("/usr/bin/blender"), &["--python", "/opt/b.py"], false),
+            "/usr/bin/blender",
+            &["--python", "/opt/b.py"],
+        );
+        // The person's other apps are started as they were.
+        assert_eq!(start_line(Path::new("/usr/bin/foot"), &["-e", "x"], false).unwrap(), (PathBuf::from("/usr/bin/foot"), vec!["-e".to_string(), "x".to_string()]));
     }
 }
