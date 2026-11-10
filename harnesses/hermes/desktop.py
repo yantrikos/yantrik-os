@@ -99,6 +99,8 @@ class Turn:
     # When anything was last streamed on this turn, so a quiet turn can be told from a dead one.
     active: float = field(default_factory=time.monotonic)
     said_anything: bool = False
+    # Handed to the gateway; and the gateway has begun working on it.
+    dispatched: bool = False
     started: bool = False
     # The gateway session working on it, and how many heartbeats in a row found it not running.
     session_key: str = ""
@@ -142,7 +144,7 @@ class Ledger:
     def mark_started(self, turn_id: str) -> None:
         with self._lock:
             if turn_id in self._turns:
-                self._turns[turn_id].started = True
+                self._turns[turn_id].started = self._turns[turn_id].dispatched = True
 
     def close(self, turn_id: str) -> Optional[Turn]:
         """Forget a turn. Returns it if it was still open, so it is closed exactly once."""

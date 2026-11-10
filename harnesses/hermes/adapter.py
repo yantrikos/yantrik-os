@@ -49,7 +49,7 @@ from .steering import PLATFORM_HINT
 from .question import Card as _Card  # noqa: F401  (named in a type comment)
 from .output import CONFIRMED_BY_ASKING, OutputMixin  # noqa: F401
 from .questions import QuestionsMixin, _approval_pending, _question_pending
-from .stop import STOP_SUFFIX, StopMixin
+from .stop import StopMixin
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +145,7 @@ class YantrikAdapter(StopMixin, QuestionsMixin, OutputMixin, BasePlatformAdapter
         # the desktop's protocol has no way to say something unasked, so it is shown, labelled, at
         # the top of the next reply instead of being thrown away.
         self._late: List[Tuple[datetime, str]] = []
-        # Runs the person stopped, and the /stop sent for each: whatever Hermes still says in reply
-        # to them is not shown, or it would land in the next turn the person starts.
-        self._stopped: set[str] = set()
+        self._init_stop()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────────────────────
 
@@ -233,6 +231,7 @@ class YantrikAdapter(StopMixin, QuestionsMixin, OutputMixin, BasePlatformAdapter
                     # failed on its side; attach again and carry on.
                     logger.warning("[yantrik] lost the desktop (%s); attaching again", exc)
                     self._session = None
+                    self._forget_stops()
                     for turn in self._ledger.open_turns():
                         self._ledger.close(turn.turn_id)
                     await asyncio.sleep(RETRY_SECONDS)
@@ -318,12 +317,18 @@ class YantrikAdapter(StopMixin, QuestionsMixin, OutputMixin, BasePlatformAdapter
             timestamp=datetime.now(timezone.utc),
         )
         turn = self._ledger.open(turn_id, CHAT_ID, text)
+        if turn_id in self._stopped:
+            # Stopped before it was taken: the desktop has let go of it, so Hermes never sees it.
+            await self._finish(turn_id, error="Stopped before Hermes answered.", why="stopped before it was taken")
+            return
         session_key = build_session_key(
             source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
         turn.session_key = session_key
+        # Handed to the gateway from here on, whether or not it has started on it yet.
+        turn.dispatched = True
 
         try:
             if session_key in self._active_sessions:
@@ -399,13 +404,14 @@ class YantrikAdapter(StopMixin, QuestionsMixin, OutputMixin, BasePlatformAdapter
     async def on_processing_start(self, event: MessageEvent) -> None:
         if event.message_id:
             self._ledger.mark_started(event.message_id)
+            self._run_started(event)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         if not event.message_id:
             return
         # A run that asked a question ends in the turn that answered it.
         turn_id = self._carried.pop(event.message_id, None) or event.message_id
-        self._stopped -= {event.message_id, turn_id, f"{event.message_id}{STOP_SUFFIX}"}
+        self._stop_done(event.message_id, turn_id)
         self._asked = {k: v for k, v in self._asked.items() if v != event.message_id}
         self._asked_ids = {k: v for k, v in self._asked_ids.items() if k in self._asked}
         # A card still waiting when its run ends will not be answered by it; the desktop closes it.

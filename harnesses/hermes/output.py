@@ -116,7 +116,7 @@ class OutputMixin:
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        if reply_to in self._stopped:
+        if self._muted(chat_id, reply_to):
             return SendResult(success=True)  # said to a run the person stopped: not theirs to read
         turn = self._ledger.route(chat_id, self._carried.get(reply_to or "", reply_to))
         if _is_status(content, metadata):

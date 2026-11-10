@@ -35,6 +35,9 @@ class Hermes:
         self.tool_calls = 0
         self.handled: List[str] = []
         self.interrupted = asyncio.Event()
+        # The end of a stopped run is reported a moment after its last words, as the gateway does.
+        self.ended = asyncio.Event()
+        self.ended.set()
         adapter.handle_message = self.handle_message
 
     async def handle_message(self, event):
@@ -45,14 +48,19 @@ class Hermes:
 
     async def run(self, turn_id: str):
         """The run for `turn_id`: busy until interrupted, then what the gateway does as it ends."""
+        gateway = base.sys.modules["gateway.platforms.base"]
+        source = self.adapter._desktop_source()
+        await self.adapter.on_processing_start(gateway.MessageEvent(text="long task", message_id=turn_id, source=source))
         self.adapter._active_sessions.add(SESSION)
         while not self.interrupted.is_set():
             self.tool_calls += 1
             await asyncio.sleep(0.02)
         self.adapter._active_sessions.discard(SESSION)
         await self.adapter.send(base.adapter_mod.CHAT_ID, "Stopped partway.", reply_to=turn_id)
-        gateway = base.sys.modules["gateway.platforms.base"]
-        event = gateway.MessageEvent(text="long task", message_id=turn_id)
+        # Hermes's "⚡ Interrupted" notice and its progress lines name no turn.
+        await self.adapter.send(base.adapter_mod.CHAT_ID, "⚡ Interrupted.", reply_to=None)
+        await self.ended.wait()
+        event = gateway.MessageEvent(text="long task", message_id=turn_id, source=source)
         await self.adapter.on_processing_complete(event, gateway.ProcessingOutcome.CANCELLED)
 
 
@@ -136,11 +144,133 @@ class StopTests(AdapterCase):
         self.assertEqual(self.hermes.handled[-1], "what time is it", "handed to Hermes as a message of its own")
         self.assertEqual(CLARIFY.resolved, [], "and not taken as the answer to the old question")
 
-    async def test_a_stop_for_a_turn_hermes_is_not_working_on_closes_it_and_sends_no_stop(self):
-        self.open_turn()
+    async def test_a_stop_for_a_turn_never_handed_to_hermes_closes_it_and_sends_no_stop(self):
+        self.adapter._ledger.open("7", base.adapter_mod.CHAT_ID, "long task")
         await self.adapter._stop_runs([7])
         self.assertEqual(self.hermes.handled, [])
         self.assertEqual(self.adapter._ledger.open_turns(), [])
+        self.assertEqual(self.adapter._stopping, {}, "nothing of it runs, so nothing is muted")
+
+    async def test_a_stop_for_a_dispatched_turn_hermes_has_not_started_still_sends_stop(self):
+        """Finding 2: between the hand-over and `on_processing_start`, `_active_sessions` says nothing."""
+        turn = self.adapter._ledger.open("7", base.adapter_mod.CHAT_ID, "long task")
+        turn.session_key, turn.dispatched = SESSION, True
+        self.assertNotIn(SESSION, self.adapter._active_sessions)
+        await self.adapter._stop_runs([7])
+        self.assertEqual(self.hermes.handled, ["/stop"])
+        self.assertEqual(self.adapter._ledger.open_turns(), [])
+
+    async def test_a_run_that_starts_after_its_stop_is_stopped_again(self):
+        """Finding 2, the gateway that only scheduled the run: it is told to stop once it can hear."""
+        turn = self.adapter._ledger.open("7", base.adapter_mod.CHAT_ID, "long task")
+        turn.session_key, turn.dispatched = SESSION, True
+        await self.adapter._stop_runs([7])
+        self.hermes.interrupted.clear()
+        run = asyncio.create_task(self.hermes.run("7"))
+        await asyncio.wait_for(run, WITHIN_SECONDS)
+        self.assertEqual(self.hermes.handled, ["/stop", "/stop"])
+        self.assertEqual(self.fake.said(), "", "nothing it said reached the desktop")
+
+    async def test_a_turn_stopped_before_it_was_taken_is_never_handed_to_hermes(self):
+        """Finding 2: a Stop for a turn the poll loop has not opened yet."""
+        await self.adapter._stop_runs([7])
+        await self.adapter._on_turn({"turn_id": 7, "text": "long task"})
+        self.assertEqual(self.hermes.handled, [])
+        self.assertEqual(self.adapter._ledger.open_turns(), [])
+        self.assertEqual(len(self.fake.of(base.desktop_mod.FAIL)), 1)
+
+    async def test_unaddressed_words_of_the_stopped_run_do_not_reach_the_next_turn(self):
+        """Finding 1: the person stops 7 and sends 8 at once; the old run's last lines name no turn."""
+        self.open_turn()
+        self.hermes.ended.clear()
+        run = asyncio.create_task(self.hermes.run("7"))
+        await self.press_stop()
+        self.open_turn("8")
+        await asyncio.sleep(0.1)  # the stopped run says its last words, 8 open, its end not yet reported
+        self.assertEqual(self.fake.said(), "")
+        self.hermes.ended.set()
+        await asyncio.wait_for(run, WITHIN_SECONDS)
+        await self.adapter.send(base.adapter_mod.CHAT_ID, "On it.", reply_to=None)
+        self.assertEqual(self.fake.said(), "On it.", "after the run's end, unaddressed words are the new turn's")
+        self.assertEqual(self.adapter._late, [])
+
+    async def test_a_new_run_starting_takes_the_chat_back_even_if_the_old_end_was_never_reported(self):
+        self.open_turn()
+        self.hermes.ended.clear()
+        asyncio.create_task(self.hermes.run("7"))
+        await self.press_stop()
+        self.open_turn("8")
+        gateway = base.sys.modules["gateway.platforms.base"]
+        await self.adapter.on_processing_start(gateway.MessageEvent(text="next", message_id="8", source=self.adapter._desktop_source()))
+        await self.adapter.send(base.adapter_mod.CHAT_ID, "On it.", reply_to=None)
+        self.assertEqual(self.fake.said(), "On it.")
+        self.hermes.ended.set()
+
+    async def test_the_turn_is_closed_only_after_stop_returned_and_a_failed_stop_is_said(self):
+        """Finding 3: a run whose /stop raised is not reported stopped."""
+        order: List[str] = []
+
+        async def failing(event):
+            order.append("stop")
+            raise RuntimeError("the gateway is wedged")
+
+        self.adapter.handle_message = failing
+        self.open_turn()
+        self.fake.calls.clear()
+        await self.adapter._stop_runs([7])
+        self.assertEqual(order, ["stop"])
+        self.assertEqual([m for m, _ in self.fake.calls], [base.desktop_mod.CHUNK, base.desktop_mod.COMPLETE])
+        self.assertIn("Hermes did not stop: its /stop failed", self.fake.said())
+        self.assertEqual(self.adapter._ledger.open_turns(), [])
+
+    async def test_a_stop_that_hangs_is_given_up_on_and_said(self):
+        async def hanging(event):
+            await asyncio.sleep(60)
+
+        self.adapter.handle_message = hanging
+        self.open_turn()
+        with mock.patch.object(base.sys.modules["yantrik_fake_gateway_plugin.stop"], "STOP_SECONDS", 0.05):
+            await self.adapter._stop_runs([7])
+        self.assertIn("did not return within 0 seconds", self.fake.said())
+        self.assertEqual(self.adapter._ledger.open_turns(), [])
+
+    async def test_a_cancelled_original_turn_stops_the_run_its_answer_carries(self):
+        """Finding 5: 7 asked, 8 answered and carries the run; the desktop cancels 7."""
+        self.open_turn("8")
+        self.adapter._carried["7"] = "8"
+        run = asyncio.create_task(self.hermes.run("7"))
+        await asyncio.sleep(0.05)
+        await self.adapter._stop_runs([7])
+        await asyncio.wait_for(run, WITHIN_SECONDS)
+        self.assertEqual(self.hermes.handled, ["/stop"])
+        self.assertEqual(self.adapter._ledger.open_turns(), [])
+
+    async def test_stopped_ids_are_bounded_and_forgotten_with_the_desktop_session(self):
+        """Finding 4."""
+        kept = base.sys.modules["yantrik_fake_gateway_plugin.stop"].STOPPED_KEPT
+        await self.adapter._stop_runs(list(range(1, kept + 10)))
+        self.assertEqual(len(self.adapter._stopped), kept)
+        self.assertNotIn("1", self.adapter._stopped)
+        self.assertIn(str(kept + 9), self.adapter._stopped)
+
+        def lost(address, method, params, timeout=10.0):
+            raise base.desktop_mod.HarnessError("unknown session")
+
+        base.desktop_mod.call = lost
+        poller = asyncio.create_task(self.adapter._run())
+        await asyncio.sleep(0.05)
+        poller.cancel()
+        self.assertEqual(self.adapter._stopped, {})
+        self.assertIsNone(self.adapter._session)
+
+    async def test_a_second_stop_for_the_same_run_sends_nothing_more(self):
+        self.open_turn()
+        run = asyncio.create_task(self.hermes.run("7"))
+        await asyncio.sleep(0.05)
+        await self.adapter._stop_runs([7, 7])
+        await asyncio.wait_for(run, WITHIN_SECONDS)
+        await self.adapter._stop_runs([7])
+        self.assertEqual(self.hermes.handled, ["/stop"])
 
     async def test_a_stop_for_a_turn_already_closed_does_nothing(self):
         await self.adapter._stop_runs([7])
