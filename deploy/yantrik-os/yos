@@ -44,7 +44,7 @@ protocol and prints what came back.
     yos web find <words>                where is the thing I want, anywhere on the page
     yos web all                         every interactive element, not just the viewport
     yos web console [all]               the page's console errors and uncaught exceptions
-    yos web screenshot [--full]         a PNG of this tab's page, under ~/Pictures/Screenshots/Browser
+    yos web screenshot [--full]         a PNG of this tab's page, in Yantrik's private folder (the person's)
     yos web go <url | ~/path>           navigate (or open a file under the home), and show the new page
     yos web click <ref>                 press it; answers with what changed on the page
     yos web type <ref> <text> [--enter] type into a field
