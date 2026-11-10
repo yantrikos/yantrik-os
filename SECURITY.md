@@ -25,9 +25,29 @@ Anything in this repository, and especially the boundaries it draws:
 - the updater and the release path (`deploy/yantrik-os/yantrik-update`, `deploy/yantrik-os/server`);
 - the lock screen and the session.
 
-Known limits that are documented, not hidden, are listed in the README's "Privacy and security"
+Known limits that are documented, not hidden, are listed in the README's "Status and known limits"
 section and in the open issues labelled security; a report that one of them is worse than it says
 is in scope too.
+
+## Known limits today
+
+These are open and public. A report that one of them is worse than described is in scope.
+
+- **A Mind that runs as you is held by the gate only where it goes through `yos` or `yos-mcp`.**
+  Hermes and Pi run as your account, and so do the jobs a Mind starts; there is no sandbox around
+  them. Running Hermes under the Mind account is in review (#1076).
+- **#1137:** such a Mind can drive your signed-in Browser through its DevTools port
+  (`127.0.0.1:9222`), with no card. Fix in review (#1151).
+- **#1027:** apps the shell opens in Mind View for a Mind are classified as you.
+- **#548:** your own dotfiles start the session, so the boot lock is not a barrier to a process
+  running as you.
+- **#1022:** the built-in companion's own mail account keeps its password in `config.yaml` in plain
+  text. The Email app's passwords are in the credential vault.
+- **#542:** some companion tools read credential files, or change state while graded Safe.
+  **#885:** recipes and the cognitive kernel give tool output to a model without the injection
+  check.
+- **The ISO is not signed.** The update manifest is (ed25519); the first image you download is
+  checked only against the sha256 the same host publishes.
 
 ## Supported versions
 
