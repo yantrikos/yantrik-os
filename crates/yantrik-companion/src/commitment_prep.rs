@@ -17,7 +17,6 @@
 //! papered over: a missing *attachment* means no draft, because a draft that says "here is the deck"
 //! without the deck is a lie the person finds at send time.
 
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use yantrik_companion_core::tools::{ToolContext, ToolRegistry};
 
@@ -84,20 +83,22 @@ struct Found {
 
 /// Prepare commitment `commitment_id` as of `now`. Idempotent: a commitment with an item is not
 /// prepared again, whether the person has seen that item or not.
+///
+/// The database is `ctx.db`, and its connection is taken for one statement at a time: a tool call
+/// writes its own audit line through the same connection, so holding it across a call would hang.
 pub fn prepare(
-    conn: &Connection,
     registry: &ToolRegistry,
     ctx: &ToolContext<'_>,
     commitment_id: i64,
     now: f64,
 ) -> Outcome {
-    let Some(commitment) = WorldModel::commitment(conn, commitment_id) else {
+    let Some(commitment) = WorldModel::commitment(&ctx.db.conn(), commitment_id) else {
         return Outcome::Nothing("no such commitment");
     };
     if matches!(commitment.status, CommitmentStatus::Completed | CommitmentStatus::Cancelled | CommitmentStatus::Superseded) {
         return Outcome::Nothing("the commitment is already done");
     }
-    if AnticipationEngine::for_commitment(conn, &commitment_id.to_string()).is_some() {
+    if AnticipationEngine::for_commitment(&ctx.db.conn(), &commitment_id.to_string()).is_some() {
         return Outcome::AlreadyPrepared;
     }
     let files = named_files(&commitment.related_entities);
@@ -143,7 +144,7 @@ pub fn prepare(
         outcome: None,
         created_at: now,
     };
-    AnticipationEngine::store(conn, &item);
+    AnticipationEngine::store(&ctx.db.conn(), &item);
     Outcome::Prepared(item)
 }
 
@@ -279,6 +280,6 @@ impl crate::companion::CompanionService {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
-        prepare(&self.db.conn(), &self.registry, &ctx, commitment_id, now)
+        prepare(&self.registry, &ctx, commitment_id, now)
     }
 }

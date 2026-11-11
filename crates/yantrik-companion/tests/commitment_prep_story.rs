@@ -161,7 +161,7 @@ impl Rig {
             incognito: false,
             agent_spawner: None,
         };
-        prepare(&self.db.conn(), &self.registry, &ctx, id, now)
+        prepare(&self.registry, &ctx, id, now)
     }
 
     fn calls(&self) -> Vec<(String, Value)> {
