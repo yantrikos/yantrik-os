@@ -35,7 +35,6 @@ pub(crate) fn state_at(current_ts: f64, ago: Option<f64>) -> CompanionState {
         formality: 0.5,
         opinions_count: 0,
         shared_references_count: 0,
-        bond_level_changed: false,
         current_hour: 10,
         current_day_of_week: 1,
         idle_seconds: current_ts - last_interaction_ts,

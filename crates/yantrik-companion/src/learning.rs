@@ -10,7 +10,6 @@
 use yantrikdb_core::YantrikDB;
 use yantrik_ml::{ChatMessage, GenerationConfig, LLMBackend};
 
-use crate::bond::BondTracker;
 use crate::config::MemoryEvolutionConfig;
 use crate::memory_lifecycle::{MemoryLifecycle, MemoryScope, MemorySource};
 use crate::sanitize;
@@ -561,21 +560,5 @@ fn reflect_on_exchange(
             Ok(rid) => tracing::debug!(rid, reflection_text, "Self-reflection recorded"),
             Err(e) => tracing::debug!("Failed to record self-reflection: {e}"),
         }
-    }
-}
-
-/// Detect if the user reacted to humor in the companion's previous response.
-/// Call this with the user's NEW message to check reaction to PREVIOUS response.
-pub fn detect_humor_reaction(conn: &rusqlite::Connection, user_text: &str) {
-    let lower = user_text.to_lowercase();
-    let humor_indicators = [
-        "haha", "lol", "lmao", "rofl", "\u{1F602}", "\u{1F923}",
-        "that's funny", "you're funny", "hilarious",
-        "good one", "nice one", "made me laugh",
-    ];
-
-    if humor_indicators.iter().any(|h| lower.contains(h)) {
-        BondTracker::record_humor(conn, true);
-        tracing::debug!("Humor success detected");
     }
 }

@@ -184,7 +184,6 @@ impl Evolution {
             params![ref_id, reference_text, origin_context, now_ts()],
         )
         .ok();
-        BondTracker::record_shared_reference(conn);
         ref_id
     }
 

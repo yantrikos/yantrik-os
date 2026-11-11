@@ -1414,17 +1414,26 @@ pub fn status(id: &str) -> Option<Status> {
 
 /// **UI only.** See the module doc: the single caller is the Allow button's callback.
 pub(crate) fn grant(id: &str) -> Result<(), String> {
-    locked().grant(id, Instant::now(), &hhmm())
+    let card = card(id);
+    locked().grant(id, Instant::now(), &hhmm())?;
+    crate::bond_receipts::card_answered(card.as_ref(), true);
+    Ok(())
 }
 
 /// **UI only.** See the module doc: the single caller is the "Allow for this session" callback.
 pub(crate) fn grant_for_session(id: &str) -> Result<(), String> {
-    locked().grant_for_session(id, Instant::now(), &hhmm())
+    let card = card(id);
+    locked().grant_for_session(id, Instant::now(), &hhmm())?;
+    crate::bond_receipts::card_answered(card.as_ref(), true);
+    Ok(())
 }
 
 /// **UI only.** See the module doc: the single caller is the Deny button's callback.
 pub(crate) fn deny(id: &str) -> Result<(), String> {
-    locked().deny(id, Instant::now(), &hhmm())
+    let card = card(id);
+    locked().deny(id, Instant::now(), &hhmm())?;
+    crate::bond_receipts::card_answered(card.as_ref(), false);
+    Ok(())
 }
 
 /// One card by id, as the UI sees it. Used by the session-rule callback, which needs the

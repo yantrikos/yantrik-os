@@ -118,7 +118,7 @@ fn builtin_turn(
             }
         }
         if done && !failed {
-            bridge.score_conversation_turn(asked);
+            bridge.note_conversation_turn();
         }
         // The first run's first success is a model's words, not the not-set-up reply.
         // A guard warning or a router reply is not a model's either (`without_model`), and
@@ -333,7 +333,7 @@ fn dispatch(
         // Acts on the control surface are not scored: those are the mind working, not the
         // person talking.
         if answered {
-            bridge.score_conversation_turn(asked);
+            bridge.note_conversation_turn();
         }
         super::onboarding::first_chat_ended(
             &weak,
@@ -707,8 +707,8 @@ mod tests {
             .expect("dispatch sends a harness its turn through the host")
             .1;
         assert!(
-            harness_branch.contains("bridge.score_conversation_turn("),
-            "the harness branch of `dispatch` relays the answer and must also score the turn; the built-in scores its own, and nothing else sees a harness's answer end"
+            harness_branch.contains("bridge.note_conversation_turn("),
+            "the harness branch of `dispatch` relays the answer and must also note the turn; the built-in notes its own, and nothing else sees a harness's answer end"
         );
         assert!(
             harness_branch.contains("if answered"),
@@ -731,8 +731,8 @@ mod tests {
             .1;
         let relay = &relay[..relay.find("fn dispatch(").unwrap_or(relay.len())];
         assert!(
-            relay.contains("bridge.score_conversation_turn(asked)"),
-            "the built-in's relay must score the turn when it ends, from the text the person typed; the companion's own handlers no longer do, because they also run for prompts the machine sends itself"
+            relay.contains("bridge.note_conversation_turn()"),
+            "the built-in's relay must note the turn when it ends; the companion's own handlers no longer do, because they also run for prompts the machine sends itself"
         );
         assert!(
             relay.contains("TURN_FAILED_REPLY") && relay.contains("if done && !failed"),

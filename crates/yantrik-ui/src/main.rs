@@ -44,6 +44,8 @@ mod agents;
 mod ambient;
 mod app_context;
 mod approvals;
+mod bond_describe;
+mod bond_receipts;
 mod approval_wording;
 mod approval_bounds;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.

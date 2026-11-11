@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use crate::bond::{BondTracker, Receipt, ReceiptKind};
+
 // ── Preparation Tasks ───────────────────────────────────────────────────────
 
 /// A prepared item — something the companion staged in advance.
@@ -222,11 +224,33 @@ impl AnticipationEngine {
     }
 
     /// Record the outcome of a prepared item.
+    ///
+    /// The person using an item is a receipt for the bond, and so is dismissing it; an item
+    /// that merely expired or went unnoticed is neither, so it moves nothing.
     pub fn record_outcome(conn: &Connection, id: &str, outcome: PrepOutcome) {
-        let _ = conn.execute(
-            "UPDATE prepared_items SET outcome = ?1 WHERE id = ?2",
-            params![outcome.as_str(), id],
-        );
+        let changed = conn
+            .execute(
+                "UPDATE prepared_items SET outcome = ?1 WHERE id = ?2",
+                params![outcome.as_str(), id],
+            )
+            .unwrap_or(0);
+        let kind = match outcome {
+            PrepOutcome::Useful => ReceiptKind::PreparedUsed,
+            PrepOutcome::Dismissed => ReceiptKind::ForYouNotUseful,
+            PrepOutcome::Ignored | PrepOutcome::Expired => return,
+        };
+        if changed > 0 {
+            BondTracker::record_receipt(
+                conn,
+                &Receipt {
+                    kind,
+                    app: String::new(),
+                    action: String::new(),
+                    leaves_machine: false,
+                    source_id: id.to_string(),
+                },
+            );
+        }
     }
 
     /// Clean up expired items.
@@ -432,6 +456,45 @@ mod tests {
 
         let rate = AnticipationEngine::success_rate(&conn, 1.0);
         assert!((rate - 0.667).abs() < 0.01, "Expected ~0.667, got {rate}");
+    }
+
+    #[test]
+    fn using_an_item_raises_the_bond_and_dismissing_it_lowers_it_and_a_lapse_moves_nothing() {
+        let conn = setup();
+        BondTracker::ensure_tables(&conn);
+        let now = now_ts();
+        let stage = |id: &str| {
+            AnticipationEngine::store(&conn, &PreparedItem {
+                id: id.to_string(),
+                trigger: PreparationTrigger::UserRequested,
+                kind: PreparedKind::ContextSummary,
+                description: "test".into(),
+                data: serde_json::json!({}),
+                relevant_at: now, expires_at: now + 100.0,
+                surfaced: true, outcome: None, created_at: now,
+            });
+        };
+        let score = || BondTracker::get_state(&conn).bond_score;
+
+        for n in 0..3 {
+            let id = format!("used{n}");
+            stage(&id);
+            AnticipationEngine::record_outcome(&conn, &id, PrepOutcome::Useful);
+        }
+        let earned = score();
+        assert!(earned > 0.0);
+
+        stage("lapsed");
+        AnticipationEngine::record_outcome(&conn, "lapsed", PrepOutcome::Expired);
+        AnticipationEngine::record_outcome(&conn, "lapsed", PrepOutcome::Ignored);
+        assert_eq!(score(), earned, "an item nobody answered moves nothing");
+
+        stage("no");
+        AnticipationEngine::record_outcome(&conn, "no", PrepOutcome::Dismissed);
+        assert!(score() < earned);
+
+        AnticipationEngine::record_outcome(&conn, "used0", PrepOutcome::Useful);
+        assert_eq!(BondTracker::get_state(&conn).receipts, 4, "the same item is counted once");
     }
 
     #[test]

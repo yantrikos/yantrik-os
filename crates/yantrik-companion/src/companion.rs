@@ -563,7 +563,6 @@ pub struct CompanionService {
     // Soul state — cached from DB per interaction
     bond_level: BondLevel,
     bond_score: f64,
-    bond_level_changed: bool,
 
     // Desktop system state — set from SystemObserver via bridge
     system_context: String,
@@ -676,12 +675,6 @@ pub struct CompanionService {
     /// Refreshed by stewardship loop, injected into system prompt per token budget.
     pub active_context: ActiveDayContext,
 
-    /// 3-axis trust model (action, personal, taste) — gates autonomous execution.
-    pub trust_state: crate::trust_model::TrustState,
-
-    /// Contextual policy engine — predicate-based permission decisions.
-    pub policy_engine: crate::policy_engine::PolicyEngine,
-
     /// Silence policy — learns when to shut up from dismissal patterns.
     pub silence_policy: crate::silence_policy::SilencePolicy,
 
@@ -720,9 +713,6 @@ impl CompanionService {
 
         // World model tables (commitments, preferences, routines)
         crate::world_model::WorldModel::ensure_tables(&db.conn());
-
-        // Trust model tables (3-axis trust + event log)
-        crate::trust_model::TrustModel::ensure_table(&db.conn());
 
         // Silence policy tables (intervention outcomes)
         crate::silence_policy::SilencePolicy::ensure_table(&db.conn());
@@ -900,8 +890,7 @@ impl CompanionService {
             &db.conn(), &user_interests, &user_location,
         );
 
-        // V25: Load trust state + silence policy history
-        let trust_state = crate::trust_model::TrustModel::get_state(&db.conn());
+        // V25: Load silence policy history
         let mut silence_policy = crate::silence_policy::SilencePolicy::new();
         silence_policy.load_history(&db.conn());
 
@@ -922,7 +911,6 @@ impl CompanionService {
             recent_valence_avg: None,
             bond_level: bond_state.bond_level,
             bond_score: bond_state.bond_score,
-            bond_level_changed: false,
             system_context: String::new(),
             registry,
             guard,
@@ -958,8 +946,6 @@ impl CompanionService {
             cognitive_router: None, // initialized via init_cognitive_router()
             capability_profile,
             active_context: ActiveDayContext::new(),
-            trust_state,
-            policy_engine: crate::policy_engine::PolicyEngine::new(),
             silence_policy,
             provider_registry: None,
             agent_hook: None,
@@ -1594,7 +1580,7 @@ impl CompanionService {
         self.compress_history_if_needed();
         self.session_turn_count += 1;
 
-        // Learning. The bond is not scored here: see `score_conversation_turn`.
+        // Learning. The shell notes the turn where it ends: see `note_conversation_turn`.
         if !self.incognito {
             let smart = if self.config.memory_evolution.smart_recall_enabled {
                 memory_evolution::smart_recall(&self.db, user_text, &self.config.memory_evolution)
@@ -1825,11 +1811,6 @@ impl CompanionService {
             .pop_for_interaction(&self.db.conn(), 2);
         let urge_ids: Vec<String> = urges.iter().map(|u| u.urge_id.clone()).collect();
 
-        // Detect humor reaction from previous exchange
-        if !self.incognito {
-            learning::detect_humor_reaction(&self.db.conn(), user_text);
-        }
-
         // Step 5: Evaluate instincts on interaction
         let state = self.build_state();
         for instinct in &self.instincts {
@@ -2045,7 +2026,7 @@ impl CompanionService {
             self.session_turn_count += 1;
 
             // Learning (skip in incognito). The bond is not scored here: see
-            // `score_conversation_turn`.
+            // `note_conversation_turn`.
             if !self.incognito {
                 let clean_response = sanitize::clean_response_for_learning(
                     &response_text, &tool_calls_made,
@@ -2385,8 +2366,6 @@ impl CompanionService {
                 agent_spawner.as_ref(),
                 self.event_bus.as_ref(),
                 msg_trace,
-                &self.policy_engine,
-                &self.trust_state,
                 self.model_family,
                 active_profile.tier,
             );
@@ -2542,7 +2521,7 @@ impl CompanionService {
             // Step 9: Tick evolution + narrative. The bond itself is not scored here: this
             // handler runs for the startup brief, EXECUTE urges and the companion's own
             // reflection prompts as well as for the person, and only the person's turn counts.
-            // The shell scores that turn where it ends, through `score_conversation_turn`.
+            // The shell notes that turn where it ends, through `note_conversation_turn`.
             if self.config.bond.enabled {
                 Evolution::tick(
                     &self.db.conn(),
@@ -2585,7 +2564,7 @@ impl CompanionService {
                 },
                 tools_used: tool_calls_made.clone(),
                 domains: classify_interaction_domains(user_text),
-                sentiment: if self.bond_level_changed { 0.8 } else { 0.3 },
+                sentiment: 0.3,
                 outcome_positive: !is_offline,
                 involved_nodes: Vec::new(),
             };
@@ -2773,10 +2752,6 @@ impl CompanionService {
         // The person's pending urges are theirs: an outside turn neither takes them nor leaves any.
         let urges = if outside { Vec::new() } else { self.urge_queue.pop_for_interaction(&self.db.conn(), 2) };
         let urge_ids: Vec<String> = urges.iter().map(|u| u.urge_id.clone()).collect();
-
-        if !self.incognito {
-            learning::detect_humor_reaction(&self.db.conn(), user_text);
-        }
 
         let state = self.build_state();
         for instinct in self.instincts.iter().filter(|_| !outside) {
@@ -3252,8 +3227,6 @@ impl CompanionService {
                             agent_spawner.as_ref(),
                             self.event_bus.as_ref(),
                             msg_trace,
-                            &self.policy_engine,
-                            &self.trust_state,
                             self.model_family,
                             active_profile.tier,
                         );
@@ -3362,8 +3335,6 @@ impl CompanionService {
                                     agent_spawner.as_ref(),
                                     self.event_bus.as_ref(),
                                     msg_trace,
-                                    &self.policy_engine,
-                                    &self.trust_state,
                                     self.model_family,
                                     active_profile.tier,
                                 );
@@ -3572,7 +3543,7 @@ impl CompanionService {
             // Step 9: Tick evolution + narrative. The bond itself is not scored here: this
             // handler runs for the startup brief, EXECUTE urges and the companion's own
             // reflection prompts as well as for the person, and only the person's turn counts.
-            // The shell scores that turn where it ends, through `score_conversation_turn`.
+            // The shell notes that turn where it ends, through `note_conversation_turn`.
             if self.config.bond.enabled {
                 Evolution::tick(
                     &self.db.conn(),
@@ -3615,7 +3586,7 @@ impl CompanionService {
                 },
                 tools_used: tool_calls_made.clone(),
                 domains: classify_interaction_domains(user_text),
-                sentiment: if self.bond_level_changed { 0.8 } else { 0.3 },
+                sentiment: 0.3,
                 outcome_positive: !is_offline,
                 involved_nodes: Vec::new(),
             };
@@ -3705,7 +3676,6 @@ impl CompanionService {
             formality: style.formality,
             opinions_count,
             shared_references_count,
-            bond_level_changed: self.bond_level_changed,
             // Phase 2: Proactive intelligence
             current_hour,
             current_day_of_week,
@@ -3752,12 +3722,6 @@ impl CompanionService {
             return;
         }
 
-        // V25: Taste trust gate — don't send proactive if suggestions aren't welcome
-        if !self.trust_state.suggestions_welcome() {
-            tracing::debug!(taste = self.trust_state.taste, "Taste trust too low, skipping proactive");
-            return;
-        }
-
         // Sync bond level so templates render with personality
         self.proactive_engine.set_bond_level(self.bond_level);
         // Scope the connection guard so the database lock is released before
@@ -3786,21 +3750,6 @@ impl CompanionService {
             source, "", &serde_json::json!({}),
         ).as_str();
         crate::brain_loop::record_brain_feedback(&self.db.conn(), source, signal_type_str, reward);
-
-        // Also update taste trust
-        let trust_event = if is_positive {
-            crate::trust_model::TrustEvent::SuggestionAccepted { source: source.to_string() }
-        } else if is_negative {
-            crate::trust_model::TrustEvent::SuggestionDismissed { source: source.to_string() }
-        } else {
-            return;
-        };
-        self.trust_state = crate::trust_model::TrustModel::apply_event(&self.db.conn(), &trust_event);
-    }
-
-    /// Refresh trust state from DB (call periodically).
-    pub fn refresh_trust_state(&mut self) {
-        self.trust_state = crate::trust_model::TrustModel::get_state(&self.db.conn());
     }
 
     /// Get silence policy dampening factor for a source.
@@ -4104,34 +4053,47 @@ impl CompanionService {
         crate::types::absence_seconds(self.last_interaction_ts, now_ts())
     }
 
-    /// Count one conversation turn: the person said something and was answered.
+    /// Note one conversation turn: the person said something and was answered.
     ///
-    /// This is the only place the bond moves and `last_interaction_ts` is bumped, whichever mind
-    /// answered. The built-in used to score inside `handle_message` and
-    /// `handle_message_streaming` — but those handlers run for every prompt the machine sends
-    /// itself (the startup brief, EXECUTE urges, "Reflect naturally") as well as for the person,
-    /// and the store on VM 520 held `interaction` rows of msg_len 281/281/403 at times nobody
-    /// was typing. A prompt the machine sent itself is not a conversation, and must not tell the
-    /// proactive engine the person was just here either. So the shell scores a turn where it
-    /// ends, and only when it began with the person's words: `wire::chat::dispatch`, for the
-    /// built-in and an attached harness alike.
-    ///
-    /// It reaches the companion rather than the store alone because the level and score cached
-    /// on this struct are what the proactive engine, the voice profile and the status bar read.
-    pub fn score_conversation_turn(&mut self, user_text: &str) {
+    /// Presence only. It takes no text and moves no trust (see `BondTracker::note_turn`); the
+    /// score is made of receipts. This is the only place `last_interaction_ts` is bumped,
+    /// whichever mind answered. The handlers run for every prompt the machine sends itself (the
+    /// startup brief, EXECUTE urges, "Reflect naturally") as well as for the person, and a
+    /// prompt the machine sent itself must not tell the proactive engine the person was just
+    /// here. So the shell notes a turn where it ends, and only when it began with the person's
+    /// words: `wire::chat::dispatch`, for the built-in and an attached harness alike.
+    pub fn note_conversation_turn(&mut self) {
         if !self.config.bond.enabled || self.incognito {
             return;
         }
-        let (new_level, level_changed) = {
-            let conn = self.db.conn();
-            BondTracker::score_conversation_turn(&conn, user_text)
-        };
-        self.bond_level = new_level;
-        self.bond_level_changed = level_changed;
-        self.bond_score = BondTracker::get_state(&self.db.conn()).bond_score;
+        BondTracker::note_turn(&self.db.conn());
         // The person is here, talking — to whichever mind. `idle_seconds` is what the
         // companion's own instincts read before speaking unprompted.
         self.last_interaction_ts = now_ts();
+    }
+
+    /// Write down one receipt — a thing the person did — and take the level it gives. Nothing
+    /// else changes the bond.
+    pub fn record_bond_receipt(&mut self, receipt: &crate::bond::Receipt) {
+        if !self.config.bond.enabled || self.incognito {
+            return;
+        }
+        let conn = self.db.conn();
+        BondTracker::record_receipt(&conn, receipt);
+        let state = BondTracker::get_state(&conn);
+        drop(conn);
+        self.bond_level = state.bond_level;
+        self.bond_score = state.bond_score;
+    }
+
+    /// The table of what each app was asked and answered, for `describe` and `yos`.
+    pub fn bond_table(&self) -> Vec<crate::bond::BondRow> {
+        crate::bond_table::rows(&self.db.conn())
+    }
+
+    /// Why the score last fell, newest first.
+    pub fn bond_why_it_fell(&self, limit: usize) -> Vec<String> {
+        BondTracker::why_it_fell(&self.db.conn(), limit)
     }
 
     /// Get current bond level.
@@ -4471,8 +4433,6 @@ fn execute_tool_round_tracked(
     agent_spawner: Option<&tools::AgentSpawnerContext>,
     event_bus: Option<&yantrik_os::EventBus>,
     parent_trace: Option<yantrik_os::TraceId>,
-    policy_engine: &crate::policy_engine::PolicyEngine,
-    trust_state: &crate::trust_model::TrustState,
     model_family: ModelFamily,
     model_tier: yantrik_ml::ModelTier,
 ) {
@@ -4532,11 +4492,9 @@ fn execute_tool_round_tracked(
             None
         };
 
-        // V25: Policy engine gate — check if this action is allowed
-        let action_ctx = crate::policy_engine::ActionContext::from_tool(name);
-        let policy_decision = policy_engine.evaluate(&action_ctx, trust_state);
-        if let crate::policy_engine::PolicyDecision::Deny { ref reason } = policy_decision {
-            tracing::warn!(tool = %name, reason = %reason, "Policy engine denied tool execution");
+        // Tools no loop may run, whatever the person has been allowing.
+        if let Some(reason) = crate::hard_deny::refusal(name) {
+            tracing::warn!(tool = %name, reason = %reason, "Hard-denied tool refused");
             let result = format!("BLOCKED by policy: {}", reason);
             agent_loop.record_step(name, args, &result, false);
             if use_native_tools {
@@ -4552,10 +4510,6 @@ fn execute_tool_round_tracked(
             }
             continue;
         }
-        if !policy_decision.is_allowed() {
-            tracing::info!(tool = %name, decision = %policy_decision.as_str(), "Policy engine flagged tool");
-        }
-
         let tool_start = std::time::Instant::now();
 
         // Execute the tool
@@ -4652,23 +4606,6 @@ fn execute_tool_round_tracked(
             &db.conn(), name, !is_error, tool_duration_ms,
             failure_reason.as_deref(),
         );
-
-        // V25: Update trust model based on tool outcome
-        {
-            let trust_event = if is_error {
-                crate::trust_model::TrustEvent::AutonomousMistake {
-                    action: name.to_string(),
-                    severity: 0.5,
-                }
-            } else {
-                crate::trust_model::TrustEvent::AutonomousSuccess {
-                    action: name.to_string(),
-                }
-            };
-            if !incognito {
-                crate::trust_model::TrustModel::apply_event(&db.conn(), &trust_event);
-            }
-        }
 
         // Record step in agent loop
         agent_loop.record_step(name, args, &result, !is_error);
@@ -5915,15 +5852,14 @@ mod bond_scoring_tests {
     }
 
     #[test]
-    fn the_persons_turn_moves_the_bond_and_the_clock() {
+    fn the_persons_turn_moves_the_clock_and_not_the_bond() {
         let mut c = companion();
         let before = bond_and_clock(&c);
-        let asked = "how is the build going?";
-        c.handle_message(asked);
-        // Where the shell counts it: after the answer, from the person's own words.
-        c.score_conversation_turn(asked);
+        c.handle_message("how is the build going?");
+        // Where the shell counts it: after the answer.
+        c.note_conversation_turn();
         let (score, interactions, clock) = bond_and_clock(&c);
-        assert!(score > before.0, "a person's turn moves the score");
+        assert_eq!(score, before.0, "a person's turn is presence, and moves no trust");
         assert_eq!(interactions, before.1 + 1, "and is one interaction");
         assert!(clock > before.2, "and is when the person was last around");
         assert_eq!(c.bond_score(), score, "the cached score the status bar reads follows the store");
@@ -5939,7 +5875,7 @@ mod bond_scoring_tests {
             // backdated. The guard goes out of scope before `new` locks again.
             let conn = db.conn();
             BondTracker::ensure_tables(&conn);
-            BondTracker::score_conversation_turn(&conn, "goodnight");
+            BondTracker::note_turn(&conn);
             conn.execute(
                 "UPDATE bond_events SET created_at = created_at - ?1 WHERE event_type = 'interaction'",
                 rusqlite::params![ago],
@@ -5988,16 +5924,17 @@ mod bond_scoring_tests {
     fn nothing_in_the_handlers_scores_an_interaction() {
         let src = include_str!("companion.rs");
         let handlers = src.split("#[cfg(test)]").next().unwrap_or_default();
-        assert!(
-            !handlers.contains("score_interaction("),
-            "`BondTracker::score_interaction` is called from inside a handler again; every prompt \
-             that handler runs — the startup brief, EXECUTE urges, reflections — will count as \
-             the person talking"
+        let notes = handlers.matches("BondTracker::note_turn(").count();
+        assert_eq!(
+            notes, 1,
+            "`BondTracker::note_turn` may be called from one place, `note_conversation_turn`; \
+             found {notes}. Called from a handler, every prompt that handler runs — the startup \
+             brief, EXECUTE urges, reflections — would count as the person being here"
         );
         let bumps = handlers.matches("self.last_interaction_ts = now_ts()").count();
         assert_eq!(
             bumps, 1,
-            "`last_interaction_ts` may be bumped in one place, `score_conversation_turn`; \
+            "`last_interaction_ts` may be bumped in one place, `note_conversation_turn`; \
              found {bumps}"
         );
     }

@@ -193,7 +193,7 @@ locally, never sent anywhere, and only what the person could read:
 - **Press-to-acknowledgement** for launches (target: under 100 ms).
 - **Proactive messages dismissed versus acted on.** A rising dismissal rate means the mind is
   nagging, so it should speak less, automatically.
-- **Turns that end answered** (already counted for the bond in `score_conversation_turn`).
+- **Turns that end answered** (already noted as presence in `note_conversation_turn`; they move no trust).
 - **Undo use versus confirmation-dialog cancels.** Undo should replace the cancels.
 
 And one qualitative check per release, on the Mac mini: use the desktop for a working day and write

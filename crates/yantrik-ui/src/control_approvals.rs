@@ -1451,6 +1451,7 @@ pub fn wire(ui: &App, bridge: std::sync::Arc<crate::bridge::CompanionBridge>) {
     yantrik_app_runtime::control::spend_grants_with(spend_in_process);
 
     crate::card_watch::attach(ui.as_weak());
+    crate::bond_receipts::attach(bridge.clone());
 
     let allow_ui = ui.as_weak();
     ui.on_approval_allow(move |id| {

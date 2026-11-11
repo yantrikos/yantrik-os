@@ -511,6 +511,7 @@ pub fn publish(
             }
 
             let bond = describe_bond(&ui.get_bond_data());
+            let (bond_table, bond_offers, bond_why_it_fell) = crate::bond_describe::describe();
 
             // From the launch registry, not the Slint window-list model. The model is only
             // refreshed while the desktop screen is showing, so a describe from any other screen
@@ -927,6 +928,12 @@ pub fn publish(
                 // The count as well as the score: the score caps at 5.0, and on a machine
                 // that reached it a reader has no other way to see a turn being counted.
                 .with("bond_interactions", bond.interactions)
+                // What each app was asked, for each action, and what the person answered: the
+                // table, the offers it has earned, and why trust last fell. Receipts only
+                // (`bond_describe`); an offer is applied only by the person's own press.
+                .with("bond_table", bond_table)
+                .with("bond_offers", bond_offers)
+                .with("bond_why_it_fell", bond_why_it_fell)
                 .with("active_project", ui.get_active_project().to_string())
                 // The time told in full — date, weekday, time, UTC offset, zone — so a mind
                 // learning what day it is is a read rather than an act: `agent_run date` is

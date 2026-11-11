@@ -1209,6 +1209,15 @@ pub fn standing_rule_answers(grade: &str, app: &str, action: &str, declared: imp
     locked().standing_rule_answers(grade, app, action, declared, &ceiling, Instant::now())
 }
 
+/// Whether the person has already allowed this app and action for the session, or the machine's
+/// own file allows it. Read by the bond table, to say whether a row still asks.
+pub fn session_allows(app: &str, action: &str) -> bool {
+    let now = Instant::now();
+    let guard = locked();
+    let same = |r: &Rule| r.app == app && r.action == action;
+    guard.rules_at(now).iter().any(same) || guard.standing_in_force(now).iter().any(same)
+}
+
 /// Fold an expired bypass back. Returns whether the screen has something new to show.
 pub fn lapse() -> bool {
     let changed = locked().lapse(Instant::now());
