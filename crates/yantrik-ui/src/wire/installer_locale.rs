@@ -3,9 +3,11 @@
 //!
 //! Neither was asked before #400. A person with a German keyboard typed their password on a US
 //! layout without knowing it, and met the difference at the lock screen of the installed
-//! machine; the installed clock ran at UTC until the desktop's own geolocation got to it after
-//! the first login. Both are one question each, and both have a good default we can find
-//! without asking — so the installer finds it, shows it, and lets it be changed.
+//! machine; the installed clock ran at UTC. The layout has a good default we can find on the
+//! live system, so the installer finds it, shows it and lets it be changed. The timezone has none
+//! that costs nothing (finding it from the network would tell a third party this machine's
+//! address, #1171), so it starts at UTC and the Review screen asks "Is this your timezone?"
+//! until the person has answered.
 
 use std::path::Path;
 use std::process::Command;

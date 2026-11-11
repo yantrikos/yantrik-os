@@ -2,11 +2,18 @@
 //! Uses wttr.in (free, no API key needed).
 //!
 //! With no place named, wttr.in finds the caller from its IP address, which tells it that
-//! address. So a call that names no place asks first (`location_consent::ASK`) unless the person
-//! has already turned location lookups on, and `YANTRIK_NO_GEOLOCATE=1` refuses it outright.
+//! address. So a call that names no place does not send anything until the person has said yes,
+//! and the yes is theirs: the shell puts up its own approval card (`allow_location_lookup`), and
+//! only their Allow there writes the switch. The model's arguments cannot carry a yes (there is
+//! no such argument), and a turn with nobody at the keyboard leaves the card unanswered, so
+//! nothing is sent. `YANTRIK_NO_GEOLOCATE=1` refuses it outright.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 use yantrik_ipc_contracts::location_consent;
+
+/// The shell's action that asks the person, and the app it belongs to.
+const APP: &str = "shell";
+const ACTION: &str = "allow_location_lookup";
 
 /// What a call's place comes to.
 #[derive(Debug, PartialEq)]
@@ -17,19 +24,29 @@ enum Place {
     Say(String),
 }
 
-/// Decide the place before any request. `yes` is the call's `my_location` flag, which the model
-/// sets only after the person agreed; `on` is the standing switch.
-fn resolve(location: &str, yes: bool, forbidden: bool, on: bool) -> Place {
+/// Decide the place before any request. `on` is the standing switch; `ask` puts the shell's card
+/// in front of the person and is called only when a place is missing and the switch is off.
+fn resolve(location: &str, forbidden: bool, on: bool, ask: impl FnOnce() -> Result<(), String>) -> Place {
     if !location.is_empty() {
         return Place::Fetch(location.to_string());
     }
     if forbidden {
         return Place::Say("Location lookups are switched off on this machine. Name a city.".into());
     }
-    if yes || on {
+    if on {
         return Place::Fetch(String::new());
     }
-    Place::Say(format!("No place named. {}", location_consent::ASK))
+    match ask() {
+        Ok(()) if location_consent::allowed() => Place::Fetch(String::new()),
+        Ok(()) => Place::Say(format!("No place named, and location lookups are still off. {}", location_consent::ASK_WEATHER)),
+        Err(why) => Place::Say(format!("No place named. {} {why} Nothing was sent; name a city to get the weather there.", location_consent::ASK_WEATHER)),
+    }
+}
+
+/// The person's yes, on the shell's own card.
+fn ask_the_person() -> Result<(), String> {
+    crate::app_ui::act_asking(&crate::app_ui::Desk::session(), APP, ACTION, &serde_json::json!({}), "", "The weather tool was asked about a place and none was named.")
+        .map(|_| ())
 }
 
 pub fn register(reg: &mut ToolRegistry) {
@@ -56,11 +73,7 @@ impl Tool for GetWeatherTool {
                     "properties": {
                         "location": {
                             "type": "string",
-                            "description": "City name or coordinates (e.g. 'London', 'New York', '48.8566,2.3522'). Leave empty only after the person agreed to find their location from their internet address, and then set my_location."
-                        },
-                        "my_location": {
-                            "type": "boolean",
-                            "description": "True only if the person said yes to finding their location from their internet address (that address is sent to wttr.in)."
+                            "description": "City name or coordinates (e.g. 'London', 'New York', '48.8566,2.3522'). If the person named no place, leave it empty: they are asked on their own screen whether wttr.in may find them from their internet address, and nothing is sent until they say yes."
                         },
                         "format": {
                             "type": "string",
@@ -75,8 +88,7 @@ impl Tool for GetWeatherTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let location = args.get("location").and_then(|v| v.as_str()).unwrap_or("");
-        let yes = args.get("my_location").and_then(|v| v.as_bool()).unwrap_or(false);
-        let location = match resolve(location.trim(), yes, location_consent::env_forbids(), location_consent::allowed()) {
+        let location = match resolve(location.trim(), location_consent::env_forbids(), location_consent::allowed(), ask_the_person) {
             Place::Fetch(place) => place,
             Place::Say(words) => return words,
         };
@@ -133,28 +145,63 @@ impl Tool for GetWeatherTool {
 mod tests {
     use super::*;
 
+    fn never_asked() -> Result<(), String> {
+        panic!("the person must not be asked")
+    }
+
     #[test]
     fn a_named_city_is_fetched_without_a_question() {
-        assert_eq!(resolve("Oslo", false, false, false), Place::Fetch("Oslo".into()));
+        assert_eq!(resolve("Oslo", false, false, never_asked), Place::Fetch("Oslo".into()));
     }
 
     #[test]
-    fn no_place_and_no_consent_asks_and_sends_nothing() {
-        let Place::Say(words) = resolve("", false, false, false) else { panic!("must ask") };
-        assert!(words.contains("internet address") && words.contains("wttr.in"), "{words}");
+    fn the_switch_on_fetches_without_a_card() {
+        assert_eq!(resolve("", false, true, never_asked), Place::Fetch(String::new()));
     }
 
     #[test]
-    fn the_lookup_is_taken_only_after_a_yes_or_the_switch() {
-        assert_eq!(resolve("", true, false, false), Place::Fetch(String::new()));
-        assert_eq!(resolve("", false, false, true), Place::Fetch(String::new()));
+    fn no_place_and_no_consent_asks_the_person_and_an_unanswered_card_sends_nothing() {
+        let Place::Say(words) = resolve("", false, false, || Err("Nobody answered the card.".into())) else { panic!("must not fetch") };
+        assert!(words.contains("wttr.in") && words.contains("Nobody answered") && !words.contains("ipinfo"), "{words}");
     }
 
     #[test]
-    fn the_environment_refuses_even_after_a_yes() {
-        for (yes, on) in [(true, false), (false, true), (true, true)] {
-            assert!(matches!(resolve("", yes, true, on), Place::Say(_)), "yes={yes} on={on}");
+    fn a_no_on_the_card_sends_nothing() {
+        assert!(matches!(resolve("", false, false, || Err("The person said no.".into())), Place::Say(_)));
+    }
+
+    /// The card says Ok but nothing was written (a shell in full bypass that ran it, a mismatch):
+    /// the request still waits for the switch itself, which only the shell writes.
+    #[test]
+    fn an_ok_that_left_the_switch_off_sends_nothing() {
+        if location_consent::allowed() {
+            return; // this machine really has it on
         }
-        assert_eq!(resolve("Oslo", true, true, true), Place::Fetch("Oslo".into()), "a typed city is the person's own words");
+        assert!(matches!(resolve("", false, false, || Ok(())), Place::Say(_)));
+    }
+
+    #[test]
+    fn the_environment_refuses_without_asking() {
+        assert!(matches!(resolve("", true, false, never_asked), Place::Say(_)));
+        assert!(matches!(resolve("", true, true, never_asked), Place::Say(_)));
+        assert_eq!(resolve("Oslo", true, true, never_asked), Place::Fetch("Oslo".into()), "a typed city is the person's own words");
+    }
+
+    /// The old schema let the model say the person agreed. There is no such argument now, and an
+    /// unknown one is not read: the model has no way to carry a yes.
+    #[test]
+    fn the_model_cannot_carry_a_yes() {
+        let def = GetWeatherTool.definition().to_string();
+        assert!(!def.contains("my_location"), "{def}");
+        let args = serde_json::json!({"my_location": true});
+        assert_eq!(args.get("location").and_then(|v| v.as_str()).unwrap_or(""), "");
+        // What execute would do with those arguments and the switch off: ask, get nobody, send nothing.
+        assert!(matches!(resolve("", false, false, || Err("nobody".into())), Place::Say(_)));
+    }
+
+    #[test]
+    fn the_source_never_reads_a_yes_from_the_arguments() {
+        let code = include_str!("weather.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(!code.contains("my_location"), "no argument may stand for the person's yes");
     }
 }

@@ -71,6 +71,7 @@ pub const ENTRIES: &[Entry] = &[
     other(Config, "mind-mode.json", "shell; read by the gate"),
     other(Config, "agent-reach.json", "shell; read by ipc-transport"),
     other(Config, "privacy.json", "shell; read by ipc-transport"),
+    other(Config, "location-lookup", "shell (the person's yes to IP-based location lookups, written only from its approval card; location_consent)"),
     other(Config, "perception.yaml", "perception-service"),
     other(Config, "vault", "perception-service scope"),
     other(Config, "event_log.db", "shell"),

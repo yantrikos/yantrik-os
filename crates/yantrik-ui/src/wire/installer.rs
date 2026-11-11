@@ -510,8 +510,8 @@ fn install_to_target(
         &format!("127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n"),
     )?;
 
-    // The clock, from the Review screen. Written here rather than left to the desktop's own
-    // geolocation, which only fills a machine still at UTC and only after the first login.
+    // The clock, from the Review screen (UTC unless the person changed it). Nothing sets it
+    // later: the desktop's IP geolocation is off until the person turns it on (#1171).
     progress(61, "Setting the timezone...");
     let zone = installer_locale::configure_target_timezone(
         mount_dir,

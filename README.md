@@ -405,16 +405,23 @@ yantrik-os/
 
 - **The OS itself sends nothing anywhere.** No telemetry, no phone-home, no analytics. The
   image ships pointed at loopback and at nothing else, because an endpoint baked into a public
-  image is an endpoint every copy of it talks to. With nobody at the keyboard it makes one call
-  on its own, the update check against `releases.yantrikos.com`, plus the clock sync (NTP) any
-  Debian system does. It does not ask where you are: location lookups are off until you turn
-  them on, and a feature that needs a place asks first, in a sentence saying what is sent and to
-  whom, or takes a city you type. The installers ask for your timezone and guess nothing from
-  the network. `YANTRIK_NO_GEOLOCATE=1` keeps lookups off even when asked. The other calls are
-  ones you set up or ask for: your weather, mail and calendar services, a cloud model if you
-  add one, and a problem report you chose to send. When an app crashes, the desktop writes a
-  record locally, scrubbed of your home directory, your user name and anything shaped like a
-  key; *Report a problem* shows you that exact file, and only pressing Send moves it, to
+  image is an endpoint every copy of it talks to. With nobody at the keyboard the OS itself
+  makes two kinds of call: the update check against `releases.yantrikos.com`, and the clock
+  sync (NTP) any Debian system does. It never looks up where you are on its own: IP-based
+  location lookups are off until you allow them, and the one way a feature gets them is a card
+  on your screen saying what is sent and to whom (your internet address, to a weather or
+  location service), whose Allow button turns them on. You can also turn them on yourself by
+  putting `on` in `~/.config/yantrik/location-lookup` (a file you own, mode 600, in a directory
+  only you can write; anything else is ignored). `yos describe shell` shows "Location lookups:
+  on (since …)" while they are on. `YANTRIK_NO_GEOLOCATE=1` keeps them off even then. The
+  installers start the timezone at UTC (the graphical one) or the live system's zone (the text
+  one) and ask you to confirm or change it; neither asks the network. Everything else the OS
+  contacts is something you set up or ask for: a cloud model account (checked in the background
+  while it is your chosen model), a mind you install (which keeps itself up to date, and which we
+  ask not to report usage with `DO_NOT_TRACK=1`), your weather, mail, calendar and connectors,
+  and a problem report you chose to send. When an app crashes, the desktop writes a record
+  locally, scrubbed of your home directory, your user name and anything shaped like a key;
+  *Report a problem* shows you that exact file, and only pressing Send moves it, to
   `report.yantrikos.com`, with no name, hostname or address attached.
 - **The mind is a separate question, and it is yours to answer.** This OS is built to be
   driven by any mind, cloud models included; that is the point of the harness protocol, and

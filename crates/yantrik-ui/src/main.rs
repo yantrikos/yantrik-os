@@ -67,6 +67,7 @@ mod power_status;
 mod control_network;
 mod caller_class;
 mod control_wifi_reconnect;
+mod control_location;
 mod control_mail;
 mod control_power;
 mod control_installer;

@@ -50,28 +50,43 @@ const UNSET_TIMEZONE: &str = "Etc/UTC";
 
 /// Learn where this machine is, if it does not already know. Returns immediately.
 pub fn detect_in_background() {
-    if !yantrik_ipc_contracts::location_consent::allowed() {
-        tracing::info!("Location lookup is off: it runs only once the person turns it on");
-        return;
-    }
+    detect_if(yantrik_ipc_contracts::location_consent::allowed);
+}
 
-    // A worker, because this makes a network call and the caller is the thread that draws the
+/// [`detect_in_background`] with the permission handed in, so a test can say yes or no.
+fn detect_if(allowed: impl Fn() -> bool + Send + 'static) {
+    // A worker, because this may make a network call and the caller is the thread that draws the
     // screen. A desktop that stalls for six seconds at login to ask the internet where it is
     // would be a worse bug than the one this fixes.
     std::thread::Builder::new()
         .name("locate".into())
-        .spawn(run)
+        .spawn(move || settle(super::settings::place(), allowed, look_up, apply_timezone, super::settings::set_place))
         .ok();
 }
 
-fn run() {
-    let known = super::settings::place();
-
-    // Already located. The timezone may still need applying — a place can be recorded before
+/// What this machine does about its place at login, with every effect handed in.
+///
+/// A place or timezone the person already set is applied whatever the switch says: that needs no
+/// network, and `place.timezone` in `settings.yaml` is the documented way to say it by hand. Only
+/// the lookup, the one call that tells ipinfo.io this machine's address, waits for the person's
+/// yes (`location_consent`).
+fn settle(
+    known: super::settings::Place,
+    allowed: impl Fn() -> bool,
+    look_up: impl FnOnce() -> Option<super::settings::Place>,
+    apply: impl Fn(&str),
+    record: impl FnOnce(super::settings::Place),
+) {
+    // Already located. The timezone may still need applying: a place can be recorded before
     // the system clock has been told about it, which is exactly the state a failed `timedatectl`
     // leaves behind.
     if !known.city.is_empty() || !known.timezone.is_empty() {
-        apply_timezone(&known.timezone);
+        apply(&known.timezone);
+        return;
+    }
+
+    if !allowed() {
+        tracing::info!("Location lookup is off: it runs only once the person turns it on. {}", yantrik_ipc_contracts::location_consent::ASK_DESKTOP);
         return;
     }
 
@@ -89,8 +104,8 @@ fn run() {
         timezone = %place.timezone,
         "Located this machine"
     );
-    super::settings::set_place(place.clone());
-    apply_timezone(&place.timezone);
+    record(place.clone());
+    apply(&place.timezone);
 }
 
 /// Ask where we are.
@@ -203,7 +218,58 @@ fn current_timezone() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_plausible_timezone;
+    use super::super::settings::Place;
+    use super::{is_plausible_timezone, settle};
+    use std::cell::{Cell, RefCell};
+
+    fn place(city: &str, timezone: &str) -> Place {
+        Place { city: city.into(), timezone: timezone.into(), ..Place::default() }
+    }
+
+    #[test]
+    fn with_the_switch_off_nothing_is_looked_up() {
+        let looked = Cell::new(false);
+        settle(
+            Place::default(),
+            || false,
+            || {
+                looked.set(true);
+                None
+            },
+            |_| panic!("nothing to apply"),
+            |_| panic!("nothing to record"),
+        );
+        assert!(!looked.get(), "the lookup must not run while lookups are off");
+    }
+
+    /// A timezone typed into `settings.yaml` is applied with the switch off: it needs no network.
+    #[test]
+    fn a_hand_set_timezone_is_applied_with_the_switch_off() {
+        let applied = RefCell::new(Vec::new());
+        settle(
+            place("", "America/Chicago"),
+            || false,
+            || panic!("a known place is never looked up"),
+            |tz| applied.borrow_mut().push(tz.to_string()),
+            |_| panic!("nothing to record"),
+        );
+        assert_eq!(*applied.borrow(), ["America/Chicago"]);
+    }
+
+    #[test]
+    fn with_the_switch_on_and_nothing_known_it_looks_up_records_and_applies() {
+        let applied = RefCell::new(Vec::new());
+        let recorded = RefCell::new(Vec::new());
+        settle(
+            Place::default(),
+            || true,
+            || Some(place("Fayetteville", "America/Chicago")),
+            |tz| applied.borrow_mut().push(tz.to_string()),
+            |p| recorded.borrow_mut().push(p.city),
+        );
+        assert_eq!(*applied.borrow(), ["America/Chicago"]);
+        assert_eq!(*recorded.borrow(), ["Fayetteville"]);
+    }
 
     #[test]
     fn real_zone_names_pass() {
