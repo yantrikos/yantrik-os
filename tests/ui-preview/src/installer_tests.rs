@@ -392,7 +392,7 @@ fn run_at(
     }
     assert_eq!(ui.get_step(), 5, "100% becomes Installed");
     save("installed")?;
-    assert!(press_up(forward_x, &|| ui.get_reboots() > 0), "Restart now reaches the shell");
+    assert!(press_up(width as f32 / 2.0, &|| ui.get_reboots() > 0), "Restart now (alone, centred: a removable medium holds the screen) reaches the shell");
 
     let _ = std::fs::remove_dir_all(&zoneinfo);
     ui.hide()?;
