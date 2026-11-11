@@ -194,9 +194,11 @@ mod tests {
                 let tail = [program].iter().chain(rest).map(|s| s.to_string()).collect::<Vec<_>>();
                 assert_eq!(argv[argv.len() - tail.len()..], tail[..], "{argv:?}");
                 let tmpfs: Vec<&String> = argv.windows(2).filter(|w| w[0] == "--tmpfs").map(|w| &w[1]).collect();
-                // Only a place that exists is hidden (`workshops::wrapped`): a machine without the base has nothing to hide.
-                let hidden: &[&str] = if Path::new(workshops::BASE).is_dir() { &[workshops::BASE] } else { &[] };
-                assert_eq!(tmpfs, hidden, "the base only: {argv:?}");
+                // The base and nothing else, and only where it exists (`workshops::wrapped`). Which
+                // base is the process's own: another test in this binary moves it under a test home.
+                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+                let bases = [PathBuf::from(workshops::BASE), home.join(".test-workshops")];
+                assert!(tmpfs.len() <= 1 && tmpfs.iter().all(|t| bases.iter().any(|b| Path::new(t.as_str()) == b)), "the base only: {argv:?}");
                 assert!(argv.iter().any(|a| a == "--unshare-pid") && !argv.iter().any(|a| a == "--die-with-parent"), "{argv:?}");
             }
             Ok((bin, argv)) => {
