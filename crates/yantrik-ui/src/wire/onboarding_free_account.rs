@@ -23,10 +23,10 @@ use yantrik_ml::provider::pool::tiers::{FreeTier, FREE_TIERS};
 use super::free_ai::store::{Op, Reply};
 use super::onboarding::{load_saved, saved_path, set_up_default_mind, show_new_backend, update_saved};
 use super::provider_models::KeyCheck;
-use crate::ai_accounts::account::KeyRef;
+use crate::ai_accounts::account::{KeyRef, Source};
 use crate::app_context::AppContext;
 use crate::bridge::CompanionBridge;
-use crate::wire::settings::ProviderStore;
+use crate::wire::settings::{ProviderStore, ProviderStoreEntry};
 use crate::App;
 
 /// What the Slint button chooses: not a provider card, the free account already set up.
@@ -62,13 +62,23 @@ pub struct Plan {
     pub model: String,
 }
 
-/// The ready free accounts, in the tiers' order.
-fn plans(tiers: &[FreeTier], kept: &BTreeSet<String>, off: &BTreeSet<String>) -> Vec<Plan> {
-    crate::ai_accounts::account::accounts(&[], tiers, kept, off)
+/// The providers the person saved: they take their ids first in the catalogue, so a free tier's id
+/// is worked out after them, as `ai_accounts::rebuild` does (a saved "Free Groq" makes the tier
+/// `free-groq-2`).
+fn saved_entries() -> Vec<ProviderStoreEntry> {
+    ProviderStore::load().entries
+}
+
+/// The ready free accounts, in the tiers' order, under the ids the catalogue gives them.
+fn plans(saved: &[ProviderStoreEntry], tiers: &[FreeTier], kept: &BTreeSet<String>, off: &BTreeSet<String>) -> Vec<Plan> {
+    crate::ai_accounts::account::accounts(saved, tiers, kept, off)
         .into_iter()
         .filter_map(|a| {
             // The card lists the tiers that have a sign-up page; a tier without one is not a row
             // the person could have made ready.
+            if a.source != Source::Free {
+                return None;
+            }
             signup::signup(&a.provider_type)?;
             let model = tiers.iter().find(|t| t.id == a.provider_type)?.models.first()?.id.to_string();
             let (key_id, fill) = match a.key {
@@ -81,8 +91,8 @@ fn plans(tiers: &[FreeTier], kept: &BTreeSet<String>, off: &BTreeSet<String>) ->
 }
 
 /// The account the button continues with: the first ready one.
-pub fn plan(kept: &BTreeSet<String>, off: &BTreeSet<String>) -> Option<Plan> {
-    plans(FREE_TIERS, kept, off).into_iter().next()
+pub fn plan(saved: &[ProviderStoreEntry], kept: &BTreeSet<String>, off: &BTreeSet<String>) -> Option<Plan> {
+    plans(saved, FREE_TIERS, kept, off).into_iter().next()
 }
 
 /// `free-groq` from the pick `free-groq/openai/gpt-oss-120b`; none for any other pick.
@@ -153,7 +163,7 @@ pub fn run(
 /// the reason above it.
 pub fn continue_with(ui: &App) {
     let (kept, off) = super::free_ai::kept_and_off();
-    let Some(plan) = plan(&kept, &off) else {
+    let Some(plan) = plan(&saved_entries(), &kept, &off) else {
         return attention(ui, "no free account is ready yet; paste a key on the card above first".into());
     };
     let Some(bridge) = BRIDGE.get().cloned() else {
@@ -203,6 +213,13 @@ fn attention(ui: &App, why: String) {
     ui.set_fr_connect_words(format!("Needs attention: {why}").into());
 }
 
+/// A late answer from the vault skips the AI screens only for a person still at Welcome (step 1,
+/// the step the skip passes over). One who has already moved on is on the AI screens by their own
+/// choice, and is not moved underneath.
+fn skip_still_applies(step: i32) -> bool {
+    step == 1
+}
+
 /// The first boot's skip of the AI screens for a pick that names a free account, once the vault
 /// says its value is kept. The vault is asked off the UI thread; the screen is told when it
 /// answers, which is before the person is past Welcome.
@@ -215,9 +232,12 @@ fn skip_when_picked(ui: &App) {
         let Ok(Reply::Tails(tails)) = bridge.provider_keys(Op::Tails, VAULT_WAIT) else { return };
         let kept: BTreeSet<String> = tails.into_keys().collect();
         let off = super::free_ai::kept_and_off().1;
-        let Some(ready) = plans(FREE_TIERS, &kept, &off).into_iter().find(|p| p.account == account) else { return };
+        let Some(ready) = plans(&saved_entries(), FREE_TIERS, &kept, &off).into_iter().find(|p| p.account == account) else { return };
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };
+            if !skip_still_applies(ui.get_fr_step()) {
+                return;
+            }
             ui.set_fr_installer_chose(true);
             ui.set_fr_chosen_name(ready.name.clone().into());
             ui.set_fr_installer_choice(ready.name.into());
@@ -242,7 +262,7 @@ mod tests {
     }
 
     fn groq() -> Plan {
-        plan(&kept(&["groq"]), &BTreeSet::new()).expect("Groq is ready")
+        plan(&[], &kept(&["groq"]), &BTreeSet::new()).expect("Groq is ready")
     }
 
     #[test]
@@ -251,8 +271,8 @@ mod tests {
         assert_eq!((p.account.as_str(), p.name.as_str(), p.key_id.as_deref(), p.model.as_str()), ("free-groq", "Groq (free)", Some("groq"), GROQ_MODEL));
         assert_eq!(p.base_url, "https://api.groq.com/openai/v1");
         assert_eq!(p.fill, None);
-        assert_ne!(plan(&kept(&[]), &BTreeSet::new()).map(|p| p.account), Some("free-groq".into()), "no key kept: not Groq");
-        assert_ne!(plan(&kept(&["groq"]), &kept(&["groq"])).map(|p| p.account), Some("free-groq".into()), "switched off: not Groq");
+        assert_ne!(plan(&[], &kept(&[]), &BTreeSet::new()).map(|p| p.account), Some("free-groq".into()), "no key kept: not Groq");
+        assert_ne!(plan(&[], &kept(&["groq"]), &kept(&["groq"])).map(|p| p.account), Some("free-groq".into()), "switched off: not Groq");
     }
 
     /// Proven with the vault's value and the tier's first model; the value is read, never stored.
@@ -324,6 +344,60 @@ mod tests {
         assert_eq!(*order.borrow(), ["chosen"], "chosen, since it answered; the pick is what failed");
     }
 
+    fn saved_named(name: &str) -> ProviderStoreEntry {
+        ProviderStoreEntry {
+            id: "p1".into(),
+            name: name.into(),
+            provider_type: "custom".into(),
+            base_url: "https://example.test/v1".into(),
+            api_key: None,
+            api_key_ref: None,
+            unmigrated_key: None,
+            auth_type: "none".into(),
+            is_primary: false,
+            is_fallback: false,
+            model: String::new(),
+        }
+    }
+
+    /// The pick names the id the catalogue gives the proven tier: with a saved "Free Groq" taking
+    /// `free-groq`, the tier is `free-groq-2`, and that is what is proven, picked and matched at
+    /// first boot (never the saved entry's id).
+    #[test]
+    fn the_pick_names_the_account_that_was_proven() {
+        let saved = [saved_named("Free Groq")];
+        let p = plan(&saved, &kept(&["groq"]), &BTreeSet::new()).expect("Groq is ready");
+        assert_eq!(p.account, "free-groq-2");
+        let catalogue = crate::ai_accounts::account::accounts(&saved, FREE_TIERS, &kept(&["groq"]), &BTreeSet::new());
+        let tier = catalogue.iter().find(|a| a.provider_type == "groq" && a.source == Source::Free).expect("the tier");
+        assert_eq!(p.account, tier.id, "the plan's id is the catalogue's id for the tier");
+        let saved_one = catalogue.iter().find(|a| a.source == Source::Saved).expect("the saved entry");
+        assert_eq!(saved_one.id, "free-groq", "the saved entry keeps the bare id");
+        let picked = RefCell::new(String::new());
+        let some = |_: &str| Some("gsk_value".to_string());
+        let pick = |account: &str, _: &str| {
+            *picked.borrow_mut() = account.to_string();
+            Ok(())
+        };
+        assert_eq!(run(&p, &some, &|_, _, _| KeyCheck::Works, &|| {}, &pick), Outcome::Connected);
+        assert_eq!(*picked.borrow(), tier.id);
+        assert!(plans(&saved, FREE_TIERS, &kept(&["groq"]), &BTreeSet::new()).iter().all(|q| q.account != "free-groq"), "the saved entry is never a free plan");
+    }
+
+    /// A vault answer that comes late moves nobody who has already left Welcome.
+    #[test]
+    fn a_late_skip_applies_only_to_a_person_still_at_welcome() {
+        assert!(skip_still_applies(1));
+        for step in 2..=5 {
+            assert!(!skip_still_applies(step), "step {step}: the person moved on");
+        }
+        let src = include_str!("onboarding_free_account.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let late = &code[code.find("skip_still_applies(ui.get_fr_step())").expect("the late skip asks first")..];
+        assert!(late.find("skip_still_applies").unwrap() < late.find("set_fr_installer_chose(true)").unwrap());
+        assert!(late.find("skip_still_applies").unwrap() < late.find("default_mind::start").unwrap(), "no default mind is started for a skip that does not apply");
+    }
+
     #[test]
     fn the_first_boot_knows_a_pick_that_names_a_free_account() {
         assert_eq!(free_account_of_pick(&format!("free-groq/{GROQ_MODEL}")), Some("free-groq"));
@@ -339,11 +413,11 @@ mod tests {
     fn the_branch_saves_the_key_nowhere() {
         let src = include_str!("onboarding_free_account.rs");
         let code = src.split("#[cfg(test)]").next().unwrap();
-        for forbidden in ["save_primary", "adopt(", "Op::Store", "ProviderStoreEntry", "api_key", "unmigrated_key", ".save()"] {
+        for forbidden in ["save_primary", "adopt(", "Op::Store", "api_key", "unmigrated_key", ".save()"] {
             assert!(!code.contains(forbidden), "the free branch must not {forbidden}");
         }
-        // The one provider-store read is the first boot's "no saved primary" test.
-        assert_eq!(code.matches("ProviderStore::").count(), 1);
+        // Two provider-store reads: the first boot's "no saved primary" test, and the saved ids.
+        assert_eq!(code.matches("ProviderStore::").count(), 2);
         assert_eq!(code.matches("provider_chosen = true").count(), 1, "chosen once, in `run`'s order");
         // "Connected" only from `Outcome::Connected`, and the default mind only from there.
         let body = &code[code.find("pub fn continue_with").unwrap()..code.find("fn attention").unwrap()];

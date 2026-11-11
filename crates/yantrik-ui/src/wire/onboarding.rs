@@ -851,8 +851,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             let Some(ui) = weak.upgrade() else { return };
             let chosen = ui.get_fr_connect_status() == "connected";
             let name = match ProviderStore::load().primary() {
-                Some(p) if chosen => card_name_for(&p.provider_type, &p.name),
-                // A free account saves no provider: the screen's own name for it ("Groq (free)").
+                Some(p) if chosen && ui.get_fr_connect_mode() != "free" => card_name_for(&p.provider_type, &p.name),
+                // A free account saves no provider (and wins over one saved earlier): the screen's own name for it ("Groq (free)").
                 _ if chosen => ui.get_fr_chosen_name().to_string(),
                 _ => String::new(),
             };
