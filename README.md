@@ -107,7 +107,8 @@ Not a chatbot. A proactive agent with:
 - **Pluggable minds** — the built-in companion is one harness among several. Anything that
   speaks the attach protocol can answer instead, managing its own endpoint and credentials.
   Five exist: Yantrik Mind, Hermes Agent, Pi, DeepSeek and OpenClaw — the last four ship as
-  source in `harnesses/`, and none of them is started until you configure it. See
+  source in `harnesses/`. Hermes is set up after the first run; Pi, DeepSeek and OpenClaw are not
+  started until you configure them. See
   [docs/harness.md](docs/harness.md).
 - **YAML plugins** — add tools without writing Rust
 
@@ -410,12 +411,17 @@ yantrik-os/
   (NTP) to Debian's pool through `systemd-timesyncd`; on Macs with an older Broadcom Wi-Fi chip
   it also fetches that driver once, from Debian's archive (or, failing that, Broadcom's firmware
   from the host Debian's installer package uses). It never looks up where you are on its
-  own, and it never searches the web on its own: IP-based location lookups and background
-  research are each off until you allow them, and the one way a feature gets either is a card on
-  your screen saying what is sent and to whom (your internet address, to a weather or location
-  service; your search terms, to your own SearXNG or else DuckDuckGo), whose Allow button turns
-  it on (an answer of No is remembered, and Settings, under Minds, turns background research
-  off again or asks again). No bypass mode skips those cards, or the card before a problem report is sent. You can
+  own: IP-based location lookups are off until you allow them, and the one way a feature gets
+  them is a card on your screen saying what is sent and to whom (your internet address, to a
+  weather or location service). Background research (your search terms, to your own SearXNG or
+  else DuckDuckGo) works the same way: a card, an Allow button, and an answer of No that is
+  remembered; Settings, under Minds, turns it off again or asks again. No bypass mode skips
+  those cards, or the card before a problem report is sent. Its own search, fetch and browser
+  tools, and its code runner's network, stay off in the background until you press Allow; but
+  in Auto and the bypass modes the companion can still have the download manager fetch an
+  address, or the terminal run a command, with nobody asking. Finishing the first run sets up
+  Hermes, the default mind, about 3 GB from GitHub and Python's package index, which then keeps
+  itself up to date. You can
   also turn location lookups on yourself by putting `on` in `~/.config/yantrik/location-lookup`
   (a file you own, mode 600, in a directory you own that neither other users nor the
   `yantrik-minds` group can write); anything running as you can write that file too, so `yos
@@ -424,7 +430,7 @@ yantrik-os/
   installers start the timezone at UTC (the graphical one) or the live system's zone (the text
   one) and ask you to confirm or change it; neither asks the network. Everything else the OS
   contacts is something you set up or ask for: a cloud model account (checked in the background
-  while it is your chosen model), a mind you install (which keeps itself up to date, and which we
+  while it is your chosen model), another mind you install (which keeps itself up to date, and which we
   ask not to report usage with `DO_NOT_TRACK=1`), your weather (from a public weather service, for a place you or
   the companion name), mail, calendar and connectors, and a problem
   report you chose to send. Code the companion runs for you has no network unless you ask for
