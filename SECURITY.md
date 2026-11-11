@@ -51,7 +51,14 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
 - **The startup-file route (#1137, step 3).** A job can append to `~/.bashrc`, `~/.bash_profile`,
   `~/.config/labwc/*`, `~/.config/systemd/user`, `~/.local/share/applications`, `mimeapps.list` or
   a browser profile. What those run later runs in no view. The acceptance for the fix is that
-  each of these fails with EACCES from a job.
+  each of these fails with EACCES from a job. The same route has variants that run seconds later,
+  on a Mind's own call and not at your next login: a git `filter` or `textconv` in a repository's
+  `.git/config` or in `~/.gitconfig` (the companion's `git_status` and `git_diff` read them), an
+  ssh `ProxyCommand` in `~/.ssh/config` (`ssh_check_host`), a harness's config that switches on its
+  own unwalled shell at its next start (`~/.config/yantrik/pi.json`, `~/.hermes/config.yaml`,
+  `~/.config/yantrik/openclaw.json`), and a `.pth` file in a wheel that `install_deps` puts under
+  `~/.local/lib/python3*/site-packages`, which every later host Python runs. They close with the
+  same fix.
 - **The loopback listeners a job reaches:** the egress ports 7450 and 7451, the gateway on 7460
   (with a token), the local model on 11434, Mind View's browser on 9223, and anything else you run
   on the machine.

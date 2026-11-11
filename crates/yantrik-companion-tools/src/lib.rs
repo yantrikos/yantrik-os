@@ -58,6 +58,7 @@ pub mod process;
 pub mod provider_keys;
 pub mod project;
 pub mod service;
+pub mod golden;
 pub mod spawn;
 pub mod ssh;
 pub mod system;

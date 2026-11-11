@@ -3,25 +3,30 @@
 //! A program whose name, path or executed content a Mind chooses, or that asks another manager to
 //! start one, starts only through one of three doors: `spawn::mind_command`, `browser_spawn`, or
 //! the shell's `open_app` (the companion's tools never build the last one). `safe_command` is the
-//! door for allowlisted utilities with protected paths. So in `yantrik-companion-tools/src`,
-//! outside `spawn.rs`, `browser_spawn.rs`, `safe_command.rs` and `#[cfg(test)]` code, this fails on:
+//! door for allowlisted utilities with protected paths. So in `yantrik-companion-tools/src` and
+//! `yantrik-companion/src` (nested files too), outside `spawn.rs`, `browser_spawn.rs`,
+//! `safe_command.rs` (the doors) and test-only code (exactly `#[cfg(test)]` or
+//! `#[cfg(all(test, ..))]`; `any(test, ..)` can compile into a release), this fails on:
 //!
 //! - a `Command::new(` whose argument is not a string literal;
 //! - a literal on the [`DENIED`] list (the shells, `env`, launchers, installers, interpreters,
 //!   browsers and `claude`), however it is spelled (`/bin/sh` is `sh`);
-//! - any `.arg("-c")`.
+//! - `Command` renamed on import (`use ... Command as C`), which would hide the two above;
+//! - a `"-c"` handed to a program: `.arg("-c")`, or `"-c"` inside `.args(`.
 //!
-//! A line may carry `// fixed-program: a|b`, naming every literal its `Command::new(` can take;
-//! that is accepted for a non-literal argument only if none of the names is denied. There is no
-//! baseline: a finding is never kept, only fixed.
+//! A line may carry `// fixed-program: a|b`, naming every program it can start; that is accepted
+//! for a non-literal `Command::new(` argument, and for a `"-c"` that is a fixed program's own flag
+//! (`ping -c`), only if none of the names is denied. There is no baseline: a finding is never
+//! kept, only fixed.
 
 use std::collections::HashSet;
 use std::path::Path;
 
-/// The crate the rule holds.
-const SCOPE: &str = "crates/yantrik-companion-tools/src/*.rs";
+/// The crates the rule holds (a git pathspec: `*` crosses `/`, so nested files are in).
+const SCOPES: [&str; 2] = ["crates/yantrik-companion-tools/src/*.rs", "crates/yantrik-companion/src/*.rs"];
 /// The doors themselves: they are where the denied programs are started, on purpose.
 const DOORS: [&str; 3] = ["spawn.rs", "browser_spawn.rs", "safe_command.rs"];
+const DOOR_DIR: &str = "crates/yantrik-companion-tools/src";
 
 /// The programs a Mind's choice must never reach except through a door.
 pub const DENIED: [&str; 24] = [
@@ -39,7 +44,7 @@ pub struct Source {
 
 /// The findings (`path:line: what`) for the whole tree, empty when the rule holds.
 pub fn check(root: &Path) -> Result<Vec<String>, String> {
-    let files = crate::workspace::tracked(root, &[SCOPE])?;
+    let files = crate::workspace::tracked(root, &SCOPES)?;
     let sources: Vec<Source> = files
         .into_iter()
         .filter_map(|path| Some(Source { text: std::fs::read_to_string(root.join(&path)).ok()?, path }))
@@ -52,7 +57,7 @@ pub fn scan(sources: &[Source]) -> Vec<String> {
     let test_files = test_only_files(sources);
     let mut out = Vec::new();
     for source in sources {
-        let is_door = DOORS.iter().any(|d| source.path == format!("crates/yantrik-companion-tools/src/{d}"));
+        let is_door = DOORS.iter().any(|d| source.path == format!("{DOOR_DIR}/{d}"));
         if is_door || test_files.contains(&source.path) {
             continue;
         }
@@ -72,8 +77,12 @@ fn judge(raw: &str) -> Vec<String> {
     let marker = comment.find(MARKER).map(|at| {
         comment[at + MARKER.len()..].trim().split('|').map(|n| n.trim().to_string()).collect::<Vec<String>>()
     });
-    if code.contains(".arg(\"-c\")") {
-        out.push("`.arg(\"-c\")` hands a string to a shell: use argv, work in-process, or go through a door (spawn::mind_command)".to_string());
+    let fixed_flag = marker.as_ref().is_some_and(|names| names.iter().all(|n| !n.is_empty() && !is_denied(n)));
+    if hands_dash_c(&code) && !fixed_flag {
+        out.push("`\"-c\"` hands a string to a program that may run it as a command: use argv, work in-process, go through a door (spawn::mind_command), or name the fixed program with `// fixed-program: name`".to_string());
+    }
+    if code.contains("Command as ") {
+        out.push("`Command as` renames the type, which hides every `Command::new(` from this rule: use it by name".to_string());
     }
     let mut rest = code.as_str();
     while let Some(at) = rest.find("Command::new(") {
@@ -98,6 +107,11 @@ fn judge(raw: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether `code` passes a `"-c"` argument: `.arg("-c")`, or `"-c"` after `.args(`.
+fn hands_dash_c(code: &str) -> bool {
+    code.contains(".arg(\"-c\")") || code.find(".args(").is_some_and(|at| code[at..].contains("\"-c\""))
 }
 
 /// The string literal `arg` starts with, when the call is exactly `Command::new("lit")`.
@@ -157,10 +171,11 @@ fn without_literals(code: &str) -> String {
     out
 }
 
-/// Whether `line` opens an item that only a test build has.
+/// Whether `line` opens an item that only a test build has: exactly `#[cfg(test)]` or
+/// `#[cfg(all(test, ..))]`. `any(test, not(test))` always compiles, so it is live code.
 fn is_cfg_test(line: &str) -> bool {
     let t = line.trim_start();
-    t.starts_with("#[cfg(test)]") || t.starts_with("#[cfg(all(test") || t.starts_with("#[cfg(any(test")
+    t.starts_with("#[cfg(test)]") || t.starts_with("#[cfg(all(test")
 }
 
 /// The lines (1-based) that are not inside a `#[cfg(test)]` item, whole comment lines left out.
@@ -285,7 +300,44 @@ mod tests {
     #[test]
     fn a_shell_c_argument_is_found() {
         assert_eq!(found("a.rs", "cmd.arg(\"-c\").arg(line);").len(), 1);
-        assert!(found("a.rs", "cmd.args([\"-c\", \"3\"]); // ping count").is_empty());
+        assert_eq!(found("a.rs", "cmd.args([\"-c\", line]);").len(), 1);
+        assert_eq!(found("a.rs", "Command::new(\"ping\").args([\"-W\", \"5\", \"-c\", n]);").len(), 1);
+        assert_eq!(found("a.rs", "cmd.args(&[\"-c\", line]);").len(), 1);
+        // A fixed program's own flag, named: accepted. Naming a denied program is not.
+        assert!(found("a.rs", "cmd.args([\"-c\", n]); // fixed-program: ping").is_empty());
+        assert_eq!(found("a.rs", "cmd.args([\"-c\", n]); // fixed-program: sh").len(), 1);
+        assert_eq!(found("a.rs", "cmd.args([\"-c\", n]); // ping count").len(), 1);
+        assert!(found("a.rs", "cmd.args([\"--color\", c]);").is_empty());
+    }
+
+    #[test]
+    fn renaming_command_on_import_is_found() {
+        assert_eq!(found("a.rs", "use std::process::Command as C;").len(), 1);
+        assert_eq!(found("a.rs", "use std::process::{Command as C, Stdio};").len(), 1);
+        assert!(found("a.rs", "use std::process::{Command, Stdio};").is_empty());
+    }
+
+    #[test]
+    fn only_an_exact_cfg_test_or_cfg_all_test_is_test_code() {
+        let held = |attr: &str| found("a.rs", &format!("{attr}
+fn f() {{ Command::new(\"sh\"); }}
+"));
+        assert!(held("#[cfg(test)]").is_empty());
+        assert!(held("#[cfg(all(test, unix))]").is_empty());
+        assert_eq!(held("#[cfg(any(test, not(test)))]").len(), 1);
+        assert_eq!(held("#[cfg(any(test, unix))]").len(), 1);
+        assert_eq!(held("#[cfg(not(test))]").len(), 1);
+    }
+
+    #[test]
+    fn both_crates_and_nested_files_are_in_scope() {
+        assert!(SCOPES.iter().any(|s| s.contains("yantrik-companion/src")));
+        assert!(SCOPES.iter().any(|s| s.contains("yantrik-companion-tools/src")));
+        let nested = Source { path: "crates/yantrik-companion/src/connectors/x.rs".into(), text: "Command::new(\"sh\");".into() };
+        assert_eq!(scan(&[nested]).len(), 1);
+        // The door exemption is the tools crate's files only: a companion file named spawn.rs is held.
+        let lookalike = Source { path: "crates/yantrik-companion/src/spawn.rs".into(), text: "Command::new(\"sh\");".into() };
+        assert_eq!(scan(&[lookalike]).len(), 1);
     }
 
     #[test]
@@ -315,7 +367,7 @@ mod tests {
 
     /// The tree itself: the rule holds, with no baseline to hide behind.
     #[test]
-    fn the_companion_tools_hold_the_rule() {
+    fn the_companion_crates_hold_the_rule() {
         let found = check(&crate::workspace::root()).expect("git ls-files");
         assert!(found.is_empty(), "{}", found.join("\n"));
     }

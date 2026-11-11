@@ -27,6 +27,7 @@ use yantrik_ipc_contracts::home_paths::workshops;
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 use crate::coder_deps::install_deps;
+use crate::spawn::SandboxMode;
 
 const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
 const OUTPUT_DIR: &str = "/home/yantrik/.config/yantrik/scripts/output";
@@ -416,31 +417,6 @@ struct ExecutionResult {
     sandboxed: bool,
 }
 
-// ── Sandbox modes ──
-
-/// Controls how isolated the script execution environment is.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum SandboxMode {
-    /// Full isolation: no network, read-only filesystem, PID namespace.
-    /// Default for code_execute and script_run.
-    Strict,
-    /// Filesystem isolation but network allowed.
-    /// For web portals, API calls, data fetching scripts.
-    Network,
-    /// No sandbox. Only used if bwrap unavailable.
-    None,
-}
-
-impl SandboxMode {
-    fn from_str(s: &str) -> Self {
-        match s {
-            "network" | "web" => Self::Network,
-            "none" | "unsafe" => Self::None,
-            _ => Self::Strict,
-        }
-    }
-}
-
 /// Check if bubblewrap is available on this system.
 fn has_bwrap() -> bool {
     let result = std::process::Command::new("/usr/bin/bwrap")
@@ -459,81 +435,6 @@ fn has_bwrap() -> bool {
             false
         }
     }
-}
-
-/// Build bwrap arguments for sandboxed execution.
-fn build_bwrap_args(
-    sandbox: SandboxMode,
-    workspace: &Path,
-    output: &Path,
-) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
-
-    // Read-only system mounts
-    for dir in &["/usr", "/lib", "/bin", "/etc"] {
-        if Path::new(dir).exists() {
-            args.push("--ro-bind".into());
-            args.push(dir.to_string());
-            args.push(dir.to_string());
-        }
-    }
-    // /sbin for system tools some scripts may need
-    if Path::new("/sbin").exists() {
-        args.push("--ro-bind".into());
-        args.push("/sbin".into());
-        args.push("/sbin".into());
-    }
-    // lib64 symlink (needed on some systems)
-    if Path::new("/usr/lib64").exists() {
-        args.push("--symlink".into());
-        args.push("usr/lib64".into());
-        args.push("/lib64".into());
-    }
-
-    // Writable workspace (scripts + output)
-    args.push("--bind".into());
-    args.push(workspace.to_string_lossy().to_string());
-    args.push(workspace.to_string_lossy().to_string());
-    if output != workspace && output.starts_with(workspace) {
-        // output is inside workspace, already covered
-    } else if output.exists() {
-        args.push("--bind".into());
-        args.push(output.to_string_lossy().to_string());
-        args.push(output.to_string_lossy().to_string());
-    }
-
-    // Writable /tmp for temp files
-    args.push("--tmpfs".into());
-    args.push("/tmp".into());
-
-    // /dev and /proc (needed for basic operation)
-    args.push("--dev".into());
-    args.push("/dev".into());
-    args.push("--proc".into());
-    args.push("/proc".into());
-
-    // PID namespace (always isolate PIDs)
-    args.push("--unshare-pid".into());
-
-    // Network isolation
-    match sandbox {
-        SandboxMode::Strict => {
-            args.push("--unshare-net".into());
-        }
-        SandboxMode::Network => {
-            args.push("--share-net".into());
-        }
-        SandboxMode::None => unreachable!("bwrap not used in None mode"),
-    }
-
-    // Die when parent dies (prevent orphan processes)
-    args.push("--die-with-parent".into());
-
-    // Resource limits via inner ulimit wrapper
-    // (bwrap doesn't set ulimits directly — we wrap the command)
-
-    args.push("--".into());
-    args
 }
 
 /// A script's private stand-in HOME for one unsandboxed run, removed with everything in it when
@@ -585,7 +486,6 @@ fn execute_script(
 
     // Build command: either bwrap-wrapped or direct
     let mut cmd = if use_bwrap {
-        let bwrap_args = build_bwrap_args(sandbox, &scripts, &out_dir);
         // Inside bwrap: ulimit wrapper for resource limits, then interpreter, as one `sh -c`
         // that spawn::sandboxed_script starts (the only place a Mind's script gets a shell).
 
@@ -613,7 +513,7 @@ fn execute_script(
             inner.push_str(args);
         }
 
-        crate::spawn::sandboxed_script(&bwrap_args, &inner)
+        crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &inner)
     } else {
         let mut words: Vec<String> = Vec::new();
         if language == "typescript" {
