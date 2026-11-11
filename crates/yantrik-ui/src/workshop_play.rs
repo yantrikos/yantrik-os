@@ -93,19 +93,29 @@ pub fn present(workshop: &Path, path: &Path, agent: &str) -> Result<String, Stri
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/root".into()));
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
     let wayland = std::env::var("WAYLAND_DISPLAY").ok();
-    let mut cmd = std::process::Command::new(bwrap);
-    cmd.args(sandbox_args(&home, runtime.as_deref(), wayland.as_deref()))
-        .args(mpv_args(media, &line))
+    let mut args = sandbox_args(&home, runtime.as_deref(), wayland.as_deref());
+    args.extend(mpv_args(media, &line));
+    launch(bwrap, args, &fd).map_err(|e| format!("no media player (mpv) could be started ({e})"))?;
+    Ok(media.to_string())
+}
+
+/// Start `program args` with the file as descriptor 3, and let it play on. The player carries
+/// `--die-with-parent`, which the kernel acts on when the *thread* that forked it exits, and this
+/// runs on a pool thread that goes after ten idle seconds: it is forked on the spawner thread,
+/// which lives as long as the shell (round 14, M1b).
+fn launch(program: &str, args: Vec<String>, fd: &OwnedFd) -> std::io::Result<()> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args)
         .env_clear()
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    hand_over(&mut cmd, &fd);
-    let mut child = cmd.spawn().map_err(|e| format!("no media player (mpv) could be started ({e})"))?;
+    hand_over(&mut cmd, fd);
+    let mut child = yantrik_ipc_contracts::home_paths::spawner::spawn(cmd)?;
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    Ok(media.to_string())
+    Ok(())
 }
 
 /// The file becomes descriptor 3 of the child, and of the player under `bwrap`, which keeps the
@@ -176,5 +186,52 @@ mod tests {
             assert!(!["hls", "applehttp", "concat", "sdp", "rtsp", "none"].contains(&demuxer(t)), "{t}");
         }
         assert_eq!(demuxer("text/plain"), "none");
+    }
+
+    /// The host's pid of the live `sleep 300.62`, once it runs (under bwrap it is a host process
+    /// of the namespace's own).
+    fn host_sleep() -> Option<u32> {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < until {
+            let found = std::fs::read_dir("/proc").unwrap().flatten().find_map(|e| {
+                let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+                let line = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+                (line == b"sleep\x00300.62\x00" && alive(pid)).then_some(pid)
+            });
+            if found.is_some() {
+                return found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        None
+    }
+
+    fn alive(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .is_ok_and(|s| s.rfind(')').is_some_and(|i| !s[i + 1..].trim_start().starts_with('Z')))
+    }
+
+    /// Round 14, M1b: the player outlives the thread that started it. bwrap arms its parent-death
+    /// signal as it starts, so the thread is held until the process is there to be seen. With the
+    /// fork back on the calling thread the player is killed when that thread ends.
+    #[test]
+    fn the_player_outlives_the_thread_that_started_it() {
+        let Some(bwrap) = yantrik_ipc_contracts::home_paths::workshops::find_bwrap() else { return };
+        let mut args = yantrik_ipc_contracts::home_paths::workshops::outside_args(&[], true);
+        args.extend(["sleep", "300.62"].map(String::from));
+        let fd = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());
+        let pid = std::thread::spawn(move || {
+            launch(bwrap, args, &fd).unwrap();
+            host_sleep()
+        })
+        .join()
+        .unwrap()
+        .expect("the player was not started");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let still = alive(pid);
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+        assert!(still, "the starter thread is gone and the player must not be");
     }
 }
