@@ -21,6 +21,8 @@ use std::path::{Component, Path, PathBuf};
 mod stat;
 mod tree;
 mod verdict;
+pub mod spawner;
+pub mod workshops;
 mod writes;
 
 #[cfg(all(test, unix))]
@@ -184,8 +186,10 @@ pub fn is_protected_with(path: &Path, places: &Places<'_>) -> bool {
                 && resolved(&home.join(place)).is_some_and(|real| starts_with_folded(path, &real))
         })
     };
+    // A Mind's workshops are held by one check, the prefix and the inode (workshops.rs).
     listed
-        || places.home.is_some_and(moved)
+        || places.home.is_some_and(|home| moved(home) || workshops::holds(path, home))
+        || places.data_home.is_some_and(|base| workshops::Root::at(&base.join("yantrik/workshops")).holds(path))
         || places.data_home.is_some_and(|base| under_prefix(".local/share/").any(|place| under(base, place)))
         || places.state_home.is_some_and(|base| under(base, "yantrik"))
         || places.config_home.is_some_and(|base| under_prefix(".config/").any(|place| under(base, place)))

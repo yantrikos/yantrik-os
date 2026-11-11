@@ -567,3 +567,39 @@ fn a_protected_place_moved_behind_a_link_is_protected_where_it_really_is() {
     assert_eq!(may_read_file("~/dotfiles/local/share/fonts/a.ttf", &home), Ok(()));
     assert_eq!(may_read_file("~/dotfiles/config/gtk-3.0/settings.ini", &home), Ok(()));
 }
+
+/// #1120: a Mind's workshops are held by the one check, so every door that asks "may an agent
+/// look here" (the Files tools, the editor, the companion's file tools) refuses them, by their own
+/// name, through a link, and through a `..`.
+#[test]
+fn a_minds_workshops_are_out_of_reach_of_every_door() {
+    let (_d, home) = home();
+    workshops::roots_under_home_for_tests();
+    let (shop, r) = (workshops::root(&home).join("hermes/shop"), workshops::root(&home).display().to_string());
+    let back = r.strip_prefix(&format!("{}/", home.display())).unwrap().to_string();
+    std::fs::create_dir_all(&shop).unwrap();
+    std::fs::write(shop.join("notes.md"), "calendar").unwrap();
+    symlink(&shop, home.join("notes/alias")).unwrap();
+    symlink(workshops::root(&home), home.join("to-root")).unwrap();
+    for asked in [
+        format!("{r}/hermes/shop/notes.md"),
+        format!("{r}/hermes/shop/not-yet.md"),
+        "~/notes/alias/notes.md".to_string(),
+        "~/to-root/hermes/shop/notes.md".to_string(),
+        format!("~/notes/../{back}/hermes/shop/notes.md"),
+    ] {
+        let asked_for = if asked.contains("..") { home.join(&asked[2..]).display().to_string() } else { asked.clone() };
+        assert!(may_read_file(&asked_for, &home).is_err(), "read {asked}");
+        assert!(may_write_file(&asked_for, &home).is_err(), "write {asked}");
+        assert!(may_create(&asked_for, &home).is_err(), "create {asked}");
+        assert!(!stat(&asked_for, &home)["exists"].is_boolean(), "stat {asked}");
+    }
+    let held = |p: &Path| is_protected_in(p, Some(&home));
+    assert!(held(&shop.join("notes.md")) && held(&home.join("notes/alias/notes.md")) && held(&workshops::root(&home)));
+    assert!(!held(&home.join("notes/today.txt")));
+    // A moved data home keeps its workshops held too.
+    let moved = home.join("elsewhere");
+    std::fs::create_dir_all(moved.join("yantrik/workshops/pi")).unwrap();
+    let places = Places { home: Some(&home), data_home: Some(&moved), ..Default::default() };
+    assert!(is_protected_with(&moved.join("yantrik/workshops/pi/x"), &places));
+}

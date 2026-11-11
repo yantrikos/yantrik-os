@@ -36,25 +36,21 @@
 //! arguments, the caller and the token on the UI thread and hands the rest — resolving the token,
 //! starting, waiting, killing — to `control::answer_later`, which finishes it on the socket's side.
 
-use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use yantrik_agent_terminal::{
-    AgentId, AgentResolver, HostTokens, JobId, JobState, Jobs, Limits, NoAgents, RunAnswer,
+    AgentId, AgentResolver, HostTokens, JobId, JobState, Jobs, Limits, NoAgents, RunAnswer, Sealed,
     DEFAULT_WAIT,
 };
 use yantrik_app_runtime::control::{self, Action, App as ControlSurface, Param};
 
+use crate::control_agent_late::{engage, late, report_late, report_late_finishes, told};
+
 static JOBS: OnceLock<Jobs> = OnceLock::new();
 static RESOLVER: RwLock<Option<Arc<dyn AgentResolver>>> = RwLock::new(None);
-
-/// Where a late finish is reported: `(agent, note) → kept?`. The host's `note_for`, once
-/// [`serve_host`] has run; until then a late finish is noticed and not reported.
-type Deliver = Arc<dyn Fn(&AgentId, String) -> bool + Send + Sync>;
-static DELIVER: RwLock<Option<Deliver>> = RwLock::new(None);
 
 /// Every agent's commands. The Agents screen draws from this (`on_output`, `with_screen`,
 /// `type_input`) — the same store the actions answer from, so a card and an answer cannot disagree.
@@ -106,162 +102,6 @@ pub fn install_resolver(resolver: Arc<dyn AgentResolver>) {
     *RESOLVER.write().unwrap_or_else(|e| e.into_inner()) = Some(resolver);
 }
 
-/// Where a command that finished after its call returned is reported. Replaces any earlier one.
-pub fn report_late_finishes(deliver: impl Fn(&AgentId, String) -> bool + Send + Sync + 'static) {
-    *DELIVER.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(deliver));
-}
-
-/// The one record of which ends are owed.
-fn late() -> std::sync::MutexGuard<'static, Late> {
-    static LATE: OnceLock<Mutex<Late>> = OnceLock::new();
-    LATE.get_or_init(|| Mutex::new(Late::default())).lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// An agent's call on `job` has begun; whatever it answers decides afresh whether the end is owed.
-fn engage(agent: &AgentId, job: &JobId) {
-    late().engage(agent, job);
-}
-
-/// The agent has just been given `answer`.
-fn told(answer: &RunAnswer) {
-    let owed = late().told(answer);
-    if let Some(done) = owed {
-        report_late(&done);
-    }
-}
-
-fn report_late(done: &RunAnswer) {
-    let deliver = DELIVER.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let Some(deliver) = deliver else {
-        tracing::debug!(agent = %done.agent, job = %done.job, "a command finished late; nothing to report it to");
-        return;
-    };
-    let kept = deliver(&done.agent, late_note(done));
-    tracing::info!(agent = %done.agent, job = %done.job, kept, "a command finished after its call returned; noted for the agent's next turn");
-}
-
-/// Which of the agents' commands were last reported to their agent as still running — and so,
-/// when one ends, whose end is owed to the agent.
-///
-/// Three moments, all under one lock, because they race: an agent's call begins on a job
-/// ([`Late::engage`]), an answer is given to it ([`Late::told`]), and a job ends
-/// ([`Late::finished`], on the job's own thread). A job can end in the instant between its
-/// answer being read as `running` and that answer reaching this record; `ended` keeps the last
-/// few ends nobody was owed so that case is still caught.
-#[derive(Default)]
-struct Late {
-    /// Jobs whose agent's last word on them was `running`, and whose they are.
-    owed: HashMap<JobId, AgentId>,
-    /// Recent ends nobody was owed, oldest first, at most [`ENDS_KEPT`].
-    ended: VecDeque<RunAnswer>,
-}
-
-/// Ends kept for the answer-then-end race. The race is a few microseconds wide; this is a bound
-/// on memory, not a guess about timing.
-const ENDS_KEPT: usize = 16;
-
-impl Late {
-    fn engage(&mut self, agent: &AgentId, job: &JobId) {
-        // Only the job's own agent: a call naming another agent's job is refused anyway, and must
-        // not cost that agent its note on the way.
-        if self.owed.get(job) == Some(agent) {
-            self.owed.remove(job);
-        }
-    }
-
-    /// Returns the end to report now, when the job ended between being read as running and here.
-    fn told(&mut self, answer: &RunAnswer) -> Option<RunAnswer> {
-        let ended = self.ended.iter().position(|end| end.job == answer.job);
-        if !answer.running() {
-            // The agent has its end; nothing is owed.
-            self.owed.remove(&answer.job);
-            if let Some(at) = ended {
-                self.ended.remove(at);
-            }
-            return None;
-        }
-        match ended {
-            Some(at) => self.ended.remove(at),
-            None => {
-                self.owed.insert(answer.job.clone(), answer.agent.clone());
-                None
-            }
-        }
-    }
-
-    /// Returns the end back when its agent is owed it.
-    fn finished(&mut self, answer: &RunAnswer) -> Option<RunAnswer> {
-        if self.owed.remove(&answer.job).is_some() {
-            return Some(answer.clone());
-        }
-        self.ended.push_back(answer.clone());
-        while self.ended.len() > ENDS_KEPT {
-            self.ended.pop_front();
-        }
-        None
-    }
-}
-
-/// How much of a command a note repeats, and how much of its output.
-const NOTE_COMMAND_CHARS: usize = 120;
-const NOTE_TAIL_LINES: usize = 5;
-const NOTE_TAIL_BYTES: usize = 400;
-
-/// The note an agent reads at the start of its next turn: which command, how it ended, where, and
-/// the last few lines — enough to go on, with the job id for the rest.
-fn late_note(answer: &RunAnswer) -> String {
-    let command = clip_chars(answer.command.trim(), NOTE_COMMAND_CHARS);
-    let how = match answer.state {
-        JobState::Exited { code } => format!("exit code {code}"),
-        JobState::Signalled { .. } => format!(
-            "ended by {}",
-            answer.to_json()["signal_name"].as_str().unwrap_or("a signal")
-        ),
-        JobState::Running { .. } => "still running".to_string(),
-    };
-    let stopped = if answer.killed { " (it was stopped)" } else { "" };
-    let dir = answer.cwd_after.as_ref().unwrap_or(&answer.cwd);
-    let lines: Vec<&str> = answer.tail.lines().collect();
-    let last = lines[lines.len().saturating_sub(NOTE_TAIL_LINES)..].join("\n");
-    let mut last = last.trim_end().to_string();
-    if last.len() > NOTE_TAIL_BYTES {
-        let mut from = last.len() - NOTE_TAIL_BYTES;
-        while !last.is_char_boundary(from) {
-            from += 1;
-        }
-        last = format!("…{}", &last[from..]);
-    }
-    let output = if last.is_empty() {
-        "It printed nothing.".to_string()
-    } else {
-        format!("Its last lines:\n{last}")
-    };
-    format!(
-        "Your command `{command}` (job {job}) finished after the call that started it had \
-         returned: {how}{stopped}, after {elapsed}, in {dir}. {output}",
-        job = answer.job,
-        elapsed = human_duration(answer.elapsed),
-        dir = dir.display(),
-    )
-}
-
-fn clip_chars(text: &str, most: usize) -> String {
-    if text.chars().count() <= most {
-        return text.to_string();
-    }
-    format!("{}…", text.chars().take(most).collect::<String>())
-}
-
-fn human_duration(elapsed: Duration) -> String {
-    let secs = elapsed.as_secs();
-    match secs {
-        0 => format!("{:.1} s", elapsed.as_secs_f64()),
-        1..=59 => format!("{secs} s"),
-        60..=3599 => format!("{}m {:02}s", secs / 60, secs % 60),
-        _ => format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60),
-    }
-}
-
 fn resolver() -> Arc<dyn AgentResolver> {
     RESOLVER
         .read()
@@ -279,7 +119,7 @@ pub fn shutdown() {
 
 /// What the dispatch established about one call, read on the UI thread where it is set and
 /// carried to the work.
-struct Call {
+pub(crate) struct Call {
     /// The socket peer, as the kernel reported it — the only account of the caller the token is
     /// checked against.
     pid: Option<u32>,
@@ -288,14 +128,14 @@ struct Call {
 }
 
 impl Call {
-    fn current() -> Call {
+    pub(crate) fn current() -> Call {
         Call {
             pid: control::caller().and_then(|c| u32::try_from(c.pid).ok()).filter(|pid| *pid > 0),
             token: control::agent_token(),
         }
     }
 
-    fn agent(&self) -> Result<AgentId, String> {
+    pub(crate) fn agent(&self) -> Result<AgentId, String> {
         resolver().resolve(self.token.as_deref().unwrap_or_default(), self.pid)
     }
 }
@@ -341,13 +181,13 @@ pub fn agent_for(token: &str, pid: Option<u32>) -> Result<AgentId, String> {
 pub(crate) static RESOLVER_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Hand the work to the socket's side; run it here only when called without a socket.
-fn later(work: impl FnOnce() -> Result<Value, String> + Send + 'static) -> Result<Value, String> {
+pub(crate) fn later(work: impl FnOnce() -> Result<Value, String> + Send + 'static) -> Result<Value, String> {
     control::answer_later(work)
         .map(|()| json!({ "answering": "off the UI thread" }))
         .or_else(|work| work())
 }
 
-fn text(args: &Value, name: &str) -> String {
+pub(crate) fn text(args: &Value, name: &str) -> String {
     args.get(name).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
@@ -365,7 +205,7 @@ fn job_arg(args: &Value) -> Result<JobId, String> {
 /// the command. Minds send `wait: true` whatever the parameter says. On the live instance the
 /// Mind did it twice in one turn, was refused twice, and went on without the output it had asked
 /// for (2 Oct 2026). Refusing a request whose meaning is not in doubt helps nobody.
-fn wait_arg(args: &Value) -> Result<Duration, String> {
+pub(crate) fn wait_arg(args: &Value) -> Result<Duration, String> {
     let most = jobs().limits().max_wait.as_secs();
     let Some(given) = args.get("wait").filter(|v| !v.is_null()) else {
         return Ok(DEFAULT_WAIT);
@@ -428,7 +268,12 @@ pub(crate) fn specs() -> [Action; 4] {
                  `cwd_after` and the `tail` of its output; if it is still going after `wait` seconds \
                  it answers `running: true` with a `job` id. The directory carries to your next \
                  command; exported variables and other shell state do not. The environment is \
-                 HOME, USER, PATH, LANG and TERM only.{WHO}"
+                 HOME, USER, PATH, LANG and TERM only. The command runs in a view with no session: \
+                 the person's runtime folder (the bus, `systemd/private`, the Yantrik sockets) and \
+                 the Minds' workshops are not there, so it cannot call `yos`; you reach the desktop \
+                 through your own tool calls. {reach} {startup}{WHO}",
+            reach = yantrik_ipc_contracts::home_paths::workshops::LOOPBACK_REACH,
+            startup = yantrik_ipc_contracts::home_paths::workshops::STARTUP_REACH
             ),
         )
         .risk("sensitive")
@@ -515,14 +360,37 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         .filter(|c| !c.is_empty())
         .map(PathBuf::from);
     let wait = wait_arg(args)?;
+    run_job(
+        command,
+        wait,
+        call,
+        Box::new(move |_| {
+            Ok(Prepared { cwd, sealed: None })
+        }),
+    )
+}
+
+/// Where a command starts and whether it is sealed, settled once the agent is known. Sealed only
+/// from `control_workshop`, which has checked the grant itself.
+pub(crate) struct Prepared {
+    pub cwd: Option<PathBuf>,
+    pub sealed: Option<Sealed>,
+}
+
+pub(crate) type Prepare = Box<dyn FnOnce(&AgentId) -> Result<Prepared, String> + Send>;
+
+/// One command for the calling agent, in its terminal and in Mind View: the whole of `agent_run`,
+/// and of `agent_run_sealed` with a sandbox.
+pub(crate) fn run_job(command: String, wait: Duration, call: Call, prepare: Prepare) -> Result<Value, String> {
     later(move || {
         let agent = call.agent()?;
+        let Prepared { cwd, sealed } = prepare(&agent)?;
         // Started, then carded, then waited on: the card opens in the agent's pane the moment the
         // command exists, and fills as its terminal does. `run` would be the same two steps with
         // nothing between them.
         // The command's line is put in the Mind View log first, so no output can arrive ahead of it.
         let mirror = crate::mind_agent_terminal::begin(&agent.0, &command);
-        let job = match jobs().start(&agent, &command, cwd) {
+        let job = match jobs().start_in(&agent, &command, cwd, sealed.as_ref()) {
             Ok(job) => job,
             Err(e) => {
                 if matches!(mirror, crate::mind_agent_terminal::Begin::Log(_)) {
@@ -548,6 +416,9 @@ fn agent_run(args: &Value, call: Call) -> Result<Value, String> {
         let answer = jobs().job(&agent, &job, wait)?;
         told(&answer);
         let mut out = answer_json(&answer);
+        if sealed.is_some() {
+            out["sealed"] = true.into();
+        }
         match &shown {
             Some(shown) => {
                 if let (Some(into), Some(from)) =
@@ -660,353 +531,5 @@ pub fn for_describe() -> Value {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::*;
-    use yantrik_agent_terminal::{TokenTable, NO_AGENT};
-
-    fn call(token: &str) -> Call {
-        Call { pid: Some(std::process::id()), token: Some(token.to_string()) }
-    }
-
-    /// A call on a session from this process, which stands in for the harness that attached it:
-    /// a session answers only the process that attached it and the ones it started.
-    fn as_harness(
-        host: &yantrik_harness::Host,
-        method: &str,
-        params: &serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        host.handle_from(method, params, Some(std::process::id()), None)
-    }
-
-    /// One job's card in its agent's pane, once the store has its end: `(args, provenance, exit
-    /// code, output)`. Asked again until the end is there — the terminal answers a waiting call
-    /// before its finish listeners have run.
-    fn settled_card(agent: &AgentId, job: &str) -> (Value, crate::agents::Provenance, Option<i32>, String) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        loop {
-            let found = crate::agents::store().read(|s| {
-                s.agent(agent)?
-                    .cards()
-                    .find(|c| c.call == job && !c.running())
-                    .map(|c| (c.args.clone(), c.provenance, c.exit_code, c.output.all()))
-            });
-            if let Some(found) = found {
-                return found;
-            }
-            assert!(std::time::Instant::now() < deadline, "no settled card for {job} in {agent}'s pane");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    /// Each command's terminal lands in the card of the agent it runs for, and in no other — two
-    /// agents' commands running side by side, one output each.
-    #[test]
-    fn a_commands_output_reaches_its_own_agents_card_and_no_other() {
-        let a = AgentId::new("pi", "c-glue-out");
-        let b = AgentId::new("deepseek", "c-glue-out");
-        let ja = jobs().start(&a, "printf 'from-a-1\\n'; sleep 0.3; printf 'from-a-2\\n'", None).unwrap();
-        let jb = jobs().start(&b, "printf 'from-b\\n'; sleep 0.1; exit 3", None).unwrap();
-        jobs().job(&a, &ja, Duration::from_secs(10)).unwrap();
-        jobs().job(&b, &jb, Duration::from_secs(10)).unwrap();
-
-        let (_, provenance, exit, output) = settled_card(&a, &ja.0);
-        assert_eq!((provenance, exit), (crate::agents::Provenance::Verified, Some(0)));
-        assert!(output.contains("from-a-1") && output.contains("from-a-2"), "{output:?}");
-        assert!(!output.contains("from-b"), "another agent's output is not in this card: {output:?}");
-
-        let (_, _, exit, output) = settled_card(&b, &jb.0);
-        assert_eq!(exit, Some(3), "the process's own exit code");
-        assert!(output.contains("from-b") && !output.contains("from-a"), "{output:?}");
-
-        // Neither job's card is in the other agent's pane at all.
-        crate::agents::store().read(|s| {
-            assert!(s.agent(&a).unwrap().cards().all(|c| c.call != jb.0));
-            assert!(s.agent(&b).unwrap().cards().all(|c| c.call != ja.0));
-        });
-    }
-
-    /// The token is not an argument of any of the four, so nothing that shows or keeps
-    /// arguments — `describe shell`'s action list, an approval card, an audit line — is ever
-    /// handed one by these actions.
-    #[test]
-    fn no_agent_action_takes_the_token_as_an_argument() {
-        for spec in specs() {
-            let schema = spec.schema();
-            let params = &schema["parameters"]["properties"];
-            assert!(params.get("agent_token").is_none(), "{} takes the token as an argument: {schema}", spec.name);
-            assert!(params.get("agent").is_none(), "{} takes the agent as an argument: {schema}", spec.name);
-            assert!(
-                schema["description"].as_str().is_some_and(|d| d.contains("beside `args`")),
-                "{} does not say where the token goes: {schema}",
-                spec.name
-            );
-        }
-    }
-
-    /// A mind sent `wait: true` again in the #980 gate, so the parameter says what it is, first.
-    #[test]
-    fn wait_says_it_is_a_number_of_seconds_in_both_actions() {
-        for spec in specs().into_iter().filter(|a| a.name == "agent_run" || a.name == "agent_job") {
-            let wait = spec.params.iter().find(|p| p.name == "wait").expect("wait");
-            assert_eq!(wait.kind, "number", "{}", spec.name);
-            assert!(
-                wait.description.starts_with("A number of seconds, e.g. 30, not true or false."),
-                "{}: {}",
-                spec.name,
-                wait.description
-            );
-        }
-        let run = specs().into_iter().find(|a| a.name == "agent_run").unwrap();
-        assert!(run.description.contains("still going after `wait` seconds it answers `running: true`"));
-        let job = specs().into_iter().find(|a| a.name == "agent_job").unwrap();
-        assert!(job.description.contains("`wait` is a number of seconds"), "{}", job.description);
-    }
-
-    /// The four actions end to end, minus only the socket: with no dispatch in progress the work
-    /// runs inline, so this drives the real token check, the real terminal and `describe`.
-    ///
-    /// One test, because the resolver is the shell's one global: "no tokens yet" has to be seen
-    /// before any are installed.
-    #[test]
-    fn the_actions_answer_for_the_agent_the_token_names_and_nobody_else() {
-        // The resolver is the shell's one global; hold it for the length of the test (see
-        // `RESOLVER_TESTS`).
-        let _held = RESOLVER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let me = Some(std::process::id());
-
-        // Before the host issues tokens, every call is inert — and says so.
-        let err = agent_run(&json!({"command": "echo hi"}), call("t-pi")).unwrap_err();
-        assert!(err.starts_with(NO_AGENT), "{err}");
-        let err = agent_run(&json!({"command": "echo hi"}), Call { pid: me, token: None }).unwrap_err();
-        assert!(err.contains("no agent token came with this call"), "{err}");
-
-        // This test process stands in for the harness that holds both tokens.
-        let table = Arc::new(TokenTable::new());
-        table.issue("t-pi", AgentId::new("pi", "c-shell"), me);
-        table.issue("t-ds", AgentId::new("deepseek", "c-shell"), me);
-        install_resolver(table);
-
-        let done = agent_run(&json!({"command": "cd /tmp && echo hi", "wait": 10}), call("t-pi")).unwrap();
-        assert_eq!(done["exit_code"], 0, "{done}");
-        assert_eq!(done["cwd_after"], "/tmp", "{done}");
-        assert_eq!(done["tail"], "hi", "{done}");
-        assert_eq!(done["agent"], "pi:c-shell", "the agent is the token's");
-        assert!(!done.to_string().contains("t-pi"), "the answer does not repeat the token: {done}");
-        // And it is a verified card in pi's pane: the command and where it started, its output,
-        // the process's own exit code — and nothing of the token.
-        let pi_agent = AgentId::new("pi", "c-shell");
-        let job = done["job"].as_str().unwrap().to_string();
-        let card = settled_card(&pi_agent, &job);
-        assert_eq!(card.0["command"], "cd /tmp && echo hi", "{card:?}");
-        assert!(card.0["cwd"].as_str().is_some_and(|c| !c.is_empty()), "{card:?}");
-        assert_eq!((card.1, card.2), (crate::agents::Provenance::Verified, Some(0)));
-        assert!(card.3.contains("hi") && !card.3.contains("t-pi"), "{card:?}");
-
-        let slow = agent_run(&json!({"command": "sleep 30", "wait": 0.5}), call("t-pi")).unwrap();
-        assert_eq!(slow["running"], true, "{slow}");
-        assert!(slow["next"].as_str().is_some_and(|n| n.contains("agent_job")), "{slow}");
-        let job = slow["job"].clone();
-
-        // `describe shell` lists it under its agent, and nowhere names the token.
-        let described = for_describe();
-        let pi = described
-            .as_array()
-            .and_then(|agents| agents.iter().find(|a| a["agent"] == "pi:c-shell"))
-            .unwrap_or_else(|| panic!("pi is not listed: {described}"));
-        assert!(pi["running"].as_array().unwrap().iter().any(|j| j["job"] == job && j["command"] == "sleep 30"));
-        assert!(!described.to_string().contains("t-pi"), "{described}");
-
-        // Another agent's token cannot touch it; nor can pi's token from outside pi's harness.
-        let err = agent_kill(&json!({"job": job}), call("t-ds")).unwrap_err();
-        assert!(err.contains("belongs to another agent"), "{err}");
-        let outsider = Call { pid: Some(1), token: Some("t-pi".into()) };
-        let err = agent_job(&json!({"job": job, "wait": 0}), outsider).unwrap_err();
-        assert!(err.contains("not issued to the process"), "{err}");
-
-        let looked = agent_job(&json!({"job": job, "wait": 0}), call("t-pi")).unwrap();
-        assert_eq!(looked["running"], true);
-
-        let killed = agent_kill(&json!({"job": job}), call("t-pi")).unwrap();
-        assert_eq!((killed["stopped"].clone(), killed["signal_name"].clone()), (json!(true), json!("SIGTERM")), "{killed}");
-
-        let answered = agent_run(&json!({"command": "read -r x; echo \"[$x]\"", "wait": 0.3}), call("t-pi")).unwrap();
-        let typed = agent_input(&json!({"job": answered["job"], "text": "yes\n"}), call("t-pi")).unwrap();
-        assert_eq!(typed["sent_bytes"], 4);
-        let finished = agent_job(&json!({"job": answered["job"], "wait": 10}), call("t-pi")).unwrap();
-        assert_eq!(finished["tail"], "yes\n[yes]", "the echo of what was typed, then the answer: {finished}");
-
-        // The bounds on `wait`, refused before anything is started.
-        let err = agent_run(&json!({"command": "true", "wait": 601}), call("t-pi")).unwrap_err();
-        assert!(err.contains("between 0 and 600"), "{err}");
-        // A yes or no is what it plainly means, not a refusal: on 561 the Mind sent
-        // `wait: true` twice and never saw its output.
-        assert_eq!(wait_arg(&json!({"wait": true})).unwrap(), DEFAULT_WAIT);
-        assert_eq!(wait_arg(&json!({"wait": false})).unwrap(), Duration::ZERO);
-        let yes = agent_run(&json!({"command": "echo yes-wait", "wait": true}), call("t-pi")).unwrap();
-        assert_eq!(yes["exit_code"], 0, "`wait: true` waits for the command: {yes}");
-        assert!(wait_arg(&json!({"wait": "soon"})).unwrap_err().contains("number of seconds"));
-
-        // ── Wired to the harness host, as the shell does when it makes one ──
-        //
-        // This test process stands in for the harness again: it attaches with its own pid, the
-        // way the socket's SO_PEERCRED would report it, and its agent is handed a turn and so a
-        // token.
-        use yantrik_harness::{protocol, Host, Turn};
-        let host = Host::new(vec![]);
-        let attach = json!({ "id": "pi", "name": "Pi", "conversations": true });
-        let session = host.handle_from(protocol::ATTACH, &attach, me, None).unwrap()["session"].as_str().unwrap().to_string();
-        let agent = host.start_agent("pi").unwrap();
-        let turn = |text: &str| {
-            let _answer = host.send_to(&agent, Turn::new(text)).unwrap();
-            let handed = as_harness(&host, protocol::POLL, &json!({ "session": session })).unwrap();
-            as_harness(&host, protocol::COMPLETE, &json!({ "session": session, "turn_id": handed["turn_id"] })).unwrap();
-            handed
-        };
-        let token = turn("build it")["agent_token"].as_str().unwrap().to_string();
-        serve_host(&host);
-
-        // The table's tokens name nothing now; the host's do, for its agent.
-        assert!(agent_run(&json!({"command": "true"}), call("t-pi")).unwrap_err().starts_with(NO_AGENT));
-        let slow = agent_run(&json!({"command": "sleep 1; echo built", "wait": 0.2}), call(&token)).unwrap();
-        assert_eq!((slow["running"].clone(), slow["agent"].clone()), (json!(true), json!(agent.to_string())), "{slow}");
-        // A command whose end is carried by the agent's own later call is not owed a note.
-        let waited = agent_run(&json!({"command": "sleep 1.5; echo waited", "wait": 0.1}), call(&token)).unwrap();
-        let ended = agent_job(&json!({"job": waited["job"], "wait": 10}), call(&token)).unwrap();
-        assert_eq!(ended["exit_code"], 0, "{ended}");
-
-        // The first one finished after its call returned: its end rides into the agent's next
-        // turn, once, as a note in the context. Asked again until it is there, not after a sleep
-        // that a loaded machine could outlast.
-        let notes_in = |handed: &Value| -> Vec<String> {
-            let context: Value = handed["context"].as_str().map(|c| serde_json::from_str(c).unwrap()).unwrap_or_default();
-            context["notes"].as_array().into_iter().flatten().map(|n| n.as_str().unwrap().to_string()).collect()
-        };
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        let notes = loop {
-            let notes = notes_in(&turn("what happened?"));
-            if !notes.is_empty() || std::time::Instant::now() > deadline {
-                break notes;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        assert_eq!(notes.len(), 1, "one late end, one note: {notes:?}");
-        let note = &notes[0];
-        for said in ["`sleep 1; echo built`", slow["job"].as_str().unwrap(), "exit code 0", "built"] {
-            assert!(note.contains(said), "the note does not say {said:?}: {note}");
-        }
-        assert!(!note.contains(&token), "the note does not carry the token");
-        assert!(notes_in(&turn("and now?")).is_empty(), "a note is delivered once");
-    }
-}
-
-/// What does not need a terminal: which ends are owed, the note's words, and the wiring.
-#[cfg(test)]
-mod late_tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    fn answer(job: &str, running: bool) -> RunAnswer {
-        RunAnswer {
-            job: JobId(job.to_string()),
-            agent: AgentId::new("pi", "c-7f3a91"),
-            command: "cargo build --release".to_string(),
-            cwd: PathBuf::from("/home/me/proj"),
-            cwd_after: (!running).then(|| PathBuf::from("/home/me/proj/target")),
-            state: if running { JobState::Running { waiting_for_input: false } } else { JobState::Exited { code: 101 } },
-            killed: false,
-            elapsed: Duration::from_secs(134),
-            tail: "Compiling a\nCompiling b\nerror[E0425]: cannot find value `x`\nerror: could not compile".to_string(),
-            tail_clipped: false,
-            output_bytes: 900,
-            truncated_bytes: 0,
-        }
-    }
-
-    #[test]
-    fn an_end_is_owed_only_when_the_agents_last_word_on_it_was_running() {
-        let mut late = Late::default();
-        // Told running, then it ends: owed.
-        assert_eq!(late.told(&answer("j1", true)), None);
-        assert_eq!(late.finished(&answer("j1", false)), Some(answer("j1", false)));
-        assert!(late.owed.is_empty() && late.ended.is_empty(), "owed once, and settled");
-
-        // Ended within the call that started it: the answer carried it, nothing is owed.
-        assert_eq!(late.finished(&answer("j2", false)), None);
-        assert_eq!(late.told(&answer("j2", false)), None);
-        assert!(late.ended.is_empty() && late.owed.is_empty());
-    }
-
-    #[test]
-    fn an_agent_waiting_on_its_command_again_is_answered_by_that_call_not_by_a_note() {
-        let mut late = Late::default();
-        let pi = AgentId::new("pi", "c-7f3a91");
-        late.told(&answer("j1", true));
-        // `agent_job` begins, and the command ends while it waits: its answer carries the end.
-        late.engage(&pi, &JobId("j1".into()));
-        assert_eq!(late.finished(&answer("j1", false)), None);
-        assert_eq!(late.told(&answer("j1", false)), None);
-        // …but when that call too runs out first, the end is owed again.
-        late.told(&answer("j3", true));
-        late.engage(&pi, &JobId("j3".into()));
-        late.told(&answer("j3", true));
-        assert!(late.finished(&answer("j3", false)).is_some());
-        // Another agent naming this job does not take its note away.
-        late.told(&answer("j4", true));
-        late.engage(&AgentId::new("deepseek", "c-02be44"), &JobId("j4".into()));
-        assert!(late.finished(&answer("j4", false)).is_some());
-    }
-
-    #[test]
-    fn an_end_between_the_look_and_the_record_is_still_reported() {
-        // The answer was read as running, and the job ended before that answer reached here.
-        let mut late = Late::default();
-        assert_eq!(late.finished(&answer("j1", false)), None);
-        assert_eq!(late.told(&answer("j1", true)), Some(answer("j1", false)));
-        assert!(late.ended.is_empty() && late.owed.is_empty());
-        // And the record of unclaimed ends is bounded.
-        for n in 0..ENDS_KEPT + 10 {
-            late.finished(&answer(&format!("x{n}"), false));
-        }
-        assert_eq!(late.ended.len(), ENDS_KEPT);
-    }
-
-    #[test]
-    fn the_note_says_which_command_how_it_ended_where_and_its_last_lines() {
-        let note = late_note(&answer("job-1a2b", false));
-        for said in ["`cargo build --release`", "job-1a2b", "exit code 101", "after 2m 14s",
-                     "in /home/me/proj/target", "error: could not compile"] {
-            assert!(note.contains(said), "{said:?} missing: {note}");
-        }
-        assert!(note.len() < yantrik_harness::host::MAX_NOTE_BYTES, "{} bytes", note.len());
-
-        let mut killed = answer("job-9", false);
-        killed.state = JobState::Signalled { signal: 15 };
-        killed.killed = true;
-        killed.tail = String::new();
-        killed.command = "x".repeat(500);
-        let note = late_note(&killed);
-        assert!(note.contains("ended by SIGTERM (it was stopped)") && note.contains("It printed nothing."), "{note}");
-        assert!(note.contains(&format!("`{}…`", "x".repeat(NOTE_COMMAND_CHARS))), "the command is cut: {note}");
-
-        let mut chatty = answer("job-8", false);
-        chatty.tail = "é".repeat(2000);
-        assert!(late_note(&chatty).len() < yantrik_harness::host::MAX_NOTE_BYTES);
-    }
-
-    /// The shell has one place where the host is made, and that is where the agent terminal is
-    /// tied to it. A missing call compiles, and every agent's command is then answered "no agent
-    /// holds this token" — so the call is asserted where it lives.
-    #[test]
-    fn the_shell_ties_the_agent_terminal_to_the_host_when_it_makes_it() {
-        let wiring = include_str!("wire/harness.rs");
-        let made = wiring.find("Host::new(").expect("wire/harness.rs makes the host");
-        let tied = wiring.find("control_agent_terminal::serve_host(&host)").expect(
-            "wire/harness.rs does not call control_agent_terminal::serve_host(&host): agent tokens would never resolve",
-        );
-        assert!(tied > made, "serve_host is called before the host exists");
-        let this = include_str!("control_agent_terminal.rs");
-        let body = &this[this.find("pub fn serve_host(").unwrap()..];
-        let body = &body[..body.find("\n}\n").unwrap()];
-        assert!(body.contains("HostTokens::new(host.clone())") && body.contains("host.note_for(agent, note)"), "{body}");
-    }
-}
+#[path = "control_agent_terminal_tests.rs"]
+mod tests;

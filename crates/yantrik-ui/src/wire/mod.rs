@@ -174,6 +174,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     // Owns the notification centre, the toasts and the poll of the one store. `toast` is the
     // drawing half and has no `wire` of its own any more.
     notifications::wire(ui, ctx);
+    // The one-time copy of the old workshops folder, and the notice that says where they went.
+    crate::workshop_move::at_start();
     for_you::wire(ui);
     initiative::wire(ui);
     skill_store::wire(ui, ctx);

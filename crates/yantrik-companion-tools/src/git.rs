@@ -18,8 +18,11 @@ pub fn register(reg: &mut ToolRegistry) {
 
 /// Run a git command in a validated directory.
 fn run_git(dir: &str, git_args: &[&str]) -> String {
-    match std::process::Command::new("git")
-        .current_dir(dir)
+    // Where git really goes is checked first: a link or a .git file can lead into a workshop.
+    if let Err(e) = super::git_guard::vet(dir) {
+        return format!("Error: {e}");
+    }
+    match super::git_guard::command(dir)
         .args(git_args)
         .output()
     {

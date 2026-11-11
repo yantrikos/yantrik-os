@@ -73,7 +73,8 @@ jobs:
             libfreetype6-dev \
             libinput-dev \
             libgbm-dev \
-            libegl1-mesa-dev
+            libegl1-mesa-dev \
+            bubblewrap
 
       # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
       # stable is today: `rustup toolchain install` with no name reads that file.
@@ -88,6 +89,17 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --locked
+
+      # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
+      # (installed above) cannot map its uid and every outside-view test fails before it starts.
+      # Lift that on the runner, so the tests run inside the real outside view.
+      - name: Let bubblewrap make its user namespace
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # The workshops root exists on a machine the installer has run on. With it here, the browser
+      # and app launches are checked with the tmpfs over it, as they are on a real machine.
+      - name: Make the workshops root
+        run: sudo mkdir -p /var/lib/yantrik/workshops
 
       - name: Test
         run: cargo test --workspace --locked
