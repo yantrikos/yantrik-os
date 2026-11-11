@@ -360,6 +360,40 @@ class TheHandOverChecksWhoIsGivingWhat(unittest.TestCase):
         self.assertIn("DevTools pipe", handover.browser_is_the_callers(22, 500, proc))
         self.assertIn("could not be read", handover.browser_is_the_callers(23, 500, proc))
 
+    def retitled(self, pid, text, parent=500):
+        """A /proc entry whose cmdline is one string, as Chromium 150 leaves it at 0.85 s
+        (proofs/1151/handover-probe.txt: nargs 2, the flag only inside argv[0])."""
+        proc = self.proc_of(pid, cmdline=["x"], parent=parent)
+        with open(os.path.join(proc, str(pid), "cmdline"), "wb") as f:
+            f.write(text.encode() + bytes([0]))
+        return proc
+
+    def test_a_chromium_that_retitled_itself_is_still_the_callers_browser(self):
+        """The 520 failure: all 8 real offers were refused, because the flag was no longer an
+        element of the cmdline. Fails on the exact-match check this replaces."""
+        line = "/usr/lib/chromium/chromium --show-component-extension-options --no-first-run --remote-debugging-pipe"
+        proc = self.retitled(30, line)
+        self.assertIsNone(handover.browser_is_the_callers(30, 500, proc))
+        self.assertIn("not a browser the caller started", handover.browser_is_the_callers(30, 501, proc))
+
+    def test_a_retitled_process_without_the_pipe_or_with_a_port_is_still_refused(self):
+        proc = self.retitled(31, "/usr/lib/chromium/chromium --no-first-run")
+        self.assertIn("DevTools pipe", handover.browser_is_the_callers(31, 500, proc))
+        proc = self.retitled(32, "/usr/lib/chromium/chromium --remote-debugging-pipe --remote-debugging-port=9222")
+        self.assertIn("DevTools pipe", handover.browser_is_the_callers(32, 500, proc))
+        proc = self.retitled(33, "/usr/lib/chromium/chromium --remote-debugging-pipeline")
+        self.assertIn("DevTools pipe", handover.browser_is_the_callers(33, 500, proc), "a word, not a substring")
+
+    def test_an_impostor_that_retitles_itself_still_fails_on_parent_and_stream(self):
+        """Saying the flag proves nothing, and nothing relies on it alone: a process that is not the
+        shell's child, or does not hold the stream the shell sent, is refused whatever it says."""
+        proc = self.retitled(34, "chromium --remote-debugging-pipe", parent=777)
+        self.assertIn("not a browser the caller started", handover.browser_is_the_callers(34, 500, proc))
+        sent, _browsers_end = socket.socketpair()
+        stranger, _also = socket.socketpair()
+        proc = self.proc_of(35, cmdline=["x"], parent=500, fd3="socket:[%d]" % os.fstat(stranger.fileno()).st_ino)
+        self.assertIn("not the one", handover.stream_is_the_browsers(sent, 35, proc))
+
     def test_the_stream_sent_is_the_browsers_only_if_the_kernel_says_its_other_end_is_fd_3(self):
         sent, browsers_end = socket.socketpair()
         stranger, _also = socket.socketpair()

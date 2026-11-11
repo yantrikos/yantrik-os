@@ -57,9 +57,18 @@ fn browser_with_the_pipe(proc: &Path) -> Option<u32> {
     std::fs::read_dir(proc).ok()?.flatten().find_map(|entry| {
         let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
         let mine = entry.metadata().is_ok_and(|m| m.uid() == me);
-        let piped = std::fs::read(entry.path().join("cmdline")).is_ok_and(|c| c.split(|b| *b == 0).any(|arg| arg == PIPE_FLAG));
+        let piped = std::fs::read(entry.path().join("cmdline")).is_ok_and(|c| has_the_pipe_switch(&c));
         (mine && piped).then_some(pid)
     })
+}
+
+/// Whether a `/proc/<pid>/cmdline` carries the pipe switch as a word. About 0.85 s after it starts
+/// Chromium folds its whole argument vector into argv[0] as one space-joined string, so the first
+/// element is read as words and the rest as given (the 520 gate on #1151).
+fn has_the_pipe_switch(cmdline: &[u8]) -> bool {
+    let mut args = cmdline.split(|b| *b == 0);
+    let first = args.next().unwrap_or_default();
+    first.split(|b| *b == b' ').chain(args).any(|arg| arg == PIPE_FLAG)
 }
 
 /// Whether Chromium's `SingletonLock` in `profile` names `pid`: a symlink to `<host>-<pid>`, made
@@ -114,6 +123,14 @@ mod tests {
     fn the_browser_the_shell_started_has_the_pipe_switch() {
         let proc = proc_with("pipe", &[("11", "bash"), ("12", "/usr/lib/chromium/chromium --remote-debugging-pipe --no-first-run")]);
         assert_eq!(browser_with_the_pipe(&proc), Some(12));
+    }
+
+    /// The 520 failure: a running Chromium has folded its arguments into argv[0], one string.
+    #[test]
+    fn a_browser_that_retitled_itself_still_has_the_pipe_switch() {
+        assert!(has_the_pipe_switch(b"/usr/lib/chromium/chromium --no-first-run --remote-debugging-pipe\0"));
+        assert!(!has_the_pipe_switch(b"/usr/lib/chromium/chromium --remote-debugging-pipeline\0"));
+        assert!(!has_the_pipe_switch(b"/usr/lib/chromium/chromium --no-first-run\0"));
     }
 
     /// A Browser started outside the shell has no pipe, and Mind View's has a port: neither counts.

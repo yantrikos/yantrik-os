@@ -71,15 +71,30 @@ def _parent_of(pid, proc):
         return int(f.read().rpartition(")")[2].split()[1])
 
 
+def _flags_of(raw):
+    """The words of a command line read from /proc/<pid>/cmdline. Chromium retitles itself about
+    0.85 s after it starts and folds its whole argument vector into argv[0] as one space-joined
+    string (the 520 gate on #1151), so argv[0] is read as words and the rest as given."""
+    args = [a.decode("utf-8", "replace") for a in raw.split(b"\0")]
+    return args[0].split() + args[1:]
+
+
 def browser_is_the_callers(pid, caller_pid, proc="/proc"):
-    """None when `pid` is a child of `caller_pid` started with the DevTools pipe and no port."""
+    """None when `pid` is a child of `caller_pid` started with the DevTools pipe and no port.
+
+    The command line is the weakest of the three facts here, a hint and not a proof: a process can
+    retitle itself to say anything. What binds the hand-over is that the caller is the installed
+    shell, `pid` is its own child, and fd 3 of `pid` is the other end of the stream sent
+    (`stream_is_the_browsers`, from the kernel); the shell makes that pair only for the Browser it
+    launches itself with the pipe switch. A process that retitles itself to carry the flag still
+    has to be the shell's child and hold the shell's stream."""
     try:
         with open(os.path.join(proc, str(pid), "cmdline"), "rb") as f:
-            args = f.read().split(b"\0")
+            raw = f.read()
         parent = _parent_of(pid, proc)
     except (OSError, ValueError, IndexError) as e:
         return "that browser (pid %d) could not be read (%s)" % (pid, e)
-    flags = [a.decode("utf-8", "replace") for a in args]
+    flags = _flags_of(raw)
     if PIPE_FLAG not in flags or any(a.startswith("--remote-debugging-port") for a in flags):
         return "pid %d was not started with a DevTools pipe and no port" % pid
     if parent != caller_pid:
