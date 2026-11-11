@@ -3280,8 +3280,11 @@ reconcile_mind_socket() { # <owner>
   systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
 }
 
-# The browsers' DevTools ports: the person's Browser on 127.0.0.1:9222, Mind View's browser (what
-# every mind's web tools drive) on 9223, the companion's other identities on 9224-9322. Loopback
+# The browsers' DevTools ports: Mind View's browser (what every mind's web tools drive) on 9223,
+# the companion's other identities on 9224-9322. The person's Browser no longer has a port (#1137:
+# it runs with --remote-debugging-pipe, held by the browser service); 9222 stays in the rule as
+# defence in depth, so a browser an older build left there, or anything else that listens on it,
+# still answers root and the person only. Step 3 of #1137 takes it out. Loopback
 # TCP has no owner: until this, every account on the machine could open those ports and drive the
 # person's logged-in browser, read its cookies, submit its forms, past every gate. Now only root
 # and the person connect, by account alone: both browsers run as the person, so this cannot tell
@@ -3295,8 +3298,10 @@ DEVTOOLS_UNIT=/etc/systemd/system/yantrik-devtools-guard.service
 
 devtools_guard_text() {
   cat <<EOF
-# Yantrik OS: the browsers' DevTools ports (9222-9322 on loopback) and the VNC ports (5900-5909,
-# wayvnc's, which ask no password on loopback) are opened and answered by root and $1 only: either
+# Yantrik OS: the browsers' DevTools ports (9222-9322 on loopback; the person's Browser uses a pipe
+# now, and 9222 is kept as defence in depth) and the VNC ports (5900-5909: nothing of this OS
+# starts a VNC server; a wayvnc someone starts by hand asks no password on loopback) are opened
+# and answered by root and $1 only: either
 # is the whole desktop to whoever reaches it, past the mind door, the cards and Private mode.
 # Made by yantrik-update; edits here are put back at the next update.
 table inet yantrik_devtools

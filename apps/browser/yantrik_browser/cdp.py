@@ -11,12 +11,13 @@ and keeps the event state (tabs, dialogs, requests in flight) the waits read.
 
 import json
 import os
+import random
 import threading
 import time
 import urllib.error
 import urllib.request
 
-from . import ports
+from . import ports, transport
 
 WORLD = "yantrik-browser"
 CALL_TIMEOUT = 20.0
@@ -60,10 +61,13 @@ class Tab:
 
 
 class Browser:
-    def __init__(self, address=None):
-        # Mind View's browser unless told otherwise, and no environment variable moves it: where a
-        # browser is, is decided in ports.py and nowhere a process's environment reaches.
-        self.address = (address or ports.address(ports.MIND_VIEW_PORT)).rstrip("/")
+    def __init__(self, address=None, opener=None):
+        """A TCP DevTools port (Mind View's unless told otherwise; where a browser is, is decided
+        in ports.py and nowhere a process's environment reaches), or, with `opener`, a pipe: a
+        function that gives a transport.PipeTransport or raises BrowserClosed. A browser given an
+        opener has no address and never touches TCP: the person's Browser (#1137)."""
+        self.opener = opener
+        self.address = None if opener else (address or ports.address(ports.MIND_VIEW_PORT)).rstrip("/")
         # Called before a connection is opened and again once it is, to hold it to the browser it
         # was made for (driver.py); it raises to stop. None where the caller owns the browser.
         self.check = None
@@ -73,7 +77,9 @@ class Browser:
         self.replies = {}
         self.abandoned = set()                 # ids whose answer nobody waits for any more
         self.generation = 0                    # which connection is the current one
-        self.ids = 0
+        # High and random: a reply the browser wrote to a process before this one (a service
+        # restart on the held pipe) must not carry an id this process will send (aff60d15, L-a).
+        self.ids = random.randrange(1 << 20, 1 << 30)
         self.tabs = {}                         # target id -> Tab, in the order they appeared
         self.by_session = {}
         self.active = None                     # the tab actions go to unless told otherwise
@@ -95,17 +101,8 @@ class Browser:
             return
         if self.check:
             self.check()
-        try:
-            from websocket import create_connection
-        except ImportError:
-            raise CdpError("python3-websocket is not installed") from None
-        url = self._version().get("webSocketDebuggerUrl")
-        if not url:
-            raise BrowserClosed()
-        # The origin the desktop's launcher allows (wire/dock.rs, --remote-allow-origins): its own
-        # debugging address and nothing wider.
         self.close()
-        ws = create_connection(url, origin=self.address, timeout=None, suppress_origin=False)
+        ws = self._open()
         if self.check:
             try:
                 self.check()
@@ -128,6 +125,22 @@ class Browser:
         self.call("Target.setDiscoverTargets", {"discover": True})
         for info in self.call("Target.getTargets").get("targetInfos", []):
             self._saw_target(info)
+
+    def _open(self):
+        """The transport to the browser: its pipe, or a WebSocket to its port."""
+        if self.opener is not None:
+            return self.opener()
+        try:
+            from websocket import create_connection
+        except ImportError:
+            raise CdpError("python3-websocket is not installed") from None
+        url = self._version().get("webSocketDebuggerUrl")
+        if not url:
+            raise BrowserClosed()
+        # The origin the desktop's launcher allows (wire/dock.rs, --remote-allow-origins): its own
+        # debugging address and nothing wider.
+        return transport.WebSocketTransport(
+            create_connection(url, origin=self.address, timeout=None, suppress_origin=False))
 
     def close(self):
         with self.cond:
