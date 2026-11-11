@@ -268,7 +268,7 @@ fn on_gateway(id: &str, name: &str, detail: &str, gateway: GatewayFact) -> MindF
 }
 
 fn sends(base_url: &str, kind: &str, model: &str) -> GatewayFact {
-    GatewayFact::Sends { base_url: base_url.into(), provider_kind: kind.into(), model: model.into(), lane: false }
+    GatewayFact::Sends { account: String::new(), base_url: base_url.into(), provider_kind: kind.into(), model: model.into(), lane: false }
 }
 
 const TO: &str = "Sends your message and conversation context to: ";
@@ -342,7 +342,7 @@ fn a_pick_the_gateway_refuses_says_what_the_gateway_does_not_the_pick() {
     assert!(!line.starts_with(TO), "no place is named");
     assert_eq!(rows[0].runs_on(), "Nothing is sent: the gateway refuses it");
     // Sharing set to Private lane: the lane's model, which is the one said.
-    let lane = GatewayFact::Sends { base_url: "http://127.0.0.1:11434/v1".into(), provider_kind: "ollama".into(), model: "qwen3.5:9b".into(), lane: true };
+    let lane = GatewayFact::Sends { account: String::new(), base_url: "http://127.0.0.1:11434/v1".into(), provider_kind: "ollama".into(), model: "qwen3.5:9b".into(), lane: true };
     assert_eq!(
         resolve(&[on_gateway("hermes", "Hermes Agent", "picked", lane)], None)[0].destination(),
         format!("{TO}Ollama at 127.0.0.1:11434 \u{b7} qwen3.5:9b, your private lane, through this desktop's gateway")
@@ -447,4 +447,20 @@ fn with_sharing_off_everywhere_the_lens_says_why_no_model_can_be_used() {
     assert_eq!(rows[0].destination(), "No model can be used yet: sharing is off for every account");
     assert_eq!(rows[0].runs_on(), "No model picked yet");
     assert_eq!(rows[0].plain_runs_on(), "No model picked yet");
+}
+
+/// #1162: the Lens said the Custom account by its host while the panel said "Custom". With the
+/// account's own name known, every face says it, and the address stays in Details.
+#[test]
+fn every_face_names_a_gateway_account_by_the_name_the_person_gave_it() {
+    let fact = GatewayFact::Sends { account: "Custom".into(), base_url: "https://aig.mycluster.cyou/v1".into(), provider_kind: "custom".into(), model: "qwen3.8:27b".into(), lane: false };
+    let rows = resolve(&[on_gateway("hermes", "Hermes Agent", "Hermes 0.21.5 \u{b7} picked", fact)], None);
+    let r = &rows[0];
+    assert_eq!(r.destination(), format!("{TO}Custom \u{b7} qwen3.8:27b, through this desktop's gateway"));
+    assert_eq!(r.plain_answering(), "Custom \u{b7} qwen3.8:27b");
+    assert_eq!(r.plain_runs_on(), "Custom \u{b7} qwen3.8:27b");
+    for said in [r.destination(), r.plain_answering(), r.plain_runs_on()] {
+        assert!(!said.contains("aig.mycluster.cyou"), "{said}");
+    }
+    assert!(r.details().contains("aig.mycluster.cyou"), "the exact address is a click away");
 }

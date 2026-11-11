@@ -4,9 +4,7 @@
 //! Serve the `harness` socket so anything else can attach. Keep the Settings screen and the
 //! status bar showing the truth about both.
 //!
-//! The [`Host`] lives for the life of the shell and is reachable from anywhere in it through
-//! [`host`], because two things need it that cannot hand each other a reference: this wiring, and
-//! the shell's own control surface in `crate::control`.
+//! The [`Host`] lives for the life of the shell and is reachable through [`host`], for this wiring and `crate::control`.
 
 use std::sync::{Arc, OnceLock};
 
@@ -39,6 +37,8 @@ const HARNESSES_SECTION: i32 = 8;
 const FIRST_RUN_SCREEN: i32 = 2;
 
 static HOST: OnceLock<Host> = OnceLock::new();
+#[cfg(test)]
+pub(crate) mod test_host;
 
 /// The shell's harness host. Available once [`wire`] has run.
 pub fn host() -> Option<&'static Host> {
@@ -182,6 +182,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // written behind the shell's back would have been taken as the person's (#448 review).
     let _ = crate::memory_grants::load();
     let host = Host::new(vec![Arc::new(Companion { bridge: ctx.bridge.clone() })]);
+    // Every face names the model the shell says answers a mind on the gateway, Hermes's own detail
+    // line included, at once after a restart and after a pick change (#1162).
+    yantrik_harness::host::detail::set_model_line(crate::answering::model_line);
+    // The listing keeps a derived line for a second; an account or its consent changing is not waited out.
+    crate::ai_accounts::on_change(yantrik_harness::host::detail::refresh_model_lines);
     // Every turn a mind takes is kept as a run beside the agents' sessions (#25); without the
     // file the host still works, it just keeps no runs.
     let host = match open_runs() {

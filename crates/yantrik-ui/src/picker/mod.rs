@@ -5,7 +5,9 @@
 //! - `choices`: the model and effort per mind, and the recent models, kept across restarts.
 //! - `menu`: the menus' rows, the reasons a model cannot be used, the search (pure).
 //! - `attach`: files handed over, with their provenance.
-//! - `status`: "connected · <model>" only after a real call or a probe (pure).
+//! - `status`: "answering · <Account> · <model>" only after a real call or a probe (pure); the model
+//!   it names is `answering`'s, never the stored pick.
+//! - `probe`: the ask of a model's account that moves a status on from "checking".
 //!
 //! The choice is per mind and travels with every message, so a harness may take a different
 //! model each turn; picking another before sending is how one message goes to another model.
@@ -14,14 +16,16 @@ pub mod attach;
 pub mod blocked;
 pub mod choices;
 pub mod menu;
+mod probe;
 pub mod status;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_blocked;
+#[cfg(test)]
+mod tests_gone;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -36,14 +40,12 @@ use crate::streaming::Speaker;
 use crate::{App, PickerFile, PickerMind, PickerModel, PickerState};
 use choices::Choices;
 use menu::MindSeen;
-use status::{Fix, Outcome, Probe};
+use status::Fix;
 
 static CHOICES: LazyLock<Mutex<Choices>> = LazyLock::new(|| Mutex::new(choices::load(&choices::path())));
 static QUERY: Mutex<String> = Mutex::new(String::new());
 static FILES: Mutex<Vec<Attachment>> = Mutex::new(Vec::new());
 static BROWSE: Mutex<Option<PathBuf>> = Mutex::new(None);
-static PROBES: LazyLock<Mutex<HashMap<String, Probe>>> = LazyLock::new(Default::default);
-static PROBING: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Default::default);
 
 /// Settings, and the two sections the picker's fixes open.
 const SETTINGS_SCREEN: i32 = 7;
@@ -67,9 +69,15 @@ pub fn choice_of(mind: &str) -> choices::MindChoice {
     lock(&CHOICES).of(mind)
 }
 
-/// The model a mind answers with through the gateway, as the person picked it.
+/// The model the person picked for a mind, as stored: what it asks for, not what answers (that is
+/// `answering::answering`'s to say, so a pick that has gone is never shown as the model in use).
 pub fn remembered_model(mind: &str) -> Option<String> {
     Some(lock(&CHOICES).of(mind).model).filter(|m| !m.is_empty())
+}
+
+/// The default pick: the one model every mind follows unless it was given its own.
+pub fn default_model() -> Option<String> {
+    Some(lock(&CHOICES).model.clone()).filter(|m| !m.is_empty())
 }
 
 /// Pick `model` (`<account>/<model>`) for every mind at once, as the picker does: what onboarding's
@@ -121,14 +129,14 @@ fn active(minds: &[MindSeen]) -> Option<&MindSeen> {
     minds.iter().find(|m| m.active)
 }
 
-/// Who says a reply that begins now: the answering mind, and the model it answers with when the
-/// desktop knows it (the one picked, for a mind on Yantrik models; what it reports, otherwise).
+/// Who says a reply that begins now: the answering mind, and the model that answers it when the
+/// desktop knows it (`answering`, for a mind on Yantrik models; nothing for the rest).
 pub fn speaker() -> Speaker {
     let Some(host) = crate::wire::harness::host() else { return Speaker::default() };
     let entries = host.list();
     let Some(e) = entries.iter().find(|e| e.active) else { return Speaker::default() };
     let model = if crate::provider_handoff::uses_gateway(&home(), &e.id) {
-        remembered_model(&e.id).map(|m| m.split_once('/').map(|(_, rest)| rest.to_string()).unwrap_or(m)).unwrap_or_default()
+        crate::answering::answering(&e.id).map(|a| a.model).unwrap_or_default()
     } else {
         String::new()
     };
@@ -180,52 +188,17 @@ fn add_file(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Ask the model's account whether it answers, off the UI thread, at most one at a time per
-/// account; the answer stands for a few minutes (status::PROBE_FRESH_SECS).
-fn probe(bridge: &Arc<CompanionBridge>, model: &str) {
-    let Some(m) = ai_accounts::catalogue().find(model).cloned() else { return };
-    let account = m.account.clone();
-    if !lock(&PROBING).insert(account.clone()) {
-        return;
-    }
-    let bridge = bridge.clone();
-    let _ = std::thread::Builder::new().name("model-probe".into()).spawn(move || {
-        let accounts = ai_accounts::accounts();
-        let outcome = match accounts.iter().find(|a| a.id == account) {
-            None => Outcome::KeyMissing,
-            Some(a) => {
-                let saved = crate::wire::settings::ProviderStore::load().entries;
-                let vault = |id: &str| ai_accounts::vault_value(&bridge, id);
-                match ai_accounts::keys::resolve(a, &saved, &vault) {
-                    Err(_) => Outcome::KeyMissing,
-                    Ok(r) if ai_accounts::models::needs_no_listing(a, yantrik_ml::provider::pool::tiers::FREE_TIERS) => {
-                        // No list to ask: the smallest request that needs the key, one token.
-                        match crate::wire::provider_models::check_key(&r.base_url, r.key.as_deref().unwrap_or(""), &m.model) {
-                            crate::wire::provider_models::KeyCheck::Works => Outcome::Ok,
-                            crate::wire::provider_models::KeyCheck::Refused => Outcome::KeyRefused,
-                            crate::wire::provider_models::KeyCheck::Unconfirmed(why) => Outcome::Unreachable(why),
-                        }
-                    }
-                    Ok(r) => match crate::wire::provider_models::list_models(&r.base_url, r.key.as_deref(), ai_accounts::keys::auth_for(a, r.key.as_deref())) {
-                        Ok(_) => Outcome::Ok,
-                        Err(crate::wire::provider_models::ListError::KeyRefused) => Outcome::KeyRefused,
-                        Err(e) => Outcome::Unreachable(e.to_string()),
-                    },
-                }
-            }
-        };
-        lock(&PROBES).insert(account.clone(), Probe { at: now(), outcome });
-        lock(&PROBING).remove(&account);
-    });
-}
-
 /// The status of the mind answering now.
 fn status_now(minds: &[MindSeen]) -> status::Status {
     let Some(mind) = active(minds) else {
         return status::Status { state: "not-set-up", words: "no mind is answering".into(), fix: Fix::None };
     };
-    let model = remembered_model(&mind.id).unwrap_or_default();
-    let account = model.split_once('/').map(|(a, _)| a.to_string()).unwrap_or_default();
+    let (answer, refusal) = match mind.on_gateway.then(|| crate::answering::answering(&mind.id)) {
+        Some(Ok(a)) => (Some(a), None),
+        Some(Err(r)) => (None, Some(r)),
+        None => (None, None),
+    };
+    let account = answer.as_ref().map(|a| a.account_id.clone()).unwrap_or_default();
     let own = crate::agents::store().read(|s| {
         let a = s.agent(&crate::agents::feed::main_agent(&mind.id))?;
         let t = a.turns.iter().rev().find(|t| t.ended.is_some() && t.ok == Some(true))?;
@@ -234,15 +207,29 @@ fn status_now(minds: &[MindSeen]) -> status::Status {
     let input = status::Input {
         now: now(),
         on_gateway: mind.on_gateway,
-        model,
+        answer,
+        refusal,
+        fallback: fallback_words(mind),
         last_call: crate::gateway::log().last_for(&mind.id),
-        probe: lock(&PROBES).get(&account).cloned(),
+        probe: probe::found(&account),
         gateway_down: crate::gateway::state().err(),
         own_answered_at: own.as_ref().map(|(at, _)| *at),
         own_model: own.map(|(_, m)| m).unwrap_or_default(),
         builtin_runs_on: mind.builtin_runs_on.clone(),
     };
     status::judge(&input)
+}
+
+/// The sentence for a pick that has gone, while the default pick answers in its place.
+fn fallback_words(mind: &MindSeen) -> Option<String> {
+    use crate::wire::harness_provider::{starting_model, Start};
+    // A pick that has gone is only the story of a mind that asks for `picked`: one whose config
+    // names a model is answered by that model, whatever the pick is.
+    let asks_picked = crate::answering::asked_for(&crate::wire::harness_provider::home_dir(), &mind.id) == yantrik_gateway::PICKED;
+    match (mind.on_gateway && asks_picked).then(|| starting_model(&mind.id)) {
+        Some(Ok(Start::Fallback { asked, using })) => Some(crate::answering::gone_words(&mind.name, &asked, Some(&using))),
+        _ => None,
+    }
 }
 
 /// The status for the mind panel's Now line: (state, words).
@@ -298,7 +285,18 @@ fn render(ui: &App, bridge: &Arc<CompanionBridge>) {
     g.set_effort(choice.effort.as_str().into());
     let query = lock(&QUERY).clone();
     let recent = lock(&CHOICES).recent.clone();
-    let rows: Vec<PickerModel> = menu::model_rows(&mind, &catalogue, &accounts, &consent, crate::private_mode::is_on(), &choice.model, &recent, &query)
+    let mut rows = menu::model_rows(&mind, &catalogue, &accounts, &consent, crate::private_mode::is_on(), &choice.model, &recent, &query);
+    let s = status_now(&minds);
+    if s.state == "checking" {
+        if let Some(answering) = crate::answering::answering(&mind.id).ok().filter(|_| mind.on_gateway) {
+            probe::ask(bridge, &answering.id());
+        }
+    }
+    // The pick has gone: the menu opens with the sentence, and the rows below are what to pick again.
+    if s.state == "pick-gone" && rows.first().is_none_or(|r| r.kind != "banner") {
+        rows.insert(0, menu::ModelRow::banner(s.words.clone()));
+    }
+    let rows: Vec<PickerModel> = rows
         .into_iter()
         .map(|r| PickerModel {
             kind: r.kind.into(),
@@ -313,10 +311,6 @@ fn render(ui: &App, bridge: &Arc<CompanionBridge>) {
         .collect();
     g.set_models(ModelRc::new(VecModel::from(rows)));
     g.set_files(ModelRc::new(VecModel::from(files_rows())));
-    let s = status_now(&minds);
-    if s.state == "checking" {
-        probe(bridge, &choice.model);
-    }
     g.set_status_state(s.state.into());
     g.set_status_words(s.words.into());
     g.set_fix_label(s.fix.label().into());
@@ -455,8 +449,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 ui.invoke_plan_provider(mind.into(), crate::provider_handoff::GATEWAY_ID.into());
             }
             Fix::AddKey | Fix::Allow => open_settings(&ui, AI_SECTION),
-            Fix::Retry => lock(&PROBES).clear(),
-            Fix::None => {}
+            Fix::Retry => probe::forget(),
+            // The chip opens the model menu itself.
+            Fix::PickAgain | Fix::None => {}
         }
         render(&ui, &b);
     });
