@@ -162,7 +162,7 @@ cp "$TARGET_DIR/libyantrik_mind_view_title.so" "$ROOT/bin/libyantrik_mind_view_t
 
 # The agent surface is not compiled, so binary discovery cannot find it. Without these the
 # machine boots a desktop that no agent can see or drive — the exact failure the old ISO had.
-for f in yos yos_web.py yos-mcp yos_mcp_web.py release-check yantrik-mind-launch; do
+for f in yos yos_web.py yos-mcp yos_mcp_web.py release-check yantrik-mind-launch yantrik-init yantrik_landlock.py; do
   [ -f "$SCRIPT_DIR/$f" ] || fail "missing $SCRIPT_DIR/$f — the agent surface is not optional"
   cp "$SCRIPT_DIR/$f" "$ROOT/bin/$f"
   chmod +x "$ROOT/bin/$f"
@@ -215,6 +215,10 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
   install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
     || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
+  # The harnesses that run as the mind account (#411), sourced by the updater: without it a build
+  # has no `yantrik-update harness` and Hermes would stay the person's.
+  install -m 0644 "$SCRIPT_DIR/harness-isolation.sh" "$ROOT/bin/harness-isolation.sh"     || fail "no harness-isolation.sh: the updater could not move a harness to the mind account"
+  for f in harness-sandbox.sh harness-isolation-room.sh; do install -m 0644 "$SCRIPT_DIR/$f" "$ROOT/bin/$f" || fail "no $f: harness-isolation.sh sources it"; done
   # The bridge rule the updater sources to hand the mind a new yos-mcp after an update (#1102).
   # Missing would be tolerable by design — the updater warns and carries on — but a bundle that
   # never shipped it is a build that quietly gives every updated machine the old hint-only path.

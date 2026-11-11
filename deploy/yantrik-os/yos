@@ -1587,8 +1587,32 @@ def take_agent_token(argv):
             token = token or arg.split("=", 1)[1]
         else:
             rest.append(arg)
-    token = (token or os.environ.get(AGENT_TOKEN_ENV, "")).strip()
+    token = (token or _token_from_environment()).strip()
     return (token or None), rest
+
+
+AGENT_TOKEN_FD_ENV = "YANTRIK_AGENT_TOKEN_FD"
+_FD_TOKEN = []
+
+
+def _token_from_environment():
+    """The token a harness's bridge started this with: a pipe's descriptor first (YANTRIK_AGENT_TOKEN_FD,
+    read once, closed, remembered for this process's later calls: it is in no environment), else
+    the plain variable."""
+    if not _FD_TOKEN:
+        text = ""
+        fd = os.environ.pop(AGENT_TOKEN_FD_ENV, "").strip()
+        if fd:
+            try:
+                number = int(fd)
+                try:
+                    text = os.read(number, 512).decode("utf-8", "replace").strip()
+                finally:
+                    os.close(number)
+            except (OSError, ValueError):
+                text = ""
+        _FD_TOKEN.append(text)
+    return _FD_TOKEN[0] or os.environ.get(AGENT_TOKEN_ENV, "")
 
 
 # A field of an app's state that fits on the `state:` line: a value, or a short list or object of

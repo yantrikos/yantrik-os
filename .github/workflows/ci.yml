@@ -331,6 +331,30 @@ jobs:
       - name: The image refuses a Mind without the capabilities this OS relies on
         run: bash deploy/yantrik-os/mind-capabilities-selftest.sh
 
+      # Hermes and the harnesses after it run as the mind account, not the person (#411). Part A
+      # reads what ships; part B makes two throwaway accounts, as root, and proves the service
+      # account cannot read, list or write the person's home, that what moves is counted twice and
+      # private, and that a failed install leaves the person's own Hermes as it was. systemd is a
+      # recorder in it; the real unit is held by a VM gate. Fake keys only.
+      - name: A harness running as the mind account cannot reach the person
+        run: sudo bash deploy/yantrik-os/harness-isolation-selftest.sh && bash deploy/yantrik-os/harness-isolation-room-selftest.sh
+
+      # Every line of the gateway unit that runs as the account is under the abstract-socket scope, and the
+      # scripts it runs look nothing up in what the account wrote (M1a). No root needed.
+      - name: The gateway unit scopes every line that runs as the mind account
+        run: bash deploy/yantrik-os/harness-scope-selftest.sh
+
+      # The desktop's tools bridge as Hermes starts it, inside a /proc mounted hidepid=invisible like the
+      # gateway unit's (ProtectProc=): it must stay listed there and be answered a token, or Hermes takes
+      # it for dead and the desktop's tools never work (the 520 gate on #1076). Needs root for the mounts.
+      - name: Hermes sees its desktop-tools bridge in the unit's /proc
+        run: sudo python3 deploy/yantrik-os/yos-mcp-hidepid-selftest.py
+
+      # The two root-side verbs a moved Hermes needs from the desktop: "Use Yantrik models" (the token
+      # on stdin, never in an argument) and the drain-aware reload the bridge update asks for.
+      - name: A moved Hermes takes its model and a reload from the updater
+        run: bash deploy/yantrik-os/harness-model-selftest.sh
+
       # The boot test's check that no real network address ships: config.yaml and update.conf
       # name no private address, the updater only ranges in CIDR and its marked selftest's made-up
       # fixtures, and nothing anywhere is on the developer's LAN. Held here against the updater in
@@ -423,6 +447,10 @@ jobs:
       # over is closed exactly once, however the mind behind it behaves.
       - name: The attachable harnesses close every turn exactly once
         run: python3 -m unittest discover -s harnesses/tests -v
+      # The Hermes plugin's own pieces that need no Hermes: where it finds the desktop at the mind door,
+      # and how it hands the tools bridge its agent token without an environment (#411).
+      - name: Hermes's plugin finds the mind door and hands over its token
+        run: python3 -m unittest discover -s harnesses/hermes/tests -v
 
       # The arena runs on the desktop, but the record of what it added itself does not need one:
       # the reset deletes through the calendar only those ids, so a gate never shows the person
