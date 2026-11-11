@@ -11351,6 +11351,7 @@ dependencies = [
  "serde",
  "serde_json",
  "yantrik-companion-core",
+ "yantrik-ipc-contracts",
 ]
 
 [[package]]

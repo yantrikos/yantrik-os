@@ -20,6 +20,8 @@ pub mod credentials;
 pub mod email;
 pub mod calendar;
 pub mod weather;
+// Whether an IP-based location lookup may be made at all: off until the person says so.
+pub mod location_consent;
 pub mod notes;
 pub mod music;
 pub mod system_monitor;

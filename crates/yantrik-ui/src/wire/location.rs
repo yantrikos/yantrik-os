@@ -20,8 +20,9 @@
 //! person can read and correct.
 //!
 //! What that costs is honest and bounded: one request that reveals this machine's public IP to
-//! one service, which every weather fetch already did implicitly. It does not repeat, it does not
-//! run when a location is already recorded, and `YANTRIK_NO_GEOLOCATE=1` turns it off entirely.
+//! one service. So it is off until the person turns it on (`yantrik_ipc_contracts::
+//! location_consent`: a fresh machine makes no call), it does not repeat, it does not run when a
+//! location is already recorded, and `YANTRIK_NO_GEOLOCATE=1` turns it off even when asked.
 //!
 //! # Why it does not keep re-checking
 //!
@@ -49,11 +50,8 @@ const UNSET_TIMEZONE: &str = "Etc/UTC";
 
 /// Learn where this machine is, if it does not already know. Returns immediately.
 pub fn detect_in_background() {
-    if std::env::var("YANTRIK_NO_GEOLOCATE")
-        .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
-    {
-        tracing::info!("Location lookup disabled (YANTRIK_NO_GEOLOCATE)");
+    if !yantrik_ipc_contracts::location_consent::allowed() {
+        tracing::info!("Location lookup is off: it runs only once the person turns it on");
         return;
     }
 

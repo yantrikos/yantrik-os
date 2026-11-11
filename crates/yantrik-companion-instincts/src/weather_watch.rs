@@ -22,6 +22,7 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
+use yantrik_ipc_contracts::location_consent;
 use yantrik_companion_core::types::{CompanionState, UrgeSpec};
 
 /// Keywords that indicate actionable weather worth alerting about.
@@ -119,6 +120,18 @@ impl Instinct for WeatherWatchInstinct {
     }
 
     fn evaluate(&self, _state: &CompanionState) -> Vec<UrgeSpec> {
+        self.alerts(location_consent::allowed(), fetch_weather)
+    }
+}
+
+impl WeatherWatchInstinct {
+    /// The check, with the permission and the fetch handed in. The fetch asks wttr.in for the
+    /// weather where the caller's IP address says they are, which tells it that address, so it
+    /// is not made until the person has turned location lookups on (`location_consent`).
+    fn alerts(&self, allowed: bool, fetch: impl FnOnce() -> Option<String>) -> Vec<UrgeSpec> {
+        if !allowed {
+            return vec![];
+        }
         let now = now_ts();
 
         // Rate-limit weather API calls
@@ -136,7 +149,7 @@ impl Instinct for WeatherWatchInstinct {
         }
 
         // Fetch current weather
-        let weather = match fetch_weather() {
+        let weather = match fetch() {
             Some(w) => w,
             None => return vec![],
         };
@@ -256,4 +269,29 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+#[cfg(test)]
+mod consent_tests {
+    use super::*;
+
+    /// A fresh machine has not turned location lookups on: the check ends before the fetch,
+    /// so no request reaches wttr.in and nothing is learned of the machine's address.
+    #[test]
+    fn nothing_is_fetched_until_location_lookups_are_on() {
+        let watch = WeatherWatchInstinct::new();
+        let alerts = watch.alerts(false, || panic!("the fetch must not run while lookups are off"));
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn once_on_the_check_fetches() {
+        let watch = WeatherWatchInstinct::new();
+        let mut asked = false;
+        let _ = watch.alerts(true, || {
+            asked = true;
+            None
+        });
+        assert!(asked);
+    }
 }

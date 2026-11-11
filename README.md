@@ -403,12 +403,16 @@ yantrik-os/
 
 ## Privacy and security
 
-- **The OS itself sends nothing anywhere.** No telemetry, no phone-home, no analytics, no call
-  it makes on its own behalf. The image ships pointed at loopback and at nothing else, because
-  an endpoint baked into a public image is an endpoint every copy of it talks to. The two
-  places it does reach out are ones you asked for: the update check against
-  `releases.yantrikos.com`, and whatever your weather, mail and calendar are configured
-  against — and a problem report you chose to send. When an app crashes, the desktop writes a
+- **The OS itself sends nothing anywhere.** No telemetry, no phone-home, no analytics. The
+  image ships pointed at loopback and at nothing else, because an endpoint baked into a public
+  image is an endpoint every copy of it talks to. With nobody at the keyboard it makes one call
+  on its own, the update check against `releases.yantrikos.com`, plus the clock sync (NTP) any
+  Debian system does. It does not ask where you are: location lookups are off until you turn
+  them on, and a feature that needs a place asks first, in a sentence saying what is sent and to
+  whom, or takes a city you type. The installers ask for your timezone and guess nothing from
+  the network. `YANTRIK_NO_GEOLOCATE=1` keeps lookups off even when asked. The other calls are
+  ones you set up or ask for: your weather, mail and calendar services, a cloud model if you
+  add one, and a problem report you chose to send. When an app crashes, the desktop writes a
   record locally, scrubbed of your home directory, your user name and anything shaped like a
   key; *Report a problem* shows you that exact file, and only pressing Send moves it, to
   `report.yantrikos.com`, with no name, hostname or address attached.
