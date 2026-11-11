@@ -12,8 +12,9 @@ fails as access denied. The page itself is held to the same gate as everything i
 is decided on the reader's thread, which must stay free to read the answer to the decision.
 """
 
-import queue
-import threading
+from concurrent import futures
+
+DECIDERS = 4       # `file:` requests decided at once: each may wait a stat round trip on the shell
 
 PATTERNS = [{"urlPattern": "file://*"}]
 
@@ -28,34 +29,21 @@ class Fence:
         self.call = call
         self.agent_of = agent_of
         self.gate = None
-        self.queue = queue.Queue()
-        self.worker = None
-        self.lock = threading.Lock()
-
-    def _put(self, job):
-        with self.lock:
-            if self.worker is None:
-                self.worker = threading.Thread(target=self._run, name="file-fence", daemon=True)
-                self.worker.start()
-        self.queue.put(job)
+        # A new window must not wait behind a slow decision (a stat the shell is slow to answer):
+        # arming has a thread of its own, and decisions a few.
+        self.arming = futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="file-arm")
+        self.deciding = futures.ThreadPoolExecutor(max_workers=DECIDERS, thread_name_prefix="file-fence")
 
     def paused(self, session, params):
         """A request the browser holds, from the reader's thread: queued, never decided here."""
-        self._put(lambda: self._decide(session, params))
+        self.deciding.submit(self._decide, session, params)
 
     def arm(self, session, target, waiting, done):
         """A target the browser attached us to, from the reader's thread: a page (`target`) gets
         the fence, and only then, if the browser holds it at its start (`waiting`), is let run, so
         its first request is already decided here. `done` is called once the fence is up. A page
         that cannot be fenced is closed rather than let run."""
-        self._put(lambda: self._arm(session, target, waiting, done))
-
-    def _run(self):
-        while True:
-            try:
-                self.queue.get()()
-            except Exception:  # noqa: BLE001 - the browser went away: nobody is left to answer
-                pass
+        self.arming.submit(self._arm, session, target, waiting, done)
 
     def _arm(self, session, target, waiting, done):
         if target:

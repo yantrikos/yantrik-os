@@ -18,11 +18,11 @@ import urllib.error
 import urllib.request
 
 from . import fence, ports
+from .pagelog import console_entry, exception_entry, log_entry
 
 WORLD = "yantrik-browser"
 CALL_TIMEOUT = 20.0
 CONSOLE_KEEP = 80          # console lines kept per tab: errors, warnings, logs and uncaught exceptions
-CONSOLE_LINE = 600         # characters kept of one line
 
 # The reader, in the order its parts build on each other; evaluated as one expression.
 SCRIPTS = ("page.js", "watch.js")
@@ -48,84 +48,18 @@ class CdpError(Exception):
     """The browser refused a command."""
 
 
-def _line(text, cap=CONSOLE_LINE):
-    """One line of a page's words: whitespace (newlines included) folded to single spaces, other
-    control characters dropped, and cut at `cap`. A page's console is the page's to write, and a
-    newline in it would start a line of its own in whatever reads this back — a fake fence, a
-    fake instruction. So nothing a page writes ever reaches a reader as more than one line."""
-    text = "".join(c for c in str(text or "") if c.isprintable() or c in " \t\n\r")
-    text = " ".join(text.split())
-    return text if len(text) <= cap else text[:cap - 1] + "…"
-
-
-def _place(url, line, column):
-    """`url:line:col` as a person reads it (DevTools counts from 0; editors from 1)."""
-    if not url and line is None:
-        return ""
-    out = str(url or "")
-    if isinstance(line, int):
-        out += ":%d" % (line + 1)
-        if isinstance(column, int):
-            out += ":%d" % (column + 1)
-    return out
-
-
-def _value_of(arg):
-    """One console argument (a RemoteObject) as text."""
-    if "value" in arg:
-        v = arg["value"]
-        return v if isinstance(v, str) else json.dumps(v)
-    if arg.get("unserializableValue"):
-        return str(arg["unserializableValue"])
-    return str(arg.get("description") or arg.get("type") or "")
-
-
-def exception_entry(details):
-    """A `Runtime.exceptionThrown`: "Uncaught SyntaxError: Unexpected token ';'" and where."""
-    exc = details.get("exception") or {}
-    described = str(exc.get("description") or "").splitlines()
-    head = described[0] if described else str(exc.get("value") or "")
-    text = " ".join(w for w in (str(details.get("text") or "").strip(), head) if w)
-    url, line, col = details.get("url"), details.get("lineNumber"), details.get("columnNumber")
-    frames = (details.get("stackTrace") or {}).get("callFrames") or []
-    if not url and frames:
-        url, line, col = frames[0].get("url"), frames[0].get("lineNumber"), frames[0].get("columnNumber")
-    return {"level": "error", "kind": "exception", "text": _line(text or "an uncaught exception"),
-            "at": _line(_place(url, line, col), 300)}
-
-
-CONSOLE_LEVELS = {"error": "error", "assert": "error", "warning": "warning"}
-
-
-def console_entry(p):
-    """A `Runtime.consoleAPICalled`: console.error / warn / log / info / debug and the rest, or
-    None for the calls that say nothing (clear, group ends, timers, profiles)."""
-    kind = str(p.get("type") or "log")
-    if kind in ("clear", "endGroup", "startGroup", "startGroupCollapsed", "profile", "profileEnd",
-                "timeEnd", "count"):
-        return None
-    text = " ".join(_value_of(a) for a in (p.get("args") or []) if isinstance(a, dict))
-    frames = (p.get("stackTrace") or {}).get("callFrames") or []
-    at = _place(frames[0].get("url"), frames[0].get("lineNumber"), frames[0].get("columnNumber")) if frames else ""
-    return {"level": CONSOLE_LEVELS.get(kind, "log"), "kind": "console." + kind,
-            "text": _line(text), "at": _line(at, 300)}
-
-
-def log_entry(entry):
-    """A `Log.entryAdded`: the browser's own report about the page — a resource that failed to
-    load (404), a security or deprecation notice — with the resource it is about."""
-    level = str(entry.get("level") or "info")
-    text = str(entry.get("text") or "")
-    source = str(entry.get("source") or "browser")
-    at = _place(entry.get("url"), entry.get("lineNumber"), None)
-    return {"level": {"error": "error", "warning": "warning"}.get(level, "log"),
-            "kind": "browser." + source, "text": _line(text), "at": _line(at, 300)}
-
-
 def _holds_file_frame(tree):
     """Whether a frame tree has a `file:` frame anywhere in it."""
     return (str((tree.get("frame") or {}).get("url", "")).lower().startswith("file:")
             or any(_holds_file_frame(child) for child in tree.get("childFrames") or []))
+
+
+def _may_have_drawn_file(tab, tree):
+    """Whether a page the browser did not hold at its start may have drawn something from a `file:`
+    URL: a `file:` frame, or a document that is no site's own (a window with an opener, an about:,
+    blob: or data: page), whose image, style or object is no frame."""
+    url = str((tree.get("frame") or {}).get("url", "")).lower()
+    return bool(tab.opened_by) or url.startswith(("about:", "blob:", "data:")) or _holds_file_frame(tree)
 
 
 def short(target_id):
@@ -170,13 +104,17 @@ class Tab:
 
 
 class Browser:
-    def __init__(self, address=None):
+    def __init__(self, address=None, held_at_start=True):
         # Mind View's browser unless told otherwise, and no environment variable moves it: where a
         # browser is, is decided in ports.py and nowhere a process's environment reaches.
         self.address = (address or ports.address(ports.MIND_VIEW_PORT)).rstrip("/")
         # Called before a connection is opened and again once it is, to hold it to the browser it
         # was made for (driver.py); it raises to stop. None where the caller owns the browser.
         self.check = None
+        # Mind View's browser holds every page target at its start and fences it (fence.py). The
+        # person's does not: it fences only the tabs the surface drives, with the person's rule, and
+        # never closes or holds a window of theirs.
+        self.held_at_start = held_at_start
         self.ws = None
         self.lock = threading.Lock()          # one writer
         self.cond = threading.Condition()     # replies and events
@@ -239,8 +177,9 @@ class Browser:
         self.call("Target.setDiscoverTargets", {"discover": True})
         # Every page target, ours or one a page opens, is held at its start until its fence is up
         # (fence.py): no request of it, and no frame it writes, is made before the fence decides it.
-        self.call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True,
-                                           "filter": [{"type": "page"}, {"exclude": True}]})
+        if self.held_at_start:
+            self.call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
+                                               "flatten": True, "filter": [{"type": "page"}, {"exclude": True}]})
         for info in self.call("Target.getTargets").get("targetInfos", []):
             self._saw_target(info)
 
@@ -354,9 +293,10 @@ class Browser:
         self.fence.arm(session, tab.id, waiting, tab.fenced.set)
 
     def _agent_of(self, session):
-        """Whether the tab on this session is held to an agent's rule: yes unless known not to be."""
+        """Whether the tab on this session is held to an agent's rule. On Mind View's browser, yes
+        unless known not to be. On the person's, never: no agent reaches it (guard.py)."""
         tab = self.by_session.get(session)
-        return tab is None or tab.agent is not False
+        return self.held_at_start and (tab is None or tab.agent is not False)
 
     def _event(self, msg):
         method = msg.get("method", "")
@@ -492,8 +432,9 @@ class Browser:
         is loaded again behind the fence, and waited for."""
         if tab.ready:
             return tab
-        with self.cond:        # the session auto-attach is making for a tab only just seen
-            self.cond.wait_for(lambda: tab.session or tab.attachments or not self.alive, 2.0)
+        if self.held_at_start:
+            with self.cond:    # the session auto-attach is making for a tab only just seen
+                self.cond.wait_for(lambda: tab.session or tab.attachments or not self.alive, 2.0)
         if not tab.session:
             got = self.call("Target.attachToTarget", {"targetId": tab.id, "flatten": True})
             tab.session, tab.born = got["sessionId"], False
@@ -507,7 +448,7 @@ class Browser:
             self.call(method, session=tab.session)
         tree = self.call("Page.getFrameTree", session=tab.session)["frameTree"]
         tab.main_frame = tree["frame"]["id"]
-        if not tab.born and _holds_file_frame(tree):
+        if not tab.born and (_may_have_drawn_file(tab, tree) if self.held_at_start else _holds_file_frame(tree)):
             self._reload(tab)
         tab.ready = True
         return tab
@@ -523,7 +464,8 @@ class Browser:
 
     def new_tab(self, url, agent=False):
         # A local page is opened blank and navigated once the fence is up: made with its address,
-        # it would load, and draw what it embeds, before anything could vet it.
+        # it would load, and draw what it embeds, before anything could vet it. (createTarget with a
+        # url is not held at its start: test_local_files pins that no `file:` url is ever sent to it.)
         local = str(url or "").lower().startswith("file:")
         got = self.call("Target.createTarget", {"url": "about:blank" if local else url or "about:blank"})
         deadline = time.monotonic() + 5

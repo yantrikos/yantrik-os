@@ -264,6 +264,12 @@ class PopupsAndOwnersAreFenced(unittest.TestCase):
             with open(os.path.join(cls.home, "site", "lazy-%s.html" % name), "w") as f:     # a frame inserted later
                 f.write("<p>waiting</p><script>setTimeout(() => { document.body.insertAdjacentHTML("
                         "'beforeend', '<iframe src=%s style=%s></iframe>'); }, 1200);</script>" % (url, FRAME))
+        for n in range(6):
+            with open(os.path.join(cls.home, "site", "f%d.html" % n), "w") as f:
+                f.write("<p>frame %d</p>" % n)
+        with open(os.path.join(cls.home, "site", "many.html"), "w") as f:      # six frames, a moment after it loads
+            f.write("<p>many</p><script>setTimeout(() => { for (let n = 0; n < 6; n++) document.body.insertAdjacentHTML("
+                    "'beforeend', '<iframe src=f' + n + '.html></iframe>'); }, 1200);</script>")
         os.link(os.path.join(cls.home, ".ssh", "key.html"), os.path.join(cls.home, "site", "hl.html"))
         cls.agent = {"is": True}
         cls.patches = [mock.patch.object(home_files, "agent_is_calling", lambda: cls.agent["is"]),
@@ -272,9 +278,14 @@ class PopupsAndOwnersAreFenced(unittest.TestCase):
             patch.start()
         cls.d = drv.Driver(Bench.d.sides.fixed, judge=False, home=lambda: cls.home)    # the OS's own rule
 
+    stat_delay = 0.0
+    stats = 0
+
     @staticmethod
     def shell_stat(asked):
-        """The shell's answer: a protected place is `/vault/`, whatever else is a file."""
+        """The shell's answer, after `stat_delay`: a protected place is `/vault/`, whatever else is a file."""
+        PopupsAndOwnersAreFenced.stats += 1
+        time.sleep(PopupsAndOwnersAreFenced.stat_delay)
         return {"exists": "unknown", "reason": "protected_place"} if "/vault/" in asked else {"exists": True, "kind": "file"}
 
     @classmethod
@@ -327,6 +338,33 @@ class PopupsAndOwnersAreFenced(unittest.TestCase):
         finally:
             self.agent["is"] = True
             self.d.close_tab(self.d.browser.active.id)
+
+    def test_a_new_window_does_not_wait_behind_a_slow_stat(self):
+        """G: the shell is slow to say whether an agent may read a file; a window opened meanwhile
+        (nothing local in it) is ready at once, not after every request queued ahead of it."""
+        self.d.go(self.home + "/site/many.html")
+        type(self).stat_delay = 3.0
+        try:
+            asked = type(self).stats
+            while type(self).stats == asked:   # the six frames are asked for now: 18 s of stats in a row
+                time.sleep(0.1)
+            began = time.monotonic()
+            self.d.go(Bench.site + "/pages/blue.html", new_tab=True)
+            took = time.monotonic() - began
+        finally:
+            type(self).stat_delay = 0.0
+        self.assertLess(took, 2.5, "a new window waited %.1f s behind the stats" % took)
+        self.d.close_tab(self.d.browser.active.id)
+        time.sleep(7.0)                        # let the stats in flight finish before the next test
+
+    def test_a_new_tab_is_never_made_with_a_file_url(self):
+        """J: createTarget with a url is not held at its start; the driver opens blank and navigates."""
+        browser = Bench.d.sides.fixed
+        with mock.patch.object(browser, "call", wraps=browser.call) as spy:
+            self.d.go(self.home + "/site/pop-outside.html", new_tab=True)
+        made = [c.args[1]["url"] for c in spy.call_args_list if c.args[0] == "Target.createTarget"]
+        self.assertEqual(made, ["about:blank"])
+        self.d.close_tab(browser.active.id)
 
     def test_a_file_with_another_name_is_not_opened(self):
         with self.assertRaises(drv.PageRefused) as caught:

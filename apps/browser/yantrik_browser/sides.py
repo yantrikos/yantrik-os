@@ -17,7 +17,7 @@ class Sides:
         never checked. Otherwise a browser per side on its port, checked by `check` (a Guard)."""
         self.fixed, self.guard = fixed, (None if fixed is not None else (check or guard.Guard()))
         self.browsers = ({ports.PERSON: fixed, ports.MIND: fixed} if fixed is not None else
-                         {side: cdp.Browser(ports.address(ports.port_of(side)))
+                         {side: cdp.Browser(ports.address(ports.port_of(side)), held_at_start=(side == ports.MIND))
                           for side in (ports.PERSON, ports.MIND)})
         self.bound = {}                 # side -> the listener its connection was made to
         self.last = {ports.PERSON: {"open": False}, ports.MIND: {"open": False}}
