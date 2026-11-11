@@ -107,8 +107,8 @@ Not a chatbot. A proactive agent with:
 - **Pluggable minds** — the built-in companion is one harness among several. Anything that
   speaks the attach protocol can answer instead, managing its own endpoint and credentials.
   Five exist: Yantrik Mind, Hermes Agent, Pi, DeepSeek and OpenClaw — the last four ship as
-  source in `harnesses/`. Hermes is set up after the first run; Pi, DeepSeek and OpenClaw are not
-  started until you configure them. See
+  source in `harnesses/`. Hermes is set up once a model is chosen in the first run; Pi, DeepSeek and
+  OpenClaw are not started until you configure them. See
   [docs/harness.md](docs/harness.md).
 - **YAML plugins** — add tools without writing Rust
 
@@ -417,8 +417,10 @@ yantrik-os/
   service; your search terms, to your own SearXNG or else DuckDuckGo), whose Allow button turns
   it on (an answer of No is remembered, and Settings, under Minds, turns background research
   off again or asks again). No bypass mode skips those cards, or the card before a problem
-  report is sent. Finishing the first run sets up Hermes, the default mind, about 3 GB from
-  GitHub and Python's package index, which then keeps itself up to date. You can
+  report is sent. Choosing a model in the first run sets up Hermes, the default mind, about 3 GB
+  from GitHub and Python's package index (the first-run screen says so before you choose, and
+  when the installer carried your choice nothing is downloaded until that screen has shown it),
+  which then keeps itself up to date. You can
   also turn location lookups on yourself by putting `on` in `~/.config/yantrik/location-lookup`
   (a file you own, mode 600, in a directory you own that neither other users nor the
   `yantrik-minds` group can write); anything running as you can write that file too, so `yos
@@ -430,8 +432,8 @@ yantrik-os/
   while it is your chosen model), another mind you install (which keeps itself up to date, and which we
   ask not to report usage with `DO_NOT_TRACK=1`), your weather (from a public weather service, for a place you or
   the companion name), mail, calendar and connectors, and a problem
-  report you chose to send. Code the companion runs for you has no network unless you ask for
-  one in your own turn. Installing the packages a script needs is a web fetch, and so is a call
+  report you chose to send. Its code runner has no network unless you ask for one in your
+  own turn (the terminal, above, is not the code runner). Installing the packages a script needs is a web fetch, and so is a call
   to a tool server you add, so neither happens with nobody there. When an app crashes or fails, the desktop writes a
   record locally (`~/.local/share/yantrik/problems/`) with your home path, your user name and common key and
   token shapes removed; other things a log line happens to contain, such as host names,
