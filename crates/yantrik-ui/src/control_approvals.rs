@@ -4034,12 +4034,7 @@ mod grant_spends_tests {
 
         // The kernel's account of this call: the peer is this test process, and it carries the
         // stolen token beside `args` the way every agent call does.
-        let _who = CallerScope::enter(Some(Caller {
-            pid: std::process::id() as i32,
-            uid: super::own_uid(),
-            gid: 0,
-            the_mind: false,
-        }));
+        let _who = CallerScope::enter(Some(Caller { pid: std::process::id() as i32, uid: super::own_uid(), gid: 0, the_mind: false }));
         let _token = AgentTokenScope::enter(Some("t-victim-182".into()));
 
         // It writes the harness pid among the arguments. Nothing about this socket peer is a
@@ -4070,12 +4065,7 @@ mod grant_spends_tests {
         let table = Arc::new(TokenTable::new());
         table.issue("t-fwd-182", crate::agents::AgentId::new("pi", "c-fwd-182"), Some(999_998));
         install_resolver(table);
-        let _who = CallerScope::enter(Some(Caller {
-            pid: std::process::id() as i32,
-            uid: super::own_uid(),
-            gid: 0,
-            the_mind: false,
-        }));
+        let _who = CallerScope::enter(Some(Caller { pid: std::process::id() as i32, uid: super::own_uid(), gid: 0, the_mind: false }));
         let _token = AgentTokenScope::enter(Some("t-fwd-182".into()));
         let args = serde_json::json!({ "caller_pid": 999_998 });
 
