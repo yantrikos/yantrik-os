@@ -99,14 +99,20 @@ pub fn debugging_flags(port: u16) -> Vec<String> {
     ]
 }
 
-/// What makes a Chromium-family browser the browser of `side`: its port and its origin, and for
-/// Mind View's its own `--user-data-dir`. The person's names no profile: it runs on its default
-/// one, so nothing of theirs changes and Chrome 136+ keeps DevTools on.
+/// The switch that gives a Chromium its DevTools over fds 3 (it reads) and 4 (it writes) and
+/// opens no port (#1137). The person's Browser runs with this and with nothing else of DevTools.
+pub const PIPE_FLAG: &str = "--remote-debugging-pipe";
+
+/// What makes a Chromium-family browser the browser of `side`. Mind View's: its port, its origin
+/// and its own `--user-data-dir`. The person's: the pipe, no port at all (so nothing of theirs
+/// listens on TCP, and `PERSON_PORT` is only the number an older build used), and no profile: it
+/// runs on its default one, so nothing of theirs changes and Chrome 136+ keeps DevTools on.
 pub fn launch_flags(side: Side) -> Vec<String> {
-    let mut flags = debugging_flags(side.port());
-    if side == Side::MindView {
-        flags.push(format!("--user-data-dir={}", mind_view_profile().display()));
+    if side == Side::Person {
+        return vec![PIPE_FLAG.into()];
     }
+    let mut flags = debugging_flags(side.port());
+    flags.push(format!("--user-data-dir={}", mind_view_profile().display()));
     flags
 }
 
@@ -214,8 +220,8 @@ mod tests {
     #[test]
     fn the_persons_launch_names_no_profile_and_mind_views_its_own() {
         let person = launch_flags(Side::Person);
-        assert!(person.contains(&format!("--remote-debugging-port={PERSON_PORT}")));
-        assert!(!person.iter().any(|f| f.starts_with("--user-data-dir")), "{person:?}");
+        assert_eq!(person, vec![PIPE_FLAG.to_string()], "the pipe and nothing else of DevTools");
+        assert!(!person.iter().any(|f| f.contains("port") || f.contains("9222")), "{person:?}");
         let mind = launch_flags(Side::MindView);
         assert!(mind.contains(&format!("--remote-debugging-port={MIND_VIEW_PORT}")));
         assert!(mind.contains(&format!("--remote-allow-origins=http://127.0.0.1:{MIND_VIEW_PORT}")));
