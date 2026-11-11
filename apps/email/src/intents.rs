@@ -108,12 +108,18 @@ pub fn table(table: &mut Intents<Email>) {
             .risk("standard")
             .arg(Param::text("to"))
             .arg(Param::text("subject"))
-            .arg(Param::text("body")),
+            .arg(Param::text("body"))
+            .arg(
+                Param::text("attach")
+                    .optional()
+                    .describe("Absolute path of a file to attach to the draft. A draft with a file attached cannot be sent from here yet"),
+            ),
             |a| {
                 Ok(Command::Compose {
                     to: arg_text(a, "to"),
                     subject: arg_text(a, "subject"),
                     body: arg_text(a, "body"),
+                    attach: arg_text(a, "attach"),
                 })
             },
         )

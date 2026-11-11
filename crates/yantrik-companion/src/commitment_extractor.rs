@@ -10,6 +10,7 @@
 
 use std::sync::OnceLock;
 use regex::Regex;
+use crate::commitment_files;
 use crate::world_model::{
     Commitment, CommitmentSource, CommitmentStatus,
 };
@@ -19,7 +20,7 @@ use crate::world_model::{
 fn re_first_person() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(
-        r"(?i)\b(?:I'?ll|I\s+will|I'?m\s+going\s+to|I\s+need\s+to|I\s+have\s+to|I\s+should|I\s+must|I\s+plan\s+to|I\s+promise\s+to|let\s+me)\s+(.{10,120})"
+        r"(?i)\b(?:I'?ll|I\s+will|I'?m\s+going\s+to|I\s+need\s+to|I\s+have\s+to|I\s+should|I\s+must|I\s+plan\s+to|I\s+promise\s+to|let\s+me)\s+(.{10,120})|\bI'?m\s+((?:sending|emailing|forwarding|sharing)\s+.{10,120})"
     ).unwrap())
 }
 
@@ -61,14 +62,14 @@ fn re_deadline_stmt() -> &'static Regex {
 fn re_deadline_extract() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(
-        r"(?i)(?:by|before|due|until|no\s+later\s+than)\s+(tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|end\s+of\s+(?:day|week|month)|this\s+(?:afternoon|evening|week)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}(?:\s*,?\s*\d{4})?|\d{1,2}[/\-]\d{1,2})"
+        r"(?i)(?:(?:by|before|due|until|no\s+later\s+than)\s+(tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+week|end\s+of\s+(?:day|week|month)|this\s+(?:afternoon|evening|week)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}(?:\s*,?\s*\d{4})?|\d{1,2}[/\-]\d{1,2})|\bon\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)"
     ).unwrap())
 }
 
 fn re_promisee() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(
-        r"(?i)(?:send|give|tell|email|message|call|update|notify|inform|show|share\s+with|get\s+back\s+to)\s+(\w+)"
+        r"(?i)(?:send(?:ing)?|give|tell|email(?:ing)?|message|call|update|notify|inform|show|share\s+with|forward(?:ing)?|get\s+back\s+to)\s+(\w+)"
     ).unwrap())
 }
 
@@ -84,6 +85,9 @@ fn re_sentence_split() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"[.!?]+\s+|\n+").unwrap())
 }
 
+/// Five in the afternoon, in seconds from the start of a day: when a weekday deadline falls.
+const WORKDAY_END_SECS: f64 = 61200.0;
+
 // ── Types ───────────────────────────────────────────────────────────
 
 /// A raw extracted commitment before storage.
@@ -96,6 +100,8 @@ pub struct ExtractedCommitment {
     pub deadline_ts: f64,
     pub confidence: f64,
     pub evidence: String,
+    /// The files the commitment names, as `commitment_files` stores them.
+    pub files: Vec<String>,
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -104,25 +110,35 @@ pub struct ExtractedCommitment {
 pub fn extract_commitments(
     text: &str,
     user_name: &str,
+    source: &CommitmentSource,
+) -> Vec<ExtractedCommitment> {
+    extract_commitments_at(text, user_name, source, now_ts())
+}
+
+/// [`extract_commitments`] at a given moment: a deadline like "Thursday" is the next Thursday
+/// after `now`.
+pub fn extract_commitments_at(
+    text: &str,
+    user_name: &str,
     _source: &CommitmentSource,
+    now: f64,
 ) -> Vec<ExtractedCommitment> {
     let mut results = Vec::new();
+    let sentences = split_sentences(text);
 
-    for sentence in split_sentences(text) {
+    for sentence in &sentences {
         let s = sentence.trim();
         if s.len() < 10 {
             continue;
         }
 
-        if let Some(c) = match_first_person_promise(s, user_name) {
-            results.push(c);
-        } else if let Some(c) = match_action_item(s, user_name) {
-            results.push(c);
-        } else if let Some(c) = match_request_promise(s, user_name) {
-            results.push(c);
-        } else if let Some(c) = match_follow_up(s, user_name) {
-            results.push(c);
-        } else if let Some(c) = match_deadline_statement(s, user_name) {
+        let found = match_first_person_promise(s, user_name, now)
+            .or_else(|| match_action_item(s, user_name, now))
+            .or_else(|| match_request_promise(s, user_name, now))
+            .or_else(|| match_follow_up(s, user_name, now))
+            .or_else(|| match_deadline_statement(s, user_name, now));
+        if let Some(mut c) = found {
+            c.files = commitment_files::for_commitment(s, &sentences);
             results.push(c);
         }
     }
@@ -150,7 +166,7 @@ pub fn to_world_model_commitments(
             confidence: e.confidence,
             source: source.clone(),
             evidence_text: e.evidence.clone(),
-            related_entities: vec![],
+            related_entities: e.files.clone(),
             created_at: now,
             updated_at: now,
             completion_evidence: None,
@@ -160,12 +176,12 @@ pub fn to_world_model_commitments(
 
 // ── Pattern Matchers ────────────────────────────────────────────────
 
-fn match_first_person_promise(sentence: &str, user_name: &str) -> Option<ExtractedCommitment> {
+fn match_first_person_promise(sentence: &str, user_name: &str, now: f64) -> Option<ExtractedCommitment> {
     let caps = re_first_person().captures(sentence)?;
-    let action = clean_action(caps.get(1)?.as_str().trim());
+    let action = clean_action(caps.get(1).or_else(|| caps.get(2))?.as_str().trim());
     if is_excluded_action(&action) { return None; }
 
-    let deadline = extract_deadline(sentence);
+    let deadline = extract_deadline(sentence, now);
     Some(ExtractedCommitment {
         action,
         promisor: Some(user_name.to_string()),
@@ -174,10 +190,11 @@ fn match_first_person_promise(sentence: &str, user_name: &str) -> Option<Extract
         deadline_ts: deadline.1,
         confidence: 0.75,
         evidence: sentence.to_string(),
+        files: Vec::new(),
     })
 }
 
-fn match_action_item(sentence: &str, user_name: &str) -> Option<ExtractedCommitment> {
+fn match_action_item(sentence: &str, user_name: &str, now: f64) -> Option<ExtractedCommitment> {
     let action = if let Some(caps) = re_action_item().captures(sentence) {
         caps.get(1)?.as_str().trim().to_string()
     } else if let Some(caps) = re_checkbox().captures(sentence) {
@@ -189,7 +206,7 @@ fn match_action_item(sentence: &str, user_name: &str) -> Option<ExtractedCommitm
     let action = clean_action(&action);
     if is_excluded_action(&action) { return None; }
 
-    let deadline = extract_deadline(sentence);
+    let deadline = extract_deadline(sentence, now);
     Some(ExtractedCommitment {
         action,
         promisor: Some(user_name.to_string()),
@@ -198,15 +215,16 @@ fn match_action_item(sentence: &str, user_name: &str) -> Option<ExtractedCommitm
         deadline_ts: deadline.1,
         confidence: 0.85,
         evidence: sentence.to_string(),
+        files: Vec::new(),
     })
 }
 
-fn match_request_promise(sentence: &str, user_name: &str) -> Option<ExtractedCommitment> {
+fn match_request_promise(sentence: &str, user_name: &str, now: f64) -> Option<ExtractedCommitment> {
     let caps = re_request().captures(sentence)?;
     let action = clean_action(caps.get(1)?.as_str().trim());
     if is_excluded_action(&action) { return None; }
 
-    let deadline = extract_deadline(sentence);
+    let deadline = extract_deadline(sentence, now);
     Some(ExtractedCommitment {
         action,
         promisor: Some(user_name.to_string()),
@@ -215,15 +233,16 @@ fn match_request_promise(sentence: &str, user_name: &str) -> Option<ExtractedCom
         deadline_ts: deadline.1,
         confidence: 0.60,
         evidence: sentence.to_string(),
+        files: Vec::new(),
     })
 }
 
-fn match_follow_up(sentence: &str, user_name: &str) -> Option<ExtractedCommitment> {
+fn match_follow_up(sentence: &str, user_name: &str, now: f64) -> Option<ExtractedCommitment> {
     let caps = re_follow_up().captures(sentence)?;
     let action = clean_action(caps.get(1)?.as_str().trim());
     if is_excluded_action(&action) { return None; }
 
-    let deadline = extract_deadline(sentence);
+    let deadline = extract_deadline(sentence, now);
     Some(ExtractedCommitment {
         action: format!("Follow up: {}", action),
         promisor: Some(user_name.to_string()),
@@ -232,10 +251,11 @@ fn match_follow_up(sentence: &str, user_name: &str) -> Option<ExtractedCommitmen
         deadline_ts: deadline.1,
         confidence: 0.70,
         evidence: sentence.to_string(),
+        files: Vec::new(),
     })
 }
 
-fn match_deadline_statement(sentence: &str, user_name: &str) -> Option<ExtractedCommitment> {
+fn match_deadline_statement(sentence: &str, user_name: &str, now: f64) -> Option<ExtractedCommitment> {
     let caps = re_deadline_stmt().captures(sentence)?;
     let action = clean_action(caps.get(1)?.as_str().trim());
     let deadline_text = caps.get(2)?.as_str().trim();
@@ -247,9 +267,10 @@ fn match_deadline_statement(sentence: &str, user_name: &str) -> Option<Extracted
         promisor: Some(user_name.to_string()),
         promisee: None,
         deadline_text: Some(deadline_text.to_string()),
-        deadline_ts: parse_deadline_text(deadline_text),
+        deadline_ts: parse_deadline_text(deadline_text, now),
         confidence: 0.80,
         evidence: sentence.to_string(),
+        files: Vec::new(),
     })
 }
 
@@ -284,18 +305,17 @@ fn is_excluded_action(action: &str) -> bool {
     EXCLUDED.iter().any(|e| lower.contains(e))
 }
 
-fn extract_deadline(sentence: &str) -> (Option<String>, f64) {
+fn extract_deadline(sentence: &str, now: f64) -> (Option<String>, f64) {
     if let Some(caps) = re_deadline_extract().captures(sentence) {
-        let text = caps.get(1).map(|m| m.as_str().to_string());
-        let ts = text.as_deref().map(parse_deadline_text).unwrap_or(0.0);
+        let text = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str().to_string());
+        let ts = text.as_deref().map(|t| parse_deadline_text(t, now)).unwrap_or(0.0);
         (text, ts)
     } else {
         (None, 0.0)
     }
 }
 
-fn parse_deadline_text(text: &str) -> f64 {
-    let now = now_ts();
+fn parse_deadline_text(text: &str, now: f64) -> f64 {
     let lower = text.to_lowercase();
 
     if lower.contains("today") || lower.contains("tonight") || lower.contains("end of day") {
@@ -334,7 +354,9 @@ fn parse_deadline_text(text: &str) -> f64 {
             } else {
                 7 + target - current_day
             };
-            return now + (days_ahead as f64) * 86400.0;
+            // The day, at five in the afternoon: the time a person means by "on Thursday".
+            let day_start = (now / 86400.0).floor() * 86400.0;
+            return day_start + (days_ahead as f64) * 86400.0 + WORKDAY_END_SECS;
         }
     }
 
@@ -449,6 +471,23 @@ mod tests {
         let results = extract("Can you review the design document and provide feedback");
         assert_eq!(results.len(), 1);
         assert!(results[0].confidence >= 0.5);
+    }
+
+    /// #1184: said once, on a Monday; the promisee, the Thursday and both files are kept.
+    #[test]
+    fn a_promise_to_send_a_named_file_on_a_weekday_keeps_who_when_and_which_files() {
+        let monday_10 = 20738.0 * 86400.0 + 10.0 * 3600.0;
+        let source = CommitmentSource::Conversation { turn_id: None };
+        let found = extract_commitments_at(
+            "I'm sending Maya the Q4 deck on Thursday. The numbers are in the budget spreadsheet.",
+            "Pranab",
+            &source,
+            monday_10,
+        );
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].promisee.as_deref(), Some("Maya"));
+        assert_eq!(found[0].deadline_ts, 20738.0 * 86400.0 + 3.0 * 86400.0 + WORKDAY_END_SECS);
+        assert_eq!(found[0].files, vec!["attach:Q4 deck", "file:budget spreadsheet"]);
     }
 
     #[test]

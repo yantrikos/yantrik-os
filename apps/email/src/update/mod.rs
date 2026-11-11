@@ -51,7 +51,7 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
         Command::OpenOriginal => message::open_original(m, fx),
         Command::OriginalOpened(sentence) => say(m, fx, sentence),
         Command::ComposeNew => compose::compose_new(m, fx),
-        Command::Compose { to, subject, body } => compose::compose(m, to, subject, body, fx),
+        Command::Compose { to, subject, body, attach } => compose::compose(m, to, subject, body, attach, fx),
         Command::Reply { all } => compose::reply(m, all, fx),
         Command::Forward => compose::forward(m, fx),
         Command::Edited { text, query } => {

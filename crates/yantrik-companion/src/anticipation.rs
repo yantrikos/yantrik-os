@@ -80,6 +80,8 @@ pub enum PreparedKind {
     DraftReply,
     /// Commitment status summary.
     CommitmentSummary,
+    /// A promised thing carried out: files opened in Mind View, the email drafted. Never sent.
+    CommitmentPrep,
     /// Offline content bundle.
     OfflineBundle,
     /// Workspace suggestion.
@@ -95,6 +97,7 @@ impl PreparedKind {
             Self::StagedFiles => "staged_files",
             Self::DraftReply => "draft_reply",
             Self::CommitmentSummary => "commitment_summary",
+            Self::CommitmentPrep => "commitment_prep",
             Self::OfflineBundle => "offline_bundle",
             Self::WorkspaceSuggestion => "workspace_suggestion",
             Self::ContextSummary => "context_summary",
@@ -106,6 +109,7 @@ impl PreparedKind {
             "staged_files" => Self::StagedFiles,
             "draft_reply" => Self::DraftReply,
             "commitment_summary" => Self::CommitmentSummary,
+            "commitment_prep" => Self::CommitmentPrep,
             "offline_bundle" => Self::OfflineBundle,
             "workspace_suggestion" => Self::WorkspaceSuggestion,
             _ => Self::ContextSummary,
@@ -195,7 +199,11 @@ impl AnticipationEngine {
 
     /// Get items that are currently relevant (relevant_at <= now < expires_at, not surfaced).
     pub fn get_relevant(conn: &Connection) -> Vec<PreparedItem> {
-        let now = now_ts();
+        Self::get_relevant_at(conn, now_ts())
+    }
+
+    /// [`Self::get_relevant`] as of `now`.
+    pub fn get_relevant_at(conn: &Connection, now: f64) -> Vec<PreparedItem> {
         let mut stmt = match conn.prepare(
             "SELECT id, trigger_type, trigger_data, kind, description, data,
                     relevant_at, expires_at, surfaced, outcome, created_at
@@ -211,6 +219,21 @@ impl AnticipationEngine {
             .ok()
             .map(|rows| rows.flatten().collect())
             .unwrap_or_default()
+    }
+
+    /// The item prepared for this commitment, if one was: what keeps a commitment from being
+    /// prepared twice, whether or not the person has seen the first yet.
+    pub fn for_commitment(conn: &Connection, commitment_id: &str) -> Option<PreparedItem> {
+        let trigger = PreparationTrigger::CommitmentDeadline { commitment_id: commitment_id.to_string() };
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, trigger_type, trigger_data, kind, description, data,
+                        relevant_at, expires_at, surfaced, outcome, created_at
+                 FROM prepared_items WHERE trigger_type = ?1 AND trigger_data = ?2 LIMIT 1",
+            )
+            .ok()?;
+        let trigger_data = serde_json::to_string(&trigger).ok()?;
+        stmt.query_row(params![trigger.type_tag(), trigger_data], Self::row_to_item).ok()
     }
 
     /// Mark an item as surfaced.

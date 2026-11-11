@@ -959,7 +959,11 @@ impl WorldModel {
 
     /// Get commitments approaching deadline (within `hours` hours from now).
     pub fn approaching_deadlines(conn: &Connection, hours: f64) -> Vec<Commitment> {
-        let now = now_ts();
+        Self::approaching_deadlines_at(conn, hours, now_ts())
+    }
+
+    /// [`Self::approaching_deadlines`] as of `now`.
+    pub fn approaching_deadlines_at(conn: &Connection, hours: f64, now: f64) -> Vec<Commitment> {
         let cutoff = now + hours * 3600.0;
         Self::query_commitments_params(
             conn,
@@ -968,6 +972,11 @@ impl WorldModel {
              ORDER BY deadline ASC",
             params![cutoff, now],
         )
+    }
+
+    /// One commitment by id, whatever its status.
+    pub fn commitment(conn: &Connection, id: i64) -> Option<Commitment> {
+        Self::query_commitments_params(conn, "WHERE id = ?1", params![id]).into_iter().next()
     }
 
     /// Get overdue commitments.

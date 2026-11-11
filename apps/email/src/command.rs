@@ -188,7 +188,7 @@ pub enum Command {
     // ── Writing ──
     ComposeNew,
     /// `compose`: the composer opened as Compose opens it, then these three filled in.
-    Compose { to: String, subject: String, body: String },
+    Compose { to: String, subject: String, body: String, attach: String },
     Reply { all: bool },
     Forward,
     /// The window's own edits: the composer and the search box.

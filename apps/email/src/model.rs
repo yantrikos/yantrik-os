@@ -163,6 +163,10 @@ pub struct Composer {
     /// The draft file as it was last read or written: what Compose reopens. An error is a file
     /// that is there and could not be read, said when Compose is pressed.
     pub kept: Result<Option<Draft>, String>,
+    /// Files a Mind's `compose` attached to this draft, by path. The draft file and the window's
+    /// fields do not carry them, and the mail service cannot send them, so a draft that has any is
+    /// never sent from here: it is said, and nothing goes.
+    pub attachments: Vec<String>,
     /// What is being sent, while a send is in flight: the window says so, a second press cannot
     /// send the message twice, and an edit made meanwhile is told apart from what went.
     pub sending: Option<Draft>,
@@ -350,6 +354,7 @@ impl Model {
                 text: Draft::default(),
                 status: String::new(),
                 kept,
+                attachments: Vec::new(),
                 sending: None,
                 unsent_at_start: None,
                 kept_unsure: false,

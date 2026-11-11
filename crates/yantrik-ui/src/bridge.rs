@@ -2085,15 +2085,7 @@ fn worker_loop(
 
                         let approaching = yantrik_companion::world_model::WorldModel::approaching_deadlines(&companion.db.conn(), 24.0);
                         for c in &approaching {
-                            triggers.push(serde_json::json!({
-                                "trigger_type": "commitment_approaching",
-                                "commitment_id": c.id,
-                                "action": c.action,
-                                "promisor": c.promisor,
-                                "promisee": c.promisee,
-                                "deadline": c.deadline,
-                                "urgency": 0.6,
-                            }));
+                            triggers.push(yantrik_companion::commitment_prep::approaching_trigger(c));
                             event_bus.emit(
                                 yantrik_os::EventKind::CommitmentAlert {
                                     commitment_id: c.id.to_string(),
@@ -2357,6 +2349,23 @@ fn worker_loop(
                         reason = %spec.reason,
                         "Urge generated"
                     );
+                    // A promised thing to prepare is carried out by `commitment_prep`, not by the
+                    // model: it opens files in Mind View and drafts, and runs with the model
+                    // offline. It says nothing to the person, so the daily message budget is not
+                    // spent on it. Asked every cycle while the window is open; a commitment already
+                    // prepared is answered from its item, so it is never prepared twice.
+                    if let Some(commitment_id) = yantrik_companion::commitment_prep::commitment_to_prepare(spec) {
+                        match companion.prepare_commitment(commitment_id) {
+                            yantrik_companion::commitment_prep::Outcome::Prepared(item) => {
+                                tracing::info!(commitment_id, summary = %item.description, "Commitment prepared");
+                            }
+                            yantrik_companion::commitment_prep::Outcome::AlreadyPrepared => {}
+                            yantrik_companion::commitment_prep::Outcome::Nothing(why) => {
+                                tracing::debug!(commitment_id, why, "Commitment not prepared");
+                            }
+                        }
+                        continue;
+                    }
                     if over_budget {
                         companion.record_suppressed_urge(&spec.cooldown_key, "daily budget exceeded");
                         continue;

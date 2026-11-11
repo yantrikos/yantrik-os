@@ -14,6 +14,7 @@ use crate::{rows, Email};
 
 /// The composer opened on new text: nothing from an earlier send is pending on it.
 fn opened_on_new_text(m: &mut Model) {
+    m.composer.attachments.clear();
     m.composer.open = true;
     m.composer.unsure = false;
     m.composer.closed_during_send = false;
@@ -53,9 +54,14 @@ pub fn compose_new(m: &mut Model, fx: &mut Effects<Email>) {
 
 /// `compose`: the composer opened as Compose opens it, with these filled in. Sending is not
 /// offered on the surface on purpose: a draft can be read before it leaves, and mail that has
-/// already gone cannot be taken back.
-pub fn compose(m: &mut Model, to: String, subject: String, body: String, fx: &mut Effects<Email>) {
+/// already gone cannot be taken back. `attach`, when given, is a file the draft is to carry; it is
+/// kept with the draft, and the draft is not sent from here until the mail service can send it.
+pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach: String, fx: &mut Effects<Email>) {
     compose_new(m, fx);
+    if !attach.trim().is_empty() {
+        m.composer.attachments = vec![attach.trim().to_string()];
+        m.composer.status = ATTACHED_STATUS.into();
+    }
     m.composer.text.to = to;
     m.composer.text.subject = subject;
     m.composer.text.body = body;
@@ -69,6 +75,9 @@ pub fn compose(m: &mut Model, to: String, subject: String, body: String, fx: &mu
         }
     }
 }
+
+/// What the composer says while a draft carries a file the mail service cannot send.
+const ATTACHED_STATUS: &str = "A file is attached to this draft. Email cannot send attachments yet, so it will not be sent from here.";
 
 /// Reply, or reply to all: the composer opened on the message that is open. None of this needs a
 /// network call; the message is already on screen.
@@ -103,6 +112,10 @@ pub fn send(m: &mut Model, mail: Draft, fx: &mut Effects<Email>) {
     }
     if m.composer.sending.is_some() {
         return say(m, fx, "A message is already being sent; wait for it before sending again.");
+    }
+    if !m.composer.attachments.is_empty() {
+        // A message that went without the file it promised is worse than one that did not go.
+        return say(m, fx, "Not sent: this draft has a file attached and Email cannot send attachments yet. The draft is kept.");
     }
     m.composer.sending = Some(mail.clone());
     m.composer.text = mail.clone();

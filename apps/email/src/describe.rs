@@ -150,6 +150,7 @@ pub fn view(m: &Model) -> View {
         )
         .with("listed", shown.len())
         .with("composing", m.composer.open)
+        .with("draft_attachments", m.composer.attachments.clone())
         .with("search_query", m.search.query.clone())
         .with("open_message", open)
         .with("folders", Value::Array(folder_rows))

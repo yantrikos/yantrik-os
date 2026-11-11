@@ -181,7 +181,7 @@ fn the_composer_in_a_mind_view_window_does_not_show_the_saved_draft() {
     quiet(&app);
     assert!(!window_text(&app).contains(SENTINEL), "{}", window_text(&app));
     // The compose call fills the composer and the kept Cc and Bcc must not stay on screen.
-    app.run(Command::Compose { to: "m@x".into(), subject: "hi".into(), body: "there".into() });
+    app.run(Command::Compose { to: "m@x".into(), subject: "hi".into(), body: "there".into(), attach: String::new() });
     quiet(&app);
     let text = window_text(&app);
     assert!(!text.contains(SENTINEL), "{text}");
@@ -203,7 +203,7 @@ fn a_mind_view_window_does_not_write_the_person_s_draft_when_it_ends() {
     for for_mind in [false, true] {
         let (app, file, draft) = with_draft_kept(&mailbox(), for_mind);
         let before = std::fs::read(&file).unwrap();
-        app.run(Command::Compose { to: "m@x".into(), subject: "hi".into(), body: "there".into() });
+        app.run(Command::Compose { to: "m@x".into(), subject: "hi".into(), body: "there".into(), attach: String::new() });
         quiet(&app);
         let paths = app.paths();
         app.event(yantrik_app::app::Event::ExitRequested(yantrik_app::app::ExitReason::Logout));
