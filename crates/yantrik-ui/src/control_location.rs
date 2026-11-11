@@ -4,8 +4,9 @@
 //! An IP-based lookup tells a third party this machine's public address, so it is off until the
 //! person says so. A feature that needs a place with none known (the weather tool, asked about
 //! "here") asks with `allow_location_lookup`: this action, graded `sensitive`, whose sentence says
-//! the address cannot be taken back, which is what makes every mode but the person's full bypass
-//! raise a card (`gate::decide`, the same reading as `send_mail`) and plan mode refuse.
+//! the address cannot be taken back, which is what makes every mode raise a card (`gate::decide`, the
+//! same reading as `send_mail`) and plan mode refuse. Full bypass asks too: the action is in
+//! `gate::always_asked`, because the switch it writes outlasts the hour.
 //!
 //! Unlike `send_mail`, the shell itself acts on the Allow. The caller does not write anything:
 //! the app's dispatch runs this handler only with a grant the person's click created, and the
@@ -86,18 +87,18 @@ mod tests {
         assert!(said.contains("wttr.in") && said.contains("ipinfo.io") && said.contains("location-lookup"));
     }
 
-    /// Without the person's Allow nothing runs: every mode but full bypass asks, plan refuses,
+    /// Without the person's Allow nothing runs: every mode asks, full bypass included, plan refuses,
     /// and the wire gate refuses an ungranted call in each of them.
     #[test]
-    fn the_shell_asks_in_ask_auto_and_bypass_and_never_runs_it_ungranted() {
+    fn the_shell_asks_in_every_mode_full_bypass_included_and_never_runs_it_ungranted() {
         let (grade, said) = published();
         let cannot_be_undone = gate::unrecoverable(&said);
         let decide = |mode| Modes::new(mode).decide(&grade, "shell", ACTION, cannot_be_undone, "dangerous", Instant::now());
-        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass] {
+        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
             assert!(matches!(decide(mode), Decision::Ask), "{mode:?} did not ask");
         }
         assert!(matches!(decide(Mode::Plan), Decision::Refuse { .. }), "plan");
-        for mode in ["ask", "auto", "bypass", "plan"] {
+        for mode in ["ask", "auto", "bypass", "bypass_all", "plan"] {
             assert!(gate::decide(&authority(mode), "shell", ACTION, &grade, &said).is_err(), "{mode}");
         }
         let granted = Authority { granted: true, ..authority("auto") };

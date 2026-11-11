@@ -15,6 +15,8 @@ use yantrik_browser_ports::{self as ports, Place};
 use yantrik_ipc_contracts::mind_view::FOR_MIND_VAR;
 
 use super::browser_side::{self, CDP_HOST, CDP_PORT};
+
+mod search;
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
 const MAX_TEXT_CHARS: usize = 6000;
@@ -498,6 +500,10 @@ fn ensure_headless_browser() -> Result<(), String> {
             "--ozone-platform=headless",
             "--no-first-run",
             "--no-default-browser-check",
+            // Chromium's own calls home (Google's component updater, field trials, safe-browsing
+            // pings) are not the person's search and are never made.
+            "--disable-background-networking",
+            "--disable-component-update",
             "--disable-gpu",
             // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
             "--disable-blink-features=AutomationControlled",
@@ -648,6 +654,8 @@ fn launch_browser(args: &serde_json::Value) -> String {
         format!("--user-data-dir={}", profile.display()),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
+        "--disable-background-networking".into(),
+        "--disable-component-update".into(),
         // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
         "--disable-blink-features=AutomationControlled".into(),
         // Anti-detection: realistic viewport size
@@ -1298,118 +1306,7 @@ impl Tool for WebSearchTool {
             return "Error: query too long (max 500 chars)".to_string();
         }
 
-        // Try SearXNG first (local, fast, no rate limits)
-        match searxng_search(query) {
-            Ok(results) => return results,
-            Err(e) => tracing::debug!("SearXNG unavailable ({e}), trying browser/DDG"),
-        }
-
-        // Auto-launch headless browser if not running — fall back to DuckDuckGo if unavailable
-        if let Err(e) = ensure_headless_browser() {
-            tracing::info!("Browser unavailable ({e}), using DuckDuckGo HTML fallback");
-            return duckduckgo_html_search(query);
-        }
-
-        // URL-encode the query
-        let encoded: String = query
-            .chars()
-            .map(|c| match c {
-                ' ' => '+'.to_string(),
-                c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => {
-                    c.to_string()
-                }
-                c => format!("%{:02X}", c as u32),
-            })
-            .collect();
-
-        let url = format!("https://www.google.com/search?q={}&num=10&hl=en", encoded);
-
-        let (mut ws, _tab) = match connect_first_tab() {
-            Ok(v) => v,
-            Err(e) => return format!("Error connecting to browser: {e}"),
-        };
-
-        // Navigate to Google search
-        if let Err(e) = cdp_send(&mut ws, "Page.navigate", json!({ "url": url })) {
-            return format!("Navigation error: {e}");
-        }
-
-        // Wait for results to load
-        std::thread::sleep(Duration::from_secs(3));
-
-        // Extract structured search results via JS
-        let js = r#"
-            (function() {
-                var results = [];
-                // Google search result blocks
-                var items = document.querySelectorAll('div.g, div[data-hveid]');
-                for (var i = 0; i < items.length && results.length < 10; i++) {
-                    var el = items[i];
-                    var link = el.querySelector('a[href^="http"]');
-                    if (!link) continue;
-                    var url = link.href;
-                    if (url.includes('google.com') || url.includes('accounts.google')) continue;
-                    var titleEl = el.querySelector('h3');
-                    var title = titleEl ? titleEl.innerText : '';
-                    if (!title) continue;
-                    var snippetEl = el.querySelector('div[data-sncf], span.aCOpRe, div.VwiC3b, div[style*="line"]');
-                    var snippet = snippetEl ? snippetEl.innerText : '';
-                    if (!snippet) {
-                        // Try getting text from the result block minus the title
-                        var allText = el.innerText || '';
-                        var parts = allText.split('\n').filter(function(l) { return l.length > 20 && l !== title; });
-                        snippet = parts.slice(0, 2).join(' ');
-                    }
-                    results.push(title + '\n' + url + '\n' + snippet.substring(0, 200));
-                }
-                if (results.length === 0) {
-                    // Fallback: just get page text
-                    return 'NO_STRUCTURED_RESULTS\n' + (document.body ? document.body.innerText.substring(0, 4000) : '');
-                }
-                return results.join('\n---\n');
-            })()
-        "#;
-
-        let raw = eval_js(&mut ws, js).unwrap_or_default();
-
-        // Check for CAPTCHA on Google search
-        let page_title = eval_js(&mut ws, "document.title").unwrap_or_default();
-        if let Some(captcha_msg) = detect_captcha(&page_title, &raw, "") {
-            cleanup_after_data_extraction(&mut ws);
-            tracing::info!("Google CAPTCHA detected, falling back to DuckDuckGo: {captcha_msg}");
-            return duckduckgo_html_search(query);
-        }
-
-        if raw.starts_with("NO_STRUCTURED_RESULTS") {
-            // Fallback to plain text results
-            let text = raw.strip_prefix("NO_STRUCTURED_RESULTS\n").unwrap_or(&raw);
-            let truncated = if text.len() > 4000 { &text[..text.floor_char_boundary(4000)] } else { text };
-            cleanup_after_data_extraction(&mut ws);
-            return format!("Search results for: {query}\n\n{truncated}");
-        }
-
-        // Parse structured results
-        let mut output = format!("Search results for: {query}\n\n");
-        for (i, block) in raw.split("\n---\n").enumerate() {
-            let lines: Vec<&str> = block.lines().collect();
-            if lines.len() >= 2 {
-                let title = lines[0];
-                let url = lines[1];
-                let snippet = if lines.len() > 2 { lines[2..].join(" ") } else { String::new() };
-                output.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title, url, snippet));
-            }
-        }
-
-        if output.len() > 5000 {
-            let boundary = output.floor_char_boundary(5000);
-            output.truncate(boundary);
-            output.push_str("\n... (truncated)");
-        }
-
-        // Clear page so stale content isn't mistaken for user activity
-        cleanup_after_data_extraction(&mut ws);
-
-        output
+        search::web_search(query)
     }
 }
 

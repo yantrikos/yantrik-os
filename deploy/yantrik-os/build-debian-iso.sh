@@ -235,6 +235,10 @@ apt-get install -y -qq \
     iproute2 iputils-ping \
     pciutils usbutils || true
 
+# ── Clock: minbase has no time daemon; the package's default servers (Debian pool), none of ours ──
+apt-get install -y -qq systemd-timesyncd
+systemctl enable systemd-timesyncd.service
+
 # ── Firmware (non-free, for real hardware) ──
 # firmware-misc-nonfree also carries tigon/tg357766.bin, the firmware of the Mac mini 2012's
 # Broadcom BCM57766 Ethernet, which is how that Mac first gets online.

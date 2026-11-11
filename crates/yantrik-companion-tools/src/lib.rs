@@ -64,6 +64,7 @@ pub mod vault_key;
 pub mod vault;
 pub mod vision;
 pub mod wallpaper;
+pub mod research_offer;
 pub mod weather;
 pub mod wifi;
 pub mod window;

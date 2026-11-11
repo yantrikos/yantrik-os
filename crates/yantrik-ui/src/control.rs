@@ -2285,7 +2285,7 @@ pub fn publish(
     // Suspend, hibernate, log out, restart and shut down: the power popover's acts, graded.
     let surface = crate::control_power::actions(surface, ui);
     // Two questions that do nothing themselves: `send_mail` ("may this mail go out?") and `allow_location_lookup` (#1171).
-    let surface = crate::control_location::actions(crate::control_mail::actions(surface));
+    let surface = crate::control_research::actions(crate::control_location::actions(crate::control_mail::actions(surface)));
     // The window overview (Super+Tab): open_switcher, switcher_move, switcher_commit, switcher_cancel.
     let surface = crate::control_switcher::actions(surface, ui);
     // An agent's commands, each in a terminal of its own in its pane — agent_run, agent_job,

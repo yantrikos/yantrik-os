@@ -13,11 +13,16 @@
 //! Allow. Nothing else writes it: [`turn_on`] is the shell's alone, and the source-scan test in
 //! `tests/no_unattended_location_lookups.rs` keeps it so.
 //!
-//! The file is believed only when it looks like the shell's: a regular file (never a link) owned
-//! by the person, mode 0600, in a directory the person owns that neither the `yantrik-minds`
-//! group nor anyone else can write. A harness that runs as the person could still write it, but
-//! then it is not the person's switch and the answer is no ([`verdict`] says why).
-//! `YANTRIK_NO_GEOLOCATE=1` outranks everything: when set, the answer is no even when asked.
+//! The file is believed only when it looks like the person's own: a regular file (never a link)
+//! owned by the person, mode 0600, in a directory the person owns that neither the
+//! `yantrik-minds` group nor other users can write. That keeps out every other user and every
+//! mind in the minds' group, and it is read race-free (opened through descriptors, see
+//! [`crate::nofollow`]). It does **not** keep out a process running as the person: anything that
+//! runs as them can write the file with `umask 077; echo on > ~/.config/yantrik/location-lookup`
+//! and it will be believed. So the switch is made visible instead: `yos describe shell` shows
+//! "Location lookups: on (since …)" whenever it is on, and the shell logs that line once at
+//! each start ([`allowed_noting`]), whoever wrote the file. `YANTRIK_NO_GEOLOCATE=1` outranks
+//! everything: when set, the answer is no even when asked.
 
 use std::path::{Path, PathBuf};
 
@@ -91,6 +96,23 @@ pub fn allowed() -> bool {
     matches!(verdict(), Verdict::On { .. })
 }
 
+static NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// [`allowed`], and the first time in this process that the answer is yes, `note` is handed the
+/// line `describe shell` shows ("Location lookups: on (since …)"), so the log says the switch was
+/// on whoever wrote the file. Called by the desktop's own lookup and by the weather tool.
+pub fn allowed_noting(note: impl FnOnce(&str)) -> bool {
+    noting(verdict(), &NOTED, note)
+}
+
+fn noting(verdict: Verdict, once: &std::sync::atomic::AtomicBool, note: impl FnOnce(&str)) -> bool {
+    let on = matches!(verdict, Verdict::On { .. });
+    if on && !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        note(&verdict.line());
+    }
+    on
+}
+
 /// What the filesystem says about the switch and the directory holding it.
 #[derive(Debug, Clone, Copy)]
 struct Facts {
@@ -132,26 +154,44 @@ fn minds_gid() -> Option<u32> {
     (!group.is_null()).then(|| unsafe { (*group).gr_gid })
 }
 
+/// The switch's verdict, from descriptors: the directory is opened (never through a link) and
+/// examined with `fstat`, the file is opened inside that directory (never through a link) and
+/// examined and read through its own descriptor. What is checked is what is read; nothing is
+/// looked up by path twice.
 #[cfg(unix)]
 fn verdict_of(path: &Path) -> Verdict {
+    use crate::nofollow::{open_dir, open_file_in, Refusal};
+    use std::io::Read;
     use std::os::unix::fs::MetadataExt;
-    // `symlink_metadata`: a link is looked at, not followed.
-    let Ok(meta) = std::fs::symlink_metadata(path) else { return Verdict::Off };
-    let Some(dir) = path.parent().and_then(|d| std::fs::metadata(d).ok()) else { return Verdict::Off };
+    let (Some(dir_path), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return Verdict::Off };
+    let dir = match open_dir(dir_path) {
+        Ok(dir) => dir,
+        Err(Refusal::Absent) => return Verdict::Off,
+        Err(_) => return Verdict::Refused("the switch's directory is a link or cannot be examined"),
+    };
+    let mut file = match open_file_in(&dir, name) {
+        Ok(file) => file,
+        Err(Refusal::Absent) => return Verdict::Off,
+        Err(Refusal::Link) => return Verdict::Refused("the switch is not a plain file"),
+        Err(Refusal::Failed(_)) => return Verdict::Refused("the switch cannot be examined"),
+    };
+    let (Ok(meta), Ok(dir_meta)) = (file.metadata(), dir.metadata()) else { return Verdict::Refused("the switch cannot be examined") };
     let facts = Facts {
         is_file: meta.file_type().is_file(),
         uid: meta.uid(),
         mode: meta.mode(),
-        dir_uid: dir.uid(),
-        dir_gid: dir.gid(),
-        dir_mode: dir.mode(),
+        dir_uid: dir_meta.uid(),
+        dir_gid: dir_meta.gid(),
+        dir_mode: dir_meta.mode(),
     };
     // SAFETY: geteuid has no preconditions.
     if let Some(why) = doubt(&facts, unsafe { libc::geteuid() }, minds_gid()) {
         return Verdict::Refused(why);
     }
-    match std::fs::read_to_string(path) {
-        Ok(s) if matches!(s.trim(), "on" | "1" | "yes" | "true") => Verdict::On { since: since(&meta) },
+    let mut text = String::new();
+    // A few bytes at most are ever meant to be there; the limit keeps a planted huge file cheap.
+    match (&mut file).take(64).read_to_string(&mut text) {
+        Ok(_) if matches!(text.trim(), "on" | "1" | "yes" | "true") => Verdict::On { since: since(&meta) },
         _ => Verdict::Off,
     }
 }
@@ -269,6 +309,53 @@ mod tests {
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::os::unix::fs::symlink(&real, &file).unwrap();
         assert!(matches!(verdict_of(&file), Verdict::Refused(_)), "a symlink");
+    }
+
+    #[test]
+    fn a_linked_directory_is_not_believed_and_a_planted_file_is_still_only_as_good_as_its_mode() {
+        let real = scratch("realdir");
+        turn_on_at(&real.join(FILE)).unwrap();
+        let parent = scratch("linkparent");
+        let linked = parent.join("yantrik");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let v = verdict_of(&linked.join(FILE));
+        assert!(matches!(v, Verdict::Refused(why) if why.contains("directory")), "{v:?}");
+        // What a process running as the person can do, and what the doc comment now says about it.
+        let mine = scratch("asme");
+        let file = mine.join(FILE);
+        std::fs::write(&file, "on
+").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(verdict_of(&file), Verdict::On { .. }), "a file the person's own process wrote is believed: the doc says so, and describe shows it");
+    }
+
+    #[test]
+    fn a_fifo_planted_at_the_name_does_not_hold_the_check() {
+        let dir = scratch("fifo");
+        let file = dir.join(FILE);
+        let name = std::ffi::CString::new(file.to_str().unwrap()).unwrap();
+        // SAFETY: a NUL-terminated path; mkfifo only creates the node.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let v = verdict_of(&file);
+        assert!(matches!(v, Verdict::Refused(why) if why.contains("plain file")), "{v:?}");
+    }
+
+    #[test]
+    fn the_first_yes_is_noted_once_with_the_line_describe_shows_whoever_wrote_the_file() {
+        let dir = scratch("note");
+        let file = dir.join(FILE);
+        std::fs::write(&file, "on
+").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let once = std::sync::atomic::AtomicBool::new(false);
+        let mut said = Vec::new();
+        for _ in 0..3 {
+            assert!(noting(verdict_of(&file), &once, |line| said.push(line.to_string())));
+        }
+        assert_eq!(said.len(), 1, "once per start");
+        assert!(said[0].starts_with("Location lookups: on (since 20"), "{said:?}");
+        let off = std::sync::atomic::AtomicBool::new(false);
+        assert!(!noting(Verdict::Off, &off, |_| panic!("nothing to say when it is off")));
     }
 
     #[test]

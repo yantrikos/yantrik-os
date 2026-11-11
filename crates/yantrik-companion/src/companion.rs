@@ -3741,7 +3741,7 @@ impl CompanionService {
         for instinct in &self.instincts {
             all_urges.extend(instinct.evaluate(state));
         }
-        all_urges
+        crate::research::hold_back_searches(all_urges, state)
     }
 
     /// Check proactive engine for messages to deliver. Called during think cycle.

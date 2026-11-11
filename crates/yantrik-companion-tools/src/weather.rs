@@ -88,7 +88,9 @@ impl Tool for GetWeatherTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let location = args.get("location").and_then(|v| v.as_str()).unwrap_or("");
-        let location = match resolve(location.trim(), location_consent::env_forbids(), location_consent::allowed(), ask_the_person) {
+        // The switch's first yes in this run is logged with the line `describe shell` shows.
+        let on = location_consent::allowed_noting(|line| tracing::warn!("{line}"));
+        let location = match resolve(location.trim(), location_consent::env_forbids(), on, ask_the_person) {
             Place::Fetch(place) => place,
             Place::Say(words) => return words,
         };
@@ -143,6 +145,15 @@ impl Tool for GetWeatherTool {
 
 #[cfg(test)]
 mod tests {
+    /// The tool asks the switch through the noting door, so the first yes in a run is logged
+    /// whoever wrote the file; no other `allowed()` call is left in the tool's own path.
+    #[test]
+    fn the_tool_notes_the_switch_when_it_is_on() {
+        let production = include_str!("weather.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(production.contains("location_consent::allowed_noting("));
+        assert_eq!(production.matches("location_consent::allowed()").count(), 1, "only the re-check after the card");
+    }
+
     use super::*;
 
     fn never_asked() -> Result<(), String> {

@@ -36,6 +36,8 @@ The pipeline learns from your feedback: dismissing a notification lowers future 
 
 Instincts are the companion's proactive behaviors — things it checks and surfaces on its own. There are 65+ instincts organized by category:
 
+**Background research is off until you allow it.** The instincts that search the web (News Watch, Deal Watch, Interest Intelligence, Deep Dive and about twenty more: every one whose urge tells the model to use `web_search`) do nothing while `background_research` in `config.yaml` is `false`, which is the default. The first time one of them wants to search while you are at the desk, the shell shows a card saying what would be sent (search terms, to your own SearXNG or else DuckDuckGo) and Allow turns it on; no mode skips that card. Once on, searches made with nobody asking never go to Google or a browser; only a search you ask for in chat may. `yos describe shell` shows `settings.background_research`. The local-only instincts are unaffected.
+
 ### Core Instincts
 | Instinct | What It Does |
 |----------|--------------|

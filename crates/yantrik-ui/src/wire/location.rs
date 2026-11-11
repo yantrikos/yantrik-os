@@ -50,6 +50,9 @@ const UNSET_TIMEZONE: &str = "Etc/UTC";
 
 /// Learn where this machine is, if it does not already know. Returns immediately.
 pub fn detect_in_background() {
+    // If the switch is on, say so once per start, whoever wrote the file (the person's own tools
+    // can write it too), so the log and `describe shell` agree about it.
+    yantrik_ipc_contracts::location_consent::allowed_noting(|line| tracing::warn!("{line}"));
     detect_if(yantrik_ipc_contracts::location_consent::allowed);
 }
 
@@ -221,6 +224,17 @@ mod tests {
     use super::super::settings::Place;
     use super::{is_plausible_timezone, settle};
     use std::cell::{Cell, RefCell};
+
+    /// The desktop notes the switch once per start, before `settle` decides anything, so a
+    /// machine that already knows its place still logs that lookups are on.
+    #[test]
+    fn the_desktop_notes_the_switch_at_each_start() {
+        let production = include_str!("location.rs").split("#[cfg(test)]").next().unwrap();
+        let start = production.split("pub fn detect_in_background").nth(1).unwrap().split("
+}
+").next().unwrap();
+        assert!(start.contains("location_consent::allowed_noting("), "{start}");
+    }
 
     fn place(city: &str, timezone: &str) -> Place {
         Place { city: city.into(), timezone: timezone.into(), ..Place::default() }

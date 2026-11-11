@@ -406,23 +406,32 @@ yantrik-os/
 - **The OS itself sends nothing anywhere.** No telemetry, no phone-home, no analytics. The
   image ships pointed at loopback and at nothing else, because an endpoint baked into a public
   image is an endpoint every copy of it talks to. With nobody at the keyboard the OS itself
-  makes two kinds of call: the update check against `releases.yantrikos.com`, and the clock
-  sync (NTP) any Debian system does. It never looks up where you are on its own: IP-based
-  location lookups are off until you allow them, and the one way a feature gets them is a card
-  on your screen saying what is sent and to whom (your internet address, to a weather or
-  location service), whose Allow button turns them on. You can also turn them on yourself by
-  putting `on` in `~/.config/yantrik/location-lookup` (a file you own, mode 600, in a directory
-  only you can write; anything else is ignored). `yos describe shell` shows "Location lookups:
-  on (since …)" while they are on. `YANTRIK_NO_GEOLOCATE=1` keeps them off even then. The
+  makes two kinds of call: the update check against `releases.yantrikos.com`, and the clock sync
+  (NTP) to Debian's pool through `systemd-timesyncd`; on Macs with an older Broadcom Wi-Fi chip
+  it also fetches that driver once from Debian's archive. It never looks up where you are on its
+  own, and it never searches the web on its own: IP-based location lookups and background
+  research are each off until you allow them, and the one way a feature gets either is a card on
+  your screen saying what is sent and to whom (your internet address, to a weather or location
+  service; your search terms, to your own SearXNG or else DuckDuckGo), whose Allow button turns
+  it on. No bypass mode skips those cards, or the card before a problem report is sent. You can
+  also turn location lookups on yourself by putting `on` in `~/.config/yantrik/location-lookup`
+  (a file you own, mode 600, in a directory you own that neither other users nor the
+  `yantrik-minds` group can write); anything running as you can write that file too, so `yos
+  describe shell` shows "Location lookups: on (since …)" whenever they are on.
+  `YANTRIK_NO_GEOLOCATE=1` keeps them off even then. The
   installers start the timezone at UTC (the graphical one) or the live system's zone (the text
   one) and ask you to confirm or change it; neither asks the network. Everything else the OS
   contacts is something you set up or ask for: a cloud model account (checked in the background
   while it is your chosen model), a mind you install (which keeps itself up to date, and which we
   ask not to report usage with `DO_NOT_TRACK=1`), your weather, mail, calendar and connectors,
-  and a problem report you chose to send. When an app crashes, the desktop writes a record
-  locally, scrubbed of your home directory, your user name and anything shaped like a key;
-  *Report a problem* shows you that exact file, and only pressing Send moves it, to
-  `report.yantrikos.com`, with no name, hostname or address attached.
+  and a problem report you chose to send. When an app crashes or fails, the desktop writes a
+  record locally (`~/.local/share/yantrik/problems/`) with your home path, your user name and common key and
+  token shapes removed; other things a log line happens to contain, such as host names,
+  addresses or file names, are not removed. *Report a problem* shows you that record, and it
+  leaves the machine only when you press Send there or Allow a mind's request to send it. It
+  goes over HTTPS to `report.yantrikos.com`, which posts it as a public issue on this
+  repository. Nothing about you or the machine is added to it; the service sees your internet
+  address only to limit how often reports arrive.
 - **The mind is a separate question, and it is yours to answer.** This OS is built to be
   driven by any mind, cloud models included; that is the point of the harness protocol, and
   the token-efficiency comparison this project publishes was itself measured against a cloud

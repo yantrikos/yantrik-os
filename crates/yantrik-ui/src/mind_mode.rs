@@ -208,7 +208,7 @@ impl Mode {
             Mode::Ask => "It asks you before anything that could matter.",
             Mode::Auto => "It gets on with things. You are still asked about the destructive ones, and once per session before it runs commands.",
             Mode::Bypass => "It does not ask, except before anything an app marks as impossible to undo, such as a purchase or a calendar delete, and once per session before running commands.",
-            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. The one exception: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still asks. (The built-in assistant's own mail is not covered by this.)",
+            Mode::BypassAll => "It does not ask. Everything the machine allows, it does, including what an app marks as impossible to undo. Two exceptions: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still asks; and three things always ask, because what they write outlasts the hour: allowing location lookups, allowing background web searches, and sending a problem report (a public issue). (The built-in assistant's own mail is not covered by this.)",
         }
     }
 
@@ -497,20 +497,14 @@ pub fn parse_standing_rules(text: &str) -> Result<Vec<Rule>, String> {
 ///   replacement). `/etc/yantrik` is root's on every machine that has it.
 pub fn standing_rules_from(path: &std::path::Path, owner: u32) -> Result<Vec<Rule>, String> {
     use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::MetadataExt;
+    use yantrik_ipc_contracts::nofollow::Refusal;
 
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-    {
+    let file = match yantrik_ipc_contracts::nofollow::open_file(path) {
         Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        // ELOOP is what O_NOFOLLOW answers for a symlink in the last component.
-        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
-            return Err("it is a symbolic link, and only a file root wrote in place is trusted".into())
-        }
-        Err(e) => return Err(format!("it could not be opened: {e}")),
+        Err(Refusal::Absent) => return Ok(Vec::new()),
+        Err(Refusal::Link) => return Err("it is a symbolic link, and only a file root wrote in place is trusted".into()),
+        Err(Refusal::Failed(e)) => return Err(format!("it could not be opened: {e}")),
     };
     let meta = file.metadata().map_err(|e| format!("it could not be examined: {e}"))?;
     if !meta.file_type().is_file() {
@@ -1025,7 +1019,8 @@ impl Modes {
         // happens to match — a `safe` action describing something else as permanent — must not
         // be able to turn a look into a question. (Nothing published on this OS today is both
         // `safe` and matching; see the design note.)
-        let irreversible = declared.cannot_be_undone && rank > 0;
+        let always = yantrik_ipc_transport::always_asked::always_asked(app, action);
+        let irreversible = (declared.cannot_be_undone || always) && rank > 0;
 
         // The app's other word: the action runs whatever it is given — a terminal's command
         // line, an agent's shell — so it can do anything the person can (Pranab's decision of 29
@@ -1072,11 +1067,10 @@ impl Modes {
                     Decision::Run { unasked: would_ask }
                 }
             }
-            // Unchanged by the rule above, and the one mode that is: full bypass does not ask, by
-            // definition and by what its confirmation says. A person who pressed "asks nothing,
-            // not even those" on a red panel with a countdown has answered this question already,
-            // and a card after that would make the confirmation a lie. It is written down
-            // instead — `would_ask` is true here, so it lands in the audit.
+            // Full bypass does not ask, by definition and by what its confirmation says, except
+            // for `always_asked`: a bypass lasts an hour, what those write lasts for good.
+            // Anything else is written down (`would_ask` lands in the audit).
+            Mode::BypassAll if always && rank > 0 => Decision::Ask,
             Mode::BypassAll => Decision::Run { unasked: would_ask },
             Mode::Auto => {
                 if rank >= DANGEROUS || irreversible || open {

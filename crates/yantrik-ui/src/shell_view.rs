@@ -129,6 +129,7 @@ mod tests {
             ("control_overlays.rs", include_str!("control_overlays.rs")),
             ("control_power.rs", include_str!("control_power.rs")),
             ("control_recipes.rs", include_str!("control_recipes.rs")),
+            ("control_research.rs", include_str!("control_research.rs")),
             ("control_screen.rs", include_str!("control_screen.rs")),
             ("control_settings.rs", include_str!("control_settings.rs")),
             ("control_switcher.rs", include_str!("control_switcher.rs")),

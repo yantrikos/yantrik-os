@@ -68,6 +68,7 @@ mod control_network;
 mod caller_class;
 mod control_wifi_reconnect;
 mod control_location;
+mod control_research;
 mod control_mail;
 mod control_power;
 mod control_installer;
@@ -273,6 +274,7 @@ fn main() {
     // Load config
     let config_path = std::env::args().nth(1).map(PathBuf::from);
     let config = load_config(config_path.clone());
+    yantrik_companion::background_research::init(config.background_research, config_path.clone());
 
     // Propagate OAuth credentials from config to env vars (if not already set)
     if let Some(ref id) = config.connectors.google_client_id {
