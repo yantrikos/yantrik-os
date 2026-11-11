@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.parse
 
-from . import cdp, commit, guard, hands, holds, judgement, sides
+from . import cdp, commit, guard, hands, holds, judgement, ports, sides
 from .cdp import short
 from .commit import commitment_of, fold_site
 from .console import ConsoleMixin
@@ -42,6 +42,23 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
         self.file_rule = file_rule_of(file_rule)
         self.home = home or (lambda: os.path.expanduser("~"))
         self.lock = threading.RLock()
+        # The person's Browser outlives this service: when its pipe is handed over, connect to it at
+        # once, so every open tab is fenced and a `file:` page reloaded without waiting for a call.
+        self.sides.pipes.on_give = lambda: threading.Thread(
+            target=self._person_arrived, daemon=True, name="person-arrived").start()
+
+    def _person_arrived(self):
+        if not self.lock.acquire(timeout=BUSY_WAIT):
+            return                      # a call is at work; it connects (and adopts) itself
+        try:
+            browser = self.sides.ready(ports.PERSON)
+            if browser is not None:
+                browser.fence.gate = self._asset_gate()
+                browser.connect()
+        except (cdp.BrowserClosed, cdp.CdpError, guard.Denied):
+            pass
+        finally:
+            self.lock.release()
 
     @property
     def browser(self):
