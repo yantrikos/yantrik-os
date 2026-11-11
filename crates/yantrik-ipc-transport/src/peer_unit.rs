@@ -12,10 +12,18 @@
 //! never read again from `/proc`: a held connection outlives its connector, the connector's pid is
 //! free for reuse, and a later read would judge whichever process has the number by then.
 //!
+//! A connection is the Mind for as long as it lives, whoever holds it later: the flag rides with
+//! the connection, so a process of the Mind's unit that hands its connected socket on has handed
+//! on the Mind's standing too.
+//!
 //! The pid is not trusted on its own even at accept. The kernel's `SO_PEERPIDFD` (Linux 6.5)
 //! names the peer as a pidfd, which cannot be reused. The cgroup is read through the pid, then
-//! `pidfd_send_signal(pidfd, 0)` confirms the pidfd's process is still the one alive: if it is,
-//! the pid was not freed and reused while the cgroup was read.
+//! `poll(pidfd, POLLIN, 0)` confirms the pidfd's process has not exited: if it has not, the pid
+//! was not freed and reused while the cgroup was read. Poll, not `pidfd_send_signal(pidfd, 0)`:
+//! a signal is permission-checked, and the desktop (the person) has no right to signal the Mind
+//! (`yantrik-mind`), so it answers `EPERM` for the very process that is alive and the Mind would
+//! never be recognised. Poll on a pidfd checks no permission. It reads a zombie as exited, which
+//! fails closed.
 //!
 //! Fails closed. A kernel without `SO_PEERPIDFD` (before 6.5), a peer that has already exited, a
 //! `/proc` that cannot be read, no pid, a cgroup line that is not the unified `0::` one: none of
@@ -68,10 +76,12 @@ fn peer_pidfd(fd: RawFd) -> Option<OwnedFd> {
     (rc == 0 && pidfd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(pidfd) })
 }
 
-/// Signal 0 checks, and sends nothing: it succeeds only for a process that has not exited.
+/// A pidfd becomes readable when its process exits (a zombie counts), whoever polls it and
+/// whatever their uid. Nothing readable: the process has not exited.
 fn is_alive(pidfd: &OwnedFd) -> bool {
-    // SAFETY: pidfd_send_signal with a descriptor we own, signal 0, and no siginfo.
-    unsafe { libc::syscall(libc::SYS_pidfd_send_signal, pidfd.as_raw_fd(), 0, std::ptr::null::<libc::c_void>(), 0) == 0 }
+    let mut poll = libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    // SAFETY: poll on one pollfd of ours, with no wait.
+    unsafe { libc::poll(&mut poll, 1, 0) == 0 }
 }
 
 #[cfg(test)]
@@ -198,5 +208,115 @@ mod tests {
         let at_accept = PeerCred { the_mind: the_mind_in(&proc.0, the_account, ours.as_raw_fd(), me()), ..me() };
         proc.put(me().pid, "0::/system.slice/hermes-gateway.service\n");
         assert!(at_accept.the_mind, "decided at accept: the Mind");
+    }
+
+    /// Opens a pidfd of `pid`.
+    fn pidfd_of(pid: libc::pid_t) -> OwnedFd {
+        // SAFETY: pidfd_open of a pid the caller names; the result is a descriptor we own.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        assert!(fd >= 0, "pidfd_open({pid}) failed");
+        // SAFETY: a new descriptor nothing else owns.
+        unsafe { OwnedFd::from_raw_fd(fd as RawFd) }
+    }
+
+    /// Runs `child` in a forked process, which may use only raw system calls, and answers its pid.
+    fn fork_child(child: impl FnOnce() -> libc::c_int) -> libc::pid_t {
+        // SAFETY: the child runs one closure of raw system calls and `_exit`s; it returns nowhere.
+        unsafe {
+            match libc::fork() {
+                -1 => panic!("fork failed"),
+                0 => libc::_exit(child()),
+                pid => pid,
+            }
+        }
+    }
+
+    fn wait_for(pid: libc::pid_t) -> libc::c_int {
+        let mut status = 0;
+        // SAFETY: waitpid on our own child.
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        libc::WEXITSTATUS(status)
+    }
+
+    /// The desktop is the person and the Mind is `yantrik-mind`: a live process of another uid
+    /// must read as alive. `pidfd_send_signal` answered EPERM here (the round-2 head), so the real
+    /// Mind was never recognised. Not root: pid 1 is root's. Root: a child drops to another uid
+    /// and asks about a process of a third.
+    #[test]
+    fn a_live_process_of_another_uid_reads_as_alive() {
+        // SAFETY: geteuid cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(is_alive(&pidfd_of(1)), "pid 1 is alive, and root's");
+            return;
+        }
+        use std::os::unix::process::CommandExt;
+        let mut target = std::process::Command::new("sleep").arg("30").uid(65534).spawn().unwrap();
+        let pidfd = pidfd_of(target.id() as libc::pid_t);
+        let asker = fork_child(|| {
+            // SAFETY: setuid to a uid that owns nothing here; checked before it is relied on.
+            if unsafe { libc::setuid(65533) } != 0 {
+                return 2;
+            }
+            if is_alive(&pidfd) { 0 } else { 1 }
+        });
+        let verdict = wait_for(asker);
+        target.kill().unwrap();
+        target.wait().unwrap();
+        assert_eq!(verdict, 0, "an asker of another uid, no CAP_KILL, still sees it alive (2 = could not drop uid)");
+    }
+
+    /// A child process connects to a listener at `path` and answers its pid; with `stay` it waits
+    /// to be killed, else it exits at once. The listener's backlog holds the connection.
+    fn connect_from_child(path: &std::path::Path, stay: bool) -> libc::pid_t {
+        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (slot, byte) in addr.sun_path.iter_mut().zip(path.as_os_str().as_encoded_bytes()) {
+            *slot = *byte as libc::c_char;
+        }
+        fork_child(|| {
+            // SAFETY: socket and connect with an address built before the fork.
+            unsafe {
+                let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+                if libc::connect(fd, (&addr as *const libc::sockaddr_un).cast(), len) != 0 {
+                    return 3;
+                }
+                if stay {
+                    libc::pause();
+                }
+            }
+            0
+        })
+    }
+
+    /// A peer that connects and exits before `accepted` runs is not the Mind, even where `/proc`
+    /// still shows the Mind's unit for its pid (a stand-in for the number reused by the Mind).
+    /// Over a real socket from another process: the live peer is the Mind (the control), the
+    /// exited one is not.
+    #[test]
+    fn a_peer_that_exited_before_accept_is_not_the_mind() {
+        let proc = FakeProc::new("exited");
+        let dir = std::env::temp_dir().join(format!("yantrik-1176-sock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("door.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let named = |pid| PeerCred { pid, uid: ACCOUNT, gid: ACCOUNT, the_mind: false };
+
+        let gone = connect_from_child(&path, false);
+        assert_eq!(wait_for(gone), 0, "the child connected");
+        let (after_exit, _) = listener.accept().unwrap();
+        proc.put(gone, "0::/system.slice/yantrik-mind.service\n");
+        assert!(!the_mind_in(&proc.0, the_account, after_exit.as_raw_fd(), named(gone)), "gone before accept");
+
+        let live = connect_from_child(&path, true);
+        let (held, _) = listener.accept().unwrap();
+        proc.put(live, "0::/system.slice/yantrik-mind.service\n");
+        let supported = peer_pidfd(held.as_raw_fd()).is_some();
+        assert_eq!(the_mind_in(&proc.0, the_account, held.as_raw_fd(), named(live)), supported, "a live peer in the unit");
+        // SAFETY: kill and reap our own child.
+        unsafe { libc::kill(live, libc::SIGKILL) };
+        wait_for(live);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
