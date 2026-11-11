@@ -73,7 +73,8 @@ jobs:
             libfreetype6-dev \
             libinput-dev \
             libgbm-dev \
-            libegl1-mesa-dev
+            libegl1-mesa-dev \
+            bubblewrap
 
       # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
       # stable is today: `rustup toolchain install` with no name reads that file.

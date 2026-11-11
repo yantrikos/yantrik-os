@@ -552,8 +552,7 @@ fn execute_script(
     }
 
     // Environment: inherit + custom + output dir hint
-    cmd.env("YANTRIK_OUTPUT_DIR", out_dir.to_str().unwrap_or("/tmp"));
-    cmd.env("YANTRIK_SCRIPTS_DIR", scripts.to_str().unwrap_or("/tmp"));
+    crate::coder_deps::script_env(&mut cmd, &out_dir, &scripts, language);
     // A stand-in HOME, so a script's dotfiles and caches never land in the real one. Inside bwrap
     // /tmp is the sandbox's own tmpfs, so it serves. Outside, /tmp is the shared one — where
     // another account could have made ~/.config or ~/.bashrc-alikes first for the script to pick

@@ -53,12 +53,16 @@ of their own (#1137, step 3) comes after launch. Until then, these are known and
   a browser profile. What those run later runs in no view. The acceptance for the fix is that
   each of these fails with EACCES from a job. The same route has variants that run seconds later,
   on a Mind's own call and not at your next login: a git `filter` or `textconv` in a repository's
-  `.git/config` or in `~/.gitconfig` (the companion's `git_status` and `git_diff` read them), an
-  ssh `ProxyCommand` in `~/.ssh/config` (`ssh_check_host`), a harness's config that switches on its
-  own unwalled shell at its next start (`~/.config/yantrik/pi.json`, `~/.hermes/config.yaml`,
-  `~/.config/yantrik/openclaw.json`), and a `.pth` file in a wheel that `install_deps` puts under
-  `~/.local/lib/python3*/site-packages`, which every later host Python runs. They close with the
-  same fix.
+  `.git/config` or in `~/.gitconfig` (the companion's `git_status` and `git_diff` read them; a
+  `filter.<x>.clean` runs only with a matching `.gitattributes` or `core.attributesFile`, which
+  is named beside it), an ssh `ProxyCommand` in `~/.ssh/config` (`ssh_check_host`), and a
+  harness's config that switches on its own unwalled shell at its next start
+  (`~/.config/yantrik/pi.json`, `~/.hermes/config.yaml`, `~/.config/yantrik/openclaw.json`).
+  They close with the same fix. A wheel that `install_deps` fetches is installed with `--target`
+  into the scripts folder's own `.deps`, which only the script sees through `PYTHONPATH` and no
+  host Python reads as a site directory, so a `.pth` it ships never runs.
+- **`llm.backend: claude-cli`** (not the default; no Settings control offers it) runs `claude -p`
+  in the host namespace, with Claude's own permission gate in front. It is fixed after launch.
 - **The loopback listeners a job reaches:** the egress ports 7450 and 7451, the gateway on 7460
   (with a token), the local model on 11434, Mind View's browser on 9223, and anything else you run
   on the machine.

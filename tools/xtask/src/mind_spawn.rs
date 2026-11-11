@@ -29,9 +29,10 @@ const DOORS: [&str; 3] = ["spawn.rs", "browser_spawn.rs", "safe_command.rs"];
 const DOOR_DIR: &str = "crates/yantrik-companion-tools/src";
 
 /// The programs a Mind's choice must never reach except through a door.
-pub const DENIED: [&str; 24] = [
+pub const DENIED: [&str; 34] = [
     "sh", "bash", "dash", "env", "nohup", "setsid", "swaymsg", "xdg-open", "gio", "systemd-run", "pip", "pip3", "npm", "npx", "gem",
     "python", "python3", "node", "ruby", "perl", "chromium", "chromium-browser", "firefox", "claude",
+    "busybox", "timeout", "nice", "xargs", "sudo", "doas", "nsenter", "unshare", "flock", "script",
 ];
 
 const MARKER: &str = "fixed-program:";
@@ -283,6 +284,17 @@ mod tests {
         let bad = found("a.rs", "let c = Command::new(cmd); // fixed-program: apk|sh");
         assert_eq!(bad.len(), 1, "{bad:?}");
         assert!(found("a.rs", "let c = Command::new(cmd); // fixed-program: ").len() == 1);
+    }
+
+    /// The launchers that start another program (round 11, Low 1) are denied as literals too.
+    #[test]
+    fn the_launchers_are_denied() {
+        for program in ["busybox", "timeout", "nice", "xargs", "sudo", "doas", "nsenter", "unshare", "flock", "script"] {
+            assert!(DENIED.contains(&program), "{program}");
+            let line = format!("Command::new(\"{program}\").arg(\"x\");");
+            assert_eq!(found("a.rs", &line).len(), 1, "{program}");
+            assert_eq!(found("a.rs", &format!("Command::new(cmd); // fixed-program: ls|{program}")).len(), 1, "{program}");
+        }
     }
 
     #[test]

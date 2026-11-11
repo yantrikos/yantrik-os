@@ -10,11 +10,30 @@
 //!   skipped, and the answer names it;
 //! - runs no hook of the package: pip gets `--only-binary=:all:` (a wheel only, so no `setup.py`)
 //!   and npm gets `--ignore-scripts` (no lifecycle script);
+//! - puts a Python wheel in a private target, `<scripts>/.deps` (`pip3 install --target`), and the
+//!   script sees it only through `PYTHONPATH`. Python runs a `.pth` file only from a site
+//!   directory, and a `PYTHONPATH` entry is not one, so a `.pth` a wheel ships never runs, in the
+//!   script or in any host Python (a `--user` install would put it where every later one reads it);
 //! - has no ruby path: `gem install` runs an extension's `extconf.rb`, so a gem is never
 //!   installed automatically.
 
 use std::path::Path;
 use std::process::Command;
+
+/// The private target a Python install goes to, and the one `PYTHONPATH` names for the script.
+fn deps_dir() -> String {
+    format!("{SCRIPTS_DIR}/.deps")
+}
+
+/// The environment of a script run: where it writes, where its scripts are, and for Python the
+/// private `.deps` its installs went to.
+pub fn script_env(command: &mut Command, output: &Path, scripts: &Path, language: &str) {
+    command.env("YANTRIK_OUTPUT_DIR", output.to_str().unwrap_or("/tmp"));
+    command.env("YANTRIK_SCRIPTS_DIR", scripts.to_str().unwrap_or("/tmp"));
+    if language == "python" {
+        command.env("PYTHONPATH", deps_dir());
+    }
+}
 
 /// Where the scripts live, and so where an install runs.
 const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
@@ -53,6 +72,9 @@ pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<Plann
         return Ok(None);
     }
     let mut argv: Vec<String> = fixed.iter().map(|a| a.to_string()).collect();
+    if language == "python" {
+        argv.extend(["--target".to_string(), deps_dir()]);
+    }
     argv.extend(plain);
     let mut command = crate::spawn::mind_command(home, program, &argv)?;
     command.current_dir(SCRIPTS_DIR);
@@ -181,6 +203,34 @@ mod tests {
             let at = w.iter().position(|x| x == "--only-binary=:all:").expect("the flag reaches the command");
             assert!(w.iter().position(|x| x == "requests").unwrap() > at, "{w:?}");
         }
+    }
+
+    /// The wheel goes to a private target, not to `~/.local`, where a `.pth` would run in every Python.
+    #[test]
+    fn pip_installs_into_a_private_target() {
+        if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "python", &names(&["requests"])) {
+            let w = words(&command);
+            let at = w.iter().position(|x| x == "--target").expect("--target reaches the command");
+            assert_eq!(w[at + 1], format!("{SCRIPTS_DIR}/.deps"), "{w:?}");
+            assert!(w.iter().position(|x| x == "requests").unwrap() > at + 1, "{w:?}");
+        }
+        if let Ok(Some((_, command, _))) = plan(&crate::spawn::home(), "node", &names(&["left-pad"])) {
+            assert!(!words(&command).contains(&"--target".to_string()));
+        }
+    }
+
+    /// The script's environment carries `PYTHONPATH` for Python, and only for Python.
+    #[test]
+    fn a_python_script_gets_pythonpath_to_the_private_target() {
+        let env = |language: &str| {
+            let mut c = Command::new("x");
+            script_env(&mut c, Path::new("/o"), Path::new(SCRIPTS_DIR), language);
+            c.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect::<Vec<_>>()
+        };
+        let py = env("python");
+        assert!(py.contains(&("PYTHONPATH".into(), Some(format!("{SCRIPTS_DIR}/.deps")))), "{py:?}");
+        assert!(py.iter().any(|(k, _)| k == "YANTRIK_OUTPUT_DIR") && py.iter().any(|(k, _)| k == "YANTRIK_SCRIPTS_DIR"));
+        assert!(!env("node").iter().any(|(k, _)| k == "PYTHONPATH"));
     }
 
     /// npm runs no lifecycle script of a package.
