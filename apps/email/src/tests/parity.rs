@@ -68,6 +68,8 @@ const BEFORE: &[Golden] = &[
             ("to", true, r#""#),
             ("subject", true, r#""#),
             ("body", true, r#""#),
+            // #1184: a Mind's `compose` may attach a file to the draft; the draft is then kept, not sent.
+            ("attach", false, r#"Absolute path of a file to attach to the draft. A draft with a file attached cannot be sent from here yet"#),
         ],
     },
     Golden {
@@ -183,7 +185,7 @@ fn a_mailbox_is_described_with_the_same_keys_and_values() {
     keys.sort_unstable();
     let mut want = vec![
         "service", "notice", "account_store", "has_account", "account", "folder", "triage", "counts",
-        "counts_reason", "listed", "composing", "search_query", "open_message", "folders", "messages",
+        "counts_reason", "listed", "composing", "draft_attachments", "search_query", "open_message", "folders", "messages",
     ];
     want.sort_unstable();
     assert_eq!(keys, want);
