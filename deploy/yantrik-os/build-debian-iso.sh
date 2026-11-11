@@ -795,10 +795,7 @@ ok "Harnesses staged at /opt/yantrik/share/harnesses, units in /etc/systemd/user
 
 # ── YantrikDB, every mind's memory (#677) ──
 #
-# From the release bundle, which bakes it (bake-memory.sh, called by build-release.sh): the same
-# tree an update installs, so a machine set up from this image and one set up by update have the
-# same memory. /opt/yantrik/memory, root-owned and outside share/. What is in it, and why, is in
-# bake-memory.sh.
+# From the release bundle, the tree an update installs too: /opt/yantrik/memory, root's (bake-memory.sh).
 [ -d "$UNPACK/memory" ] \
     || fail "release tarball carries no memory/ — every harness install would stop at \"no yantrikdb-mcp\" (build it with build-release.sh, which bakes it)"
 sh "$SCRIPT_DIR/bake-memory.sh" --check "$UNPACK/memory" \
@@ -818,6 +815,9 @@ sudo chmod 755 "$ROOTFS/opt/yantrik/memory/bin/yantrikdb-mcp"
 sudo chroot "$ROOTFS" /usr/bin/python3 -I -c 'import sys; sys.path.insert(0, "/opt/yantrik/memory/mcp"); import yantrikdb, yantrikdb_mcp' \
     || fail "yantrikdb-mcp does not import on the image's Python"
 ok "YantrikDB at /opt/yantrik/memory ($(sudo du -sh "$ROOTFS/opt/yantrik/memory" | cut -f1)), from the release bundle: $(head -n 2 "$UNPACK/memory/VERSIONS" | tr '\n' ' ')"
+
+# ── Hermes, the default mind (#1166): pinned, checksummed, ready at first run (bake-hermes.sh) ──
+sudo sh "$SCRIPT_DIR/bake-hermes.sh" "$ROOTFS" || fail "Hermes did not bake into the image"
 
 # ── The mind, beside the OS ──
 #

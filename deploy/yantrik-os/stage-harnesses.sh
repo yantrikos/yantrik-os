@@ -37,7 +37,7 @@ find "$dest" -name __pycache__ -type d -prune -exec rm -rf {} +
 for harness in hermes deepseek pi openclaw mind; do
     [ -f "$dest/$harness/harness.yaml" ] || { echo "$harness has no harness.yaml in $dest" >&2; exit 1; }
 done
-for script in common.sh npm.sh hermes.sh hermes-plugins.sh refresh-plugins.sh hermes_config.py openclaw.sh pi.sh deepseek.sh mind.sh revert.sh; do
+for script in common.sh npm.sh hermes.sh hermes-pin.sh hermes-bake.sh hermes-bake-checks.sh hermes_licences.py hermes_bake_embedder.py hermes-plugins.sh refresh-plugins.sh hermes_config.py openclaw.sh pi.sh deepseek.sh mind.sh revert.sh; do
     [ -f "$dest/lib/install/$script" ] || { echo "lib/install/$script did not stage" >&2; exit 1; }
 done
 # The three proofs every installer ends with, and the Settings row and onboarding call (#677).

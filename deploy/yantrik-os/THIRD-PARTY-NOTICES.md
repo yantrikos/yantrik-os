@@ -62,6 +62,24 @@ An image built **without** `--with-llm` ships no LLM weights. The default build 
 
 Both font families are also *embedded in each app binary* by Slint, not only shipped loose.
 
+## Hermes, the default mind
+
+Baked into the image at `/var/lib/yantrik-mind/harness/hermes` by `bake-hermes.sh` (#1166), at the
+commit pinned in `harnesses/lib/install/hermes-pin.sh`, which is `hermes-agent/LICENSE` there.
+
+| Component | Licence |
+|---|---|
+| Hermes Agent (`github.com/NousResearch/hermes-agent`) | MIT |
+| uv, Node.js, npm, ripgrep (fetched by Hermes's installer, hash-checked) | MIT / Apache-2.0 / Unlicense |
+| Python (python-build-standalone) | PSF-2.0 |
+| Hermes's Python wheels and npm packages | declared per package (MIT, BSD, Apache-2.0, ISC and similar); each ships its own licence file |
+| Embedder model potion-base-8M (minishlab's model2vec distillation, fetched by the YantrikDB engine from `github.com/yantrikos/yantrikdb-models` at build time, SHA-256 checked) | MIT |
+
+Left out on purpose: the GPLv3 ffmpeg build and the `gsap` package (GSAP's own "no charge"
+licence). The build reads every package's declared licence and stops on a restrictive one
+(`harnesses/lib/install/hermes_licences.py`), and reads the embedder model cache by name and release tag. Four Python wheels declare none in their metadata
+(socksio, agent-client-protocol, resvg-py, ptyprocess) and are MIT, Apache-2.0, MIT and ISC upstream.
+
 ## Yantrik OS itself
 
 The binaries under `/opt/yantrik/bin` are Yantrik OS, licensed **GPL-3.0** (`LICENSE` in the

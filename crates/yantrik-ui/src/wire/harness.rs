@@ -35,8 +35,6 @@ const REFRESH: std::time::Duration = std::time::Duration::from_secs(2);
 /// registry, which is in memory.
 const SETTINGS_SCREEN: i32 = 7;
 const HARNESSES_SECTION: i32 = 8;
-/// The first run (`onboarding_first_run.slint`), which says how the default mind's install is going.
-const FIRST_RUN_SCREEN: i32 = 2;
 
 static HOST: OnceLock<Host> = OnceLock::new();
 
@@ -319,14 +317,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             let Some(ui) = weak.upgrade() else { return };
             restore_choice(&host);
             publish(&ui, &host);
-            // The first run's line about the default mind, only while the first run is drawn:
-            // it reads a file, and nothing else shows it.
-            if ui.get_current_screen() == FIRST_RUN_SCREEN {
-                let words: slint::SharedString = crate::default_mind::words_now().into();
-                if ui.get_fr_default_mind_words() != words {
-                    ui.set_fr_default_mind_words(words);
-                }
-            }
+            crate::default_mind_notice::tick(&ui, &host);
         });
     }
     // Keep timer alive

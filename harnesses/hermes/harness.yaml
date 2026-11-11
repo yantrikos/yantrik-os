@@ -20,8 +20,9 @@ requires:
 
 install:
   # Hermes itself when it is not here — by Hermes's own installer, into ~/.hermes, no root —
-  # then the plugin and Hermes's gateway. The image ships no Hermes, so a command that only
-  # copied the plugin failed on every fresh machine with "hermes: not found". `{dir}` is
+  # then the plugin and Hermes's gateway. An image that bakes Hermes (bake-hermes.sh) already has
+  # it and fetches nothing; an older one has none, and a command that only copied the plugin
+  # failed there with "hermes: not found". `{dir}` is
   # wherever this manifest was read from, so it works from the image and from a checkout.
   command: sh {dir}/../lib/install/hermes.sh {dir}
   # Then YantrikDB as its memory from the image, the desktop platform allowlisted to the owner

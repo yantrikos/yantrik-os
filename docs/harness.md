@@ -105,10 +105,10 @@ are `install_harness` and `start_harness`, both graded `sensitive` because they 
 machine.
 
 An install command has to bring the harness's own program, not assume it: the image ships no
-Node, no npm and no Hermes, and every button that assumed one failed on a fresh machine with
-"command not found". The installers live in `harnesses/lib/install` — `npm.sh` fetches a pinned,
-checksummed Node when there is none new enough and installs a package into `~/.local`, and
-`hermes.sh` runs Hermes's own installer — and every one puts its command in `~/.local/bin`. The
+Node, no npm and only Hermes (`bake-hermes.sh`), and every button that assumed one failed on a
+fresh machine with "command not found". The installers live in `harnesses/lib/install`: `npm.sh`
+fetches a pinned, checksummed Node when there is none new enough and installs a package into
+`~/.local`, `hermes.sh` runs Hermes's own installer, and every one puts its command in `~/.local/bin`. The
 page looks there as well as on `PATH`, and each harness's unit puts it on its `PATH`.
 
 Two rules this page keeps:
