@@ -12,23 +12,39 @@
 //! - a pair whose key names a secret, in any of the shapes a log carries one: JSON
 //!   (`"api_key": "…"`), a Rust `Debug` struct (`api_key: "…"`, `api_key: Some("…")`), YAML or an
 //!   env line (`api_key: …`, `API_KEY=…`), with `-` read as `_` (`x-api-key`);
+//! - an `Authorization` or cookie header (`Authorization: token ghs_…`, `cookie: session=…`), a flag
+//!   (`--api-key abc`), and a value that is itself JSON inside a quoted string (`\"api_key\":\"…\"`,
+//!   which is how `tracing` prints a `String` body);
+//! - a secret in a URL's path: a Telegram bot token, a Slack or Discord webhook
+//!   (`problems_redact_urls`);
 //! - `user:pass@` in a URL, whatever the password holds;
 //! - a JSON Web Token (`eyJ…`.`…`.`…`), also at the end of a sentence.
+
+use crate::problems_redact_urls::redact_url_secrets;
 
 /// The prefixes after which the rest of the word is a credential.
 const PREFIXES: &[&str] = &[
     "sk-", "sk_live_", "sk_test_", "rk_live_", "rk_test_", "gsk_", "ya29.", "ghp_", "gho_", "github_pat_", "xoxb-",
-    "xoxp-", "AKIA", "AIza", "hf_", "glpat-", "Bearer ", "bearer ", "token=", "TOKEN=", "api_key=", "API_KEY=", "apikey=",
+    "xoxp-", "xoxa-", "xoxs-", "xapp-", "ghs_", "ghu_", "ghr_", "npm_", "AKIA", "ASIA", "AIza", "hf_", "glpat-", "token=", "TOKEN=", "api_key=", "API_KEY=", "apikey=",
     "key=", "KEY=", "password=", "PASSWORD=", "secret=", "SECRET=",
 ];
 
 /// Words that make a key a secret's name, matched in any case anywhere in the key once `-` is `_`.
-const SECRET_KEYS: &[&str] =
-    &["api_key", "apikey", "token", "secret", "password", "passwd", "passphrase", "private_key", "credential"];
+const SECRET_KEYS: &[&str] = &[
+    "api_key", "apikey", "token", "secret", "password", "passwd", "passphrase", "private_key", "credential", "authorization",
+    "accountkey",
+];
+
+/// Short words that name a secret only as a whole `_`-separated part of the key (`wifi_psk`, `set-cookie`,
+/// `session`), so `pskill` and `autoexec` are not read as one.
+const SECRET_KEY_PARTS: &[&str] = &["auth", "psk", "pwd", "cookie", "session"];
+
+/// The schemes an `Authorization` value starts with; the credential after one is what goes.
+const AUTH_SCHEMES: &[&str] = &["bearer", "basic", "token", "digest", "negotiate", "ntlm"];
 
 /// `text` with every credential shape replaced.
 pub(crate) fn redact_secrets(text: &str) -> String {
-    redact_pairs(&redact_basic(&redact_prefixed(&redact_jwts(&redact_url_credentials(&redact_pem(text))))))
+    redact_pairs(&redact_basic(&redact_prefixed(&redact_jwts(&redact_url_credentials(&redact_url_secrets(&redact_pem(text)))))))
 }
 
 fn is_word(c: char) -> bool {
@@ -49,13 +65,25 @@ fn redact_prefixed(text: &str) -> String {
         if !previous.is_ascii_alphanumeric() {
             for prefix in PREFIXES {
                 if let Some(after) = rest.strip_prefix(prefix) {
-                    // Keep the prefix that names the thing, drop the thing.
+                    // Keep the prefix that names the thing, drop the thing. After `password=` a quote
+                    // opens a whole string (a passphrase has spaces), not a word.
                     out.push_str(prefix);
-                    out.push_str("<redacted>");
+                    let (shown, len) = match after.chars().next() {
+                        Some(q @ ('"' | '\'')) if prefix.ends_with('=') => (format!("{q}<redacted>{q}"), quoted_end(after, q)),
+                        _ => ("<redacted>".to_string(), token_end(after)),
+                    };
+                    out.push_str(&shown);
                     previous = '>';
-                    rest = &after[token_end(after)..];
+                    rest = &after[len..];
                     continue 'scan;
                 }
+            }
+            if let Some((scheme, after)) = bearer_scheme(rest) {
+                out.push_str(scheme);
+                out.push_str("<redacted>");
+                previous = '>';
+                rest = &after[token_end(after)..];
+                continue 'scan;
             }
         }
         let ch = rest.chars().next().unwrap();
@@ -64,6 +92,16 @@ fn redact_prefixed(text: &str) -> String {
         rest = &rest[ch.len_utf8()..];
     }
     out
+}
+
+/// `Bearer` and the blanks after it (a space, a tab, several), and what follows them.
+fn bearer_scheme(text: &str) -> Option<(&str, &str)> {
+    const WORD: &str = "bearer";
+    if !text.get(..WORD.len())?.eq_ignore_ascii_case(WORD) {
+        return None;
+    }
+    let blanks = text[WORD.len()..].len() - text[WORD.len()..].trim_start_matches([' ', '\t']).len();
+    (blanks > 0).then(|| text.split_at(WORD.len() + blanks))
 }
 
 /// `Basic dXNlcjpwYXNzd29yZA==`: the base64 of `user:password`. Only a base64 word of some length
@@ -116,14 +154,15 @@ fn redact_pem(text: &str) -> String {
 /// Whether `key` (as written in a log) names a secret. A count of tokens is not one (`max_tokens`).
 fn names_a_secret(key: &str) -> bool {
     let key = key.to_ascii_lowercase().replace('-', "_");
-    let auth = key.split('_').any(|part| part == "auth");
-    (auth || SECRET_KEYS.iter().any(|k| key.contains(k))) && !key.ends_with("tokens")
+    let part = key.split('_').any(|part| SECRET_KEY_PARTS.contains(&part));
+    (part || SECRET_KEYS.iter().any(|k| key.contains(k))) && !key.ends_with("tokens")
 }
 
 /// Pairs whose key names a secret: the value goes, the key and the punctuation stay. A value is a
 /// quoted string (escapes honoured), `Some("…")` as `Debug` prints an `Option`, or a bare word that
-/// runs to the next `,`, `}`, `]`, `)`, `&` or whitespace. The separator is `:` or `=`, after a key
-/// that may be quoted.
+/// runs to the next `,`, `}`, `]`, `)`, `&`, `;` or whitespace. The separator is `:` or `=`, after a
+/// key that may be quoted; for a `--flag` it is the blank after it. Where the pair is itself inside a
+/// string (`\"api_key\":\"…\"`, JSON as `tracing` prints a `String`), the quotes are the escaped ones.
 fn redact_pairs(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -140,17 +179,55 @@ fn redact_pairs(text: &str) -> String {
         if !names_a_secret(key) {
             continue;
         }
-        let closing_quote = usize::from(rest.starts_with('"') || rest.starts_with('\''));
-        let spaced = rest[closing_quote..].trim_start_matches([' ', '\t']);
-        let Some(value) = spaced.strip_prefix(':').or_else(|| spaced.strip_prefix('=')) else { continue };
+        let escaped = escaped_quote(rest);
+        let closing = escaped.map_or(usize::from(rest.starts_with(['"', '\''])), str::len);
+        let spaced = rest[closing..].trim_start_matches([' ', '\t']);
+        let separated = spaced.strip_prefix(':').or_else(|| spaced.strip_prefix('='));
+        let flag_value = (key.starts_with("--") && closing == 0 && rest.starts_with([' ', '\t']) && !spaced.starts_with('-')).then_some(spaced);
+        let Some(value) = separated.or(flag_value) else { continue };
         let value_at = value.trim_start_matches([' ', '\t']);
-        let gap = &rest[..rest.len() - value_at.len()];
-        out.push_str(gap);
-        let (redacted, left) = redact_value(value_at);
+        out.push_str(&rest[..rest.len() - value_at.len()]);
+        let (redacted, left) = match escaped {
+            Some(quote) if value_at.starts_with(quote) => {
+                let inner = &value_at[quote.len()..];
+                let len = inner.find(quote).map_or(inner.len(), |i| i + quote.len());
+                (format!("{quote}<redacted>{quote}"), &inner[len..])
+            }
+            _ => redact_value_of(key, value_at),
+        };
         out.push_str(&redacted);
         rest = left;
     }
     out
+}
+
+/// The backslashes and quote at the start of `text` (`\"`, `\\"`): a quote escaped once or more.
+fn escaped_quote(text: &str) -> Option<&str> {
+    let slashes = text.len() - text.trim_start_matches('\\').len();
+    (slashes > 0 && text[slashes..].starts_with('"')).then(|| &text[..slashes + 1])
+}
+
+/// What follows `key`, redacted by what the key is: a header's scheme stays, a cookie runs to the end of
+/// its line (it holds blanks and `;`), anything else is [`redact_value`].
+fn redact_value_of<'a>(key: &str, value: &'a str) -> (String, &'a str) {
+    let key = key.to_ascii_lowercase().replace('-', "_");
+    let quoted = value.starts_with(['"', '\'']) || value.starts_with("Some(");
+    if quoted {
+        return redact_value(value);
+    }
+    if key.contains("authorization") {
+        let word = value.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(value.len());
+        let after = &value[word..];
+        let credential = after.trim_start_matches([' ', '\t']);
+        let blanks = &after[..after.len() - credential.len()];
+        if AUTH_SCHEMES.contains(&value[..word].to_ascii_lowercase().as_str()) && !blanks.is_empty() {
+            return (format!("{}{blanks}<redacted>", &value[..word]), &credential[bare_end(credential)..]);
+        }
+    }
+    if key.split('_').any(|part| part == "cookie") {
+        return ("<redacted>".into(), &value[value.find(['\n', '"', '\'', '}']).unwrap_or(value.len())..]);
+    }
+    redact_value(value)
 }
 
 /// The value at the start of `value` as it is printed once redacted, and what follows it.
@@ -180,7 +257,7 @@ fn quoted_end(value: &str, quote: char) -> usize {
 }
 
 fn bare_end(value: &str) -> usize {
-    value.find(|c: char| matches!(c, ',' | '}' | ']' | ')' | '&') || c.is_whitespace()).unwrap_or(value.len())
+    value.find(|c: char| matches!(c, ',' | '}' | ']' | ')' | '&' | ';') || c.is_whitespace()).unwrap_or(value.len())
 }
 
 /// `scheme://user:pass@host` becomes `scheme://<redacted>@host`: the whole userinfo goes when it
@@ -361,6 +438,54 @@ mod tests {
         assert_eq!(redact_secrets("clone https://user:p@ss@host/x"), "clone https://<redacted>@host/x");
         assert_eq!(redact_secrets("https://user:12345@host/"), "https://<redacted>@host/");
         assert_eq!(redact_secrets(r#"urls "https://a:b@h/","https://example.org/x@y""#), r#"urls "https://<redacted>@h/","https://example.org/x@y""#);
+    }
+
+    /// Round-5 review, row 1: a passphrase or Wi-Fi PSK with spaces in quotes lost only its first word.
+    #[test]
+    fn a_multi_word_quoted_secret_goes_whole() {
+        assert_eq!(redact_secrets(r#"password="correct horse battery staple""#), r#"password="<redacted>""#);
+        assert_eq!(redact_secrets(r#"psk="my home wifi pass" ssid="Home""#), r#"psk="<redacted>" ssid="Home""#);
+        assert_eq!(redact_secrets("token='two words' next"), "token='<redacted>' next");
+        assert_eq!(redact_secrets(r#"{"passphrase": "correct horse battery"}"#), r#"{"passphrase": "<redacted>"}"#);
+    }
+
+    /// Row 2: JSON inside a quoted string, which is how `tracing` prints `?body` of a `String`.
+    #[test]
+    fn json_inside_a_quoted_string_loses_its_values() {
+        let out = redact_secrets(r#"body="{\"error\":\"bad\",\"api_key\":\"abc123secretvalue\"}" status=400"#);
+        assert_eq!(out, r#"body="{\"error\":\"bad\",\"api_key\":\"<redacted>\"}" status=400"#);
+        let twice = redact_secrets(r#"x="{\\"password\\": \\"two words\\"}" y"#);
+        assert_eq!(twice, r#"x="{\\"password\\": \\"<redacted>\\"}" y"#);
+        assert_eq!(redact_secrets(r#"{\"note\":\"fine\"}"#), r#"{\"note\":\"fine\"}"#);
+    }
+
+    /// Row 4: `authorization` with a scheme that is not `Bearer`, and the `ghs_` family.
+    #[test]
+    fn an_authorization_header_loses_its_credential_whatever_the_scheme() {
+        let ghs = ["ghs_", "16C7e42F292c6912E7710c838347Ae178B4a"].concat();
+        assert_eq!(redact_secrets(&format!(r#"{{"authorization": "token {ghs}"}}"#)), r#"{"authorization": "<redacted>"}"#);
+        assert_eq!(redact_secrets(&format!("Authorization: token {ghs} sent")), "Authorization: token <redacted> sent");
+        assert_eq!(redact_secrets("Authorization: Digest abc123 realm"), "Authorization: Digest <redacted> realm");
+        assert_eq!(redact_secrets("Authorization: abc123secret"), "Authorization: <redacted>");
+        for prefix in ["ghs_", "ghu_", "ghr_", "npm_", "xoxa-", "xoxs-", "xapp-"] {
+            assert_eq!(redact_secrets(&format!("t {prefix}abcdef0123456789 e")), format!("t {prefix}<redacted> e"), "{prefix}");
+        }
+        assert_eq!(redact_secrets("sts ASIAIOSFODNN7EXAMPLE end"), "sts ASIA<redacted> end");
+    }
+
+    /// Row 5: `Bearer` and a tab, flags, cookies and the Azure connection string.
+    #[test]
+    fn bearer_after_a_tab_flags_cookies_and_account_keys_go() {
+        assert_eq!(redact_secrets("Authorization: Bearer\tabc123secret"), "Authorization: Bearer\t<redacted>");
+        assert_eq!(redact_secrets("Bearer   abc123secret x"), "Bearer   <redacted> x");
+        assert_eq!(redact_secrets("run --api-key abc123 --token abc456 --model x"), "run --api-key <redacted> --token <redacted> --model x");
+        assert_eq!(redact_secrets("run --max-tokens 100 --retries 3"), "run --max-tokens 100 --retries 3");
+        assert_eq!(redact_secrets("cookie: session=abc123; theme=dark\nnext: 1"), "cookie: <redacted>\nnext: 1");
+        assert_eq!(redact_secrets("Set-Cookie: sid=abc; Path=/"), "Set-Cookie: <redacted>");
+        assert_eq!(redact_secrets("AccountName=acct;AccountKey=abc123def==;EndpointSuffix=core"), "AccountName=acct;AccountKey=<redacted>;EndpointSuffix=core");
+        assert_eq!(redact_secrets("pwd=hunter2 PWD: x"), "pwd=<redacted> PWD: <redacted>");
+        // A word that merely holds one of the short names is not a key.
+        assert_eq!(redact_secrets("pskill: done sessions: 3"), "pskill: done sessions: 3");
     }
 
     #[test]

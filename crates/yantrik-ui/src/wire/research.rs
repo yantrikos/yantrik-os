@@ -5,11 +5,26 @@
 //! forgets an earlier No and raises the same card the companion's own wish would, naming what is
 //! sent and to whom. Nothing here turns research on; the card's Allow does (`control_research`).
 
+use std::sync::Mutex;
+
 use slint::ComponentHandle;
 
 use crate::{App, InitiativeState};
 
+/// The window the row is drawn in, for a change that arrives from another thread: a card's answer,
+/// a mind's action.
+static WINDOW: Mutex<Option<slint::Weak<App>>> = Mutex::new(None);
+
+/// Redraw the row from any thread, when the switch or a No changes (`background_research::on_changed`).
+fn redraw() {
+    if let Some(weak) = WINDOW.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = weak.upgrade_in_event_loop(|ui| refresh(&ui));
+    }
+}
+
 pub fn wire(ui: &App) {
+    *WINDOW.lock().unwrap_or_else(|e| e.into_inner()) = Some(ui.as_weak());
+    yantrik_companion::background_research::on_changed(redraw);
     let state = ui.global::<InitiativeState>();
     let weak = ui.as_weak();
     state.on_research_off(move || {

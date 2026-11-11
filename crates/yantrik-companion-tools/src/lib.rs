@@ -24,6 +24,7 @@ pub mod canvas;
 pub mod claude;
 pub mod clipboard;
 pub mod coder;
+mod coder_sandbox;
 pub mod desktop;
 pub mod discovery;
 pub mod disk;

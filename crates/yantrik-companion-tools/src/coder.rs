@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
+use crate::coder_sandbox::{self, SandboxMode};
 
 const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
 const OUTPUT_DIR: &str = "/home/yantrik/.config/yantrik/scripts/output";
@@ -285,6 +286,11 @@ fn detect_node_deps(content: &str) -> Vec<String> {
 /// Install dependencies before execution. Returns error message if installation fails.
 fn install_deps(language: &str, deps: &[String]) -> Option<String> {
     if deps.is_empty() { return None; }
+    // pip, npm and gem reach their public registries, outside the sandbox: that is a fetch from the
+    // open web, and it waits for a turn the person started or for research to be on.
+    if let Err(refused) = coder_sandbox::allow_install() {
+        return Some(refused);
+    }
 
     let (cmd, args_prefix): (&str, &[&str]) = match language {
         "python" => ("pip3", &["install", "-q", "--break-system-packages"]),
@@ -442,126 +448,6 @@ struct ExecutionResult {
     sandboxed: bool,
 }
 
-// ── Sandbox modes ──
-
-/// Controls how isolated the script execution environment is.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum SandboxMode {
-    /// Full isolation: no network, read-only filesystem, PID namespace.
-    /// Default for code_execute and script_run.
-    Strict,
-    /// Filesystem isolation but network allowed.
-    /// For web portals, API calls, data fetching scripts.
-    Network,
-    /// No sandbox. Only used if bwrap unavailable.
-    None,
-}
-
-impl SandboxMode {
-    fn from_str(s: &str) -> Self {
-        match s {
-            "network" | "web" => Self::Network,
-            "none" | "unsafe" => Self::None,
-            _ => Self::Strict,
-        }
-    }
-}
-
-/// Check if bubblewrap is available on this system.
-fn has_bwrap() -> bool {
-    let result = std::process::Command::new("/usr/bin/bwrap")
-        .arg("--version")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .env_remove("LD_PRELOAD") // bwrap is a native binary, doesn't need LD_PRELOAD
-        .status();
-    match &result {
-        Ok(s) => {
-            tracing::debug!(success = s.success(), "bwrap availability check");
-            s.success()
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "bwrap not available");
-            false
-        }
-    }
-}
-
-/// Build bwrap arguments for sandboxed execution.
-fn build_bwrap_args(
-    sandbox: SandboxMode,
-    workspace: &Path,
-    output: &Path,
-) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
-
-    // Read-only system mounts
-    for dir in &["/usr", "/lib", "/bin", "/etc"] {
-        if Path::new(dir).exists() {
-            args.push("--ro-bind".into());
-            args.push(dir.to_string());
-            args.push(dir.to_string());
-        }
-    }
-    // /sbin for system tools some scripts may need
-    if Path::new("/sbin").exists() {
-        args.push("--ro-bind".into());
-        args.push("/sbin".into());
-        args.push("/sbin".into());
-    }
-    // lib64 symlink (needed on some systems)
-    if Path::new("/usr/lib64").exists() {
-        args.push("--symlink".into());
-        args.push("usr/lib64".into());
-        args.push("/lib64".into());
-    }
-
-    // Writable workspace (scripts + output)
-    args.push("--bind".into());
-    args.push(workspace.to_string_lossy().to_string());
-    args.push(workspace.to_string_lossy().to_string());
-    if output != workspace && output.starts_with(workspace) {
-        // output is inside workspace, already covered
-    } else if output.exists() {
-        args.push("--bind".into());
-        args.push(output.to_string_lossy().to_string());
-        args.push(output.to_string_lossy().to_string());
-    }
-
-    // Writable /tmp for temp files
-    args.push("--tmpfs".into());
-    args.push("/tmp".into());
-
-    // /dev and /proc (needed for basic operation)
-    args.push("--dev".into());
-    args.push("/dev".into());
-    args.push("--proc".into());
-    args.push("/proc".into());
-
-    // PID namespace (always isolate PIDs)
-    args.push("--unshare-pid".into());
-
-    // Network isolation
-    match sandbox {
-        SandboxMode::Strict => {
-            args.push("--unshare-net".into());
-        }
-        SandboxMode::Network => {
-            args.push("--share-net".into());
-        }
-        SandboxMode::None => unreachable!("bwrap not used in None mode"),
-    }
-
-    // Die when parent dies (prevent orphan processes)
-    args.push("--die-with-parent".into());
-
-    // Resource limits via inner ulimit wrapper
-    // (bwrap doesn't set ulimits directly — we wrap the command)
-
-    args.push("--".into());
-    args
-}
-
 /// A script's private stand-in HOME for one unsandboxed run, removed with everything in it when
 /// the run is over (the guard is dropped as `execute_script` returns, after the child is reaped).
 struct RunHome(PathBuf);
@@ -606,12 +492,27 @@ fn execute_script(
     let before = snapshot_dir(&out_dir);
     let before_scripts = snapshot_dir(&scripts);
 
-    // Decide whether to use bwrap
-    let use_bwrap = sandbox != SandboxMode::None && has_bwrap();
+    // Decide whether to use bwrap. A sandbox that was asked for and is not there is a refusal, not a
+    // quiet run without one.
+    let use_bwrap = match coder_sandbox::plan(sandbox, coder_sandbox::has_bwrap()) {
+        Ok(use_bwrap) => use_bwrap,
+        Err(why) => {
+            return ExecutionResult {
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: why,
+                duration_secs: 0.0,
+                timed_out: false,
+                generated_files: vec![],
+                error_analysis: None,
+                sandboxed: false,
+            };
+        }
+    };
 
     // Build command: either bwrap-wrapped or direct
     let mut cmd = if use_bwrap {
-        let bwrap_args = build_bwrap_args(sandbox, &scripts, &out_dir);
+        let bwrap_args = coder_sandbox::build_bwrap_args(sandbox, &scripts, &out_dir);
         let mut c = std::process::Command::new("/usr/bin/bwrap");
         c.env_remove("LD_PRELOAD"); // bwrap is native, LD_PRELOAD can interfere
         c.args(&bwrap_args);
@@ -905,7 +806,7 @@ impl Tool for CodeExecuteTool {
                         "code": {"type": "string", "description": "Code to execute"},
                         "language": {"type": "string", "enum": ["python", "bash", "node", "ruby"], "description": "Language (default: python)"},
                         "timeout": {"type": "integer", "description": "Timeout in seconds (default 120, max 600)"},
-                        "sandbox": {"type": "string", "enum": ["strict", "network"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for API/web calls."}
+                        "sandbox": {"type": "string", "enum": ["strict", "network"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for API/web calls, and runs only in a turn the person started."}
                     },
                     "required": ["code"]
                 }
@@ -927,6 +828,16 @@ impl Tool for CodeExecuteTool {
 
         if code.is_empty() {
             return "Error: code is required".to_string();
+        }
+
+        // Auto-install deps, before anything is written: a refusal leaves no trace.
+        let deps = match language {
+            "python" => detect_python_deps(code),
+            "node" | "javascript" => detect_node_deps(code),
+            _ => vec![],
+        };
+        if let Some(err) = install_deps(language, &deps) {
+            return err;
         }
 
         let _ = std::fs::create_dir_all(scripts_dir());
@@ -952,17 +863,6 @@ impl Tool for CodeExecuteTool {
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
-        }
-
-        // Auto-install deps
-        let deps = match language {
-            "python" => detect_python_deps(code),
-            "node" | "javascript" => detect_node_deps(code),
-            _ => vec![],
-        };
-        if let Some(err) = install_deps(language, &deps) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return err;
         }
 
         // Execute in sandbox
@@ -1125,7 +1025,7 @@ impl Tool for ScriptRunTool {
                         "timeout": {"type": "integer", "description": "Timeout in seconds (default 120, max 600)"},
                         "env": {"type": "object", "description": "Environment variables to set (key-value pairs)"},
                         "working_dir": {"type": "string", "description": "Working directory (default: scripts dir)"},
-                        "sandbox": {"type": "string", "enum": ["strict", "network", "none"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for web portals/APIs. 'none': no sandbox."}
+                        "sandbox": {"type": "string", "enum": ["strict", "network", "none"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for web portals/APIs. 'none': no sandbox. Both run only in a turn the person started."}
                     },
                     "required": ["name"]
                 }

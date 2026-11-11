@@ -2,20 +2,20 @@
 //!
 //! The rule "no tool that reaches the open web runs in a turn nobody started, unless research is on"
 //! is enforced once, in `ToolRegistry::execute`, from the table in `yantrik_companion_core::reach`.
-//! A tool nobody listed is `Local`, so the table is only as good as this test, which does not trust
-//! it. It builds the full registry (every optional tool switched on) and checks it three ways:
+//! A tool nobody listed is `Local`, so the table is only as good as the tests, which do not trust
+//! it. They build the full registry (every optional tool switched on) and check it:
 //!
-//! 1. the tools known to reach the web or a browser are classed as such (a hand-kept list, so a
+//! 1. here: the tools known to reach the web or a browser are classed as such (a hand-kept list, so a
 //!    refactor of the table cannot quietly drop one);
-//! 2. every tool whose `impl Tool` block drives an HTTP client, a socket, a search backend or the
-//!    browser is classed non-local, or is in the reviewed list of tools that do and send nothing out;
-//! 3. an unattended call to each web or browser tool through the real registry is refused and not run.
-//!
-//! (2) is what catches a new tool: add `curl` to a file and its tools must be declared.
+//! 2. here: an unattended call to each web or browser tool through the real registry is refused and
+//!    not run, and so is each way a code runner reaches the web (a network sandbox, a dependency
+//!    install); a person's call is not;
+//! 3. `reach_sources.rs`: every tool whose source (or a helper it calls, in any crate) drives a client,
+//!    a socket, a search backend, a browser or a network program is classed non-local.
 
-use std::path::{Path, PathBuf};
+mod common;
 
-use yantrik_companion::config::CompanionConfig;
+use common::tools;
 use yantrik_companion::tools::build_registry;
 use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::reach::{check_call, reach, Reach};
@@ -38,84 +38,11 @@ const KNOWN_WEB: [&str; 14] = [
     "launch_browser",
     "browser_search",
 ];
-const KNOWN_BROWSER: [&str; 3] = ["search_sources", "open_url", "browser_login"];
-
-/// What in a tool's code means "this drives the network or a browser".
-const MARKERS: [&str; 12] = [
-    "ureq",
-    "reqwest",
-    "curl",
-    "TcpStream",
-    "UdpSocket",
-    "http_get",
-    "ensure_headless_browser",
-    "browser_side",
-    "connect_first_tab",
-    "cdp_send",
-    "searxng",
-    "duckduckgo",
-];
-
-/// Tools whose code holds one of those markers and send nothing out, and why. Everything else with
-/// a marker must be declared.
-const LOCAL_DESPITE_MARKERS: [(&str, &str); 0] = [];
-
-fn config_with_everything_on() -> CompanionConfig {
-    serde_yaml::from_str(
-        r#"
-llm: { backend: ollama, api_base_url: "http://localhost:11434/v1", api_model: "m" }
-home_assistant: { enabled: true, base_url: "http://ha.local", token: "t" }
-telegram: { enabled: true, bot_token: "t", chat_id: "1" }
-whatsapp: { enabled: true, phone_number_id: "p", access_token: "t" }
-email: { enabled: true, accounts: [ { name: "n", email: "a@b.c", provider: "gmail" } ] }
-"#,
-    )
-    .expect("a config with every optional tool on")
-}
-
-fn tools() -> Vec<(&'static str, &'static str)> {
-    static TOOLS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> = std::sync::OnceLock::new();
-    TOOLS
-        .get_or_init(|| {
-            build_registry(&config_with_everything_on())
-                .list_metadata(PermissionLevel::Dangerous)
-                .into_iter()
-                .map(|m| (m.name, m.category))
-                .collect()
-        })
-        .clone()
-}
+const KNOWN_BROWSER: [&str; 4] = ["search_sources", "open_url", "browser_login", "claude_code"];
 
 fn class(name: &str) -> Reach {
     let (_, category) = tools().into_iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("{name} is not a registered tool"));
     reach(name, category, &serde_json::json!({}))
-}
-
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(dir).unwrap().flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-/// The tool names a file registers: the string literal after each `fn name(&self) -> &'static str`.
-fn tool_names(code: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut rest = code;
-    while let Some(at) = rest.find("fn name(&self) -> &'static str") {
-        rest = &rest[at + 30..];
-        let window = &rest[..rest.len().min(120)];
-        if let Some(open) = window.find('"') {
-            if let Some(len) = window[open + 1..].find('"') {
-                names.push(window[open + 1..open + 1 + len].to_string());
-            }
-        }
-    }
-    names
 }
 
 #[test]
@@ -128,44 +55,11 @@ fn the_tools_known_to_reach_out_are_declared() {
     }
 }
 
-#[test]
-fn every_tool_whose_source_drives_a_client_or_a_browser_is_declared() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut files = Vec::new();
-    rust_files(&crates.join("yantrik-companion-tools/src"), &mut files);
-    rust_files(&crates.join("yantrik-companion/src/tools"), &mut files);
-    rust_files(&crates.join("yantrik-companion/src/life_assistant"), &mut files);
-    let registered = tools();
-    let mut checked = 0;
-    for file in files {
-        let source = std::fs::read_to_string(&file).unwrap();
-        let code = source.split("#[cfg(test)]").next().unwrap();
-        for block in code.split("impl Tool for ").skip(1) {
-            let Some(marker) = MARKERS.iter().find(|m| block.contains(**m)) else { continue };
-            for name in tool_names(block) {
-                let Some((_, category)) = registered.iter().find(|(n, _)| *n == name) else { continue };
-                checked += 1;
-                let declared = reach(&name, category, &serde_json::json!({})) != Reach::Local;
-                let reviewed = LOCAL_DESPITE_MARKERS.iter().any(|(n, _)| *n == name);
-                assert!(
-                    declared || reviewed,
-                    "`{name}` ({}) uses `{marker}` and is declared Local: declare what it reaches in yantrik_companion_core::reach, or list it in LOCAL_DESPITE_MARKERS with a reason",
-                    file.display()
-                );
-            }
-        }
-    }
-    assert!(checked > 25, "the scan found {checked} tools that reach out: it is not reading the sources");
-}
-
-#[test]
-fn the_reviewed_local_tools_are_registered_and_local() {
-    for (name, _) in LOCAL_DESPITE_MARKERS {
-        assert_eq!(class(name), Reach::Local, "{name}");
-    }
-}
-
 fn run_unattended(reg: &ToolRegistry, db: &yantrikdb_core::YantrikDB, name: &str) -> String {
+    run_with(reg, db, name, &serde_json::json!({ "query": "rust news", "url": "https://example.com", "app": "browser" }))
+}
+
+fn run_with(reg: &ToolRegistry, db: &yantrikdb_core::YantrikDB, name: &str, args: &serde_json::Value) -> String {
     let ctx = ToolContext {
         db,
         max_permission: PermissionLevel::Dangerous,
@@ -174,7 +68,7 @@ fn run_unattended(reg: &ToolRegistry, db: &yantrikdb_core::YantrikDB, name: &str
         incognito: true,
         agent_spawner: None,
     };
-    reg.execute(&ctx, name, &serde_json::json!({ "query": "rust news", "url": "https://example.com", "app": "browser" }))
+    reg.execute(&ctx, name, args)
 }
 
 /// A Medium-tier news-watch urge never reaches the model (see the instincts' tests), but the
@@ -183,7 +77,7 @@ fn run_unattended(reg: &ToolRegistry, db: &yantrikdb_core::YantrikDB, name: &str
 /// never starts.
 #[test]
 fn an_unattended_turn_runs_no_tool_that_reaches_the_web_and_starts_no_browser() {
-    let reg = build_registry(&config_with_everything_on());
+    let reg = build_registry(&common::config_with_everything_on());
     let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
     assert!(!yantrik_companion_core::background_research::person_started());
     assert!(!yantrik_companion_core::background_research::is_on());
@@ -211,5 +105,59 @@ fn a_turn_the_person_started_is_not_refused() {
     for (name, category) in tools() {
         let args = serde_json::json!({ "app": "browser" });
         assert_eq!(check_call(name, category, &args), Ok(()), "{name} was refused for a person");
+    }
+}
+
+/// The code runners are not web tools by name, and the model reaches for them after a refused
+/// `web_search`: `code_execute {"sandbox":"network"}` runs `urllib` with the network shared. Asked for
+/// any way but the strict sandbox, or needing a package from pip, npm or gem, they do not run.
+#[test]
+fn an_unattended_code_runner_has_no_way_to_the_web() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    for sandbox in ["network", "web", "none", "unsafe"] {
+        for (tool, args) in [
+            ("code_execute", json!({ "code": "import urllib.request
+print(urllib.request.urlopen('https://example.com').read())", "sandbox": sandbox })),
+            ("script_run", json!({ "name": "anything", "sandbox": sandbox })),
+        ] {
+            let said = run_with(&reg, &db, tool, &args);
+            assert!(said.starts_with("Refused:"), "{tool} with sandbox {sandbox} ran with nobody asking: {said}");
+        }
+    }
+    // A package to fetch is a fetch, even in the strict sandbox. Nothing is written first.
+    for args in [
+        json!({ "code": "import zzz_no_such_package_1171
+print(1)" }),
+        json!({ "code": "const x = require('zzz-no-such-package-1171');", "language": "node" }),
+    ] {
+        let said = run_with(&reg, &db, "code_execute", &args);
+        assert!(said.starts_with("Refused:") && said.contains("install_deps"), "a dependency install ran with nobody asking: {said}");
+    }
+}
+
+/// And a person who asks for code with a network gets it: the gate lets the call through (the code is
+/// empty, so the tool answers with its own error instead of running anything).
+#[test]
+fn a_persons_code_runner_with_a_network_is_not_refused() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let _person = yantrik_companion_core::background_research::person_turn();
+    for sandbox in ["strict", "network", "none"] {
+        let said = run_with(&reg, &db, "code_execute", &json!({ "code": "", "sandbox": sandbox }));
+        assert_eq!(said, "Error: code is required", "sandbox {sandbox} in a turn the person started: {said}");
+    }
+    assert_eq!(check_call("code_execute", "coder", &json!({ "sandbox": "network", "code": "print(1)" })), Ok(()));
+    assert_eq!(check_call("install_deps", "coder", &json!({})), Ok(()), "a person's dependencies install");
+}
+
+/// A tool server the person adds is named at run time, so no list of names can hold it: its
+/// category does, and every `mcp` tool is the web's.
+#[test]
+fn every_tool_of_a_tool_server_is_the_webs() {
+    for name in ["mcp__fetch_fetch", "mcp__brave-search_web_search", "mcp__x_y"] {
+        assert_eq!(reach(name, "mcp", &serde_json::json!({})), Reach::Web, "{name}");
     }
 }

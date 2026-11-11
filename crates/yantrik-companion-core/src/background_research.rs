@@ -38,6 +38,8 @@ static CONFIG_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 static IDLE_SECS: AtomicU64 = AtomicU64::new(f64::INFINITY.to_bits());
 /// What raises the offer card, installed by the companion (the card lives in a crate above this one).
 static ON_WANTED: OnceLock<fn(&str)> = OnceLock::new();
+/// What redraws a screen that shows the switch, installed by the shell.
+static ON_CHANGED: OnceLock<fn()> = OnceLock::new();
 
 /// Seconds since the person last spoke within which they count as at the desk.
 pub const PRESENT_WITHIN_SECS: f64 = 600.0;
@@ -79,11 +81,25 @@ pub fn is_on() -> bool {
 /// its source-scan test keeps every other file from calling it.
 pub fn set_on() {
     ON.store(true, Ordering::SeqCst);
+    changed();
 }
 
 /// Record that the person turned it off. Same rule as [`set_on`].
 pub fn set_off() {
     ON.store(false, Ordering::SeqCst);
+    changed();
+}
+
+/// Install what redraws the screen that shows the switch and a No (Settings). It runs after the
+/// switch or the No changes, whoever changed it: a card's answer, a mind's action or the row itself.
+pub fn on_changed(redraw: fn()) {
+    let _ = ON_CHANGED.set(redraw);
+}
+
+fn changed() {
+    if let Some(redraw) = ON_CHANGED.get() {
+        redraw();
+    }
 }
 
 /// Did the person say No to the card, and has not asked to be asked again.
@@ -102,14 +118,18 @@ fn declined_marker() -> Option<PathBuf> {
 /// Remember a No, here and in the file. Called by the offer when the card is answered No.
 pub fn decline() -> std::io::Result<()> {
     DECLINED.store(true, Ordering::SeqCst);
-    declined_marker().map_or(Ok(()), |p| write_marker(&p))
+    let kept = declined_marker().map_or(Ok(()), |p| write_marker(&p));
+    changed();
+    kept
 }
 
 /// Forget a No, so the card may be raised again. **Only when the person asks to be asked**, or
 /// allows (`control_research.rs`).
 pub fn forgive() -> std::io::Result<()> {
     DECLINED.store(false, Ordering::SeqCst);
-    declined_marker().map_or(Ok(()), |p| clear_marker(&p))
+    let forgotten = declined_marker().map_or(Ok(()), |p| clear_marker(&p));
+    changed();
+    forgotten
 }
 
 fn write_marker(path: &Path) -> std::io::Result<()> {
@@ -252,6 +272,18 @@ mod tests {
         .unwrap();
         let unattended = std::thread::spawn(carry).join().unwrap();
         std::thread::spawn(move || assert!(adopt(unattended).is_none() && !person_started())).join().unwrap();
+    }
+
+    #[test]
+    fn a_screen_that_shows_the_switch_is_told_when_it_changes() {
+        static REDRAWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        on_changed(|| {
+            REDRAWS.fetch_add(1, Ordering::SeqCst);
+        });
+        let before = REDRAWS.load(Ordering::SeqCst);
+        // Off is what the test process already is, so this changes nothing else a test reads.
+        set_off();
+        assert_eq!(REDRAWS.load(Ordering::SeqCst), before + 1, "turning it off redraws Settings");
     }
 
     #[test]

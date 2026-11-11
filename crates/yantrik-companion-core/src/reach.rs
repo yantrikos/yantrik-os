@@ -37,10 +37,14 @@ pub enum Reach {
 /// In the `browser` category, but only closing or reporting on the browser. (`web_search` is in that
 /// category too and is `Web`: unattended, it goes to SearXNG or DuckDuckGo and never to a browser.)
 const BROWSER_LOCAL: &[&str] = &["browser_cleanup", "browser_status"];
-/// Drive or open a browser from outside the `browser` category.
-const BROWSER_NAMES: &[&str] = &["search_sources", "open_url"];
-/// Categories whose every tool fetches from, or posts to, the open internet.
-const WEB_CATEGORIES: &[&str] = &["network", "github"];
+/// Drive or open a browser from outside the `browser` category, or run something that can: `claude_code`
+/// runs `claude -p` with `Bash`, and `run_background` and `docker_exec` run whatever command they are
+/// given, which is `curl` of anything. (`run_command` runs only the programs of `safe_command`.)
+const BROWSER_NAMES: &[&str] = &["search_sources", "open_url", "claude_code", "run_background", "docker_exec"];
+/// Categories whose every tool fetches from, or posts to, the open internet. `mcp` is here because a
+/// tool server the person added can be a fetch or a search (`fetch`, `brave-search`), and nothing in its
+/// tool list says so.
+const WEB_CATEGORIES: &[&str] = &["network", "github", "mcp"];
 /// Single tools that do the same, from categories that are otherwise local.
 const WEB_NAMES: &[&str] = &[
     "web_search",
@@ -52,17 +56,30 @@ const WEB_NAMES: &[&str] = &[
     "network_traceroute",
     "network_dns",
     "network_diagnose",
+    // Not a tool: the step the code runners take before a script, when it needs a package from pip,
+    // npm or gem. They ask this gate for it (`coder_sandbox::allow_install`), outside any sandbox.
+    "install_deps",
 ];
 /// Categories that talk to a service the person set up.
 const SERVICE_CATEGORIES: &[&str] =
-    &["email", "calendar", "telegram", "whatsapp", "home_assistant", "ssh", "connector", "mcp", "weather", "vision", "canvas", "ai"];
+    &["email", "calendar", "telegram", "whatsapp", "home_assistant", "ssh", "connector", "weather", "vision", "canvas", "ai"];
+
+/// The `sandbox` values of `code_execute` and `script_run` that give the script a network, or no
+/// sandbox at all (`coder_sandbox::SandboxMode::from_str` reads the same ones; a test there pins it).
+const CODE_NETWORK_SANDBOXES: &[&str] = &["network", "web", "none", "unsafe"];
 
 /// The apps `app_action` can drive that are a browser.
 const BROWSER_APPS: &[&str] = &["browser", "chromium"];
 
-/// What this call reaches. `args` matter for one tool: `app_action` drives any app, so its reach
-/// is its app's.
+/// What this call reaches. `args` matter for two kinds of tool. `app_action` drives any app, so its
+/// reach is its app's. The code runners run code the model wrote: in the strict sandbox it has no
+/// network, and asked for any other way it can fetch anything, so that is the browser's reach (only
+/// in a turn the person started; "SearXNG, else DuckDuckGo" is not what code with a network does).
 pub fn reach(name: &str, category: &str, args: &serde_json::Value) -> Reach {
+    if matches!(name, "code_execute" | "script_run") {
+        let sandbox = args.get("sandbox").and_then(serde_json::Value::as_str).unwrap_or("strict").trim().to_ascii_lowercase();
+        return if CODE_NETWORK_SANDBOXES.contains(&sandbox.as_str()) { Reach::Browser } else { Reach::Local };
+    }
     if name == "app_action" {
         let app = args.get("app").and_then(serde_json::Value::as_str).unwrap_or("").trim().to_ascii_lowercase().replace('_', "-");
         let app = app.strip_prefix("app-").unwrap_or(&app);
@@ -94,7 +111,7 @@ pub fn permits(reach: Reach, person_started: bool, research_on: bool) -> bool {
 /// What the model is told when a call is refused, in words it can say to the person.
 fn refusal(name: &str, reach: Reach) -> String {
     let why = match reach {
-        Reach::Browser => "A browser is used only in a turn the person started, so it did not run",
+        Reach::Browser => "A browser, or code run with a network, is used only in a turn the person started, so it did not run",
         _ => "Searching or fetching from the web with nobody asking is off on this machine until the person allows it, so it did not run",
     };
     format!(
@@ -145,6 +162,35 @@ mod tests {
         }
         assert_eq!(reach("app_action", "app", &json!({ "app": "notes", "action": "new" })), Reach::Local);
         assert_eq!(reach("app_action", "app", &json!({})), Reach::Local);
+    }
+
+    #[test]
+    fn code_that_is_given_a_network_is_the_browsers_reach_and_strict_code_is_local() {
+        for tool in ["code_execute", "script_run"] {
+            for sandbox in ["network", "web", "none", "unsafe", "Network", " NONE "] {
+                assert_eq!(reach(tool, "coder", &json!({ "sandbox": sandbox })), Reach::Browser, "{tool} {sandbox}");
+                assert!(check_call(tool, "coder", &json!({ "sandbox": sandbox })).is_err(), "{tool} {sandbox} unattended");
+            }
+            for args in [json!({ "sandbox": "strict" }), json!({}), json!({ "sandbox": 3 })] {
+                assert_eq!(reach(tool, "coder", &args), Reach::Local, "{tool} {args}");
+            }
+        }
+        let _mine = background_research::person_turn();
+        assert_eq!(check_call("code_execute", "coder", &json!({ "sandbox": "network" })), Ok(()), "the person asked");
+    }
+
+    #[test]
+    fn what_can_fetch_for_a_model_that_was_told_no_is_not_a_service() {
+        assert_eq!(of("install_deps", "coder"), Reach::Web, "pip, npm and gem fetch from public registries");
+        assert_eq!(of("claude_code", "ai"), Reach::Browser, "claude -p runs Bash, so curl");
+        assert_eq!(of("claude_think", "ai"), Reach::Service, "the model the person chose");
+        for (name, category) in [("run_background", "background_tasks"), ("docker_exec", "docker")] {
+            assert_eq!(of(name, category), Reach::Browser, "{name} runs any command, curl included");
+        }
+        assert_eq!(of("run_command", "desktop"), Reach::Local, "only the programs on safe_command's list");
+        for name in ["mcp__fetch_fetch", "mcp__brave-search_search", "mcp__anything_at_all"] {
+            assert_eq!(of(name, "mcp"), Reach::Web, "{name}: a tool server can fetch, and its tool list does not say");
+        }
     }
 
     #[test]

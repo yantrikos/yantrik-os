@@ -211,3 +211,21 @@ fn the_report_problem_card_makes_the_claims_the_readme_makes() {
         assert!(!card.contains(withdrawn), "{withdrawn}");
     }
 }
+
+/// The README's sentence about permissions is true of what the code does (round-4 review, Low 4): the
+/// built-in companion's own tools are held only by the ceiling, which the image ships at `sensitive`,
+/// so it does not say that sensitive and dangerous tools "need explicit approval".
+#[test]
+fn the_readme_says_what_the_permission_ceiling_does_and_what_it_does_not() {
+    let readme = include_str!("../../../README.md").split_whitespace().collect::<Vec<_>>().join(" ");
+    let shipped = include_str!("../../../deploy/yantrik-os/config-default.yaml");
+    assert!(shipped.contains("max_permission: \"sensitive\""), "the image's ceiling changed: say so in the README");
+    for claim in [
+        "(`tools.max_permission`; the image ships `sensitive`)",
+        "runs its own tools up to that ceiling without asking you each time",
+        "in the default `ask` mode its sensitive and dangerous actions put a card in front of you",
+    ] {
+        assert!(readme.contains(claim), "the README does not say: {claim}");
+    }
+    assert!(!readme.contains("the last two need explicit approval"), "that is true of a mind's calls only");
+}

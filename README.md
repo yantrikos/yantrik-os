@@ -425,8 +425,12 @@ yantrik-os/
   one) and ask you to confirm or change it; neither asks the network. Everything else the OS
   contacts is something you set up or ask for: a cloud model account (checked in the background
   while it is your chosen model), a mind you install (which keeps itself up to date, and which we
-  ask not to report usage with `DO_NOT_TRACK=1`), your weather, mail, calendar and connectors,
-  and a problem report you chose to send. When an app crashes or fails, the desktop writes a
+  ask not to report usage with `DO_NOT_TRACK=1`), your weather (from wttr.in, for a place you or
+  the companion name), mail, calendar and connectors, and a problem
+  report you chose to send. Code the companion runs for you has no network unless you ask for
+  one in your own turn. Installing the packages a script needs is a web fetch, and so is a call
+  to a tool server you add, so neither happens with nobody there until you have allowed
+  background research. When an app crashes or fails, the desktop writes a
   record locally (`~/.local/share/yantrik/problems/`) with your home path, your user name and common key and
   token shapes removed; other things a log line happens to contain, such as host names,
   addresses or file names, are not removed. *Report a problem* shows you that record, and it
@@ -447,8 +451,12 @@ yantrik-os/
   most important thing in the bar.
 - **The memory is yours.** It lives at `/opt/yantrik/data/` as plain SQLite you can read,
   export or delete.
-- **Graded permissions.** Tools are safe, standard, sensitive or dangerous; the last two need
-  explicit approval.
+- **Graded permissions.** Tools are graded safe, standard, sensitive or dangerous, and the
+  machine has a ceiling above which nothing runs (`tools.max_permission`; the image ships
+  `sensitive`). The built-in companion runs its own tools up to that ceiling without asking you
+  each time, so lower it to restrict the companion. A mind you attach is asked about on your
+  screen: in the default `ask` mode its sensitive and dangerous actions put a card in front of
+  you, and the other modes ask about less, never past the ceiling.
 - **Path sandboxing.** File tools refuse `.ssh`, `.gnupg` and similar.
 - **Applications are not sandboxed.** Software installed through the package manager runs with
   your own access, as on any ordinary Debian desktop. Said plainly here rather than left to be
