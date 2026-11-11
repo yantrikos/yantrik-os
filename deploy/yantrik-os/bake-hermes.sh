@@ -44,15 +44,17 @@ chroot "$rootfs" install -d -o yantrik-mind -g yantrik-minds -m 0700 /var/lib/ya
 # as the image's `yantrik-mind` uid then sees and signals none of the build host's processes, whose
 # uid that number may belong to there (review of #1169, L1). Its SysV IPC is its own too, and so
 # is its /dev (bake-hermes-sandbox.sh): a tmpfs with the few nodes an installer opens, not the
-# host's /dev with the /dev/shm every host process of that uid shares (L-E). The network stays: it
-# is the fetch. An egress-only network namespace is left for a follow-up, as it needs pasta or
+# host's /dev with the /dev/shm every host process of that uid shares (L-E). It has no terminal
+# either: `setsid --wait` takes it out of the operator's session and stdin is /dev/null, so a
+# compromised artifact cannot push keystrokes into the operator's shell with TIOCSTI on a kernel
+# that still allows it (L-3). The network stays: it is the fetch. An egress-only network namespace is left for a follow-up, as it needs pasta or
 # slirp4netns on every build host.
 unshare --fork --pid --ipc --mount --mount-proc="$rootfs/proc" \
     sh "$(dirname "$0")/bake-hermes-sandbox.sh" "$rootfs" \
-    chroot "$rootfs" runuser -u yantrik-mind -- env -i HOME="$home" USER=yantrik-mind LOGNAME=yantrik-mind \
+    setsid --wait chroot "$rootfs" runuser -u yantrik-mind -- env -i HOME="$home" USER=yantrik-mind LOGNAME=yantrik-mind \
     LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin TERM=dumb \
     sh -c 'umask 077; exec sh /opt/yantrik/share/harnesses/lib/install/hermes-bake.sh' \
-    || fail "Hermes did not bake; the image build stops (YANTRIK_ISO_WITHOUT_HERMES=1 builds without it on purpose)"
+    </dev/null || fail "Hermes did not bake; the image build stops (YANTRIK_ISO_WITHOUT_HERMES=1 builds without it on purpose)"
 
 [ "$(stat -c %U "$rootfs$home/.local/bin/hermes")" = yantrik-mind ] || fail "Hermes is not the mind account's"
 mkdir -p "$rootfs/opt/yantrik/hermes"

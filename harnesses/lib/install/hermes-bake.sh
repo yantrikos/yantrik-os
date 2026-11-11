@@ -73,12 +73,19 @@ hermes_python=$(python3 "$HARNESS_LIB/hermes_runtime.py" </dev/null) \
 owed=$(hermes_completion_owed "$HOME/.hermes") || fail "could not look for an owed source-update tail"
 [ -z "$owed" ] || fail "Hermes owes the tail of a source update ($owed), which a first run with no network cannot finish; the image does not ship this Hermes"
 
+# The embedder a first run would otherwise download (the engine's default for a new memory, from
+# github.com/yantrikos/yantrikdb-models): fetched here by the engine itself, with its own checksum, so
+# a first run with no network opens a memory on it and an offline run does not quietly settle for
+# the small bundled model, which a store keeps for good (review of #1169, H-1). The licence gate
+# below reads the cache and stops the build if the model is not in it.
+python3 -I "$INSTALL_LIB/hermes_bake_embedder.py" "$MEMORY_DIR" </dev/null || fail "could not fetch the embedder the first run needs"
+
 # Last of all, after every command Hermes ran here: the caches go, and nothing that must not ship
 # is there (L-C), so the licence gate below reads what the image will carry.
 rm -rf "$HOME/.hermes/cache/uv" "$HOME/.npm"
 left=$(hermes_unshippable "$HOME/.hermes" "$HOME/.npm")
 [ -z "$left" ] || fail "a Hermes command brought back what the image leaves out ($left)"
-# Every package and tool must be one the image may carry (hermes_licences.py fails closed on
-# anything unknown or undeclared).
-python3 -I "$INSTALL_LIB/hermes_licences.py" "$HOME/.hermes" || fail "Hermes brought in a licence the image does not ship (above)"
+# Every package, tool and model must be one the image may carry, and the embedder must be there
+# (hermes_licences.py fails closed on anything unknown, undeclared or missing).
+python3 -I "$INSTALL_LIB/hermes_licences.py" "$HOME/.hermes" "$HOME/.cache/yantrikdb/models" || fail "Hermes brought in a licence the image does not ship (above)"
 say "$(hermes --version 2>/dev/null | head -n 1) at $HERMES_COMMIT"

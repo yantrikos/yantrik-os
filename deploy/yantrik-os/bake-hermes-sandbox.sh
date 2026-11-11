@@ -5,14 +5,15 @@
 # and by nothing else. The chroot's /dev is the build host's, bind-mounted by build-debian-iso.sh,
 # and Hermes's installer (fetched code, hash-pinned but still fetched) runs with it: /dev/shm there
 # is shared with every process of that uid on the host (review of #1169, L-E). It gets a tmpfs
-# with the few nodes an installer opens, and a /dev/shm of its own.
+# with the few nodes an installer opens (not /dev/tty: it has no terminal, see bake-hermes.sh), and
+# a /dev/shm of its own.
 set -eu
 [ $# -ge 2 ] || { echo "usage: bake-hermes-sandbox.sh ROOTFS COMMAND..." >&2; exit 2; }
 rootfs=$1; shift
 dev=$rootfs/dev
 
 mount -t tmpfs -o mode=0755,nosuid,size=4m tmpfs "$dev"
-for node in null zero full random urandom tty; do
+for node in null zero full random urandom; do
     : > "$dev/$node"
     mount --bind "/dev/$node" "$dev/$node"
 done

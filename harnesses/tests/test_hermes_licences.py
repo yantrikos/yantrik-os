@@ -7,6 +7,7 @@ wheel, too few packages, no readable `facts.json`, a tool folder that only start
 a stranger that borrows a workspace package's name.
 """
 
+import codecs
 import json
 import os
 import shutil
@@ -28,7 +29,9 @@ class HermesLicenceTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.home = Path(tmp.name)
+        self.home = Path(tmp.name) / "hermes"
+        self.models = Path(tmp.name) / "models"
+        self.home.mkdir()
         self.healthy_tree()
 
     def healthy_tree(self):
@@ -39,6 +42,18 @@ class HermesLicenceTests(unittest.TestCase):
         for n in range(hermes_licences.MIN_NPM_PACKAGES):
             self.npm("filler%d" % n, "MIT")
         self.tools(*TOOLS, recorded=RECORDED)
+        self.model("potion-base-8M-v0.1.0")
+
+    def model(self, name, *, skip=()):
+        """An engine model cache folder holding the four files the engine looks for."""
+        folder = self.models / name
+        folder.mkdir(parents=True, exist_ok=True)
+        for part in hermes_licences.MODEL_FILES:
+            if part not in skip:
+                (folder / part).write_bytes(b"x")
+
+    def run_gate(self):
+        return hermes_licences.main(["x", str(self.home), str(self.models)])
 
     def npm(self, name, licence):
         folder = self.home / "hermes-agent" / "node_modules" / name
@@ -95,12 +110,12 @@ class HermesLicenceTests(unittest.TestCase):
         self.wheel("bsd3", "License: 3-Clause BSD License")
         self.wheel("cmu", "License: MIT-CMU")
         self.assertEqual(hermes_licences.problems(self.home), [])
-        self.assertEqual(hermes_licences.main(["x", str(self.home)]), 0)
+        self.assertEqual(self.run_gate(), 0)
 
     def test_gsaps_no_charge_licence_stops_the_build(self):
         self.npm("gsap", "Standard 'no charge' license: https://gsap.com/standard-license.")
         self.assertEqual(self.names(), ["gsap"])
-        self.assertEqual(hermes_licences.main(["x", str(self.home)]), 1)
+        self.assertEqual(self.run_gate(), 1)
 
     def test_copyleft_wheels_stop_the_build_and_only_the_header_is_read(self):
         self.wheel("gplthing", "License-Expression: GPL-3.0-or-later")
@@ -118,7 +133,7 @@ class HermesLicenceTests(unittest.TestCase):
         self.npm("elsewhere", "SEE LICENSE IN LICENSE.txt")
         self.npm("nothing", None)
         self.assertEqual(self.names(), ["closed", "elsewhere", "half", "nothing", "odd", "placeholder", "silent"])
-        self.assertEqual(hermes_licences.main(["x", str(self.home)]), 1)
+        self.assertEqual(self.run_gate(), 1)
 
     def test_a_reviewed_exception_passes_only_while_it_declares_nothing(self):
         self.wheel("resvg_py")
@@ -133,13 +148,13 @@ class HermesLicenceTests(unittest.TestCase):
         self.assertEqual(hermes_licences.tool_problems(self.home),
                          ["facts.json records chromium: not a tool the image ships",
                           "tools/ffmpeg-9.0.1-linux-x64: not a tool the image ships"])
-        self.assertEqual(hermes_licences.main(["x", str(self.home)]), 1)
+        self.assertEqual(self.run_gate(), 1)
 
     def test_an_empty_tree_is_not_a_clean_one(self):
         shutil.rmtree(self.home)
         self.home.mkdir()
         self.assertNotEqual(hermes_licences.problems(self.home), [])
-        self.assertEqual(hermes_licences.main(["x", str(self.home)]), 1)
+        self.assertEqual(self.run_gate(), 1)
 
     def test_a_tree_without_hermes_itself_or_with_too_few_packages_fails(self):
         shutil.rmtree(self.home / "installs")
@@ -167,7 +182,7 @@ class HermesLicenceTests(unittest.TestCase):
                 facts.write_text(broken)
             found = hermes_licences.tool_problems(self.home)
             self.assertEqual(found, ["tools/facts.json: missing or unreadable, so the tools cannot be checked"], broken)
-            self.assertEqual(hermes_licences.main(["x", str(self.home)]), 1)
+            self.assertEqual(self.run_gate(), 1)
 
     def test_a_tool_folder_must_match_exactly_not_start_like_one(self):
         self.tools(*TOOLS, "node-ffmpeg-7", "uv-evil-linux-x64", "python3-3.14-linux-x64", recorded=RECORDED)
@@ -191,8 +206,47 @@ class HermesLicenceTests(unittest.TestCase):
         self.workspace("elsewhere/web", "other-web")
         self.assertEqual(self.names(), ["other-web"])
 
+    def test_a_manifest_that_cannot_be_read_stops_the_build_named_by_its_place(self):
+        # Review of #1169, Info: a package.json that fails to parse used to be skipped, so a broken
+        # manifest that says GPL passed the gate unread.
+        folder = self.home / "hermes-agent" / "node_modules" / "broken"
+        folder.mkdir(parents=True)
+        (folder / "package.json").write_text('{"name": "broken", "license": "GPL-3.0",')
+        self.assertEqual(self.names(), ["node_modules/broken/package.json"])
+        self.assertEqual(self.run_gate(), 1)
+        (folder / "package.json").write_bytes(codecs.BOM_UTF8 + b'{"name": "bom", "license": "MIT"}')
+        self.assertEqual(self.names(), [], "a byte-order mark is still JSON")
+        self.assertEqual(self.run_gate(), 0)
+
+    def test_the_embedder_the_first_run_needs_must_be_in_the_image(self):
+        # Review of #1169, H-1: offline, the first run would fetch it, or settle for the bundled one.
+        self.assertEqual(hermes_licences.model_problems(self.models), [])
+        shutil.rmtree(self.models)
+        self.assertEqual(self.run_gate(), 1)
+        self.models.mkdir()
+        self.assertEqual(hermes_licences.model_problems(self.models),
+                         ["models/potion-base-8M-v0.1.0: missing, so the first run would have to download it"])
+        self.assertEqual(self.run_gate(), 1)
+
+    def test_a_model_cache_with_a_file_missing_or_empty_is_not_the_model(self):
+        shutil.rmtree(self.models)
+        self.model("potion-base-8M-v0.1.0", skip=("tokenizer.json",))
+        (self.models / "potion-base-8M-v0.1.0" / "config.json").write_bytes(b"")
+        self.assertEqual(hermes_licences.model_problems(self.models),
+                         ["models/potion-base-8M-v0.1.0: tokenizer.json is missing or empty",
+                          "models/potion-base-8M-v0.1.0: config.json is missing or empty"])
+
+    def test_a_model_the_image_has_not_reviewed_stops_the_build(self):
+        self.model("potion-multilingual-128M-v0.2.0")
+        self.model("potion-base-8M-v0.1.0.tmp.42")
+        self.assertEqual(hermes_licences.model_problems(self.models),
+                         ["models/potion-base-8M-v0.1.0.tmp.42: not a model the image ships",
+                          "models/potion-multilingual-128M-v0.2.0: not a model the image ships"])
+        self.assertEqual(self.run_gate(), 1)
+
     def test_the_arguments_are_checked(self):
         self.assertEqual(hermes_licences.main(["x"]), 2)
+        self.assertEqual(hermes_licences.main(["x", str(self.home)]), 2, "a gate with no model cache to read")
 
 
 if __name__ == "__main__":

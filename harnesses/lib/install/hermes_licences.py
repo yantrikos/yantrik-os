@@ -1,7 +1,7 @@
 """Fail the image build unless every package in the Hermes tree it is about to ship declares a
 licence this image may carry.
 
-    python3 -I hermes_licences.py HERMES_HOME
+    python3 -I hermes_licences.py HERMES_HOME MODELS_DIR
 
 Hermes is MIT, and so are nearly all of its packages, but its installer pulls in a few hundred
 more (Python wheels in the venv, npm packages for the terminal and web UI, the tools under
@@ -14,8 +14,13 @@ adds it here with its upstream licence or takes it out of the tree. A tool in `t
 taken out by name, and a pin that brings another is not shipped unseen.
 
 It also fails closed on what it cannot see. A tree that lacks what must be in it (Hermes's own
-wheel, a few hundred Python and npm packages, a readable `facts.json`) is not a clean tree but a
-pin that moved something, and stops the build: a gate that read nothing proved nothing.
+wheel, a few hundred Python and npm packages, a readable `facts.json`, the embedder model) is not a
+clean tree but a pin that moved something, and stops the build: a gate that read nothing proved
+nothing.
+
+MODELS_DIR is the engine's model cache in the same home (`~/.cache/yantrikdb/models`): the embedder
+the bake fetched so a first run needs no network. A model passes only by name and version, on the list
+below with its licence read.
 
 Allowed here means permissive: MIT and its variants, BSD, Apache-2.0, ISC, PSF, Unlicense, 0BSD,
 Blue Oak, CC0 and CC-BY (not NC, not SA). MPL-2.0 is file-level copyleft that asks nothing of the
@@ -68,6 +73,14 @@ TOOLS = frozenset(("uv", "python", "node", "npm", "ripgrep"))
 
 # A folder under `tools/` is `<tool>-<version>-<os>-<arch>`, and the whole name must read so.
 TOOL_FOLDER = re.compile(r"^(?P<tool>[a-z]+)-\d[0-9A-Za-z.+]*-[a-z0-9_]+-[a-z0-9_]+$")
+
+# The embedder models the image carries, as the engine names their cache folders
+# (`<name>-<release tag>`, yantrikdb-core embedder/downloaded.rs). potion-base-8M is minishlab's
+# MIT-licensed model2vec distillation, which github.com/yantrikos/yantrikdb-models republishes and
+# the engine checks against a pinned SHA-256 before it unpacks it. Another model is added here only
+# with its upstream licence read.
+MODELS = frozenset(("potion-base-8M-v0.1.0",))
+MODEL_FILES = ("model.safetensors", "tokenizer.json", "config.json", "modules.json")
 
 # Fewer than this many of each in the tree means the globs matched nothing like Hermes's real
 # tree (uv.lock lists 334 wheels, the npm lockfiles over a thousand packages): a layout moved.
@@ -137,9 +150,13 @@ def npm_declarations(home):
     pattern = os.path.join(home, "hermes-agent", "**", "node_modules", "**", "package.json")
     for manifest in glob.glob(pattern, recursive=True):
         try:
-            with open(manifest, encoding="utf-8") as handle:
+            with open(manifest, encoding="utf-8-sig") as handle:
                 package = json.load(handle)
         except (OSError, ValueError):
+            # A manifest that cannot be read declares nothing that can be checked: it fails
+            # the gate, named by where it is, rather than slipping through unread.
+            place = os.path.relpath(manifest, checkout).replace(os.sep, "/")
+            yield place, ["unreadable package.json"], place
             continue
         if not isinstance(package, dict) or not package.get("name"):
             continue
@@ -195,6 +212,28 @@ def tool_problems(home):
     return found
 
 
+def model_problems(models):
+    """Every reason the embedder cache may not ship: none there, a folder that is not a model the
+    image carries (by name and release tag, so a moved default is seen), or one with a file missing
+    or empty. A cache with nothing in it is not a clean one: the first run would fetch."""
+    try:
+        entries = sorted(os.listdir(models))
+    except OSError:
+        return ["models: %s is missing, so the first run would have to download its embedder" % models]
+    found = ["models/%s: not a model the image ships" % entry for entry in entries if entry not in MODELS]
+    for name in sorted(set(MODELS) - set(entries)):
+        found.append("models/%s: missing, so the first run would have to download it" % name)
+    for name in sorted(set(MODELS) & set(entries)):
+        for part in MODEL_FILES:
+            try:
+                empty = os.path.getsize(os.path.join(models, name, part)) == 0
+            except OSError:
+                empty = True
+            if empty:
+                found.append("models/%s: %s is missing or empty" % (name, part))
+    return found
+
+
 def count_problems(python, npm):
     """The tree must hold what Hermes's own is known to: its wheel and a few hundred packages."""
     found = []
@@ -223,10 +262,10 @@ def problems(home):
 
 
 def main(argv):
-    if len(argv) != 2:
-        print("usage: hermes_licences.py HERMES_HOME", file=sys.stderr)
+    if len(argv) != 3:
+        print("usage: hermes_licences.py HERMES_HOME MODELS_DIR", file=sys.stderr)
         return 2
-    found = problems(argv[1])
+    found = sorted(set(problems(argv[1])) | set(model_problems(argv[2])))
     for line in found:
         print("not shipped: %s" % line, file=sys.stderr)
     return 1 if found else 0

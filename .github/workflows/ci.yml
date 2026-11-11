@@ -421,6 +421,16 @@ jobs:
       - name: The attachable harnesses close every turn exactly once
         run: python3 -m unittest discover -s harnesses/tests -v
 
+      # The one harness test that needs root: the image bake's private /dev (bake-hermes-sandbox.sh)
+      # is mounted, so the test unshares a mount namespace, and the runner's AppArmor refuses that to
+      # an unprivileged user ("write failed /proc/self/uid_map"). Run as root, as the contracts selftest
+      # further up is, it runs for real here; the discover step above skips it as a non-root user (the
+      # test says why), and test_hermes_bake.py holds this step in the workflow.
+      - name: The image bake's private /dev holds only what an installer opens
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: cd harnesses/tests && sudo -E python3 -m unittest -v test_hermes_bake.HermesBakeTests.test_the_private_dev_holds_only_what_an_installer_opens
+
       # The arena runs on the desktop, but the record of what it added itself does not need one:
       # the reset deletes through the calendar only those ids, so a gate never shows the person
       # a refusal card. Stdlib only, with `yos` faked.

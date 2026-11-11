@@ -1,14 +1,22 @@
 //! Whether the Hermes this image ships is the one an install on this machine sets up.
 //!
 //! The person's desktop cannot see the mind account's home, so it cannot compare homes. It sees
-//! what the install itself looks at: the root-owned marker the image build writes, and the
-//! hand-over (#1076) that moves the install into the mind account, which is the condition
-//! `harnesses/lib/install/hermes.sh` tests before it runs `sudo yantrik-update harness install`:
-//! the `yantrik-mind` account exists, and the updater carries the `harness` command (it does only
-//! when `harness-isolation.sh` sits beside it). Read from the same live files rather than from a
-//! fact written at build time, so a later update or rollback of the updater changes the answer
-//! with it. Without the hand-over the install runs as the person, in the person's home, and
-//! downloads, whatever the image carries.
+//! what the install itself looks at, all of it root's and none of it the person's to change:
+//!
+//! - the marker the image build writes when Hermes is in the image;
+//! - the hand-over (#1076) that moves the install into the mind account, which is the condition
+//!   `harnesses/lib/install/hermes.sh` tests before it runs `sudo yantrik-update harness install`:
+//!   the `yantrik-mind` account exists, and the updater is executable and carries the `harness`
+//!   command (it does only when `harness-isolation.sh` and the two files it sources sit beside it);
+//! - the shipped installer itself, which hands over only when it carries `YANTRIK_HARNESS_ISOLATED`
+//!   (the test `hi_has_installer` makes in the updater): an OS rollback to an installer from before
+//!   the hand-over leaves every other input in place and the install downloading again;
+//! - the note a failed move leaves for root (`hi_note_failure`): a move that failed was cleaned up
+//!   by deleting the baked home it had been handed, so what the marker promises is gone.
+//!
+//! Read from the same live files rather than from a fact written at build time, so a later update
+//! or rollback changes the answer with it. Without the hand-over the install runs as the person, in
+//! the person's home, and downloads, whatever the image carries.
 
 use std::path::Path;
 
@@ -17,8 +25,19 @@ use std::path::Path;
 const BAKED_MARKER: &str = "opt/yantrik/hermes/BAKED";
 /// The mind account the install is handed over to.
 const MIND_ACCOUNT: &str = "yantrik-mind";
-/// Beside `yantrik-update`: the updater has the `harness` command only when this is there.
-const HAND_OVER: &str = "opt/yantrik/bin/harness-isolation.sh";
+/// The updater: `hermes.sh` hands over only when it is executable.
+const UPDATER: &str = "opt/yantrik/bin/yantrik-update";
+/// Beside the updater: it has the `harness` command only when these are there (`hi_parts_ok`).
+const HAND_OVER: [&str; 3] = [
+    "opt/yantrik/bin/harness-isolation.sh",
+    "opt/yantrik/bin/harness-isolation-room.sh",
+    "opt/yantrik/bin/harness-sandbox.sh",
+];
+/// The installer an install runs, and the word in it that means it hands over.
+const INSTALLER: &str = "opt/yantrik/share/harnesses/lib/install/hermes.sh";
+const INSTALLER_HANDS_OVER: &str = "YANTRIK_HARNESS_ISOLATED";
+/// What a failed move leaves (0644, root's, in `HI_STATE`): there while the move stays failed.
+const FAILED_NOTE: &str = "var/lib/yantrik-harness/hermes.failed";
 
 /// The image carries Hermes and the install on this machine runs in the home it was baked into.
 pub fn baked() -> bool {
@@ -27,7 +46,14 @@ pub fn baked() -> bool {
 
 /// [`baked`] on the machine rooted at `root`.
 pub fn baked_in(root: &Path) -> bool {
-    root.join(BAKED_MARKER).is_file() && root.join(HAND_OVER).is_file() && has_account(&root.join("etc/passwd"))
+    root.join(BAKED_MARKER).is_file()
+        && has_account(&root.join("etc/passwd"))
+        && is_executable(&root.join(UPDATER))
+        && HAND_OVER.iter().all(|part| root.join(part).is_file())
+        && std::fs::read_to_string(root.join(INSTALLER)).is_ok_and(|text| text.contains(INSTALLER_HANDS_OVER))
+        // Any entry at all, a link included: the updater's own reader refuses a link, and an
+        // unreadable state is not one to promise from.
+        && std::fs::symlink_metadata(root.join(FAILED_NOTE)).is_err()
 }
 
 fn has_account(passwd: &Path) -> bool {
@@ -36,55 +62,111 @@ fn has_account(passwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A machine's files, with only the named ones present.
-    fn machine(marker: bool, account: bool, hand_over: bool) -> tempfile::TempDir {
+    const ACCOUNT_LINE: &str = "yantrik-mind:x:999:999::/var/lib/yantrik-mind:/usr/sbin/nologin\n";
+
+    fn put(root: &Path, path: &str, text: &str) {
+        let at = root.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, text).unwrap();
+    }
+
+    /// A machine that has every input: what an image with this PR and #1076 is on first boot.
+    fn baked_machine() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
-        let put = |path: &str, text: &str| {
-            let at = root.path().join(path);
-            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-            std::fs::write(at, text).unwrap();
-        };
-        put("etc/passwd", "root:x:0:0::/root:/bin/sh\npranab:x:1000:1000::/home/pranab:/bin/bash\n");
-        if marker {
-            put(BAKED_MARKER, "38d3dbce\n");
+        put(root.path(), "etc/passwd", &format!("root:x:0:0::/root:/bin/sh\n{ACCOUNT_LINE}"));
+        put(root.path(), BAKED_MARKER, "38d3dbce\n");
+        put(root.path(), UPDATER, "#!/bin/sh\n");
+        make_executable(&root.path().join(UPDATER));
+        for part in HAND_OVER {
+            put(root.path(), part, "");
         }
-        if account {
-            put("etc/passwd", "root:x:0:0::/root:/bin/sh\nyantrik-mind:x:999:999::/var/lib/yantrik-mind:/usr/sbin/nologin\n");
-        }
-        if hand_over {
-            put(HAND_OVER, "");
-        }
+        put(root.path(), INSTALLER, "case \"${YANTRIK_HARNESS_ISOLATED:-}\" in\n");
         root
     }
 
-    /// The input the old test never used: files the person's desktop can read. Only the marker
-    /// with the hand-over and the account behind it counts.
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn make_executable(_: &Path) {}
+
     #[test]
-    fn the_bake_counts_when_the_marker_and_the_hand_over_are_there() {
-        assert!(baked_in(machine(true, true, true).path()));
+    fn the_bake_counts_when_every_input_is_there() {
+        assert!(baked_in(baked_machine().path()));
     }
 
     #[test]
-    fn the_marker_alone_promises_nothing() {
-        assert!(!baked_in(machine(true, false, false).path()), "an image before #1076");
-        assert!(!baked_in(machine(true, true, false).path()), "an account but an updater with no `harness`");
-        assert!(!baked_in(machine(true, false, true).path()), "no account to hand over to");
+    fn each_input_missing_alone_means_not_baked() {
+        let missing = [BAKED_MARKER, UPDATER, HAND_OVER[0], HAND_OVER[1], HAND_OVER[2], INSTALLER];
+        for path in missing {
+            let root = baked_machine();
+            std::fs::remove_file(root.path().join(path)).unwrap();
+            assert!(!baked_in(root.path()), "without {path}");
+        }
+        let root = baked_machine();
+        put(root.path(), "etc/passwd", "root:x:0:0::/root:/bin/sh\n");
+        assert!(!baked_in(root.path()), "no account to hand over to");
     }
 
     #[test]
     fn a_machine_without_the_bake_is_not_baked() {
-        assert!(!baked_in(machine(false, true, true).path()));
         assert!(!baked_in(Path::new("/nonexistent-root-for-the-test")));
+        let root = baked_machine();
+        std::fs::remove_file(root.path().join(BAKED_MARKER)).unwrap();
+        assert!(!baked_in(root.path()), "an image built without Hermes");
     }
 
     #[test]
     fn an_account_is_matched_by_its_whole_name() {
-        let root = machine(true, false, true);
-        std::fs::write(root.path().join("etc/passwd"), "yantrik-mind-old:x:1:1::/:/bin/sh\n").unwrap();
+        let root = baked_machine();
+        put(root.path(), "etc/passwd", "yantrik-mind-old:x:1:1::/:/bin/sh\n");
         assert!(!baked_in(root.path()));
+    }
+
+    /// Review of #1169, L-1: a rollback to an installer from before the hand-over leaves the
+    /// marker, the account and the updater, and the install downloads again.
+    #[test]
+    fn an_installer_that_does_not_hand_over_is_not_baked() {
+        let root = baked_machine();
+        put(root.path(), INSTALLER, "say \"fetching Hermes\"\n");
+        assert!(!baked_in(root.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_updater_that_cannot_run_is_not_baked() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = baked_machine();
+        std::fs::set_permissions(root.path().join(UPDATER), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!baked_in(root.path()), "hermes.sh tests -x on it");
+    }
+
+    /// Review of #1169, H-1: a move that failed deleted the baked home (and said so in a note for
+    /// root), and every later press would still have been told "from this computer".
+    #[test]
+    fn a_noted_failed_move_means_the_baked_home_is_gone() {
+        let root = baked_machine();
+        put(root.path(), FAILED_NOTE, "failed 2026-11-10T01:00:00Z could not fetch the embedder\n");
+        assert!(!baked_in(root.path()));
+        std::fs::remove_file(root.path().join(FAILED_NOTE)).unwrap();
+        assert!(baked_in(root.path()), "a success clears the note, and the bake counts again");
     }
 }

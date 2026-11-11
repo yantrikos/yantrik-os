@@ -140,7 +140,7 @@ class HermesBakeTests(unittest.TestCase):
         # Review of #1169, L-E: not the host's SysV IPC, and not the host's /dev with its shared /dev/shm.
         text = BAKE_ISO.read_text()
         self.assertRegex(text, r'unshare [^\n]*--ipc[^\n]*--mount [^\n]*--mount-proc')
-        self.assertRegex(text, r'--mount-proc="\$rootfs/proc" \\\n\s+sh "\$\(dirname "\$0"\)/bake-hermes-sandbox.sh" "\$rootfs" \\\n\s+chroot')
+        self.assertRegex(text, r'--mount-proc="\$rootfs/proc" \\\n\s+sh "\$\(dirname "\$0"\)/bake-hermes-sandbox.sh" "\$rootfs" \\\n\s+setsid --wait chroot')
 
     def test_the_private_dev_holds_only_what_an_installer_opens(self):
         rootfs = self.root / "rootfs"
@@ -148,15 +148,35 @@ class HermesBakeTests(unittest.TestCase):
         probe = ('readlink /proc/self/ns/ipc; ls -A "%s/dev"; echo x > "%s/dev/shm/mine"; echo ok > "%s/dev/null"'
                  % (rootfs, rootfs, rootfs))
         host_ipc = os.readlink("/proc/self/ns/ipc") if os.path.exists("/proc/self/ns/ipc") else None
-        result = subprocess.run(["unshare", "-r", "--mount", "--ipc", "sh", str(SANDBOX), str(rootfs), "sh", "-c", probe],
-                                capture_output=True, text=True)
-        if result.returncode != 0 and "ermission" in result.stderr + result.stdout or host_ipc is None:
-            self.skipTest("no user namespaces here: %s" % result.stderr.strip())
+        # Mounting needs root. CI runs this test as root (ci.yml); anyone else gets a user namespace
+        # that makes them root inside it, which some kernels refuse an unprivileged user.
+        as_root = hasattr(os, "geteuid") and os.geteuid() == 0
+        unshare = ["unshare", "--mount", "--ipc"] if as_root else ["unshare", "-r", "--mount", "--ipc"]
+        result = subprocess.run(unshare + ["sh", str(SANDBOX), str(rootfs), "sh", "-c", probe], capture_output=True, text=True)
+        if host_ipc is None:
+            self.skipTest("no /proc/self/ns/ipc here")
+        if not as_root and result.returncode != 0 and "uid_map" in result.stderr:
+            self.skipTest("no user namespaces for a non-root user here (CI runs this as root): %s" % result.stderr.strip())
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.split()
         self.assertNotEqual(lines[0], host_ipc, "its own IPC namespace")
-        self.assertEqual(sorted(lines[1:]), sorted("fd full null random shm stderr stdin stdout tty urandom zero".split()))
+        self.assertEqual(sorted(lines[1:]), sorted("fd full null random shm stderr stdin stdout urandom zero".split()),
+                         "no tty: the fetched code has no terminal (review of #1169, L-3)")
         self.assertEqual(list((rootfs / "dev").iterdir()), [], "nothing of it is on the host's side of the mount")
+
+    def test_ci_runs_the_private_dev_test_as_root(self):
+        # Review of #1169, M-2: the runner refuses an unprivileged user the namespace, so without
+        # this step the test would only ever skip there and L-E would have no runtime proof.
+        workflow = (support.ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertRegex(workflow, r"sudo -E python3 -m unittest [^\n]*test_hermes_bake\.HermesBakeTests"
+                                   r"\.test_the_private_dev_holds_only_what_an_installer_opens")
+
+    def test_the_fetched_code_has_no_terminal(self):
+        # Review of #1169, L-3: a session of its own and no stdin, so TIOCSTI cannot reach the operator's shell.
+        text = BAKE_ISO.read_text()
+        self.assertRegex(text, r'sandbox\.sh" "\$rootfs" \\\n\s+setsid --wait chroot "\$rootfs" runuser')
+        self.assertRegex(text, r"hermes-bake\.sh' \\\n\s+</dev/null \|\| fail")
+        self.assertNotIn("tty", re.findall(r"for node in ([^;]*); do", SANDBOX.read_text())[0].split())
 
     def test_the_sandbox_takes_a_rootfs_and_a_command(self):
         result = subprocess.run(["sh", str(SANDBOX), "only-one"], capture_output=True, text=True)
@@ -224,9 +244,57 @@ class HermesBakeTests(unittest.TestCase):
         self.assertLess(text.index("hermes_unshippable"), text.index("hermes_licences.py"), "and checked before the licence gate")
         self.assertNotIn('rm -rf "$HOME/.hermes/tools"/ffmpeg-* "$HOME/.hermes/hermes-agent/node_modules/gsap" "$HOME/.hermes/cache/uv"', text)
 
+    def test_the_embedder_is_fetched_in_the_bake_and_read_by_the_gate(self):
+        # Review of #1169, H-1: without it a first run with no network fetches it or settles for the
+        # bundled model. Fetched before the gate, which reads the cache and fails the build when the
+        # model is not in it.
+        text = (INSTALL / "hermes-bake.sh").read_text()
+        fetch = text.index("hermes_bake_embedder.py")
+        self.assertGreater(fetch, text.index("plugins enable yantrik-desktop"))
+        self.assertLess(fetch, text.index("hermes_licences.py"))
+        self.assertRegex(text, r'hermes_bake_embedder\.py" "\$MEMORY_DIR" </dev/null \|\| fail')
+        self.assertRegex(text, r'hermes_licences\.py" "\$HOME/\.hermes" "\$HOME/\.cache/yantrikdb/models" \|\| fail')
+
+    def fake_engine(self, body):
+        """A `yantrikdb` for the memory directory's mcp/, whose `with_default` runs `body`."""
+        engine = self.root / "memory" / "mcp" / "yantrikdb"
+        engine.mkdir(parents=True)
+        (engine / "__init__.py").write_text(
+            "import os\n"
+            "def log(line):\n"
+            "    open(os.environ['FAKE_LOG'], 'a').write(line + '\\n')\n"
+            "class YantrikDB:\n"
+            "    @staticmethod\n"
+            "    def with_default(path):\n" + body +
+            "    def close(self):\n"
+            "        log('closed')\n")
+        return self.root / "memory"
+
+    def run_embedder(self, memory):
+        return subprocess.run(["python3", "-I", str(INSTALL / "hermes_bake_embedder.py"), str(memory)],
+                              capture_output=True, text=True, env=dict(self.env(), FAKE_LOG=str(self.root / "log")))
+
+    def test_the_embedder_fetch_opens_a_new_store_as_a_first_run_does_and_closes_it(self):
+        memory = self.fake_engine("        log('with_default ' + os.path.dirname(path))\n        return YantrikDB()\n")
+        result = self.run_embedder(memory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        opened, closed = (self.root / "log").read_text().split("\n")[:2]
+        self.assertTrue(opened.startswith("with_default "), opened)
+        self.assertEqual(closed, "closed")
+        self.assertFalse(Path(opened.split(" ", 1)[1]).exists(), "the scratch store is gone")
+
+    def test_an_embedder_the_engine_cannot_open_stops_the_bake(self):
+        result = self.run_embedder(self.fake_engine("        raise RuntimeError('cannot open')\n"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot open", result.stderr)
+
+    def test_the_embedder_fetch_takes_the_memory_directory(self):
+        result = subprocess.run(["python3", "-I", str(INSTALL / "hermes_bake_embedder.py")], capture_output=True)
+        self.assertEqual(result.returncode, 2)
+
     def test_the_baked_scripts_are_staged_and_executable_where_they_have_a_shebang(self):
         staged = (support.ROOT / "deploy" / "yantrik-os" / "stage-harnesses.sh").read_text()
-        self.assertIn("hermes-pin.sh hermes-bake.sh hermes-bake-checks.sh hermes_licences.py", staged)
+        self.assertIn("hermes-pin.sh hermes-bake.sh hermes-bake-checks.sh hermes_licences.py hermes_bake_embedder.py", staged)
         for path in (INSTALL / "hermes-bake.sh", BAKE_ISO, SANDBOX):
             self.assertTrue(path.read_text().startswith("#!/bin/sh"), path)
 
