@@ -84,6 +84,7 @@ impl Handoff for DeepSeek {
             token: None,
             private_context: false,
             mind_post: None,
+            moved_post: None,
         })
     }
 

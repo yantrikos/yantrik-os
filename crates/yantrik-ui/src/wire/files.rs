@@ -1212,7 +1212,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 // The machine's browser by the desktop id the defaults file would name, so a
                 // browser row and a written default speak the same language.
                 let browser =
-                    super::dock::find_browser().map(|(bin, _)| format!("{bin}.desktop"));
+                    super::browser_launch::find_browser().map(|(bin, _)| format!("{bin}.desktop"));
                 crate::mime_dispatch::open_with(
                     &item.entry.name,
                     &defaults,

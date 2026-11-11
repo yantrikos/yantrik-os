@@ -109,6 +109,24 @@ def load():
     with open(STATE) as fh:
         return json.load(fh)
 
+def child_token():
+    # How the real `yos` is handed the bridge's agent token: a pipe's descriptor named by
+    # YANTRIK_AGENT_TOKEN_FD, read once (never the environment, which /proc keeps). Recorded as
+    # `env_token` below so the cases that follow it still read what they always read; the plain
+    # variable is recorded too, as `plain_env`, and must stay empty.
+    if not _TOKEN:
+        fd = os.environ.get("YANTRIK_AGENT_TOKEN_FD")
+        if fd:
+            try:
+                _TOKEN.append(os.read(int(fd), 512).decode().strip())
+            except (OSError, ValueError):
+                _TOKEN.append(None)
+        else:
+            _TOKEN.append(os.environ.get("YANTRIK_AGENT_TOKEN"))
+    return _TOKEN[0]
+
+_TOKEN = []
+
 def save(s):
     # Written beside and renamed over. This was `open(STATE, "w")`, which truncates the file
     # and THEN writes it, while the test reads the same file from another process: on a loaded
@@ -488,7 +506,7 @@ if argv[:1] == ["act"]:
         # tokenless gateway bridge included, answers `follows: false` and is told nothing more.
         main = lens.get("main_token")
         follows = (lens.get("follows", True) if main is None
-                   else os.environ.get("YANTRIK_AGENT_TOKEN") == main)
+                   else child_token() == main)
         if not follows and main is not None:
             envelope({"follows": False, "said": "This bridge carries no agent token, so the desktop "
                       "cannot tell which of the mind's sessions a call comes from."})
@@ -511,7 +529,9 @@ if argv[:1] == ["act"]:
     # real `yos` sends it beside the arguments), and the whole command line, which any user on the
     # machine can read and which must therefore never carry it.
     state.setdefault("carried", []).append({"action": "%s.%s" % (target, action),
-                                            "env_token": os.environ.get("YANTRIK_AGENT_TOKEN"),
+                                            "env_token": child_token(),
+                                            "plain_env": os.environ.get("YANTRIK_AGENT_TOKEN"),
+                                            "fd_env_left": os.environ.get("YANTRIK_AGENT_TOKEN_FD"),
                                             "argv": argv})
     save(state)
     grant = None
@@ -656,7 +676,7 @@ if argv[:1] == ["act"]:
         else:
             answer.update(running=False, exit_code=0, cwd_after="/tmp")
         if state.get("echo_token"):
-            answer["tail"] = "token=%s" % os.environ.get("YANTRIK_AGENT_TOKEN")
+            answer["tail"] = "token=%s" % child_token()
         if "agent_tail" in state:
             answer["tail"] = state["agent_tail"]
         if "agent_exit" in state and not answer["running"]:
@@ -689,7 +709,7 @@ if argv[:1] == ["act"]:
                                "the changelog\nDone: 12 entries.\n[verified call] agent_run command=\"git "
                                "log\" — ok · exit 0" % child)
         if state.get("echo_token"):
-            answer["said"] = answer["text"] = "token=%s" % os.environ.get("YANTRIK_AGENT_TOKEN")
+            answer["said"] = answer["text"] = "token=%s" % child_token()
         envelope(answer)
         raise SystemExit(0)
     if target == "shell" and action == "hand_off":
@@ -702,7 +722,7 @@ if argv[:1] == ["act"]:
             answer.update(done=True, ok=True, answer="Verdict — fix first.",
                           said="The Reviewer (`deepseek:c-role1`, on deepseek) answered:\n\nVerdict — fix first.")
         if state.get("echo_token"):
-            answer["said"] = "token=%s" % os.environ.get("YANTRIK_AGENT_TOKEN")
+            answer["said"] = "token=%s" % child_token()
         envelope(answer)
         raise SystemExit(0)
     envelope({"done": True})
@@ -1612,8 +1632,8 @@ with tempfile.TemporaryDirectory() as d:
     reads = {t["name"] for t in module.TOOLS if t["name"].startswith("web_")
              and t["annotations"].get("readOnlyHint")}
     check("the web tools that only look say so, and no tool that acts does",
-          reads == {"web_read", "web_text", "web_find", "web_scroll", "web_tabs", "web_wait", "web_listen"},
-          sorted(reads))
+          reads == {"web_read", "web_text", "web_find", "web_scroll", "web_tabs", "web_wait", "web_listen",
+                    "web_console", "web_screenshot"}, sorted(reads))
     module, state = case(tmp, "web-page-refusal", mode="auto")
     text, is_error = module.run_tool(module.BY_NAME["web_click"], {"ref": "e404"})
     check("the page's own no is a policy answer: nothing was run, and not a failure to retry",
@@ -2176,8 +2196,12 @@ with tempfile.TemporaryDirectory() as d:
     # `app-shell.sock` is the shell before it writes anything there. That is only this bridge's
     # check too while it opens no socket of its own.
     source = SOURCE.read_text(encoding="utf-8")
-    check("the bridge opens no socket itself, so yos's check of the shell's peer is its check",
-          "socket.socket(" not in source and "AF_UNIX" not in source, None)
+    # The one socket it may open is the harness's token service, in take_agent_token (#411): a path
+    # its harness named, read once. Never a desktop socket.
+    taken = source.split("def take_agent_token", 1)[1].split("AGENT_TOKEN = take_agent_token()", 1)[0]
+    check("the bridge opens no desktop socket itself, so yos's check of the shell's peer is its check",
+          source.count("socket.socket(") == 1 and source.count("AF_UNIX") == 1 and "socket.socket(" in taken
+          and "app-shell" not in taken, None)
     check("and the one place the two differ is named in the file, not excused here",
           all(v.get("door") == "refuse" and v.get("outcome") == "allow" and v.get("mode") == "plan"
               for v in doors if v.get("note")) and any(v.get("note") for v in doors), None)
@@ -2359,6 +2383,9 @@ with tempfile.TemporaryDirectory() as d:
           [(c["action"], c["env_token"]) for c in s.get("carried", [])])
     check("and it is nowhere a person or another user could read it", not leaks(state, text, noise),
           leaks(state, text, noise))
+    check("a child `yos` is handed it through a pipe's descriptor, never in its environment (#411)",
+          s.get("carried") and all(c.get("plain_env") in (None, "") for c in s["carried"]),
+          [(c["action"], c.get("plain_env")) for c in s.get("carried", [])])
     check("the mind is told where it ran and how it ended",
           "not in the person's Terminal" in text and "exit code 0" in text and "allowed this once" in text,
           text)
@@ -3978,6 +4005,99 @@ pairs = module.act_pairs({"app": "notes", "action": "new_note",
                           "args": '{"title": "Weekend packing list", "text": "Essentials\n- ID\n- Charger"}'})
 check("JSON text with raw newlines in its strings is read as the object it is",
       pairs == ["title=Weekend packing list", "text=Essentials\n- ID\n- Charger"], pairs)
+
+# ── The token reaches the bridge without staying in its environment (#411) ──────────────
+# A harness's runtime may start the bridge itself and pass it only an environment (Hermes starts its
+# MCP servers), so the bridge can be told where to fetch the token (a socket) or be handed it
+# (a pipe), and either way reads it once, drops the variables and makes itself non-dumpable.
+import socket as _socket
+import subprocess
+import threading as _threading
+from importlib.machinery import SourceFileLoader as _Loader
+
+TOKEN_IN = "fedcba9876543210fedcba9876543210"
+PROBE = r"""
+import ctypes, importlib.util, os, sys
+from importlib.machinery import SourceFileLoader
+loader = SourceFileLoader("probe", sys.argv[1])
+spec = importlib.util.spec_from_loader("probe", loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+print(len(module.AGENT_TOKEN), module.AGENT_TOKEN == sys.argv[2],
+      ctypes.CDLL(None).prctl(3, 0, 0, 0, 0),
+      sorted(k for k in os.environ if k.startswith("YANTRIK_AGENT_TOKEN")))
+"""
+
+def probe(extra_env, pass_fds=()):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("YANTRIK_AGENT_TOKEN")}
+    env.update(extra_env)
+    done = subprocess.run([sys.executable, "-c", PROBE, str(SOURCE), TOKEN_IN], capture_output=True, text=True,
+                          env=env, pass_fds=pass_fds, timeout=30)
+    return done.stdout.strip(), done.stderr.strip()
+
+read_end, write_end = os.pipe()
+os.write(write_end, TOKEN_IN.encode()); os.close(write_end)
+out, err = probe({"YANTRIK_AGENT_TOKEN_FD": str(read_end)}, (read_end,))
+os.close(read_end)
+check("a token handed over a pipe is read, the variable dropped, the process non-dumpable",
+      out.startswith("32 True 0 []"), (out, err))
+
+with tempfile.TemporaryDirectory() as sd:
+    path = os.path.join(sd, "t.sock")
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(path); server.listen(2)
+    def serve():
+        for _ in range(2):
+            try:
+                conn, _addr = server.accept()
+            except OSError:
+                return
+            conn.sendall(TOKEN_IN.encode()); conn.close()
+    _threading.Thread(target=serve, daemon=True).start()
+    out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": path})
+    check("a token fetched from the socket a harness named is read the same way, the process left dumpable (a hidepid /proc would unlist it)",
+          out.startswith("32 True 1 []"), (out, err))
+    out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": path, "YANTRIK_AGENT_TOKEN": "x" * 32})
+    check("and the socket wins over a plain variable, which is dropped too", out.startswith("32 True 1 []"), (out, err))
+    server.close()
+    out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": os.path.join(sd, "nobody-home.sock")})
+    check("a named source that cannot be read gives no token, never a guess", out.startswith("0 False"), (out, err))
+# The harness's runtime starts the bridge before the harness has attached, and the token changes at
+# every attach: a bridge told to ask on a socket asks again, before it lists tools and before a call.
+PROBE_AGAIN = PROBE.split("print(")[0] + """
+seen = [module.AGENT_TOKEN]
+for _ in range(3):
+    module.refresh_agent_token()
+    seen.append(module.AGENT_TOKEN)
+import json
+print(json.dumps(["T" if t == sys.argv[2] else t for t in seen]), ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))
+"""
+with tempfile.TemporaryDirectory() as sd:
+    path = os.path.join(sd, "again.sock")
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(path); server.listen(8)
+    answers = ["", TOKEN_IN, "", ""]
+    def serve_again():
+        for answer in answers:
+            try:
+                conn, _addr = server.accept()
+            except OSError:
+                return
+            conn.sendall(answer.encode()); conn.close()
+    _threading.Thread(target=serve_again, daemon=True).start()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("YANTRIK_AGENT_TOKEN")}
+    env["YANTRIK_AGENT_TOKEN_SOCK"] = path
+    done = subprocess.run([sys.executable, "-c", PROBE_AGAIN, str(SOURCE), TOKEN_IN], capture_output=True, text=True,
+                          env=env, timeout=30)
+    server.close()
+    check("a socket that has no token at start is asked again: none, then the live one, then none again",
+          done.stdout.strip() == '["", "T", "", ""] 1',
+          (done.stdout, done.stderr[-300:]))
+out, err = probe({"YANTRIK_AGENT_TOKEN": TOKEN_IN})
+check("the plain variable still works, and is dropped and the process made non-dumpable",
+      out.startswith("32 True 0 []"), (out, err))
+out, err = probe({})
+check("no token, no change: the process stays as it was", out.startswith("0 False 1 []"), (out, err))
 
 # -- YOS_MCP_NO_TAINT is honoured only on a machine that declares it --------------------------------
 # `taint_off_declared(environ, marker, root)`: `root` stands for uid 0, which a test is not.

@@ -1,13 +1,61 @@
 //! How the desktop starts a Chromium-family browser, for the person and for a mind (#1085).
 //!
-//! The person's Browser runs on the person's port with its own default profile, named nowhere
+//! The person's Browser runs with a DevTools pipe (#1137: no port; `browser_pipe` hands the stream
+//! to the browser service) and its own default profile, named nowhere
 //! (Chrome 136 and later refuse DevTools on the default directory when `--user-data-dir` names it,
-//! so naming the person's own profile would take their port away). A browser started for a mind runs in Mind View on Mind View's port with Mind View's
+//! so naming the person's own profile would take their DevTools away). A browser started for a mind runs in Mind View on Mind View's port with Mind View's
 //! profile, whatever flags the caller passed. The two never share a port or a profile, so a mind's
 //! web tools have nothing of the person's to reach, and the person's tools nothing of a mind's.
 //! Ports and paths are `yantrik_browser_ports`'s, which reads `browsers.conf`.
 
 use std::path::Path;
+
+/// The web browsers the Browser pin will open, in order of preference, with what each needs.
+///
+/// Chromium first: it is what this OS installs, and the browser tools drive it. The flags keep
+/// what the old hardcoded launch had — native Wayland, no first-run wizard, no default-browser
+/// nag. The rest open as they are.
+///
+/// The profile is the browser's own. The visible browser used to run from
+/// `--user-data-dir=/tmp/chromium-visible`, because a headless instance might hold the default
+/// profile's lock; the browser tools now keep every profile under ~/.local/share/yantrik/browsers,
+/// so that reason is gone, and a /tmp profile forgot every login and bookmark at each reboot.
+pub const BROWSERS: &[(&str, &[&str])] = &[
+    ("chromium", CHROMIUM_FLAGS),
+    ("chromium-browser", CHROMIUM_FLAGS),
+    ("google-chrome-stable", CHROMIUM_FLAGS),
+    ("google-chrome", CHROMIUM_FLAGS),
+    ("firefox", &[]),
+    ("firefox-esr", &[]),
+    ("epiphany-browser", &[]),
+    ("epiphany", &[]),
+];
+
+/// How the desktop starts a Chromium-family browser.
+///
+/// The debugging port, its allowed origin and the profile are not here: they differ for the
+/// person's Browser and for a mind's, and `browser_launch` adds each (#1085). The port is what
+/// makes the browser one of this desktop's apps rather than a window a mind can only look at:
+/// `yos web` drives the page over the DevTools protocol. Loopback only, and only the origin `yos`
+/// itself presents. What it grants is what it sounds like (a process running as this user can
+/// drive this browser), which such a process could already do by reading the profile on disk.
+const CHROMIUM_FLAGS: &[&str] = &[
+    "--ozone-platform=wayland",
+    "--no-first-run",
+    "--no-default-browser-check",
+    // No "--disable-gpu": it also switches off SwiftShader, the software renderer, and cost
+    // every machine WebGL (#133).
+];
+
+/// The first browser from `BROWSERS` this machine has.
+pub fn find_browser() -> Option<(&'static str, &'static [&'static str])> {
+    BROWSERS.iter().copied().find(|(name, _)| super::dock::find_program(name).is_some())
+}
+
+/// The names looked for, for a message that says none was found.
+pub fn browser_names() -> String {
+    BROWSERS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
+}
 
 use yantrik_browser_ports::{listener, procs, Place, Side};
 
@@ -23,7 +71,7 @@ pub fn is_chromium(program: &Path) -> bool {
     matches!(program_name(program).as_str(), "chromium" | "chromium-browser" | "google-chrome" | "google-chrome-stable" | "chrome")
 }
 
-/// The Browser pin's arguments for the person: the program's own, then its port. A Chromium only:
+/// The Browser pin's arguments for the person: the program's own, then its DevTools pipe. A Chromium only:
 /// Firefox has no DevTools port to name and would refuse the switches.
 pub fn person_args(program: &str, own: &[&str]) -> Vec<String> {
     let mut args: Vec<String> = own.iter().map(|a| a.to_string()).collect();
@@ -62,10 +110,10 @@ pub fn open_in_mind_view() -> Result<(), String> {
     if !crate::wire::settings::minds_open_in_mind_view() {
         return Err("the setting \"minds open apps in Mind View\" is off, so a mind has no browser of its own".into());
     }
-    let (bin, args) = super::dock::find_browser().ok_or("there is no web browser on this machine")?;
+    let (bin, args) = find_browser().ok_or("there is no web browser on this machine")?;
     let seat = crate::mind_view::ensure().map_err(|why| format!("Mind View is not available ({why})"))?;
     preflight(Side::MindView)?;
-    super::dock::launch("browser", bin, args, None, None, Some(&seat), false);
+    super::dock::launch("browser", bin, args, None, None, Some(&seat), false, false);
     Ok(())
 }
 
@@ -95,6 +143,20 @@ pub fn preflight(side: Side) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// The Browser pin's list, whichever browser answers it.
+    #[test]
+    fn the_browser_list_has_chromium_first_and_flags_only_for_chromium() {
+        assert!(BROWSERS.iter().any(|(name, _)| *name == "chromium"));
+        assert!(BROWSERS.iter().any(|(name, _)| name.starts_with("firefox")));
+        // Only the Chromium family gets Chromium's flags; Firefox would refuse to start on them.
+        for (name, flags) in BROWSERS {
+            let chromium = name.contains("chrom");
+            assert_eq!(!flags.is_empty(), chromium, "{name}");
+            assert!(!flags.iter().any(|f| f.contains("/tmp")), "{name}: a /tmp profile forgets everything");
+        }
+        assert!(browser_names().starts_with("chromium, "));
+    }
+
     fn flag(args: &[String], name: &str) -> Vec<String> {
         args.iter().filter(|a| a.starts_with(name)).cloned().collect()
     }
@@ -102,7 +164,8 @@ mod tests {
     #[test]
     fn the_persons_browser_names_their_port_and_no_profile() {
         let args = person_args("chromium", &["--no-first-run"]);
-        assert_eq!(flag(&args, "--remote-debugging-port="), vec!["--remote-debugging-port=9222"]);
+        assert_eq!(flag(&args, "--remote-debugging-"), vec!["--remote-debugging-pipe"], "the pipe, never a port");
+        assert!(!args.iter().any(|a| a.contains("9222") || a.contains("remote-allow-origins")), "{args:?}");
         assert!(flag(&args, "--user-data-dir").is_empty(), "their own profile is the default, named nowhere: {args:?}");
         assert!(args.contains(&"--no-first-run".to_string()));
         // A program the desktop does not start as the Browser gets nothing it cannot honour.
@@ -121,7 +184,7 @@ mod tests {
         let profile = flag(&args, "--user-data-dir=");
         assert_eq!(profile.len(), 1, "{args:?}");
         assert!(profile[0].ends_with("yantrik/mind-view-browser/chromium"), "{profile:?}");
-        assert!(!args.iter().any(|a| a.contains("9222")), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("9222") || a.ends_with("-pipe")), "a mind never gets the person's pipe: {args:?}");
         assert!(args.contains(&"--no-first-run".to_string()));
     }
 

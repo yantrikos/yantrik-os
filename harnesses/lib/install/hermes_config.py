@@ -55,8 +55,39 @@ YANTRIK_OS = "yantrik_os"
 # may hold a call for 270 seconds while a person answers a card (README.md, "an MCP client must
 # allow os_act up to 270 seconds").
 YANTRIK_OS_SERVER = {"command": "/opt/yantrik/bin/yos-mcp", "timeout": 300}
+
+
+def yantrik_os_server():
+    """The desktop's tools server as this process should have Hermes start it.
+
+    Hermes starts an MCP server with a cleaned environment (only what its config names, plus a few
+    basics), so under the mind account (#411) the server would not find the desktop: `yos-mcp` looks
+    for the mind door only through YANTRIK_MIND_RUN. When this process has it, the server is given
+    it by name. Never any other variable, and never a value from anywhere but this process.
+    """
+    server = dict(YANTRIK_OS_SERVER)
+    door = os.environ.get("YANTRIK_MIND_RUN", "").strip()
+    if door:
+        # And where to ask for its agent token: a path, not a secret. The desktop refuses a mind's
+        # acts without a token, Hermes starts the bridge with nothing but this environment, and a
+        # token in an environment would stay readable in /proc: the plugin answers it on this socket
+        # (harnesses/hermes/bridge_token.py, the same path).
+        server["env"] = {"YANTRIK_MIND_RUN": door, "YANTRIK_AGENT_TOKEN_SOCK": token_socket()}
+    return server
+
+
+def token_socket():
+    """The plugin's token service (bridge_token.socket_path): in Hermes's home."""
+    home = os.environ.get("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+    return os.path.join(home, "yantrik-bridge.sock")
 # A research sub-agent that may take 50 turns will take 50.
 DELEGATION_MAX_ITERATIONS = 25
+# How long Hermes's gateway lets running turns finish when it is stopped (agent.restart_drain_timeout;
+# its default is 0, interrupt at once) and a scheduled job (agent.cron_drain_timeout; default 30).
+# hermes-gateway.service's TimeoutStopSec is what Hermes's own resolve_systemd_timeout_stop_sec gives
+# for these: max(60, max(60, 50 + 10) + 30) = 90. Change one, change the other.
+RESTART_DRAIN_SECONDS = 60
+CRON_DRAIN_SECONDS = 50
 BACKUP_SUFFIX = ".before-yantrik-desktop"
 # Hermes's first-conversation offer to build a profile of the person (agent/onboarding.py's
 # profile_build_mode): "off" never offers; Hermes's default, "ask", does.
@@ -124,8 +155,9 @@ def _read(path):
         text = f.read()
     try:
         data = load(text)
-    except YAMLError as exc:
-        raise ConfigError("%s is not YAML Hermes could read either: %s" % (path, exc))
+    except YAMLError:
+        # Not the parser's message: it quotes the offending line, which may be the `api_key:` one.
+        raise ConfigError("%s is not YAML Hermes could read either" % path)
     if data is None:
         return {}, text
     if not isinstance(data, dict):
@@ -174,9 +206,12 @@ def apply(path, plugin_toolsets=()):
     servers = _section(data, "mcp_servers", path)
     # Always this entry, whatever is there: a `yantrik_os` that runs another command is a "desktop
     # tools" server the platform's allowlist trusts by name. Only the person's other servers stay.
-    servers[YANTRIK_OS] = dict(YANTRIK_OS_SERVER)
+    servers[YANTRIK_OS] = yantrik_os_server()
     _section(data, "skills", path)["inline_shell"] = False
     _section(data, "delegation", path)["max_iterations"] = DELEGATION_MAX_ITERATIONS
+    agent = _section(data, "agent", path)
+    agent["restart_drain_timeout"] = RESTART_DRAIN_SECONDS
+    agent["cron_drain_timeout"] = CRON_DRAIN_SECONDS
     # No profile-building questions on the reply to the person's first request (the docstring).
     _section(data, "onboarding", path)["profile_build"] = PROFILE_BUILD
 
@@ -297,7 +332,7 @@ def problems(path, resolve):
             wrong.append("platform_toolsets.%s lists %s, which the desktop platform may not have" % (PLATFORM, ", ".join(extra)))
     servers = data.get("mcp_servers")
     ours = servers.get(YANTRIK_OS) if isinstance(servers, dict) else None
-    if ours != YANTRIK_OS_SERVER:
+    if ours != yantrik_os_server():
         wrong.append(
             "mcp_servers.%s is not the desktop's own (command %s, timeout %d), so the desktop platform "
             "has no desktop tools or tools from somewhere else" % (YANTRIK_OS, YANTRIK_OS_SERVER["command"], YANTRIK_OS_SERVER["timeout"])
@@ -316,6 +351,13 @@ def problems(path, resolve):
     if extra:
         wrong.append("Hermes resolves the desktop platform to %s as well, which it may not have" % ", ".join(extra))
     return wrong
+
+
+# `hermes_config.py reassert` exits with: 0 the allowlist held; REASSERT_REPAIRED it had been widened
+# and is put right (a gateway that read it before then must restart); REASSERT_UNFIXED it could not be
+# put right (nothing may attach).
+REASSERT_REPAIRED = 3
+REASSERT_UNFIXED = 1
 
 
 def reassert(path, plugin_toolsets=hermes_plugin_toolsets, resolver=hermes_resolver):
@@ -348,10 +390,15 @@ def main(argv, plugin_toolsets=hermes_plugin_toolsets, resolver=hermes_resolver)
             print(exc, file=sys.stderr)
             return 1
         return 0
-    if len(argv) != 3 or argv[1] not in ("apply", "check", "memory"):
-        print("usage: hermes_config.py apply|check|memory CONFIG, or manifest SRC DEST", file=sys.stderr)
+    if len(argv) != 3 or argv[1] not in ("apply", "check", "memory", "reassert"):
+        print("usage: hermes_config.py apply|check|memory|reassert CONFIG, or manifest SRC DEST", file=sys.stderr)
         return 2
     path = argv[2]
+    if argv[1] == "reassert":
+        found, left = reassert(path, plugin_toolsets, resolver)
+        for line in left or found:
+            print(line, file=sys.stderr)
+        return REASSERT_UNFIXED if left else (REASSERT_REPAIRED if found else 0)
     if argv[1] == "memory":
         try:
             memory(path)

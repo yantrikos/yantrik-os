@@ -9,27 +9,35 @@ Thread-safe: calls come from the surface's connection threads; one reader thread
 and keeps the event state (tabs, dialogs, requests in flight) the waits read.
 """
 
+import collections
 import json
 import os
+import random
 import threading
 import time
 import urllib.error
 import urllib.request
 
-from . import ports
+from . import fence, ports, transport
+from .pagelog import console_entry, exception_entry, log_entry
 
 WORLD = "yantrik-browser"
 CALL_TIMEOUT = 20.0
+CONSOLE_KEEP = 80          # console lines kept per tab: errors, warnings, logs and uncaught exceptions
 
+# The reader, in the order its parts build on each other; evaluated as one expression.
+SCRIPTS = ("page.js", "watch.js")
 _PAGE_JS = None
 
 
 def page_js():
     global _PAGE_JS
     if _PAGE_JS is None:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page.js"),
-                  encoding="utf-8") as f:
-            _PAGE_JS = f.read()
+        parts = []
+        for name in SCRIPTS:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name), encoding="utf-8") as f:
+                parts.append(f.read())
+        _PAGE_JS = "\n;\n".join(parts)
     return _PAGE_JS
 
 
@@ -41,6 +49,25 @@ class CdpError(Exception):
     """The browser refused a command."""
 
 
+def _holds_file_frame(tree):
+    """Whether a frame tree has a `file:` frame anywhere in it."""
+    return (str((tree.get("frame") or {}).get("url", "")).lower().startswith("file:")
+            or any(_holds_file_frame(child) for child in tree.get("childFrames") or []))
+
+
+def _may_have_drawn_file(tab, tree):
+    """Whether a page the browser did not hold at its start may have drawn something from a `file:`
+    URL: a `file:` frame, or a document that is no site's own (a window with an opener, an about:,
+    blob: or data: page), whose image, style or object is no frame."""
+    url = str((tree.get("frame") or {}).get("url", "")).lower()
+    return bool(tab.opened_by) or url.startswith(("about:", "blob:", "data:")) or _holds_file_frame(tree)
+
+
+def short(target_id):
+    """A target id as the surface names a tab: its first eight characters."""
+    return target_id[:8]
+
+
 class Tab:
     """What the connection knows about one page target."""
 
@@ -49,6 +76,13 @@ class Tab:
         self.url = url
         self.title = title
         self.session = None
+        self.ready = False         # attached, fenced and enabled: what attach() makes
+        self.attachments = 0       # how many times attach() has made it ready
+        self.fenced = threading.Event()   # set once Fetch.enable is on for the session (fence.py)
+        self.born = False          # attached before its first request (the browser held it for us)
+        self.agent = None          # whose rule its `file:` requests are held to: True an agent's, False the
+                                   # person's, None not known (held to the agent's). Sticky towards True
+                                   # and inherited by a window it opens (#1170 re-review, B)
         self.world = None          # executionContextId of the isolated world in the top frame
         self.main_frame = None
         self.dialog = None         # {type, message, default} while a JS dialog is open
@@ -57,26 +91,47 @@ class Tab:
         self.loaded = True
         self.navigations = 0
         self.opened_by = None      # the tab this one was opened from, if any
+        # What the page wrote to its console and the exceptions nobody caught (#1152): the
+        # page's own words, kept so a reader can see "Uncaught SyntaxError at line 4091"
+        # without DevTools. Each entry is numbered (`console_seq`) so an act can say which
+        # lines appeared while it ran, and carries the navigation it belongs to.
+        self.console = collections.deque(maxlen=CONSOLE_KEEP)
+        self.console_seq = 0
+        self.held_keys = set()     # keys key_down put down and key_up has not released (hands.py)
+        self.hold_timers = {}      # key -> the timer that releases it if nobody does (holds.py)
+        self.cache_hits = 0        # responses the browser took from a cache rather than the network
+        self.cached_requests = set()   # their request ids, so one is not counted twice
+        self.document_cached = False   # the last main document came from a cache
 
 
 class Browser:
-    def __init__(self, address=None):
-        # Mind View's browser unless told otherwise, and no environment variable moves it: where a
-        # browser is, is decided in ports.py and nowhere a process's environment reaches.
-        self.address = (address or ports.address(ports.MIND_VIEW_PORT)).rstrip("/")
+    def __init__(self, address=None, opener=None, held_at_start=True):
+        """A TCP DevTools port (Mind View's unless told otherwise; where a browser is, is decided
+        in ports.py and nowhere a process's environment reaches), or, with `opener`, a pipe: a
+        function that gives a transport.PipeTransport or raises BrowserClosed. A browser given an
+        opener has no address and never touches TCP: the person's Browser (#1137)."""
+        self.opener = opener
+        self.address = None if opener else (address or ports.address(ports.MIND_VIEW_PORT)).rstrip("/")
         # Called before a connection is opened and again once it is, to hold it to the browser it
         # was made for (driver.py); it raises to stop. None where the caller owns the browser.
         self.check = None
+        # Mind View's browser holds every page target at its start and fences it (fence.py). The
+        # person's does not: it fences only the tabs the surface drives, with the person's rule, and
+        # never closes or holds a window of theirs.
+        self.held_at_start = held_at_start
         self.ws = None
         self.lock = threading.Lock()          # one writer
         self.cond = threading.Condition()     # replies and events
         self.replies = {}
         self.abandoned = set()                 # ids whose answer nobody waits for any more
         self.generation = 0                    # which connection is the current one
-        self.ids = 0
+        # High and random: a reply the browser wrote to a process before this one (a service
+        # restart on the held pipe) must not carry an id this process will send (aff60d15, L-a).
+        self.ids = random.randrange(1 << 20, 1 << 30)
         self.tabs = {}                         # target id -> Tab, in the order they appeared
         self.by_session = {}
         self.active = None                     # the tab actions go to unless told otherwise
+        self.fence = fence.Fence(self.call, self._agent_of)   # decides every `file:` request a tab makes (fence.py)
         self.reader = None
         self.alive = False
 
@@ -95,17 +150,8 @@ class Browser:
             return
         if self.check:
             self.check()
-        try:
-            from websocket import create_connection
-        except ImportError:
-            raise CdpError("python3-websocket is not installed") from None
-        url = self._version().get("webSocketDebuggerUrl")
-        if not url:
-            raise BrowserClosed()
-        # The origin the desktop's launcher allows (wire/dock.rs, --remote-allow-origins): its own
-        # debugging address and nothing wider.
         self.close()
-        ws = create_connection(url, origin=self.address, timeout=None, suppress_origin=False)
+        ws = self._open()
         if self.check:
             try:
                 self.check()
@@ -126,8 +172,29 @@ class Browser:
                                        daemon=True)
         self.reader.start()
         self.call("Target.setDiscoverTargets", {"discover": True})
+        # Every page target, ours or one a page opens, is held at its start until its fence is up
+        # (fence.py): no request of it, and no frame it writes, is made before the fence decides it.
+        if self.held_at_start:
+            self.call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
+                                               "flatten": True, "filter": [{"type": "page"}, {"exclude": True}]})
         for info in self.call("Target.getTargets").get("targetInfos", []):
             self._saw_target(info)
+
+    def _open(self):
+        """The transport to the browser: its pipe, or a WebSocket to its port."""
+        if self.opener is not None:
+            return self.opener()
+        try:
+            from websocket import create_connection
+        except ImportError:
+            raise CdpError("python3-websocket is not installed") from None
+        url = self._version().get("webSocketDebuggerUrl")
+        if not url:
+            raise BrowserClosed()
+        # The origin the desktop's launcher allows (wire/dock.rs, --remote-allow-origins): its own
+        # debugging address and nothing wider.
+        return transport.WebSocketTransport(
+            create_connection(url, origin=self.address, timeout=None, suppress_origin=False))
 
     def close(self):
         with self.cond:
@@ -210,14 +277,39 @@ class Browser:
 
     def _saw_target(self, info):
         if info.get("type") != "page":
-            return
+            return None
         tab = self.tabs.get(info["targetId"])
         if tab is None:
             tab = Tab(info["targetId"])
             tab.opened_by = info.get("openerId")
+            opener = self.tabs.get(tab.opened_by)
+            tab.agent = opener.agent if opener else None      # a window is held to its opener's rule
             self.tabs[tab.id] = tab
         tab.url = str(info.get("url", tab.url) or "")
         tab.title = str(info.get("title", tab.title) or "")
+        return tab
+
+    def _attached(self, p):
+        """The browser attached us to a target it holds at its start (`waitForDebuggerOnStart`): a
+        page is fenced and then let run, anything else is just let run. Both off the reader's thread."""
+        info, session, waiting = p.get("targetInfo") or {}, p.get("sessionId"), bool(p.get("waitingForDebugger"))
+        tab = self._saw_target(info)
+        if tab is None:
+            if waiting:
+                self.fence.arm(session, None, True, None)
+            return
+        if tab.session == session:
+            return
+        tab.session, tab.born, tab.ready = session, waiting, False
+        tab.fenced.clear()
+        self.by_session[session] = tab
+        self.fence.arm(session, tab.id, waiting, tab.fenced.set)
+
+    def _agent_of(self, session):
+        """Whether the tab on this session is held to an agent's rule. On Mind View's browser, yes
+        unless known not to be. On the person's, never: no agent reaches it (guard.py)."""
+        tab = self.by_session.get(session)
+        return self.held_at_start and (tab is None or tab.agent is not False)
 
     def _event(self, msg):
         method = msg.get("method", "")
@@ -232,10 +324,17 @@ class Browser:
             if self.active is tab:
                 self.active = None
             return
+        if method == "Target.attachedToTarget":
+            self._attached(p)
+            return
         if method == "Target.detachedFromTarget":
             tab = self.by_session.pop(p.get("sessionId"), None)
             if tab:
                 tab.session = tab.world = None
+                tab.ready = False
+            return
+        if method == "Fetch.requestPaused":
+            self.fence.paused(msg.get("sessionId"), p)      # decided off the reader's thread
             return
         tab = self.by_session.get(msg.get("sessionId"))
         if tab is None:
@@ -257,6 +356,8 @@ class Browser:
                 tab.url = frame.get("url", tab.url)
                 tab.world = None
                 tab.navigations += 1
+                tab.held_keys.clear()      # a new document starts with nothing held
+                tab.cached_requests.clear()
         elif method == "Page.frameStartedLoading":
             if p.get("frameId") == tab.main_frame:
                 tab.loaded = False
@@ -275,6 +376,35 @@ class Browser:
         elif method in ("Network.loadingFinished", "Network.loadingFailed"):
             tab.inflight.pop(p.get("requestId"), None)
             tab.last_network = time.monotonic()
+        elif method == "Network.requestServedFromCache":
+            # The browser's memory or disk cache answered instead of the network (the one event
+            # Chromium sends for it; responseReceived may follow with fromDiskCache, or not).
+            tab.cache_hits += 1
+            tab.cached_requests.add(p.get("requestId"))
+        elif method == "Network.responseReceived":
+            r = p.get("response") or {}
+            cached = bool(r.get("fromDiskCache") or r.get("fromPrefetchCache") or r.get("fromServiceWorker")
+                          or p.get("requestId") in tab.cached_requests)
+            if cached and p.get("requestId") not in tab.cached_requests:
+                tab.cache_hits += 1
+                tab.cached_requests.add(p.get("requestId"))
+            if p.get("type") == "Document" and p.get("frameId") == tab.main_frame:
+                tab.document_cached = cached
+        elif method == "Runtime.exceptionThrown":
+            self._console(tab, exception_entry(p.get("exceptionDetails") or {}))
+        elif method == "Runtime.consoleAPICalled":
+            entry = console_entry(p)
+            if entry is not None:
+                self._console(tab, entry)
+        elif method == "Log.entryAdded":
+            self._console(tab, log_entry(p.get("entry") or {}))
+
+    def _console(self, tab, entry):
+        tab.console_seq += 1
+        entry["seq"] = tab.console_seq
+        entry["nav"] = tab.navigations
+        entry["when"] = time.monotonic()
+        tab.console.append(entry)
 
     # ── tabs ──
 
@@ -282,42 +412,84 @@ class Browser:
         """The open tabs, oldest first, without the browser's own internal pages."""
         return [t for t in self.tabs.values() if not t.url.startswith("devtools://")]
 
-    def tab(self, tab_id=None):
-        """The tab an action goes to: the one named, else the active one, else the first."""
+    def tab(self, tab_id=None, agent=False):
+        """The tab an action goes to: the one named, else the active one, else the first. `agent`:
+        the caller is an agent, which holds the tab to the agent's rule for good (see Tab.agent)."""
         self.connect()
         pages = self.pages()
         if tab_id:
             for t in pages:
                 if t.id == tab_id or t.id.startswith(tab_id):
-                    return self.attach(t)
+                    return self.attach(self._owned(t, agent))
             raise CdpError("no open tab `%s`; tabs lists them" % tab_id)
         if self.active is None or self.active.id not in self.tabs:
             if not pages:
                 raise CdpError("the browser has no tab open; go opens one")
             self.active = pages[0]
-        return self.attach(self.active)
+        return self.attach(self._owned(self.active, agent))
 
-    def attach(self, tab):
-        if tab.session:
-            return tab
-        got = self.call("Target.attachToTarget", {"targetId": tab.id, "flatten": True})
-        tab.session = got["sessionId"]
-        self.by_session[tab.session] = tab
-        for method in ("Page.enable", "Runtime.enable", "Network.enable"):
-            self.call(method, session=tab.session)
-        tree = self.call("Page.getFrameTree", session=tab.session)
-        tab.main_frame = tree["frameTree"]["frame"]["id"]
+    @staticmethod
+    def _owned(tab, agent):
+        """The tab, held to the agent's rule from now on if an agent is the caller, and to the
+        person's if nobody knew whose it was and the caller is not an agent."""
+        if agent:
+            tab.agent = True
+        elif tab.agent is None:
+            tab.agent = False
         return tab
 
-    def new_tab(self, url):
-        got = self.call("Target.createTarget", {"url": url or "about:blank"})
+    def attach(self, tab):
+        """The tab with a session, fenced and enabled. A page the browser held at its start was
+        fenced before its first request. One it did not hold (open before this connection, or its
+        session was lost) is fenced now, and if a `file:` frame is in it, that loaded unfenced: it
+        is loaded again behind the fence, and waited for."""
+        if tab.ready:
+            return tab
+        if self.held_at_start:
+            with self.cond:    # the session auto-attach is making for a tab only just seen
+                self.cond.wait_for(lambda: tab.session or tab.attachments or not self.alive, 2.0)
+        if not tab.session:
+            got = self.call("Target.attachToTarget", {"targetId": tab.id, "flatten": True})
+            tab.session, tab.born = got["sessionId"], False
+            self.by_session[tab.session] = tab
+            self.call("Fetch.enable", {"patterns": fence.PATTERNS}, session=tab.session)
+            tab.fenced.set()
+        elif not tab.fenced.wait(CALL_TIMEOUT):
+            raise CdpError("the browser did not let the fence onto this tab")
+        tab.attachments += 1
+        for method in ("Page.enable", "Runtime.enable", "Network.enable", "Log.enable"):
+            self.call(method, session=tab.session)
+        tree = self.call("Page.getFrameTree", session=tab.session)["frameTree"]
+        tab.main_frame = tree["frame"]["id"]
+        if not tab.born and (_may_have_drawn_file(tab, tree) if self.held_at_start else _holds_file_frame(tree)):
+            self._reload(tab)
+        tab.ready = True
+        return tab
+
+    def _reload(self, tab):
+        """Load the tab again behind the fence and wait for it to commit and finish."""
+        before = tab.navigations
+        self.call("Page.reload", session=tab.session)
+        deadline = time.monotonic() + CALL_TIMEOUT
+        with self.cond:
+            while not (tab.navigations > before and tab.loaded) and self.alive and time.monotonic() < deadline:
+                self.cond.wait(0.2)
+
+    def new_tab(self, url, agent=False):
+        # A local page is opened blank and navigated once the fence is up: made with its address,
+        # it would load, and draw what it embeds, before anything could vet it. (createTarget with a
+        # url is not held at its start: test_local_files pins that no `file:` url is ever sent to it.)
+        local = str(url or "").lower().startswith("file:")
+        got = self.call("Target.createTarget", {"url": "about:blank" if local else url or "about:blank"})
         deadline = time.monotonic() + 5
         with self.cond:
             while got["targetId"] not in self.tabs and time.monotonic() < deadline:
                 self.cond.wait(0.2)
         tab = self.tabs.get(got["targetId"]) or Tab(got["targetId"], url)
         self.tabs.setdefault(tab.id, tab)
-        self.active = self.attach(tab)
+        self.active = self.attach(self._owned(tab, agent))
+        if local:
+            self.call("Page.navigate", {"url": url}, session=tab.session)
         return tab
 
     # ── the reader ──

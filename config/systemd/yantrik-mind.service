@@ -63,8 +63,8 @@ Environment=NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1
 # that silently forgot everything. Run as root (+), the only one that can look there.
 # And never without the table that holds it to the proxy: a hand `nft flush ruleset` leaves the
 # unit above active and the table gone.
-ExecStartPre=+/bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/dev/null 2>&1 || { echo "Yantrik Mind: the egress table (inet yantrik_mind_egress) is not loaded. Run: sudo yantrik-update mind-egress apply" >&2; exit 1; }'
-ExecStartPre=+/bin/sh -c 'for d in /home/*/.local/share/yantrik-mind/mind.db; do if [ -e "$$d" ] && [ ! -e /var/lib/yantrik-mind/mind.db ]; then echo "Yantrik Mind: its memory is still at $$d. Run: sudo yantrik-update migrate-minds" >&2; exit 1; fi; done; exit 0'
+ExecStartPre=+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh -c '/usr/sbin/nft list table inet yantrik_mind_egress >/dev/null 2>&1 || { echo "Yantrik Mind: the egress table (inet yantrik_mind_egress) is not loaded. Run: sudo yantrik-update mind-egress apply" >&2; exit 1; }'
+ExecStartPre=+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh -c 'for d in /home/*/.local/share/yantrik-mind/mind.db; do if [ -e "$$d" ] && [ ! -e /var/lib/yantrik-mind/mind.db ]; then echo "Yantrik Mind: its memory is still at $$d. Run: sudo yantrik-update migrate-minds" >&2; exit 1; fi; done; exit 0'
 # The Mind's settings are read by the mind itself, not by systemd as root (see the launcher).
 ExecStart=/opt/yantrik/bin/yantrik-mind-launch
 # stdin is not a terminal, which is how the mind knows to run headless.
@@ -88,6 +88,18 @@ ProtectHome=yes
 # they type to the built-in companion, data/ its memories, config.yaml their provider keys. Out of
 # this unit's sight even should a file in them come out readable (security review, 29 Sep 2026).
 InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yaml
+# The other harnesses that run as this account (hermes-gateway.service, #411) keep their keys and
+# sessions under harness/<name>. Two things keep them out of this unit, together: this mount mask
+# (yantrik-update makes the empty, private directory before this unit starts, because a mask on a
+# path that does not exist yet is skipped) and the PID namespace below, which closes
+# /proc/<pid>/root, /fd and /environ of the harness's processes (same uid). Neither alone is enough.
+InaccessiblePaths=-/var/lib/yantrik-mind/harness
+# The pty `hermes model` runs in is allocated in the host's devpts and owned by this uid, and
+# PrivateDevices would hand this unit the host's /dev/pts: it could read the keys the person types.
+# The Mind is headless (StandardInput=null) and its sandbox command needs no pty, so /dev/pts is
+# hidden from it. `-`: a missing path must never stop the Mind from starting. Gate bar: a code
+# sandbox run from the Mind still works with it.
+InaccessiblePaths=-/dev/pts
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
@@ -101,6 +113,26 @@ RestrictRealtime=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0077
+# This unit's own PID namespace (systemd 257), the other half of keeping the harnesses' keys out of
+# the Mind's reach (see above) and the Mind's out of theirs. The Mind is PID 1 there, and a signal
+# PID 1 has no handler for is ignored. What a stop of the Mind does, from what was measured and where:
+#   - staging (systemd 257.8, a container, the Mind's reviewer): `systemctl stop` of a PID 1 with no
+#     SIGTERM handler took 0.02 s, with SIGKILL in the journal and no handler run;
+#   - the VM (systemd 257.13, the gate's test units): a PID 1 with a SIGTERM handler ran it and the
+#     stop took 3.04 s; one with no handler took 0.023 s, SIGKILL in the journal;
+#   - the VM, the Mind itself (no SIGTERM handler yet): three stops took 30.13, 30.24 and 30.20 s,
+#     i.e. TimeoutStopSec, then SIGKILL ("State 'stop-sigterm' timed out"). A SIGTERM sent to it by
+#     hand was ignored for 20 s.
+# So today a stop of the Mind costs the 30 s below and an unclean SQLite close (the WAL survives);
+# that is accepted until its bundle handles SIGTERM (E.SIGTERM1), which cleans nothing up and so
+# needs no drain here either. The journal prints "Supervising process ... which is not our child"
+# at each start (seen on staging and on the VM).
+# A systemd older than 257 ignores the line and the Mind runs as before;
+# that is safe because a harness cannot be installed or started there (harness-isolation.sh and the
+# harness unit both refuse), so there is nothing to keep apart. This unit therefore has no version
+# gate of its own: a gate that refused to start would be a machine without a Mind.
+PrivatePIDs=yes
+TimeoutStopSec=30
 # The person's processes, and their command lines, are not the mind's to see.
 ProtectProc=invisible
 ProcSubset=pid

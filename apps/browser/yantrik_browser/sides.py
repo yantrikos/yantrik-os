@@ -1,24 +1,28 @@
 """The two browsers the service can drive, and which one a call gets (#1085).
 
 One connection per side, held for as long as that side's browser runs. A call is sent to its
-side's browser by who is calling (guard.py), and only after what holds that port has been
-checked; the connection is bound to the listener that was checked, and dropped if the port ever
-holds anything else.
+side's browser by who is calling (guard.py), and only after what holds it has been checked: the
+port for Mind View's browser, the pipe for the person's (#1137). The connection is bound to what
+was checked, and dropped if that ever changes.
 """
 
 import threading
 
-from . import cdp, guard, ports
+from . import cdp, guard, pipes, ports
 
 
 class Sides:
-    def __init__(self, fixed=None, check=None):
+    def __init__(self, fixed=None, check=None, holder=None):
         """`fixed`: one browser the caller runs and owns (the tests'), used for everyone and
-        never checked. Otherwise a browser per side on its port, checked by `check` (a Guard)."""
-        self.fixed, self.guard = fixed, (None if fixed is not None else (check or guard.Guard()))
+        never checked. Otherwise Mind View's browser on its port and the person's over the pipe
+        `holder` keeps (pipes.py), checked by `check` (a Guard). The person's side has no address,
+        so there is nothing for it to fall back to."""
+        self.pipes = holder or getattr(check, "pipes", None) or pipes.PipeHolder()   # a guard's own
+        self.fixed = fixed
+        self.guard = None if fixed is not None else (check or guard.Guard(pipes=self.pipes))
         self.browsers = ({ports.PERSON: fixed, ports.MIND: fixed} if fixed is not None else
-                         {side: cdp.Browser(ports.address(ports.port_of(side)))
-                          for side in (ports.PERSON, ports.MIND)})
+                         {ports.PERSON: cdp.Browser(opener=self.pipes.open, held_at_start=False),
+                          ports.MIND: cdp.Browser(ports.address(ports.MIND_VIEW_PORT), held_at_start=True)})
         self.bound = {}                 # side -> the listener its connection was made to
         self.last = {ports.PERSON: {"open": False}, ports.MIND: {"open": False}}
         self._here = threading.local()

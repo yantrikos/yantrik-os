@@ -308,5 +308,5 @@ pub fn reachable(agent: &AgentId, live: &[AgentId], attached: &[String]) -> bool
     let harness = agent.harness();
     !builtin(harness)
         && attached.iter().any(|a| a == harness)
-        && (agent.conversation() == AgentId::MAIN || live.contains(agent))
+        && (agent.conversation() == AgentId::MAIN || agent.conversation() == AgentId::GATEWAY || live.contains(agent))
 }

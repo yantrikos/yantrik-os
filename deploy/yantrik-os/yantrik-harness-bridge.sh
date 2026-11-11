@@ -24,10 +24,18 @@
 # (15 minutes) counts as a turn in flight, and is not waited on (an orphaned row is final: nothing
 # changes it while waiting), just left; a turn that runs longer than that is not protected.
 #
+# Two shapes, chosen by which unit exists (harness_bridge_shape). Before Hermes is moved to the mind
+# account (#411) it is the person's user unit, reached through their manager. After, it is the
+# system unit hermes-gateway.service (User=yantrik-mind, cgroup system.slice/): reloaded as root,
+# its stamp kept in root's /run, its bridge found by that cgroup. Either way the idle signal is the
+# same, because the run store is the shell's, in the person's home, whoever runs Hermes.
+#
 # Three rules hold here.
 #   - The bridge is found by pid, through systemd's own record of what the gateway holds (the
 #     cgroup a process runs in), never by process name. That is what keeps the Mind's bridge out
-#     of reach: it runs in its own system unit, so its last path element is not this one.
+#     of reach: it runs in its own system unit, so its last path element is not this one. In the
+#     system shape the whole path is system.slice/<unit>, so a user manager's unit of the same
+#     name is not it either.
 #   - A restart that cannot happen never stops the update from applying (`apply` still applies; a
 #     machine gets out of a bad update with it). But the update does not end "done": its closing
 #     line, `status` and `status --porcelain` all say "not done" with the reason, until a later
@@ -37,7 +45,8 @@
 # What to wait on and where to remember it. None of these is read from the environment outside
 # selftest (selftest_standins, never true for root): they are stand-ins for the selftest to point at
 # a fake desktop, not a way for a caller to steer a root-run restart or a root-owned note.
-#   HERMES_GATEWAY_UNIT              the user unit holding the bridge
+#   HERMES_GATEWAY_UNIT              the unit holding the bridge
+#   HARNESS_BRIDGE_SHAPE             selftest: user | system (otherwise: the unit that exists)
 #   HARNESS_BRIDGE_WAIT_SECONDS      how long a turn in flight is waited on (300), restart path
 #   HARNESS_BRIDGE_RELOAD_SECONDS    how long after a reload the bridge is awaited fresh (60)
 #   HARNESS_BRIDGE_CANRELOAD         selftest: whether the unit can reload (yes | no)
@@ -56,6 +65,19 @@ harness_bridge_seconds() { # harness_bridge_seconds <var> <default>: a number, o
   case "$v" in ''|*[!0-9]*) v="$2" ;; esac
   printf '%s' "$v"
 }
+
+# Which unit holds the bridge: `system` once Hermes has been moved to the mind account (root's
+# mark, or the system unit is running), `user` otherwise (the person's own unit). A moved machine
+# whose system unit is stopped is still `system`: the person's unit is disabled and must not be
+# reloaded in its place.
+harness_bridge_shape() {
+  local v; v="$(harness_bridge_knob HARNESS_BRIDGE_SHAPE "")"
+  case "$v" in system|user) printf '%s' "$v"; return 0 ;; esac
+  selftest_standins && { printf user; return 0; }
+  if [ -f "${HI_STATE:-/var/lib/yantrik-harness}/hermes.isolated" ] \
+     || systemctl is-active --quiet "$(harness_bridge_unit)" 2>/dev/null; then printf system; else printf user; fi
+}
+harness_bridge_system() { [ "$(harness_bridge_shape)" = system ]; }
 
 # Whose gateway this is. As root, the desktop's account and never root itself; as the person,
 # this account. Fails when there is no desktop to ask.
@@ -89,6 +111,9 @@ harness_bridge_userctl() {
 harness_bridge_holds_pid() {
   local path owner uid
   path="$(sed -n 's#^0::/\(.*\)$#\1#p' "$(harness_bridge_proc)/$1/cgroup" 2>/dev/null)"
+  # The moved gateway is a system unit: exactly system.slice/<unit>, not a unit of that name
+  # anywhere else (a user manager's, or the Mind's).
+  harness_bridge_system && { [ "$path" = "system.slice/$(harness_bridge_unit)" ]; return; }
   owner="$(harness_bridge_owner)" && uid="$(id -u "$owner" 2>/dev/null)" || return 1
   case "/$path" in */user@"$uid".service/*) ;; *) return 1 ;; esac
   [ "${path##*/}" = "$(harness_bridge_unit)" ]
@@ -101,6 +126,27 @@ harness_bridge_stale_pids() {
   local pid out=""
   for pid in $(printf '%s' " $1" | tr ' ' '\n' | sed -n 's/^yos-mcp(pid-\([0-9][0-9]*\))$/\1/p'); do
     harness_bridge_holds_pid "$pid" && out="$out $pid"
+  done
+  printf '%s' "${out# }"
+}
+
+# The old yos-mcp processes of the moved gateway. stale_processes looks at the desktop's account and
+# root, and the moved gateway runs as the mind account, so it adds these. By the unit's cgroup
+# and the command line (readable by anyone; /proc/<pid>/exe is not, and `check` runs as the
+# person), and started before the build was installed, as stale_processes decides it.
+harness_bridge_system_stale() {
+  harness_bridge_system || return 0
+  local d pid cmd installed started out=""
+  installed="$(stat -c %Y "${BUILD_FILE:-/opt/yantrik/BUILD}" 2>/dev/null || echo 0)"
+  for d in "$(harness_bridge_proc)"/[0-9]*; do
+    pid="${d##*/}"
+    harness_bridge_holds_pid "$pid" || continue
+    cmd="$(tr '\0' ' ' 2>/dev/null < "$d/cmdline")"
+    case "$cmd" in
+      *"${BIN_DIR:-/opt/yantrik/bin}/yos-mcp"*)
+        started="$(stat -c %Y "$d" 2>/dev/null || echo 0)"
+        [ "$started" -lt "$installed" ] && out="$out yos-mcp(pid-$pid)" ;;
+    esac
   done
   printf '%s' "${out# }"
 }
@@ -214,10 +260,16 @@ harness_bridge_signal() {
 harness_bridge_signal_do() {
   if selftest_standins && [ -n "${HARNESS_BRIDGE_RESTART:-}" ]; then
     [ "$HARNESS_BRIDGE_RESTART" = fail ] && return 1
-    printf '%s %s as %s\n' "$1" "$(harness_bridge_unit)" "$(harness_bridge_owner)" >> "$HARNESS_BRIDGE_RESTART"
+    printf '%s %s as %s\n' "$1" "$(harness_bridge_unit)" "$(harness_bridge_system && echo root || harness_bridge_owner)" >> "$HARNESS_BRIDGE_RESTART"
     return 0
   fi
-  harness_bridge_userctl "$1" "$(harness_bridge_unit)"
+  if harness_bridge_system; then harness_bridge_systemctl "$1"; else harness_bridge_userctl "$1" "$(harness_bridge_unit)"; fi
+}
+# The moved gateway is a system unit: root reloads or restarts it. The person's `check` (the shell
+# runs it) asks the updater's own sudo rule, which comes back here as root through `harness reload`.
+harness_bridge_systemctl() { # <reload|restart>
+  if [ "$(id -u)" = 0 ]; then systemctl "$1" "$(harness_bridge_unit)"
+  else sudo -n "${BIN_DIR:-/opt/yantrik/bin}/yantrik-update" harness "$1" hermes >/dev/null 2>&1; fi
 }
 harness_bridge_restart() { harness_bridge_signal restart; }
 
@@ -229,6 +281,8 @@ harness_bridge_restart() { harness_bridge_signal restart; }
 harness_bridge_stamp_file() {
   local v owner uid; v="$(harness_bridge_knob HARNESS_BRIDGE_STAMP "")"
   [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  # The moved gateway: root's own /run, which nobody else can plant a link in; cleared by a reboot.
+  harness_bridge_system && { printf '/run/yantrik-hermes-bridge-signalled'; return 0; }
   owner="$(harness_bridge_owner)" && uid="$(id -u "$owner" 2>/dev/null)" || return 1
   printf '/run/user/%s/yantrik-hermes-bridge-signalled' "$uid"
 }
@@ -238,7 +292,11 @@ harness_bridge_stamp_file() {
 # root reads the mtime whatever the mode.
 harness_bridge_stamp_write() {
   local f owner; f="$(harness_bridge_stamp_file)" || return 0
-  if [ "$(id -u)" = 0 ]; then
+  if harness_bridge_system; then
+    # Root's file: written by the root that signalled (the sudo'd `harness reload` does it for a
+    # person's check), never by the person.
+    if [ "$(id -u)" = 0 ] || selftest_standins; then touch -- "$f" 2>/dev/null; fi
+  elif [ "$(id -u)" = 0 ]; then
     owner="$(harness_bridge_owner)" || return 0
     runuser -u "$owner" -- touch -- "$f" 2>/dev/null
   else
@@ -259,6 +317,9 @@ harness_bridge_signalled_recently() {
 harness_bridge_can_reload() {
   if selftest_standins && [ -n "${HARNESS_BRIDGE_RESTART:-}" ]; then
     [ "$(harness_bridge_knob HARNESS_BRIDGE_CANRELOAD no)" = yes ]; return
+  fi
+  if harness_bridge_system; then
+    [ "$(systemctl show -p CanReload --value "$(harness_bridge_unit)" 2>/dev/null)" = yes ]; return
   fi
   [ "$(harness_bridge_userctl show -p CanReload --value "$(harness_bridge_unit)" 2>/dev/null)" = yes ]
 }
