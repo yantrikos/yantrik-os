@@ -25,16 +25,18 @@ const READ_NR: Option<&str> = None;
 pub(crate) struct Stat {
     pub state: char,
     pub pgrp: i32,
+    pub session: i32,
 }
 
-/// Parse state (field 3) and pgrp (field 5), from the last `)` — the command name in field 2 is
-/// not escaped, so it can hold spaces and parentheses. The same rule as `peer_identity::parse_stat`.
+/// Parse state (field 3), pgrp (field 5) and session (field 6), from the last `)` — the command name in
+/// field 2 is not escaped, so it can hold spaces and parentheses. The same rule as `peer_identity::parse_stat`.
 pub(crate) fn parse_stat(text: &str) -> Option<Stat> {
     let tail = &text[text.rfind(')')? + 1..];
     let fields: Vec<&str> = tail.split_whitespace().collect();
     Some(Stat {
         state: fields.first()?.chars().next()?,
         pgrp: fields.get(5 - 3)?.parse().ok()?,
+        session: fields.get(6 - 3)?.parse().ok()?,
     })
 }
 
@@ -107,6 +109,24 @@ pub(crate) fn waiting_on_terminal(master: RawFd, leader: i32, tty: &Path) -> boo
     })
 }
 
+/// Every process in session `sid` that is not a `bwrap`, from a scan of `/proc`: the command and
+/// what it started, as a host sees them from outside the pid namespace they are in. The `bwrap`s
+/// are left out because they are the namespace's way of ending: they die of a TERM, and the
+/// kernel then kills everything the namespace holds.
+pub(crate) fn session_members(sid: i32) -> Vec<i32> {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in dir.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
+        let in_session = stat(pid).is_some_and(|s| s.session == sid);
+        let is_bwrap = std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "bwrap");
+        if in_session && !is_bwrap {
+            out.push(pid);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,7 +134,18 @@ mod tests {
     #[test]
     fn stat_is_read_from_the_last_parenthesis() {
         let text = "4242 (my (odd) name) S 1 4240 4240 34816 4240 4194560 0 0 0 0 0 0 0 0 20 0 1 0 1234 0 0";
-        assert_eq!(parse_stat(text), Some(Stat { state: 'S', pgrp: 4240 }));
+        assert_eq!(parse_stat(text), Some(Stat { state: 'S', pgrp: 4240, session: 4240 }));
         assert_eq!(parse_stat("garbage"), None);
+    }
+
+    #[test]
+    fn a_session_is_listed_by_the_processes_in_it() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let sid = unsafe { libc::getsid(0) };
+        let members = session_members(sid);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(members.contains(&(std::process::id() as i32)) && members.contains(&(child.id() as i32)), "{members:?}");
+        assert!(session_members(i32::MAX).is_empty());
     }
 }

@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::job_sys::{hand_over_fds, peek_exit, pipe, reported_directory};
+use crate::job_sys::{as_the_shell_ended, hand_over_fds, peek_exit, pipe, reported_directory, signal_job};
 use crate::jobs::{JobId, JobState, Limits, RunAnswer, Shared};
 use crate::retained::Retained;
 use crate::sealed::Sealed;
@@ -67,8 +67,10 @@ pub(crate) struct Job {
     pub started: Instant,
     /// The sandbox a sealed command runs in: what it may spend and where it is allowed to write.
     pub sealed: Option<Sealed>,
-    /// The command's `bash`: session leader, so also the process group's id.
+    /// The command's `bash`, or the `bwrap` around it: session leader, so also the process group's id.
     pub pid: i32,
+    /// Whether `pid` is a `bwrap` with the command in a pid namespace of its own ([`signal_job`]).
+    walled: bool,
     /// `/dev/pts/N`, for telling a read on this terminal from any other read.
     tty: PathBuf,
     state: Mutex<State>,
@@ -129,12 +131,14 @@ pub(crate) fn spawn(
     let filter_fd = filter.as_ref().map(|f| f.as_raw_fd());
     // A sealed command is the same wrapper inside the sandbox; one the sandbox cannot be built
     // for is not started at all.
+    let mut walled = false;
     let (program, args, env): (String, Vec<String>, Vec<(String, String)>) = match sealed {
         // Not sealed: the outside view, in which the workshops root does not exist (#1120).
         None => {
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
             let words = ["--noprofile", "--norc", "-c", WRAPPER, "bash", command].map(String::from);
             let (program, args) = workshops::outside_command(&home, bash, &words).map_err(|e| format!("the command was not started: {e}"))?;
+            walled = program != bash;
             (program, args, env.to_vec())
         }
         Some(s) => {
@@ -174,6 +178,7 @@ pub(crate) fn spawn(
         started: Instant::now(),
         sealed: sealed.cloned(),
         pid,
+        walled,
         tty,
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
@@ -365,11 +370,9 @@ impl Job {
         }
         if state.kill_requested.is_none() {
             // The leader is not reaped while `end` is unset, so `-pid` is still this group.
-            unsafe {
-                libc::kill(-self.pid, libc::SIGTERM);
-                // A stopped process would sit on the TERM until continued.
-                libc::kill(-self.pid, libc::SIGCONT);
-            }
+            signal_job(self.pid, self.walled, libc::SIGTERM);
+            // A stopped process would sit on the TERM until continued.
+            signal_job(self.pid, self.walled, libc::SIGCONT);
             state.kill_requested = Some(Instant::now());
         }
         drop(state);
@@ -514,10 +517,16 @@ fn worker(
                 // A sealed command's `$PWD` is written by the sandbox, so it is its word and nothing
                 // more: it never moves the Mind's directory for its next unsealed command (#1124,
                 // L3).
-                let cwd_after = match &job.sealed {
-                    Some(_) => job.cwd.clone(),
-                    None => reported_directory(&pwd).unwrap_or_else(|| job.cwd.clone()),
+                let reported = match &job.sealed {
+                    Some(_) => None,
+                    None => reported_directory(&pwd),
                 };
+                // `bwrap` answers 128+n for a shell that died of signal n: say which it was.
+                let end = match job.walled {
+                    true => as_the_shell_ended(end, reported.is_some(), lock(&job.state).kill_requested.is_some()),
+                    false => end,
+                };
+                let cwd_after = reported.unwrap_or_else(|| job.cwd.clone());
                 {
                     let mut state = lock(&job.state);
                     state.end = Some(end);

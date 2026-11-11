@@ -137,3 +137,64 @@ pub(crate) fn reported_directory(pipe: &OwnedFd) -> Option<PathBuf> {
     (path.is_absolute() && path.is_dir()).then_some(path)
 }
 
+
+/// `signal` to a job: its whole process group, or, when its leader is a `bwrap` (`walled`), to
+/// everything in its session except the `bwrap`s.
+///
+/// A `bwrap` has no handler for TERM, so a TERM to the group ends it, and with it the pid
+/// namespace: the kernel kills every process inside at once, a command that traps TERM to clean up
+/// included. That would make the grace period a fiction. So the TERM goes to the command and what
+/// it started, which are in the leader's session however `bwrap` hid their pids, and the `bwrap`
+/// ends when they do. The KILL after the grace goes to the group, `bwrap` too, and that is the one
+/// that takes the namespace down. Whatever left the session (a `setsid` daemon) is not reached by
+/// a TERM, and is by that KILL.
+pub(crate) fn signal_job(leader: i32, walled: bool, signal: i32) {
+    if !walled {
+        unsafe {
+            libc::kill(-leader, signal);
+        }
+        return;
+    }
+    for pid in crate::proc::session_members(leader) {
+        unsafe {
+            libc::kill(pid, signal);
+        }
+    }
+}
+
+/// How the command's shell ended, when it ran inside `bwrap`, which reports a child that died of
+/// signal `n` as the exit code 128+n and so cannot say the two apart.
+///
+/// `reported` is whether the wrapper's `EXIT` trap wrote the directory: it runs for every way out
+/// but SIGKILL, so no word from it with a code in the signal range is a shell that was killed.
+/// `asked` is whether the job was told to stop: then 128+SIGTERM is the TERM that was sent (bash
+/// runs the trap on it and still dies of it). A TERM from elsewhere, or an `exit 143`, stays an exit
+/// code, as it is in any shell.
+pub(crate) fn as_the_shell_ended(end: End, reported: bool, asked: bool) -> End {
+    match end {
+        End::Exited(code) if (129..=128 + 64).contains(&code) && (!reported || (asked && code == 128 + libc::SIGTERM)) => {
+            End::Signalled(code - 128)
+        }
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bwrap_exit_codes_are_read_as_signals_only_where_that_is_what_they_were() {
+        // The wrapper never wrote its directory: killed, nothing could run.
+        assert_eq!(as_the_shell_ended(End::Exited(137), false, false), End::Signalled(9));
+        // It did, and nobody asked it to stop: the shell's own `exit 137`.
+        assert_eq!(as_the_shell_ended(End::Exited(137), true, false), End::Exited(137));
+        // Asked to stop, and bash ran its trap on the TERM and died of it.
+        assert_eq!(as_the_shell_ended(End::Exited(143), true, true), End::Signalled(15));
+        assert_eq!(as_the_shell_ended(End::Exited(143), true, false), End::Exited(143));
+        // Ordinary codes, and what `bwrap` died of itself, are what they are.
+        assert_eq!(as_the_shell_ended(End::Exited(3), false, true), End::Exited(3));
+        assert_eq!(as_the_shell_ended(End::Exited(128), false, true), End::Exited(128));
+        assert_eq!(as_the_shell_ended(End::Signalled(9), false, true), End::Signalled(9));
+    }
+}
