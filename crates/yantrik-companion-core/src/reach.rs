@@ -84,9 +84,32 @@ const BROWSER_APPS: &[&str] = &["browser", "chromium", "download-manager", "term
 /// The apps with no action that fetches an address or takes a command line, which an unattended
 /// `app_action` may drive when their `describe` fails. A source test holds every one to that.
 pub const LOCAL_APPS: &[&str] = &[
-    "shell", "notes", "calendar", "text-editor", "document-editor", "spreadsheet", "presentation", "snippet-manager",
+    "notes", "calendar", "text-editor", "document-editor", "spreadsheet", "presentation", "snippet-manager",
     "image-viewer", "system-monitor",
 ];
+
+/// Actions that reach out in a way their description cannot say, because what they send is free text
+/// or what they start is a program that goes out on its own: a harness install (GitHub, npm), Google's
+/// sign-in page, a place name sent to a geocoder, the shell's Mind View browser, and the shell's `send_message`,
+/// which starts a turn whose words are the caller's (it also declares `open_ended`; this holds when no `describe` answers). Person-only,
+/// whatever the arguments.
+pub const PERSON_ONLY_ACTIONS: &[(&str, &str)] =
+    &[("shell", "send_message"), ("shell", "install_harness"), ("shell", "open_mind_browser"), ("email", "begin_google_sign_in"), ("weather", "add_location")];
+
+/// Whether this `app_action` starts a browser or fetches web content, by what it is given: the shell's
+/// `open_app` and `show_app` of a browser app, and `files_open` of a page or an address (Chromium
+/// contacts Google on its own, fresh profile or not).
+fn starts_a_browser(app: &str, action: &str, args: &serde_json::Value) -> bool {
+    let name = args.get("name").and_then(serde_json::Value::as_str).unwrap_or("").trim();
+    match (app, action) {
+        ("shell", "open_app" | "show_app") => BROWSER_APPS.contains(&app_id(name).as_str()),
+        ("shell", "files_open") => {
+            let name = name.to_ascii_lowercase();
+            name.contains("://") || [".html", ".htm", ".xhtml"].iter().any(|ext| name.ends_with(ext))
+        }
+        _ => false,
+    }
+}
 
 /// An app as `app_action` names it: `app-notes` and `Notes` are `notes`.
 pub fn app_id(app: &str) -> String {
@@ -106,7 +129,12 @@ pub fn reach(name: &str, category: &str, args: &serde_json::Value) -> Reach {
     }
     if name == "app_action" {
         let app = app_id(args.get("app").and_then(serde_json::Value::as_str).unwrap_or(""));
-        return if BROWSER_APPS.contains(&app.as_str()) { Reach::Browser } else { Reach::Local };
+        let action = args.get("action").and_then(serde_json::Value::as_str).unwrap_or("").trim();
+        let inner = args.get("args").cloned().unwrap_or_default();
+        let person_only = BROWSER_APPS.contains(&app.as_str())
+            || PERSON_ONLY_ACTIONS.contains(&(app.as_str(), action))
+            || starts_a_browser(&app, action, &inner);
+        return if person_only { Reach::Browser } else { Reach::Local };
     }
     if name == "ssh_check_host" {
         let host = args.get("host").and_then(serde_json::Value::as_str).unwrap_or("");
@@ -185,6 +213,33 @@ mod tests {
 
     fn of(name: &str, category: &str) -> Reach {
         reach(name, category, &json!({}))
+    }
+
+    #[test]
+    fn an_app_action_that_starts_a_browser_or_reaches_out_by_name_is_person_only() {
+        let act = |app: &str, action: &str, args: serde_json::Value| reach("app_action", "", &json!({ "app": app, "action": action, "args": args }));
+        for (app, action, args) in [
+            ("shell", "open_app", json!({ "name": "browser" })),
+            ("shell", "open_app", json!({ "name": " Chromium " })),
+            ("shell", "show_app", json!({ "name": "browser" })),
+            ("app-shell", "open_mind_browser", json!({})),
+            ("shell", "files_open", json!({ "name": "report.htm" })),
+            ("shell", "files_open", json!({ "name": "http://x.example/" })),
+            ("shell", "install_harness", json!({ "id": "pi" })),
+            ("shell", "send_message", json!({ "text": "search the web" })),
+            ("email", "begin_google_sign_in", json!({})),
+            ("weather", "add_location", json!({ "name": "Oslo" })),
+        ] {
+            assert_eq!(act(app, action, args.clone()), Reach::Browser, "{app}.{action} {args}");
+        }
+        for (app, action, args) in [
+            ("shell", "open_app", json!({ "name": "notes" })),
+            ("shell", "files_open", json!({ "name": "notes.txt" })),
+            ("weather", "show_location", json!({ "name": "Oslo" })),
+            ("email", "compose", json!({})),
+        ] {
+            assert_eq!(act(app, action, args.clone()), Reach::Local, "{app}.{action} {args}");
+        }
     }
 
     #[test]

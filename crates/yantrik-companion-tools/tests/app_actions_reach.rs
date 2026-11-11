@@ -7,11 +7,17 @@
 //! publishes), and asks the code that decides: the actions that declare either are refused with
 //! nobody there, and every other action is not. An app that gains such an action, or a declaration
 //! this scan cannot attach to an action, fails here until the change is looked at.
+//!
+//! The shell is read the same way (`crates/yantrik-ui/src/control*.rs`, over a hundred actions): it is
+//! the app `app_action` drives most, and it declares `open_ended` on its own actions. The actions
+//! `reach::PERSON_ONLY_ACTIONS` holds person-only, whose description cannot say what they reach, must
+//! exist in one of these surfaces, and an action whose own source names a network client, a browser or an
+//! installer must be declared, person-only, or listed here as known to stay on the machine.
 
 use std::path::{Path, PathBuf};
 
 use yantrik_companion_core::background_research;
-use yantrik_companion_core::reach::LOCAL_APPS;
+use yantrik_companion_core::reach::{reach, Reach, LOCAL_APPS, PERSON_ONLY_ACTIONS};
 use yantrik_companion_tools::app_reach::refused_unattended;
 use yantrik_ipc_contracts::control_surface::Action;
 
@@ -19,6 +25,8 @@ use yantrik_ipc_contracts::control_surface::Action;
 struct Surface {
     app: String,
     actions: Vec<(String, Option<Declared>)>,
+    /// Each action's own source, from its `Action::new` to the next one's.
+    spans: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -64,11 +72,33 @@ fn declared_names(src: &str) -> Vec<(usize, String)> {
 fn surface_of(app_dir: &Path) -> Surface {
     let mut files = Vec::new();
     rust_files(&app_dir.join("src"), &mut files);
+    surface_from(&app_dir.file_name().unwrap().to_string_lossy(), &files)
+}
+
+/// The shell's actions are declared across `control*.rs` (and `caller_class.rs`, for the desktop's own services).
+fn shell_surface() -> Surface {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui/src");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&src)
+        .expect("yantrik-ui/src")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| (n.starts_with("control") || n == "caller_class.rs") && n.ends_with(".rs") && !n.ends_with("tests.rs") && !n.ends_with("_test.rs")))
+        .collect();
+    files.sort();
+    surface_from("shell", &files)
+}
+
+fn surface_from(app: &str, files: &[PathBuf]) -> Surface {
     let mut actions: Vec<(String, Option<Declared>)> = Vec::new();
+    let mut spans: Vec<(String, String)> = Vec::new();
     let mut declarations = 0;
     for file in files {
-        // Comments talk about the declarations without making them.
-        let src: String = std::fs::read_to_string(&file)
+        // Comments talk about the declarations without making them. Whatever follows `#[cfg(test)]`
+        // is a test's own surface, not the app's.
+        let whole = std::fs::read_to_string(file).unwrap_or_default();
+        let src: String = whole
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
             .unwrap_or_default()
             .lines()
             .map(|l| if l.trim_start().starts_with("//") { "" } else { l })
@@ -84,18 +114,24 @@ fn surface_of(app_dir: &Path) -> Surface {
                 here[owner].1 = Some(if open_ended { Declared::OpenEnded } else { Declared::Address(param.to_string()) });
             }
         }
+        for (i, (at, name)) in names.iter().enumerate() {
+            let end = names.get(i + 1).map_or(src.len(), |(next, _)| *next);
+            spans.push((name.clone(), src[*at..end].to_string()));
+        }
         actions.extend(here);
     }
     let attached = actions.iter().filter(|(_, d)| d.is_some()).count();
-    assert_eq!(attached, declarations, "{}: a declaration was attached to an action twice, or to none", app_dir.display());
-    Surface { app: app_dir.file_name().unwrap().to_string_lossy().into_owned(), actions }
+    assert_eq!(attached, declarations, "{app}: a declaration was attached to an action twice, or to none");
+    Surface { app: app.to_string(), actions, spans }
 }
 
 fn surfaces() -> Vec<Surface> {
     let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&apps).expect("apps/").flatten().map(|e| e.path()).filter(|p| p.join("src").is_dir()).collect();
     dirs.sort();
-    dirs.iter().map(|d| surface_of(d)).collect()
+    let mut all: Vec<Surface> = dirs.iter().map(|d| surface_of(d)).collect();
+    all.push(shell_surface());
+    all
 }
 
 /// What the app would publish for this action, from the real builder.
@@ -130,7 +166,11 @@ fn exactly_the_actions_that_declare_an_address_or_a_command_line_are_refused_wit
     }
     refused.sort();
     refused.dedup();
-    assert_eq!(refused, ["download-manager.add", "terminal.run", "terminal.send_input"], "an app now declares a reach: is it meant to?");
+    assert_eq!(
+        refused,
+        ["download-manager.add", "shell.agent_input", "shell.agent_run", "shell.send_message", "terminal.run", "terminal.send_input"],
+        "an app now declares a reach: is it meant to?"
+    );
 }
 
 #[test]
@@ -151,7 +191,50 @@ fn the_apps_an_unattended_call_may_drive_without_a_describe_declare_no_such_acti
         let reaching: Vec<&str> = surface.actions.iter().filter(|(_, d)| d.is_some()).map(|(n, _)| n.as_str()).collect();
         assert!(reaching.is_empty(), "{app} is on the local list and declares {reaching:?}");
     }
-    for app in ["download-manager", "terminal"] {
+    for app in ["download-manager", "terminal", "shell"] {
         assert!(!LOCAL_APPS.contains(&app), "{app}");
     }
+    let shell = surfaces.iter().find(|s| s.app == "shell").expect("the shell's surface is scanned");
+    for open_ended in ["agent_run", "agent_input", "send_message"] {
+        assert!(shell.actions.iter().any(|(n, d)| n == open_ended && matches!(d, Some(Declared::OpenEnded))), "shell.{open_ended}");
+    }
+}
+
+/// What `reach::PERSON_ONLY_ACTIONS` names exists: a renamed action must not leave its guard behind, and
+/// an app that cannot say what an action reaches (free text to a geocoder, an install from GitHub, a
+/// sign-in page) is held by name.
+#[test]
+fn every_person_only_action_exists_and_is_refused_unattended() {
+    let surfaces = surfaces();
+    for (app, action) in PERSON_ONLY_ACTIONS {
+        let surface = surfaces.iter().find(|s| s.app == *app).unwrap_or_else(|| panic!("no app {app}"));
+        assert!(surface.actions.iter().any(|(n, _)| n == action), "{app}.{action} is not an action any more");
+        let call = serde_json::json!({ "app": app, "action": action, "args": {} });
+        assert_eq!(reach("app_action", "", &call), Reach::Browser, "{app}.{action}");
+        assert!(yantrik_companion_tools::app_reach::refused_before_start(&call).is_some(), "{app}.{action}");
+    }
+}
+
+/// An action whose own source names a network client, a browser or an installer, and that
+/// is neither declared nor held person-only, is a reach nobody said: the scan cannot see through a helper
+/// it calls, so this is the part of the problem it can catch. What stays here stays on the machine, or is
+/// the person's to ask for.
+#[test]
+fn an_action_that_names_the_network_in_its_own_source_declares_it() {
+    const REACHING: [&str; 7] = ["ureq::", "reqwest", "TcpStream", "open::that", "xdg-open", "Command::new(\"curl\"", "Command::new(\"npm\""];
+    // Known, with what each does: none sends anything with nobody there.
+    const KNOWN: [&str; 0] = [];
+    let mut undeclared = Vec::new();
+    for surface in surfaces() {
+        for ((name, declared), (_, span)) in surface.actions.iter().zip(surface.spans.iter()) {
+            let held = PERSON_ONLY_ACTIONS.contains(&(surface.app.as_str(), name.as_str()));
+            let names_one = REACHING.iter().any(|needle| span.contains(needle));
+            let id = format!("{}.{name}", surface.app);
+            if names_one && declared.is_none() && !held && !KNOWN.contains(&id.as_str()) {
+                undeclared.push(id);
+            }
+        }
+    }
+    undeclared.sort();
+    assert!(undeclared.is_empty(), "actions whose source reaches out and that declare nothing: {undeclared:?}");
 }

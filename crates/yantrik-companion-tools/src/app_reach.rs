@@ -27,6 +27,13 @@ pub fn purpose_of(view: &Value, action: &str) -> String {
     published(view, action).and_then(|a| a.get("description").and_then(Value::as_str)).unwrap_or_default().to_string()
 }
 
+/// The refusal for an `app_action` call whose own arguments (its app, its action, the name or file it is
+/// given) already say it reaches out, or `None`. Asked before the app is started, so a refused call starts
+/// nothing; `refused_unattended` then reads what the app's `describe` declares.
+pub fn refused_before_start(args: &Value) -> Option<String> {
+    reach::check_call("app_action", "", args).err()
+}
+
 /// What to tell the model when this unattended call is not allowed, or `None` to go on. `view` is the
 /// app's `describe`, or `None` when it did not answer.
 pub fn refused_unattended(app: &str, action: &str, view: Option<&Value>) -> Option<String> {

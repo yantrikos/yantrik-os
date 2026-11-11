@@ -18,6 +18,7 @@
 //!   once, on the desktop, that it answers from now on.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -73,6 +74,8 @@ pub enum Outcome {
     Started,
     /// Installed and proven already; nothing to do.
     Proven,
+    /// The first run has not yet put [`BEFORE_NEXT`] on a screen: nothing was tried or counted.
+    NotShown,
     /// Started before (the first run), or tried as often as it may be (a restart).
     NotAgain,
     /// An install of it is running now.
@@ -93,6 +96,8 @@ pub trait Machine {
     /// started that is still going.
     fn installing(&self) -> bool;
     fn online(&self) -> bool;
+    /// [`BEFORE_NEXT`] has been put on the first run's screen in this shell.
+    fn sentence_shown(&self) -> bool;
     fn install(&self) -> Result<(), String>;
     /// Say on the row why it was not installed.
     fn refuse(&self, why: &str);
@@ -113,6 +118,11 @@ pub fn begin(machine: &dyn Machine, when: When) -> Outcome {
     };
     if !may {
         return Outcome::NotAgain;
+    }
+    // A download the person was not told about is not started: the first run's start waits for the
+    // sentence (a restart carries on one that was started after it).
+    if when == When::FirstRun && !machine.sentence_shown() {
+        return Outcome::NotShown;
     }
     if machine.installing() {
         return Outcome::Running;
@@ -243,6 +253,9 @@ impl Machine for Here {
     fn online(&self) -> bool {
         reachable(WAIT_FOR_INTERNET)
     }
+    fn sentence_shown(&self) -> bool {
+        SENTENCE_SHOWN.load(Ordering::SeqCst)
+    }
     fn install(&self) -> Result<(), String> {
         crate::wire::harness::install(DEFAULT_MIND).map(|command| {
             tracing::info!(harness = DEFAULT_MIND, command = %command, "setting up the default mind");
@@ -263,7 +276,23 @@ impl Machine for Here {
 /// while the first is still waiting for the internet.
 static STARTING: Mutex<()> = Mutex::new(());
 
-/// Start the default mind's install in the background if the rules say so. Never on the live
+/// Set once the first run's words for the default mind have been put on its screen, whose steps all
+/// draw them: the model step before the pick, and the welcome step when the installer carried the pick.
+static SENTENCE_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// How often a start that is waiting for the sentence looks again.
+const WAIT_FOR_SENTENCE: Duration = Duration::from_millis(500);
+
+/// The first run's screen now carries `words` (what [`words_now`] said): note that the person has been
+/// shown [`BEFORE_NEXT`], which lets a waiting start go ahead.
+pub fn published(words: &str) {
+    if words == BEFORE_NEXT {
+        SENTENCE_SHOWN.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Start the default mind's install in the background if the rules say so, once the first run has
+/// shown [`BEFORE_NEXT`] (a first start waits for it, however long that takes). Never on the live
 /// image: the person has not installed yet, and what it would download is lost at reboot.
 pub fn start(when: When) {
     if crate::lock::live_session() {
@@ -271,7 +300,12 @@ pub fn start(when: When) {
     }
     let spawned = std::thread::Builder::new().name("default-mind".into()).spawn(move || {
         let _one = STARTING.lock().unwrap_or_else(|e| e.into_inner());
-        let outcome = begin(&Here { home: home() }, when);
+        let here = Here { home: home() };
+        let mut outcome = begin(&here, when);
+        while outcome == Outcome::NotShown {
+            std::thread::sleep(WAIT_FOR_SENTENCE);
+            outcome = begin(&here, when);
+        }
         tracing::info!(harness = DEFAULT_MIND, ?when, ?outcome, "default mind");
     });
     if let Err(e) = spawned {
@@ -311,6 +345,8 @@ mod tests {
         proven: bool,
         installing: Cell<bool>,
         offline: bool,
+        /// The first run has not drawn `BEFORE_NEXT` yet.
+        unshown: Cell<bool>,
         fails: bool,
         installs: Cell<u32>,
         refused: RefCell<Vec<String>>,
@@ -329,6 +365,9 @@ mod tests {
         }
         fn online(&self) -> bool {
             !self.offline
+        }
+        fn sentence_shown(&self) -> bool {
+            !self.unshown.get()
         }
         fn install(&self) -> Result<(), String> {
             if self.fails {
@@ -364,6 +403,36 @@ mod tests {
         assert_eq!(begin(&m, When::FirstRun), Outcome::NotAgain);
         assert_eq!(m.installs.get(), 1);
         assert_eq!(m.record().tries, 1);
+    }
+
+    #[test]
+    fn nothing_is_downloaded_before_the_sentence_that_names_it_is_on_screen() {
+        let m = Fake { picked: true, unshown: Cell::new(true), ..Default::default() };
+        for when in [When::FirstRun, When::FirstRun] {
+            assert_eq!(begin(&m, when), Outcome::NotShown);
+        }
+        assert_eq!((m.installs.get(), m.record().tries), (0, 0), "nothing started, and nothing was used up");
+        // The first run puts the words on screen (the model step, or the welcome step when the
+        // installer carried the pick): only then does the pick start it.
+        published(&words(&Record::default(), false, None));
+        assert!(SENTENCE_SHOWN.load(Ordering::SeqCst));
+        m.unshown.set(false);
+        assert_eq!(begin(&m, When::FirstRun), Outcome::Started);
+        assert_eq!(m.installs.get(), 1);
+    }
+
+    #[test]
+    fn what_is_shown_before_the_pick_is_the_sentence_and_what_it_says_after_is_the_install() {
+        let before = words(&Record::default(), false, None);
+        assert_eq!(before, BEFORE_NEXT);
+        assert!(before.contains("3 GB") && before.contains("GitHub") && before.contains("package index"));
+        let after = words(&Record { tries: 1, ..Default::default() }, false, None);
+        assert_eq!(after, SETTING_UP);
+        published(&after);
+        // Not a sentence the person was shown before: it does not count as that.
+        let seen = SENTENCE_SHOWN.load(Ordering::SeqCst);
+        published("something else");
+        assert_eq!(SENTENCE_SHOWN.load(Ordering::SeqCst), seen);
     }
 
     #[test]

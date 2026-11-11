@@ -77,7 +77,7 @@ fn builtin_turn(
         Some(h) => crate::agents::handover::with_handover(h, text),
         None => text.to_string(),
     };
-    let (answer, by_model) = bridge.send_message_reporting(sent, false);
+    let (answer, by_model) = bridge.send_message_reporting(sent, false, crate::turn_source::typed());
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
     let bridge = bridge.clone();
     let asked = text.to_string();

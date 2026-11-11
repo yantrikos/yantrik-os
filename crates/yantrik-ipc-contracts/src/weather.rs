@@ -104,8 +104,8 @@ pub trait WeatherService: Send + Sync {
 
 /// The place a person gave, when it reads as a place: a name of a few words, not a sentence
 /// remembered from a chat (the companion's `user_location` can be one) and nothing that could
-/// change the shape of a URL. `None` is "no place known". The one rule for text that may go to a
-/// weather service with nobody asking: the weather watch and the `get_weather` tool both use it.
+/// change the shape of a URL. `None` is "no place known". The rule for the companion's remembered home before the weather
+/// watch names it with nobody asking (`weather_places` keeps the places the person saved).
 pub fn named_place(given: &str) -> Option<String> {
     let place = given.trim();
     let plain = place.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | ',' | '.' | '-' | '\''));

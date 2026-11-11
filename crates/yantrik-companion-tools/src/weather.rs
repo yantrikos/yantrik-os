@@ -11,7 +11,7 @@
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 use yantrik_companion_core::background_research;
 use yantrik_ipc_contracts::location_consent;
-use yantrik_ipc_contracts::weather::named_place;
+use yantrik_companion_core::weather_places;
 
 /// The shell's action that asks the person, and the app it belongs to.
 const APP: &str = "shell";
@@ -45,13 +45,14 @@ fn resolve(location: &str, forbidden: bool, on: bool, ask: impl FnOnce() -> Resu
     }
 }
 
-/// With nobody there, the place goes to wttr.in in the clear, so it must read as a place: a name of a
-/// few words, as the weather watch requires (`named_place`), not text the model chose. A person's own
-/// turn may type anything. `None` lets the call go on.
-fn unplace(location: &str, person: bool) -> Option<String> {
+/// With nobody there, the place goes to wttr.in in the clear, so it must be one the person has: a place
+/// they saved in the weather app, the coordinates of one, or where they live (`weather_places`), not text
+/// the model chose, however plain it reads. A person's own turn may type anything. `None` lets the call go
+/// on.
+fn unplace(location: &str, person: bool, theirs: impl Fn(&str) -> bool) -> Option<String> {
     let location = location.trim();
-    (!person && !location.is_empty() && named_place(location).is_none()).then(|| {
-        "Refused: with nobody asking, the weather is looked up only for a plain place name (a city, a few words), and that was not one, so nothing was sent."
+    (!person && !location.is_empty() && !theirs(location)).then(|| {
+        "Refused: with nobody asking, the weather is looked up only for a place the person saved or lives in, and that was not one, so nothing was sent."
             .to_string()
     })
 }
@@ -101,7 +102,7 @@ impl Tool for GetWeatherTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let location = args.get("location").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(refusal) = unplace(location, background_research::person_started()) {
+        if let Some(refusal) = unplace(location, background_research::person_started(), weather_places::is_theirs) {
             return refusal;
         }
         // The switch's first yes in this run is logged with the line `describe shell` shows.
@@ -176,16 +177,18 @@ mod tests {
         panic!("the person must not be asked")
     }
 
-    /// Round 5, low 6: an unattended turn sent any short text to wttr.in as the place ("rust news").
+    /// Round 5, low 6, and the review after it: an unattended turn sent any short text to wttr.in as the
+    /// place ("rust news", a contact's name). Only a place the person has goes, with nobody there.
     #[test]
-    fn with_nobody_there_only_a_place_name_is_sent() {
-        for text in ["rust news: today", "48.8566,2.3522", "a/b?x=1", "lives in a house near the big lake in Oslo", "interest: deals near me tonight"] {
-            let said = unplace(text, false).unwrap_or_else(|| panic!("{text:?} was let through"));
+    fn with_nobody_there_only_a_place_the_person_has_is_sent() {
+        let theirs = |p: &str| p == "Oslo" || p == "59.9139,10.7522";
+        for text in ["rust news", "Priya Nair", "Rome", "a/b?x=1", "48.8566,2.3522"] {
+            let said = unplace(text, false, theirs).unwrap_or_else(|| panic!("{text:?} was let through"));
             assert!(said.starts_with("Refused:"), "{said}");
-            assert_eq!(unplace(text, true), None, "{text:?}: a person types what they like");
+            assert_eq!(unplace(text, true, theirs), None, "{text:?}: a person types what they like");
         }
-        for text in ["Oslo", "New York", "  Paris, France ", "", "  "] {
-            assert_eq!(unplace(text, false), None, "{text:?}");
+        for text in ["Oslo", "59.9139,10.7522", "", "  "] {
+            assert_eq!(unplace(text, false, theirs), None, "{text:?}");
         }
     }
 

@@ -430,11 +430,13 @@ yantrik-os/
   one) and ask you to confirm or change it; neither asks the network. Everything else the OS
   contacts is something you set up or ask for: a cloud model account (checked in the background
   while it is your chosen model), another mind you install (which keeps itself up to date, and which we
-  ask not to report usage with `DO_NOT_TRACK=1`), your weather (from a public weather service, for a place you or
-  the companion name), mail, calendar and connectors, and a problem
+  ask not to report usage with `DO_NOT_TRACK=1`), your weather (from a public weather service, for a place you name or have saved), mail, calendar and connectors, and a problem
   report you chose to send. Its code runner has no network unless you ask for one in your
   own turn (the terminal, above, is not the code runner). Installing the packages a script needs is a web fetch, and so is a call
-  to a tool server you add, so neither happens with nobody there. When an app crashes or fails, the desktop writes a
+  to a tool server you add, so neither happens with nobody there. A turn is yours only when you
+  typed or spoke it: an urge, an automation, or a program asking the shell to send a message is not,
+  and with nobody there the companion cannot open a browser, start a harness install or Google's
+  sign-in page, or look up a place you did not save. When an app crashes or fails, the desktop writes a
   record locally (`~/.local/share/yantrik/problems/`) with your home path, your user name and common key and
   token shapes removed; other things a log line happens to contain, such as host names,
   addresses or file names, are not removed. *Report a problem* shows you that record, and it
