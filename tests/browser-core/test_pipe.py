@@ -446,8 +446,8 @@ class NothingListensOnThePersonsOldPort(unittest.TestCase):
         self.assertIn('return vec![PIPE_FLAG.into()]', flags)
 
     def test_nothing_in_the_deploy_tools_reaches_the_persons_browser_by_port(self):
-        """M4: release-check and yos drive the Browser through its service; no port is spelled."""
-        for tool in ("release-check", "yos"):
+        """M4: release-check, yos and its web helpers drive the Browser through its service; no port is spelled."""
+        for tool in ("release-check", "yos", "yos_web.py", "yos_mcp_web.py"):
             path = os.path.join(ROOT, "deploy", "yantrik-os", tool)
             with open(path, encoding="utf-8") as f:
                 source = f.read()
