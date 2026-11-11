@@ -14,6 +14,7 @@
 set -eu
 . "$(dirname "$0")/common.sh"
 . "$(dirname "$0")/hermes-launcher.sh"
+. "$(dirname "$0")/hermes-bake-checks.sh"
 . "$(dirname "$0")/hermes-pin.sh"
 . "$(dirname "$0")/hermes-plugins.sh"
 
@@ -31,8 +32,9 @@ hermes --version >/dev/null 2>&1 || fail "Hermes installed, but hermes will not 
 #    request;
 #  - gsap, a build-time dependency of Hermes's web UI under GSAP's own "no charge" licence, which is
 #    not an open-source one. The built UI does not contain it.
-# And the two caches the installer leaves behind, 285 MB of uv's and 93 MB of npm's.
-rm -rf "$HOME/.hermes/tools"/ffmpeg-* "$HOME/.hermes/hermes-agent/node_modules/gsap" "$HOME/.hermes/cache/uv" "$HOME/.npm"
+# The two caches the installer leaves behind, 285 MB of uv's and 93 MB of npm's, go last of all
+# (below), because every Hermes command after this one can fill them again.
+rm -rf "$HOME/.hermes/tools"/ffmpeg-* "$HOME/.hermes/hermes-agent/node_modules/gsap"
 python3 -I -c '
 import json, sys
 path = sys.argv[1]
@@ -66,8 +68,17 @@ hermes_python=$(python3 "$HARNESS_LIB/hermes_runtime.py" </dev/null) \
     || fail "cannot find the Python Hermes runs on: none beside hermes, and no venv on Hermes's own sys.path"
 (cd "$HOME/.hermes/hermes-agent" && "$hermes_python" -c 'import pm, pathlib, sys; sys.exit(0 if pm.venv_is_current(project_root=pathlib.Path.cwd()) else 1)') </dev/null \
     || fail "Hermes still owes itself a dependency sync after the desktop plugin was enabled, so a first run with no network would stop; the image does not ship this Hermes"
+# Nor may it owe the tail of a source update: prepare_launch finishes that, over the network, even
+# with the venv current, and a failed one leaves its record behind for the first run to retry.
+owed=$(hermes_completion_owed "$HOME/.hermes") || fail "could not look for an owed source-update tail"
+[ -z "$owed" ] || fail "Hermes owes the tail of a source update ($owed), which a first run with no network cannot finish; the image does not ship this Hermes"
 
-# Read last, after everything Hermes runs here: every package and tool must be one the image may
-# carry (hermes_licences.py fails closed on anything unknown or undeclared).
+# Last of all, after every command Hermes ran here: the caches go, and nothing that must not ship
+# is there (L-C), so the licence gate below reads what the image will carry.
+rm -rf "$HOME/.hermes/cache/uv" "$HOME/.npm"
+left=$(hermes_unshippable "$HOME/.hermes" "$HOME/.npm")
+[ -z "$left" ] || fail "a Hermes command brought back what the image leaves out ($left)"
+# Every package and tool must be one the image may carry (hermes_licences.py fails closed on
+# anything unknown or undeclared).
 python3 -I "$INSTALL_LIB/hermes_licences.py" "$HOME/.hermes" || fail "Hermes brought in a licence the image does not ship (above)"
 say "$(hermes --version 2>/dev/null | head -n 1) at $HERMES_COMMIT"
