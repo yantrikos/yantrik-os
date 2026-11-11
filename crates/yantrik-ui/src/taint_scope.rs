@@ -412,6 +412,7 @@ mod tests {
             pid: 4242,
             uid: 1000,
             gid: 1000,
+            the_mind: false,
         }));
         assert!(!is_press(), "a call that came over the socket is never a press");
     }
