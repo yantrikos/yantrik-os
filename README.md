@@ -425,7 +425,7 @@ yantrik-os/
   one) and ask you to confirm or change it; neither asks the network. Everything else the OS
   contacts is something you set up or ask for: a cloud model account (checked in the background
   while it is your chosen model), a mind you install (which keeps itself up to date, and which we
-  ask not to report usage with `DO_NOT_TRACK=1`), your weather (from wttr.in, for a place you or
+  ask not to report usage with `DO_NOT_TRACK=1`), your weather (from a public weather service, for a place you or
   the companion name), mail, calendar and connectors, and a problem
   report you chose to send. Code the companion runs for you has no network unless you ask for
   one in your own turn. Installing the packages a script needs is a web fetch, and so is a call
