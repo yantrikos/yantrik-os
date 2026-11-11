@@ -17,6 +17,11 @@ const KEEP_IN_MEMORY: usize = 256;
 pub struct Call {
     /// Seconds since the epoch.
     pub at: i64,
+    /// The call's own key, set by the gateway ([`new_rid`]) and never reused: what a turn is tied to
+    /// when it ends, so a past answer names the call that answered it and no other. 0 on a line
+    /// written before there was one.
+    #[serde(default)]
+    pub rid: u64,
     pub harness: String,
     pub account: String,
     pub model: String,
@@ -43,6 +48,21 @@ pub struct Call {
     pub dropped: Vec<String>,
 }
 
+/// A key no other call has had, across restarts: the clock in nanoseconds, or one more than the last
+/// key handed out when two calls land in the same tick.
+pub fn new_rid() -> u64 {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
+    let mut last = LAST.load(std::sync::atomic::Ordering::SeqCst);
+    loop {
+        let next = now.max(last + 1);
+        match LAST.compare_exchange(last, next, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) {
+            Ok(_) => return next,
+            Err(seen) => last = seen,
+        }
+    }
+}
+
 impl Call {
     pub fn ok(&self) -> bool {
         (200..300).contains(&self.status)
@@ -59,8 +79,11 @@ impl CallLog {
         CallLog { path: None, recent: Mutex::new(VecDeque::new()) }
     }
 
+    /// The log at `path`, with its newest calls read back in: what was answered before the shell
+    /// started is still what answered.
     pub fn at(path: PathBuf) -> CallLog {
-        CallLog { path: Some(path), recent: Mutex::new(VecDeque::new()) }
+        let recent = std::fs::read_to_string(&path).map(|text| newest_calls(&text)).unwrap_or_default();
+        CallLog { path: Some(path), recent: Mutex::new(recent) }
     }
 
     pub fn record(&self, call: Call) {
@@ -86,10 +109,25 @@ impl CallLog {
         self.recent.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
     }
 
-    /// The newest call by this harness, if any since the shell started.
+    /// The newest call by this harness.
     pub fn last_for(&self, harness: &str) -> Option<Call> {
         self.recent.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().find(|c| c.harness == harness).cloned()
     }
+
+    /// The newest call by this harness that was answered: the one that shows which model really
+    /// answered it.
+    pub fn last_ok_for(&self, harness: &str) -> Option<Call> {
+        self.recent.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().find(|c| c.harness == harness && c.ok()).cloned()
+    }
+}
+
+/// The last [`KEEP_IN_MEMORY`] calls a log's text holds, oldest first; a line that is not a call is skipped.
+fn newest_calls(text: &str) -> VecDeque<Call> {
+    let mut calls: VecDeque<Call> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    while calls.len() > KEEP_IN_MEMORY {
+        calls.pop_front();
+    }
+    calls
 }
 
 fn append(path: &std::path::Path, call: &Call) -> Result<(), String> {
@@ -130,7 +168,37 @@ mod tests {
     use super::*;
 
     fn call(model: &str) -> Call {
-        Call { at: 1, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+        Call { at: 1, rid: 0, harness: "pi".into(), account: "a".into(), model: model.into(), effort: None, status: 200, outcome: String::new(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+    }
+
+    /// #1162 M1: each call has a key of its own, which survives the log's round trip.
+    #[test]
+    fn every_call_has_a_key_no_other_call_has() {
+        let keys: std::collections::BTreeSet<u64> = (0..1000).map(|_| new_rid()).collect();
+        assert_eq!(keys.len(), 1000);
+        assert!(!keys.contains(&0));
+        let c = Call { rid: new_rid(), ..call("m") };
+        assert_eq!(serde_json::from_str::<Call>(&serde_json::to_string(&c).unwrap()).unwrap().rid, c.rid);
+        let old = r#"{"at":1,"harness":"pi","account":"a","model":"m","status":200,"ms":1}"#;
+        assert_eq!(serde_json::from_str::<Call>(old).unwrap().rid, 0, "a line from before keys is unkeyed");
+    }
+
+    #[test]
+    fn the_newest_answered_call_survives_a_restart_and_skips_failures() {
+        let dir = std::env::temp_dir().join(format!("gateway-log-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("calls.jsonl");
+        let failed = Call { status: 502, outcome: "unreachable".into(), ..call("newest-but-failed") };
+        let lines = [call("answered"), failed].iter().map(|c| serde_json::to_string(c).unwrap() + "
+").collect::<String>() + "not json
+";
+        std::fs::write(&path, lines).unwrap();
+        let log = CallLog::at(path);
+        assert_eq!(log.last_for("pi").unwrap().model, "newest-but-failed");
+        assert_eq!(log.last_ok_for("pi").unwrap().model, "answered");
+        assert!(log.last_ok_for("hermes").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

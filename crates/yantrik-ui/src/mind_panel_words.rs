@@ -117,6 +117,22 @@ mod tests {
         }
     }
 
+    /// #1162: only `describe`'s `mind_panel.model` carried "answering · <Account> · <model>"; the
+    /// drawn panel showed it for a failing model alone, so idle and thinking said no model at all.
+    /// The line is bound to the same `now.model`, in every state but a mind with its own models.
+    #[test]
+    fn the_drawn_panel_says_the_model_idle_and_thinking_as_describe_does() {
+        let slint = include_str!("../../yantrik-ui-slint/ui/components/mind_panel.slint");
+        let code = slint.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let at = code.find("text: root.now.model;").expect("the panel draws now.model");
+        let line = &code[..at];
+        let gate = &line[line.rfind("if root.now.known").expect("its condition")..];
+        for hidden in ["!= \"connected\"", "!= \"thinking\""] {
+            assert!(!gate.contains(hidden), "the model line is not hidden while the model works or thinks: {gate}");
+        }
+        assert!(gate.contains("root.now.model != \"\""), "and it is not drawn empty: {gate}");
+    }
+
     #[test]
     fn the_panel_draws_no_ceiling_code_no_audit_jargon_and_no_cut_rows() {
         let slint = include_str!("../../yantrik-ui-slint/ui/components/mind_panel.slint");

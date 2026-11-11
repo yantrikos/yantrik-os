@@ -61,8 +61,14 @@ impl Accounts for Fake {
     fn effort_for(&self, harness: &str, model: &str) -> Option<yantrik_ml::model_caps::Effort> {
         (harness == "pi" && model == "cloud/gpt-oss-120b").then_some(PICKED)
     }
-    fn picked_model(&self, harness: &str) -> Option<String> {
-        (harness == "pi").then(|| "home/qwen3:8b".to_string())
+    fn picked_model(&self, harness: &str) -> Result<String, Refusal> {
+        if harness == "pi" {
+            return Ok("home/qwen3:8b".to_string());
+        }
+        if harness == "gone" {
+            return Err(Refusal::new(404, "pick_gone", "Your pick, X, isn't offered by any of your accounts any more."));
+        }
+        Err(crate::server::no_pick())
     }
     fn private_lane(&self) -> Option<String> {
         self.lane.map(str::to_string)
@@ -435,6 +441,17 @@ fn picked_is_the_model_the_person_picked_for_that_mind_at_each_call() {
     let (status, body) = answer(&g, &request("POST", "/v1/chat/completions", Some(&mind), json!({"model": "picked"})));
     assert_eq!(status, 404, "nothing picked for it: said, not guessed");
     assert!(body.contains("pick one in the ask bar"));
+}
+
+#[test]
+fn a_pick_that_has_gone_with_no_default_is_refused_in_the_sentence_that_says_so() {
+    let (g, echo, _, _) = gateway(false);
+    let gone = mint().unwrap();
+    g.tokens.register(&gone, Grant { harness: "gone".into(), private_context: false }).unwrap();
+    let (status, body) = answer(&g, &request("POST", "/v1/chat/completions", Some(&gone), json!({"model": "picked"})));
+    assert_eq!(status, 404);
+    assert!(body.contains("pick_gone") && body.contains("isn't offered by any of your accounts any more"), "{body}");
+    assert!(echo.sent.lock().unwrap().is_empty(), "nothing was sent anywhere");
 }
 
 #[test]

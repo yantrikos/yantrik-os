@@ -182,6 +182,11 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     // written behind the shell's back would have been taken as the person's (#448 review).
     let _ = crate::memory_grants::load();
     let host = Host::new(vec![Arc::new(Companion { bridge: ctx.bridge.clone() })]);
+    // Every face names the model the shell says answers a mind on the gateway, Hermes's own detail
+    // line included, at once after a restart and after a pick change (#1162).
+    yantrik_harness::host::detail::set_model_line(crate::answering::model_line);
+    // The listing keeps a derived line for a second; an account or its consent changing is not waited out.
+    crate::ai_accounts::on_change(yantrik_harness::host::detail::refresh_model_lines);
     // Every turn a mind takes is kept as a run beside the agents' sessions (#25); without the
     // file the host still works, it just keeps no runs.
     let host = match open_runs() {
