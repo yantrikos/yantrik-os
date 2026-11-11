@@ -6,7 +6,35 @@ use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 
+use yantrik_ipc_contracts::home_paths::spawner;
+
 use crate::job::End;
+
+/// Start the command on the spawner thread (`spawner`), which lives as long as the process. A
+/// walled command carries `bwrap --die-with-parent`, and the kernel sends that on the exit of the
+/// *thread* that forked it: forked on a tokio blocking-pool thread, a job that outlived its call
+/// was killed when the pool thread went idle (round 13, M1).
+pub(crate) fn fork(
+    program: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    cwd: PathBuf,
+    pwd: RawFd,
+    seccomp: Option<RawFd>,
+    pts: pty_process::blocking::Pts,
+) -> Result<std::process::Child, pty_process::Error> {
+    spawner::on_spawner(move || {
+        let builder = pty_process::blocking::Command::new(program)
+            .args(args)
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .current_dir(&cwd);
+        // Safety: only async-signal-safe calls (dup2, fcntl, close_range) between fork and exec.
+        let builder = unsafe { builder.pre_exec(move || hand_over_fds(pwd, seccomp)) };
+        builder.spawn(pts)
+    })
+    .unwrap_or_else(|| Err(std::io::Error::other("the spawner thread failed").into()))
+}
 
 /// In the child, between fork and exec: put the directory pipe on fd 3, open across exec, then
 /// (`seccomp`) the filter on fd 4, and mark every other descriptor the child inherited close-on-exec.
@@ -16,7 +44,7 @@ use crate::job::End;
 /// socket, an inotify fd from a C library) would otherwise reach a sealed command at
 /// `/proc/self/fd/N`, and with it the display, the bus or the network. Only async-signal-safe
 /// calls (fcntl, dup2, close, syscall).
-pub(crate) fn hand_over_fds(pwd: RawFd, seccomp: Option<RawFd>) -> std::io::Result<()> {
+fn hand_over_fds(pwd: RawFd, seccomp: Option<RawFd>) -> std::io::Result<()> {
     unsafe {
         // A source that sits on a slot we are about to fill is moved out of the way first.
         let (mut pwd, mut seccomp) = (pwd, seccomp);

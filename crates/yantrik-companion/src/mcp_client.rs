@@ -50,7 +50,7 @@ impl McpConnection {
             cmd.current_dir(dir);
         }
 
-        let child = cmd.spawn().map_err(|e| {
+        let child = yantrik_companion_tools::spawn::spawn_long_lived(cmd).map_err(|e| {
             format!("Failed to spawn MCP server '{command}': {e}")
         })?;
 

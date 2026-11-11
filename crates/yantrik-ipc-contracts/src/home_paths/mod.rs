@@ -21,6 +21,7 @@ use std::path::{Component, Path, PathBuf};
 mod stat;
 mod tree;
 mod verdict;
+pub mod spawner;
 pub mod workshops;
 mod writes;
 

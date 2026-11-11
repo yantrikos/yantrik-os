@@ -34,6 +34,14 @@ pub fn mind_command(home: &Path, program: &str, args: &[String]) -> Result<Comma
     Ok(command)
 }
 
+/// Start a [`mind_command`] that outlives the call that starts it (a background task, an MCP
+/// server). `--die-with-parent` ends the program when the *thread* that forked it exits, so it
+/// is forked on the spawner thread, which lives as long as the process (round 13, M1). A command
+/// that is waited for on the calling thread (`output()`) needs no such care.
+pub fn spawn_long_lived(command: Command) -> std::io::Result<std::process::Child> {
+    yantrik_ipc_contracts::home_paths::spawner::spawn(command)
+}
+
 /// Controls how isolated the script execution environment is.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SandboxMode {

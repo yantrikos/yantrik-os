@@ -111,10 +111,8 @@ impl TaskManager {
             .try_clone()
             .map_err(|e| format!("Failed to clone file handle: {e}"))?;
 
-        let child = shell
-            .stdout(Stdio::from(log_file))
-            .stderr(Stdio::from(stderr_file))
-            .spawn()
+        shell.stdout(Stdio::from(log_file)).stderr(Stdio::from(stderr_file));
+        let child = yantrik_companion_tools::spawn::spawn_long_lived(shell)
             .map_err(|e| format!("Failed to spawn process: {e}"))?;
 
         let pid = child.id();

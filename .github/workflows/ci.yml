@@ -96,6 +96,11 @@ jobs:
       - name: Let bubblewrap make its user namespace
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # The workshops root exists on a machine the installer has run on. With it here, the browser
+      # and app launches are checked with the tmpfs over it, as they are on a real machine.
+      - name: Make the workshops root
+        run: sudo mkdir -p /var/lib/yantrik/workshops
+
       - name: Test
         run: cargo test --workspace --locked
 

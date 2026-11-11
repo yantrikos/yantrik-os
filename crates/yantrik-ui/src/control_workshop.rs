@@ -324,6 +324,8 @@ fn workshop_export(args: &Value) -> Result<Value, String> {
 mod tests {
     use super::*;
     use yantrik_ipc_transport::gate::{fetches_address, leaves_machine, open_ended};
+    use yantrik_agent_terminal::{AgentId, Environment, Jobs, Limits};
+    use std::time::Duration;
 
     fn grant_for(home: &Path, rec: &Path, agent: &str, name: &str) -> PathBuf {
         let real = workshop::folder_for(home, agent, name, true).unwrap();
@@ -457,27 +459,30 @@ mod tests {
         std::fs::create_dir(&secret_dir).unwrap();
         std::fs::write(secret_dir.join("token"), "do-not-read").unwrap();
         let shop = workshop::folder_for(h.path(), "hermes", "shop", true).unwrap();
-        let s = Sealed::new(shop.clone());
-        let env: Vec<(String, String)> = vec![("USER".into(), "p".into()), ("LANG".into(), "C.UTF-8".into()), ("TERM".into(), "xterm".into())];
-        let mut argv = vec![["/usr/bin/bwrap", "/bin/bwrap"].into_iter().find(|p| Path::new(p).exists()).unwrap().to_string()];
-        argv.extend(s.bwrap_args(Path::new("/"), &shop, &env).unwrap());
+        // Through `Jobs`, the real spawn path: it builds the seccomp filter and hands it to
+        // bwrap on fd 4, as the shell does (round 13, B1: a bare bwrap read some other fd 4).
+        let environment = Environment {
+            home: h.path().to_path_buf(),
+            user: "p".into(),
+            path: "/usr/local/bin:/usr/bin:/bin".into(),
+            lang: "C.UTF-8".into(),
+        };
+        let jobs = Jobs::with_environment(Limits::default(), environment);
         let probe = format!(
-            "cat {}/token 2>&1; echo \"home=$HOME\"; echo \"bus=${{DBUS_SESSION_BUS_ADDRESS-unset}}\"; \
-             ls /run/user 2>&1 | head -1; echo hi > {}/made; \
-             (exec 3<>/dev/tcp/1.1.1.1/53) 2>&1; echo \"net=$?\"",
+            "cat {}/token 2>&1; echo \"home=$HOME\"; echo \"bus=${{DBUS_SESSION_BUS_ADDRESS-unset}}\";              ls /run/user 2>&1 | head -1; echo hi > {}/made;              (exec 3<>/dev/tcp/1.1.1.1/53) 2>&1; echo \"net=$?\"",
             secret_dir.display(),
             shop.display()
         );
-        argv.extend(["/bin/bash".into(), "-c".into(), probe]);
-        // Not a session leader here, as in the shell, where a bash stands in front of it.
-        let out = std::process::Command::new("/bin/bash")
-            .args(["-c", "\"$@\"; exit $?", "bash"])
-            .args(&argv)
-            .env_clear()
-            .env("XDG_RUNTIME_DIR", std::env::var("XDG_RUNTIME_DIR").unwrap())
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        let sealed = Sealed::new(shop.clone());
+        let agent = AgentId::new("hermes", "c-1");
+        let answer = jobs.start_in(&agent, &probe, Some(shop.clone()), Some(&sealed)).and_then(|id| jobs.job(&agent, &id, Duration::from_secs(60)));
+        let text = match answer {
+            Ok(a) => {
+                assert!(!a.running(), "the probe did not finish: {}", a.tail);
+                a.tail
+            }
+            Err(e) => panic!("the sealed probe was not started: {e}"),
+        };
         assert!(!text.contains("do-not-read"), "the home config was readable: {text}");
         assert!(text.contains(&format!("home={}", shop.display())), "{text}");
         assert!(text.contains("bus=unset"), "{text}");

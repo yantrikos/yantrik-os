@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::job_sys::{as_the_shell_ended, hand_over_fds, peek_exit, pipe, reported_directory, signal_job};
+use crate::job_sys::{self, as_the_shell_ended, peek_exit, pipe, reported_directory, signal_job};
 use crate::jobs::{JobId, JobState, Limits, RunAnswer, Shared};
 use crate::retained::Retained;
 use crate::sealed::Sealed;
@@ -146,14 +146,7 @@ pub(crate) fn spawn(
             (spec.program, spec.args, spec.env)
         }
     };
-    let builder = pty_process::blocking::Command::new(program)
-        .args(args)
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .current_dir(&cwd);
-    // Safety: only async-signal-safe calls (dup2, fcntl, close_range) between fork and exec.
-    let builder = unsafe { builder.pre_exec(move || hand_over_fds(write_fd, filter_fd)) };
-    let child = builder.spawn(pts).map_err(|e| refuse("bash would not start", &e))?;
+    let child = job_sys::fork(program, args, env, cwd.clone(), write_fd, filter_fd, pts).map_err(|e| refuse("bash would not start", &e))?;
     // Ours closed, so the command's copy is the only writer.
     drop(pwd_write);
     drop(filter);
