@@ -52,6 +52,7 @@ pub mod dock;
 pub(crate) mod already_open;
 pub(crate) mod browser_launch;
 pub(crate) mod browser_peer;
+pub(crate) mod browser_holder;
 pub(crate) mod browser_pipe;
 /// The grounded dock's buttons and window list, published from the window list.
 pub mod dock_bar;

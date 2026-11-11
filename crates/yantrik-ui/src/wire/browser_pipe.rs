@@ -21,6 +21,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -62,6 +63,8 @@ pub fn socket_path() -> PathBuf {
 pub struct Handoff {
     mine: OwnedFd,
     theirs: OwnedFd,
+    /// The inode of the browser's end, to find which process holds it once the browser runs.
+    inode: u64,
 }
 
 fn socketpair() -> std::io::Result<(OwnedFd, OwnedFd)> {
@@ -88,6 +91,7 @@ pub fn attach(command: &mut Command) -> std::io::Result<Handoff> {
     // SAFETY: `high` is a new fd and ours.
     let theirs = unsafe { OwnedFd::from_raw_fd(high) };
     let raw = theirs.as_raw_fd();
+    let inode = std::fs::File::from(theirs.try_clone()?).metadata()?.ino();
     // SAFETY: only async-signal-safe calls (dup2) between fork and exec.
     unsafe {
         command.pre_exec(move || {
@@ -97,7 +101,7 @@ pub fn attach(command: &mut Command) -> std::io::Result<Handoff> {
             Ok(())
         });
     }
-    Ok(Handoff { mine, theirs })
+    Ok(Handoff { mine, theirs, inode })
 }
 
 /// The launcher's one call: if this launch is the person's Browser (`persons_browser`, said by the
@@ -117,6 +121,16 @@ pub fn wants(args: &[&str], persons_browser: bool) -> bool {
     persons_browser && args.contains(&PIPE_FLAG)
 }
 
+/// The Browser the shell itself started with a pipe, while it runs (0: none).
+static OWN_BROWSER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn own_browser() -> Option<u32> {
+    match OWN_BROWSER.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        pid => alive(pid).then_some(pid),
+    }
+}
+
 fn alive(pid: u32) -> bool {
     // SAFETY: signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid as i32, 0) == 0 }
@@ -126,14 +140,35 @@ impl Handoff {
     /// The browser is running as `pid`: close the browser's end here and offer ours to the
     /// service, on a thread that lives as long as the browser. A browser that is gone by then (a
     /// second copy that handed over to the first) is not offered.
+    ///
+    /// `pid` is the process the shell spawned. In the wall that is the outer bwrap, which holds no
+    /// stream: the service is told the process that does (`browser_holder`), and the shell keeps
+    /// following `pid` for the app's life.
     pub fn offer(self, pid: u32) {
-        let Handoff { mine, theirs } = self;
+        let Handoff { mine, theirs, inode } = self;
         drop(theirs);
         let spawned = std::thread::Builder::new().name("browser-pipe".into()).spawn(move || {
             std::thread::sleep(SETTLE);
+            let proc = Path::new("/proc");
+            let Some(holder) = super::browser_holder::holder_of(proc, pid, inode) else {
+                // This launch did not become a Browser with the pipe: it handed over to one that
+                // was already open (or died, which the reaper reports). If the shell has none of
+                // its own and the person's account runs another, the dock joined an instance
+                // nothing can drive (one `xdg-open` started, outside the wall): say so.
+                // SAFETY: getuid has no failure mode.
+                let uid = unsafe { libc::getuid() };
+                if own_browser().is_none() && super::browser_holder::another_browser_is_open(proc, None, uid) {
+                    tracing::warn!(pid, "The Browser joined one Yantrik did not start; it cannot be driven");
+                    crate::running::mark_launch_failed("browser", "browser", super::browser_holder::NOT_DRIVABLE, 0);
+                } else {
+                    tracing::warn!(pid, "No process under the Browser's launch holds its DevTools pipe");
+                }
+                return;
+            };
+            OWN_BROWSER.store(holder, std::sync::atomic::Ordering::SeqCst);
             // Read afresh for every offer: a restarted service has a new pid, and the service
             // manager records the current one on every start it performs.
-            keep_offered(&socket_path(), &mine, pid, || ServiceIdentity::installed(service_pid()));
+            keep_offered(&socket_path(), &mine, holder, || ServiceIdentity::installed(service_pid()));
         });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "Could not start the thread that hands the Browser's pipe over");
@@ -263,7 +298,7 @@ mod tests {
         command.args(["-c", "read line <&3; printf '{\"got\":\"%s\"}\\0' \"$line\" >&4"]);
         let handoff = attach(&mut command).unwrap();
         let mut child = command.spawn().unwrap();
-        let Handoff { mine, theirs } = handoff;
+        let Handoff { mine, theirs, .. } = handoff;
         drop(theirs);
         let mut stream = UnixStream::from(mine);
         stream.write_all(b"ping\n").unwrap();
