@@ -25,7 +25,7 @@ use crate::system_context;
 use crate::wire::app_framework::{AppState, BackgroundJobManager};
 use crate::wire::entity_bridge::SharedEntityGraph;
 use crate::terminal::TerminalHandle;
-use crate::{App, AccentPreset, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
+use crate::{App, AccentPreset, ContrastPrefs, ThemeMode, ThemeOverrides, MessageData, UrgeCardData, WhisperCardItem};
 use yantrik_companion::skills::SkillRegistry;
 
 /// Clipboard operation for file browser copy/cut.
@@ -85,6 +85,9 @@ impl AppContext {
         let user_settings = crate::wire::settings::load();
         ui.global::<ThemeMode>().set_dark(user_settings.dark_mode);
         ui.set_settings_dark_mode(user_settings.dark_mode);
+        // High contrast the same way dark is: the saved value is put on the tokens here, and
+        // `wire::theme::sync_window_theme` carries it to every app window.
+        ui.global::<ContrastPrefs>().set_high(user_settings.high_contrast);
         ui.set_settings_tool_permission(user_settings.tool_permission.clone().into());
         ui.set_settings_auto_lock_secs(crate::wire::settings::auto_lock_choice(user_settings.auto_lock_secs));
         // The only place do-not-disturb comes back after a restart. Everything that suppresses a
