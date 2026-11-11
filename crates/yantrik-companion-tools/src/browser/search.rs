@@ -2,8 +2,10 @@
 //!
 //! A person's own turn may use the browser (SearXNG first, then Google in the headless Chromium,
 //! then DuckDuckGo). A search with nobody asking (an instinct's urge, a queued task, a program on
-//! the socket) goes to the person's SearXNG, else DuckDuckGo's HTML page, never to Chromium, and
-//! only once the person has allowed background research (`yantrik_companion_core::background_research`).
+//! the socket) goes to the person's SearXNG, else DuckDuckGo's HTML page, never to Chromium. Whether
+//! it may be made at all, with nobody asking, is not decided here: `ToolRegistry::execute` refuses
+//! the call before this runs unless the person has allowed background research
+//! (`yantrik_companion_core::reach`).
 
 use std::time::Duration;
 
@@ -15,31 +17,22 @@ use super::{
     ensure_headless_browser, eval_js, searxng_search,
 };
 
-/// What a search without a person behind it is told while research is off.
-const REFUSED: &str = "Background web search is off on this machine, so nothing was searched. The person can     allow it on the card the desktop shows; a search they ask for in chat is not held back.";
-
 /// Where a query may go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Route {
-    /// Nowhere: research is off and nobody asked.
-    Refused,
     /// SearXNG, else DuckDuckGo's HTML page. Never a browser.
     Quiet,
     /// SearXNG, else the headless Chromium on Google, else DuckDuckGo.
     Browser,
 }
 
-pub(super) fn route(person_started: bool, research_on: bool) -> Route {
-    match (person_started, research_on) {
-        (true, _) => Route::Browser,
-        (false, true) => Route::Quiet,
-        (false, false) => Route::Refused,
-    }
+pub(super) fn route(person_started: bool) -> Route {
+    if person_started { Route::Browser } else { Route::Quiet }
 }
 
 /// The tool's search, for the turn this thread is running.
 pub(super) fn web_search(query: &str) -> String {
-    let route = route(background_research::person_started(), background_research::is_on());
+    let route = route(background_research::person_started());
     search_with(query, route, searxng_search, duckduckgo_html_search, google_search)
 }
 
@@ -51,9 +44,6 @@ fn search_with(
     duckduckgo: impl Fn(&str) -> String,
     google: impl Fn(&str) -> String,
 ) -> String {
-    if route == Route::Refused {
-        return REFUSED.to_string();
-    }
     // SearXNG first (local, fast, no rate limits)
     match searxng(query) {
         Ok(results) => return results,
@@ -61,7 +51,7 @@ fn search_with(
     }
     match route {
         Route::Browser => google(query),
-        _ => duckduckgo(query),
+        Route::Quiet => duckduckgo(query),
     }
 }
 
@@ -205,21 +195,9 @@ mod tests {
     }
 
     #[test]
-    fn who_asked_and_whether_research_is_on_pick_the_route() {
-        assert_eq!(route(false, false), Route::Refused, "off, nobody asked");
-        assert_eq!(route(false, true), Route::Quiet, "on, nobody asked");
-        assert_eq!(route(true, false), Route::Browser, "a person asked: research being off does not hold it back");
-        assert_eq!(route(true, true), Route::Browser);
-    }
-
-    #[test]
-    fn research_off_and_nobody_asking_runs_no_search() {
-        let (out, hit) = reached(Route::Refused, true);
-        assert_eq!(out, REFUSED);
-        assert_eq!(hit, [false, false, false], "not even SearXNG is asked");
-        // And the tool itself, on this thread, with no person's turn marked and the switch unset.
-        assert!(!background_research::person_started() && !background_research::is_on());
-        assert_eq!(web_search("anything"), REFUSED);
+    fn only_who_asked_picks_the_route() {
+        assert_eq!(route(false), Route::Quiet, "nobody asked: never the browser");
+        assert_eq!(route(true), Route::Browser, "a person asked");
     }
 
     #[test]
@@ -238,10 +216,11 @@ mod tests {
         assert_eq!(out, "google");
         assert_eq!(hit, [true, false, true]);
         let _turn = background_research::person_turn();
-        assert_eq!(route(background_research::person_started(), false), Route::Browser);
+        assert_eq!(route(background_research::person_started()), Route::Browser);
     }
 
     /// The tool goes through `web_search` and nothing else, and the two launches carry both flags.
+    /// (Whether a search may be made at all is the registry's rule, not this file's.)
     #[test]
     fn the_tool_has_one_way_in_and_chromium_starts_without_phoning_home() {
         let browser = include_str!("../browser.rs").split("#[cfg(test)]").next().unwrap();

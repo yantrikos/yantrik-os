@@ -408,12 +408,14 @@ yantrik-os/
   image is an endpoint every copy of it talks to. With nobody at the keyboard the OS itself
   makes two kinds of call: the update check against `releases.yantrikos.com`, and the clock sync
   (NTP) to Debian's pool through `systemd-timesyncd`; on Macs with an older Broadcom Wi-Fi chip
-  it also fetches that driver once from Debian's archive. It never looks up where you are on its
+  it also fetches that driver once, from Debian's archive (or, failing that, Broadcom's firmware
+  from the host Debian's installer package uses). It never looks up where you are on its
   own, and it never searches the web on its own: IP-based location lookups and background
   research are each off until you allow them, and the one way a feature gets either is a card on
   your screen saying what is sent and to whom (your internet address, to a weather or location
   service; your search terms, to your own SearXNG or else DuckDuckGo), whose Allow button turns
-  it on. No bypass mode skips those cards, or the card before a problem report is sent. You can
+  it on (an answer of No is remembered, and Settings, under Minds, turns background research
+  off again or asks again). No bypass mode skips those cards, or the card before a problem report is sent. You can
   also turn location lookups on yourself by putting `on` in `~/.config/yantrik/location-lookup`
   (a file you own, mode 600, in a directory you own that neither other users nor the
   `yantrik-minds` group can write); anything running as you can write that file too, so `yos

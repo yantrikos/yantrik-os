@@ -1127,9 +1127,8 @@ pub fn publish(
                 "report_problem",
                 "Send one of this machine's problem records - a crash or failure this desktop wrote \
                  down, listed under `problems` in describe - to the project's report intake, with a \
-                 note. Graded sensitive because the record leaves the machine. It carries no name, \
-                 hostname or address; the bytes sent are exactly the record as the file holds it, \
-                 which is what the Problems screen shows. The answer says where it landed. \
+                 note. Graded sensitive because the record leaves the machine. It has your home path, your user name and common key and token shapes removed; other things a log line happens to contain, such as host names, addresses or file names, are not removed. \
+                 It is posted as a public issue on yantrikos/yantrik-os, exactly as the Problems screen shows it. The answer says where it landed. \
                  Once sent it cannot be undone.",
             )
             .risk("sensitive")

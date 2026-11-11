@@ -62,6 +62,7 @@ pub mod notifications;
 pub mod for_you;
 // Settings → Minds → Initiative.
 pub mod initiative;
+pub mod research;
 mod power;
 pub mod screenshot;
 pub mod capture_bar;
@@ -171,6 +172,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     notifications::wire(ui, ctx);
     for_you::wire(ui);
     initiative::wire(ui);
+    research::wire(ui);
     skill_store::wire(ui, ctx);
     device_dashboard::wire(ui, ctx);
     permission_dashboard::wire(ui, ctx);

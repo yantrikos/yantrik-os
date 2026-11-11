@@ -71,6 +71,10 @@ impl Instinct for GoldenFindInstinct {
         "GoldenFind"
     }
 
+    fn searches_web(&self) -> bool {
+        true
+    }
+
     fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
         let now = state.current_ts;
 

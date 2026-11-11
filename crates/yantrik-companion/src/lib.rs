@@ -105,6 +105,7 @@ pub mod structured_output;
 // Top-level convenience re-exports (matching previous API)
 pub use companion::CompanionService;
 pub use yantrik_companion_core::background_research;
+pub use yantrik_companion_tools::research_offer;
 pub use config::CompanionConfig;
 pub use types::{
     AgentResponse, CompanionState, InstinctCategory, ProactiveMessage,

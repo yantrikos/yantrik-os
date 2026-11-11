@@ -14,7 +14,7 @@
 //! does not touch. `ask` is today's behaviour. `auto` stops asking about the routine sensitive
 //! things. `bypass` stops asking about everything except what cannot be undone — a payment, a
 //! send, a delete — for a while, and says so loudly. `bypass_all` ("Full bypass") stops asking
-//! entirely, those included, on the same terms.
+//! entirely, those included, bar what `gate::always_asked` lists (a consent that outlasts the hour).
 //!
 //! # Two bypasses, and why
 //!
@@ -1337,7 +1337,7 @@ pub fn lower_from_socket(mode: &str) -> Result<Mode, String> {
             "`{mode}` is not a mode. This desktop has five: plan (read only), ask (you are asked \
              about anything that matters), auto (only destructive actions are asked about), \
              bypass (nothing is asked except before what cannot be undone), bypass_all (nothing \
-             is asked, bar a connected mind's command, hand-off, new address or send after a private read). From here you can only tighten it."
+             is asked, bar a connected mind's command, hand-off, new address or send after a private read, and allowing location lookups, background web searches or a problem report). From here you can only tighten it."
         ));
     };
     let settled = locked().lower_from_socket(wanted, Instant::now())?;

@@ -189,3 +189,25 @@ fn the_countdown_is_in_minutes_and_says_what_happens_then() {
     assert_eq!(expires_text(59), "Expires in under a minute, then declined");
     assert_eq!(expires_text(0), "Expires in under a minute, then declined");
 }
+
+/// The card a person reads before a problem report is sent says what the README says about what the
+/// record holds, and that it becomes a public issue: it used to say it carried no hostname or
+/// address, which the README had withdrawn (round-3 review, Medium 3).
+#[test]
+fn the_report_problem_card_makes_the_claims_the_readme_makes() {
+    let flat = |s: &str| s.replace("\\n", " ").split_whitespace().collect::<Vec<_>>().join(" ");
+    let control = include_str!("control.rs");
+    let at = control.find("\"report_problem\"").expect("the action");
+    let card = flat(&control[at..at + 1400]);
+    let readme = flat(include_str!("../../../README.md"));
+    for claim in [
+        "your home path, your user name and common key and token shapes removed; other things a log line happens to contain, such as host names, addresses or file names, are not removed",
+        "public issue",
+    ] {
+        assert!(card.contains(claim), "the card does not say: {claim}");
+        assert!(readme.contains(claim), "the README does not say: {claim}");
+    }
+    for withdrawn in ["no name, hostname or address", "carries no name"] {
+        assert!(!card.contains(withdrawn), "{withdrawn}");
+    }
+}
