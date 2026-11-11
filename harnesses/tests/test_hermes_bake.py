@@ -19,6 +19,8 @@ import support
 
 INSTALL = support.HARNESSES / "lib" / "install"
 BAKE_ISO = support.ROOT / "deploy" / "yantrik-os" / "bake-hermes.sh"
+SANDBOX = support.ROOT / "deploy" / "yantrik-os" / "bake-hermes-sandbox.sh"
+CHECKS = INSTALL / "hermes-bake-checks.sh"
 FAKE_INSTALLER = "#!/bin/bash\necho \"$@\" > \"$INSTALLER_RAN\"\n"
 
 
@@ -132,7 +134,33 @@ class HermesBakeTests(unittest.TestCase):
     def test_the_fetched_code_runs_in_its_own_pid_namespace(self):
         # Review of #1169, L1: a fresh /proc over the chroot's, so nothing of the host is seen.
         text = BAKE_ISO.read_text()
-        self.assertRegex(text, r'unshare --fork --pid --mount-proc="\$rootfs/proc"[\s\S]*chroot "\$rootfs" runuser')
+        self.assertRegex(text, r'unshare --fork --pid [^\n]*--mount-proc="\$rootfs/proc"[\s\S]*chroot "\$rootfs" runuser')
+
+    def test_the_fetched_code_has_its_own_ipc_and_its_own_dev(self):
+        # Review of #1169, L-E: not the host's SysV IPC, and not the host's /dev with its shared /dev/shm.
+        text = BAKE_ISO.read_text()
+        self.assertRegex(text, r'unshare [^\n]*--ipc[^\n]*--mount [^\n]*--mount-proc')
+        self.assertRegex(text, r'--mount-proc="\$rootfs/proc" \\\n\s+sh "\$\(dirname "\$0"\)/bake-hermes-sandbox.sh" "\$rootfs" \\\n\s+chroot')
+
+    def test_the_private_dev_holds_only_what_an_installer_opens(self):
+        rootfs = self.root / "rootfs"
+        (rootfs / "dev").mkdir(parents=True)
+        probe = ('readlink /proc/self/ns/ipc; ls -A "%s/dev"; echo x > "%s/dev/shm/mine"; echo ok > "%s/dev/null"'
+                 % (rootfs, rootfs, rootfs))
+        host_ipc = os.readlink("/proc/self/ns/ipc") if os.path.exists("/proc/self/ns/ipc") else None
+        result = subprocess.run(["unshare", "-r", "--mount", "--ipc", "sh", str(SANDBOX), str(rootfs), "sh", "-c", probe],
+                                capture_output=True, text=True)
+        if result.returncode != 0 and "ermission" in result.stderr + result.stdout or host_ipc is None:
+            self.skipTest("no user namespaces here: %s" % result.stderr.strip())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.split()
+        self.assertNotEqual(lines[0], host_ipc, "its own IPC namespace")
+        self.assertEqual(sorted(lines[1:]), sorted("fd full null random shm stderr stdin stdout tty urandom zero".split()))
+        self.assertEqual(list((rootfs / "dev").iterdir()), [], "nothing of it is on the host's side of the mount")
+
+    def test_the_sandbox_takes_a_rootfs_and_a_command(self):
+        result = subprocess.run(["sh", str(SANDBOX), "only-one"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
 
     def test_an_image_built_without_hermes_on_purpose_touches_nothing(self):
         rootfs = self.root / "rootfs"
@@ -149,10 +177,57 @@ class HermesBakeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not staged", result.stderr)
 
+    def tree(self, *, completion=(), fetched=()):
+        """A ~/.hermes with the named files in it, as the bake's own checks see it."""
+        hermes = self.home / ".hermes"
+        for name in completion + fetched:
+            (hermes / name).parent.mkdir(parents=True, exist_ok=True)
+            (hermes / name).write_text("")
+        hermes.mkdir(exist_ok=True)
+        return hermes
+
+    def ask(self, fn, *args):
+        result = subprocess.run(["sh", "-c", '. "$1"; shift; "$@"', "sh", str(CHECKS), fn, *map(str, args)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.split()
+
+    def test_an_owed_source_update_tail_is_found_wherever_hermes_keeps_its_state(self):
+        # Review of #1169, L-B: prepare_launch finishes it over the network, even with the venv current.
+        self.assertEqual(self.ask("hermes_completion_owed", self.tree()), [])
+        for owed in ("source-completion-pending", "source-completion-attempts"):
+            hermes = self.tree(completion=("state/abc/" + owed,))
+            self.assertEqual(self.ask("hermes_completion_owed", hermes), [str(hermes / "state/abc" / owed)])
+            os.remove(hermes / "state/abc" / owed)
+        self.tree(completion=("hermes-agent/node_modules/x/source-completion-pending",))
+        self.assertEqual(self.ask("hermes_completion_owed", self.home / ".hermes"), [], "node_modules is not looked in")
+
+    def test_what_must_not_ship_is_found_after_the_caches_come_back(self):
+        # Review of #1169, L-C: the check runs after the last Hermes command, and it sees the caches too.
+        npm = self.home / ".npm"
+        self.assertEqual(self.ask("hermes_unshippable", self.tree(), npm), [])
+        names = ("tools/ffmpeg-9-linux-x64/ffmpeg", "hermes-agent/node_modules/gsap/package.json", "cache/uv/x")
+        hermes = self.tree(fetched=names)
+        (npm / "_cacache").mkdir(parents=True)
+        found = self.ask("hermes_unshippable", hermes, npm)
+        self.assertEqual(sorted(found), sorted(str(p) for p in (
+            hermes / "tools/ffmpeg-9-linux-x64", hermes / "hermes-agent/node_modules/gsap", hermes / "cache/uv", npm)))
+
+    def test_the_bake_looks_for_the_owed_tail_and_clears_the_caches_after_hermes_has_run(self):
+        text = (INSTALL / "hermes-bake.sh").read_text()
+        last_hermes = max(m.start() for m in re.finditer(r"^timeout \d+ hermes |^\(cd .*venv_is_current", text, re.M))
+        owed = text.index("hermes_completion_owed")
+        self.assertGreater(owed, text.index("pm.venv_is_current"), "asked with the venv proof")
+        caches = text.index('rm -rf "$HOME/.hermes/cache/uv" "$HOME/.npm"')
+        self.assertGreater(caches, last_hermes, "the caches are cleared after the last Hermes command")
+        self.assertGreater(text.index("hermes_unshippable"), caches)
+        self.assertLess(text.index("hermes_unshippable"), text.index("hermes_licences.py"), "and checked before the licence gate")
+        self.assertNotIn('rm -rf "$HOME/.hermes/tools"/ffmpeg-* "$HOME/.hermes/hermes-agent/node_modules/gsap" "$HOME/.hermes/cache/uv"', text)
+
     def test_the_baked_scripts_are_staged_and_executable_where_they_have_a_shebang(self):
         staged = (support.ROOT / "deploy" / "yantrik-os" / "stage-harnesses.sh").read_text()
-        self.assertIn("hermes-pin.sh hermes-bake.sh hermes_licences.py", staged)
-        for path in (INSTALL / "hermes-bake.sh", BAKE_ISO):
+        self.assertIn("hermes-pin.sh hermes-bake.sh hermes-bake-checks.sh hermes_licences.py", staged)
+        for path in (INSTALL / "hermes-bake.sh", BAKE_ISO, SANDBOX):
             self.assertTrue(path.read_text().startswith("#!/bin/sh"), path)
 
 

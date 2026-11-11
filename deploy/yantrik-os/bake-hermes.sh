@@ -11,7 +11,7 @@
 # here with the flags yantrik-update's reconcile_minds uses, which then finds it and leaves it. What is baked is Hermes alone (harnesses/lib/install/hermes-bake.sh): the person's
 # plugin, config and memory are made at first run, as they were.
 #
-# BAKED is the desktop's cue that Hermes is here (crates/yantrik-ui/src/default_mind.rs): root's,
+# BAKED is the desktop's cue that Hermes is here (crates/yantrik-ui/src/default_mind_baked.rs): root's,
 # outside the account's home, which the person cannot open.
 #
 # YANTRIK_ISO_WITHOUT_HERMES=1 builds an image without it on purpose. Any other failure, a
@@ -42,8 +42,13 @@ chroot "$rootfs" install -d -o yantrik-mind -g yantrik-minds -m 0700 /var/lib/ya
 # umask 077 as the harness installs run, and a clean environment, as harness-isolation.sh runs them.
 # In a pid namespace of its own, with a fresh /proc over the chroot's: what the fetched code runs
 # as the image's `yantrik-mind` uid then sees and signals none of the build host's processes, whose
-# uid that number may belong to there (review of #1169, L1). The network stays: it is the fetch.
-unshare --fork --pid --mount-proc="$rootfs/proc" \
+# uid that number may belong to there (review of #1169, L1). Its SysV IPC is its own too, and so
+# is its /dev (bake-hermes-sandbox.sh): a tmpfs with the few nodes an installer opens, not the
+# host's /dev with the /dev/shm every host process of that uid shares (L-E). The network stays: it
+# is the fetch. An egress-only network namespace is left for a follow-up, as it needs pasta or
+# slirp4netns on every build host.
+unshare --fork --pid --ipc --mount --mount-proc="$rootfs/proc" \
+    sh "$(dirname "$0")/bake-hermes-sandbox.sh" "$rootfs" \
     chroot "$rootfs" runuser -u yantrik-mind -- env -i HOME="$home" USER=yantrik-mind LOGNAME=yantrik-mind \
     LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin TERM=dumb \
     sh -c 'umask 077; exec sh /opt/yantrik/share/harnesses/lib/install/hermes-bake.sh' \
