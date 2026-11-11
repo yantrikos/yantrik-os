@@ -82,60 +82,6 @@ hi_code_dirs() {
 # Files outside that directory the harness's own data lives in (globs, relative to the home).
 hi_person_extra() { case "$1" in hermes) printf '%s' '.local/share/yantrik/memory/hermes.db*' ;; esac; }
 
-# The tree a harness moves, by one program so that what is listed, copied and compared cannot
-# disagree. `list`: NUL-separated relative paths of the files and links to move. `digest`: the
-# count and one hash over their names and contents. Links are listed and hashed by their target
-# text, never followed.
-HI_PY_TREE='
-import glob, hashlib, os, stat, sys
-mode, root, top, skip, extra = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split(":"), sys.argv[5]
-skip = [s for s in skip if s]
-def skipped(rel):
-    return any(rel == s or rel.startswith(s + "/") for s in skip)
-found = []
-for one in filter(None, top.split(":")):
-  if os.path.isdir(os.path.join(root, one)) and not os.path.islink(os.path.join(root, one)):
-    for here, dirs, files in os.walk(os.path.join(root, one), followlinks=False):
-        rel = os.path.relpath(here, root)
-        dirs[:] = sorted(d for d in dirs if not skipped(os.path.join(rel, d)))
-        for d in list(dirs):
-            if os.path.islink(os.path.join(here, d)):
-                found.append(os.path.join(rel, d))
-        for f in sorted(files):
-            full = os.path.join(here, f)
-            if not skipped(os.path.join(rel, f)) and (os.path.islink(full) or os.path.isfile(full)):
-                found.append(os.path.join(rel, f))
-for pattern in filter(None, extra.split(":")):
-    for path in sorted(glob.glob(os.path.join(root, pattern))):
-        if os.path.islink(path) or os.path.isfile(path):
-            found.append(os.path.relpath(path, root))
-found = sorted(set(found))
-if mode == "list":
-    sys.stdout.buffer.write(b"\0".join(p.encode("utf-8", "surrogateescape") for p in found))
-    sys.exit(0)
-digest = hashlib.sha256()
-for rel in found:
-    full = os.path.join(root, rel)
-    digest.update(rel.encode("utf-8", "surrogateescape") + b"\0")
-    if os.path.islink(full):
-        digest.update(b"L" + os.readlink(full).encode("utf-8", "surrogateescape"))
-    elif os.path.isfile(full):
-        # Never blocks on a file swapped for a FIFO after the walk, and reads only regular files.
-        try:
-            fd = os.open(full, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-        except OSError:
-            digest.update(b"?")
-        else:
-            with os.fdopen(fd, "rb") as f:
-                if stat.S_ISREG(os.fstat(f.fileno()).st_mode):
-                    for block in iter(lambda: f.read(1 << 20), b""):
-                        digest.update(block)
-                else:
-                    digest.update(b"?")
-    digest.update(b"\0")
-print(len(found), digest.hexdigest())
-'
-
 # ── Who runs what ───────────────────────────────────────────────────────────────────────
 
 hi_ids() { # <user>: "uid gid", refused for root and for a name that is not an account

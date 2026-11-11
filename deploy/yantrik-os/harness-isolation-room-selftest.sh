@@ -122,6 +122,19 @@ has "... and a note" "could not measure" "$(cat "$HI_STATE/hermes.failed")"
 reset; mkdir -p "$work/fakepy"; printf '#!/bin/sh\nexit 1\n' > "$work/fakepy/python3"; chmod 755 "$work/fakepy/python3"
 ( PATH="$work/fakepy:$PATH"; hi_room_check hermes "$H" yes ) >/dev/null 2>&1; is "a failing measurement step (python3) refuses" "1" "$?"
 reset; ( hi_room_check hermes "$work/nohome" no ) >/dev/null 2>&1; is "a person with no data is not measured, and passes on a roomy disk" "0" "$?"
+# The 520 gate (R3): a directory inside ~/.hermes the person cannot enter (root-owned 0700 there; mode 000
+# here, which this user cannot enter either), on a roomy disk. os.walk skipped it without a word, so the
+# measurement passed and the move went on to the installer, leaving its contents behind.
+reset; disk 99999999; mkdir -p "$H/.hermes/locked/inner"; chmod 000 "$H/.hermes/locked"
+( hi_room_check hermes "$H" yes ) >/dev/null 2>&1; is "a directory in the data that cannot be entered refuses, on a roomy disk" "1" "$?"
+has "... with the sentence that the data could not be measured" "could not be measured" "$(said)"
+has "... that nothing was changed" "Nothing was changed" "$(said)"
+has "... and a note" "could not measure" "$(cat "$HI_STATE/hermes.failed")"
+tree_err="$(python3 -I -c "$HI_PY_TREE" list "$H" ".hermes" ".hermes/hermes-agent" "" 2>&1 >/dev/null)"; tree_rc=$?
+is "the tree program stops (3) rather than leaving it out ..." "3" "$tree_rc"
+has "... and names the directory" "cannot read $H/.hermes/locked" "$tree_err"
+chmod 755 "$H/.hermes/locked"; rm -rf "$H/.hermes/locked"
+reset; ( hi_room_check hermes "$H" yes ) >/dev/null 2>&1; is "the same home without it is measured and passes" "0" "$?"
 
 echo "-- L-1: a missing helper refuses"
 mkdir -p "$work/partial"; cp "$here/harness-isolation.sh" "$here/harness-sandbox.sh" "$work/partial/"

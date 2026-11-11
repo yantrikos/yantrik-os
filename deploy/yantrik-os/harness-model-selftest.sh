@@ -52,6 +52,7 @@ lacks "... and not in any argument" "$TOKEN" "$args"
 has "... run as the account's tool, apply" "hermes-model.sh apply" "$args"
 has "... with HERMES_HOME the account's own" "HERMES_HOME=$work/mind/harness/hermes/.hermes" "$args"
 is "... then Hermes drains and restarts onto it" "reload-or-restart hermes-gateway.service" "$(cat "$work/systemctl")"
+has "... and it says what the 520 gate saw: Hermes finishes its turns and restarts (exit 75, a new pid), not that it keeps running" "finishes its turns and restarts" "$(cat "$work/said")"
 lacks "... and nothing said holds the token" "$TOKEN" "$(cat "$work/said")"
 reset
 is "a reload that fails is not reported as done: the command fails" "1" "$(printf '%s' "$BODY" | FAKE_SYSTEMCTL_RC=1 run hi_model hermes apply)"
@@ -60,6 +61,7 @@ has "... and says the settings were saved but Hermes keeps the old model" "keeps
 lacks "... and not that it finishes its turns and restarts" "finishes its turns and restarts" "$(cat "$work/said")"
 reset
 is "revert asks for revert, with no settings" "0 hermes-model.sh revert" "$(run hi_model hermes revert </dev/null) $(grep -o 'hermes-model.sh revert' "$work/task-args")"
+has "... and says the same: Hermes finishes its turns and restarts" "finishes its turns and restarts" "$(cat "$work/said")"
 reset
 is "a tool that fails: the settings are not applied, Hermes is not restarted" "1 no" \
   "$(FAKE_TASK_RC=1 bash -c 'exit 0' >/dev/null; FAKE_TASK_RC=1; export FAKE_TASK_RC; printf '%s' "$BODY" | run hi_model hermes apply) $([ -e "$work/systemctl" ] && echo yes || echo no)"
