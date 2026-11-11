@@ -19,6 +19,7 @@ use yantrik_ipc_transport::gate;
 use yantrik_ipc_transport::SyncRpcClient;
 
 use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
+use crate::app_reach::{self, published};
 
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(ListAppsTool));
@@ -77,15 +78,6 @@ fn describe(app: &str) -> Result<serde_json::Value, String> {
     client(app, READ_TIMEOUT)
         .call("app.describe", serde_json::json!({}))
         .map_err(|e| e.message)
-}
-
-/// One action as the app publishes it in `describe`, if it publishes one by that name.
-fn published<'a>(view: &'a serde_json::Value, action: &str) -> Option<&'a serde_json::Value> {
-    view.get("actions")
-        .and_then(|v| v.as_array())
-        .and_then(|actions| {
-            actions.iter().find(|a| a.get("name").and_then(|n| n.as_str()) == Some(action))
-        })
 }
 
 /// Whether this assistant's own cap (`tools.max_permission`) lets it use the action at all, or
@@ -494,16 +486,17 @@ impl Tool for AppActionTool {
         if let Err(said) = crate::app_start::ensure(app, true) {
             return said;
         }
+        let described = describe(app);
+        if let Some(refusal) = app_reach::refused_unattended(app, action, described.as_ref().ok()) {
+            return refusal;
+        }
         let mut purpose = String::new();
-        if let Ok(ref view) = describe(app) {
+        if let Ok(ref view) = described {
             if let Some(refusal) = beyond_cap(view, app, action, ctx.max_permission) {
                 return refusal;
             }
             // The app's own sentence for the action, for the card if one has to go up.
-            purpose = published(view, action)
-                .and_then(|a| a.get("description").and_then(|d| d.as_str()))
-                .unwrap_or_default()
-                .to_string();
+            purpose = app_reach::purpose_of(view, action);
         }
 
         match act_asking(&Desk::session(), app, action, &action_args, expect, &purpose) {

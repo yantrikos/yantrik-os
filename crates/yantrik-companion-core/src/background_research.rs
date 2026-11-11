@@ -7,13 +7,13 @@
 //! until the person presses Allow on the shell's card (`allow_background_research`, in
 //! `yantrik-ui`), the one place that turns it on.
 //!
-//! The rule, as a class and not a list of words: **no tool that reaches the open web runs in a
-//! turn nobody started, unless research is on** ([`crate::reach`], enforced once, in
-//! `ToolRegistry::execute`). Three things hang on the switch:
+//! The rule, as a class and not a list of words: **with nobody there, `web_search` runs only while
+//! research is on, and no other tool that reaches the open web runs at all** ([`crate::reach`],
+//! enforced once, in `ToolRegistry::execute`). Three things hang on the switch:
 //! - [`gate`] holds back the urges of every instinct that declares `searches_web`, so the model is
 //!   never even asked;
-//! - the registry refuses an unattended call to a web tool while it is off, and a browser tool
-//!   always, and raises the offer card for it ([`wanted`]);
+//! - the registry refuses an unattended `web_search` while it is off, and raises the offer card for
+//!   it ([`wanted`]); every other fetch, probe or browser it refuses always, on or off;
 //! - when it is on, an unattended `web_search` goes to the person's SearXNG or else DuckDuckGo,
 //!   never to Google in a browser; a turn the person started may use the browser.
 //!

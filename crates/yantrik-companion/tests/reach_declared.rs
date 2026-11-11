@@ -154,10 +154,49 @@ fn a_persons_code_runner_with_a_network_is_not_refused() {
 }
 
 /// A tool server the person adds is named at run time, so no list of names can hold it: its
-/// category does, and every `mcp` tool is the web's.
+/// category does, and every `mcp` tool is person-only.
 #[test]
-fn every_tool_of_a_tool_server_is_the_webs() {
+fn every_tool_of_a_tool_server_is_person_only() {
     for name in ["mcp__fetch_fetch", "mcp__brave-search_web_search", "mcp__x_y"] {
-        assert_eq!(reach(name, "mcp", &serde_json::json!({})), Reach::Web, "{name}");
+        assert_eq!(reach(name, "mcp", &serde_json::json!({})), Reach::Browser, "{name}");
     }
+}
+
+/// Round 5, high 1: `app_action` reaches the web through two apps whose actions say so
+/// (`download-manager.add` fetches an address; `terminal.run` and `send_input` run a line). With
+/// nobody there each is refused, whatever the person's mode would have done, and a person's own call is
+/// not held back by this gate.
+#[test]
+fn an_unattended_app_action_that_fetches_or_runs_is_refused_and_a_persons_is_not() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let acts = [
+        json!({ "app": "download-manager", "action": "add", "args": { "url": "https://html.duckduckgo.com/html/?q=rust+news" } }),
+        json!({ "app": "terminal", "action": "run", "args": { "command": "curl -s https://www.google.com/search?q=rust" } }),
+        json!({ "app": "terminal", "action": "send_input", "args": { "text": "curl https://example.com\n" } }),
+    ];
+    for act in &acts {
+        let said = run_with(&reg, &db, "app_action", act);
+        assert!(said.starts_with("Refused:") && said.contains("app_action"), "{act}: {said}");
+    }
+    let _person = yantrik_companion_core::background_research::person_turn();
+    for act in &acts {
+        let said = run_with(&reg, &db, "app_action", act);
+        assert!(!said.starts_with("Refused:"), "{act} in a turn the person started: {said}");
+    }
+}
+
+/// With no `describe` there is no declaration to read, so an unattended act on an app that is not on
+/// the local list is refused: a new app that fetches cannot get in by being slow to answer.
+#[test]
+fn an_unattended_app_action_whose_describe_fails_is_refused() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let said = run_with(&reg, &db, "app_action", &json!({ "app": "no-such-app-1175", "action": "go" }));
+    assert!(said.starts_with("Refused:"), "{said}");
+    let _person = yantrik_companion_core::background_research::person_turn();
+    let said = run_with(&reg, &db, "app_action", &json!({ "app": "no-such-app-1175", "action": "go" }));
+    assert!(!said.starts_with("Refused:"), "a person's act is the app's to answer: {said}");
 }

@@ -9,7 +9,9 @@
 //! nothing is sent. `YANTRIK_NO_GEOLOCATE=1` refuses it outright.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
+use yantrik_companion_core::background_research;
 use yantrik_ipc_contracts::location_consent;
+use yantrik_ipc_contracts::weather::named_place;
 
 /// The shell's action that asks the person, and the app it belongs to.
 const APP: &str = "shell";
@@ -41,6 +43,17 @@ fn resolve(location: &str, forbidden: bool, on: bool, ask: impl FnOnce() -> Resu
         Ok(()) => Place::Say(format!("No place named, and location lookups are still off. {}", location_consent::ASK_WEATHER)),
         Err(why) => Place::Say(format!("No place named. {} {why} Nothing was sent; name a city to get the weather there.", location_consent::ASK_WEATHER)),
     }
+}
+
+/// With nobody there, the place goes to wttr.in in the clear, so it must read as a place: a name of a
+/// few words, as the weather watch requires (`named_place`), not text the model chose. A person's own
+/// turn may type anything. `None` lets the call go on.
+fn unplace(location: &str, person: bool) -> Option<String> {
+    let location = location.trim();
+    (!person && !location.is_empty() && named_place(location).is_none()).then(|| {
+        "Refused: with nobody asking, the weather is looked up only for a plain place name (a city, a few words), and that was not one, so nothing was sent."
+            .to_string()
+    })
 }
 
 /// The person's yes, on the shell's own card.
@@ -88,6 +101,9 @@ impl Tool for GetWeatherTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let location = args.get("location").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(refusal) = unplace(location, background_research::person_started()) {
+            return refusal;
+        }
         // The switch's first yes in this run is logged with the line `describe shell` shows.
         let on = location_consent::allowed_noting(|line| tracing::warn!("{line}"));
         let location = match resolve(location.trim(), location_consent::env_forbids(), on, ask_the_person) {
@@ -158,6 +174,19 @@ mod tests {
 
     fn never_asked() -> Result<(), String> {
         panic!("the person must not be asked")
+    }
+
+    /// Round 5, low 6: an unattended turn sent any short text to wttr.in as the place ("rust news").
+    #[test]
+    fn with_nobody_there_only_a_place_name_is_sent() {
+        for text in ["rust news: today", "48.8566,2.3522", "a/b?x=1", "lives in a house near the big lake in Oslo", "interest: deals near me tonight"] {
+            let said = unplace(text, false).unwrap_or_else(|| panic!("{text:?} was let through"));
+            assert!(said.starts_with("Refused:"), "{said}");
+            assert_eq!(unplace(text, true), None, "{text:?}: a person types what they like");
+        }
+        for text in ["Oslo", "New York", "  Paris, France ", "", "  "] {
+            assert_eq!(unplace(text, false), None, "{text:?}");
+        }
     }
 
     #[test]

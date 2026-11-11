@@ -411,17 +411,14 @@ yantrik-os/
   (NTP) to Debian's pool through `systemd-timesyncd`; on Macs with an older Broadcom Wi-Fi chip
   it also fetches that driver once, from Debian's archive (or, failing that, Broadcom's firmware
   from the host Debian's installer package uses). It never looks up where you are on its
-  own: IP-based location lookups are off until you allow them, and the one way a feature gets
-  them is a card on your screen saying what is sent and to whom (your internet address, to a
-  weather or location service). Background research (your search terms, to your own SearXNG or
-  else DuckDuckGo) works the same way: a card, an Allow button, and an answer of No that is
-  remembered; Settings, under Minds, turns it off again or asks again. No bypass mode skips
-  those cards, or the card before a problem report is sent. Its own search, fetch and browser
-  tools, and its code runner's network, stay off in the background until you press Allow; but
-  in Auto and the bypass modes the companion can still have the download manager fetch an
-  address, or the terminal run a command, with nobody asking. Finishing the first run sets up
-  Hermes, the default mind, about 3 GB from GitHub and Python's package index, which then keeps
-  itself up to date. You can
+  own, and it never searches the web on its own: IP-based location lookups and background
+  research are each off until you allow them, and the one way a feature gets either is a card on
+  your screen saying what is sent and to whom (your internet address, to a weather or location
+  service; your search terms, to your own SearXNG or else DuckDuckGo), whose Allow button turns
+  it on (an answer of No is remembered, and Settings, under Minds, turns background research
+  off again or asks again). No bypass mode skips those cards, or the card before a problem
+  report is sent. Finishing the first run sets up Hermes, the default mind, about 3 GB from
+  GitHub and Python's package index, which then keeps itself up to date. You can
   also turn location lookups on yourself by putting `on` in `~/.config/yantrik/location-lookup`
   (a file you own, mode 600, in a directory you own that neither other users nor the
   `yantrik-minds` group can write); anything running as you can write that file too, so `yos
@@ -435,8 +432,7 @@ yantrik-os/
   the companion name), mail, calendar and connectors, and a problem
   report you chose to send. Code the companion runs for you has no network unless you ask for
   one in your own turn. Installing the packages a script needs is a web fetch, and so is a call
-  to a tool server you add, so neither happens with nobody there until you have allowed
-  background research. When an app crashes or fails, the desktop writes a
+  to a tool server you add, so neither happens with nobody there. When an app crashes or fails, the desktop writes a
   record locally (`~/.local/share/yantrik/problems/`) with your home path, your user name and common key and
   token shapes removed; other things a log line happens to contain, such as host names,
   addresses or file names, are not removed. *Report a problem* shows you that record, and it

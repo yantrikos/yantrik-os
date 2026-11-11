@@ -26,6 +26,11 @@ use crate::wire::settings::DEFAULT_MIND;
 
 /// What the first run and the Hermes row say while it installs.
 pub const SETTING_UP: &str = "Setting up Hermes, your mind, about 4 minutes. It needs the internet.";
+/// What the first run's model step says before Next: that choosing a model also sets Hermes up, and what
+/// that downloads and from where. A download named on the screen that starts it is no secret (Fable,
+/// 11 Nov); the README says the same thing in the same words about the size and the sources.
+pub const BEFORE_NEXT: &str =
+    "Choosing a model also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index.";
 /// What the desktop says once, when Hermes takes over, and what the first run says after.
 pub const READY: &str = "Hermes is ready; it answers from now on.";
 /// The row's reason when the internet was not there to install from.
@@ -134,8 +139,8 @@ pub fn begin(machine: &dyn Machine, when: When) -> Outcome {
     }
 }
 
-/// What the first run says about the default mind: nothing before it was started, then the
-/// row's own words.
+/// What the first run says about the default mind: before it was started, what choosing a model will
+/// download ([`BEFORE_NEXT`]); then the row's own words.
 pub fn words(record: &Record, proven: bool, job: Option<&JobView>) -> String {
     if proven {
         return if record.tries > 0 { READY.to_string() } else { String::new() };
@@ -144,7 +149,7 @@ pub fn words(record: &Record, proven: bool, job: Option<&JobView>) -> String {
         Some(job) if job.running => SETTING_UP.to_string(),
         Some(job) if !job.error.is_empty() => job.error.clone(),
         _ if record.tries > 0 => SETTING_UP.to_string(),
-        _ => String::new(),
+        _ => BEFORE_NEXT.to_string(),
     }
 }
 
@@ -431,7 +436,7 @@ mod tests {
         let started = Record { tries: 1, announced: false };
         let running = JobView { running: true, ..Default::default() };
         let failed = JobView { error: "install failed: it exited 1".into(), ..Default::default() };
-        assert_eq!(words(&fresh, false, None), "", "nothing is said before it starts");
+        assert_eq!(words(&fresh, false, None), BEFORE_NEXT, "before it starts, the screen says what choosing a model sets up");
         assert_eq!(words(&started, false, Some(&running)), SETTING_UP);
         assert_eq!(words(&started, false, None), SETTING_UP, "after a reboot, before the job is back");
         assert_eq!(words(&started, false, Some(&failed)), "install failed: it exited 1");
@@ -443,6 +448,22 @@ mod tests {
     fn the_sentences_are_the_ones_the_owner_asked_for() {
         assert_eq!(SETTING_UP, "Setting up Hermes, your mind, about 4 minutes. It needs the internet.");
         assert_eq!(READY, "Hermes is ready; it answers from now on.");
+    }
+
+    /// Round 5, high 2: the model step names the download before Next, and the README names the same
+    /// one, so the screen, the row and the README cannot drift apart.
+    #[test]
+    fn the_model_step_names_the_hermes_download_the_readme_names() {
+        assert_eq!(
+            BEFORE_NEXT,
+            "Choosing a model also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index."
+        );
+        let readme = include_str!("../../../README.md").split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(readme.contains("about 3 GB from GitHub and Python's package index"), "the README does not say what Hermes downloads");
+        assert!(BEFORE_NEXT.contains("about 3 GB from GitHub and Python's package index"));
+        // The same mind, named the same way, in the sentence before the install and while it runs.
+        let mind = "Hermes, your mind";
+        assert!(BEFORE_NEXT.contains(mind) && SETTING_UP.contains(mind) && DEFAULT_MIND == "hermes");
     }
 
     #[test]
