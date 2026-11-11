@@ -115,6 +115,17 @@ hi_auto_blocked() { # <name>: succeeds (and says why) when the last move failed 
   info "$1 stays the person's: the last move to the mind account failed ($t; a full disk, whoever filled it, is the usual reason). An update does not retry it; when there is room and you want it, run: sudo yantrik-update harness install $1"
 }
 
+# A rollback leaves the note a failed move does, for a harness that is still the person's, so the next
+# apply (which brings this build's installer back beside this updater) does not start the move again
+# unasked (the 520 gate on #1076). `harness install` is the way back, and a success clears it. A note
+# that is already there keeps its own reason.
+hi_note_rollback() {
+  local name
+  for name in hermes; do
+    hi_migrated "$name" || [ -n "$(hi_failure_text "$name")" ]       || hi_note_failure "$name" "the update that moves it to the mind account was rolled back, so no move was tried"
+  done
+}
+
 # ── Leaving things as they were ─────────────────────────────────────────────────────────
 
 # What the mind account made while trying: removed, together with the full copies an older build kept

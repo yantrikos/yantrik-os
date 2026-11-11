@@ -54,6 +54,11 @@ has "... with HERMES_HOME the account's own" "HERMES_HOME=$work/mind/harness/her
 is "... then Hermes drains and restarts onto it" "reload-or-restart hermes-gateway.service" "$(cat "$work/systemctl")"
 lacks "... and nothing said holds the token" "$TOKEN" "$(cat "$work/said")"
 reset
+is "a reload that fails is not reported as done: the command fails" "1" "$(printf '%s' "$BODY" | FAKE_SYSTEMCTL_RC=1 run hi_model hermes apply)"
+printf '%s' "$BODY" | FAKE_SYSTEMCTL_RC=1 run hi_model hermes apply >/dev/null
+has "... and says the settings were saved but Hermes keeps the old model" "keeps the old model" "$(cat "$work/said")"
+lacks "... and not that it finishes its turns and restarts" "finishes its turns and restarts" "$(cat "$work/said")"
+reset
 is "revert asks for revert, with no settings" "0 hermes-model.sh revert" "$(run hi_model hermes revert </dev/null) $(grep -o 'hermes-model.sh revert' "$work/task-args")"
 reset
 is "a tool that fails: the settings are not applied, Hermes is not restarted" "1 no" \
@@ -84,6 +89,9 @@ reset
 is "... widened by it and put right: the gateway is reloaded onto the right file" "try-reload-or-restart hermes-gateway.service" "$(cat "$work/systemctl")"
 reset
 is "... not put right: the gateway is stopped, and the command fails" "1 stop hermes-gateway.service" "$(FAKE_GUARD_RC=1 run hi_run hermes model) $(cat "$work/systemctl")"
+reset
+( FAKE_GUARD_RC=3 FAKE_SYSTEMCTL_RC=1 hi_run hermes model ) >/dev/null 2>&1
+has "... and when that reload fails it says so" "would not reload onto the corrected file" "$(cat "$work/said")"
 reset
 ( hi_run hermes status ) >/dev/null 2>&1
 is "run hermes status: no guard (it cannot write the file)" "no" "$([ -e "$work/guard-args" ] && echo yes || echo no)"

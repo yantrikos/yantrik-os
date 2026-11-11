@@ -223,6 +223,18 @@ has "with no note, a person's Hermes is moved in the background (control)" "migr
 reconcile_harness_isolation
 is "an installer from before the mind account starts nothing" "0" "$(wc -c < "$work/log/run" | tr -d ' ')"
 printf '# %s\n' "$HI_CAPABILITY" > "$PREFIX/share/harnesses/lib/install/hermes.sh"
+echo "-- a rollback leaves the note, so this build's installer beside this updater starts no move"
+reset; disk 99999999
+hi_note_rollback
+yes "a rollback leaves a note for a Hermes that is still the person's" hi_auto_blocked hermes
+: > "$work/log/run"; reconcile_harness_isolation
+is "... and a reconcile with this build's installer and a Hermes at ~/.hermes starts no move" "0" "$(wc -c < "$work/log/run" | tr -d ' ')"
+reset; hi_note_failure hermes "its installer stopped"; hi_note_rollback
+has "a reason already noted is kept" "its installer stopped" "$(cat "$HI_STATE/hermes.failed")"
+reset; hi_mark_migrated hermes; hi_note_rollback
+no "a Hermes that has moved gets no note" test -e "$HI_STATE/hermes.failed"
+rm -f "$HI_STATE/hermes.isolated"
+has "the updater's rollback calls it" "hi_note_rollback" "$(sed -n '/^cmd_rollback()/,/^}/p' "$here/yantrik-update")"
 echo "-- a success clears the note"
 hi_note_failure hermes "x"; yes "(a note is there)" test -f "$HI_STATE/hermes.failed"
 hi_mark_migrated hermes

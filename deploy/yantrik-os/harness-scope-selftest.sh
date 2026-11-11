@@ -21,7 +21,9 @@ unscoped="$(grep -E '^Exec(Start|StartPre|StartPost|Stop|StopPost|Condition)=' "
 is "no ExecStart/ExecStartPre/ExecStartPost/ExecStop(Post) without + runs outside the scope" "" "$unscoped"
 has "the guard before the start is one of them, scoped" "ExecStartPre=${want}/bin/sh /opt/yantrik/share/harnesses/lib/install/hermes-guard.sh start" "$(cat "$unit")"
 has "... and the gateway itself" "ExecStart=${want}" "$(cat "$unit")"
-is "the only other Exec line is the reload, a kill by root's /bin" "ExecReload=/bin/kill -USR1 \$MAINPID" "$(grep -E '^Exec(Reload)=' "$unit")"
+# ExecReload runs inside the unit's PID namespace unless it is a `+` line, and $MAINPID is the host's
+# number for the main process: without the `+` the kill finds "No such process" (the 520 gate on #1076).
+is "the only other Exec line is the reload, a kill by root's /bin, outside the PID namespace (+)"   "ExecReload=+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/kill -USR1 \$MAINPID" "$(grep -E '^Exec(Reload)=' "$unit")"
 
 # hi_task runs the installer, the plugin refresh, `hermes model` and the guard's `after`: Hermes's code.
 has "hi_task puts every task under the scope (L5)" 'yantrik-init" --scope-abstract-unix "$@"' "$(cat "$here/harness-sandbox.sh")"
@@ -137,6 +139,37 @@ if scope_supported; then
   is "a Python planted where the guard runs Hermes's is refused the abstract socket (M1a)" "DENIED" "$(cat "$work/probe" 2>/dev/null)"
 else
   is "... without the scope the guard is not run at all (126)" "126" "$rc"
+fi
+
+echo "== the reload signal reaches Hermes through the PID namespace (the 520 gate on #1076)"
+# The unit's main process is yantrik-init, PID 1 of a namespace of its own; ExecReload (a + line) kills
+# its HOST pid. PID 1 of a namespace drops a signal it has no handler for, so what matters is that
+# yantrik-init has one and passes it on. Needs root for the namespace.
+cat > "$work/hermes.py" <<'PY'
+import signal, sys, time
+signal.signal(signal.SIGUSR1, lambda *_: (print("DRAINING", flush=True), sys.exit(75)))
+print("up", flush=True)
+time.sleep(8)
+PY
+if unshare --pid --fork --mount-proc true >/dev/null 2>&1; then
+  reload_reaches() { # <command run as PID 1 of a new namespace>...: its output after a host-side USR1
+    local out="$work/reload.out" ns pid i
+    : > "$out"
+    unshare --pid --fork --mount-proc "$@" >> "$out" 2>&1 & ns=$!
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do grep -q '^up' "$out" && break; sleep 0.25; done
+    pid="$(pgrep -P "$ns" | head -n 1)"
+    [ -n "$pid" ] && kill -USR1 "$pid"
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then echo ALIVE >> "$out"; kill -KILL "$pid" 2>/dev/null; else echo GONE >> "$out"; fi
+    wait "$ns" 2>/dev/null
+    tr '
+' ' ' < "$out"
+  }
+  has "a USR1 sent to yantrik-init's host pid reaches Hermes, which drains" "DRAINING" "$(reload_reaches python3 "$init" python3 "$work/hermes.py")"
+  has "... and the init ends with it (GONE)" "GONE" "$(reload_reaches python3 "$init" python3 "$work/hermes.py")"
+  has "control: a PID 1 with no handler drops the same signal (so the handler is what matters)" "ALIVE" "$(reload_reaches python3 -c 'import time; print("up", flush=True); time.sleep(8)')"
+else
+  echo "  note: no PID namespace here (needs root); the reload signal path was not run"
 fi
 
 echo

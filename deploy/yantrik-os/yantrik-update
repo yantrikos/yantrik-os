@@ -1715,9 +1715,9 @@ cmd_rollback() {
   say "Rolling back to $backup"
   restore_backup "$backup"
   restart_and_verify "$backup"
-  # The restored build's keys into the person's home: the same gap as an update, the other way
-  # round (#854).
+  # The restored build's keys into the person's home (#854); a note that no update moves Hermes unasked.
   refresh_session_chrome || true
+  hi_note_rollback || true
 }
 
 # ── status ──────────────────────────────────────────────────────────────────────────────

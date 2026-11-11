@@ -513,7 +513,7 @@ hi_model() { # <name> <apply|revert>; the settings on stdin for apply
   # A drain-aware restart where the unit can reload, a plain restart where it cannot: Hermes reads
   # its config as it starts.
   systemctl reload-or-restart "$(hi_unit "$name")" >/dev/null 2>&1 \
-    || warn "$(hi_unit "$name") did not restart; it reads the new model when it next starts"
+    || fail "$name's model settings were saved, but $(hi_unit "$name") would not reload, so it keeps the old model until it is restarted (journalctl -u $(hi_unit "$name"); sudo systemctl restart $(hi_unit "$name"))"
   info "$name's model settings changed; $(hi_unit "$name") finishes its turns and restarts"
 }
 
@@ -535,7 +535,7 @@ hi_run() { # <name> <args...>
     local g=0; hi_guard_toolsets "$name" || g=$?
     case "$g" in
       0) ;;
-      3) systemctl try-reload-or-restart "$(hi_unit "$name")" >/dev/null 2>&1 || true ;;
+      3) systemctl try-reload-or-restart "$(hi_unit "$name")" >/dev/null 2>&1 || warn "$(hi_unit "$name") would not reload onto the corrected file; restart it: sudo systemctl restart $(hi_unit "$name")" ;;
       *) warn "$name's toolset allowlist could not be held after \`model\`; $(hi_unit "$name") is stopped"; [ "$rc" != 0 ] || rc=1 ;;
     esac
   fi

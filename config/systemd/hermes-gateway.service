@@ -89,7 +89,11 @@ RestartForceExitStatus=75
 # A reload is Hermes's drain-aware restart (what its own user unit does): SIGUSR1, which yantrik-init
 # passes on. The gateway refuses new turns, finishes the running ones within its own cap, and exits 75
 # (RestartForceExitStatus) to be started again. The updater uses it to hand Hermes a new bridge (#1102).
-ExecReload=/bin/kill -USR1 $MAINPID
+# `+`, so it runs in the host's PID namespace: without it ExecReload runs inside this unit's own
+# (PrivatePIDs), where $MAINPID, the host's number for yantrik-init, does not exist ("No such
+# process", the 520 gate on #1076). yantrik-init installs a handler for SIGUSR1 (it is PID 1 there,
+# which drops a signal it has no handler for) and passes it on to Hermes.
+ExecReload=+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/kill -USR1 $MAINPID
 KillMode=mixed
 KillSignal=SIGTERM
 # A stop is SIGTERM to the main process, then the kill after TimeoutStopSec. Hermes handles SIGTERM
@@ -134,6 +138,11 @@ ReadWritePaths=/var/lib/yantrik-mind/harness/hermes
 ProtectHome=yes
 # The desktop's own log, memory and settings are the person's, not a harness's.
 InaccessiblePaths=-/opt/yantrik/logs -/opt/yantrik/data -/opt/yantrik/config.yaml
+# The Mind's own runtime directory, as the Mind's unit hides harness/. Both run as one uid, so the
+# mode of /run/yantrik-mind/<uid>/ and of the memory.sock in it keep nobody out. Hermes needs
+# nothing there: the door it attaches at is /run/yantrik-minds (another directory, with an s), its
+# memory is its own file under its home, and the Mind answers that socket only for the person's uid.
+InaccessiblePaths=-/run/yantrik-mind
 PrivateTmp=yes
 PrivateDevices=yes
 # /dev/shm stays the host's even with PrivateDevices, and one uid can read the other unit's segments in

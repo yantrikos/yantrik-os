@@ -64,6 +64,7 @@ has "... and says the cost of its stop is accepted until its bundle handles SIGT
 lacks "... nor tell anyone not to chase the 'not our child' line" "do not chase" "$(cat "$repo/config/systemd/yantrik-mind.service" "$unit" "$repo/harnesses/hermes/README.md")"
 has "... the Mind's unit hides /dev/pts from the Mind (the hermes model pty), ignoring a missing path" "InaccessiblePaths=-/dev/pts" "$mind_live"
 has "... and /dev/shm is private and writable" "TemporaryFileSystem=/dev/shm:mode=1777" "$block"
+has "the gateway cannot see the Mind's runtime directory (its memory.sock, same uid), ignoring a missing one" "InaccessiblePaths=-/run/yantrik-mind" "$block"
 has "the gateway refuses to start beside a Mind unit that does not isolate (rollback)" "does not mask harness/ and have its own PID namespace" "$live"
 lacks "... and nowhere claims a stop waits out the timeout" "waits out" "$(cat "$repo/config/systemd/yantrik-mind.service" "$repo/config/systemd/hermes-gateway.service" "$repo/harnesses/hermes/README.md" "$here/harness-isolation.sh")"
 has "... and says the 'not our child' journal line is expected" "not our child" "$(cat "$repo/config/systemd/yantrik-mind.service")"
