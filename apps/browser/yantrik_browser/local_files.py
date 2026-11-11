@@ -49,8 +49,8 @@ def file_path_of(url):
 
 def vet_file(url, home, rule):
     """The real path of the file a `file:` URL may open or draw, or Refused: a regular file of a
-    web type under the home, in no hidden place, reached through no link that leaves it — and,
-    for an agent, one the OS's file rule allows (`rule`, asked with the path as written; it walks
+    web type under the home with no other name (a hard link is refused), in no hidden place, reached
+    through no link that leaves it — and, for an agent, one the OS's file rule allows (`rule`, asked with the path as written; it walks
     the links itself). The one gate: for `go`, for each act on the tab, and for every request
     the page makes."""
     path = file_path_of(url)
@@ -66,6 +66,9 @@ def vet_file(url, home, rule):
         raise Refused("%s is a folder; go opens a file — name one inside it (index.html, say)" % path)
     if not os.path.isfile(real):
         raise Refused("%s is not a regular file; nothing was opened" % path)
+    if os.stat(real).st_nlink > 1:
+        raise PageRefused("%s is a hard link: the same file has another name, perhaps in a hidden or "
+                          "protected place, and the Browser cannot tell. Nothing was opened." % path)
     if home_files.where_programs_look(path, home):
         raise PageRefused("%s is in a hidden place (a dotfile or a dot-folder), where programs keep "
                           "their settings and what the person must not lose. Nothing was opened." % path)
@@ -99,6 +102,10 @@ class LocalFilesMixin:
             url = "file://" + urllib.parse.quote(url)
         return url
 
+    def _agent_calling(self):
+        """Whether the call in hand is an agent's (read on the dispatch's own thread)."""
+        return home_files.agent_is_calling()
+
     def _vet_local_file(self, url):
         """The real path of the file a `file:` URL may open, or Refused (vet_file)."""
         return vet_file(url, self.home(), self.file_rule)
@@ -106,15 +113,16 @@ class LocalFilesMixin:
     def _asset_gate(self):
         """The gate fence.py asks for each `file:` request the browser pauses: the `file:` URL of
         the vetted real path to load, or None to refuse. It runs on the fence's thread, where no
-        dispatch is in hand, so who is calling is read here, on the call's own, and carried."""
+        dispatch is in hand, so whose rule it is comes with the request: `agent` is the
+        requesting tab's (cdp.Tab.agent), never the last caller's."""
         home, rule = self.home(), self.file_rule
-        if rule is home_files.may_read_file:
-            agent = home_files.agent_is_calling()
-            rule = lambda path: home_files.may_read_file(path, as_agent=agent)  # noqa: E731
 
-        def gate(url):
+        def gate(url, agent):
+            asked = rule
+            if rule is home_files.may_read_file:
+                asked = lambda path: home_files.may_read_file(path, as_agent=agent)  # noqa: E731
             try:
-                return "file://" + urllib.parse.quote(vet_file(url, home, rule))
+                return "file://" + urllib.parse.quote(vet_file(url, home, asked))
             except Refused:
                 return None
         return gate

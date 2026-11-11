@@ -183,7 +183,7 @@ WEB_TOOLS = [
                        "then release: a window by its title bar, a slider, a resize handle. Answers "
                        "with how far it moved. Held to the rules of web_click at both ends: a commitment, "
                        "or a frame from another site, is refused as the thing pressed and as the "
-                       "place released. A key held is released after at most 60 seconds.",
+                       "place released.",
         "inputSchema": {"type": "object", "properties": {
             "ref": {"type": "string"}, "dx": {"type": "integer"}, "dy": {"type": "integer"}},
             "required": ["ref", "dx", "dy"]},
@@ -195,7 +195,8 @@ WEB_TOOLS = [
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
         "description": "Hold a key: down puts it down until up releases it; hold keeps it down for "
                        "`seconds` (at most 10) and releases it — a game's held arrow. Enter and Space "
-                       "follow the same commitment rule as web_press.",
+                       "follow the same commitment rule as web_press. A key left down is released after at "
+                       "most 60 seconds.",
         "inputSchema": {"type": "object", "properties": {
             "key": {"type": "string"}, "action": {"type": "string", "enum": ["down", "up", "hold"]},
             "seconds": {"type": "number"}, "ref": {"type": "string"}}, "required": ["action"]},

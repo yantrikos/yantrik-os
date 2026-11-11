@@ -12,10 +12,12 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from test_live import Bench, setUpModule, tearDownModule  # noqa: F401  (the bench, started for this module too)
 from test_screenshot import png_pixel  # noqa: E402
 from yantrik_browser import driver as drv  # noqa: E402  (on the path once test_live is imported)
+from yantrik_surface import files as home_files  # noqa: E402
 
 
 class LocalFiles(unittest.TestCase):
@@ -230,6 +232,106 @@ class LocalPagesAreFenced(unittest.TestCase):
         for path in (self.home + "/.ssh/key.html", self.home + "/site/notes.pem", self.home + "/site/.env"):
             with self.assertRaises(drv.PageRefused, msg=path):
                 self.d.go(path)
+
+
+FRAME = "position:absolute;border:0;left:0;top:0;width:300px;height:300px"
+
+
+class PopupsAndOwnersAreFenced(unittest.TestCase):
+    """The security re-review of #1170, A and B: a window a local page opens is fenced before its
+    first request (a written popup draws no file the page could not), and a page is held to the rule
+    of whoever loaded it, not of whoever called last."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.home = tempfile.mkdtemp(prefix="yb-home-")
+        cls.outside = tempfile.mkdtemp(prefix="yb-outside-")
+        red = "<body style=\"margin:0;background:#f00\"><p>SECRET-KEY-MATERIAL-1234</p>"
+        for folder in ("site", ".ssh", "vault"):
+            os.makedirs(os.path.join(cls.home, folder))
+        for rel in (".ssh/key.html", "vault/p.html"):
+            with open(os.path.join(cls.home, rel), "w") as f:
+                f.write(red)
+        with open(os.path.join(cls.outside, "secret.html"), "w") as f:
+            f.write(red)
+        cls.targets = {"outside": "file://%s/secret.html" % cls.outside,
+                       "hidden": "file://%s/.ssh/key.html" % cls.home,
+                       "protected": "file://%s/vault/p.html" % cls.home}
+        for name, url in cls.targets.items():      # the popup of the re-review: opened, written, closed
+            with open(os.path.join(cls.home, "site", "pop-%s.html" % name), "w") as f:
+                f.write("<button onclick=\"var x=window.open('');x.document.write('<iframe src=%s style=%s>"
+                        "</iframe>');x.document.close()\">Open preview</button>" % (url, FRAME))
+            with open(os.path.join(cls.home, "site", "lazy-%s.html" % name), "w") as f:     # a frame inserted later
+                f.write("<p>waiting</p><script>setTimeout(() => { document.body.insertAdjacentHTML("
+                        "'beforeend', '<iframe src=%s style=%s></iframe>'); }, 1200);</script>" % (url, FRAME))
+        os.link(os.path.join(cls.home, ".ssh", "key.html"), os.path.join(cls.home, "site", "hl.html"))
+        cls.agent = {"is": True}
+        cls.patches = [mock.patch.object(home_files, "agent_is_calling", lambda: cls.agent["is"]),
+                       mock.patch.object(home_files, "shell_stat", cls.shell_stat)]
+        for patch in cls.patches:
+            patch.start()
+        cls.d = drv.Driver(Bench.d.sides.fixed, judge=False, home=lambda: cls.home)    # the OS's own rule
+
+    @staticmethod
+    def shell_stat(asked):
+        """The shell's answer: a protected place is `/vault/`, whatever else is a file."""
+        return {"exists": "unknown", "reason": "protected_place"} if "/vault/" in asked else {"exists": True, "kind": "file"}
+
+    @classmethod
+    def tearDownClass(cls):
+        for patch in cls.patches:
+            patch.stop()
+        shutil.rmtree(cls.home, ignore_errors=True)
+        shutil.rmtree(cls.outside, ignore_errors=True)
+
+    def drawn(self, tab=None):
+        """The (r, g, b) at the middle of the frame a page holds, from a screenshot of the tab."""
+        return png_pixel(self.d.screenshot(tab)["path"], 150, 150)
+
+    def test_a_window_the_page_opens_draws_no_file_the_page_could_not(self):
+        for name in self.targets:
+            self.d.go(self.home + "/site/pop-%s.html" % name)
+            button = next(e["ref"] for e in self.d.read()["elements"] if e.get("name") == "Open preview")
+            popup = self.d.click(button)["new_tabs"][0]["tab"]
+            time.sleep(1.0)
+            self.assertNotEqual(self.drawn(popup), RED, "the popup drew a file %s" % name)
+            self.assertNotIn("SECRET-KEY-MATERIAL", self.seen_by_reading(popup), name)
+            self.d.close_tab(popup)
+
+    def seen_by_reading(self, tab):
+        out = ""
+        for fn in (self.d.read, self.d.text):
+            try:
+                out += repr(fn(tab))
+            except drv.Refused as e:
+                out += str(e)
+        return out
+
+    def test_a_page_an_agent_loaded_stays_under_the_agents_rule_whoever_calls_next(self):
+        self.agent["is"] = True
+        self.d.go(self.home + "/site/lazy-protected.html")
+        self.agent["is"] = False
+        try:
+            self.d.read()                       # one call that is not an agent's, before the page inserts its frame
+        finally:
+            self.agent["is"] = True
+        time.sleep(2.5)
+        self.assertNotEqual(self.drawn(), RED, "a protected place was drawn into the agent's page")
+
+    def test_a_page_the_person_loaded_is_held_to_the_persons_rule(self):
+        self.agent["is"] = False
+        try:
+            self.d.go(self.home + "/site/lazy-protected.html", new_tab=True)
+            time.sleep(2.5)
+            self.assertEqual(self.drawn(), RED, "the person's own page is not held to the agent's rule")
+        finally:
+            self.agent["is"] = True
+            self.d.close_tab(self.d.browser.active.id)
+
+    def test_a_file_with_another_name_is_not_opened(self):
+        with self.assertRaises(drv.PageRefused) as caught:
+            self.d.go(self.home + "/site/hl.html")
+        self.assertIn("hard link", str(caught.exception))
 
 
 if __name__ == "__main__":

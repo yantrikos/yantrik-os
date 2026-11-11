@@ -73,8 +73,8 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
 
     def _tab(self, tab=None, leaving=False):
         try:
-            self.browser.fence.gate = self._asset_gate()     # what a local page may draw, for this call
-            t = self.browser.tab(tab)
+            self.browser.fence.gate = self._asset_gate()     # what a local page may draw
+            t = self.browser.tab(tab, agent=self._agent_calling())
         except cdp.BrowserClosed:
             self.browser.close()
             raise Refused("the browser is not open, so there is no page to read or act on. Open "
@@ -314,7 +314,7 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
             if new_tab:
                 holds.release_all(self.browser, self._tab(None, leaving=True))
                 before = {t.id for t in self.browser.pages()}
-                t = self.browser.new_tab(url)
+                t = self.browser.new_tab(url, agent=self._agent_calling())
                 took, why = hands.settle(self.browser, t, NAVIGATE_LIMIT)
                 return self._consequence(t, "opened %s in a new tab" % url, -1, "", before, took, why, False)
             t = self._tab(tab, leaving=True)
