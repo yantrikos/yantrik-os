@@ -30,12 +30,6 @@ pub const SETTING_UP: &str = "Setting up Hermes, your mind, about 4 minutes. It 
 pub const READY: &str = "Hermes is ready; it answers from now on.";
 /// What the first run says while an image that ships Hermes sets it up: nothing is fetched.
 pub const SETTING_UP_BAKED: &str = "Setting up Hermes, your mind, from this computer. It does not need the internet.";
-/// Written by the image build (`deploy/yantrik-os/bake-hermes.sh`) when Hermes is in the image. A
-/// root-owned file outside the mind account's home, which the person's desktop cannot open.
-pub const BAKED_MARKER: &str = "/opt/yantrik/hermes/BAKED";
-/// Where the image bakes Hermes: the mind account's home, which is where the install runs once it
-/// runs as that account (#1076).
-pub const BAKED_HOME: &str = "/var/lib/yantrik-mind/harness/hermes";
 /// The row's reason when the internet was not there to install from.
 pub const NO_INTERNET: &str =
     "Hermes was not set up: this computer cannot reach the internet. Press Install again once it can.";
@@ -172,19 +166,6 @@ pub fn proven_marker(home: &Path, id: &str) -> PathBuf {
     home.join(".local/state/yantrik/harnesses").join(id).join("installed")
 }
 
-/// Whether the Hermes this machine's install sets up is the one the image ships: the marker is
-/// there, and the install runs in the home it was baked into. Until #1076 the install runs as the
-/// person, in the person's home, and what it sets up is a download whatever the image carries, so
-/// the marker alone promises nothing.
-pub fn baked() -> bool {
-    baked_for(Path::new(BAKED_MARKER).exists(), &crate::harness_install::job_home())
-}
-
-/// The rule behind [`baked`], on what the machine shows.
-pub fn baked_for(marker: bool, install_home: &Path) -> bool {
-    marker && install_home == Path::new(BAKED_HOME)
-}
-
 /// An install of the default mind is running: a job on this shell's board, or an installer an
 /// earlier shell started that is still going.
 pub fn installing() -> bool {
@@ -267,7 +248,7 @@ impl Machine for Here {
         installing()
     }
     fn baked(&self) -> bool {
-        baked()
+        crate::default_mind_baked::baked()
     }
     fn online(&self) -> bool {
         reachable(WAIT_FOR_INTERNET)
@@ -312,7 +293,7 @@ pub fn start(when: When) {
 pub fn words_now() -> String {
     let home = home();
     let job = crate::harness_install::views().remove(DEFAULT_MIND);
-    words(&load_record(&record_path(&home)), proven_marker(&home, DEFAULT_MIND).exists(), baked(), job.as_ref())
+    words(&load_record(&record_path(&home)), proven_marker(&home, DEFAULT_MIND).exists(), crate::default_mind_baked::baked(), job.as_ref())
 }
 
 /// The desktop has just handed the conversation to the default mind, which nobody chose: say so,
@@ -427,16 +408,6 @@ mod tests {
         assert_eq!(begin(&m, When::FirstRun), Outcome::Started, "nothing is downloaded, so being offline is no reason to refuse");
         assert_eq!(m.installs.get(), 1);
         assert!(m.refused.borrow().is_empty());
-    }
-
-    /// The bake is used only by an install that runs in the baked home (#1076). Before that the
-    /// install runs in the person's home and downloads, and the image's marker must not make the
-    /// desktop skip the internet check or say "from this computer".
-    #[test]
-    fn the_bake_counts_only_when_the_install_runs_in_the_baked_home() {
-        assert!(baked_for(true, Path::new(BAKED_HOME)));
-        assert!(!baked_for(true, Path::new("/home/pranab")), "the marker alone promises nothing");
-        assert!(!baked_for(false, Path::new(BAKED_HOME)));
     }
 
     #[test]

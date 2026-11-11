@@ -40,7 +40,7 @@ pub struct Facts {
     pub installing: bool,
     /// The default mind is the one answering.
     pub answering: bool,
-    /// Its install runs from the image, not from a download ([`crate::default_mind::baked`]).
+    /// Its install runs from the image, not from a download ([`crate::default_mind_baked::baked`]).
     pub baked: bool,
 }
 
@@ -90,7 +90,7 @@ pub fn tick(ui: &crate::App, host: &yantrik_harness::Host) {
         proven: crate::default_mind::proven(),
         installing: crate::default_mind::installing(),
         answering: host.active_id() == DEFAULT_MIND,
-        baked: crate::default_mind::baked(),
+        baked: crate::default_mind_baked::baked(),
     };
     let said = next(&mut TOLD.lock().unwrap_or_else(|e| e.into_inner()), facts);
     if let Some(words) = said {
