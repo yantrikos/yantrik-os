@@ -60,6 +60,7 @@ use crate::protocol::{self, Assignment, Attach};
 use crate::run_store::{RunError, RunState, RunStore};
 use crate::{Answer, Capabilities, Chunk, Harness, Health, Turn};
 
+pub mod detail;
 mod erase;
 mod notice;
 pub mod stop;
@@ -980,7 +981,7 @@ impl Host {
                 says_id: a.announced.id.clone(),
             });
         }
-        rows
+        detail::displayed(state, rows)
     }
 
     pub fn active_id(&self) -> String {
@@ -1500,6 +1501,7 @@ impl Host {
             protocol::CHUNK => self.chunk(params, peer),
             protocol::EVENT => self.event(params, peer),
             protocol::NOTICE => self.notice(params, peer),
+            protocol::DETAIL => self.set_detail(params, peer),
             protocol::COMPLETE => self.finish(params, peer, None),
             protocol::FAIL => {
                 let why = params["error"].as_str().unwrap_or("the harness reported a failure");
@@ -1525,7 +1527,7 @@ impl Host {
         // every face draws it: the Minds rows and Details, the status rail, `describe shell`, the
         // runs-on card. It is kept only as it may be drawn, here, so none of them can show the
         // sign-in details of an address in it (review of #856, finding 3).
-        announced.detail = announced.detail.as_deref().map(yantrik_shown_address::without_sign_in);
+        announced.detail = announced.detail.as_deref().and_then(detail::shown_detail);
         if announced.id.trim().is_empty() {
             return Err("`id` is what a person types to select this harness; it cannot be empty".into());
         }
