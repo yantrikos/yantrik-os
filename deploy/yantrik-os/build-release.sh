@@ -162,7 +162,7 @@ cp "$TARGET_DIR/libyantrik_mind_view_title.so" "$ROOT/bin/libyantrik_mind_view_t
 
 # The agent surface is not compiled, so binary discovery cannot find it. Without these the
 # machine boots a desktop that no agent can see or drive — the exact failure the old ISO had.
-for f in yos yos-mcp release-check yantrik-mind-launch; do
+for f in yos yos_web.py yos-mcp yos_mcp_web.py release-check yantrik-mind-launch yantrik-init yantrik_landlock.py; do
   [ -f "$SCRIPT_DIR/$f" ] || fail "missing $SCRIPT_DIR/$f — the agent surface is not optional"
   cp "$SCRIPT_DIR/$f" "$ROOT/bin/$f"
   chmod +x "$ROOT/bin/$f"
@@ -179,7 +179,7 @@ cp -r "$PROJECT_ROOT/apps/browser/yantrik_browser" "$ROOT/share/browser/"   || f
 cp -r "$PROJECT_ROOT/sdk/python/yantrik_surface" "$ROOT/share/browser/"   || fail "sdk/python/yantrik_surface missing — the browser service would have no surface to serve"
 find "$ROOT/share/browser" -name __pycache__ -type d -prune -exec rm -rf {} +
 cp "$PROJECT_ROOT/crates/yantrik-browser-ports/browsers.conf" "$ROOT/share/browser/yantrik_browser/browsers.conf" || fail "browsers.conf (the browsers' ports and profiles) did not ship"
-[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] || fail "the browser service's page reader (page.js) did not ship"
+[ -f "$ROOT/share/browser/yantrik_browser/page.js" ] && [ -f "$ROOT/share/browser/yantrik_browser/watch.js" ] || fail "the browser service's page reader (page.js, watch.js) did not ship"
 echo "   + yantrik-browser (the browser's surface, with yantrik_surface vendored in share/browser)"
 
 # The harnesses, staged by the same script as the image. The updater installs share/ with
@@ -215,6 +215,10 @@ if [ -f "$SCRIPT_DIR/yantrik-update" ]; then
   # What install-mind requires of a Mind, the same list the image checks: sourced beside it.
   install -m 0644 "$SCRIPT_DIR/mind-capabilities.sh" "$ROOT/bin/mind-capabilities.sh" \
     || fail "no mind-capabilities.sh: install-mind would refuse every Mind"
+  # The harnesses that run as the mind account (#411), sourced by the updater: without it a build
+  # has no `yantrik-update harness` and Hermes would stay the person's.
+  install -m 0644 "$SCRIPT_DIR/harness-isolation.sh" "$ROOT/bin/harness-isolation.sh"     || fail "no harness-isolation.sh: the updater could not move a harness to the mind account"
+  for f in harness-sandbox.sh harness-isolation-room.sh; do install -m 0644 "$SCRIPT_DIR/$f" "$ROOT/bin/$f" || fail "no $f: harness-isolation.sh sources it"; done
   # The bridge rule the updater sources to hand the mind a new yos-mcp after an update (#1102).
   # Missing would be tolerable by design — the updater warns and carries on — but a bundle that
   # never shipped it is a build that quietly gives every updated machine the old hint-only path.

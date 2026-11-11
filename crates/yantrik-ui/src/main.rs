@@ -329,6 +329,7 @@ fn main() {
     // only one that has one — so the manager and the hook come first. Nothing in `init` or in
     // `wire_all` depends on the services being down.
     let service_manager = start_services();
+    wire::browser_pipe::note_service_manager(service_manager.clone());
 
     // Anything in this process that needs an on-demand service can now start it directly.
     //

@@ -35,6 +35,10 @@ import sys
 import threading
 import time
 
+# yos_mcp_web.py ships beside this file (/opt/yantrik/bin): found from wherever yos-mcp was loaded.
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+from yos_mcp_web import BROWSER_NAMES, BROWSER_WRITES, SILENT_KEYS, WEB_TOOLS, picture_items, web_ref  # noqa: E402
+
 # How `yos` ends when it made no call because the app it is for is starting (try again) or could
 # not be started (deploy/yantrik-os/yos: EX_STARTING, EX_NOT_STARTED).
 EX_STARTING = 75
@@ -125,7 +129,101 @@ _CLIENT = {}
 # rather than being typed into the person's Terminal, and the first-class command tools below are
 # offered. Without one, nothing here changes.
 AGENT_TOKEN_ENV = "YANTRIK_AGENT_TOKEN"
-AGENT_TOKEN = os.environ.get(AGENT_TOKEN_ENV, "").strip()
+# Two ways to be handed the token that keep it out of this process's ENVIRONMENT (which
+# /proc/<pid>/environ keeps for the life of the process, whatever is done to os.environ):
+# a pipe's file descriptor, for a harness that starts this bridge itself, and the path of a unix
+# socket that answers one token and closes, for a harness whose runtime starts the bridge (Hermes
+# starts its MCP servers itself and passes them nothing but an environment). Either is read once
+# into memory and the variable dropped. A token from a pipe or the plain variable also makes the
+# process non-dumpable (nothing of the same user reads /proc/<pid>/{environ,mem}); a socket's does not.
+AGENT_TOKEN_FD_ENV = "YANTRIK_AGENT_TOKEN_FD"
+AGENT_TOKEN_SOCK_ENV = "YANTRIK_AGENT_TOKEN_SOCK"
+TOKEN_MOST = 512
+
+
+def make_undumpable():
+    """prctl(PR_SET_DUMPABLE, 0): /proc/<pid>/{environ,mem,fd} of this process are root's alone, and
+    ptrace needs a capability. The one helper for it on this side; harnesses/hermes/bridge_token.py
+    is the one on the starting side."""
+    try:
+        import ctypes
+
+        ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)
+    except Exception:
+        pass
+
+
+def _read_all(read, limit=TOKEN_MOST):
+    chunks, size = [], 0
+    while size <= limit:
+        chunk = read(256)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    return b"".join(chunks)[:limit].decode("utf-8", "replace").strip()
+
+
+def take_agent_token(environ=None):
+    """The agent token this bridge was started with, or "". Reads it from the descriptor or the
+    socket if one is named, else from the plain variable; drops all three variables; and makes the
+    process non-dumpable when the token came by pipe or variable, not by socket (hermes/bridge_token.py
+    says why). A source that is named and cannot be read gives no token at all (the bridge then acts
+    as no agent), never a guess."""
+    global _TOKEN_SOCK
+    environ = os.environ if environ is None else environ
+    token = ""
+    fd = environ.pop(AGENT_TOKEN_FD_ENV, "").strip()
+    sock = environ.pop(AGENT_TOKEN_SOCK_ENV, "").strip()
+    plain = environ.pop(AGENT_TOKEN_ENV, "").strip()
+    try:
+        if fd:
+            number = int(fd)
+            try:
+                token = _read_all(lambda n: os.read(number, n))
+            finally:
+                os.close(number)
+        elif sock:
+            # Kept (a path is not a secret) so the token can be asked for again: the harness that
+            # serves it may not have one yet when this starts (its runtime starts bridges before it
+            # has attached), and gets a new one each time it attaches.
+            _TOKEN_SOCK = sock
+            token = fetch_token(sock)
+        else:
+            token = plain
+    except (OSError, ValueError):
+        token = ""
+    if token and not sock:
+        make_undumpable()
+    return token
+
+
+_TOKEN_SOCK = ""
+
+
+def fetch_token(sock):
+    """What the harness's token service answers on `sock`, or "" (it has none, or is not there)."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(2.0)
+            conn.connect(sock)
+            return _read_all(conn.recv)
+    except (OSError, ValueError):
+        return ""
+
+
+def refresh_agent_token():
+    """Ask the token service again, when one was named: before the tools are listed and before each
+    call. The token it answers is the live one; none means the attach is gone, and this bridge then
+    acts as no agent (the desktop refuses a mind's acts) rather than with a token nothing holds."""
+    global AGENT_TOKEN
+    if _TOKEN_SOCK:
+        AGENT_TOKEN = fetch_token(_TOKEN_SOCK)
+
+
+AGENT_TOKEN = take_agent_token()
 
 
 def scrub(text):
@@ -154,11 +252,31 @@ def yos_env():
         env["YOS_START_DEADLINE"] = repr(deadline)
     else:
         env.pop("YOS_START_DEADLINE", None)
-    if AGENT_TOKEN:
-        env[AGENT_TOKEN_ENV] = AGENT_TOKEN
-    else:
-        env.pop(AGENT_TOKEN_ENV, None)
+    # Never the token: a child of this bridge is handed it through a pipe (`run_yos`), so it is in
+    # no environment, this process's or a child's.
+    for name in (AGENT_TOKEN_ENV, AGENT_TOKEN_FD_ENV, AGENT_TOKEN_SOCK_ENV):
+        env.pop(name, None)
     return env
+
+
+def run_yos(argv, timeout, **kw):
+    """`subprocess.run` for a `yos` of this bridge's, handing it the agent token (when there is one)
+    through a pipe's descriptor named by YANTRIK_AGENT_TOKEN_FD, which `yos` reads once and closes.
+    Not through the environment: /proc/<pid>/environ of the child would keep it."""
+    env = yos_env()
+    if not AGENT_TOKEN:
+        return subprocess.run(argv, timeout=timeout, env=env, **kw)
+    read_end, write_end = os.pipe()
+    try:
+        os.write(write_end, AGENT_TOKEN.encode("utf-8"))
+        os.close(write_end)
+        write_end = -1
+        env[AGENT_TOKEN_FD_ENV] = str(read_end)
+        return subprocess.run(argv, timeout=timeout, env=env, pass_fds=(read_end,), **kw)
+    finally:
+        os.close(read_end)
+        if write_end >= 0:
+            os.close(write_end)
 
 
 def reach_file():
@@ -545,195 +663,7 @@ TOOLS = [
     },
     # ── The browser (#477) ──
     #
-    # Each web_* tool is an act on the browser's own surface (`app-browser`), made through
-    # os_act: the grade, the mode, the card, the ceiling and the taint are the ones every app
-    # meets, and the answer is the page as `yos` renders it. Until #477 these ran `yos web`,
-    # which drove the page over DevTools itself, with the commitment check in this process.
-    {
-        "name": "web_read",
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "What is on the current web page: everything that can be clicked, typed "
-                       "into or chosen, each with a ref like e12 and its role, name and state, "
-                       "among the headings and alerts that say where it is. Refs stay the same "
-                       "while the element exists; one that is gone is refused, never mis-pressed. "
-                       "Controls marked as a commitment (buy, send, delete) are pressed with "
-                       "web_commit, which asks the person.",
-        "inputSchema": {"type": "object", "properties": {
-            "all": {"type": "boolean", "description": "every element, not only what is in view"}}},
-        "browser_action": "read",
-        "browser_args": lambda a: {"all": bool(a.get("all"))},
-    },
-    {
-        "name": "web_text",
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "What the current page SAYS — the prose a reader sees, without the "
-                       "markup or the interactive furniture.",
-        "inputSchema": {"type": "object", "properties": {
-            "limit": {"type": "integer", "description": "max characters"}}},
-        "browser_action": "text",
-        "browser_args": lambda a: {"limit": a.get("limit")},
-    },
-    {
-        "name": "web_find",
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "Locate something anywhere on the page, including off screen: the "
-                       "elements whose name, value or link holds these words, with their refs.",
-        "inputSchema": {"type": "object", "properties": {"words": {"type": "string"}},
-                        "required": ["words"]},
-        "browser_action": "find",
-        "browser_args": lambda a: {"query": a.get("words")},
-    },
-    {
-        "name": "web_go",
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Open a URL in the browser and wait for it to load; answers with what is "
-                       "on the new page. new_tab opens it beside the current one.",
-        "inputSchema": {"type": "object", "properties": {
-            "url": {"type": "string"},
-            "new_tab": {"type": "boolean"}}, "required": ["url"]},
-        "browser_action": "go",
-        "browser_args": lambda a: {"url": a.get("url"), "new_tab": bool(a.get("new_tab"))},
-    },
-    {
-        "name": "web_click",
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Press an element by its ref, with the pointer, as a person would; answers "
-                       "with what changed — a new page, text that appeared (an error, a result), "
-                       "a dialog, a new tab. Refused, and nothing pressed, when the ref is gone, "
-                       "covered by something (the refusal names it) or disabled, and for a "
-                       "control that reads as a commitment: that is web_commit.",
-        "inputSchema": {"type": "object", "properties": {"ref": {"type": "string"}},
-                        "required": ["ref"]},
-        "browser_action": "click",
-        "browser_args": lambda a: {"ref": web_ref(a.get("ref"))},
-    },
-    {
-        "name": "web_type",
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Type into a field by its ref, replacing what is there (keep=true to add "
-                       "to it), and press Enter after if enter=true — unless Enter would submit a "
-                       "form whose button reads as a commitment.",
-        "inputSchema": {"type": "object", "properties": {
-            "ref": {"type": "string"}, "text": {"type": "string"},
-            "enter": {"type": "boolean"}, "keep": {"type": "boolean"}},
-            "required": ["ref", "text"]},
-        "browser_action": "type",
-        "browser_args": lambda a: {"ref": web_ref(a.get("ref")), "text": a.get("text"),
-                                   "enter": bool(a.get("enter")), "clear": not a.get("keep")},
-    },
-    {
-        "name": "web_press",
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Press a key — Enter, Tab, Escape, ArrowDown, PageDown, ctrl+a — in the "
-                       "element given, or wherever the focus is.",
-        "inputSchema": {"type": "object", "properties": {
-            "key": {"type": "string"}, "ref": {"type": "string"}}, "required": ["key"]},
-        "browser_action": "press",
-        "browser_args": lambda a: {"key": a.get("key"), "ref": web_ref(a["ref"]) if a.get("ref") else None},
-    },
-    {
-        "name": "web_select",
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Choose an option, by its text, in a list (a select) by its ref.",
-        "inputSchema": {"type": "object", "properties": {
-            "ref": {"type": "string"}, "option": {"type": "string"}}, "required": ["ref", "option"]},
-        "browser_action": "select",
-        "browser_args": lambda a: {"ref": web_ref(a.get("ref")), "option": a.get("option")},
-    },
-    {
-        "name": "web_scroll",
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "Scroll the page (down, up, top, bottom) or bring a ref into view; "
-                       "answers with what is in view then.",
-        "inputSchema": {"type": "object", "properties": {
-            "direction": {"type": "string", "enum": ["down", "up", "top", "bottom"]},
-            "ref": {"type": "string"}}},
-        "browser_action": "scroll",
-        "browser_args": lambda a: ({"ref": web_ref(a["ref"])} if a.get("ref")
-                                   else {"direction": a.get("direction") or "down"}),
-    },
-    {
-        "name": "web_back",
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Go back in the tab's history — or forward, or reload, with `to`.",
-        "inputSchema": {"type": "object", "properties": {
-            "to": {"type": "string", "enum": ["back", "forward", "reload"]}}},
-        "browser_action": lambda a: (a.get("to") if a.get("to") in ("forward", "reload") else "back"),
-        "browser_args": lambda a: {},
-    },
-    {
-        "name": "web_tabs",
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "The browser's open tabs, with their ids, and which one actions go to.",
-        "inputSchema": {"type": "object", "properties": {}},
-        "browser_action": "tabs",
-        "browser_args": lambda a: {},
-    },
-    {
-        "name": "web_tab",
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Bring a tab (its id from web_tabs) to the front and act in it; with "
-                       "close=true, close it instead.",
-        "inputSchema": {"type": "object", "properties": {
-            "tab": {"type": "string"}, "close": {"type": "boolean"}}, "required": ["tab"]},
-        "browser_action": lambda a: "close_tab" if a.get("close") else "switch_tab",
-        "browser_args": lambda a: {"tab": a.get("tab")},
-    },
-    {
-        "name": "web_wait",
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "Wait for words to appear on the page, or for it to finish loading, up "
-                       "to `seconds` (at most 30).",
-        "inputSchema": {"type": "object", "properties": {
-            "text": {"type": "string"}, "seconds": {"type": "number"}}},
-        "browser_action": "wait",
-        "browser_args": lambda a: {"text": a.get("text"), "seconds": a.get("seconds")},
-    },
-    {
-        "name": "web_dialog",
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
-        "description": "Answer the page's alert, confirm or prompt: accept (default) or dismiss, "
-                       "with text for a prompt. A confirm that reads as a commitment is accepted "
-                       "with web_commit ref=dialog instead.",
-        "inputSchema": {"type": "object", "properties": {
-            "accept": {"type": "boolean"}, "text": {"type": "string"}}},
-        "browser_action": "dialog",
-        "browser_args": lambda a: {"accept": a.get("accept", True) is not False, "text": a.get("text")},
-    },
-    {
-        "name": "web_commit",
-        "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True},
-        "description": "Press a control whose label reads as a commitment — buy, pay, send, "
-                       "post, delete, confirm. It cannot be undone, so it puts a card on the "
-                       "person's screen and waits for them, every time. label is the control's "
-                       "label exactly as web_read shows it, and site the page's site; nothing is "
-                       "pressed if either has changed.",
-        "inputSchema": {"type": "object", "properties": {
-            "ref": {"type": "string", "description": "the control's ref, or `dialog`"},
-            "label": {"type": "string"}, "site": {"type": "string"}},
-            "required": ["ref", "label", "site"]},
-        "browser_action": "commit",
-        "browser_args": lambda a: {"ref": "dialog" if a.get("ref") == "dialog" else web_ref(a.get("ref")),
-                                   "label": a.get("label"), "site": a.get("site")},
-    },
-    {
-        "name": "web_listen",
-        "annotations": {"readOnlyHint": True, "openWorldHint": True},
-        "description": "What the page says OUT LOUD. Records the audio this machine is "
-                       "playing and transcribes it, so speech in a video is readable whether "
-                       "or not the video is captioned. It hears whatever is making noise, not "
-                       "one specific tab. Takes roughly twice the requested duration to return.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "seconds": {"type": "integer", "description": "how long to listen, default 30"}
-            },
-        },
-        "argv": lambda a: ["web", "listen", str(a.get("seconds", 30))],
-        # Capture is real-time and transcription runs slower than real time on this CPU,
-        # so the ceiling has to scale with the request rather than sit at a fixed value.
-        "timeout": lambda a: int(a.get("seconds", 30)) * 4 + 120,
-    },
+    *WEB_TOOLS,
 ]
 
 BY_NAME = {t["name"]: t for t in TOOLS}
@@ -1080,6 +1010,7 @@ AGENT_WAITING = {"agent_run", "agent_run_sealed", "agent_job"}
 
 def offered():
     """The tools this bridge offers: the desktop's, and an agent's own when it runs as one."""
+    refresh_agent_token()
     return TOOLS + (AGENT_TOOLS if AGENT_TOKEN else [])
 
 
@@ -1273,19 +1204,15 @@ def run_agent_tool(tool, args):
     return text, is_error, seen.get("result")
 
 
-def web_ref(ref):
-    """`12`, `e12` or `[e12]` as the ref the browser hands out."""
-    r = str(ref if ref is not None else "").strip().strip("[]")
-    return "e" + r if r.isdigit() else r
-
-
 def present_browser(out):
     """The browser's answer, as the page `yos` renders — one renderer for the command line and
-    for a mind. The raw JSON only when yos cannot be loaded here to render it."""
+    for a mind. The raw JSON only when yos cannot be loaded here to render it. A picture the
+    answer carries (web_screenshot) goes beside the text, as image content (`serve_call`)."""
     reply = result_object(out)
     if not isinstance(reply, dict):
         return out
     result = reply.get("result", reply)
+    _LOCAL.pictures = picture_items(result)
     module = _yos_module()
     render = getattr(module, "render_browser", None) if module is not None else None
     shown = render(result) if render else None
@@ -1304,16 +1231,6 @@ def run_browser_tool(tool, args):
     act = {"app": "browser", "action": action, "args": inner}
     full = dict(BY_NAME["os_act"], argv=lambda a: ["act", a["app"], a["action"]] + act_pairs(a) + ["--full"])
     return run_tool(full, act, present=present_browser)
-
-
-BROWSER_NAMES = {"browser", "chromium"}     # what app-browser answers to (its aliases)
-# The browser's actions that put the caller's words into a page, whatever they are called: typing,
-# a key that types a character, a prompt's answer, a choice in a list. Each is web_type to the taint.
-BROWSER_WRITES = {"type", "press", "dialog", "select"}
-# Keys that carry no text: pressing them says nothing.
-SILENT_KEYS = {"enter", "return", "tab", "escape", "esc", "backspace", "delete", "arrowup", "up",
-               "arrowdown", "down", "arrowleft", "left", "arrowright", "right", "pageup",
-               "pagedown", "home", "end"}
 
 
 def browser_args(args):
@@ -1337,7 +1254,7 @@ def outbound_of(tool, args):
     if action == "go":
         return "web_go", inner
     if action in BROWSER_WRITES:
-        if action == "press" and str(inner.get("key") or "").strip().lower().split("+")[-1] in SILENT_KEYS:
+        if action in ("press", "key_down") and str(inner.get("key") or "").strip().lower().split("+")[-1] in SILENT_KEYS:
             return tool["name"], args
         if action == "dialog" and not inner.get("text"):
             return tool["name"], args
@@ -1347,6 +1264,7 @@ def outbound_of(tool, args):
 
 def call_tool(tool, args):
     """Any tool this bridge offers. Returns (text, is_error, meta)."""
+    refresh_agent_token()
     if tool["name"] in AGENT_BY_NAME:
         return run_agent_tool(tool, args)
     if "browser_action" in tool:
@@ -1459,8 +1377,7 @@ def yos(args, timeout):
         # JSON-RPC stream, and a `yos` that inherited it could read a request meant for the
         # bridge — bytes that are then simply gone. Nothing `yos` does today reads stdin; this
         # is so that nothing it does later can.
-        return subprocess.run([YOS] + list(args), capture_output=True, text=True,
-                              timeout=timeout, env=yos_env(), stdin=subprocess.DEVNULL)
+        return run_yos([YOS] + list(args), timeout, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
 
@@ -3120,6 +3037,10 @@ def in_process(argv):
     with _YOS_LOCK:
         _CAPTURE.out, _CAPTURE.err = [], []
         code = 0
+        # This process's own memory is the only place the token goes for a call made in it (the
+        # process is non-dumpable); dropped when the call ends.
+        if AGENT_TOKEN:
+            os.environ[AGENT_TOKEN_ENV] = AGENT_TOKEN
         try:
             command(list(argv[1:]))
         except SystemExit as e:
@@ -3127,6 +3048,8 @@ def in_process(argv):
         except Exception as e:  # noqa: BLE001 — a crash in yos is its failure, not this bridge's
             code = 1
             _CAPTURE.err.append("yos: %s: %s\n" % (type(e).__name__, e))
+        finally:
+            os.environ.pop(AGENT_TOKEN_ENV, None)
         return _Ran(code, "".join(_CAPTURE.out), "".join(_CAPTURE.err))
 
 
@@ -3207,6 +3130,7 @@ def run_tool(tool, args, present=None):
     """
     _LOCAL.start_deadline = None
     _LOCAL.go_approved = None
+    _LOCAL.pictures = []
     if "browser_action" in tool:
         # Every web tool is an act on the browser's surface (#477): made there, through os_act.
         return run_browser_tool(tool, args)
@@ -3313,9 +3237,8 @@ def run_tool(tool, args, present=None):
         # stdin closed to the child, for the reason in `yos`: this process's stdin belongs to
         # the client's JSON-RPC stream and nothing else may read from it. The environment is
         # `yos_env`'s: the desktop's session, and the agent token when this bridge has one.
-        p = (in_process(argv[1:]) if tool["name"] in IN_PROCESS else None) or subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, env=yos_env(),
-            stdin=subprocess.DEVNULL)
+        p = (in_process(argv[1:]) if tool["name"] in IN_PROCESS else None) or run_yos(
+            argv, timeout, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         note = join(note, report_unasked(audit, "timed out"))
         return (prefix(note, "timed out after %ss — the desktop did not answer. It may be busy "
@@ -3719,7 +3642,8 @@ def serve_call(msg_id, tool, arguments):
     except Exception as e:  # a malformed argument must not take the server down
         text, is_error = "could not run %s: %s" % (tool["name"], e), True
     text = going_round(tool["name"], arguments, text, is_error)
-    result = {"content": [{"type": "text", "text": scrub(text)}], "isError": is_error}
+    pictures = [] if is_error else getattr(_LOCAL, "pictures", [])
+    result = {"content": [{"type": "text", "text": scrub(text)}] + pictures, "isError": is_error}
     if meta is not None:
         result["_meta"] = {"yantrik/command": json.loads(scrub(json.dumps(meta)))}
     reply(msg_id, result)

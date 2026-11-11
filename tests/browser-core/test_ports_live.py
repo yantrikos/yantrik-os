@@ -10,12 +10,14 @@ own), set through ports.py as a test of the same code; and "who is calling" is a
 the mind door and the shell are not here (test_guard.py covers that half; live-proof-1085b.sh
 covers it with real Mind and Hermes turns on a VM).
 
-The person's Browser is started with no --user-data-dir at all (the default profile, as it is launched
-before and after this change) and, in one test, with a profile named some other way: both must be
-the person's. Mind View's is started with its profile. In every start order a mind lands in Mind View's
+The person's Browser is started with --remote-debugging-pipe and no port (#1137), its stream given to
+the service's pipes.PipeHolder as the shell does; with no --user-data-dir at all (the default
+profile) and, in one test, with a profile named some other way: both must be the person's. Mind View's
+is started with its profile and a port. In every start order a mind lands in Mind View's
 browser and the person in theirs.
 """
 
+import fcntl
 import functools
 import http.server
 import os
@@ -42,7 +44,7 @@ def chrome():
 
 
 try:
-    from yantrik_browser import cdp, driver as drv, guard, listener, ports  # noqa: E402
+    from yantrik_browser import cdp, driver as drv, guard, listener, pipes, ports  # noqa: E402
     import websocket  # noqa: F401,E402
     SUPPORTED = sys.platform.startswith("linux") and chrome() is not None
 except ImportError:
@@ -78,23 +80,54 @@ class Fixture:
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
         self.site = "http://127.0.0.1:%d" % self.http.server_address[1]
         self.procs = {}
+        self.holder = pipes.PipeHolder()     # the person's Browser's stream, as the service holds it
+        self.person_titles = lambda: []      # set by the test: the person's tabs, over the pipe
 
-    def start(self, who, profile="default", port=None):
-        """Start the person's or the mind's Chromium. `profile`: "default" (no flag: the person's
-        Browser as it is launched, before and after this change), "other" (a profile named some
-        other way), or "mind" (Mind View's)."""
-        port = port or (self.person_port if who == "person" else self.mind_port)
+    def start(self, who, profile="default", port=None, pipe=None):
+        """Start the person's or the mind's Chromium. The person's runs on a DevTools pipe handed to
+        `self.holder`; a mind's, or any browser given a `port`, on that port. `profile`: "default"
+        (no flag), "other" (a profile named some other way), or "mind" (Mind View's)."""
+        pipe = (who == "person" and port is None) if pipe is None else pipe
+        port = None if pipe else (port or (self.person_port if who == "person" else self.mind_port))
         args = [chrome(), "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-gpu",
-                "--no-sandbox", "--disable-background-networking", "--disable-component-update",
-                "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=%d" % port,
-                "--remote-allow-origins=http://127.0.0.1:%d" % port]
+                "--no-sandbox", "--disable-background-networking", "--disable-component-update"]
+        args += (["--remote-debugging-pipe"] if pipe else
+                 ["--remote-debugging-address=127.0.0.1", "--remote-debugging-port=%d" % port,
+                  "--remote-allow-origins=http://127.0.0.1:%d" % port])
         if profile == "other":
             args.append("--user-data-dir=" + os.path.join(self.home, ".config", "person-profile"))
         elif profile == "mind":
             args.append("--user-data-dir=" + ports.mind_view_profile())
         args.append("about:blank")
         env = dict(os.environ)
-        log = open(os.path.join(self.home, "%s-%d.log" % (who, port)), "wb")
+        log = open(os.path.join(self.home, "%s-%s.log" % (who, port or "pipe")), "wb")
+        if pipe:
+            mine, theirs = socket.socketpair()
+            # As browser_pipe::attach does it: the end duplicated above 4 (so dup2 onto 3 and 4
+            # cannot land on itself) and inheritable, then dup2 in the child. Python's own close
+            # pass runs after preexec_fn and would close the 3 and 4 made there, so it is off; every
+            # other descriptor of this process is non-inheritable anyway (PEP 446).
+            keep = fcntl.fcntl(theirs.fileno(), fcntl.F_DUPFD, 10)
+            os.set_inheritable(keep, True)
+
+            def fds_3_and_4():
+                os.dup2(keep, 3)
+                os.dup2(keep, 4)
+            proc = subprocess.Popen(args, stdout=log, stderr=log, env=env, stdin=subprocess.DEVNULL,
+                                    preexec_fn=fds_3_and_4, close_fds=False)
+            os.close(keep)
+            theirs.close()
+            self.procs[(who, "pipe")] = proc
+            mine.settimeout(60)
+            mine.sendall(b'{"id":1,"method":"Browser.getVersion"}\0')
+            try:
+                if b"\0" not in mine.recv(65536):
+                    raise OSError("short reply")
+            except OSError as e:
+                raise RuntimeError("the %s's browser did not answer on its pipe (%s; exit %s)" % (who, e, proc.poll()))
+            mine.settimeout(None)
+            self.holder.give(mine, proc.pid)
+            return proc
         proc = subprocess.Popen(args, stdout=log, stderr=log, env=env, stdin=subprocess.DEVNULL)
         self.procs[(who, port)] = proc
         deadline = time.monotonic() + 60
@@ -120,7 +153,10 @@ class Fixture:
         time.sleep(0.5)
 
     def titles(self, port):
-        """The page titles of the browser on `port`, straight from its own /json."""
+        """The page titles of the browser on `port`, straight from its own /json; the person's
+        (who has no port) over the pipe, through the service."""
+        if port == self.person_port:
+            return self.person_titles()
         import json
         import urllib.request
         with urllib.request.urlopen("http://127.0.0.1:%d/json" % port, timeout=5) as r:
@@ -153,8 +189,17 @@ class RealBrowsers(unittest.TestCase):
             self.fx.start("mind", "mind")
         self.starter = start_mind_view
         self.driver = drv.Driver(judge=False, guard_=guard.Guard(
-            side_of=lambda: self.caller["side"], starter=lambda: self.starter()))
+            side_of=lambda: self.caller["side"], starter=lambda: self.starter(), pipes=self.fx.holder))
         self.addCleanup(lambda: [b.close() for b in self.driver.sides.browsers.values()])
+        self.fx.person_titles = self.persons_titles
+
+    def persons_titles(self):
+        before = self.caller["side"]
+        try:
+            tabs = self.as_(ports.PERSON).tabs().get("tabs", [])
+        finally:
+            self.caller["side"] = before
+        return sorted(t["title"] for t in tabs)
 
     def as_(self, side):
         self.caller["side"] = side
@@ -181,11 +226,13 @@ class RealBrowsers(unittest.TestCase):
         self.assertEqual([t["title"] for t in mind_tabs], ["MIND-B"])
         self.assertEqual([t["title"] for t in person_tabs], ["PERSON-B"])
 
-    def test_the_persons_browser_first_on_the_old_flags_then_mind_views(self):
-        self.fx.start("person", "default")
-        held = listener.identify(self.fx.person_port)
-        self.assertEqual(held.place, listener.PERSON)
-        with open("/proc/%d/cmdline" % held.pids[0], "rb") as f:
+    def test_the_persons_browser_first_on_its_pipe_then_mind_views(self):
+        person = self.fx.start("person", "default")
+        self.assertEqual(listener.place_of_pid("/proc", person.pid), listener.PERSON)
+        for port in (self.fx.person_port,):
+            with self.assertRaises(listener.Unidentified, msg="nothing listens on the person's old port"):
+                listener.identify(port)
+        with open("/proc/%d/cmdline" % person.pid, "rb") as f:
             raw = f.read()
         # The 520 gate found Debian's Chromium reading back as one space-joined string; this Chrome
         # may or may not. Either way the profile is read: the point is the line above.
@@ -196,8 +243,8 @@ class RealBrowsers(unittest.TestCase):
 
     def test_mind_views_browser_first_then_the_person_with_a_profile_named_some_other_way(self):
         self.fx.start("mind", "mind")
-        self.fx.start("person", "other")
-        self.assertEqual(listener.identify(self.fx.person_port).place, listener.PERSON)
+        person = self.fx.start("person", "other")
+        self.assertEqual(listener.place_of_pid("/proc", person.pid), listener.PERSON)
         self.both_land_where_they_belong()
 
     def test_the_persons_browser_closing_and_coming_back_changes_nothing_for_a_mind(self):
@@ -265,11 +312,11 @@ class RealBrowsers(unittest.TestCase):
         self.assertIn(self.fx.titles(self.fx.mind_port), (["about:blank"], [""]), "a page was opened in the person's browser")
         self.assertTrue(all(not b.alive for b in self.driver.sides.browsers.values()))
 
-    def test_a_mind_views_browser_left_on_the_persons_port_is_not_the_persons(self):
-        self.fx.start("mind", "mind", port=self.fx.person_port)
+    def test_a_mind_views_browser_handed_over_as_the_persons_is_not_the_persons(self):
+        self.fx.start("mind", "mind", pipe=True)
         with self.assertRaises(drv.PageRefused) as refused:
             self.as_(ports.PERSON).read()
-        self.assertIn("Mind View's own browser", str(refused.exception))
+        self.assertIn("Mind View's own", str(refused.exception))
 
     def test_a_browser_that_takes_the_port_after_a_connection_is_not_followed(self):
         self.fx.start("mind", "mind")
