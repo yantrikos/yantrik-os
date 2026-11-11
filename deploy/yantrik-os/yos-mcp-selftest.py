@@ -4055,10 +4055,10 @@ with tempfile.TemporaryDirectory() as sd:
             conn.sendall(TOKEN_IN.encode()); conn.close()
     _threading.Thread(target=serve, daemon=True).start()
     out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": path})
-    check("a token fetched from the socket a harness named is read the same way",
-          out.startswith("32 True 0 []"), (out, err))
+    check("a token fetched from the socket a harness named is read the same way, the process left dumpable (a hidepid /proc would unlist it)",
+          out.startswith("32 True 1 []"), (out, err))
     out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": path, "YANTRIK_AGENT_TOKEN": "x" * 32})
-    check("and the socket wins over a plain variable, which is dropped too", out.startswith("32 True 0 []"), (out, err))
+    check("and the socket wins over a plain variable, which is dropped too", out.startswith("32 True 1 []"), (out, err))
     server.close()
     out, err = probe({"YANTRIK_AGENT_TOKEN_SOCK": os.path.join(sd, "nobody-home.sock")})
     check("a named source that cannot be read gives no token, never a guess", out.startswith("0 False"), (out, err))
@@ -4091,7 +4091,7 @@ with tempfile.TemporaryDirectory() as sd:
                           env=env, timeout=30)
     server.close()
     check("a socket that has no token at start is asked again: none, then the live one, then none again",
-          done.stdout.strip() == '["", "T", "", ""] 0',
+          done.stdout.strip() == '["", "T", "", ""] 1',
           (done.stdout, done.stderr[-300:]))
 out, err = probe({"YANTRIK_AGENT_TOKEN": TOKEN_IN})
 check("the plain variable still works, and is dropped and the process made non-dumpable",

@@ -9,8 +9,13 @@ process, for every process of the account. So:
 - `TokenService` listens on a unix socket in Hermes's own home (`$HERMES_HOME/yantrik-bridge.sock`,
   0600, in a directory only the account can open) and answers one token to a connecting process and
   closes. The bridge's MCP entry in Hermes's config names that path (a path is not a secret); the
-  bridge connects once at start, reads the token into memory, drops the variable and makes itself
-  non-dumpable (`deploy/yantrik-os/yos-mcp`, `take_agent_token`).
+  bridge connects at start and before each call, reads the token into memory and drops the variable
+  (`deploy/yantrik-os/yos-mcp`, `take_agent_token`). It does NOT make itself non-dumpable: the unit's
+  /proc is hidepid=invisible (ProtectProc=), where a non-dumpable process of the account is not listed
+  at all. Hermes's `psutil.pid_exists` then says its live bridge has exited and restarts it every 3
+  minutes, and `descends_from` below cannot read the bridge's parent chain, so no token is answered
+  (the 520 gate on #1076). Nothing is given up: this service answers any process that descends from the
+  gateway, Hermes's own tools included, so memory they could read is a token they could already ask for.
 - It answers only a process of the same account that descends from this one (the kernel's
   `SO_PEERCRED` and the parent chain in `/proc`), and nothing at all while there is no token.
 - `popen_with_token` is the other way, for a bridge the plugin starts itself: a pipe's descriptor,

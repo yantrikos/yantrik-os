@@ -158,7 +158,7 @@ exactly as long as the attach, held to the harness's reach, taking no turns, nev
 Agents view, never stoppable, and never the person's chat, so the Lens's + does not clear its taint.
 Its approval cards say "<mind> (background)". The harness hands it to its bridge without an
 environment (a pipe, or a socket the bridge asks on: `harnesses/hermes/bridge_token.py`, read by
-`yos-mcp` once into memory with the process then non-dumpable). Never for a shared attach, and a
+`yos-mcp` into memory; a bridge handed it by pipe is then non-dumpable, one that asks a socket is not). Never for a shared attach, and a
 `resume` cannot claim the name.
 
 **Conversations.** A harness that can hold more than one conversation at a time — a process per

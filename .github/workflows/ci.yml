@@ -341,6 +341,12 @@ jobs:
       - name: The gateway unit scopes every line that runs as the mind account
         run: bash deploy/yantrik-os/harness-scope-selftest.sh
 
+      # The desktop's tools bridge as Hermes starts it, inside a /proc mounted hidepid=invisible like the
+      # gateway unit's (ProtectProc=): it must stay listed there and be answered a token, or Hermes takes
+      # it for dead and the desktop's tools never work (the 520 gate on #1076). Needs root for the mounts.
+      - name: Hermes sees its desktop-tools bridge in the unit's /proc
+        run: sudo python3 deploy/yantrik-os/yos-mcp-hidepid-selftest.py
+
       # The two root-side verbs a moved Hermes needs from the desktop: "Use Yantrik models" (the token
       # on stdin, never in an argument) and the drain-aware reload the bridge update asks for.
       - name: A moved Hermes takes its model and a reload from the updater

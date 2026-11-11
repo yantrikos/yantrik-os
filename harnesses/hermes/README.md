@@ -68,8 +68,9 @@ no approval card. Now:
   `hermes:gateway` (`gateway: true`), and the plugin answers its token to the bridge on a unix socket
   in Hermes's home (`bridge_token.py`; only a process of the account that descends from the gateway
   is answered), because a token in the bridge's environment would stay readable in `/proc` and Hermes
-  gives its MCP children nothing but an environment. `yos-mcp` reads it once into memory, drops the
-  variable, becomes non-dumpable, and hands it to each short-lived `yos` it runs through a pipe, never
+  gives its MCP children nothing but an environment. `yos-mcp` reads it into memory, drops the
+  variable (it stays dumpable: under `ProtectProc=invisible` a non-dumpable process is unlisted, and Hermes
+  would think it had exited), and hands it to each short-lived `yos` it runs through a pipe, never
   an environment or a command line. It is the gateway's background work, not the person's chat: its
   approval cards say "Hermes (background)" and the Lens's + does not clear its taint. It lives as long
   as the attach.

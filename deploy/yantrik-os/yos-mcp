@@ -130,8 +130,8 @@ AGENT_TOKEN_ENV = "YANTRIK_AGENT_TOKEN"
 # a pipe's file descriptor, for a harness that starts this bridge itself, and the path of a unix
 # socket that answers one token and closes, for a harness whose runtime starts the bridge (Hermes
 # starts its MCP servers itself and passes them nothing but an environment). Either is read once
-# into memory, the variable is dropped, and the process is made non-dumpable, so nothing of the
-# same user can read it back out of /proc/<pid>/{environ,mem}. The plain variable still works.
+# into memory and the variable dropped. A token from a pipe or the plain variable also makes the
+# process non-dumpable (nothing of the same user reads /proc/<pid>/{environ,mem}); a socket's does not.
 AGENT_TOKEN_FD_ENV = "YANTRIK_AGENT_TOKEN_FD"
 AGENT_TOKEN_SOCK_ENV = "YANTRIK_AGENT_TOKEN_SOCK"
 TOKEN_MOST = 512
@@ -163,9 +163,9 @@ def _read_all(read, limit=TOKEN_MOST):
 def take_agent_token(environ=None):
     """The agent token this bridge was started with, or "". Reads it from the descriptor or the
     socket if one is named, else from the plain variable; drops all three variables; and makes the
-    process non-dumpable whenever there is a token. A source that is named and cannot be read gives
-    no token at all (the bridge then acts as no agent and the desktop refuses a mind's acts), never
-    a guess."""
+    process non-dumpable when the token came by pipe or variable, not by socket (hermes/bridge_token.py
+    says why). A source that is named and cannot be read gives no token at all (the bridge then acts
+    as no agent), never a guess."""
     global _TOKEN_SOCK
     environ = os.environ if environ is None else environ
     token = ""
@@ -189,7 +189,7 @@ def take_agent_token(environ=None):
             token = plain
     except (OSError, ValueError):
         token = ""
-    if token or sock:
+    if token and not sock:
         make_undumpable()
     return token
 
