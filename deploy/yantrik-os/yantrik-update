@@ -4364,16 +4364,15 @@ reconcile_private_dirs() {
   for d in "$LOG_DIR" "$PREFIX/data"; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
     [ "$(stat -c %U "$d")" = "$owner" ] || continue
-    # Read by the owner alone, not only written: the log holds what the person types to the
-    # built-in companion and data/ its memories, and every other account on the machine — the
-    # mind's included — could list and read both (security review, 29 Sep 2026).
+    # Read by the owner alone: the log holds what the person types, data/ its memories (security review, 29 Sep 2026).
     if [ -n "$(find "$d" -maxdepth 0 -perm /077 2>/dev/null)" ]; then
       runuser -u "$owner" -- chmod go-rwx "$d" && info "$d is $owner's alone now"
     fi
+    # The vault (memory.db, -wal, -shm) crosses an install as the old session's uid; one root's, orphaned or the live session's (yantrik) is adopted, not dropped with strangers' files (#1168).
+    find "$d" -maxdepth 1 -type f -links 1 -name 'memory.db*' \( -nouser -o -user root -o -user yantrik \) -exec chown -h "$owner" -- {} + 2>/dev/null || true
     runuser -u "$owner" -- find "$d" -mindepth 1 -maxdepth 1 ! -user "$owner" ! -type d \
       -exec rm -f -- {} + 2>/dev/null || true
-    # A directory under a name the session writes (yantrik-os.log) would stop the desktop
-    # starting. Renaming within the owner's directory needs no write on the one moved.
+    # A directory under a name the session writes (yantrik-os.log) would stop the desktop starting.
     runuser -u "$owner" -- find "$d" -mindepth 1 -maxdepth 1 ! -user "$owner" -type d \
       -exec sh -c 'for p; do mv -T -- "$p" "${p%/*}/.foreign-$(stat -c %i -- "$p")"; done' sh {} + \
       2>/dev/null || true
@@ -6469,6 +6468,7 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
     "$([ -x "$mp/memory/bin/yantrikdb-mcp" ] && [ -f "$mp/memory/wheels/click-8.3.1-py3-none-any.whl" ] && echo yes || echo no)"
   is "memory: modes are the ISO's whatever the umask (dirs 755, files 644, the launcher 755)" "755 644 755 755" \
     "$(stat -c %a "$mp/memory/wheels" "$mp/memory/VERSIONS" "$mp/memory/bin/yantrikdb-mcp" "$mp/memory/bin" | tr '\n' ' ' | sed 's/ $//')"
+  is "private dirs: the vault is adopted before the strangers' files go" "yes" "$(declare -f reconcile_private_dirs | awk '/memory\.db/&&/chown/{a=NR} /rm -f/{r=NR} END{print (a&&r&&a<r)?"yes":"no"}')"
   is "memory: migrate-ownership makes memory/ root's with the rest of the tree" "yes" \
     "$(declare -f cmd_migrate_ownership | grep -qF '"$PREFIX/memory"' && echo yes || echo no)"
   is "memory: the old memory/ is replaced whole, not merged" "no" "$([ -e "$mp/memory/stale" ] && echo yes || echo no)"
