@@ -54,6 +54,7 @@ pub(crate) mod browser_launch;
 /// The grounded dock's buttons and window list, published from the window list.
 pub mod dock_bar;
 pub mod harness;
+mod first_party_claim;
 pub mod i18n;
 mod lens;
 mod navigate;

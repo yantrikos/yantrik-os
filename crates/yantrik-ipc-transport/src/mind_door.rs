@@ -62,6 +62,31 @@ pub fn is_mind(_uid: u32) -> bool {
     false
 }
 
+/// The cgroup the Mind runs in, as `/proc/<pid>/cgroup` names it on the unified hierarchy.
+pub const MIND_CGROUP: &str = "/system.slice/yantrik-mind.service";
+
+/// Whether this peer is the Mind: the mind account's uid AND a process of the Mind's own unit.
+///
+/// [`is_mind`] says a caller is a tenant of the `yantrik-mind` account, and that is all it can say
+/// once another harness (Hermes) runs under the same account. Where something is handed out, the
+/// uid alone is not enough: the peer's cgroup, read from the pid the kernel named at accept, must
+/// be exactly the Mind's unit. Exactly, not a prefix: the unit delegates no sub-cgroup, so only
+/// this path is the unit, and `hermes-gateway.service` or a `.scope` beside it is not.
+///
+/// Fails closed. A pid that is gone, a `/proc` that cannot be read, no pid at all, a cgroup line
+/// that is not the unified `0::` one: none of them is the Mind.
+pub fn is_the_mind(peer: crate::PeerCred) -> bool {
+    is_the_mind_in(Path::new("/proc"), is_mind, peer)
+}
+
+fn is_the_mind_in(proc: &Path, is_mind: impl Fn(u32) -> bool, peer: crate::PeerCred) -> bool {
+    if !is_mind(peer.uid) || peer.pid <= 0 {
+        return false;
+    }
+    std::fs::read_to_string(proc.join(peer.pid.to_string()).join("cgroup"))
+        .is_ok_and(|text| text.lines().any(|line| line.strip_prefix("0::") == Some(MIND_CGROUP)))
+}
+
 #[cfg(unix)]
 fn lookup_user(name: &str) -> Option<u32> {
     let name = std::ffi::CString::new(name).ok()?;
@@ -441,5 +466,45 @@ mod tests {
             assert!(!MindMethods::SurfaceOnly.admits(no), "{no:?}");
             assert!(MindMethods::Every.admits(no), "every method, as before: {no:?}");
         }
+    }
+
+    /// The Mind is its uid AND its unit: a Hermes under the same account is a mind-uid peer in
+    /// another cgroup, and is not the Mind.
+    #[test]
+    fn the_mind_is_the_account_and_the_unit_and_anything_unreadable_is_neither() {
+        let proc = std::env::temp_dir().join(format!("yantrik-1176-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&proc);
+        let put = |pid: i32, text: &str| {
+            std::fs::create_dir_all(proc.join(pid.to_string())).unwrap();
+            std::fs::write(proc.join(pid.to_string()).join("cgroup"), text).unwrap();
+        };
+        put(10, "0::/system.slice/yantrik-mind.service
+");
+        put(11, "0::/system.slice/hermes-gateway.service
+");
+        put(12, "0::/system.slice/yantrik-mind.service/child
+");
+        put(13, "0::/system.slice/yantrik-mind.service.scope
+");
+        put(14, "0::/user.slice/user-1000.slice/session-3.scope
+");
+        put(15, "1:name=systemd:/system.slice/yantrik-mind.service
+");
+        put(16, "0::/system.slice/yantrik-mind.service (deleted)
+");
+        put(17, "");
+        let mind_uid = |uid: u32| uid == 990;
+        let peer = |pid: i32, uid: u32| crate::PeerCred { pid, uid, gid: uid };
+        let the_mind = |pid: i32, uid: u32| is_the_mind_in(&proc, mind_uid, peer(pid, uid));
+
+        assert!(the_mind(10, 990), "the mind account in the Mind's unit");
+        assert!(!the_mind(11, 990), "a mind-uid Hermes in its own unit is not the Mind");
+        assert!(!the_mind(12, 990) && !the_mind(13, 990), "only the unit itself, not a neighbour or a child");
+        assert!(!the_mind(14, 990), "a mind-uid process in a session");
+        assert!(!the_mind(15, 990) && !the_mind(16, 990) && !the_mind(17, 990), "not the unified line, deleted, empty");
+        assert!(!the_mind(10, 1000), "the unit with another uid is not the account");
+        assert!(!the_mind(99, 990), "a pid that has gone");
+        assert!(!the_mind(0, 990) && !the_mind(-1, 990), "no pid the kernel named");
+        let _ = std::fs::remove_dir_all(&proc);
     }
 }
