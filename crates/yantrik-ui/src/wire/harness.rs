@@ -4,9 +4,7 @@
 //! Serve the `harness` socket so anything else can attach. Keep the Settings screen and the
 //! status bar showing the truth about both.
 //!
-//! The [`Host`] lives for the life of the shell and is reachable from anywhere in it through
-//! [`host`], because two things need it that cannot hand each other a reference: this wiring, and
-//! the shell's own control surface in `crate::control`.
+//! The [`Host`] lives for the life of the shell and is reachable through [`host`], for this wiring and `crate::control`.
 
 use std::sync::{Arc, OnceLock};
 
@@ -39,6 +37,8 @@ const HARNESSES_SECTION: i32 = 8;
 const FIRST_RUN_SCREEN: i32 = 2;
 
 static HOST: OnceLock<Host> = OnceLock::new();
+#[cfg(test)]
+pub(crate) mod test_host;
 
 /// The shell's harness host. Available once [`wire`] has run.
 pub fn host() -> Option<&'static Host> {

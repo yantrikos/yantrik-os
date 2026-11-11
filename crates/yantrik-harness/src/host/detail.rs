@@ -104,6 +104,19 @@ pub(super) fn displayed(state: std::sync::MutexGuard<'_, super::State>, mut rows
 }
 
 impl Host {
+    /// The name a mind is listed under, read from the registry alone. Unlike [`Host::list`] it
+    /// never asks the shell for a detail line, so the shell may call it while it is working out
+    /// that line (a pick that is gone names its mind in the sentence it says) without asking
+    /// itself the same question again.
+    pub fn name_of(&self, id: &str) -> Option<String> {
+        let mut state = self.lock();
+        self.reap(&mut state);
+        match self.builtins.iter().find(|h| h.id() == id) {
+            Some(h) => Some(h.name().to_string()),
+            None => state.attached.get(id).map(|a| a.announced.name.clone()),
+        }
+    }
+
     /// `harness.detail`.
     pub(super) fn set_detail(&self, params: &serde_json::Value, peer: Peer) -> Result<serde_json::Value, String> {
         let detail = params["detail"].as_str().ok_or("`detail` is missing; it is the text to show under the name")?;
@@ -143,6 +156,30 @@ mod tests {
         let said = |id: &str| host.list().into_iter().find(|e| e.id == id).unwrap().detail;
         assert_eq!(said("shelled-1162").as_deref(), Some("Hermes 0.14.0 \u{b7} qwen3.8:27b"));
         assert_eq!(said("pi").as_deref(), Some("Pi 1"));
+        *super::MODEL_LINE.write().unwrap() = None;
+    }
+
+    /// #1162, the crash: the shell names a mind inside its own line hook (a gone pick says whose
+    /// pick it is). Reading the name must not ask the hook again: that was the recursion that
+    /// overflowed the shell's stack.
+    #[test]
+    fn a_minds_name_is_read_without_asking_the_shell_for_its_line() {
+        let _turn = HOOK.lock().unwrap_or_else(|e| e.into_inner());
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
+        super::set_model_line(move |id, _, _| {
+            if id == "named-1162" {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            None
+        });
+        let host = Host::new(Vec::new());
+        host.handle(protocol::ATTACH, &serde_json::json!({ "id": "named-1162", "name": "Hermes Agent", "detail": "Hermes 1" })).unwrap();
+        assert_eq!(host.name_of("named-1162").as_deref(), Some("Hermes Agent"));
+        assert_eq!(host.name_of("nobody-1162"), None);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0, "a name is not a listing");
+        host.list();
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "a listing still asks");
         *super::MODEL_LINE.write().unwrap() = None;
     }
 

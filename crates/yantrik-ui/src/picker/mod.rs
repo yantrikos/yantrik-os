@@ -23,6 +23,8 @@ pub mod status;
 mod tests;
 #[cfg(test)]
 mod tests_blocked;
+#[cfg(test)]
+mod tests_gone;
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};

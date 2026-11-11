@@ -149,11 +149,11 @@ pub(crate) fn display_model(id: &str) -> String {
     }
 }
 
-/// The name a mind goes by on screen.
+/// The name a mind goes by on screen. Read from the host's registry, never from its listing: the
+/// listing asks [`model_line`] for each mind's line, and a pick that has gone names its mind while
+/// that line is being worked out, so a listing here asks itself until the stack is gone.
 pub(crate) fn mind_name(id: &str) -> String {
-    crate::wire::harness::host()
-        .and_then(|h| h.list().into_iter().find(|e| e.id == id).map(|e| e.name))
-        .unwrap_or_else(|| id.to_string())
+    crate::wire::harness::host().and_then(|h| h.name_of(id)).unwrap_or_else(|| id.to_string())
 }
 
 /// The sentence for a pick that is offered by no account any more. `using` is the default pick that
