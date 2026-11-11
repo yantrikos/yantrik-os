@@ -46,15 +46,27 @@ fn resolve(location: &str, forbidden: bool, on: bool, ask: impl FnOnce() -> Resu
 }
 
 /// With nobody there, the place goes to wttr.in in the clear, so it must be one the person has: a place
-/// they saved in the weather app, the coordinates of one, or where they live (`weather_places`), not text
-/// the model chose, however plain it reads. A person's own turn may type anything. `None` lets the call go
-/// on.
+/// they saved in the weather app, or where they live (`weather_places`), not text the model chose,
+/// however plain it reads. A person's own turn may type anything. `None` lets the call go on.
 fn unplace(location: &str, person: bool, theirs: impl Fn(&str) -> bool) -> Option<String> {
     let location = location.trim();
     (!person && !location.is_empty() && !theirs(location)).then(|| {
         "Refused: with nobody asking, the weather is looked up only for a place the person saved or lives in, and that was not one, so nothing was sent."
             .to_string()
     })
+}
+
+/// The places the weather app has saved, as it says them in its `describe`: asked only of a running app,
+/// because starting it would have it fetch a forecast with nobody there. Empty when it is not running.
+fn saved_places(place: &str) -> bool {
+    let saved: Vec<String> = crate::app_ui::describe("weather")
+        .ok()
+        .and_then(|view| view.get("state")?.get("saved_locations")?.as_array().cloned())
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get("name")?.as_str().map(str::to_string))
+        .collect();
+    weather_places::is_theirs(place, &saved)
 }
 
 /// The person's yes, on the shell's own card.
@@ -102,7 +114,7 @@ impl Tool for GetWeatherTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let location = args.get("location").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(refusal) = unplace(location, background_research::person_started(), weather_places::is_theirs) {
+        if let Some(refusal) = unplace(location, background_research::person_started(), saved_places) {
             return refusal;
         }
         // The switch's first yes in this run is logged with the line `describe shell` shows.
