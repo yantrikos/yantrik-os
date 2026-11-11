@@ -1603,7 +1603,7 @@ pub fn publish(
                 crate::memory_grants::validate(
                     args,
                     crate::wire::harness::host(),
-                    yantrik_ipc_transport::mind_door::is_mind, yantrik_ipc_transport::mind_door::is_the_mind,
+                    yantrik_ipc_transport::mind_door::is_mind,
                     crate::memory_grants::load,
                 )
             },

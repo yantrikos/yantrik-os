@@ -6,7 +6,7 @@ use yantrik_ipc_transport::PeerCred;
 ///
 /// The id is only a name the harness gives itself, and it is the one the person's memory grants
 /// treat as the person's own Mind (#447). Where the mind door is served, the real Mind runs as the
-/// mind account, in its own unit, so a process that is not both ([`yantrik_ipc_transport::mind_door::is_the_mind`]) and calls itself
+/// mind account, in its own unit, so a process that is not both (`PeerCred::the_mind`, decided at accept) and calls itself
 /// `mind` is an impostor. The uid alone is not enough: another harness (Hermes) shares the account
 /// (#1076), and under the bare id it would replace the live Mind. Refused, it cannot take the name at all, nor replace the real
 /// Mind's session by re-attaching under it. A caller the kernel could not name (the TCP dev path)
@@ -21,7 +21,6 @@ pub(super) fn first_party_claim_refused(
     params: &serde_json::Value,
     peer: Option<PeerCred>,
     door_served: bool,
-    is_the_mind: impl Fn(PeerCred) -> bool,
 ) -> Option<String> {
     if method != yantrik_harness::protocol::ATTACH
         || params["id"].as_str() != Some(crate::memory_grants::FIRST_PARTY_MIND)
@@ -36,7 +35,7 @@ pub(super) fn first_party_claim_refused(
             crate::memory_grants::FIRST_PARTY_MIND
         ));
     }
-    if !door_served || peer.is_some_and(is_the_mind) {
+    if !door_served || peer.is_some_and(|p| p.the_mind) {
         return None;
     }
     Some(format!(
@@ -50,14 +49,10 @@ mod tests {
     use super::*;
     use yantrik_harness::protocol;
 
-    /// The mind account's uid, and the Mind's unit: pid 4242 is in it, 5151 is a Hermes that
-    /// shares the account (#1076) but runs in its own unit.
-    fn is_the_mind(p: PeerCred) -> bool {
-        p.uid == 990 && p.pid == 4242
-    }
-
+    /// The mind account's uid is 990. Pid 4242 is the Mind, in its unit; 5151 is a Hermes that
+    /// shares the account (#1076) but runs in its own unit: it was not the Mind at accept.
     fn peer(pid: i32, uid: u32) -> Option<PeerCred> {
-        Some(PeerCred { pid, uid, gid: uid })
+        Some(PeerCred { pid, uid, gid: uid, the_mind: uid == 990 && pid == 4242 })
     }
 
     fn attach(id: &str) -> serde_json::Value {
@@ -65,7 +60,7 @@ mod tests {
     }
 
     fn refused(params: &serde_json::Value, peer: Option<PeerCred>, door: bool) -> Option<String> {
-        first_party_claim_refused(protocol::ATTACH, params, peer, door, is_the_mind)
+        first_party_claim_refused(protocol::ATTACH, params, peer, door)
     }
 
     /// #447: the first-party Mind's id is the Mind's alone wherever the door is served.
@@ -81,7 +76,7 @@ mod tests {
         // Any other id is anybody's, and any other method is not an attach.
         assert_eq!(refused(&attach("pi"), peer(300, 1000), true), None);
         assert_eq!(refused(&attach("Mind"), peer(300, 1000), true), None, "another name, and no defaults with it");
-        let poll = first_party_claim_refused(protocol::POLL, &attach("mind"), peer(300, 1000), true, is_the_mind);
+        let poll = first_party_claim_refused(protocol::POLL, &attach("mind"), peer(300, 1000), true);
         assert_eq!(poll, None);
 
         // No door, as before the account migration: the Mind runs as the person and attaches so.

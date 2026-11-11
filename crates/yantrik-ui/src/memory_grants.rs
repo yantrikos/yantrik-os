@@ -341,19 +341,19 @@ pub fn answer(person_uid: u32, mind: &str, attach: &str, grants: &Grants) -> Val
 /// surface's standing rule lets this one action through without one (`yantrik_surface`'s
 /// `STANDING_NOT_NEEDED`), and this check is what stands in its place.
 ///
-/// The asker must be the Mind itself, `is_the_mind`: the mind account's uid AND the Mind's unit
-/// (#1176), because another harness (Hermes) shares the account (#1076). `is_mind` judges only the
-/// account a harness attached with. All three are the real ones in the shell and stand-ins in
-/// tests: no test machine has the mind account.
+/// The asker must be the Mind itself: the mind account's uid AND the Mind's unit (#1176), because
+/// another harness (Hermes) shares the account (#1076). That was decided when the connection was
+/// accepted and rides with the caller as `the_mind`; it is never looked up again here. `is_mind`
+/// judges only the account a harness attached with. It is the real one in the shell and a stand-in
+/// in tests: no test machine has the mind account.
 pub fn validate(
     args: &Value,
     host: Option<&yantrik_harness::Host>,
     is_mind: impl Fn(u32) -> bool,
-    is_the_mind: impl Fn(yantrik_ipc_transport::PeerCred) -> bool,
     choices: impl FnOnce() -> Option<Store>,
 ) -> Result<Value, String> {
     let asker = yantrik_app_runtime::control::caller();
-    if !asker.is_some_and(|c| is_the_mind(c.into())) {
+    if !asker.is_some_and(|c| c.the_mind) {
         return Err("only the person's memory server asks this".into());
     }
     let digest = args["memory_sha256"].as_str().unwrap_or_default();
