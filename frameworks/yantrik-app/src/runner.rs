@@ -48,6 +48,8 @@ pub fn first_window<A: App>(boot: &Boot<A::Settings>, theme: &theme::ThemeSettin
 /// A window of the app, themed and given its chrome: what a person's start shows first and what
 /// their arrival at a service start makes.
 pub(crate) fn made_window<A: App>(theme: &theme::ThemeSettings) -> Result<A::Ui, String> {
+    // Before the window exists: the compositor reads the app id when the surface is made.
+    boot::name_windows(A::ID);
     let ui = A::Ui::make().map_err(|e| e.to_string())?;
     ui.apply_theme(theme);
     ui.connect_chrome();
