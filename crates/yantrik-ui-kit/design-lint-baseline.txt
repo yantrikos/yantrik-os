@@ -59,7 +59,7 @@ px-font 7 crates/yantrik-switcher/ui/switcher.slint
 px-font 1 crates/yantrik-ui-kit/slint/line_chart.slint
 px-font 1 crates/yantrik-ui-slint/ui/desktop.slint
 px-font 2 crates/yantrik-ui-slint/ui/document_editor.slint
-px-font 21 crates/yantrik-ui-slint/ui/file_browser.slint
+px-font 20 crates/yantrik-ui-slint/ui/file_browser.slint
 px-font 1 crates/yantrik-ui-slint/ui/lock.slint
 px-font 1 crates/yantrik-ui-slint/ui/login.slint
 px-font 5 crates/yantrik-ui-slint/ui/notes_editor.slint
