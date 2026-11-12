@@ -31,6 +31,14 @@ fn shell_allows(grade: &str, cannot_be_undone: bool) -> bool {
     grade != "dangerous" && !cannot_be_undone
 }
 
+/// `n` For-you "Useful" answers: the receipts no cap holds back, to start a score above zero.
+fn earn_from_for_you(conn: &Connection, n: usize) {
+    for i in 0..n {
+        let r = receipt(ReceiptKind::ForYouUseful, "", "", facts("", false), &format!("fy{i}"));
+        assert!(BondTracker::record_receipt(conn, &r));
+    }
+}
+
 fn score(conn: &Connection) -> f64 {
     BondTracker::get_state(conn).bond_score
 }
@@ -118,19 +126,16 @@ fn history_the_old_scorer_wrote_is_kept_and_not_counted() {
 fn each_receipt_moves_the_score_the_right_way() {
     for kind in [ReceiptKind::CardAllowed, ReceiptKind::ForYouUseful, ReceiptKind::PreparedUsed] {
         let conn = conn();
-        // A starting point above zero, so a fall has somewhere to go.
-        for n in 0..5 {
-            card(&conn, true, "notes", "create", false, &format!("base{n}"));
-        }
+        // A starting point above zero, so a fall has somewhere to go, and every card's rise
+        // has room under the card cap.
+        earn_from_for_you(&conn, 10);
         let before = score(&conn);
         assert!(BondTracker::record_receipt(&conn, &receipt(kind, "x", "y", facts("sensitive", false), "r")));
         assert!(score(&conn) > before, "{kind:?} raises it");
     }
     for kind in [ReceiptKind::CardRefused, ReceiptKind::ForYouNotUseful, ReceiptKind::Undone] {
         let conn = conn();
-        for n in 0..5 {
-            card(&conn, true, "notes", "create", false, &format!("base{n}"));
-        }
+        earn_from_for_you(&conn, 10);
         let before = score(&conn);
         assert!(BondTracker::record_receipt(&conn, &receipt(kind, "x", "y", facts("sensitive", false), "r")));
         assert!(score(&conn) < before, "{kind:?} lowers it");
@@ -142,9 +147,7 @@ fn the_score_stays_between_zero_and_the_ceiling() {
     let conn = conn();
     BondTracker::record_receipt(&conn, &receipt(ReceiptKind::Undone, "a", "b", facts("sensitive", false), "u"));
     assert_eq!(score(&conn), 0.0, "a fall from nothing is nothing");
-    for n in 0..200 {
-        card(&conn, true, "notes", &format!("create{n}"), false, &format!("c{n}"));
-    }
+    earn_from_for_you(&conn, 200);
     assert_eq!(score(&conn), SCORE_CEILING);
 }
 
@@ -173,11 +176,9 @@ fn a_fall_keeps_the_reason_with_the_receipt_that_caused_it() {
 fn levels_follow_the_receipt_score() {
     let conn = conn();
     assert_eq!(BondTracker::get_state(&conn).bond_level, BondLevel::Stranger);
-    // One allow each from six different apps: a level is earned across the machine, never by one
-    // pair (see `one_trivial_card_raised_over_and_over_cannot_buy_a_level`).
-    for n in 0..6 {
-        card(&conn, true, &format!("app{n}"), "create", false, &format!("c{n}"));
-    }
+    // Cards alone stop at the card cap, which is under the first level: a level is earned by
+    // being useful across the machine (see `one_trivial_card_raised_over_and_over_cannot_buy_a_level`).
+    earn_from_for_you(&conn, 12);
     assert_eq!(BondTracker::get_state(&conn).bond_level, BondLevel::Acquaintance);
 }
 
