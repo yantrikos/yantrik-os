@@ -198,8 +198,7 @@ mod tests {
     /// window is placed by labwc, so the rule is checked: no `MoveTo` (labwc reads its x and y
     /// with atoi, and "center" was 0, the top-left corner), the bottom dropped onto the usable
     /// area's, which ends at `<margin bottom>`, and lifted by exactly `Theme.osd-gap`. The worked
-    /// example is the sign-off's screen: 1280x800 with the 64px dock puts its top at 592 (608 when
-    /// the dock was 48px).
+    /// example is the sign-off's: 1280x800 with a 48px dock puts its top at 608.
     #[test]
     fn the_pill_sits_the_osd_gap_above_the_dock_whatever_the_screen() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -226,8 +225,8 @@ mod tests {
         assert_eq!(dock, px("taskbar-height"), "the usable area ends at the dock's top");
         let top = |screen_h: i32| screen_h - dock - px("osd-gap") - px("osd-h");
         assert_eq!((px("osd-w"), px("osd-h")), (240, 64));
-        assert_eq!(top(800), 592);
-        assert_eq!(top(1080), 872);
+        assert_eq!(top(800), 608);
+        assert_eq!(top(1080), 888);
     }
 
     #[test]
