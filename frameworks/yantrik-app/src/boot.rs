@@ -235,6 +235,25 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RecentLines {
     }
 }
 
+/// The Wayland app id of an app's windows: `yantrik-<id>`, the name of its desktop file.
+///
+/// Our windows told the compositor no app id at all, so labwc's rules, a taskbar and Alt+Tab's
+/// renderer knew a window only by its title (#877). With one, a single labwc rule
+/// (`identifier="yantrik-*"`, config/labwc/rc.xml) reaches every app's windows and none of
+/// anybody else's, which is how they get the compositor's shadow.
+pub fn window_app_id(id: &str) -> String {
+    format!("yantrik-{id}")
+}
+
+/// Give every window this process makes from here on its app id ([`window_app_id`]). Called before
+/// each window is made; the first call is the one that matters. A platform that takes no app id
+/// (a test's headless one) says so and is left alone.
+pub fn name_windows(id: &str) {
+    if let Err(e) = slint::set_xdg_app_id(window_app_id(id)) {
+        tracing::debug!(app = id, error = %e, "This platform takes no window app id");
+    }
+}
+
 /// The software renderer when the session asks for it, chosen before any component exists. One
 /// implementation of the five-line switch seven apps carried.
 pub fn choose_backend() {
