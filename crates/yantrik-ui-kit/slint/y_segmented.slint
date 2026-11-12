@@ -4,7 +4,7 @@
 //
 // A single button whose label is the current choice ("C") reads as an action, and filled with
 // the accent it reads as THE action of the screen. A segmented control shows every option at
-// once and marks the one in force: a raised plate in a sunk track, plus a heavier weight, so
+// once and marks the one in force: a raised plate with a 3:1 edge in a sunk track, plus a heavier weight, so
 // the mark does not rest on colour alone. It was a soft accent tint, which on the navy ground
 // was one more navy. Never the filled accent.
 //
@@ -41,7 +41,7 @@ export component YSegmented inherits Rectangle {
             border-radius: Theme.r-sm;
             background: seg.in-force ? Theme.control-fill-hover : seg-ta.has-hover ? Theme.hover-fill : transparent;
             border-width: seg-keys.has-focus ? 2px : seg.in-force ? 1px : 0px;
-            border-color: seg-keys.has-focus ? Theme.focus-ring : Theme.control-edge;
+            border-color: seg-keys.has-focus ? Theme.focus-ring : Theme.control-edge-strong;
             animate background { duration: Theme.dur-fast; }
 
             seg-keys := FocusScope {

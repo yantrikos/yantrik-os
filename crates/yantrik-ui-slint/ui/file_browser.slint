@@ -263,8 +263,6 @@ export struct FileOpItem {
     status: string,     // "in_progress", "done", "error"
 }
 
-// A place in the sidebar. The selected one wears the Files blue, as the app's identity (see
-// AppIdentity): which app you are in, not which control is primary.
 component FileRow inherits Rectangle {
     in property <FileEntry> entry;
     in property <bool> selected;

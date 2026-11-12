@@ -386,6 +386,30 @@ mod tests {
         assert_eq!(rc, again, "writing it twice writes the same file, so the second reconfigure never happens");
     }
 
+    /// A window's frame is a keyline darker than the bar it runs round, on every theme; the
+    /// window's own light hairline is drawn inside it (Theme.window-edge).
+    #[test]
+    fn a_windows_keyline_is_darker_than_its_title_bar_on_every_theme() {
+        let light = |hex: &str| -> u32 { rgb(hex).unwrap_or_else(|| panic!("{hex}")).iter().map(|c| u32::from(*c)).sum() };
+        for t in all() {
+            let colours: std::collections::HashMap<_, _> = frame_colours(t).into_iter().collect();
+            for (border, bar) in [("window.active.border.color", "window.active.title.bg.color"), ("window.inactive.border.color", "window.inactive.title.bg.color")] {
+                assert!(light(&colours[border]) < light(&colours[bar]), "{}: {border} {} is not darker than {bar} {}", t.id, colours[border], colours[bar]);
+            }
+        }
+    }
+
+    /// The shipped themerc is what a session wears before the shell has written the theme's own:
+    /// its frame must be Lake's, so the file and the derivation cannot drift apart.
+    #[test]
+    fn the_shipped_themerc_frames_a_window_as_lake_does() {
+        let colours: std::collections::HashMap<_, _> = frame_colours(lake()).into_iter().collect();
+        for key in ["window.active.border.color", "window.inactive.border.color"] {
+            let line = format!("{key}: {}", colours[key]);
+            assert!(BASE_THEMERC.lines().any(|l| l == line), "config/labwc/themerc should say `{line}`");
+        }
+    }
+
     #[test]
     fn the_alt_tab_list_wears_the_theme() {
         for t in all() {
