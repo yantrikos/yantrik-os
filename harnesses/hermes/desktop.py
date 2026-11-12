@@ -25,6 +25,7 @@ CHUNK = "harness.chunk"
 COMPLETE = "harness.complete"
 FAIL = "harness.fail"
 DETACH = "harness.detach"
+DETAIL = "harness.detail"
 EVENT = "harness.event"
 
 

@@ -54,6 +54,14 @@ pub fn catalogue() -> Catalogue {
     cached
 }
 
+/// Tests only: the accounts and models the shell lists, in place of what the vault and the saved
+/// providers would give.
+#[cfg(test)]
+pub(crate) fn set_listing_for_test(accounts: Vec<Account>, catalogue: Catalogue) {
+    *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = accounts;
+    *CATALOGUE.write().unwrap_or_else(|e| e.into_inner()) = Some(catalogue);
+}
+
 /// The accounts as last read. No keys.
 pub fn accounts() -> Vec<Account> {
     ACCOUNTS.read().unwrap_or_else(|e| e.into_inner()).clone()
