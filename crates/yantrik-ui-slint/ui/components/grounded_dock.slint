@@ -334,11 +334,6 @@ export component GroundedDock inherits Rectangle {
         triggered => { root.close-list(); }
     }
 
-    // ── The bar ──
-    //
-    // `clip` is the trick that squares the bottom corners: a rounded rectangle taller than the
-    // visible strip, cut off at the screen's edge, leaves round top corners, square bottom ones,
-    // and no border along the bottom.
     // The dock's shadow (a picture, so a VM draws it too: y_shadow.slint). It is a sibling under
     // the bar and outside its clip: the bar below is clipped, which is how its bottom corners are
     // square, and anything inside the clip is cut off with them. The shadow is drawn for the whole
@@ -351,6 +346,11 @@ export component GroundedDock inherits Rectangle {
         height: bar.height + Theme.r-xl;
     }
 
+    // ── The bar ──
+    //
+    // `clip` is the trick that squares the bottom corners: a rounded rectangle taller than the
+    // visible strip, cut off at the screen's edge, leaves round top corners, square bottom ones,
+    // and no border along the bottom.
     bar := Rectangle {
         width: body.preferred-width + 2 * Theme.dock-pad;
         height: Theme.taskbar-height;

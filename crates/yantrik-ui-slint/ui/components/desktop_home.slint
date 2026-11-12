@@ -49,8 +49,9 @@ export component DesktopHome inherits Rectangle {
     out property <length> content-height: body.preferred-height + 8px;
     // The ask field: the one control on the desktop, so it is wide enough to be the second thing
     // seen after the greeting (it was 340px, the width of the Continue card beside it, and the
-    // two read as a pair of equal boxes). The Continue row is under it now.
-    property <length> ask-width: root.agent-mode ? root.width - 8px : min(root.width - 8px, 520px);
+    // two read as a pair of equal boxes). The Continue row is under it now. 560 is the art
+    // direction's width for it (design/art-direction-2026-10-20.md, 3B).
+    property <length> ask-width: root.agent-mode ? root.width - 8px : min(root.width - 8px, 560px);
 
     property <int> columns: max(2, min(6, floor((self.width - 48px) / 104px)));
     // The box says where its words go: it opens the chat with the mind that answers, and that
@@ -62,12 +63,21 @@ export component DesktopHome inherits Rectangle {
     // The ask field's shadow (a picture, so a VM draws it too: y_shadow.slint). Out here and not
     // beside the field, because the Flickable below clips what it holds to its own box, and a
     // shadow cut off in a straight line 4px left of the field is worse than none. It follows the
-    // field's row through the layout and the scroll.
-    YShadow {
-        x: ask-row.x;
-        y: flick.viewport-y + ask-row.y;
-        width: root.ask-width;
-        height: 56px;
+    // field's row through the layout and the scroll, so it sits in a holder that clips where the
+    // Flickable clips the field, at the home's top edge, and nowhere else: a field scrolled out
+    // of the top takes its shadow with it and leaves no smudge on the photograph.
+    Rectangle {
+        x: -ask-shadow.reach-side;
+        y: 0;
+        width: root.width + 2 * ask-shadow.reach-side;
+        height: root.height + ask-shadow.reach-bottom;
+        clip: true;
+        ask-shadow := YShadow {
+            x: self.reach-side + ask-row.x;
+            y: flick.viewport-y + ask-row.y;
+            width: root.ask-width;
+            height: 56px;
+        }
     }
 
     flick := Flickable {
@@ -157,12 +167,12 @@ export component DesktopHome inherits Rectangle {
             // the width of the field, and a desktop with two equal boxes has no first thing.
             // Nothing at all when there is none.
             if !root.agent-mode && root.has-continue : Rectangle {
-                height: 40px;
+                height: Theme.h-prominent;
                 Rectangle {
                     x: 0px;
                     width: min(root.ask-width, continue-row.preferred-width);
-                    height: 40px;
-                    border-radius: 10px;
+                    height: Theme.h-prominent;
+                    border-radius: Theme.r-lg;
                     background: recent-touch.pressed ? Theme.label-plate-selected : Theme.label-plate;
                     border-width: recent-focus.has-focus ? 2px : 1px;
                     border-color: recent-focus.has-focus ? Theme.accent
@@ -179,7 +189,7 @@ export component DesktopHome inherits Rectangle {
                     }
                     recent-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-continue(); } }
                     continue-row := HorizontalLayout {
-                        padding-left: 12px; padding-right: 14px; spacing: 8px;
+                        padding-left: Theme.sp-3; padding-right: Theme.sp-3h; spacing: Theme.sp-2;
                         // The plate is dark in both themes (Theme.label-plate), so its ink is the
                         // wallpaper label's white and never a theme text colour.
                         Icon { commands: Icons.file; size: 16px; tint: Theme.label-on-wallpaper.with-alpha(0.72); y: (parent.height - self.height) / 2; }
@@ -187,11 +197,16 @@ export component DesktopHome inherits Rectangle {
                             text: "Continue " + root.continue-title;
                             font-size: Theme.fs-body; font-weight: 600; color: Theme.label-on-wallpaper;
                             vertical-alignment: center; overflow: elide;
+                            // The name is what the line is for: when the row is narrower than
+                            // its words, the name keeps the room and the place gives way.
+                            horizontal-stretch: 1;
                         }
                         if root.continue-subtitle != "" : Text {
                             text: root.continue-subtitle;
                             font-size: Theme.fs-body; color: Theme.label-on-wallpaper.with-alpha(0.72);
                             vertical-alignment: center; overflow: elide;
+                            max-width: root.ask-width / 3;
+                            horizontal-stretch: 0;
                         }
                     }
                 }
