@@ -68,6 +68,10 @@ class RestartedChromium(base.FakeChromium):
 class NeverCommits(RestartedChromium):
     """`Page.reload` is answered and no navigation follows (a stalled beforeunload, a busy renderer)."""
 
+    def __init__(self, sock):
+        super().__init__(sock)
+        self.tabs["T1"]["attached"] = True      # the dead service was on the file: tab too
+
     def committed(self, tid, session):
         pass
 
@@ -78,6 +82,7 @@ class CommitsLate(RestartedChromium):
     def __init__(self, sock):
         super().__init__(sock)
         self.go = threading.Event()
+        self.tabs["T1"]["attached"] = True      # the dead service was on the file: tab too
 
     def committed(self, tid, session):
         threading.Thread(target=lambda: (self.go.wait(10), super(CommitsLate, self).committed(tid, session)),
@@ -93,7 +98,8 @@ def wait_for(cond, seconds=5):
     return cond()
 
 
-class TheServiceRestarts(unittest.TestCase):
+class Restarted:
+    """The fixture: a service whose person's Chromium (`chromium_class`) kept its tabs."""
     chromium_class = RestartedChromium
 
     def setUp(self):
@@ -113,6 +119,9 @@ class TheServiceRestarts(unittest.TestCase):
     def hand_over(self):
         self.holder.give(self.mine, os.getpid())
 
+
+class TheServiceRestarts(Restarted, unittest.TestCase):
+
     def test_every_tab_is_fenced_and_the_file_tab_reloaded_with_no_call_at_all(self):
         self.hand_over()                      # the shell offers the stream to the new service: no call follows
         c = self.chromium
@@ -121,9 +130,8 @@ class TheServiceRestarts(unittest.TestCase):
             self.assertTrue(wait_for(lambda: c.methods("Fetch.enable", "S-" + tid)), "tab %s was not fenced" % tid)
             self.assertEqual(c.methods("Fetch.enable", "S-" + tid)[0][2], {"patterns": [{"urlPattern": "file://*"}]})
         reloads = c.methods("Page.reload")
-        self.assertEqual(sorted(s for _, s, _ in reloads), ["S-T1", "S-T2"],
-                         "the tab holding a file: frame and the tab another session was on are reloaded")
-        self.assertLess(c.index("Fetch.enable", "S-T2"), c.index("Page.reload", "S-T2"))
+        self.assertEqual([s for _, s, _ in reloads], ["S-T1"], "only the tab holding a file: frame is reloaded")
+        self.assertTrue(c.methods("Page.stopLoading", "S-T2"), "the pre-attached https tab is stopped, not reloaded")
         self.assertLess(c.index("Fetch.enable", "S-T1"), c.index("Page.reload", "S-T1"), "reload is behind the fence")
 
     def test_what_the_reloaded_page_asks_is_decided_and_never_left_paused(self):
@@ -133,9 +141,8 @@ class TheServiceRestarts(unittest.TestCase):
         self.assertTrue(wait_for(decided), "a request paused behind the fence was left hanging")
         self.assertTrue(wait_for(lambda: "S-T1" in {x[1] for x in decided()}), "S-T1's request was not decided")
 
-    def test_nothing_is_reloaded_when_no_tab_holds_a_file_frame_or_had_another_session(self):
+    def test_nothing_is_reloaded_when_no_tab_holds_a_file_frame(self):
         del self.chromium.tabs["T1"]
-        del self.chromium.tabs["T2"]["attached"]
         self.hand_over()
         self.assertTrue(wait_for(lambda: self.chromium.methods("Fetch.enable", "S-T2")))
         time.sleep(0.3)
@@ -191,38 +198,56 @@ class TheDeadServicesSessionsAndTheRaces(TheServiceRestarts):
         self.assertNotIn("S-T1", detached)
         self.assertNotIn("S-T2", detached)
 
-    def sees_old_session(self):
+    def sees_old_session(self, reloaded=True):
         c = self.chromium
-        self.assertTrue(wait_for(lambda: c.methods("Page.reload")))
+        self.assertTrue(wait_for(lambda: c.methods("Page.reload" if reloaded else "Page.stopLoading")))
         c.reply({"method": "Network.loadingFailed", "sessionId": "S-OLD", "params": {"requestId": "R-OLD"}})
         return self.driver.sides.browsers[ports.PERSON]
 
-    def test_a_reload_that_never_commits_leaves_the_stale_session_in_place(self):
-        """M-A: the gap's paused request is held on S-OLD; detaching it would let that request go."""
-        self.chromium_class = NeverCommits
-        with mock.patch("yantrik_browser.adopt.ADOPT_WAIT", 0.3):
-            self.setUp()
-            self.hand_over()
-            browser = self.sees_old_session()
-            self.assertTrue(wait_for(lambda: browser.adopted))
-            self.assertTrue(wait_for(lambda: "S-OLD" in browser.stale))
-            time.sleep(0.5)
-            self.assertEqual(self.chromium.methods("Target.detachFromTarget"), [],
-                             "detached while the old document may still hold a paused request")
-            self.assertIn("S-OLD", browser.stale)
+    def test_a_pre_attached_https_tab_is_fenced_and_stopped_not_reloaded_and_its_stale_session_goes(self):
+        """MEDIUM-1: a reload re-POSTs silently; with no file: frame it buys no safety."""
+        del self.chromium.tabs["T1"]
+        self.hand_over()
+        browser = self.sees_old_session(reloaded=False)
+        c = self.chromium
+        self.assertTrue(wait_for(lambda: c.methods("Target.detachFromTarget")), "the stale session was never detached")
+        self.assertTrue(c.methods("Fetch.enable", "S-T2"))
+        self.assertTrue(c.methods("Page.stopLoading", "S-T2"))
+        self.assertEqual(c.methods("Page.reload"), [], "an https tab was reloaded")
+        self.assertFalse(browser.tabs["T2"].gap)
 
-    def test_a_reload_that_commits_late_detaches_then(self):
-        self.chromium_class = CommitsLate
-        with mock.patch("yantrik_browser.adopt.ADOPT_WAIT", 0.3):
-            self.setUp()
+    def test_a_gap_tab_whose_adoption_failed_is_retried_from_the_cleanup(self):
+        """LOW-1: a gap tab left unready is adopted again by the next sweep, and held back till then."""
+        from yantrik_browser import adopt
+        real = cdp.Browser.attach
+        fails = [True]
+
+        def flaky(browser, tab, wait=cdp.CALL_TIMEOUT):
+            if fails[0] and tab.id == "T2":
+                raise cdp.CdpError("adoption failed")
+            return real(browser, tab, wait)
+        with mock.patch.object(cdp.Browser, "attach", flaky):
             self.hand_over()
             browser = self.sees_old_session()
-            self.assertTrue(wait_for(lambda: browser.adopted))
+            self.assertTrue(wait_for(lambda: browser.adopted and "S-OLD" in browser.stale))
             time.sleep(0.3)
-            self.assertEqual(self.chromium.methods("Target.detachFromTarget"), [])
-            self.chromium.go.set()
+            self.assertTrue(browser.tabs["T2"].gap)
+            self.assertEqual(self.chromium.methods("Target.detachFromTarget"), [], "detached with a gap tab unadopted")
+            fails[0] = False
+            adopt.after_commit(browser)
             self.assertTrue(wait_for(lambda: self.chromium.methods("Target.detachFromTarget")),
-                            "never detached after the reload committed")
+                            "the gap tab was never adopted again")
+
+    def test_a_gap_on_a_devtools_page_does_not_hold_the_cleanup_back(self):
+        self.hand_over()
+        browser = self.sees_old_session()
+        self.assertTrue(wait_for(lambda: self.chromium.methods("Target.detachFromTarget")))
+        from yantrik_browser import adopt
+        with browser.cond:
+            browser._saw_target({"targetId": "D1", "type": "page", "url": "devtools://x", "attached": True})
+        browser.stale.add("S-OLD3")
+        adopt.sweep(browser)
+        self.assertEqual(len(self.chromium.methods("Target.detachFromTarget")), 2)
 
     def test_a_tab_opened_after_adoption_does_not_hold_the_cleanup_back(self):
         self.hand_over()
@@ -274,6 +299,43 @@ class TheDeadServicesSessionsAndTheRaces(TheServiceRestarts):
             self.assertTrue(wait_for(lambda: self.chromium.methods("Page.reload")),
                             "the arrival was dropped while the lock was held")
         t.join(2)
+
+
+class TheReloadNeverCommits(Restarted, unittest.TestCase):
+    chromium_class = NeverCommits
+
+    def sees_old_session(self):
+        return TheDeadServicesSessionsAndTheRaces.sees_old_session(self)
+
+    def test_a_reload_that_never_commits_leaves_the_stale_session_in_place(self):
+        """M-A: the gap's paused request is held on S-OLD; detaching it would let that request go."""
+        with mock.patch("yantrik_browser.adopt.ADOPT_WAIT", 0.3):
+            self.hand_over()
+            browser = self.sees_old_session()
+            self.assertTrue(wait_for(lambda: browser.adopted))
+            self.assertTrue(wait_for(lambda: "S-OLD" in browser.stale))
+            time.sleep(0.5)
+            self.assertEqual(self.chromium.methods("Target.detachFromTarget"), [],
+                             "detached while the old document may still hold a paused request")
+            self.assertIn("S-OLD", browser.stale)
+
+
+class TheReloadCommitsLate(Restarted, unittest.TestCase):
+    chromium_class = CommitsLate
+
+    def sees_old_session(self):
+        return TheDeadServicesSessionsAndTheRaces.sees_old_session(self)
+
+    def test_a_reload_that_commits_late_detaches_then(self):
+        with mock.patch("yantrik_browser.adopt.ADOPT_WAIT", 0.3):
+            self.hand_over()
+            browser = self.sees_old_session()
+            self.assertTrue(wait_for(lambda: browser.adopted))
+            time.sleep(0.3)
+            self.assertEqual(self.chromium.methods("Target.detachFromTarget"), [])
+            self.chromium.go.set()
+            self.assertTrue(wait_for(lambda: self.chromium.methods("Target.detachFromTarget")),
+                            "never detached after the reload committed")
 
 
 class MindViewsBrowserIsStillHeld(unittest.TestCase):

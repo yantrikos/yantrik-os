@@ -320,7 +320,7 @@ class Browser:
     def _idle(self, session):
         """The fence decided the last request paused on `session`: a stale one can go (adopt.py)."""
         if session in self.stale:
-            self.fence.arming.submit(adopt.sweep, self)
+            self.fence.arming.submit(adopt.sweep, self, True)
 
     def _agent_of(self, session):
         """Whether the tab on this session is held to an agent's rule. On Mind View's browser, yes
@@ -496,8 +496,10 @@ class Browser:
         tree = self.call("Page.getFrameTree", session=tab.session)["frameTree"]
         tab.main_frame = tree["frame"]["id"]
         if not tab.born and (_may_have_drawn_file(tab, tree) if self.held_at_start
-                             else tab.gap or _holds_file_frame(tree)):
-            self._reload(tab, wait)
+                             else _holds_file_frame(tree)):
+            self._reload(tab, wait)             # a gap clears on its commit (frameNavigated)
+        elif not tab.born:
+            adopt.close_gap_unreloaded(self, tab)
         tab.ready = True
         return tab
 
