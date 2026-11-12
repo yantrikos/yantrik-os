@@ -133,7 +133,7 @@ mod tests {
     }
 
     fn profiles() -> Profiles {
-        Profiles { mind_view: "/home/p/.local/share/yantrik/mind-view".into(), identities: "/home/p/.local/share/yantrik/identities".into() }
+        Profiles { mind_view: "/home/p/.local/share/minds/mind-view".into(), identities: "/home/p/.local/share/minds/identities".into() }
     }
 
     /// The Minds' browsers run as the person too: they are not "another browser".
@@ -141,9 +141,9 @@ mod tests {
     fn a_minds_browser_is_not_another_browser() {
         let me = unsafe { libc::getuid() };
         let proc = tree("minds");
-        browser(&proc, 410, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/yantrik/mind-view --remote-debugging-port=9223");
+        browser(&proc, 410, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/minds/mind-view --remote-debugging-port=9223");
         assert!(!another_browser_is_open(&proc, None, me, &profiles()), "Mind View's browser");
-        browser(&proc, 411, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/yantrik/identities/work --remote-debugging-port=9300");
+        browser(&proc, 411, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/minds/identities/work --remote-debugging-port=9300");
         assert!(!another_browser_is_open(&proc, None, me, &profiles()), "a Mind's other identity");
         let proc = tree("headless");
         browser(&proc, 420, "/usr/bin/chromium --headless=new --remote-debugging-port=9300 --user-data-dir=/tmp/x");
