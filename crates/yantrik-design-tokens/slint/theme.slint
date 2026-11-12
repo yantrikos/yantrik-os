@@ -183,9 +183,10 @@ export global Theme {
         : (ThemeMode.dark ? #1c293b : #ffffff);
     out property <color> bg-input:    ThemeMode.dark ? #0e1724 : #f8fafc;
     // A selected row's fill (with its 2px leading rule): a step above a card, so the row is
-    // found before it is read, and no lighter than leaves the dim ink 4.5:1 on it (4.66; a
-    // first try at #2a3a51 left 4.21). It was #1d2d42, the accent at 12% over the ground.
-    out property <color> bg-selected: ThemeMode.dark ? #24334a : #dde6f1;
+    // found before it is read, and no lighter than leaves every dark theme's dim ink 4.5:1 on
+    // it (Lake 4.72, Nightfall 4.55; a test in wire/theme.rs holds each theme to it). It was
+    // #1d2d42, the accent at 12% over the ground.
+    out property <color> bg-selected: ThemeMode.dark ? #23324a : #dde6f1;
 
     // ─── Glass ────────────────────────────────────────────────────
     //
