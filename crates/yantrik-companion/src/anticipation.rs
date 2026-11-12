@@ -154,6 +154,10 @@ impl PrepOutcome {
 
 pub struct AnticipationEngine;
 
+/// The columns every query for a [`PreparedItem`] reads, in the order `row_to_item` takes them.
+const ITEM_COLUMNS: &str = "id, trigger_type, trigger_data, kind, description, data,
+                    relevant_at, expires_at, surfaced, outcome, created_at";
+
 impl AnticipationEngine {
     pub fn ensure_table(conn: &Connection) {
         conn.execute_batch(
@@ -204,13 +208,11 @@ impl AnticipationEngine {
 
     /// [`Self::get_relevant`] as of `now`.
     pub fn get_relevant_at(conn: &Connection, now: f64) -> Vec<PreparedItem> {
-        let mut stmt = match conn.prepare(
-            "SELECT id, trigger_type, trigger_data, kind, description, data,
-                    relevant_at, expires_at, surfaced, outcome, created_at
-             FROM prepared_items
+        let mut stmt = match conn.prepare(&format!(
+            "SELECT {ITEM_COLUMNS} FROM prepared_items
              WHERE relevant_at <= ?1 AND expires_at > ?1 AND surfaced = 0
              ORDER BY relevant_at ASC",
-        ) {
+        )) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -226,14 +228,19 @@ impl AnticipationEngine {
     pub fn for_commitment(conn: &Connection, commitment_id: &str) -> Option<PreparedItem> {
         let trigger = PreparationTrigger::CommitmentDeadline { commitment_id: commitment_id.to_string() };
         let mut stmt = conn
-            .prepare(
-                "SELECT id, trigger_type, trigger_data, kind, description, data,
-                        relevant_at, expires_at, surfaced, outcome, created_at
-                 FROM prepared_items WHERE trigger_type = ?1 AND trigger_data = ?2 LIMIT 1",
-            )
+            .prepare(&format!("SELECT {ITEM_COLUMNS} FROM prepared_items WHERE trigger_type = ?1 AND trigger_data = ?2 LIMIT 1"))
             .ok()?;
         let trigger_data = serde_json::to_string(&trigger).ok()?;
         stmt.query_row(params![trigger.type_tag(), trigger_data], Self::row_to_item).ok()
+    }
+
+    /// Remove the item prepared for this commitment: a commitment that is forgotten takes with it
+    /// what was prepared from it.
+    pub fn delete_for_commitment(conn: &Connection, commitment_id: &str) -> usize {
+        let trigger = PreparationTrigger::CommitmentDeadline { commitment_id: commitment_id.to_string() };
+        let data = serde_json::to_string(&trigger).unwrap_or_default();
+        conn.execute("DELETE FROM prepared_items WHERE trigger_type = ?1 AND trigger_data = ?2", params![trigger.type_tag(), data])
+            .unwrap_or(0)
     }
 
     /// Mark an item as surfaced.
@@ -338,7 +345,7 @@ impl AnticipationEngine {
     }
 }
 
-fn now_ts() -> f64 {
+pub(crate) fn now_ts() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

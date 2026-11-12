@@ -1408,30 +1408,7 @@ fn worker_loop(
 
                 // V18: Extract commitments from user messages
                 if !is_system_generated {
-                    let source = yantrik_companion::world_model::CommitmentSource::Conversation {
-                        turn_id: Some(msg_trace.as_u64().to_string()),
-                    };
-                    let extracted = yantrik_companion::commitment_extractor::extract_commitments(
-                        &text,
-                        &companion.config.user_name,
-                        &source,
-                    );
-                    if !extracted.is_empty() {
-                        let wm_commits = yantrik_companion::commitment_extractor::to_world_model_commitments(
-                            &extracted,
-                            &companion.config.user_name,
-                            source,
-                        );
-                        for c in &wm_commits {
-                            yantrik_companion::world_model::WorldModel::insert_commitment(
-                                &companion.db.conn(), c,
-                            );
-                        }
-                        tracing::info!(
-                            count = wm_commits.len(),
-                            "Extracted commitments from user message"
-                        );
-                    }
+                    companion.note_commitments(&text, msg_trace.as_u64());
                 }
 
                 // Resonance Model: record user interaction (positive quality for now)
@@ -2333,6 +2310,7 @@ fn worker_loop(
                     .as_secs_f64();
 
                 // Daily budget check — skip all urges if over budget
+                companion.commitment_housekeeping();
                 let over_budget = companion.is_over_daily_budget();
                 if over_budget {
                     tracing::info!(
@@ -2349,21 +2327,8 @@ fn worker_loop(
                         reason = %spec.reason,
                         "Urge generated"
                     );
-                    // A promised thing to prepare is carried out by `commitment_prep`, not by the
-                    // model: it opens files in Mind View and drafts, and runs with the model
-                    // offline. It says nothing to the person, so the daily message budget is not
-                    // spent on it. Asked every cycle while the window is open; a commitment already
-                    // prepared is answered from its item, so it is never prepared twice.
-                    if let Some(commitment_id) = yantrik_companion::commitment_prep::commitment_to_prepare(spec) {
-                        match companion.prepare_commitment(commitment_id) {
-                            yantrik_companion::commitment_prep::Outcome::Prepared(item) => {
-                                tracing::info!(commitment_id, summary = %item.description, "Commitment prepared");
-                            }
-                            yantrik_companion::commitment_prep::Outcome::AlreadyPrepared => {}
-                            yantrik_companion::commitment_prep::Outcome::Nothing(why) => {
-                                tracing::debug!(commitment_id, why, "Commitment not prepared");
-                            }
-                        }
+                    // A promise to prepare is carried out by `commitment_prep`, not the model.
+                    if companion.run_commitment_urge(spec) {
                         continue;
                     }
                     if over_budget {

@@ -341,7 +341,7 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
         settings.open_loops_threshold.unwrap_or(5),
     )));
 
-    // Commitment prep (always on, and local: it opens files and drafts, never sends or reaches out)
+    // Commitment prep (loaded always; the person's say is in `commitment_store`: asked once before it acts, and a switch. Local: opens files and drafts, never sends or reaches out)
     instincts.push(Box::new(CommitmentPrepInstinct));
 
     // Natural Communication instincts (always loaded — bond-gated internally)

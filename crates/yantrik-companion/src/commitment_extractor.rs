@@ -10,7 +10,9 @@
 
 use std::sync::OnceLock;
 use regex::Regex;
-use crate::commitment_files;
+use crate::anticipation::now_ts;
+use crate::commitment_files::{self, SEND_VERBS, SHARE_VERBS};
+use crate::{commitment_screen, commitment_when};
 use crate::world_model::{
     Commitment, CommitmentSource, CommitmentStatus,
 };
@@ -19,9 +21,9 @@ use crate::world_model::{
 
 fn re_first_person() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(
-        r"(?i)\b(?:I'?ll|I\s+will|I'?m\s+going\s+to|I\s+need\s+to|I\s+have\s+to|I\s+should|I\s+must|I\s+plan\s+to|I\s+promise\s+to|let\s+me)\s+(.{10,120})|\bI'?m\s+((?:sending|emailing|forwarding|sharing)\s+.{10,120})"
-    ).unwrap())
+    RE.get_or_init(|| Regex::new(&format!(
+        r"(?i)\b(?:I'?ll|I\s+will|I'?m\s+going\s+to|I\s+need\s+to|I\s+have\s+to|I\s+should|I\s+must|I\s+plan\s+to|I\s+promise\s+to|let\s+me)\s+(.{{10,120}})|\bI'?m\s+((?:{SEND_VERBS}|{SHARE_VERBS})\s+.{{10,120}})"
+    )).unwrap())
 }
 
 fn re_action_item() -> &'static Regex {
@@ -68,9 +70,9 @@ fn re_deadline_extract() -> &'static Regex {
 
 fn re_promisee() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(
-        r"(?i)(?:send(?:ing)?|give|tell|email(?:ing)?|message|call|update|notify|inform|show|share\s+with|forward(?:ing)?|get\s+back\s+to)\s+(\w+)"
-    ).unwrap())
+    RE.get_or_init(|| Regex::new(&format!(
+        r"(?i)(?:{SEND_VERBS}|tell|message|call|update|notify|inform|show|share\s+with|get\s+back\s+to)\s+(\w+)"
+    )).unwrap())
 }
 
 fn re_sender() -> &'static Regex {
@@ -84,9 +86,6 @@ fn re_sentence_split() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"[.!?]+\s+|\n+").unwrap())
 }
-
-/// Five in the afternoon, in seconds from the start of a day: when a weekday deadline falls.
-const WORKDAY_END_SECS: f64 = 61200.0;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -126,9 +125,9 @@ pub fn extract_commitments_at(
     let mut results = Vec::new();
     let sentences = split_sentences(text);
 
-    for sentence in &sentences {
+    for (i, sentence) in sentences.iter().enumerate() {
         let s = sentence.trim();
-        if s.len() < 10 {
+        if s.len() < 10 || commitment_screen::is_not_a_promise(s) {
             continue;
         }
 
@@ -138,7 +137,7 @@ pub fn extract_commitments_at(
             .or_else(|| match_follow_up(s, user_name, now))
             .or_else(|| match_deadline_statement(s, user_name, now));
         if let Some(mut c) = found {
-            c.files = commitment_files::for_commitment(s, &sentences);
+            c.files = commitment_files::for_commitment(s, sentences.get(i + 1).map(String::as_str));
             results.push(c);
         }
     }
@@ -307,6 +306,12 @@ fn is_excluded_action(action: &str) -> bool {
 
 fn extract_deadline(sentence: &str, now: f64) -> (Option<String>, f64) {
     if let Some(caps) = re_deadline_extract().captures(sentence) {
+        // "on Monday" after a finished action ("the report I finished on Monday") says when that
+        // happened, not when this falls due.
+        let on_weekday = caps.get(2).map(|m| m.start());
+        if on_weekday.is_some_and(|at| commitment_screen::weekday_belongs_to_a_past_action(&sentence[..at])) {
+            return (None, 0.0);
+        }
         let text = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str().to_string());
         let ts = text.as_deref().map(|t| parse_deadline_text(t, now)).unwrap_or(0.0);
         (text, ts)
@@ -344,19 +349,10 @@ fn parse_deadline_text(text: &str, now: f64) -> f64 {
         return now + 5.0 * 86400.0;
     }
 
-    let days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
-    for (i, day) in days.iter().enumerate() {
+    for (i, day) in commitment_when::WEEKDAYS.iter().enumerate() {
         if lower.contains(day) {
-            let current_day = ((now / 86400.0).floor() as i64 + 3) % 7;
-            let target = i as i64;
-            let days_ahead = if target > current_day {
-                target - current_day
-            } else {
-                7 + target - current_day
-            };
-            // The day, at five in the afternoon: the time a person means by "on Thursday".
-            let day_start = (now / 86400.0).floor() * 86400.0;
-            return day_start + (days_ahead as f64) * 86400.0 + WORKDAY_END_SECS;
+            // The day, at five in the afternoon by the person's clock: what "on Thursday" means.
+            return commitment_when::next_weekday_at_five(now, i, &chrono::Local).unwrap_or(0.0);
         }
     }
 
@@ -404,13 +400,6 @@ fn dedup_commitments(commitments: &mut Vec<ExtractedCommitment>) {
         let b_lower = b.action.to_lowercase();
         a_lower == b_lower || a_lower.contains(&b_lower) || b_lower.contains(&a_lower)
     });
-}
-
-fn now_ts() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
 }
 
 #[cfg(test)]
@@ -486,7 +475,7 @@ mod tests {
         );
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].promisee.as_deref(), Some("Maya"));
-        assert_eq!(found[0].deadline_ts, 20738.0 * 86400.0 + 3.0 * 86400.0 + WORKDAY_END_SECS);
+        assert_eq!(Some(found[0].deadline_ts), commitment_when::next_weekday_at_five(monday_10, 3, &chrono::Local));
         assert_eq!(found[0].files, vec!["attach:Q4 deck", "file:budget spreadsheet"]);
     }
 

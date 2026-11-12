@@ -126,11 +126,16 @@ fn re_file() -> &'static Regex {
     })
 }
 
+/// The verbs of getting a thing to someone, as a regex alternation: shared with the extractor, so
+/// what it takes as "sending" and what decides a file is attached are one list.
+pub const SEND_VERBS: &str = "send(?:ing)?|email(?:ing)?|forward(?:ing)?|giv(?:e|ing)";
+
+/// "Share", which also takes "with" before its person, so it is listed apart.
+pub const SHARE_VERBS: &str = "shar(?:e|ing)";
+
 fn re_sends() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(?:send(?:ing)?|email(?:ing)?|forward(?:ing)?|giv(?:e|ing)|shar(?:e|ing))\b").expect("send pattern")
-    })
+    RE.get_or_init(|| Regex::new(&format!(r"(?i)\b(?:{SEND_VERBS}|{SHARE_VERBS})\b")).expect("send pattern"))
 }
 
 /// The files one sentence names. In a sentence about sending, they are what is sent.
@@ -146,15 +151,14 @@ pub fn in_sentence(sentence: &str) -> Vec<NamedFile> {
     found
 }
 
-/// What a commitment from `sentence` names, given every sentence of the message it came from: its
-/// own files with their roles, then the files named elsewhere in the message, which it points at.
-pub fn for_commitment(sentence: &str, message: &[String]) -> Vec<String> {
+/// What a commitment from `sentence` names: its own files with their roles, then the files named
+/// in the sentence right after it, which it points at ("The numbers are in the budget
+/// spreadsheet"). Nothing from further off: a file named in another sentence is that sentence's.
+pub fn for_commitment(sentence: &str, next: Option<&str>) -> Vec<String> {
     let mut files = in_sentence(sentence);
-    for other in message {
-        for file in in_sentence(other) {
-            if !files.iter().any(|f| f.label.eq_ignore_ascii_case(&file.label)) {
-                files.push(NamedFile { role: Role::Reference, label: file.label });
-            }
+    for file in next.map(in_sentence).unwrap_or_default() {
+        if !files.iter().any(|f| f.label.eq_ignore_ascii_case(&file.label)) {
+            files.push(NamedFile { role: Role::Reference, label: file.label });
         }
     }
     files.iter().map(NamedFile::encode).collect()
