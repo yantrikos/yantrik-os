@@ -237,6 +237,9 @@ fn deleting_the_primary_leaves_a_companion_off_yantrik_models_with_no_key_and_no
         is_fallback: false,
         model: "m".into(),
     };
+    // Saved (keyless on disk), as it is when Settings holds it: a reload for a provider that is not
+    // saved is dropped by the sender.
+    save_providers(vec![saved("p1", true, None)]);
     crate::wire::provider_panel::reload_now(&entry, &*crate::wire::provider_panel::bridge_sender(&f.bridge)).unwrap();
     match f.told.try_iter().collect::<Vec<_>>().as_slice() {
         [CompanionCommand::ReloadLLM { api_key, .. }] => assert_eq!(api_key.as_deref(), Some(FAKE_KEY), "it holds the key now"),
@@ -245,6 +248,7 @@ fn deleting_the_primary_leaves_a_companion_off_yantrik_models_with_no_key_and_no
     assert!(!crate::provider_handoff::companion::companion_on_gateway(h.path()), "and it is not on Yantrik models");
 
     // The provider is deleted in Settings (nothing is saved in this home), which calls this.
+    save_providers(vec![]);
     f.changed();
     let told: Vec<CompanionCommand> = f.told.try_iter().collect();
     assert!(told.iter().any(|c| matches!(c, CompanionCommand::StopLLM)), "its LLM was stopped");
@@ -310,7 +314,7 @@ fn a_move_to_the_new_primary_that_cannot_get_its_key_leaves_the_companion_stoppe
     free_ai::set_state_for_test(&values(), &[]);
     // The companion runs on A; B is primary but its key cannot be had (a reference the vault does not hold).
     crate::provider_handoff::companion::note_on_saved(Some("a".into()));
-    save_providers(vec![saved("b", true, Some("no-such-ref"))]);
+    save_providers(vec![saved("b", true, Some(&crate::provider_vault::reference("b")))]);
     f.changed();
     let told = told_within(&f, std::time::Duration::from_millis(800));
     assert!(matches!(told.first(), Some(CompanionCommand::StopLLM)), "stopped first, before anything is tried");
