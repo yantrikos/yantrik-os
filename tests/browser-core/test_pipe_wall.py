@@ -16,6 +16,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -126,6 +127,34 @@ class TheWallsTree(unittest.TestCase):
 
         with mock.patch.object(handover.os, "stat", stat):
             self.assertIn("not the file the system installed", self.check(600))
+
+    def _deleted(self, nlink):
+        """The middle bwrap's `exe` reads `<bwrap> (deleted)`; its file is root's (ours here)."""
+        self.wall()
+        os.remove(os.path.join(self.proc, "599", "exe"))
+        named = self.bwrap + " (deleted)"
+        open(named, "w").close()          # a real file at that name: it still has a link
+        os.chmod(named, 0o755)
+        os.symlink(named, os.path.join(self.proc, "599", "exe"))
+        real_stat = os.stat
+
+        def stat(path, *a, **kw):
+            st = real_stat(path, *a, **kw)
+            if str(path).endswith(os.path.join("599", "exe")) and nlink is not None:
+                return types.SimpleNamespace(st_uid=st.st_uid, st_mode=st.st_mode, st_dev=st.st_dev,
+                                             st_ino=st.st_ino, st_nlink=nlink)
+            return st
+
+        return mock.patch.object(handover.os, "stat", stat)
+
+    def test_a_bwrap_an_update_replaced_has_no_links_and_is_still_the_system_bwrap(self):
+        with self._deleted(0):
+            self.assertIsNone(self.check(600))
+
+    def test_a_root_owned_file_that_still_has_links_named_deleted_is_not_the_system_bwrap(self):
+        """Anyone can bind a root-owned program at a path that reads `/usr/bin/bwrap (deleted)`."""
+        with self._deleted(None):         # the real nlink: 1
+            self.assertIn("still has links", self.check(600))
 
     def test_a_non_child_of_the_shell_is_refused_even_through_bwrap(self):
         self.at(598, 777, exe=self.bwrap)

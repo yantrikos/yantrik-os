@@ -29,6 +29,7 @@ mod writes;
 mod tests;
 #[cfg(all(test, unix))]
 mod protected_tests;
+#[cfg(all(test, unix))]
 mod write_tests;
 
 pub use stat::stat;

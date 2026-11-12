@@ -131,6 +131,14 @@ fn own_browser() -> Option<u32> {
     }
 }
 
+/// Forget `holder` as the shell's own Browser, but only once it has exited.
+fn clear_once_gone(holder: u32, every: Duration) {
+    while alive(holder) {
+        std::thread::sleep(every);
+    }
+    let _ = OWN_BROWSER.compare_exchange(holder, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn alive(pid: u32) -> bool {
     // SAFETY: signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid as i32, 0) == 0 }
@@ -181,8 +189,10 @@ impl Handoff {
             // Read afresh for every offer: a restarted service has a new pid, and the service
             // manager records the current one on every start it performs.
             keep_offered(&socket_path(), &mine, holder, || ServiceIdentity::installed(service_pid()));
-            // The browser is gone: a later process may reuse its pid, and must not pass for it.
-            let _ = OWN_BROWSER.compare_exchange(holder, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
+            // `keep_offered` can return with the Browser still running (a final refusal): the slot
+            // is cleared only once the holder is gone, and a later process that reuses its pid
+            // must not pass for it.
+            clear_once_gone(holder, RETRY);
         });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "Could not start the thread that hands the Browser's pipe over");
@@ -299,9 +309,26 @@ mod tests {
     fn fake_proc(name: &str, cmdline: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("yb-notice-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("900")).unwrap();
+        std::fs::create_dir_all(dir.join("900").join("fd")).unwrap();
         std::fs::write(dir.join("900").join("cmdline"), cmdline.replace(' ', "\0")).unwrap();
         dir
+    }
+
+    /// The Browser's slot is cleared when the holder is gone, and not before: a `keep_offered`
+    /// that gave up (a final refusal) leaves the Browser running, and it is still the shell's own.
+    #[test]
+    fn the_own_browser_slot_is_cleared_only_once_the_holder_has_exited() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        OWN_BROWSER.store(pid, std::sync::atomic::Ordering::SeqCst);
+        let waiter = std::thread::spawn(move || clear_once_gone(pid, Duration::from_millis(20)));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(own_browser(), Some(pid), "the holder is running: it is still the shell's own");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        waiter.join().unwrap();
+        assert_eq!(own_browser(), None);
+        assert_eq!(OWN_BROWSER.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     fn a_gone_pid() -> u32 {

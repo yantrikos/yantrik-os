@@ -88,7 +88,8 @@ def _flags_of(raw):
 def is_the_system_bwrap(pid, proc="/proc", owner=None):
     """None when `pid` runs the system's bubblewrap: its `exe` reads as one of `SYSTEM_BWRAP` and
     is that very file, by (st_dev, st_ino) as `shell_is_installed` does (a file an update has
-    replaced reads `(deleted)` and is the one thing that is not compared: its path is gone), and
+    replaced reads `(deleted)` and is the one thing that is not compared: its path is gone, so it
+    must have no links left, which a file merely named `… (deleted)` still has), and
     the file behind it is `owner`'s (root's) and writable by nobody else. A copy of bwrap an
     account made is not it, and neither is another program bind-mounted over the path in the
     account's own mount namespace: it reads the right name but is another file."""
@@ -104,7 +105,10 @@ def is_the_system_bwrap(pid, proc="/proc", owner=None):
         exe = exe[:-len(_DELETED)]
     if exe not in SYSTEM_BWRAP:
         return "pid %d runs %s, not the system's bwrap" % (pid, exe)
-    if not replaced:
+    if replaced:
+        if theirs.st_nlink != 0:
+            return "pid %d runs %s, which still has links: it was not replaced, only named so" % (pid, exe)
+    else:
         try:
             installed = os.stat(exe)
         except OSError as e:

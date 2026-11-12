@@ -54,20 +54,15 @@ pub fn holder_of(proc: &Path, root: u32, inode: u64) -> Option<u32> {
 pub const NOT_DRIVABLE: &str = "A Browser was already open that Yantrik did not start (a link in another program opened it), \
     so it is outside the protected view and Yantrik cannot drive it. Close it, then open the Browser from the dock again.";
 
-/// The `--user-data-dir` a command line names (everything up to the next ` --`, so a path with
-/// a space stays whole).
-fn user_data_dir(line: &str) -> Option<&str> {
-    let rest = line.split_once("--user-data-dir=")?.1;
-    Some(rest.split(" --").next().unwrap_or(rest).trim())
-}
-
 /// Whether the person's account runs a Chromium main process (not one of its helpers) that is
 /// not `ours`: a browser the shell did not start with a pipe, which a dock launch then joins and
-/// nothing can drive. Read from the command line's first word, which a Chromium keeps.
+/// nothing can drive. Read from the command line's first argument, which a Chromium keeps.
 ///
-/// The Minds' browsers are not that: Mind View's (its own `--user-data-dir`, a Mind profile in
-/// `profiles`) and the headless ones (`--headless*`) run as the person too, and the person
-/// cannot close them, so they never make a dock launch "join another browser".
+/// The Minds' browsers are not that: a browser that owns a Mind's profile (`place_in`: its
+/// `SingletonLock` or an open `LOCK`, as the listener decides; a `--user-data-dir` in its text
+/// proves nothing) and the headless ones (a whole `--headless` / `--headless=…` argument) run as
+/// the person too, and the person cannot close them. A process whose files cannot be read is not
+/// counted: nothing says it is the person's.
 pub fn another_browser_is_open(proc: &Path, ours: Option<u32>, uid: u32, profiles: &Profiles) -> bool {
     use std::os::unix::fs::MetadataExt;
     let Ok(dir) = std::fs::read_dir(proc) else { return false };
@@ -75,16 +70,18 @@ pub fn another_browser_is_open(proc: &Path, ours: Option<u32>, uid: u32, profile
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { return false };
         let at = proc.join(pid.to_string());
         let Ok(raw) = std::fs::read(at.join("cmdline")) else { return false };
-        let line = String::from_utf8_lossy(&raw).replace('\0', " ");
-        let mut words = line.split_whitespace();
-        let program = words.next().and_then(|w| w.rsplit('/').next()).unwrap_or_default();
-        let chromium = matches!(program, "chromium" | "chromium-browser" | "chrome" | "google-chrome" | "google-chrome-stable");
+        let argv: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|a| !a.is_empty()).collect();
+        let program = argv.first().and_then(|w| w.rsplit(|b| *b == b'/').next()).unwrap_or_default();
+        let chromium = matches!(
+            program,
+            b"chromium" | b"chromium-browser" | b"chrome" | b"google-chrome" | b"google-chrome-stable"
+        );
         chromium
-            && !line.contains("--type=")
-            && !line.split_whitespace().any(|w| w.starts_with("--headless"))
-            && !user_data_dir(&line).is_some_and(|d| profiles.is_a_minds(Path::new(d)))
+            && !argv.iter().any(|a| a.starts_with(b"--type="))
+            && !argv.iter().any(|a| *a == b"--headless" || a.starts_with(b"--headless="))
             && Some(pid) != ours
             && std::fs::metadata(&at).is_ok_and(|m| m.uid() == uid)
+            && matches!(yantrik_browser_ports::place_in(proc, profiles, pid), Ok(yantrik_browser_ports::Place::Person))
     })
 }
 
@@ -153,6 +150,41 @@ mod tests {
         // The person's own browser, on a profile of theirs, still counts beside them.
         browser(&proc, 422, "/usr/bin/chromium --user-data-dir=/home/p/.config/chromium");
         assert!(another_browser_is_open(&proc, None, me, &profiles()));
+    }
+
+    /// A Mind's browser is known by the profile it owns, not by what its command line says.
+    #[test]
+    fn a_browser_is_a_minds_by_the_profile_it_owns() {
+        let me = unsafe { libc::getuid() };
+        let proc = tree("owned");
+        let root = tree("owned-profiles");
+        let owned = Profiles { mind_view: root.join("mind-view"), identities: root.join("identities") };
+        std::fs::create_dir_all(&owned.mind_view).unwrap();
+        std::os::unix::fs::symlink("host-430", owned.mind_view.join("SingletonLock")).unwrap();
+        browser(&proc, 430, "/usr/bin/chromium --remote-debugging-port=9223");
+        assert!(!another_browser_is_open(&proc, None, me, &owned), "owns Mind View's profile, names none");
+    }
+
+    /// The three crafted cases: text in a command line that is not an argument of that kind.
+    #[test]
+    fn crafted_command_lines_do_not_pass_for_a_minds_browser() {
+        let me = unsafe { libc::getuid() };
+        // 1. A URL that carries `--user-data-dir=<a Mind's profile>`.
+        let proc = tree("crafted-url");
+        browser(&proc, 440, "/usr/bin/chromium https://x/#--user-data-dir=/home/p/.local/share/minds/identities/a");
+        assert!(another_browser_is_open(&proc, None, me, &profiles()), "a URL claimed a Mind's profile");
+        // 2. A path that climbs out of the identities directory.
+        let proc = tree("crafted-dots");
+        browser(&proc, 441, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/minds/identities/../../../.config/chromium");
+        assert!(another_browser_is_open(&proc, None, me, &profiles()), "a `..` path claimed a Mind's profile");
+        // 3. A file argument that merely begins `--headless` after a space (one argument).
+        let proc = tree("crafted-headless");
+        let at = proc.join("442");
+        entry(&proc, 442, 1, None);
+        std::fs::write(at.join("cmdline"), b"/usr/bin/chromium\0/home/p/a --headless.html\0").unwrap();
+        assert!(another_browser_is_open(&proc, None, me, &profiles()), "a file name claimed to be headless");
+        std::fs::write(at.join("cmdline"), b"/usr/bin/chromium\0--headless.html\0").unwrap();
+        assert!(another_browser_is_open(&proc, None, me, &profiles()), "`--headless.html` is not `--headless`");
     }
 
     /// The xdg-open case: a Chromium with no pipe, which a dock launch joins.
