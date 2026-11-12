@@ -787,13 +787,7 @@ pub fn open_ended(purpose: &str) -> bool {
 /// routine `sensitive` surface a long job trips over forty times — is exactly what the session
 /// rule is for.
 pub fn may_offer_session_rule(grade: &str, purpose: &str) -> bool {
-    session_rule_allowed(grade, unrecoverable(purpose))
-}
-
-/// [`may_offer_session_rule`] with the purpose already read: the grade, and whether the app says
-/// the action cannot be undone. The bond's offer is held to this same test (#1185).
-pub fn session_rule_allowed(grade: &str, cannot_be_undone: bool) -> bool {
-    grade != "dangerous" && !cannot_be_undone
+    crate::approvals_bond::session_rule_allowed(grade, unrecoverable(purpose))
 }
 
 /// The warning line, or empty.
@@ -909,9 +903,6 @@ pub struct Requested {
 pub struct Store {
     records: Vec<Record>,
     next: u64,
-    /// Tells this boot's cards from every other boot's: the counter starts again at 1 on each
-    /// start, and a card id is what a bond receipt is keyed on (#1185).
-    boot: String,
 }
 
 impl Default for Store {
@@ -922,15 +913,7 @@ impl Default for Store {
 
 impl Store {
     pub fn new() -> Self {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        Self::with_boot(&format!("{millis:x}"))
-    }
-
-    /// A store whose card ids carry `boot`, so two boots never raise the same id.
-    pub fn with_boot(boot: &str) -> Self {
-        Store { records: Vec::new(), next: 1, boot: boot.to_string() }
+        Store { records: Vec::new(), next: 1 }
     }
 
     /// Raise a request. The only thing this does is make a card appear.
@@ -1051,7 +1034,7 @@ impl Store {
             ));
         }
 
-        let id = format!("appr-{}-{}", self.boot, self.next);
+        let id = format!("appr-{}-{}", crate::approvals_bond::boot(), self.next);
         self.next += 1;
         self.records.push(Record {
             id: id.clone(),
@@ -1374,11 +1357,11 @@ fn store() -> &'static Mutex<Store> {
 /// A poisoned lock means a previous holder panicked mid-update. The records are plain data with
 /// no invariant that a panic could have half-broken, so the contents are still readable and
 /// refusing every approval forever is the worse outcome.
-fn locked() -> std::sync::MutexGuard<'static, Store> {
+pub(crate) fn locked() -> std::sync::MutexGuard<'static, Store> {
     store().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn hhmm() -> String {
+pub(crate) fn hhmm() -> String {
     crate::app_context::current_time_hhmm()
 }
 
@@ -1445,19 +1428,12 @@ pub(crate) fn grant_for_session(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// **UI only.** See the module doc: the single caller is the Deny button's callback (and the
-/// phone code's "no"). A withdrawal is [`withdraw`], which is not an answer.
+/// **UI only.** See the module doc: the single caller is the Deny button's callback.
 pub(crate) fn deny(id: &str) -> Result<(), String> {
     let card = card(id);
     locked().deny(id, Instant::now(), &hhmm())?;
     crate::bond_receipts::card_answered(card.as_ref(), false);
     Ok(())
-}
-
-/// Take a card away because the person's situation changed (Private mode), not because they
-/// answered it: the same as a refusal at the gate, and no bond receipt (#1185).
-pub(crate) fn withdraw(id: &str) -> Result<(), String> {
-    locked().deny(id, Instant::now(), &hhmm())
 }
 
 /// One card by id, as the UI sees it. Used by the session-rule callback, which needs the

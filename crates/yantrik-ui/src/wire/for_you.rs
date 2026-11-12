@@ -48,7 +48,8 @@ pub fn wire(ui: &App) {
         // Pressed on the desktop's own screen and nowhere else: the store takes feedback only
         // from the desktop, so a mind cannot mark its own card useful.
         act(NOTICE_FEEDBACK, serde_json::json!({ "id": id, "kind": kind.as_str() }));
-        crate::bond_receipts::for_you_answered(&id, &kind);
+        let harness = with_mirror(|m| m.get(&id).and_then(|n| n.notice.as_ref()).map(|c| c.harness.id.clone()));
+        crate::bond_receipts::for_you_answered(&id, &harness.flatten().unwrap_or_default(), &kind);
         with_mirror(|m| {
             if kind.takes_the_card_away() {
                 m.dismiss_locally(&id);

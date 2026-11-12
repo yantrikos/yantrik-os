@@ -26,7 +26,7 @@ fn card(conn: &Connection, allowed: bool, app: &str, action: &str, leaves: bool,
 }
 
 /// The shell's own rule for whether a session rule may cover an action
-/// (`approvals::session_rule_allowed`).
+/// (`approvals_bond::session_rule_allowed`).
 fn shell_allows(grade: &str, cannot_be_undone: bool) -> bool {
     grade != "dangerous" && !cannot_be_undone
 }
@@ -173,8 +173,10 @@ fn a_fall_keeps_the_reason_with_the_receipt_that_caused_it() {
 fn levels_follow_the_receipt_score() {
     let conn = conn();
     assert_eq!(BondTracker::get_state(&conn).bond_level, BondLevel::Stranger);
-    for n in 0..5 {
-        card(&conn, true, "notes", "create", false, &format!("c{n}"));
+    // One allow each from six different apps: a level is earned across the machine, never by one
+    // pair (see `one_trivial_card_raised_over_and_over_cannot_buy_a_level`).
+    for n in 0..6 {
+        card(&conn, true, &format!("app{n}"), "create", false, &format!("c{n}"));
     }
     assert_eq!(BondTracker::get_state(&conn).bond_level, BondLevel::Acquaintance);
 }
@@ -322,6 +324,7 @@ fn the_facts_come_back_from_the_store_as_they_went_in() {
         open_ended: true,
         fetches_address: true,
         leaves_machine: true,
+        no_session_rule: true,
     };
     card_with(&conn, true, "x", "y", all.clone(), "c1");
     let row = &bond_table::rows(&conn)[0];
@@ -334,7 +337,7 @@ fn the_facts_come_back_from_the_store_as_they_went_in() {
 #[test]
 fn a_restart_does_not_make_a_new_card_look_like_an_old_one() {
     // Boot 1 numbers its cards from 1 and so does boot 2; the shell makes the ids differ
-    // (`approvals::Store::with_boot`), and the store counts both. Four allows, then, after a
+    // (`approvals_bond::boot`), and the store counts both. Four allows, then, after a
     // restart, a refusal of the "same" first card for the same pair.
     let conn = conn();
     for n in 1..=4 {
@@ -394,6 +397,11 @@ fn one_trivial_card_raised_over_and_over_cannot_buy_a_level() {
         card(&conn, true, "notes", "create", false, &format!("c{n}"));
     }
     assert_eq!(score(&conn), PAIR_RISE_CAP);
+    assert_eq!(
+        BondTracker::get_state(&conn).bond_level,
+        BondLevel::Stranger,
+        "one pair, however often, stays below the first level"
+    );
     assert_eq!(BondTracker::get_state(&conn).receipts, 500, "every one is still a receipt");
     card(&conn, false, "notes", "create", false, "no");
     assert!(score(&conn) < PAIR_RISE_CAP, "a refusal still counts in full");
@@ -406,6 +414,7 @@ fn receipts_are_kept_for_a_hundred_and_eighty_days() {
     let conn = conn();
     card(&conn, true, "notes", "create", false, "old");
     card(&conn, true, "files", "move", false, "recent");
+    card(&conn, true, "notes", "list", false, "newest");
     let days = |n: i64| (n as f64) * 86_400.0;
     conn.execute(
         "UPDATE bond_events SET created_at = created_at - ?1 WHERE event_id LIKE '%:old'",
@@ -418,10 +427,57 @@ fn receipts_are_kept_for_a_hundred_and_eighty_days() {
     )
     .unwrap();
     // Reading drops nothing: only a write (or a start) forgets.
-    assert_eq!(BondTracker::get_state(&conn).receipts, 2);
+    assert_eq!(BondTracker::get_state(&conn).receipts, 3);
     card(&conn, true, "email", "send", true, "new");
     let left: Vec<String> = bond_table::rows(&conn).iter().map(|r| r.app.clone()).collect();
-    assert_eq!(left, vec!["email", "files"], "the 181-day-old receipt went, the 179-day-old stayed");
+    assert_eq!(left, vec!["email", "files", "notes"], "the 181-day-old receipt went, the 179-day-old stayed");
+}
+
+fn stamps(conn: &Connection) -> Vec<f64> {
+    let mut stmt = conn.prepare("SELECT created_at FROM bond_events WHERE event_type = 'receipt' ORDER BY rowid").unwrap();
+    stmt.query_map([], |row| row.get::<_, f64>(0)).unwrap().flatten().collect()
+}
+
+#[test]
+fn a_clock_that_was_wrong_and_early_does_not_age_a_refusal_out() {
+    let conn = conn();
+    card(&conn, true, "notes", "create", false, "a1");
+    card(&conn, false, "notes", "create", false, "no");
+    // The refusal was stamped while the clock was a year slow; the clock then corrects itself.
+    conn.execute("UPDATE bond_events SET created_at = created_at - 365.0 * 86400.0", []).unwrap();
+    card(&conn, true, "notes", "create", false, "a2");
+    assert!(BondTracker::why_it_fell(&conn, 5).len() == 1, "the refusal is still there after the correction");
+    assert_eq!(bond_table::rows(&conn)[0].refused, 1);
+    let at = stamps(&conn);
+    assert!(at.windows(2).all(|w| w[0] <= w[1]), "stamps never run backwards: {at:?}");
+}
+
+#[test]
+fn a_clock_that_steps_forward_drops_nothing_and_a_clock_behind_never_reorders() {
+    let conn = conn();
+    card(&conn, false, "notes", "create", false, "no");
+    // Clock ahead of the receipts by a year, then behind them: neither moves a stamp back or
+    // drops the refusal.
+    conn.execute("UPDATE bond_events SET created_at = created_at - 365.0 * 86400.0", []).unwrap();
+    card(&conn, true, "notes", "create", false, "a1");
+    assert_eq!(BondTracker::get_state(&conn).receipts, 2, "a jump forward ages nothing out");
+    conn.execute("UPDATE bond_events SET created_at = created_at + 2.0 * 365.0 * 86400.0", []).unwrap();
+    card(&conn, true, "notes", "create", false, "a2");
+    let at = stamps(&conn);
+    assert!(at.windows(2).all(|w| w[0] <= w[1]), "stamps never run backwards: {at:?}");
+    assert_eq!(BondTracker::get_state(&conn).receipts, 3);
+}
+
+#[test]
+fn a_card_without_the_session_button_is_never_offered() {
+    let conn = conn();
+    for n in 0..5 {
+        let facts = ActionFacts { no_session_rule: n == 2, ..facts("sensitive", false) };
+        card_with(&conn, true, "notes", "create", facts, &format!("c{n}"));
+    }
+    let rows = bond_table::rows(&conn);
+    assert!(rows[0].ever.no_session_rule);
+    assert!(rows[0].offer(shell_allows).is_none(), "one card without the button closes the offer");
 }
 
 #[test]

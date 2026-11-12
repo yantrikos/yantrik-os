@@ -44,6 +44,7 @@ mod agents;
 mod ambient;
 mod app_context;
 mod approvals;
+mod approvals_bond;
 mod bond_describe;
 mod bond_receipts;
 mod approval_wording;

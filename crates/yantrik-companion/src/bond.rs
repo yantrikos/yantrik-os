@@ -30,6 +30,9 @@ pub use yantrik_companion_core::bond::{
 /// The `bond_events.event_type` a receipt is stored under.
 pub(crate) const RECEIPT_EVENT: &str = "receipt";
 
+/// The most a receipt's stamp may run ahead of the newest receipt before it, in seconds: a day.
+const MAX_STAMP_STEP_SECS: f64 = 86_400.0;
+
 /// Reads and writes the bond.
 pub struct BondTracker;
 
@@ -131,6 +134,7 @@ impl BondTracker {
     /// given a fresh id, so each one counts. A receipt that lowers the score carries the sentence
     /// that says why. Receipts past [`RECEIPT_RETENTION_DAYS`] are dropped as this one is written.
     pub fn record_receipt(conn: &Connection, receipt: &Receipt) -> bool {
+        let stamp = Self::next_stamp(conn);
         Self::drop_old_receipts(conn);
         let source_id = if receipt.source_id.is_empty() {
             uuid7::uuid7().to_string()
@@ -147,6 +151,7 @@ impl BondTracker {
             "open_ended": receipt.facts.open_ended,
             "fetches_address": receipt.facts.fetches_address,
             "leaves_machine": receipt.facts.leaves_machine,
+            "no_session_rule": receipt.facts.no_session_rule,
             "source_id": source_id,
             "why": receipt.why_it_fell(),
         })
@@ -154,7 +159,7 @@ impl BondTracker {
         conn.execute(
             "INSERT OR IGNORE INTO bond_events (event_id, event_type, delta, context, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![event_id, RECEIPT_EVENT, receipt.kind.delta(), context, now_ts()],
+            params![event_id, RECEIPT_EVENT, receipt.kind.delta(), context, stamp],
         )
         .map(|written| written > 0)
         .unwrap_or(false)
@@ -167,13 +172,37 @@ impl BondTracker {
         conn.execute("DELETE FROM bond_events WHERE event_type = ?1", params![RECEIPT_EVENT]).unwrap_or(0)
     }
 
-    /// Drop receipts older than [`RECEIPT_RETENTION_DAYS`]. The only way time touches the score,
-    /// and it only forgets: reading never moves it.
+    /// The time a receipt written now is stamped with. It never runs backwards (not before the
+    /// newest receipt) and never jumps more than a day past it, so a clock that is wrong at boot,
+    /// or steps, cannot reorder receipts or age the older ones out. The wall clock is read, and
+    /// then held to those two bounds.
+    fn next_stamp(conn: &Connection) -> f64 {
+        let now = now_ts();
+        match Self::newest_receipt_stamp(conn) {
+            Some(last) => now.clamp(last, last + MAX_STAMP_STEP_SECS),
+            None => now,
+        }
+    }
+
+    fn newest_receipt_stamp(conn: &Connection) -> Option<f64> {
+        conn.query_row(
+            "SELECT MAX(created_at) FROM bond_events WHERE event_type = ?1",
+            params![RECEIPT_EVENT],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
+    /// Drop receipts more than [`RECEIPT_RETENTION_DAYS`] older than the newest receipt. The wall
+    /// clock is not read here: it is measured from the receipts' own stamps (see
+    /// [`Self::next_stamp`]), so no step of the clock can drop one early. It only forgets:
+    /// reading never moves the score.
     fn drop_old_receipts(conn: &Connection) {
-        let cutoff = now_ts() - RECEIPT_RETENTION_DAYS as f64 * 86_400.0;
         conn.execute(
-            "DELETE FROM bond_events WHERE event_type = ?1 AND created_at < ?2",
-            params![RECEIPT_EVENT, cutoff],
+            "DELETE FROM bond_events WHERE event_type = ?1 AND created_at <
+               (SELECT MAX(created_at) FROM bond_events WHERE event_type = ?1) - ?2",
+            params![RECEIPT_EVENT, RECEIPT_RETENTION_DAYS as f64 * 86_400.0],
         )
         .ok();
     }

@@ -113,12 +113,9 @@ pub enum CompanionCommand {
     /// turn it started ends answered, and this is how it reaches the bond store, which lives on
     /// this thread.
     NoteConversationTurn,
-    /// One thing the person did — a card answered, a For-you item marked, something undone.
-    /// The only way the bond moves; it is written on this thread, where the store lives.
-    BondReceipt(yantrik_companion::bond::Receipt),
-    /// The person's "forget the bond history". Sent only from a UI callback
-    /// (`bond_receipts::forget`), never from the control socket.
-    ForgetBondHistory,
+    /// One thing the person did to the bond: a receipt, or forgetting them (`bond_receipts`).
+    /// The only way the bond moves; written on this thread, where the store lives.
+    Bond(crate::bond_receipts::BondCommand),
     /// Reload the LLM backend from a new provider config.
     /// Used when user adds/edits a provider in settings.
     ReloadLLM {
@@ -823,14 +820,9 @@ impl CompanionBridge {
         let _ = self.cmd_tx.send(CompanionCommand::NoteConversationTurn);
     }
 
-    /// Hand the companion one receipt: a thing the person did. The only way the bond moves.
-    pub fn bond_receipt(&self, receipt: yantrik_companion::bond::Receipt) {
-        let _ = self.cmd_tx.send(CompanionCommand::BondReceipt(receipt));
-    }
-
-    /// Forget every bond receipt. The person's own button only.
-    pub fn forget_bond_history(&self) {
-        let _ = self.cmd_tx.send(CompanionCommand::ForgetBondHistory);
+    /// Hand the companion a receipt, or the person's forgetting. The only way the bond moves.
+    pub fn bond_command(&self, command: crate::bond_receipts::BondCommand) {
+        let _ = self.cmd_tx.send(CompanionCommand::Bond(command));
     }
 
     /// Request bond data.
@@ -1099,7 +1091,7 @@ fn paused_while_private(cmd: &CompanionCommand, recipe_signals: &mut std::collec
         | CompanionCommand::RecordSnapshot { .. }
         | CompanionCommand::RecordIssue { .. }
         | CompanionCommand::NoteConversationTurn
-        | CompanionCommand::BondReceipt(_) => true,
+        | CompanionCommand::Bond(_) => true,
         CompanionCommand::StartRecipe { reply_tx, .. } => {
             if let Some(tx) = reply_tx {
                 let _ = tx.send(Err(SAID.to_string()));
@@ -1760,13 +1752,8 @@ fn worker_loop(
                 companion.note_conversation_turn();
                 push_bond(&companion, &ui_weak);
             }
-            Ok(CompanionCommand::ForgetBondHistory) => {
-                companion.forget_bond_history();
-                cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
-                push_bond(&companion, &ui_weak);
-            }
-            Ok(CompanionCommand::BondReceipt(receipt)) => {
-                companion.record_bond_receipt(&receipt);
+            Ok(CompanionCommand::Bond(command)) => {
+                command.apply(&mut companion);
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
                 push_bond(&companion, &ui_weak);
             }

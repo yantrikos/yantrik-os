@@ -85,7 +85,7 @@ pub(crate) fn offers_json(rows: &[BondRow], gate: impl Fn(&BondRow) -> Decision)
     rows.iter()
         .filter(|row| gate(row) == Decision::Ask)
         .filter_map(|row| {
-            row.offer(crate::approvals::session_rule_allowed)
+            row.offer(crate::approvals_bond::session_rule_allowed)
                 .map(|text| serde_json::json!({ "app": row.app, "action": row.action, "text": text }))
         })
         .collect()
@@ -219,6 +219,30 @@ mod tests {
             for word in ["max_permission", "tool_permission", "set_ceiling"] {
                 assert!(!code.contains(word), "{name} must not reach `{word}`");
             }
+        }
+    }
+
+    /// The person's "Forget the bond history" is a button on the Interaction history screen, and
+    /// the only caller of the callback is that button's `clicked` handler (after its confirm).
+    #[test]
+    fn the_forget_button_has_exactly_one_caller_and_it_is_a_click() {
+        let screen = include_str!("../../yantrik-ui-slint/ui/bond.slint");
+        let calls: Vec<usize> = screen.match_indices("root.forget-bond-history()").map(|(at, _)| at).collect();
+        assert_eq!(calls.len(), 1, "bond.slint calls forget-bond-history exactly once");
+        let before = &screen[..calls[0]];
+        let click = before.rfind("clicked => {").expect("the call sits in a `clicked` handler");
+        assert!(!before[click..].contains('}'), "and in that handler's own block, not after it");
+        assert!(screen.contains("It can't be undone."), "the confirm says what it does");
+        assert!(screen.contains("Forget the bond history"), "and the button is drawn");
+
+        // App forwards the screen's callback to the Rust handler, in its own handler, once.
+        let app = include_str!("../../yantrik-ui-slint/ui/app.slint");
+        assert_eq!(app.matches("root.forget-bond-history()").count(), 1);
+        assert!(app.contains("forget-bond-history => { root.forget-bond-history(); }"));
+        // Rust: one handler, and nothing ever presses it.
+        assert_eq!(include_str!("bond_receipts.rs").matches("on_forget_bond_history").count(), 1);
+        for (name, source) in [("control.rs", include_str!("control.rs")), ("bridge.rs", include_str!("bridge.rs"))] {
+            assert!(!source.contains("invoke_forget_bond_history"), "{name} must not press the button");
         }
     }
 }

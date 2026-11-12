@@ -64,10 +64,12 @@ pub const SCORE_CEILING: f64 = 5.0;
 /// to stop asking. A refusal puts the count back to zero.
 pub const OFFER_CLEAN_STREAK: u32 = 4;
 
-/// The most one (app, action) pair can add to the score, however many cards it raises: five
-/// allows' worth. A Mind can raise a trivial card as often as it likes, and a person who has
-/// stopped reading it allows each one; neither should buy a level. A pair's falls are not capped.
-pub const PAIR_RISE_CAP: f64 = 0.5;
+/// The most one (app, action) pair can add to the score, however many cards it raises: four
+/// allows' worth, which stays below the first level (0.5), so no one pair buys a level. A Mind can
+/// raise a trivial card as often as it likes, and a person who has stopped reading it allows each
+/// one. A pair's falls are not capped. A For-you item counts under its sender harness, so a Mind
+/// posting many notices is held to the same cap.
+pub const PAIR_RISE_CAP: f64 = 0.4;
 
 /// How long a receipt is kept. Older receipts are dropped the next time one is written, and the
 /// person can drop them all at once (`BondTracker::forget_receipts`).
@@ -149,6 +151,11 @@ pub struct ActionFacts {
     pub fetches_address: bool,
     /// The app says it sends something off this machine.
     pub leaves_machine: bool,
+    /// The card drew no "Allow for this session" button (`Card::can_session` was false): it
+    /// carried a per-call sentence or was a one-time question. The inverse of `can_session`, so
+    /// that an unknown answer reads as "may offer" only through the other guards, and one card
+    /// without the button closes the offer for good.
+    pub no_session_rule: bool,
 }
 
 impl ActionFacts {
@@ -164,6 +171,7 @@ impl ActionFacts {
         self.open_ended |= newer.open_ended;
         self.fetches_address |= newer.fetches_address;
         self.leaves_machine |= newer.leaves_machine;
+        self.no_session_rule |= newer.no_session_rule;
     }
 }
 
@@ -273,14 +281,15 @@ impl BondRow {
     ///
     /// `may_offer_session_rule` is the shell's own test for whether the card draws "Allow for
     /// this session", given a grade and whether the app says it cannot be undone
-    /// (`approvals::session_rule_allowed`), so the offer is never wider than the button that
-    /// would apply it. On top of that, nothing that ever left the machine or fetched an address
+    /// (`approvals_bond::session_rule_allowed`), so the offer is never wider than the button that
+    /// would apply it, and no card for the action ever lacked that button (`ever.no_session_rule`). On top of that, nothing that ever left the machine or fetched an address
     /// is offered, and nothing whose grade was never recorded.
     pub fn offerable(&self, may_offer_session_rule: impl Fn(&str, bool) -> bool) -> bool {
         self.clean_streak >= OFFER_CLEAN_STREAK
             && !self.ever.grade.is_empty()
             && !self.ever.leaves_machine
             && !self.ever.fetches_address
+            && !self.ever.no_session_rule
             && may_offer_session_rule(&self.ever.grade, self.ever.cannot_be_undone)
     }
 
@@ -334,7 +343,7 @@ mod tests {
         }
     }
 
-    /// The shell's rule, as `approvals::session_rule_allowed` has it.
+    /// The shell's rule, as `approvals_bond::session_rule_allowed` has it.
     fn shell_allows(grade: &str, cannot_be_undone: bool) -> bool {
         grade != "dangerous" && !cannot_be_undone
     }
@@ -361,6 +370,25 @@ mod tests {
     }
 
     #[test]
+    fn the_cap_is_below_the_first_level() {
+        assert!(PAIR_RISE_CAP < 0.5);
+        let mut fold = ScoreFold::default();
+        for _ in 0..1000 {
+            fold.add(0.10, "notes", "create");
+        }
+        assert_eq!(BondLevel::from_score(fold.finish().0), BondLevel::Stranger);
+    }
+
+    #[test]
+    fn a_card_without_the_session_button_closes_the_offer() {
+        let mut ever = facts("sensitive");
+        ever.absorb(&ActionFacts { no_session_rule: true, ..facts("sensitive") });
+        ever.absorb(&facts("sensitive"));
+        assert!(ever.no_session_rule, "sticky: a later card with the button does not reopen it");
+        assert!(row(9, ever).offer(shell_allows).is_none());
+    }
+
+    #[test]
     fn absorbing_keeps_the_cautious_side() {
         let mut ever = ActionFacts { leaves_machine: true, ..facts("dangerous") };
         ever.absorb(&facts("sensitive"));
@@ -375,9 +403,9 @@ mod tests {
         }
         assert_eq!(fold.score, PAIR_RISE_CAP);
         fold.add(-0.20, "notes", "create");
-        assert!((fold.score - 0.3).abs() < 1e-9);
+        assert!((fold.score - 0.2).abs() < 1e-9);
         fold.add(0.10, "", "");
-        assert!((fold.score - 0.4).abs() < 1e-9, "a receipt with no pair is not capped");
+        assert!((fold.score - 0.3).abs() < 1e-9, "a receipt with no pair is not capped");
     }
 
     #[test]

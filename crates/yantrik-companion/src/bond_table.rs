@@ -32,7 +32,7 @@ pub fn rows(conn: &Connection) -> Vec<BondRow> {
                 json_extract(context, '$.action'), json_extract(context, '$.source_id'),
                 json_extract(context, '$.grade'), json_extract(context, '$.cannot_be_undone'),
                 json_extract(context, '$.open_ended'), json_extract(context, '$.fetches_address'),
-                json_extract(context, '$.leaves_machine')
+                json_extract(context, '$.leaves_machine'), json_extract(context, '$.no_session_rule')
          FROM bond_events WHERE event_type = ?1 ORDER BY rowid",
     ) else {
         return Vec::new();
@@ -50,6 +50,7 @@ pub fn rows(conn: &Connection) -> Vec<BondRow> {
                 open_ended: flag(6)?,
                 fetches_address: flag(7)?,
                 leaves_machine: flag(8)?,
+                no_session_rule: flag(9)?,
             },
         ))
     }) else {
@@ -101,7 +102,7 @@ fn row_of(app: String, action: String, answers: Vec<Answer>) -> BondRow {
 }
 
 /// The rows the companion may offer to stop asking about. An offer, never a grant.
-/// `may_offer_session_rule` is the shell's own test (`approvals::session_rule_allowed`).
+/// `may_offer_session_rule` is the shell's own test (`approvals_bond::session_rule_allowed`).
 pub fn offers(rows: &[BondRow], may_offer_session_rule: impl Fn(&str, bool) -> bool + Copy) -> Vec<&BondRow> {
     rows.iter().filter(|row| row.offerable(may_offer_session_rule)).collect()
 }

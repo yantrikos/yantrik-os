@@ -13,6 +13,7 @@
 use std::sync::{Arc, OnceLock};
 
 use yantrik_companion::bond::{ActionFacts, Receipt, ReceiptKind};
+use yantrik_companion::CompanionService;
 use yantrik_ipc_contracts::control_surface::{fetches_address, leaves_machine};
 use yantrik_ipc_contracts::notifications::notice::FeedbackKind;
 
@@ -26,9 +27,29 @@ pub fn attach(bridge: Arc<CompanionBridge>) {
     let _ = SINK.set(bridge);
 }
 
+/// What the person can do to the bond: add a receipt, or forget them all. One command, so the
+/// bridge carries one variant for both (`CompanionCommand::Bond`).
+pub enum BondCommand {
+    Receipt(Receipt),
+    /// "Forget the bond history": the person's button only (see [`forget`]).
+    Forget,
+}
+
+impl BondCommand {
+    /// Run it on the companion's own thread, where the store lives.
+    pub fn apply(self, companion: &mut CompanionService) {
+        match self {
+            Self::Receipt(receipt) => companion.record_bond_receipt(&receipt),
+            Self::Forget => {
+                companion.forget_bond_history();
+            }
+        }
+    }
+}
+
 fn send(receipt: Receipt) {
     if let Some(bridge) = SINK.get() {
-        bridge.bond_receipt(receipt);
+        bridge.bond_command(BondCommand::Receipt(receipt));
     }
 }
 
@@ -43,7 +64,7 @@ pub fn wire(ui: &crate::App, bridge: Arc<CompanionBridge>) {
 /// control socket, so no Mind can call it, and it empties the receipts, the table and the offers.
 pub fn forget() {
     if let Some(bridge) = SINK.get() {
-        bridge.forget_bond_history();
+        bridge.bond_command(BondCommand::Forget);
     }
 }
 
@@ -56,6 +77,7 @@ pub(crate) fn card_facts(card: &Card) -> ActionFacts {
         open_ended: approvals::open_ended(&card.said),
         fetches_address: fetches_address(&card.said).is_some(),
         leaves_machine: leaves_machine(&card.said),
+        no_session_rule: !card.can_session,
     }
 }
 
@@ -71,7 +93,7 @@ pub(crate) fn card_receipt(card: &Card, allowed: bool) -> Receipt {
 }
 
 /// The person pressed Allow or Deny on a card. A card that expired unanswered, or was withdrawn
-/// (`approvals::withdraw`), is neither and never comes through here.
+/// (`approvals_bond::withdraw`), is neither and never comes through here.
 pub fn card_answered(card: Option<&Card>, allowed: bool) {
     if let Some(card) = card {
         send(card_receipt(card, allowed));
@@ -80,18 +102,26 @@ pub fn card_answered(card: Option<&Card>, allowed: bool) {
 
 /// The receipt for feedback on a For-you item, or `None` for the kinds that say nothing about
 /// whether it was useful ("not now" is about timing, "never" about the family).
-pub(crate) fn for_you_receipt(id: &str, kind: &FeedbackKind) -> Option<Receipt> {
+///
+/// It is filed under the notice's sender harness (`harness`, empty when unknown), so one Mind
+/// posting many notices that a person habitually marks Useful is held to the same per-source
+/// cap as one card raised over and over ([`yantrik_companion::bond::PAIR_RISE_CAP`]).
+pub(crate) fn for_you_receipt(id: &str, harness: &str, kind: &FeedbackKind) -> Option<Receipt> {
     let kind = match kind {
         FeedbackKind::Useful => ReceiptKind::ForYouUseful,
         FeedbackKind::NotUseful => ReceiptKind::ForYouNotUseful,
         _ => return None,
     };
-    Some(Receipt::bare(kind, id))
+    let mut receipt = Receipt::bare(kind, id);
+    receipt.app = if harness.is_empty() { "unknown-harness".to_string() } else { harness.to_string() };
+    receipt.action = "for_you".to_string();
+    Some(receipt)
 }
 
 /// The person pressed Useful or Not useful on a For-you item.
-pub fn for_you_answered(id: &str, kind: &FeedbackKind) {
-    if let Some(receipt) = for_you_receipt(id, kind) {
+/// `harness` is the id of the harness that sent the notice.
+pub fn for_you_answered(id: &str, harness: &str, kind: &FeedbackKind) {
+    if let Some(receipt) = for_you_receipt(id, harness, kind) {
         send(receipt);
     }
 }
@@ -119,6 +149,7 @@ pub fn undone(app: &str, action: &str) {
 mod tests {
     use super::*;
     use crate::approvals::{Store, Verified};
+    use crate::approvals_bond;
     use std::time::Instant;
 
     fn raise(store: &mut Store, app: &str, action: &str, purpose: &str) -> Card {
@@ -131,17 +162,33 @@ mod tests {
     }
 
     #[test]
-    fn a_card_after_a_restart_has_an_id_no_earlier_boot_used() {
-        let (mut first, mut second) = (Store::with_boot("a1"), Store::with_boot("b2"));
-        let before = raise(&mut first, "notes", "create", "Make a note.");
-        let after = raise(&mut second, "notes", "create", "Make a note.");
-        assert_ne!(before.id, after.id, "both boots count from 1; the ids must still differ");
-        assert_ne!(card_receipt(&before, true).source_id, card_receipt(&after, false).source_id);
+    fn a_card_id_carries_the_boot_so_a_restart_cannot_repeat_one() {
+        // Both boots count from 1; only the boot part of the id tells them apart.
+        let mut store = Store::new();
+        let card = raise(&mut store, "notes", "create", "Make a note.");
+        assert_eq!(card.id, format!("appr-{}-1", approvals_bond::boot()));
+        assert_ne!(approvals_bond::fresh_boot(), approvals_bond::boot());
+        let earlier = format!("appr-{}-1", approvals_bond::fresh_boot());
+        assert_ne!(card_receipt(&card, true).source_id, earlier);
+    }
+
+    #[test]
+    fn a_card_without_the_session_button_says_so_in_its_receipt() {
+        let (mut store, now) = (Store::new(), Instant::now());
+        let id = store
+            .request("m", Verified::default(), "notes", "create", serde_json::json!({}), "sensitive", "Make a note.", "", "Because of this one", now, "12:00")
+            .unwrap()
+            .id;
+        let explained = store.cards(now).into_iter().find(|c| c.id == id).unwrap();
+        assert!(!explained.can_session, "the premise: a per-call sentence closes the standing yes");
+        assert!(card_receipt(&explained, true).facts.no_session_rule);
+        let plain = raise(&mut store, "notes", "create", "Make a note.");
+        assert!(!card_receipt(&plain, true).facts.no_session_rule);
     }
 
     #[test]
     fn the_receipt_carries_what_the_app_said_about_the_action() {
-        let mut store = Store::with_boot("t");
+        let mut store = Store::new();
         let gone = raise(&mut store, "calendar", "delete_event", "Delete an event. It is not recoverable.");
         let facts = card_receipt(&gone, true).facts;
         assert!(facts.cannot_be_undone && !facts.leaves_machine);
@@ -158,8 +205,22 @@ mod tests {
 
     #[test]
     fn only_useful_and_not_useful_are_receipts() {
-        assert!(for_you_receipt("n1", &FeedbackKind::Useful).is_some());
-        assert!(for_you_receipt("n1", &FeedbackKind::NotUseful).is_some());
-        assert!(for_you_receipt("n1", &FeedbackKind::NotNow).is_none());
+        assert!(for_you_receipt("n1", "mind-a", &FeedbackKind::Useful).is_some());
+        assert!(for_you_receipt("n1", "mind-a", &FeedbackKind::NotUseful).is_some());
+        assert!(for_you_receipt("n1", "mind-a", &FeedbackKind::NotNow).is_none());
+    }
+
+    #[test]
+    fn a_for_you_receipt_belongs_to_its_senders_harness_so_it_is_capped() {
+        let one = for_you_receipt("n1", "mind-a", &FeedbackKind::Useful).unwrap();
+        assert_eq!((one.app.as_str(), one.action.as_str()), ("mind-a", "for_you"));
+        let unknown = for_you_receipt("n2", "", &FeedbackKind::Useful).unwrap();
+        assert!(!unknown.app.is_empty(), "an unknown sender is still one source, never uncapped");
+        // Many notices from one harness, all marked Useful: the fold stops at the cap.
+        let mut fold = yantrik_companion::bond::ScoreFold::default();
+        for _ in 0..1000 {
+            fold.add(one.kind.delta(), &one.app, &one.action);
+        }
+        assert!(fold.finish().0 <= yantrik_companion::bond::PAIR_RISE_CAP + 1e-9);
     }
 }
