@@ -182,7 +182,8 @@ mod tests {
         let explained = store.cards(now).into_iter().find(|c| c.id == id).unwrap();
         assert!(!explained.can_session, "the premise: a per-call sentence closes the standing yes");
         assert!(card_receipt(&explained, true).facts.no_session_rule);
-        let plain = raise(&mut store, "notes", "create", "Make a note.");
+        let plain = raise(&mut Store::new(), "notes", "create", "Make a note.");
+        assert!(plain.can_session, "the premise: an ordinary card draws the session button");
         assert!(!card_receipt(&plain, true).facts.no_session_rule);
     }
 
