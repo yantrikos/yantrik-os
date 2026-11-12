@@ -48,6 +48,17 @@ mod tests {
         assert_eq!(boot(), boot());
     }
 
+    /// A withdrawal is not an answer: it never reaches the bond, which only `deny` and the two
+    /// allows do (`approvals.rs`).
+    #[test]
+    fn a_withdrawal_writes_no_receipt() {
+        let source = include_str!("approvals_bond.rs");
+        let start = source.find("pub(crate) fn withdraw").unwrap();
+        let body = &source[start..source[start..].find("\n}\n").map(|n| start + n).unwrap()];
+        assert!(!body.contains("bond_receipts"), "withdraw must not file a receipt");
+        assert!(body.contains("locked().deny("), "and it is the gate's own refusal");
+    }
+
     #[test]
     fn the_session_button_test() {
         assert!(session_rule_allowed("sensitive", false));

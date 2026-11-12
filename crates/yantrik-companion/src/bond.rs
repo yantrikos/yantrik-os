@@ -24,14 +24,11 @@ use rusqlite::{params, Connection};
 // Re-export data types from core
 pub use yantrik_companion_core::bond::{
     ActionFacts, BondLevel, BondRow, BondState, Receipt, ReceiptKind, ScoreFold, OFFER_CLEAN_STREAK,
-    PAIR_RISE_CAP, RECEIPT_RETENTION_DAYS, SCORE_CEILING,
+    CARD_RISE_CAP, PAIR_RISE_CAP, RECEIPT_RETENTION_DAYS, SCORE_CEILING,
 };
 
 /// The `bond_events.event_type` a receipt is stored under.
 pub(crate) const RECEIPT_EVENT: &str = "receipt";
-
-/// The most a receipt's stamp may run ahead of the newest receipt before it, in seconds: a day.
-const MAX_STAMP_STEP_SECS: f64 = 86_400.0;
 
 /// Reads and writes the bond.
 pub struct BondTracker;
@@ -112,19 +109,29 @@ impl BondTracker {
         // Order by `rowid` alone: the order they were written in. A clock stepped back must not
         // move a refusal ahead of older allows.
         let Ok(mut stmt) = conn.prepare(
-            "SELECT delta, json_extract(context, '$.app'), json_extract(context, '$.action')
+            "SELECT delta, json_extract(context, '$.app'), json_extract(context, '$.action'),
+                    json_extract(context, '$.kind')
              FROM bond_events WHERE event_type = ?1 ORDER BY rowid",
         ) else {
             return (0.0, 0);
         };
         let Ok(found) = stmt.query_map(params![RECEIPT_EVENT], |row| {
-            Ok((row.get::<_, f64>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?))
+            Ok((
+                row.get::<_, f64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
         }) else {
             return (0.0, 0);
         };
         let mut fold = ScoreFold::default();
-        for (delta, app, action) in found.flatten() {
-            fold.add(delta, app.as_deref().unwrap_or(""), action.as_deref().unwrap_or(""));
+        for (delta, app, action, kind) in found.flatten() {
+            let (app, action) = (app.as_deref().unwrap_or(""), action.as_deref().unwrap_or(""));
+            match kind.as_deref().and_then(ReceiptKind::parse) {
+                Some(ReceiptKind::CardAllowed | ReceiptKind::CardRefused) => fold.add_card(delta, app, action),
+                _ => fold.add(delta, app, action),
+            }
         }
         fold.finish()
     }
@@ -172,16 +179,12 @@ impl BondTracker {
         conn.execute("DELETE FROM bond_events WHERE event_type = ?1", params![RECEIPT_EVENT]).unwrap_or(0)
     }
 
-    /// The time a receipt written now is stamped with. It never runs backwards (not before the
-    /// newest receipt) and never jumps more than a day past it, so a clock that is wrong at boot,
-    /// or steps, cannot reorder receipts or age the older ones out. The wall clock is read, and
-    /// then held to those two bounds.
+    /// The time a receipt written now is stamped with: the clock, but never before the newest
+    /// receipt, so a clock that steps back cannot move a stamp backwards. Order is by `rowid`,
+    /// not by stamp, so a stamp only says when.
     fn next_stamp(conn: &Connection) -> f64 {
         let now = now_ts();
-        match Self::newest_receipt_stamp(conn) {
-            Some(last) => now.clamp(last, last + MAX_STAMP_STEP_SECS),
-            None => now,
-        }
+        Self::newest_receipt_stamp(conn).map_or(now, |last| now.max(last))
     }
 
     fn newest_receipt_stamp(conn: &Connection) -> Option<f64> {
@@ -194,15 +197,18 @@ impl BondTracker {
         .flatten()
     }
 
-    /// Drop receipts more than [`RECEIPT_RETENTION_DAYS`] older than the newest receipt. The wall
-    /// clock is not read here: it is measured from the receipts' own stamps (see
-    /// [`Self::next_stamp`]), so no step of the clock can drop one early. It only forgets:
-    /// reading never moves the score.
+    /// Drop receipts more than [`RECEIPT_RETENTION_DAYS`] old by the clock, at startup and on each
+    /// write. Only when the clock is not behind the newest receipt: a clock that runs backwards
+    /// deletes nothing. A clock that jumps forward may delete early, which is the safe side for
+    /// privacy; an offer that comes back grants nothing. Reading never calls this.
     fn drop_old_receipts(conn: &Connection) {
+        let now = now_ts();
+        if Self::newest_receipt_stamp(conn).is_some_and(|newest| now < newest) {
+            return;
+        }
         conn.execute(
-            "DELETE FROM bond_events WHERE event_type = ?1 AND created_at <
-               (SELECT MAX(created_at) FROM bond_events WHERE event_type = ?1) - ?2",
-            params![RECEIPT_EVENT, RECEIPT_RETENTION_DAYS as f64 * 86_400.0],
+            "DELETE FROM bond_events WHERE event_type = ?1 AND created_at < ?2",
+            params![RECEIPT_EVENT, now - RECEIPT_RETENTION_DAYS as f64 * 86_400.0],
         )
         .ok();
     }

@@ -312,6 +312,11 @@ pub(super) fn offer_undo(ui: &App, b: &mut Bench, done: Vec<Archived>, by_mind: 
 }
 
 /// Undo on the toast: put the batch back, never over something that has taken its name since.
+/// Whether an archive undo is a receipt: something went back, and a Mind archived it.
+fn undo_counts(back: usize, toast_id: &str) -> bool {
+    back > 0 && toast_id.contains(&format!(":{MIND_MADE}"))
+}
+
 pub fn undo_archive(ui: &App, toast_id: &str) {
     // The toast's own id says which batch.
     let restored = super::with(|b| b.archived.iter().position(|(id, _)| id == toast_id).map(|at| b.archived.remove(at))).flatten();
@@ -332,11 +337,23 @@ pub fn undo_archive(ui: &App, toast_id: &str) {
         b.model.rescan();
         view::publish(ui, b);
     });
-    if back > 0 && toast_id.contains(&format!(":{MIND_MADE}")) {
+    if undo_counts(back, toast_id) {
         crate::bond_receipts::undone("desktop", "archive");
     }
     match why {
         None => say(ui, &format!("Put back {back} on the desktop"), ""),
         Some(why) => say(ui, &format!("Put back {back} of {}", batch.len()), &why),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_mind_archive_that_came_back_is_a_receipt() {
+        assert!(undo_counts(2, &format!("t:{MIND_MADE}7")));
+        assert!(!undo_counts(0, &format!("t:{MIND_MADE}7")), "nothing came back");
+        assert!(!undo_counts(2, "t:7"), "the person's own archive is theirs");
     }
 }

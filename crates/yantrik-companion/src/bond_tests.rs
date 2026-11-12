@@ -438,34 +438,63 @@ fn stamps(conn: &Connection) -> Vec<f64> {
     stmt.query_map([], |row| row.get::<_, f64>(0)).unwrap().flatten().collect()
 }
 
-#[test]
-fn a_clock_that_was_wrong_and_early_does_not_age_a_refusal_out() {
-    let conn = conn();
-    card(&conn, true, "notes", "create", false, "a1");
-    card(&conn, false, "notes", "create", false, "no");
-    // The refusal was stamped while the clock was a year slow; the clock then corrects itself.
-    conn.execute("UPDATE bond_events SET created_at = created_at - 365.0 * 86400.0", []).unwrap();
-    card(&conn, true, "notes", "create", false, "a2");
-    assert!(BondTracker::why_it_fell(&conn, 5).len() == 1, "the refusal is still there after the correction");
-    assert_eq!(bond_table::rows(&conn)[0].refused, 1);
-    let at = stamps(&conn);
-    assert!(at.windows(2).all(|w| w[0] <= w[1]), "stamps never run backwards: {at:?}");
+fn backdate(conn: &Connection, id: &str, days: f64) {
+    conn.execute("UPDATE bond_events SET created_at = created_at - ?1 WHERE event_id LIKE ?2", params![days * 86_400.0, format!("%:{id}")])
+        .unwrap();
 }
 
 #[test]
-fn a_clock_that_steps_forward_drops_nothing_and_a_clock_behind_never_reorders() {
+fn a_receipt_backdated_181_days_is_gone_after_one_write_and_a_restart() {
+    let conn = conn();
+    card(&conn, false, "notes", "create", false, "old");
+    backdate(&conn, "old", 181.0);
+    card(&conn, true, "notes", "create", false, "a1");
+    BondTracker::ensure_tables(&conn); // a restart
+    assert!(BondTracker::why_it_fell(&conn, 5).is_empty(), "the old refusal and its why are gone");
+    assert_eq!(BondTracker::get_state(&conn).receipts, 1);
+}
+
+#[test]
+fn a_receipt_that_ages_out_while_nothing_is_written_goes_at_startup() {
+    let conn = conn();
+    card(&conn, true, "notes", "create", false, "old");
+    backdate(&conn, "old", 400.0);
+    assert_eq!(BondTracker::get_state(&conn).receipts, 1, "reading drops nothing");
+    BondTracker::ensure_tables(&conn);
+    assert_eq!(BondTracker::get_state(&conn).receipts, 0);
+}
+
+#[test]
+fn a_clock_behind_the_receipts_deletes_nothing_and_reorders_nothing() {
     let conn = conn();
     card(&conn, false, "notes", "create", false, "no");
-    // Clock ahead of the receipts by a year, then behind them: neither moves a stamp back or
-    // drops the refusal.
-    conn.execute("UPDATE bond_events SET created_at = created_at - 365.0 * 86400.0", []).unwrap();
+    backdate(&conn, "no", -2.0); // the newest stamp is two days ahead of the clock
     card(&conn, true, "notes", "create", false, "a1");
-    assert_eq!(BondTracker::get_state(&conn).receipts, 2, "a jump forward ages nothing out");
-    conn.execute("UPDATE bond_events SET created_at = created_at + 2.0 * 365.0 * 86400.0", []).unwrap();
-    card(&conn, true, "notes", "create", false, "a2");
+    BondTracker::ensure_tables(&conn);
+    assert_eq!(BondTracker::get_state(&conn).receipts, 2, "nothing is dropped while the clock is behind");
     let at = stamps(&conn);
     assert!(at.windows(2).all(|w| w[0] <= w[1]), "stamps never run backwards: {at:?}");
-    assert_eq!(BondTracker::get_state(&conn).receipts, 3);
+    assert_eq!(bond_table::rows(&conn)[0].clean_streak, 1, "and the order is the order written");
+}
+
+#[test]
+fn two_trivial_pairs_together_cannot_reach_a_level() {
+    let conn = conn();
+    for n in 0..50 {
+        card(&conn, true, "notes", "create", false, &format!("a{n}"));
+        card(&conn, true, "notes", "list", false, &format!("b{n}"));
+        card(&conn, true, "files", "stat", false, &format!("c{n}"));
+    }
+    assert_eq!(score(&conn), CARD_RISE_CAP, "all cards together stop at the card cap");
+    assert_eq!(BondTracker::get_state(&conn).bond_level, BondLevel::Stranger);
+    // Feedback on For-you items is not a card and still lifts the score, under its own cap.
+    for n in 0..50 {
+        let up = Receipt { app: "mind-a".into(), action: "for_you".into(), ..Receipt::bare(ReceiptKind::ForYouUseful, &format!("n{n}")) };
+        BondTracker::record_receipt(&conn, &up);
+    }
+    assert!((score(&conn) - (CARD_RISE_CAP + PAIR_RISE_CAP)).abs() < 1e-9);
+    card(&conn, false, "notes", "create", false, "no");
+    assert!(score(&conn) < CARD_RISE_CAP + PAIR_RISE_CAP, "a refusal is never capped");
 }
 
 #[test]

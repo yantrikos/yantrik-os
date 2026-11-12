@@ -1428,7 +1428,7 @@ pub(crate) fn grant_for_session(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// **UI only.** See the module doc: the single caller is the Deny button's callback.
+/// **UI only.** See the module doc: the callers are the Deny button's callback (and the phone code's "no").
 pub(crate) fn deny(id: &str) -> Result<(), String> {
     let card = card(id);
     locked().deny(id, Instant::now(), &hhmm())?;

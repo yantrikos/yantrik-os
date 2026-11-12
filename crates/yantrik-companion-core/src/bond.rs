@@ -71,7 +71,13 @@ pub const OFFER_CLEAN_STREAK: u32 = 4;
 /// posting many notices is held to the same cap.
 pub const PAIR_RISE_CAP: f64 = 0.4;
 
-/// How long a receipt is kept. Older receipts are dropped the next time one is written, and the
+/// The most all cards together can add to the score, across every (app, action) pair: the same
+/// four allows' worth, below the first level. Two trivial pairs, or a Mind raising cards under
+/// many names, cannot reach a level by cards alone; what lifts the bond past it is a person's
+/// feedback on For-you items and prepared work, which stays capped per sender.
+pub const CARD_RISE_CAP: f64 = 0.4;
+
+/// How long a receipt is kept. Receipts older than that, by the clock, are dropped when the app starts and when one is written, and the
 /// person can drop them all at once (`BondTracker::forget_receipts`).
 pub const RECEIPT_RETENTION_DAYS: i64 = 180;
 
@@ -230,17 +236,34 @@ pub struct ScoreFold {
     score: f64,
     receipts: i64,
     risen: std::collections::HashMap<(String, String), f64>,
+    cards_risen: f64,
 }
 
 impl ScoreFold {
     /// Add one receipt's `delta`, made by `app` and `action` (empty for neither).
     pub fn add(&mut self, delta: f64, app: &str, action: &str) {
+        self.fold(delta, app, action, false);
+    }
+
+    /// Add the receipt of a card's answer: capped per pair, and with every other card's rises
+    /// under [`CARD_RISE_CAP`] in all.
+    pub fn add_card(&mut self, delta: f64, app: &str, action: &str) {
+        self.fold(delta, app, action, true);
+    }
+
+    fn fold(&mut self, delta: f64, app: &str, action: &str, card: bool) {
         self.receipts += 1;
         let delta = if delta > 0.0 && !app.is_empty() {
             let risen = self.risen.entry((app.to_string(), action.to_string())).or_insert(0.0);
-            let room = (PAIR_RISE_CAP - *risen).max(0.0);
+            let mut room = (PAIR_RISE_CAP - *risen).max(0.0);
+            if card {
+                room = room.min((CARD_RISE_CAP - self.cards_risen).max(0.0));
+            }
             let taken = delta.min(room);
             *risen += taken;
+            if card {
+                self.cards_risen += taken;
+            }
             taken
         } else {
             delta
