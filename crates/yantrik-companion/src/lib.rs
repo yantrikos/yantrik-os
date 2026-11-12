@@ -86,6 +86,7 @@ pub mod voice;
 pub mod whatsapp;
 pub mod cognitive_router;
 pub mod commitment_extractor;
+pub mod commitment_cards;
 pub mod commitment_consent;
 pub mod commitment_files;
 pub mod commitment_hands;

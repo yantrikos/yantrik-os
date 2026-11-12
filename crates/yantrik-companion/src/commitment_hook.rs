@@ -84,13 +84,18 @@ impl CompanionService {
         crate::commitment_consent::brief_actions(&self.db.conn(), now_ts())
     }
 
-    /// The person pressed a button about preparing (brief card or Settings). Called only from the
-    /// shell's own button callback. What was said back, if the press answered anything, and what the
-    /// surfaces show now; an empty `action_id` only asks what they show.
-    pub fn person_answers_commitment_prep(&self, action_id: &str) -> (Option<String>, crate::commitment_consent::Status) {
+    /// The person pressed a button about preparing (brief card, shell card or Settings). Called only
+    /// from the shell's own button callback. What was said back, if the press answered anything, and
+    /// what the surfaces show now; an empty `action_id` only asks what they show. In incognito nothing
+    /// is put to the person, so nothing is marked asked and no card is raised.
+    pub fn person_answers_commitment_prep(&self, action_id: &str) -> crate::commitment_consent::Reply {
         let conn = self.db.conn();
         let said = crate::commitment_consent::person_answer(&conn, action_id);
-        (said, crate::commitment_consent::ask(&conn, now_ts()))
+        if self.incognito {
+            return (said, crate::commitment_consent::status(&conn, now_ts()), Vec::new());
+        }
+        let cards = crate::commitment_cards::cards(&conn, now_ts());
+        (said, crate::commitment_consent::status(&conn, now_ts()), cards)
     }
 
     /// Housekeeping for what was prepared: expired items are closed, and old ones deleted.

@@ -4,6 +4,7 @@
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
+import { PrepCard, PrepState } from "../commitment_prep.slint";
 
 export struct WhisperCardItem {
     id: string,
@@ -174,5 +175,7 @@ export component WhisperCardStack inherits Rectangle {
             dismissed(id) => { root.card-dismissed(id); }
             action-clicked(id) => { root.card-action(id); }
         }
+        // Getting promised things ready: a question or what was done, until answered or expired.
+        for prep in PrepState.cards : PrepCard { card: prep; }
     }
 }

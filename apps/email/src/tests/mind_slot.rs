@@ -423,6 +423,22 @@ fn a_compose_after_ten_seconds_makes_no_mail_call() {
     assert!(mail.asked().is_empty(), "{:?}", mail.asked());
 }
 
+/// LOW-1: in an Email started for an agent nobody has the draft open, so the clear is paid at once
+/// and is not refused with a reason that is not true.
+#[test]
+fn an_agent_start_compose_then_forget_prepared_clears_it_and_never_says_someone_has_it_open() {
+    let file = HomeFile::new("low1");
+    let paths = Paths::temporary(Email::ID);
+    let mail = with_inbox();
+    let app = service_start(&paths, &mail);
+    quiet(&app);
+    act(&app, "compose", with_commitment(&file.path(), "7")).unwrap();
+    assert!(slot_file(&paths).exists(), "the agent's draft is kept");
+    act(&app, "forget_prepared", json!({ "commitment": "7" })).unwrap();
+    assert!(!slot_file(&paths).exists(), "the slot is gone");
+    assert!(mail.asked().is_empty(), "{:?}", mail.asked());
+}
+
 /// P1: the person is typing in the prepared draft when the clear arrives.
 #[test]
 fn forget_prepared_while_the_person_types_in_it_refuses_and_their_text_survives() {

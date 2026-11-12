@@ -6,17 +6,22 @@
 //! `CompanionService::person_answers_commitment_prep` and nothing else does: no tool, recipe step or
 //! Mind can call it, and no `control*.rs` action names it (`no_control_action_gives_the_answer`).
 
-use yantrik_companion::commitment_consent::{no_for, BriefAction, Status, YES};
+use yantrik_companion::commitment_consent::{no_for, BriefAction, YES};
 use yantrik_companion::CompanionService;
 
 use crate::bridge::MorningBriefSectionData;
 
 /// What a press said back, and what the surfaces show after it.
-pub type Reply = (Option<String>, Status);
+pub type Reply = yantrik_companion::commitment_consent::Reply;
 
 /// The rows to add to the brief card.
 pub fn sections(companion: &CompanionService) -> Vec<MorningBriefSectionData> {
     companion.commitment_brief_actions().into_iter().map(row).collect()
+}
+
+/// The row for the question outstanding.
+pub fn question_row(q: &yantrik_companion::commitment_consent::Question) -> MorningBriefSectionData {
+    row(yantrik_companion::commitment_consent::question_action(q))
 }
 
 fn row(a: BriefAction) -> MorningBriefSectionData {
@@ -103,7 +108,7 @@ mod tests {
             }
             let whole = std::fs::read_to_string(entry.path()).unwrap();
             let src = whole.split("#[cfg(test)]").next().unwrap_or("");
-            for needle in ["person_answers_commitment_prep", "commitment_consent", "answer_commitment_prep"] {
+            for needle in ["person_answers_commitment_prep", "commitment_consent", "commitment_cards", "answer_commitment_prep"] {
                 assert!(!src.contains(needle), "{name} names {needle}");
             }
         }
@@ -126,5 +131,43 @@ mod tests {
                 assert!(!src.contains("answer_commitment_prep"), "{name} calls the answer");
             }
         }
+        // In the one file that does: a press of `PrepState.answer` is the only thing that carries an
+        // action id (brief card, shell cards and Settings all press it); the poll's call carries none.
+        let wire = std::fs::read_to_string(dir.join("wire/commitment_prep.rs")).unwrap();
+        let wire = wire.split("#[cfg(test)]").next().unwrap_or("");
+        assert_eq!(wire.matches("on_answer(").count(), 1, "one listener");
+        assert_eq!(wire.matches("answer_commitment_prep(").count(), 2, "the press, and the poll");
+        assert!(wire.contains("answer_commitment_prep(String::new())"), "the poll answers nothing");
+    }
+
+    /// The shell cards (the question, and what was prepared with Turn off) are the person's alone too:
+    /// drawn only by `PrepCard`, whose buttons are `PrepChoices` (pointer-only, `PrepState.answer`),
+    /// never by a notification or a whisper action a socket program can invoke, and named by no
+    /// file of the notification store's wiring or the control surface.
+    #[test]
+    fn the_shell_cards_are_pointer_only_person_only_and_named_by_no_notification_path() {
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui");
+        let prep = std::fs::read_to_string(ui.join("commitment_prep.slint")).unwrap();
+        let card = prep.split_once("export component PrepCard").expect("the card").1;
+        assert!(card.contains("PrepChoices {") && !card.contains("YButton {") && !card.contains("TouchArea"), "its buttons are PrepChoices, nothing clickable of its own");
+        let stack = std::fs::read_to_string(ui.join("components/whisper_card.slint")).unwrap();
+        assert!(stack.contains("PrepCard { card: prep; }"), "the stack draws the card");
+        assert!(!stack.contains("PrepState.answer"), "the stack never presses the answer");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for name in ["wire/notifications.rs", "wire/for_you.rs", "wire/callbacks.rs", "cards.rs", "notice_inbox.rs"] {
+            let whole = std::fs::read_to_string(src.join(name)).unwrap();
+            let code = whole.split("#[cfg(test)]").next().unwrap_or("");
+            for needle in ["commitment_cards", "answer_commitment_prep", "PrepState"] {
+                assert!(!code.contains(needle), "{name} names {needle}");
+            }
+        }
+    }
+
+    /// LOW-2: a press that answered nothing says so, and is never dropped silently.
+    #[test]
+    fn a_press_on_a_stale_question_says_so() {
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/commitment_prep.rs")).unwrap();
+        assert!(src.contains("None => stale(&ui, &status)"), "a press with no answer goes to stale");
+        assert!(src.contains("That question has changed; the current one is in {WHERE}."));
     }
 }

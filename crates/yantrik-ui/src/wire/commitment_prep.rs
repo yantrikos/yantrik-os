@@ -12,11 +12,12 @@ use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
-use yantrik_companion::commitment_consent::Status;
+use yantrik_companion::commitment_cards::Card;
+use yantrik_companion::commitment_consent::{Status, TURN_OFF, TURN_ON, WHERE};
 
 use crate::app_context::AppContext;
 use crate::commitment_brief::Reply;
-use crate::{App, PrepState};
+use crate::{App, PrepCardData, PrepState};
 
 /// Replies are looked for this often, and the state is asked again every [`ASK_EVERY`] looks.
 const TICK: Duration = Duration::from_millis(200);
@@ -26,6 +27,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let bridge = ctx.bridge.clone();
     let pending: Rc<RefCell<Vec<(Receiver<Reply>, bool)>>> = Rc::new(RefCell::new(Vec::new()));
 
+    let g = ui.global::<PrepState>();
+    g.set_off_id(TURN_OFF.into());
+    g.set_on_id(TURN_ON.into());
     let queue = pending.clone();
     let asker = bridge.clone();
     ui.global::<PrepState>().on_answer(move |action_id| {
@@ -44,10 +48,13 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         *n += 1;
         let mut waiting = pending.borrow_mut();
         waiting.retain(|(rx, pressed)| match rx.try_recv() {
-            Ok((said, status)) => {
-                show(&ui, &status);
-                if let Some(said) = said.filter(|_| *pressed) {
-                    answered(&ui, &said);
+            Ok((said, status, cards)) => {
+                show(&ui, &status, &cards);
+                if *pressed {
+                    match said {
+                        Some(said) => answered(&ui, &said),
+                        None => stale(&ui, &status),
+                    }
                 }
                 false
             }
@@ -58,9 +65,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     std::mem::forget(timer);
 }
 
-/// What Settings → Companion shows.
-fn show(ui: &App, status: &Status) {
+/// What Settings → Companion and the cards show. The cards are set only when they changed, so an
+/// item has one card however often it is asked, and a card is not redrawn under the pointer.
+fn show(ui: &App, status: &Status, cards: &[Card]) {
     let g = ui.global::<PrepState>();
+    let now: Vec<PrepCardData> = cards.iter().map(card_data).collect();
+    let drawn: Vec<PrepCardData> = g.get_cards().iter().collect();
+    if now != drawn {
+        g.set_cards(ModelRc::new(VecModel::from(now)));
+    }
     g.set_on(status.on);
     let (text, yes, no) = status.question.as_ref().map(|q| (q.text.clone(), q.yes.clone(), q.no.clone())).unwrap_or_default();
     g.set_question(text.into());
@@ -73,4 +86,27 @@ fn answered(ui: &App, said: &str) {
     super::toast::local(&ui.as_weak(), "Yantrik", said, "", 1);
     let rest: Vec<_> = ui.get_morning_brief_sections().iter().filter(|s| s.yes_id.is_empty()).collect();
     ui.set_morning_brief_sections(ModelRc::new(VecModel::from(rest)));
+}
+
+fn card_data(c: &Card) -> PrepCardData {
+    PrepCardData {
+        item: c.item.clone().into(),
+        title: c.title.clone().into(),
+        text: c.text.clone().into(),
+        yes_label: c.yes_label.into(),
+        yes_id: c.yes_id.clone().into(),
+        no_label: c.no_label.into(),
+        no_id: c.no_id.clone().into(),
+    }
+}
+
+/// A press that answered nothing (the question had moved on, or was answered already) says so, and
+/// the brief card is given the question that is outstanding now, if there is one.
+fn stale(ui: &App, status: &Status) {
+    super::toast::local(&ui.as_weak(), "Yantrik", &format!("That question has changed; the current one is in {WHERE}."), "", 1);
+    let mut rows: Vec<_> = ui.get_morning_brief_sections().iter().filter(|s| s.yes_id.is_empty()).collect();
+    if let Some(q) = &status.question {
+        rows.push(super::morning_brief::section(&crate::commitment_brief::question_row(q)));
+    }
+    ui.set_morning_brief_sections(ModelRc::new(VecModel::from(rows)));
 }

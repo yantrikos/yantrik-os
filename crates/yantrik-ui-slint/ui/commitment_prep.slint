@@ -13,13 +13,29 @@
 import { Theme } from "theme.slint";
 import { YButton } from "components/y_button.slint";
 
+// One card raised in the shell for an item: the question, or what was done with Turn off.
+export struct PrepCardData {
+    item: string,
+    title: string,
+    text: string,
+    yes-label: string,
+    yes-id: string,
+    no-label: string,
+    no-id: string,
+}
+
 export global PrepState {
+    // The cards to show, one per item. They go when the item is answered or has expired.
+    in-out property <[PrepCardData]> cards;
     // Whether getting promised things ready is on; the shell keeps it current.
     in-out property <bool> on: true;
     // The question that waits, when one does: its sentence and the ids of its two buttons.
     in-out property <string> question;
     in-out property <string> yes-id;
     in-out property <string> no-id;
+    // The ids of the turn-off and turn-on buttons, from the companion, so they cannot drift.
+    in-out property <string> off-id;
+    in-out property <string> on-id;
     callback answer(string);
 }
 
@@ -69,7 +85,7 @@ export component PrepSwitch inherits VerticalLayout {
             label: PrepState.on ? "Turn off" : "Turn on";
             variant: 1;
             pointer-only: true;
-            clicked => { PrepState.answer(PrepState.on ? "commitment_prep:off" : "commitment_prep:on"); }
+            clicked => { PrepState.answer(PrepState.on ? PrepState.off-id : PrepState.on-id); }
         }
     }
     Text {
@@ -87,5 +103,44 @@ export component PrepSwitch inherits VerticalLayout {
             wrap: word-wrap;
         }
         PrepChoices { yes-id: PrepState.yes-id; no-id: PrepState.no-id; }
+    }
+}
+
+// A card on the desktop, where the person is: it stays until its item is answered or expires. Its
+// buttons are `PrepChoices`, so they are pointer-only and press `PrepState.answer`, as the brief's do.
+export component PrepCard inherits Rectangle {
+    in property <PrepCardData> card;
+
+    width: 300px;
+    height: body.preferred-height + 2 * Theme.sp-3;
+    border-radius: 16px;
+    background: Theme.bg-deep.transparentize(10%);
+    border-width: 1px;
+    border-color: Theme.border-default;
+
+    body := VerticalLayout {
+        x: Theme.sp-3;
+        width: parent.width - 2 * Theme.sp-3;
+        y: Theme.sp-3;
+        spacing: Theme.sp-2;
+        Text {
+            text: root.card.title;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.card.text;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        PrepChoices {
+            yes-label: root.card.yes-label;
+            yes-id: root.card.yes-id;
+            no-label: root.card.no-label;
+            no-id: root.card.no-id;
+        }
     }
 }

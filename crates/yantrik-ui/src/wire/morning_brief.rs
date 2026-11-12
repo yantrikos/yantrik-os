@@ -24,7 +24,7 @@ use std::time::Duration;
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::app_context::AppContext;
-use crate::bridge::MorningBriefSnapshot;
+use crate::bridge::{MorningBriefSectionData, MorningBriefSnapshot};
 use crate::{App, BriefSection};
 
 /// Wire the morning brief card on the desktop.
@@ -196,21 +196,7 @@ fn populate_brief_card(ui_weak: &slint::Weak<App>, snapshot: &MorningBriefSnapsh
     let sections: Vec<BriefSection> = snapshot
         .sections
         .iter()
-        .map(|s| {
-            // A question about preparing is drawn with buttons of its own, and its row fires nothing.
-            let d = crate::commitment_brief::drawn(&s.action_id);
-            BriefSection {
-                icon: SharedString::from(&s.icon),
-                label: SharedString::from(&s.label),
-                content: SharedString::from(&s.content),
-                expanded: s.expanded,
-                action_id: SharedString::from(&d.row_action_id),
-                yes_id: d.yes_id.into(),
-                yes_label: d.yes_label.into(),
-                no_id: d.no_id.into(),
-                no_label: d.no_label.into(),
-            }
-        })
+        .map(section)
         .collect();
 
     let weak = ui_weak.clone();
@@ -268,6 +254,23 @@ fn wire_brief_section_action(ui: &App) {
             }
         }
     });
+}
+
+/// How the card draws one section. A question about preparing is drawn with buttons of its own, and
+/// its row fires nothing.
+pub(super) fn section(s: &MorningBriefSectionData) -> BriefSection {
+    let d = crate::commitment_brief::drawn(&s.action_id);
+    BriefSection {
+        icon: SharedString::from(&s.icon),
+        label: SharedString::from(&s.label),
+        content: SharedString::from(&s.content),
+        expanded: s.expanded,
+        action_id: SharedString::from(&d.row_action_id),
+        yes_id: d.yes_id.into(),
+        yes_label: d.yes_label.into(),
+        no_id: d.no_id.into(),
+        no_label: d.no_label.into(),
+    }
 }
 
 #[cfg(test)]

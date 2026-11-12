@@ -39,14 +39,18 @@ pub struct Status {
     pub question: Option<Question>,
 }
 
+/// What a press says back: the sentence (if it answered anything), what Settings shows, and the cards.
+pub type Reply = (Option<String>, Status, Vec<crate::commitment_cards::Card>);
+
 /// The `no` button's id for a `yes` button's id.
 pub fn no_for(action_id: &str) -> Option<String> {
     action_id.strip_prefix(YES).map(|item| format!("{NO}{item}"))
 }
 
-/// Whether an action id is one of the buttons of the answer.
-pub fn is_answer(action_id: &str) -> bool {
-    action_id.starts_with(YES) || action_id.starts_with(NO) || action_id == TURN_ON || action_id == TURN_OFF
+/// The sentence of a proposed item without the question it ends with, for a surface that puts the
+/// question as its own heading.
+pub fn without_question(text: &str) -> &str {
+    text.trim_end().strip_suffix(store::QUESTION).unwrap_or(text).trim_end()
 }
 
 /// The proposed items that are waiting for a yes or a no.
@@ -74,7 +78,9 @@ pub fn status(conn: &rusqlite::Connection, now: f64) -> Status {
 pub fn ask(conn: &rusqlite::Connection, now: f64) -> Status {
     let status = status(conn, now);
     if let Some(item) = status.question.as_ref().and_then(|q| q.yes.strip_prefix(YES)) {
-        store::mark_asked(conn, item);
+        if store::asking(conn).as_deref() != Some(item) {
+            store::mark_asked(conn, item);
+        }
     }
     status
 }
@@ -102,12 +108,16 @@ pub fn brief_actions(conn: &rusqlite::Connection, now: f64) -> Vec<BriefAction> 
         return vec![BriefAction {
             icon: "\u{2726}",
             label: "Get promised things ready: off".into(),
-            content: "It was turned off in a chat. Files would be opened in Mind View and emails drafted; nothing is ever sent.".into(),
+            content: "Yantrik turned this off, not you. Files would be opened in Mind View and emails drafted; nothing is ever sent.".into(),
             action_id: TURN_ON.into(),
         }];
     }
-    let Some(q) = status.question else { return Vec::new() };
-    vec![BriefAction { icon: "\u{2713}", label: store::QUESTION.into(), content: q.text, action_id: q.yes }]
+    status.question.map(|q| vec![question_action(&q)]).unwrap_or_default()
+}
+
+/// The brief card's row for a question. A neutral mark: a tick before a question reads as done.
+pub fn question_action(q: &Question) -> BriefAction {
+    BriefAction { icon: "\u{2726}", label: "Get promised things ready?".into(), content: without_question(&q.text).into(), action_id: q.yes.clone() }
 }
 
 /// A press of one of the buttons. What was said back to the person, or `None` when the press is not

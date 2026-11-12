@@ -178,7 +178,9 @@ pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>)
     if !ours {
         return Ok(());
     }
-    if m.composer.in_slot && m.composer.open {
+    // Open in front of the person: an Email started for an agent has no window and nobody typing, and
+    // a draft there is only the agent's, so it goes as before.
+    if m.composer.in_slot && m.composer.open && m.person_here {
         if edited_since_shown(m) {
             park(m);
         }
