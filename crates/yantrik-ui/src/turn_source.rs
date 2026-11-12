@@ -142,4 +142,13 @@ mod tests {
         assert!(bridge.contains("the_persons_turn_begins()"), "the worker records the turn from the sender's `person`");
         assert!(bridge.contains("let _person_turn = (!is_system_generated)"), "and only for a turn that is not system generated");
     }
+
+    #[test]
+    fn every_hand_off_goes_through_the_companion_check_and_send_to_agent_is_sensitive() {
+        let production = include_str!("control_agents.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(production.contains("turn_source::refuse_the_companion(&crate::mind_view::requester_now())?;\n    let caller = caller()?;"), "delegating_caller asks the shell who is calling");
+        assert_eq!(production.matches("delegating_caller()?").count(), 3, "new_agent, send_to_agent, hand_off");
+        let send = production.split("\"send_to_agent\",").nth(1).unwrap().split("Action::new(").next().unwrap();
+        assert!(send.contains(".risk(\"sensitive\")"), "send_to_agent is graded sensitive");
+    }
 }
