@@ -579,6 +579,24 @@
 
   <windowRules>
     <!--
+      Our own apps float: every window whose app id is `yantrik-<app>` (the app framework names
+      them, frameworks/yantrik-app boot::window_app_id, #877) gets the compositor's border and
+      drop shadow, and no title bar. The apps draw their own header and buttons, so until now they
+      asked for no decoration at all, and a window with no decoration gets no shadow from labwc:
+      three windows stacked on a photograph were three flat rectangles with a hairline between
+      them. `border` keeps labwc out of the app's header and gives it the one thing an app cannot
+      draw for itself, the shadow outside its own surface (themerc: window.*.shadow.*). The
+      shell's own windows (the desktop, the OSD, the capture bar) carry no such id and are not
+      touched; a maximised window has no border and no shadow, as before.
+
+      The action alone, with no `serverDecoration="yes"` on the rule: with it labwc first places
+      the window as one with a title bar and then takes the bar away, which left every window
+      27px lower than it asked to be, its foot on the dock (VM 542, 12 Nov 2026).
+    -->
+    <windowRule identifier="yantrik-*">
+      <action name="SetDecorations" decorations="border" forceSSD="yes" />
+    </windowRule>
+    <!--
       The on-screen display (volume, brightness, mic, Caps Lock) is a window of its own, because
       drawn in the shell's window it sat behind every app (review of #579). Always on top, no
       title bar, not in the taskbar or Alt+Tab. It cannot be kept from taking focus when it
