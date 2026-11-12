@@ -5551,8 +5551,8 @@ STUB
     cp "$(command -v bash)" "$sw_labwc"; cp "$(command -v sleep)" "$sb/yantrik-switcher"
     cp "$(command -v sleep)" "$root/swother/yantrik-switcher"
     sw_stand() { # <labwc stand-in's name> <switcher path>: a switcher whose parent has that name; sets sw_pid
-      cp "$sw_labwc" "$root/$1"
-      "$root/$1" -c '"$1" 30 & echo $!; wait' _ "$2" > "$root/sw.pid" 2>/dev/null &
+      mkdir -p "$root/swparent"; cp "$sw_labwc" "$root/swparent/$1"
+      "$root/swparent/$1" -c '"$1" 30 & echo $!; wait' _ "$2" > "$root/sw.pid" 2>/dev/null &
       sleep 0.4; sw_pid="$(cat "$root/sw.pid")"
     }
     sw_end() { YANTRIK_SELFTEST=1 YANTRIK_LABWC_NAME=ylabwc-selftest BIN_DIR="$sb" end_stale_switcher "$(id -un)" 2>&1; }
