@@ -10,6 +10,8 @@
 
 use std::path::Path;
 
+use yantrik_browser_ports::Profiles;
+
 /// How deep under the spawned process the holder may be: the reaper and the program.
 const MAX_DEPTH: usize = 3;
 
@@ -52,10 +54,21 @@ pub fn holder_of(proc: &Path, root: u32, inode: u64) -> Option<u32> {
 pub const NOT_DRIVABLE: &str = "A Browser was already open that Yantrik did not start (a link in another program opened it), \
     so it is outside the protected view and Yantrik cannot drive it. Close it, then open the Browser from the dock again.";
 
+/// The `--user-data-dir` a command line names (everything up to the next ` --`, so a path with
+/// a space stays whole).
+fn user_data_dir(line: &str) -> Option<&str> {
+    let rest = line.split_once("--user-data-dir=")?.1;
+    Some(rest.split(" --").next().unwrap_or(rest).trim())
+}
+
 /// Whether the person's account runs a Chromium main process (not one of its helpers) that is
 /// not `ours`: a browser the shell did not start with a pipe, which a dock launch then joins and
 /// nothing can drive. Read from the command line's first word, which a Chromium keeps.
-pub fn another_browser_is_open(proc: &Path, ours: Option<u32>, uid: u32) -> bool {
+///
+/// The Minds' browsers are not that: Mind View's (its own `--user-data-dir`, a Mind profile in
+/// `profiles`) and the headless ones (`--headless*`) run as the person too, and the person
+/// cannot close them, so they never make a dock launch "join another browser".
+pub fn another_browser_is_open(proc: &Path, ours: Option<u32>, uid: u32, profiles: &Profiles) -> bool {
     use std::os::unix::fs::MetadataExt;
     let Ok(dir) = std::fs::read_dir(proc) else { return false };
     dir.flatten().any(|e| {
@@ -68,6 +81,8 @@ pub fn another_browser_is_open(proc: &Path, ours: Option<u32>, uid: u32) -> bool
         let chromium = matches!(program, "chromium" | "chromium-browser" | "chrome" | "google-chrome" | "google-chrome-stable");
         chromium
             && !line.contains("--type=")
+            && !line.split_whitespace().any(|w| w.starts_with("--headless"))
+            && !user_data_dir(&line).is_some_and(|d| profiles.is_a_minds(Path::new(d)))
             && Some(pid) != ours
             && std::fs::metadata(&at).is_ok_and(|m| m.uid() == uid)
     })
@@ -117,17 +132,40 @@ mod tests {
         std::fs::write(proc.join(pid.to_string()).join("cmdline"), line.replace(' ', "\0")).unwrap();
     }
 
+    fn profiles() -> Profiles {
+        Profiles { mind_view: "/home/p/.local/share/yantrik/mind-view".into(), identities: "/home/p/.local/share/yantrik/identities".into() }
+    }
+
+    /// The Minds' browsers run as the person too: they are not "another browser".
+    #[test]
+    fn a_minds_browser_is_not_another_browser() {
+        let me = unsafe { libc::getuid() };
+        let proc = tree("minds");
+        browser(&proc, 410, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/yantrik/mind-view --remote-debugging-port=9223");
+        assert!(!another_browser_is_open(&proc, None, me, &profiles()), "Mind View's browser");
+        browser(&proc, 411, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/yantrik/identities/work --remote-debugging-port=9300");
+        assert!(!another_browser_is_open(&proc, None, me, &profiles()), "a Mind's other identity");
+        let proc = tree("headless");
+        browser(&proc, 420, "/usr/bin/chromium --headless=new --remote-debugging-port=9300 --user-data-dir=/tmp/x");
+        assert!(!another_browser_is_open(&proc, None, me, &profiles()), "a headless browser");
+        browser(&proc, 421, "/usr/bin/chromium --headless --disable-gpu");
+        assert!(!another_browser_is_open(&proc, None, me, &profiles()));
+        // The person's own browser, on a profile of theirs, still counts beside them.
+        browser(&proc, 422, "/usr/bin/chromium --user-data-dir=/home/p/.config/chromium");
+        assert!(another_browser_is_open(&proc, None, me, &profiles()));
+    }
+
     /// The xdg-open case: a Chromium with no pipe, which a dock launch joins.
     #[test]
     fn a_browser_the_shell_did_not_start_is_noticed_and_helpers_and_its_own_are_not() {
         let proc = tree("another");
         let me = unsafe { libc::getuid() };
         browser(&proc, 400, "/usr/lib/chromium/chromium --type=renderer --no-sandbox");
-        assert!(!another_browser_is_open(&proc, None, me), "a helper is not a browser");
+        assert!(!another_browser_is_open(&proc, None, me, &profiles()), "a helper is not a browser");
         browser(&proc, 401, "/usr/lib/chromium/chromium --remote-debugging-pipe");
-        assert!(!another_browser_is_open(&proc, Some(401), me), "the shell's own is not another");
-        assert!(another_browser_is_open(&proc, None, me));
-        assert!(!another_browser_is_open(&proc, None, me + 1), "another account's is not the person's");
+        assert!(!another_browser_is_open(&proc, Some(401), me, &profiles()), "the shell's own is not another");
+        assert!(another_browser_is_open(&proc, None, me, &profiles()));
+        assert!(!another_browser_is_open(&proc, None, me + 1, &profiles()), "another account's is not the person's");
     }
 
     #[test]

@@ -136,6 +136,23 @@ fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
+/// Raise the "not drivable" notice for `app_id`, but only for a clean hand-over exit: the launch
+/// has exited (`pid` is gone), nothing has recorded why (a `Failed` record is the real reason and
+/// is never overwritten), the shell has no Browser of its own, and the person's account runs
+/// another one that is theirs (the Minds' browsers are not).
+fn note_not_drivable(app_id: &str, proc: &Path, pid: u32, uid: u32, profiles: &yantrik_browser_ports::Profiles) {
+    if !alive(pid)
+        && crate::running::last_launch_failure(app_id).is_none()
+        && own_browser().is_none()
+        && super::browser_holder::another_browser_is_open(proc, None, uid, profiles)
+    {
+        tracing::warn!(pid, "The Browser joined one Yantrik did not start; it cannot be driven");
+        crate::running::mark_launch_failed(app_id, app_id, super::browser_holder::NOT_DRIVABLE, 0);
+    } else {
+        tracing::warn!(pid, "No process under the Browser's launch holds its DevTools pipe");
+    }
+}
+
 impl Handoff {
     /// The browser is running as `pid`: close the browser's end here and offer ours to the
     /// service, on a thread that lives as long as the browser. A browser that is gone by then (a
@@ -157,18 +174,15 @@ impl Handoff {
                 // nothing can drive (one `xdg-open` started, outside the wall): say so.
                 // SAFETY: getuid has no failure mode.
                 let uid = unsafe { libc::getuid() };
-                if own_browser().is_none() && super::browser_holder::another_browser_is_open(proc, None, uid) {
-                    tracing::warn!(pid, "The Browser joined one Yantrik did not start; it cannot be driven");
-                    crate::running::mark_launch_failed("browser", "browser", super::browser_holder::NOT_DRIVABLE, 0);
-                } else {
-                    tracing::warn!(pid, "No process under the Browser's launch holds its DevTools pipe");
-                }
+                note_not_drivable("browser", proc, pid, uid, &yantrik_browser_ports::Profiles::current());
                 return;
             };
             OWN_BROWSER.store(holder, std::sync::atomic::Ordering::SeqCst);
             // Read afresh for every offer: a restarted service has a new pid, and the service
             // manager records the current one on every start it performs.
             keep_offered(&socket_path(), &mine, holder, || ServiceIdentity::installed(service_pid()));
+            // The browser is gone: a later process may reuse its pid, and must not pass for it.
+            let _ = OWN_BROWSER.compare_exchange(holder, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
         });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "Could not start the thread that hands the Browser's pipe over");
@@ -281,6 +295,53 @@ mod tests {
     use super::*;
     use super::super::browser_peer::tests::{this_process_is_not_the_service, this_process_is_the_service};
     use std::os::unix::net::UnixListener;
+
+    fn fake_proc(name: &str, cmdline: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("yb-notice-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("900")).unwrap();
+        std::fs::write(dir.join("900").join("cmdline"), cmdline.replace(' ', "\0")).unwrap();
+        dir
+    }
+
+    fn a_gone_pid() -> u32 {
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    fn profiles() -> yantrik_browser_ports::Profiles {
+        yantrik_browser_ports::Profiles { mind_view: "/p/mind-view".into(), identities: "/p/identities".into() }
+    }
+
+    /// The notice is for a clean hand-over exit only: a `Failed` record is the real reason, and
+    /// stays; the person's own other browser is what raises it.
+    #[test]
+    fn a_failed_launch_record_is_not_overwritten_by_the_notice() {
+        let me = unsafe { libc::getuid() };
+        let proc = fake_proc("failed", "/usr/bin/chromium --no-first-run");
+        let pid = a_gone_pid();
+        crate::running::mark_launch_failed("notice-test-failed", "chromium", "exit status: 1", 300);
+        note_not_drivable("notice-test-failed", &proc, pid, me, &profiles());
+        let kept = crate::running::last_launch_failure("notice-test-failed").unwrap();
+        assert_eq!((kept.status.as_str(), kept.lived_ms), ("exit status: 1", 300));
+        // With nothing recorded, the same situation raises it.
+        note_not_drivable("notice-test-clean", &proc, pid, me, &profiles());
+        let said = crate::running::last_launch_failure("notice-test-clean").unwrap();
+        assert_eq!(said.status, super::super::browser_holder::NOT_DRIVABLE);
+    }
+
+    #[test]
+    fn the_notice_is_not_raised_for_a_minds_browser_or_a_launch_still_running() {
+        let me = unsafe { libc::getuid() };
+        let minds = fake_proc("minds", "/usr/bin/chromium --headless=new --remote-debugging-port=9300");
+        note_not_drivable("notice-test-minds", &minds, a_gone_pid(), me, &profiles());
+        assert!(crate::running::last_launch_failure("notice-test-minds").is_none());
+        let other = fake_proc("running", "/usr/bin/chromium --no-first-run");
+        note_not_drivable("notice-test-running", &other, std::process::id(), me, &profiles());
+        assert!(crate::running::last_launch_failure("notice-test-running").is_none(), "the launch has not exited");
+    }
 
     /// N3: the pipe goes with the Browser arm's own launch; a catalogue entry, a `.desktop` file
     /// or a Mind View launch whose arguments carry the flag is not the person's Browser.

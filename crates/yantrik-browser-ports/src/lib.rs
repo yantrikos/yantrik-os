@@ -146,6 +146,11 @@ impl Profiles {
         Profiles { mind_view: mind_view_profile(), identities: identities_root() }
     }
 
+    /// Whether `dir` (a `--user-data-dir`) is a mind's profile: Mind View's, or an identity's.
+    pub fn is_a_minds(&self, dir: &Path) -> bool {
+        dir == self.mind_view || dir.starts_with(&self.identities)
+    }
+
     /// Every directory that is a mind's profile now.
     fn dirs(&self) -> Vec<(PathBuf, Place)> {
         let mut out = vec![(self.mind_view.clone(), Place::MindView)];

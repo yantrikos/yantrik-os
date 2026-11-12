@@ -108,6 +108,25 @@ class TheWallsTree(unittest.TestCase):
         with mock.patch.object(handover, "SYSTEM_BWRAP", (self.copy,)):
             self.assertIn("not the installer's alone", self.check(600))
 
+    def test_another_program_mounted_over_the_path_is_not_the_system_bwrap(self):
+        """Inside its own mount namespace an account can bind any root-owned program over
+        /usr/bin/bwrap: `exe` then reads the right name, but the file is another one."""
+        self.wall()
+        self.assertIsNone(self.check(600))
+        real_stat = os.stat
+        other = os.path.join(self.tmp, "python3")
+        open(other, "w").close()
+        os.chmod(other, 0o755)
+
+        def stat(path, *a, **kw):
+            # /proc/<pid>/exe of the middle bwrap follows to a different file than the installed one
+            if str(path).endswith(os.path.join("599", "exe")):
+                return real_stat(other)
+            return real_stat(path, *a, **kw)
+
+        with mock.patch.object(handover.os, "stat", stat):
+            self.assertIn("not the file the system installed", self.check(600))
+
     def test_a_non_child_of_the_shell_is_refused_even_through_bwrap(self):
         self.at(598, 777, exe=self.bwrap)
         self.at(599, 598, exe=self.bwrap)

@@ -86,9 +86,12 @@ def _flags_of(raw):
 
 
 def is_the_system_bwrap(pid, proc="/proc", owner=None):
-    """None when `pid` runs the system's bubblewrap: its `exe` is one of `SYSTEM_BWRAP` (a file an
-    update has replaced reads `(deleted)` and still counts) and the file behind it is `owner`'s
-    (root's) and writable by nobody else, so a copy of bwrap an account made is not it."""
+    """None when `pid` runs the system's bubblewrap: its `exe` reads as one of `SYSTEM_BWRAP` and
+    is that very file, by (st_dev, st_ino) as `shell_is_installed` does (a file an update has
+    replaced reads `(deleted)` and is the one thing that is not compared: its path is gone), and
+    the file behind it is `owner`'s (root's) and writable by nobody else. A copy of bwrap an
+    account made is not it, and neither is another program bind-mounted over the path in the
+    account's own mount namespace: it reads the right name but is another file."""
     owner = BWRAP_OWNER if owner is None else owner
     at = os.path.join(proc, str(pid))
     try:
@@ -96,10 +99,18 @@ def is_the_system_bwrap(pid, proc="/proc", owner=None):
         theirs = os.stat(os.path.join(at, "exe"))
     except OSError as e:
         return "pid %d could not be identified (%s)" % (pid, e)
-    if exe.endswith(_DELETED):
+    replaced = exe.endswith(_DELETED)
+    if replaced:
         exe = exe[:-len(_DELETED)]
     if exe not in SYSTEM_BWRAP:
         return "pid %d runs %s, not the system's bwrap" % (pid, exe)
+    if not replaced:
+        try:
+            installed = os.stat(exe)
+        except OSError as e:
+            return "the system's bwrap could not be read (%s)" % e
+        if (theirs.st_dev, theirs.st_ino) != (installed.st_dev, installed.st_ino):
+            return "pid %d runs %s, but not the file the system installed there" % (pid, exe)
     if theirs.st_uid != owner or theirs.st_mode & 0o022:
         return "pid %d runs a bwrap that is not the installer's alone" % pid
     return None
