@@ -11,7 +11,7 @@ environment, and never printed.
 `model:`, leaving every other key in the file as it was (above all `platform_toolsets`, the allowlist
 that keeps Hermes's own terminal, file, code, browser and web tools off). The model section the file
 had is kept once, beside it, and `revert` puts it back (or removes `model:` when there was none).
-A live section of the person's own that is edited since is copied, never written over (the shared
+A live section that is not the one this tool wrote (its digest is kept, so a key added to it counts) is copied, never written over (the shared
 table harnesses/tests/fixtures/keep_live_cases.json is the rule); the desktop is told where, on
 `NOTE: ` lines, since this runs as another account and its files are not readable from the desktop.
 The address must be this machine's own gateway (http, a loopback name, port 7460, no userinfo: the
@@ -19,6 +19,8 @@ host of `http://127.0.0.1:@evil/` is `evil`), so a caller cannot use this to sen
 the token, anywhere else.
 """
 
+import copy
+import hashlib
 import json
 import os
 import stat
@@ -132,8 +134,21 @@ def _keep_copy(path, data):
     raise ModelError("could not find a free name to keep a copy of the model section; nothing was changed")
 
 
-def _is_gateway_section(model):
-    return isinstance(model, dict) and is_gateway(str(model.get("base_url", "")))
+def _digest(model):
+    """sha256 of a `model` section's canonical JSON (never printed)."""
+    return hashlib.sha256(json.dumps(model, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _is_own_section(model, before):
+    """The live section is what this tool wrote: its digest is among the ones the kept record holds
+    (every section this tool wrote or was about to write). Pointing at the gateway is not enough: the
+    person can add a key (`context_length`) and keep the address. A record from before digests were kept
+    has none, and then the address is all there is to go by."""
+    if not isinstance(model, dict):
+        return False
+    if "written" not in before:
+        return is_gateway(str(model.get("base_url", "")))
+    return _digest(model) in before["written"]
 
 
 def _differs_from_kept(data, before):
@@ -150,12 +165,12 @@ def _copies_of(before):
 def _keep_live_model(path, kept, before, data):
     """The shared rule (harnesses/tests/fixtures/keep_live_cases.json is the rule; provider_handoff in
     the desktop runs the same table): nothing of the person's is overwritten without a copy. When no
-    apply of this tool is in force (the live `model` section is not the gateway's), a live section that
-    differs from the kept one is the person's newer work, and is copied before anything writes over it.
+    apply of this tool is in force (the live `model` section is not one this tool wrote), a live section
+    that differs from the kept one is the person's newer work, and is copied before anything writes over it.
     Compared on every Apply, however many cycles came before; the copies are a list, and the kept
     record names each (#1201, #1205)."""
     replaced = _copies_of(before)
-    if _is_gateway_section(data.get("model")) or not _differs_from_kept(data, before):
+    if _is_own_section(data.get("model"), before) or not _differs_from_kept(data, before):
         return replaced
     replaced.append(_keep_copy(path, data))
     before["replaced"] = replaced
@@ -172,7 +187,9 @@ def apply(path, spec):
     before = _load_kept(kept)
     copies = []
     if before is None:
-        _publish(kept, {"had": "model" in data, "model": data.get("model"), "made_by": "apply"}, exclusive=True)
+        # A copy: `model.update` below changes the live section in place, and the record keeps what was there.
+        before = {"had": "model" in data, "model": copy.deepcopy(data.get("model")), "made_by": "apply", "written": []}
+        _publish(kept, before, exclusive=True)
     else:
         copies = _keep_live_model(path, kept, before, data)
     model = data.get("model")
@@ -180,6 +197,13 @@ def apply(path, spec):
     if not isinstance(model, dict):
         model = data["model"] = {}
     model.update(spec)
+    # Recorded before the config is written, and added to what is there: a write that fails leaves the
+    # section of the apply before it still known as this tool's.
+    if "written" in before:
+        digest = _digest(model)
+        if digest not in before["written"]:
+            before["written"].append(digest)
+            _publish(kept, before)
     hermes_config._write(path, data, text)
     return copies
 
@@ -196,7 +220,7 @@ def revert(path):
         return None, []
     data, text = hermes_config._read(path)
     copies = _copies_of(before)
-    if not _is_gateway_section(data.get("model")) and _differs_from_kept(data, before):
+    if not _is_own_section(data.get("model"), before) and _differs_from_kept(data, before):
         copies.append(_keep_copy(path, data))
     if before.get("had"):
         data["model"] = before.get("model")
@@ -267,7 +291,10 @@ def main(argv):
         print(exc if isinstance(exc, (ModelError, hermes_config.ConfigError)) else "could not change the model settings: %s"
               % type(exc).__name__, file=sys.stderr)
         return 1
-    print("Hermes's model settings %s" % ("now point at Yantrik models" if argv[1] == "apply" else "are back as they were"))
+    if argv[1] == "apply":
+        print("Hermes's model settings now point at Yantrik models")
+    else:
+        print("Hermes's model settings are back %s" % ("as an older kept section had them" if found else "as they were"))
     for line in _notes(found, copies):
         print(line)
     return 0

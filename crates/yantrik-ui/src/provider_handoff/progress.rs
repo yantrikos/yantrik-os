@@ -33,6 +33,12 @@ pub(super) struct FileProgress {
 }
 
 impl FileProgress {
+    /// The copies this record names that `named` (a marker's list) does not: made by an apply that
+    /// failed after it, so no marker knows them yet.
+    pub fn not_in(&self, named: &[PathBuf]) -> Vec<PathBuf> {
+        self.replaced.iter().filter(|p| !named.contains(p)).cloned().collect()
+    }
+
     pub fn is_own(&self, bytes: &[u8]) -> bool {
         self.own.contains(&sha(bytes))
     }

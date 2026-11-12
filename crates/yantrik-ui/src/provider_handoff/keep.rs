@@ -3,7 +3,7 @@
 //! The rule (the shared cases in harnesses/tests/fixtures/keep_live_cases.json are the rule; the
 //! Python side, harnesses/lib/install/hermes_model.py, runs the same table): nothing of the person's is
 //! overwritten without a copy. A live file is this code's own, and needs none, only if it equals the
-//! backup or a content the in-progress record says this code wrote.
+//! backup or a content the in-progress record says an earlier attempt of this code wrote.
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +49,9 @@ pub(super) fn keep_original(path: &Path, known: &FileProgress, earlier: Option<&
         let backup_present = t.backup.as_ref().is_none_or(|b| exists(b));
         if backup_present {
             let edited = live.as_ref().is_some_and(|l| is_edited(t, known, l));
+            // The copies the marker names, and any a failed apply of this code made since (progress.rs).
             let mut replaced = t.replaced.clone();
+            replaced.extend(known.not_in(&t.replaced));
             if edited {
                 replaced.push(replaced::keep_live(path, live.as_deref().unwrap_or_default())?);
             }
@@ -71,7 +73,9 @@ pub(super) fn keep_original(path: &Path, known: &FileProgress, earlier: Option<&
     match live {
         // Nothing before this, or only what this code wrote (the backup was deleted): nothing to keep.
         None => Ok(Kept { backup: None, adopted: false, replaced: carried }),
-        Some(l) if known.is_own(&l) => Ok(Kept { backup: None, adopted: false, replaced: carried }),
+        // `known.own` is what EARLIER attempts wrote (apply.rs): a file that merely equals what this
+        // plan is about to write is the person's, and is backed up like any other.
+        Some(l) if known.is_own(&l) && !known.backup_ours => Ok(Kept { backup: None, adopted: false, replaced: carried }),
         Some(l) => {
             private_file::write(&b, &l, Publish::CreateOnly, || Ok(()))?;
             Ok(Kept { backup: Some(b), adopted: false, replaced: carried })

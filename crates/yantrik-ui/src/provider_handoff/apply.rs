@@ -7,7 +7,7 @@ use super::{
     adapter_for, Handoff, companion, hermes, marker, marker_path, mind, own_models_path, Marker, Plan, Touched, GATEWAY_ID,
 };
 use super::keep::keep_original;
-use super::progress::{self, sha, Progress};
+use super::progress::{self, sha, FileProgress, Progress};
 use super::replaced;
 use crate::private_file::{self, Publish};
 
@@ -19,11 +19,14 @@ static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub(crate) fn apply(home: &Path, plan: &Plan) -> Result<Marker, String> {
     let _one_at_a_time = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let earlier = marker(home, &plan.harness);
-    let mut known = record_intent(home, plan)?;
+    let (mut known, earlier_attempts) = record_intent(home, plan)?;
     let mut files = Vec::new();
     for w in &plan.writes {
         let mut here = known.file(&w.path);
-        let kept = keep_original(&w.path, &here, earlier.as_ref())?;
+        // Judged by what EARLIER attempts wrote only: bytes equal to this plan's are not yet this code's.
+        let mut judged = here.clone();
+        judged.own = earlier_attempts.file(&w.path).own;
+        let kept = keep_original(&w.path, &judged, earlier.as_ref())?;
         // The copies are on disk now: say so before the live write, so a retry names them.
         here.replaced = kept.replaced.clone();
         known.set(here);
@@ -101,12 +104,15 @@ pub(crate) fn revert(home: &Path, harness: &str) -> Result<Option<String>, Strin
     let _one_at_a_time = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let adapter = adapter_for(harness).ok_or_else(|| format!("{harness} cannot be given a provider here"))?;
     let m = marker(home, harness).ok_or_else(|| format!("{harness} was not given a provider here"))?;
+    let unfinished = progress::load(home, harness);
     let restore: Vec<Touched> = files_to_restore(&m, adapter, home, harness == hermes::ID && hermes::moved())?.into_iter().cloned().collect();
     let mut marker_now = m.clone();
     let mut said = Vec::new();
     for t in restore.iter().filter(|t| !t.restored) {
-        let (found, mut copies) = restore_one(t)?;
-        copies.splice(0..0, t.replaced.iter().cloned());
+        // A failed re-apply left Yantrik's own file live, and copies it made that no marker names yet.
+        let unfinished = unfinished.file(&t.path);
+        let (found, mut copies) = restore_one(t, &unfinished)?;
+        copies.splice(0..0, t.replaced.iter().cloned().chain(unfinished.not_in(&t.replaced)));
         said.extend(replaced::revert_sentence(&t.path, found.as_deref(), &copies));
         // Each file is marked done as it goes, so a Revert that stops here is finished, not repeated.
         if let Some(done) = marker_now.files.iter_mut().find(|f| f.path == t.path) {
@@ -139,7 +145,9 @@ pub(crate) fn revert(home: &Path, harness: &str) -> Result<Option<String>, Strin
 
 /// Before the first live write: what each file is about to be written with, added to what an
 /// unfinished apply already recorded (progress.rs says why).
-fn record_intent(home: &Path, plan: &Plan) -> Result<Progress, String> {
+///
+/// Returns the record now saved and the one found (what earlier attempts wrote).
+fn record_intent(home: &Path, plan: &Plan) -> Result<(Progress, Progress), String> {
     let old = progress::load(home, &plan.harness);
     let mut next = Progress::default();
     for w in &plan.writes {
@@ -148,19 +156,20 @@ fn record_intent(home: &Path, plan: &Plan) -> Result<Progress, String> {
         if !f.own.contains(&h) {
             f.own.push(h);
         }
-        // About to make the backup itself: a retry that finds it has found its own.
-        if !super::keep::exists(&backup_path(&w.path)) && super::keep::exists(&w.path) {
-            f.backup_ours = true;
-        }
+        // About to make the backup itself: a retry that finds it has found its own. Set from the disk
+        // each time: only a live file that is not this code's own is an original worth a backup.
+        let b = backup_path(&w.path);
+        let original = std::fs::read(&w.path).ok().is_some_and(|l| !old.file(&w.path).is_own(&l));
+        f.backup_ours = (!super::keep::exists(&b) && original) || (f.backup_ours && super::keep::exists(&b));
         next.files.push(f);
     }
     progress::save(home, &plan.harness, &next)?;
-    Ok(next)
+    Ok((next, old))
 }
 
 /// Put one file back. Returns where an adopted backup was set aside, and the copies made now of a
 /// live file edited since it was written: it is copied first, never written over.
-fn restore_one(t: &Touched) -> Result<(Option<PathBuf>, Vec<PathBuf>), String> {
+fn restore_one(t: &Touched, unfinished: &FileProgress) -> Result<(Option<PathBuf>, Vec<PathBuf>), String> {
     private_file::check_target(&t.path)?;
     if let Some(b) = &t.backup {
         if !super::keep::exists(b) {
@@ -175,7 +184,8 @@ fn restore_one(t: &Touched) -> Result<(Option<PathBuf>, Vec<PathBuf>), String> {
     };
     let mut copies = Vec::new();
     if let (Some(l), Some(h)) = (&live, &t.written) {
-        if sha(l) != *h && backup_bytes.as_ref() != Some(l) {
+        // Not the person's: what was written, or what a failed re-apply (still recorded) wrote after.
+        if sha(l) != *h && !unfinished.is_own(l) && backup_bytes.as_ref() != Some(l) {
             copies.push(replaced::keep_live(&t.path, l)?);
         }
     }
