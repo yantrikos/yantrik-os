@@ -5,8 +5,9 @@
 // Accent color presets via AccentPreset global (index-based).
 
 // ─── Typefaces ────────────────────────────────────────────────────────
-// Embedded so every window — shell and apps — renders the same face on any box. Barlow for
-// UI text (three weights, normalised into one family), JetBrains Mono for anything tabular.
+// Embedded so every window — shell and apps — renders the same face on any box. Inter for
+// UI text (three weights), Barlow for the few large words the desktop says (three weights,
+// normalised into one family), JetBrains Mono for anything tabular.
 // Windows opt in with `default-font-family: Theme.font-ui;`.
 import "fonts/Inter-Regular.ttf";
 import "fonts/Inter-Medium.ttf";
@@ -47,8 +48,8 @@ export global AccentPreset {
     // apply another (it did, #583).
     // The system blue gained chroma on 12 Nov 2026 (it was #8fb4e3, 60% saturation): as the fill
     // of a tile that is on or a switch, the paler blue read as a tint of the navy under it and
-    // not as a state. Same hue, same lightness, so every contrast it was signed off at holds or
-    // improves (7.9:1 as ink on the ground, and for the ground's ink on it).
+    // not as a state. Same hue and a little darker: as ink on the ground it is 7.9:1 where the
+    // paler blue was 8.8, and the ground's ink on it is the same 7.9:1 (4.5 is the bar).
     out property <color> swatch-0: #74aaf5;
     out property <color> swatch-2: #b98aef;
     out property <color> swatch-4: #f27aa0;
@@ -181,9 +182,10 @@ export global Theme {
     out property <color> bg-elevated: ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
         : (ThemeMode.dark ? #1c293b : #ffffff);
     out property <color> bg-input:    ThemeMode.dark ? #0e1724 : #f8fafc;
-    // A selected row's fill (with its 2px leading rule): a clear step above a card, so the row
-    // is found before it is read. It was the accent at 12% over the ground, one more navy.
-    out property <color> bg-selected: ThemeMode.dark ? #2a3a51 : #d3deec;
+    // A selected row's fill (with its 2px leading rule): a step above a card, so the row is
+    // found before it is read, and no lighter than leaves the dim ink 4.5:1 on it (4.66; a
+    // first try at #2a3a51 left 4.21). It was #1d2d42, the accent at 12% over the ground.
+    out property <color> bg-selected: ThemeMode.dark ? #24334a : #dde6f1;
 
     // ─── Glass ────────────────────────────────────────────────────
     //
@@ -413,6 +415,10 @@ export global Theme {
     out property <color> control-fill-hover:   ThemeMode.dark ? #ffffff2b : #ffffff;
     out property <color> control-fill-pressed: ThemeMode.dark ? #ffffff12 : #f1f3f6;
     out property <color> control-edge:         ThemeMode.dark ? #ffffff24 : #14253b29;
+    // The edge of a plate that IS the mark: the segment in force. 3:1 or better against the
+    // track it sits in, in both modes, so the choice is found by its outline and not by its
+    // label's weight alone.
+    out property <color> control-edge-strong:  ThemeMode.dark ? #ffffff66 : #14253ba6;
     // The track a raised plate slides in: a segmented control's ground. Sunk, where the plate
     // in it is lit.
     out property <color> control-well:         ThemeMode.dark ? #00000040 : #14253b14;
@@ -482,8 +488,9 @@ export global Theme {
     // An app's name under its tile: the desktop's workspace, the launcher, the window switcher,
     // a mind's desk and the dock's hover label, all drawn by AppLabel. It was 11-12px regular,
     // much of it grey, and on a 1x screen with no GPU that read soft beside the tiles above it.
-    // lh-label is one line of it rounded up to whole pixels (Barlow's line box is 1.2em, 15.6px
-    // here), so whatever a layout stacks under a label still starts on a whole pixel.
+    // lh-label is one line of it rounded up to whole pixels (Inter's line box is 1.21em, 15.7px
+    // here; Barlow's was 1.2em), so whatever a layout stacks under a label still starts on a
+    // whole pixel.
     out property <length> fs-label: 13px * TextScale.factor;
     out property <int>    fw-label: 500;
     out property <length> lh-label: 16px * TextScale.factor;
