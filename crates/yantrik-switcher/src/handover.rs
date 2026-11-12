@@ -13,13 +13,13 @@
 //! A switcher that is alive but gets no frame on the screen, because it hangs after the ack, its
 //! first frame is very slow or a buffer cannot be made, shows nothing until the frame comes, where
 //! labwc's list would have come up at `LABWC_WAITS`. Alt coming up still switches. A layer surface
-//! the compositor closes during a session is the one such case this program can see, and it
-//! exits on it, so labwc draws.
+//! the compositor closes during a session is the one such case this program acts on: it exits,
+//! so labwc draws.
 //!
 //! What is still open: labwc cannot say that it fell back, and this program's clock for a session
-//! starts when it reads `session_start`. Starved for longer than `MARGIN` before that read, it
-//! takes an old session for a young one, acks too late and draws over labwc's list. Closing that
-//! takes a word from labwc (#1193).
+//! starts when it reads `session_start`. Starved for long enough before that read (about 200 ms
+//! for a session it then decides on time), it can take an old session for a young one, ack too
+//! late and draw over labwc's list. Closing that takes a word from labwc (#1193).
 
 use std::time::Duration;
 
@@ -73,9 +73,7 @@ mod tests {
     fn the_wait_here_is_the_wait_in_labwcs_patch() {
         let patch = include_str!("../../../packaging/labwc/debian-patches/yantrik-window-switcher-renderer.patch");
         // The whole line as the patch adds it: `300` must not pass for `3000`.
-        let line = format!("
-+#define ACK_TIMEOUT_MS {}
-", LABWC_WAITS.as_millis());
+        let line = format!("\n+#define ACK_TIMEOUT_MS {}\n", LABWC_WAITS.as_millis());
         assert!(patch.contains(&line), "packaging/labwc's patch no longer says {line:?}");
     }
 }
