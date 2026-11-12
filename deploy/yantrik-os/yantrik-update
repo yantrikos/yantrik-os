@@ -1161,7 +1161,7 @@ EOF
   # of its own, and this one stands in only when that file cannot run.
   if [ -x "$BIN_DIR/yantrik-update" ]; then
     # This apply refreshes the keys itself, after the new build answered (refresh_session_chrome).
-    YANTRIK_PREFIX="$PREFIX" YANTRIK_APPLY_REFRESHES_KEYS=1 "$BIN_DIR/yantrik-update" reconcile || true
+    YANTRIK_PREFIX="$PREFIX" YANTRIK_APPLY_REFRESHES_KEYS=1 YANTRIK_APPLY_ENDS_SWITCHER=1 "$BIN_DIR/yantrik-update" reconcile || true
   else
     reconcile_packages || true
     reconcile_pinned_debs || true
@@ -1627,18 +1627,19 @@ reload_labwc() { # <owner> <pid>...
 # one of that account's labwc. The image's sha256 is compared with the file's, which is "the binary
 # changed" however many updates came since, and leaves it alone when they match.
 #
-# Called where the keys are (refresh_session_chrome), for the same reason: a machine is updated by
-# its OLD updater, which runs only this build's `reconcile` (not its apply), so reconcile calls it
-# unless this build's own apply does (YANTRIK_APPLY_REFRESHES_KEYS=1). The up-to-date branch of
-# apply and rollback call it too. Accepted: an old updater that rolls back after reconcile leaves a
+# A machine is updated by its OLD updater, which runs only this build's `reconcile` (not its
+# apply), so reconcile calls it unless this build's own apply does and says so with its own marker
+# (YANTRIK_APPLY_ENDS_SWITCHER=1; the keys' marker is set by every updater since #854, so it cannot
+# tell). The up-to-date branch of apply and rollback call it too. Accepted: an old updater that rolls back after reconcile leaves a
 # renderer newer than the file until the next login. Accepted too: only the desktop's owner
 # (desktop_owner) is handled; another account's desktop keeps its old renderer until its next login.
 end_stale_switcher() { # [owner]
   local bin="$BIN_DIR/yantrik-switcher" owner="${1:-$(desktop_owner)}" uid pid exe ppid pexe have want n=0 as=()
   [ -x "$bin" ] || return 0
+  want="$(sha256sum < "$bin" 2>/dev/null | cut -d' ' -f1)"
+  [ -n "$want" ] || { info "Alt+Tab renderer: could not read $bin; left running"; return 0; }
   plain_owner "$owner" || { info "Alt+Tab renderer: cannot tell whose desktop this is; the new one draws after the next login"; return 0; }
   uid="$(id -u "$owner" 2>/dev/null)" || return 0
-  want="$(sha256sum < "$bin" 2>/dev/null | cut -d' ' -f1)"
   [ "$(id -u)" = 0 ] && as=(runuser -u "$owner" --)
   local labwcs; labwcs=" $(session_labwc_pids "$uid" | tr '\n' ' ')"
   for pid in $(pgrep -u "$uid" 2>/dev/null); do
@@ -4724,12 +4725,13 @@ cmd_reconcile() {
   reconcile_hermes_launcher
   reconcile_harness_plugins
   # The keys (#854), here because this is what every updater runs on the new build, an old one's
-  # apply included. This build's own apply says it does them itself, after the restart. The
-  # Alt+Tab renderer (#1211) goes the same way, for the same reason.
+  # apply included. This build's own apply says it does them itself, after the restart.
   if [ "${YANTRIK_APPLY_REFRESHES_KEYS:-}" != 1 ]; then
     refresh_session_chrome || true
-    end_stale_switcher
   fi
+  # The Alt+Tab renderer (#1211): the same, but with a marker only this build's apply sets, since
+  # an apply from before it sets the keys' one and would otherwise leave the old renderer running.
+  [ "${YANTRIK_APPLY_ENDS_SWITCHER:-}" = 1 ] || end_stale_switcher
   audit_unowned /etc/polkit-1/rules.d '*.rules' polkit
   audit_unowned /etc/sysctl.d '*.conf' sysctl
   audit_unowned /etc/containers/registries.conf.d '*.conf' containers
@@ -5643,6 +5645,17 @@ STUB
     out="$(as_old_updater)"
     t "with no desktop running, reconcile says the login will do it" "no desktop is running for" "$out"
     is "and changes nothing" "<keys from 16 Oct/>" "$(cat "$oh/.config/labwc/rc.xml")"
+    # The renderer, through the same old apply (it sets the keys' marker, not the renderer's).
+    cp "$(command -v sleep)" "$op/bin/yantrik-switcher"
+    sw_stand ylabwc-selftest "$op/bin/yantrik-switcher"
+    cp /bin/true "$op/bin/new" && mv -f "$op/bin/new" "$op/bin/yantrik-switcher"
+    as_old_updater YANTRIK_APPLY_REFRESHES_KEYS=1 YANTRIK_APPLY_ENDS_SWITCHER=1 >/dev/null
+    is "an apply of this build leaves the renderer to itself" "alive" "$(sw_alive)"
+    out="$(as_old_updater YANTRIK_APPLY_REFRESHES_KEYS=1)"
+    for _ in 1 2 3 4 5 6 7 8; do [ "$(sw_alive)" = ended ] && break; sleep 0.25; done
+    is "an older apply's reconcile ends the old renderer" "ended" "$(sw_alive)"
+    t "and names it" "ended the Alt+Tab renderer (pid $sw_pid" "$out"
+    wait 2>/dev/null
   fi
 
   # Where this build's own apply and rollback do it: after the build answered, never with
@@ -5651,7 +5664,7 @@ STUB
   is "apply refreshes the keys right after the restart it verified" 'refresh_session_chrome || true' \
     "$(printf '%s\n' "$applyfn" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F 'refresh_session_chrome' | sed 's/^ *//')"
   is "an up-to-date apply checks them too" "2" "$(printf '%s\n' "$applyfn" | grep -c 'refresh_session_chrome || true')"
-  t "apply's reconcile is told the keys are apply's" 'YANTRIK_APPLY_REFRESHES_KEYS=1 "$BIN_DIR/yantrik-update" reconcile' \
+  t "apply's reconcile is told the keys are apply's" 'YANTRIK_APPLY_REFRESHES_KEYS=1 ' \
     "$(printf '%s\n' "$applyfn" | grep -F 'YANTRIK_APPLY_REFRESHES_KEYS=1')"
   t "rollback puts the older keys back after the restart" 'refresh_session_chrome || true' \
     "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F refresh_session_chrome)"
@@ -5662,8 +5675,10 @@ STUB
     "$(printf '%s\n' "$applyfn" | grep -A4 -F 'restart_and_verify "$backup"' | grep -F end_stale_switcher)"
   t "rollback ends it after the restart" 'end_stale_switcher' \
     "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH" | grep -A4 -F 'restart_and_verify "$backup"' | grep -F end_stale_switcher)"
-  t "reconcile ends it beside the keys, unless apply does" 'end_stale_switcher' \
-    "$(sed -n '/^cmd_reconcile()/,/^}/p' "$SELF_PATH" | grep -A2 -F 'refresh_session_chrome || true' | grep -F end_stale_switcher)"
+  t "apply's reconcile is told the renderer is apply's" 'YANTRIK_APPLY_ENDS_SWITCHER=1 "$BIN_DIR/yantrik-update" reconcile' \
+    "$(printf '%s\n' "$applyfn" | grep -F 'YANTRIK_APPLY_ENDS_SWITCHER=1')"
+  t "reconcile ends it unless that marker is set" '"${YANTRIK_APPLY_ENDS_SWITCHER:-}" = 1 ] || end_stale_switcher' \
+    "$(sed -n '/^cmd_reconcile()/,/^}/p' "$SELF_PATH" | grep -F end_stale_switcher)"
 
   # 9. Subordinate ids for rootless podman (#401). Where a new range starts, and whether an
   #    account already has one, decide whether two accounts end up sharing ids; both are pure
