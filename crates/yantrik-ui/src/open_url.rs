@@ -4,10 +4,10 @@
 //! Two ways:
 //! - [`open`]: an ordinary link (the Lens), in the person's own browser.
 //! - [`open_apart`]: a page where a credential is made or shown (a provider's sign-up and API-key
-//!   pages, from the free AI card), in a browser of its own: its own profile, and no
-//!   remote-debugging port. The desktop's own Chromium listens on 127.0.0.1:9222 so the browser
-//!   tools can drive it, which means anything driving it could read a key off the page the moment
-//!   the provider shows it (security review of #544, #545). Nothing can attach to this one.
+//!   pages, from the free AI card), in a browser of its own: its own profile, and no DevTools
+//!   switch at all. The desktop's Browser is driven by the browser service so the browser tools can
+//!   use it, which means anything driving it could read a key off the page the moment the provider
+//!   shows it (security review of #544, #545). Nothing can attach to this one.
 //!
 //! Either way the page comes to the front the same way: the window list is read before, and the
 //! window that appears, or whose title changes (a running browser takes the page as a tab and

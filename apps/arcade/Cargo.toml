@@ -28,10 +28,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 # Human-readable build times, and the DeletionDate a freedesktop Trash info file wants.
 chrono = { workspace = true }
-# The verifier drives a headless Chromium over the DevTools protocol: HTTP for
-# target discovery, one websocket for the commands.
-tungstenite = { workspace = true }
-ureq = { workspace = true }
+# The screenshot the verifier takes comes back base64-encoded.
 base64 = { workspace = true }
 # Decoding the screenshot the verifier takes, to check a frame actually rendered.
 png = "0.18"

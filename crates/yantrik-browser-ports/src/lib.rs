@@ -91,6 +91,9 @@ pub fn launch_flags(side: Side) -> Vec<String> {
         Side::MindView => vec![
             PIPE_FLAG.into(),
             "--disable-blink-features=AutomationControlled".into(),
+            // After a crash Chromium offers to restore the last session; a mind's browser is never
+            // offered it (the shell also removes the session files before the start).
+            "--disable-session-crashed-bubble".into(),
             format!("--user-data-dir={}", mind_view_profile().display()),
         ],
     }

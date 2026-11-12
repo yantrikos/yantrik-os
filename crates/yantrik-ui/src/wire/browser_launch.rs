@@ -62,9 +62,16 @@ pub fn browser_names() -> String {
 use super::browser_pipe::Role;
 use yantrik_browser_ports::{procs, Side, PIPE_FLAG};
 
-/// The switches that name a debugging port, its allowed origin, or a profile. A caller's own are
-/// dropped from a mind's launch, which has them from `launch_flags` and nowhere else.
-const OWN_BY_SIDE: [&str; 3] = ["--remote-debugging-", "--remote-allow-origins=", "--user-data-dir="];
+/// The switches that name a debugging port, its allowed origin, or a profile, by name. A caller's
+/// own are dropped from a mind's launch, which has them from `launch_flags` and nowhere else.
+const OWN_BY_SIDE: [&str; 3] = ["remote-debugging-", "remote-allow-origins=", "user-data-dir="];
+
+/// Whether a caller's argument is one the launch will not carry: one of `OWN_BY_SIDE` in either
+/// dash spelling (Chromium on POSIX takes `-name=` as well as `--name=`), or the `--` that ends
+/// the switches and would turn the shell's own flags into addresses to open.
+fn is_own_by_side(arg: &str) -> bool {
+    arg == "--" || (arg.starts_with('-') && OWN_BY_SIDE.iter().any(|name| arg.trim_start_matches('-').starts_with(name)))
+}
 
 fn program_name(program: &Path) -> String {
     program.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase()
@@ -104,6 +111,21 @@ pub fn pipe_role(app_id: &str, program: &Path, in_mind_view: bool, persons_brows
     }
 }
 
+/// What Chromium restores a session from, in a profile: `Sessions/` and the files older versions
+/// kept beside it.
+const SESSION_FILES: [&str; 5] = ["Sessions", "Current Session", "Current Tabs", "Last Session", "Last Tabs"];
+
+/// Mind View's Chromium never restores a session: whatever an earlier run left to restore is
+/// removed before the start, so what it opens is the blank page it is told to and nothing a page
+/// of the last run held, which would load before the service has fenced it (#1200). A second launch
+/// of a browser already running hands over to it and exits; the files are only what it has saved.
+fn forget_last_session(profile: &Path) {
+    for name in SESSION_FILES {
+        let path = profile.join("Default").join(name);
+        let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+    }
+}
+
 /// A launch in Mind View: the caller's arguments, and for Mind View's browser its own profile and
 /// DevTools pipe in place of any the caller named, starting on a blank page: a page named on the
 /// command line would load before the browser service has the pipe, and so before it can fence the
@@ -113,17 +135,17 @@ pub fn pipe_role(app_id: &str, program: &Path, in_mind_view: bool, persons_brows
 pub fn mind_view_args(app_id: &str, program: &Path, args: &[&str]) -> Vec<String> {
     let name = program_name(program);
     if is_chromium(program) {
-        let _ = std::fs::create_dir_all(yantrik_browser_ports::mind_view_profile());
+        let profile = yantrik_browser_ports::mind_view_profile();
+        let _ = std::fs::create_dir_all(&profile);
         let browser = is_mind_views_browser(app_id, program);
-        // The caller's switches only: its own port, origin and profile are dropped, and for the
-        // browser its pages are too.
-        let mut out: Vec<String> = args
-            .iter()
-            .filter(|a| !OWN_BY_SIDE.iter().any(|p| a.starts_with(p)) && (!browser || a.starts_with('-')))
-            .map(|a| a.to_string())
-            .collect();
-        // Another Chromium app in Mind View is not given a pipe: nothing would hold it (`pipe_role`).
-        out.extend(yantrik_browser_ports::launch_flags(Side::MindView).into_iter().filter(|f| browser || f != PIPE_FLAG));
+        if browser {
+            forget_last_session(&profile);
+        }
+        // The shell's flags first, so nothing a caller passes can come before them, and a caller's
+        // port, origin, profile and `--` are dropped; for the browser its pages are too. Another
+        // Chromium app in Mind View is not given a pipe: nothing would hold it (`pipe_role`).
+        let mut out: Vec<String> = yantrik_browser_ports::launch_flags(Side::MindView).into_iter().filter(|f| browser || f != PIPE_FLAG).collect();
+        out.extend(args.iter().filter(|a| !is_own_by_side(a) && (!browser || a.starts_with('-'))).map(|a| a.to_string()));
         if browser {
             out.push("about:blank".into());
         }
@@ -157,13 +179,20 @@ pub fn open_in_mind_view() -> Result<(), String> {
 /// stopped (they would keep the person's own Browser from having it). Mind View's own has no port
 /// to be taken (#1200): a browser an earlier build left running on its profile is stopped by the
 /// update (`stop_mind_view.py`) before this one starts, and one that is running now was handed to
-/// the service by the shell that started it.
+/// the service by the shell that started it. One that survived that and listens on a TCP port is
+/// refused here, in words: every launch would hand over to it and exit, and its port would stay
+/// open to every process of the session.
 pub fn preflight(_side: Side) -> Result<(), String> {
     let stopped = procs::stop_mind_view_off_port();
     if stopped > 0 {
         tracing::info!(stopped, "Stopped a Mind View browser an earlier build left on the person's port");
     }
-    Ok(())
+    match procs::mind_view_listening_now().first() {
+        Some((pid, port)) => Err(format!(
+            "a Mind View browser from an older build (pid {pid}) is still running with a DevTools port ({port}), which any process of this session could drive; close it and open Mind View's browser again"
+        )),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +266,38 @@ mod tests {
         let other = mind_view_args("chromium-app", chromium, &[]);
         assert!(!other.iter().any(|a| a.contains("remote-debugging")), "no pipe nobody holds: {other:?}");
         assert!(other.iter().any(|a| a.starts_with("--user-data-dir=")));
+    }
+
+    /// Review LOW-4: a single dash is a switch too, and `--` ends them: neither reaches the launch,
+    /// and the shell's flags come before anything the caller passed.
+    #[test]
+    fn a_callers_single_dash_port_and_double_dash_are_dropped_and_the_shells_flags_come_first() {
+        let chromium = Path::new("/usr/bin/chromium");
+        for app in ["browser", "chromium-app"] {
+            let args = mind_view_args(app, chromium, &["--no-first-run", "-remote-debugging-port=9999", "-remote-allow-origins=*", "-user-data-dir=/x", "--", "--remote-debugging-address=0.0.0.0"]);
+            assert!(!args.iter().any(|a| a == "--" || a.contains("9999") || a.contains("address") || a.contains("origins") || a.contains("/x")), "{app}: {args:?}");
+            let own = args.iter().position(|a| a.starts_with("--user-data-dir=")).unwrap();
+            let theirs = args.iter().position(|a| a == "--no-first-run").unwrap();
+            assert!(own < theirs, "{app}: the shell's flags first: {args:?}");
+            let after_flags = args.iter().skip_while(|a| a.starts_with('-')).count();
+            assert!(after_flags <= 1, "{app}: only the blank page can follow the switches: {args:?}");
+        }
+    }
+
+    /// The session an earlier run left is removed before Mind View's browser starts, so it has none
+    /// to restore; another profile's is not touched.
+    #[test]
+    fn mind_views_browser_has_no_session_to_restore() {
+        let profile = std::env::temp_dir().join(format!("yb-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile);
+        std::fs::create_dir_all(profile.join("Default/Sessions")).unwrap();
+        std::fs::write(profile.join("Default/Sessions/Session_1"), b"tabs").unwrap();
+        std::fs::write(profile.join("Default/Current Session"), b"tabs").unwrap();
+        std::fs::write(profile.join("Default/Cookies"), b"kept").unwrap();
+        forget_last_session(&profile);
+        assert!(!profile.join("Default/Sessions").exists() && !profile.join("Default/Current Session").exists());
+        assert!(profile.join("Default/Cookies").exists(), "only the session goes");
+        let _ = std::fs::remove_dir_all(&profile);
     }
 
     #[test]

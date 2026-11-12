@@ -74,6 +74,34 @@ pub fn mind_view_off_port<'a>(procs: &'a [Proc], own: u32, profiles: &Profiles, 
         .collect()
 }
 
+/// The TCP ports a Mind View browser (the process that owns its profile, and what it started)
+/// listens on, as (pid, port). It has none (#1200): one left from an older build would be a
+/// DevTools port any process could drive round the fence, and every launch would hand over to it.
+pub fn mind_view_listening(proc: &Path, procs: &[Proc], own: u32, profiles: &Profiles) -> Vec<(u32, u16)> {
+    let roots: Vec<&Proc> = mind_side_mains(procs, own, profiles).into_iter().filter(|(_, place)| *place == Place::MindView).map(|(p, _)| p).collect();
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let sockets = listener::listening_in(proc);
+    let mut found = Vec::new();
+    for pid in with_descendants(procs, &roots) {
+        let Ok(fds) = fs::read_dir(proc.join(pid.to_string()).join("fd")) else { continue };
+        for fd in fds.flatten() {
+            let link = fs::read_link(fd.path()).ok();
+            let inode = link.as_ref().and_then(|l| l.to_str()?.strip_prefix("socket:[")?.strip_suffix(']')?.parse::<u64>().ok());
+            if let Some((port, _)) = sockets.iter().find(|(_, i)| Some(*i) == inode) {
+                found.push((pid, *port));
+            }
+        }
+    }
+    found
+}
+
+/// [`mind_view_listening`] on the real `/proc`.
+pub fn mind_view_listening_now() -> Vec<(u32, u16)> {
+    mind_view_listening(Path::new("/proc"), &snapshot(), listener::own_uid(), &Profiles::current())
+}
+
 /// `roots` and everything started under them.
 pub fn with_descendants(procs: &[Proc], roots: &[&Proc]) -> Vec<u32> {
     let mut family: Vec<u32> = roots.iter().map(|p| p.pid).collect();
@@ -164,6 +192,22 @@ mod tests {
         assert_eq!(with_descendants(&all, &off), vec![30, 31], "its helpers go with it, nothing else does");
         // Mind View's browser on its own port, not on the person's, is left running.
         assert!(mind_view_off_port(&all, 1000, &fake.profiles, &[]).is_empty());
+    }
+
+    /// Review LOW-6: a Mind View browser an older build left listening is found, by what it owns and
+    /// with its helpers; one that listens on nothing, and the person's, are not.
+    #[test]
+    fn a_mind_view_browser_that_listens_on_tcp_is_found_and_one_that_does_not_is_not() {
+        let fake = Fake::new("listening");
+        fake.table(&[("0100007F:2457", 1000, 555), ("0100007F:2000", 1000, 777)]);
+        fake.process(30, 999, b"chromium");                // Mind View's main: a socket that is not listening
+        fake.process(31, 555, b"chromium --type=utility"); // its helper holds the listener, on 9303
+        fake.process(10, 777, b"chromium");                // the person's: listens, and owns nothing of Mind View's
+        fake.takes(&fake.profiles.mind_view, 30);
+        let all = vec![p(10, 1, 1000), p(30, 1, 1000), p(31, 30, 1000)];
+        assert_eq!(mind_view_listening(&fake.proc(), &all, 1000, &fake.profiles), vec![(31, 0x2457)]);
+        fake.table(&[("0100007F:2000", 1000, 777)]);
+        assert!(mind_view_listening(&fake.proc(), &all, 1000, &fake.profiles).is_empty());
     }
 
     #[test]

@@ -118,9 +118,10 @@ def wait_for(cond, seconds=5):
 class Restarted:
     """The fixture: a service whose person's Chromium (`chromium_class`) kept its tabs."""
     chromium_class = RestartedChromium
+    side, place = ports.PERSON, listener.PERSON     # whose browser it is, and the profile it owns
 
     def setUp(self):
-        patch = mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.PERSON)
+        patch = mock.patch.object(listener, "place_of_pid", lambda proc, pid: self.place)
         patch.start()
         self.addCleanup(patch.stop)
         mine, theirs = socket.socketpair()
@@ -128,17 +129,17 @@ class Restarted:
         self.chromium.start()
         self.holder = pipes.Pipes()
         g = guard.Guard(identify=lambda port: (_ for _ in ()).throw(listener.Unidentified("nothing", nobody=True)),
-                        uid=base.ME, side_of=lambda: ports.PERSON, pipes=self.holder)
+                        uid=base.ME, side_of=lambda: self.side, pipes=self.holder)
         self.driver = drv.Driver(judge=False, guard_=g, file_rule=lambda path: True,
                                  home=lambda: "/home/someone")
         self.mine = mine
 
     def the_browser(self):
-        self.assertTrue(wait_for(lambda: ports.PERSON in self.driver.sides.browsers))
-        return self.driver.sides.browsers[ports.PERSON]
+        self.assertTrue(wait_for(lambda: self.side in self.driver.sides.browsers))
+        return self.driver.sides.browsers[self.side]
 
     def hand_over(self):
-        self.holder.give(ports.PERSON, self.mine, os.getpid())
+        self.holder.give(self.side, self.mine, os.getpid())
 
 
 class TheServiceRestarts(Restarted, unittest.TestCase):
@@ -191,6 +192,54 @@ class TheServiceRestarts(Restarted, unittest.TestCase):
         self.assertFalse(self.driver.sides.browsers[ports.PERSON].held_at_start)
         self.assertEqual(self.chromium.methods("Target.setAutoAttach"), [], "no window of theirs is held")
         self.assertEqual(self.chromium.methods("Target.closeTarget"), [])
+
+
+class MindViewChromium(RestartedChromium):
+    """Mind View's browser across a restart of the service: its stream outlived the dead service
+    (it is the shell's), and T1 is a `file:` page the dead service's session had a request paused
+    on, which is paused for good. T2 is the blank page the browser was started on."""
+
+    def __init__(self, sock):
+        super().__init__(sock)
+        self.tabs = {"T1": {"targetId": "T1", "type": "page", "url": FILE_URL, "title": "p1", "attached": True},
+                     "T2": {"targetId": "T2", "type": "page", "url": "about:blank", "title": "about:blank"}}
+
+    def answer(self, msg):
+        if msg["method"] == "Target.closeTarget":
+            self.log.append((msg["method"], None, msg.get("params", {})))
+            self.tabs.pop(msg["params"]["targetId"], None)
+            self.reply({"id": msg["id"], "result": {"success": True}})
+            self.reply({"method": "Target.targetDestroyed", "params": {"targetId": msg["params"]["targetId"]}})
+            return
+        super().answer(msg)
+
+
+class MindViewRestarts(Restarted, unittest.TestCase):
+    """#1200 review, LOW-7: Mind View on a pipe is held from its start, so none of the person's
+    adoption (a reload, stale sessions learned and swept) applies. What a page left paused is not
+    adopted: the page is closed, with no call."""
+    chromium_class = MindViewChromium
+    side, place = ports.MIND, listener.MIND_VIEW
+
+    def test_the_page_the_dead_service_left_paused_is_closed_and_the_blank_one_is_kept(self):
+        self.hand_over()
+        c = self.chromium
+        self.assertTrue(wait_for(lambda: c.methods("Target.closeTarget")), "the page was not closed unprompted")
+        self.assertEqual([p for _, _, p in c.methods("Target.closeTarget")], [{"targetId": "T1"}])
+        self.assertTrue(c.methods("Target.setAutoAttach"), "held from its start from here on")
+        self.assertEqual(c.methods("Page.reload"), [], "closed, not reloaded for a later touch to find")
+        browser = self.the_browser()
+        self.assertTrue(wait_for(lambda: [t.id for t in browser.pages()] == ["T2"]), "only the blank page is left")
+        self.assertEqual(browser.stale, set(), "no stale session is learned: nothing is left that could hold one")
+
+    def test_a_second_restart_with_nothing_but_the_blank_page_closes_nothing(self):
+        del self.chromium.tabs["T1"]
+        self.hand_over()
+        self.assertTrue(wait_for(lambda: self.chromium.methods("Target.setAutoAttach")))
+        self.the_browser()
+        time.sleep(0.3)
+        self.assertEqual(self.chromium.methods("Target.closeTarget"), [])
+        self.assertEqual(self.chromium.methods("Target.createTarget"), [])
 
 
 class TheDeadServicesSessionsAndTheRaces(TheServiceRestarts):
@@ -362,7 +411,7 @@ class TheReloadCommitsLate(Restarted, unittest.TestCase):
 class MindViewsBrowserIsStillHeld(unittest.TestCase):
     def test_a_held_connection_does_not_attach_to_tabs_it_has_not_been_given(self):
         mine, theirs = socket.socketpair()
-        chromium = RestartedChromium(theirs)
+        chromium = MindViewChromium(theirs)           # one page that drew before the hold, one blank
         chromium.start()
         browser = cdp.Browser(opener=lambda: base.transport.PipeTransport(os.dup(mine.fileno())), held_at_start=True)
         browser.connect()

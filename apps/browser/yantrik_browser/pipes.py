@@ -216,8 +216,11 @@ class Pipes:
             holder = None
             try:
                 reply, holder = self._take(conn)
-            except (OSError, ValueError) as e:
-                reply = "refused: %s" % e
+            except (OSError, ValueError, listener.Unidentified) as e:
+                # `Unidentified`: which profile the browser owns could not be read this once, so the
+                # shell is told to offer again ("retry:"), never left with silence, which it would
+                # read as a final answer.
+                reply = ("retry: %s" if isinstance(e, listener.Unidentified) else "refused: %s") % e
             try:
                 conn.sendall((reply + "\n").encode())
             except OSError:
@@ -276,22 +279,30 @@ class Pipes:
         why = self._not_this_sides_browser(side, sock, pid, peer.pid)
         if why is not None:
             sock.close()
-            return "refused: " + why, None
+            return why, None
         holder = self.holders[side]
         if not holder.give(sock, pid):
             return "refused: %s is already held" % ("a Browser" if side == ports.PERSON else "Mind View's browser"), None
         return "ok", holder
 
     def _not_this_sides_browser(self, side, sock, pid, shell_pid):
+        """None when `pid` is `side`'s browser, else the reply to send: "refused: ..." for an
+        answer that will not change, "retry: ..." for one that may. A Mind View browser that does
+        not yet own its profile is the second kind: a cold start has not written its
+        SingletonLock or opened its LOCK yet (the shell offers again, and stops the browser if it
+        never does)."""
         if self.uid_of(pid) != os.getuid():
-            return "that browser is not run by this account"
+            return "refused: that browser is not run by this account"
         why = (handover.browser_is_the_callers(pid, shell_pid, self.proc)
                or handover.stream_is_the_browsers(sock, pid, self.proc))
         if why is not None:
-            return why
-        place = listener.place_of_pid(self.proc, pid)
+            return "refused: " + why
+        try:
+            place = listener.place_of_pid(self.proc, pid)
+        except listener.Unidentified as e:
+            return "retry: %s" % e
         if side == ports.PERSON and place != listener.PERSON:
-            return "that is a mind's browser, not the person's"
+            return "refused: that is a mind's browser, not the person's"
         if side == ports.MIND and place != listener.MIND_VIEW:
-            return "that browser does not run on Mind View's profile, so it is not Mind View's"
+            return "retry: that browser does not run on Mind View's profile (yet), so it is not Mind View's"
         return None

@@ -79,6 +79,28 @@ fn rows(table: &str, port: u16) -> Vec<Row> {
         .collect()
 }
 
+/// Every TCP socket in LISTEN state in `proc`'s tables (IPv4 and IPv6) as (port, socket inode),
+/// whatever its address or account.
+pub fn listening_in(proc: &Path) -> Vec<(u16, u64)> {
+    ["net/tcp", "net/tcp6"]
+        .iter()
+        .filter_map(|table| fs::read_to_string(proc.join(table)).ok())
+        .flat_map(|text| {
+            text.lines()
+                .skip(1)
+                .filter_map(|line| {
+                    let f: Vec<&str> = line.split_whitespace().collect();
+                    if f.get(3)? != &"0A" {
+                        return None;
+                    }
+                    let port = u16::from_str_radix(f.get(1)?.rsplit(':').next()?, 16).ok()?;
+                    Some((port, f.get(9)?.parse().ok()?))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The socket on 127.0.0.1:`port` and the processes holding it: (account, inode, pids).
 pub fn holders_in(proc: &Path, port: u16) -> Result<(u32, u64, Vec<u32>), Why> {
     let table = fs::read_to_string(proc.join("net/tcp")).map_err(|e| Why::Unclear(format!("the socket table {UNREADABLE} ({e})")))?;

@@ -189,7 +189,15 @@ class Browser:
         if self.held_at_start:
             self.call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
                                                "flatten": True, "filter": [{"type": "page"}, {"exclude": True}]})
-        for info in self.call("Target.getTargets").get("targetInfos", []):
+        infos = self.call("Target.getTargets").get("targetInfos", [])
+        if self.held_at_start:
+            # Before connect returns: nothing a page drew before this hold stays on screen.
+            try:
+                infos = adopt.close_drawn_pages(self, infos)
+            except BaseException:
+                self.close()
+                raise
+        for info in infos:
             self._saw_target(info)
         if not self.held_at_start:
             adopt.adopt_pages(self)

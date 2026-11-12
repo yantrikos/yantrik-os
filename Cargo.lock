@@ -11189,8 +11189,6 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
- "tungstenite",
- "ureq 2.12.1",
  "yantrik-app",
  "yantrik-app-build",
  "yantrik-browser-ports",

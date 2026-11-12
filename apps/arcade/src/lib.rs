@@ -49,6 +49,7 @@ mod intents;
 pub mod library;
 pub mod play;
 mod model;
+mod pipe;
 mod persons_browser;
 pub mod spec;
 mod slow;

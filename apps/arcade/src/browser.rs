@@ -1,11 +1,11 @@
 //! The headless browser as a process: how it is started, where its profile lives, and how it is
 //! made to die with the app.
 //!
-//! A verify or a screenshot starts a Chromium with `--remote-debugging-port`, which any local
-//! process can drive. Two rules keep one from being left behind or reached: the browser dies with
-//! the app (`PR_SET_PDEATHSIG`, and `kill_live` when the app ends on purpose), and each job has a
-//! profile of its own, made private and new, never a path another job or another user could
-//! predict or share.
+//! A verify or a screenshot starts a Chromium with a DevTools pipe, a stream only the Arcade holds
+//! (`pipe`): no port, so no other process can drive it. Two rules keep one from being left behind
+//! or reached: the browser dies with the app (`PR_SET_PDEATHSIG`, and `kill_live` when the app ends
+//! on purpose), and each job has a profile of its own, made private and new, never a path another
+//! job or another user could predict or share.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -173,7 +173,8 @@ pub fn remove_profile(profile: &Path) {
 /// for them, and removes the profile, in that order.
 pub struct Headless {
     child: std::process::Child,
-    pub ws_url: String,
+    /// The Arcade's end of the browser's DevTools stream, until a session takes it.
+    pub stream: Option<std::os::unix::net::UnixStream>,
     pub browser: String,
     pub(crate) profile: PathBuf,
     pub(crate) tmp: PathBuf,
@@ -193,6 +194,8 @@ impl Headless {
         }
         let mut command = Command::new(binary);
         command
+            // The DevTools pipe: a stream only this app holds, and no port.
+            .arg(yantrik_browser_ports::PIPE_FLAG)
             // Software rendering: WSL here has no GPU path for headless Chromium.
             .args([
                 "--headless=new",
@@ -205,14 +208,25 @@ impl Headless {
                 "--mute-audio",
                 "--hide-scrollbars",
                 "--window-size=1280,720",
-                "--remote-debugging-port=0",
             ])
             .arg(format!("--user-data-dir={}", profile.display()))
             .arg(url)
             .env("TMPDIR", &tmp)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        Headless::spawn(command, binary, profile, &tmp)
+        let (mine, theirs) = match crate::pipe::attach(&mut command) {
+            Ok(ends) => ends,
+            Err(e) => {
+                remove_profile(&tmp);
+                remove_profile(profile);
+                return Err(format!("cannot make the browser's DevTools stream: {e}"));
+            }
+        };
+        let mut headless = Headless::spawn(command, binary, profile, &tmp)?;
+        // The browser has its end now; this app's copy goes, so the stream ends with the browser.
+        drop(theirs);
+        headless.stream = Some(mine);
+        Ok(headless)
     }
 
     /// The part of [`Headless::start`] that does not know Chromium's flags, so a test can start a
@@ -229,7 +243,7 @@ impl Headless {
         register(child.id(), profile, tmp, cancel);
         Ok(Headless {
             child,
-            ws_url: String::new(),
+            stream: None,
             browser: binary.display().to_string(),
             profile: profile.to_path_buf(),
             tmp: tmp.to_path_buf(),

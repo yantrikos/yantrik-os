@@ -274,6 +274,34 @@ class TheHandOver(unittest.TestCase):
         for side in (ports.PERSON, ports.MIND):
             self.assertIsNone(self.hub.holder(side).current())
 
+    def test_a_mind_view_browser_not_yet_on_its_profile_is_told_to_retry_and_then_taken(self):
+        """#1200 review, MEDIUM-2: a cold start has not written its SingletonLock or opened a LOCK
+        when the first offer is checked. That is a "retry:", not a final refusal, and the same
+        browser is taken once its profile shows."""
+        places = iter([listener.PERSON, listener.MIND_VIEW])
+        with the_identity_checks_pass(), mock.patch.object(listener, "place_of_pid", lambda proc, pid: next(places)):
+            first, _ = self.offer(side=ports.MIND)
+            self.assertIsNone(self.hub.holder(ports.MIND).current())
+            second, _ = self.offer(side=ports.MIND)
+        self.assertTrue(first.startswith("retry:"), first)
+        self.assertEqual(second, "ok")
+        self.assertIsNotNone(self.hub.holder(ports.MIND).current())
+
+    def test_a_profile_that_cannot_be_read_is_answered_with_a_retry_and_never_silence(self):
+        """`listener.Unidentified` from `place_of_pid` once killed the receiving thread with no
+        reply, which the shell reads as a final answer. It is answered, by `take` and by the
+        thread that serves it."""
+        def unreadable(proc, pid):
+            raise listener.Unidentified("the files process %d holds could not be read" % pid, transient=True)
+        with the_identity_checks_pass(), mock.patch.object(listener, "place_of_pid", unreadable):
+            reply, _ = self.offer(side=ports.MIND)
+        self.assertTrue(reply.startswith("retry:") and "could not be read" in reply, reply)
+        self.assertIsNone(self.hub.holder(ports.MIND).current())
+        # And when it is raised past `take` (a check added later that reads /proc): still a reply.
+        with mock.patch.object(pipes.Pipes, "_take", side_effect=listener.Unidentified("/proc went away")):
+            reply, _ = self.offer(side=ports.MIND)
+        self.assertEqual(reply, "retry: /proc went away")
+
     def test_mind_views_browser_goes_through_the_same_identity_checks(self):
         """Not a copy of them: the shell, the child, the pipe flag and the stream are asked for a
         Mind View offer exactly as for the person's, so the refusals are the same sentences."""
@@ -402,6 +430,12 @@ class TheHandOverChecksWhoIsGivingWhat(unittest.TestCase):
         proc = self.proc_of(22, cmdline=["chromium", flag, "--remote-debugging-port=9222"], parent=500)
         self.assertIn("DevTools pipe", handover.browser_is_the_callers(22, 500, proc))
         self.assertIn("could not be read", handover.browser_is_the_callers(23, 500, proc))
+        # LOW-4: a single dash is a switch to Chromium too, and so is any other debugging switch.
+        for bad in ("-remote-debugging-port=9222", "--remote-debugging-address=0.0.0.0", "-remote-debugging-pipe"):
+            proc = self.proc_of(24, cmdline=["chromium", flag, bad], parent=500)
+            self.assertIn("DevTools pipe", handover.browser_is_the_callers(24, 500, proc), bad)
+        proc = self.proc_of(25, cmdline=["chromium", flag, "--no-first-run", "about:blank"], parent=500)
+        self.assertIsNone(handover.browser_is_the_callers(25, 500, proc))
 
     def retitled(self, pid, text, parent=500):
         """A /proc entry whose cmdline is one string, as Chromium 150 leaves it at 0.85 s

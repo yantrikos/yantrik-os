@@ -114,6 +114,27 @@ class NothingSpellsThemTwice(unittest.TestCase):
                         offenders.append(os.path.relpath(path, ROOT))
         self.assertEqual(offenders, [])
 
+    def test_no_production_source_asks_a_browser_for_a_port(self):
+        """#1200: no DevTools TCP listener anywhere on the machine, so no source that runs may
+        start a browser with a debugging port, in either dash spelling. The Arcade's verifier, the
+        companion's headless browser, `launch_browser` and `open_apart` once did. A source may name
+        the switch only in a comment or a test (the checks that refuse it are written without it)."""
+        offenders = []
+        for root in (("apps",), ("crates",), ("deploy",), ("sdk",)):
+            for here, dirs, names in os.walk(os.path.join(ROOT, *root)):
+                dirs[:] = [d for d in dirs if d not in ("target", "tests", "__pycache__", "node_modules", "vendor")]
+                for name in names:
+                    if not name.endswith((".rs", ".py", ".sh", ".toml", ".conf", ".service")) and name not in ("yos", "yantrik-update"):
+                        continue
+                    path = os.path.join(here, name)
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        text = f.read()
+                    code = code_of(text) if name.endswith(".rs") else "\n".join(
+                        l for l in text.splitlines() if not re.match(r"\s*#", l))
+                    if re.search(r"remote-debugging-port", code):
+                        offenders.append(os.path.relpath(path, ROOT))
+        self.assertEqual(offenders, [])
+
     def test_the_rust_constants_are_built_from_the_python_packages_file(self):
         build = read("crates", "yantrik-browser-ports", "build.rs")
         self.assertIn('const CONF: &str = "browsers.conf"', build)

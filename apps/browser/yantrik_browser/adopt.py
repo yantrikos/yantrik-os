@@ -15,6 +15,7 @@ import threading
 import time
 
 ADOPT_WAIT = 3.0       # seconds adoption waits on one tab's reload: far below the driver's BUSY_WAIT
+CLOSE_WAIT = 5.0       # seconds a connection waits for the pages it closed to be gone
 ARRIVAL_RETRY = 0.5    # seconds between tries for the driver lock when the pipe arrives
 
 
@@ -40,6 +41,37 @@ def adopt_pages(browser):
         w.join(max(0.0, end - time.monotonic()))
     browser.adopted = True
     sweep(browser)
+
+
+def close_drawn_pages(browser, infos):
+    """A browser held from its start (Mind View's) is connected after it has been running for a
+    while: the service takes its stream only once the shell has offered it and the checks have
+    passed, and again after every restart of the service. What a page drew in that window was never
+    fenced, and would stay on screen (and in a screenshot of the window) until a call touched its
+    tab. So every page target that is not an untouched `about:blank` is closed here, before the
+    connection is used, and the page targets that stay are returned. Closing the last page would
+    close the browser, so a blank one is made first. A page that cannot be closed fails the
+    connection: nothing of it is left on screen to be trusted."""
+    pages = [i for i in infos if i.get("type") == "page"]
+    unclean = [i for i in pages if i.get("url") != "about:blank"]
+    if not unclean:
+        return infos
+    if len(unclean) == len(pages):
+        browser.call("Target.createTarget", {"url": "about:blank"})
+    for info in unclean:
+        browser.call("Target.closeTarget", {"targetId": info["targetId"]})
+    gone = {i["targetId"] for i in unclean}
+    # The browser closes a page after it answers, so the page is waited for to be gone: on return
+    # nothing of it is on screen.
+    end = time.monotonic() + CLOSE_WAIT
+    while True:
+        left = [i for i in browser.call("Target.getTargets").get("targetInfos", []) if i.get("targetId") in gone]
+        if not left:
+            return [i for i in infos if i.get("targetId") not in gone]
+        if time.monotonic() > end:
+            from .cdp import CdpError
+            raise CdpError("a page the browser drew before it was held would not close")
+        time.sleep(0.05)
 
 
 def snapshot(browser):
