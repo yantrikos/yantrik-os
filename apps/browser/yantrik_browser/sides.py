@@ -62,12 +62,30 @@ class Sides:
             except guard.Denied:
                 browser.close()
                 raise
+        self._hold(side, browser, held)
+        return side
+
+    def _hold(self, side, browser, held):
+        """Bind `browser`'s connection to what was checked (`held`, None for nothing)."""
         if held is None or (browser.alive and self.bound.get(side) != held.key):
             # Nothing there, or not what the connection was made to: that connection is over.
             browser.close()
         self.bound[side] = held and held.key
         browser.check = lambda: self._still(side, held)
-        return side
+
+    def ready(self, side):
+        """`side`'s browser, checked and bound as a call would, without a call: for connecting when
+        its pipe arrives (driver.py). None when it may not be used or nothing is held."""
+        if self.guard is None:
+            return None
+        browser = self.browsers[side]
+        try:
+            held = self.guard.vet(side)
+        except guard.Denied:
+            browser.close()
+            return None
+        self._hold(side, browser, held)
+        return browser if held is not None else None
 
     def _still(self, side, held):
         """The connection's own check, before and after it opens: the port holds what it held."""

@@ -179,6 +179,27 @@ class Browser:
                                                "flatten": True, "filter": [{"type": "page"}, {"exclude": True}]})
         for info in self.call("Target.getTargets").get("targetInfos", []):
             self._saw_target(info)
+        if not self.held_at_start:
+            self._adopt_pages()
+
+    def _adopt_pages(self):
+        """The person's browser outlives this service (the pipe stays open in the shell), so a tab
+        may carry the dead process's session: its `file:` requests paused for a decider that is gone,
+        and nobody to continue them. Every open page gets its session, its fence and, if a `file:`
+        frame is in it, the reload behind the fence now, not when a command first touches it: the
+        reload ends what the old session left paused. One tab that cannot be adopted is left to the
+        call that reaches it (attach raises there); the others do not wait on it."""
+        def adopt(tab):
+            try:
+                self.attach(tab)
+            except (CdpError, BrowserClosed):
+                pass
+        pages = self.pages()
+        workers = [threading.Thread(target=adopt, args=(t,), daemon=True, name="cdp-adopt") for t in pages]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(CALL_TIMEOUT * 2)
 
     def _open(self):
         """The transport to the browser: its pipe, or a WebSocket to its port."""

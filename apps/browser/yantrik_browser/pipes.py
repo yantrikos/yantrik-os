@@ -73,6 +73,7 @@ class PipeHolder:
         self.lock = threading.Lock()
         self.server = None
         self.open_transport = None      # the transport of the connection in use, if any
+        self.on_give = None             # called (off this lock) once a browser's pipe is held
 
     # ── what is held ──
 
@@ -87,7 +88,12 @@ class PipeHolder:
             _drain(sock)
             self.serial += 1
             self.held = Held(sock, pid, self._start_of(pid), self.serial)
-            return True
+        if self.on_give:
+            try:
+                self.on_give()
+            except Exception:  # noqa: BLE001 - a listener's failure never loses the pipe
+                pass
+        return True
 
     def _drop(self):
         held, self.held = self.held, None
