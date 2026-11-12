@@ -252,12 +252,15 @@ export component DesktopScreen inherits Rectangle {
     //
     // The desktop still starts below it; that is what the offset on the layer below is for.
 
-    // ── Layer 2: Desktop content area ──
+    // ── Layer 0: the wallpaper, the whole screen ──
+    //
+    // Under the bar as well as under the desktop. It was inside the content area below, which
+    // starts under the bar: the bar was an opaque strip then, so nothing showed there. On the
+    // bare desktop the bar has no plate now (status_bar.slint, `airy`), and what shows through
+    // it is the top of the photograph.
     Rectangle {
-        y: Theme.status-bar-height;
         width: 100%;
-        height: root.height - Theme.status-bar-height;
-        clip: true;
+        height: 100%;
 
         // ── Wallpaper layer (lowest — below all backdrops) ──
 
@@ -357,14 +360,22 @@ export component DesktopScreen inherits Rectangle {
             y: 0;
             width: 100%;
             height: Theme.wallpaper-scrim-top;
-            background: @linear-gradient(180deg, Theme.wallpaper-scrim 0%, Theme.wallpaper-scrim.with-alpha(0.34) 46%, Theme.wallpaper-scrim.with-alpha(0) 100%);
+            background: @linear-gradient(180deg, Theme.wallpaper-scrim 0%, Theme.wallpaper-scrim.with-alpha(0.26) 44%, Theme.wallpaper-scrim.with-alpha(0) 100%);
         }
         if root.wallpaper-path != "" && ThemeMode.dark : Rectangle {
             y: parent.height - self.height;
             width: 100%;
             height: Theme.wallpaper-scrim-bottom;
-            background: @linear-gradient(180deg, Theme.wallpaper-scrim.with-alpha(0) 0%, Theme.wallpaper-scrim.with-alpha(0.3) 58%, Theme.wallpaper-scrim.with-alpha(0.62) 100%);
+            background: @linear-gradient(180deg, Theme.wallpaper-scrim.with-alpha(0) 0%, Theme.wallpaper-scrim.with-alpha(0.16) 55%, Theme.wallpaper-scrim.with-alpha(0.4) 100%);
         }
+    }
+
+    // ── Layer 2: Desktop content area ──
+    Rectangle {
+        y: Theme.status-bar-height;
+        width: 100%;
+        height: root.height - Theme.status-bar-height;
+        clip: true;
 
         // ── The desktop's own right-click ──
         //

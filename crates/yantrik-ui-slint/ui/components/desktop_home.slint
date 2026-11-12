@@ -17,6 +17,7 @@ import { Icon, Icons } from "icon.slint";
 import { DockItem } from "app_dock.slint";
 import { YButton } from "y_button.slint";
 import { YKeycap } from "y_keycap.slint";
+import { YShadow } from "y_shadow.slint";
 import { UrgeCardData, GlanceCard } from "glance_card.slint";
 
 export component DesktopHome inherits Rectangle {
@@ -58,7 +59,18 @@ export component DesktopHome inherits Rectangle {
     property <string> ask-words: "Ask "
         + (root.mind-name == "" || root.mind-name == "no mind" ? "your mind" : root.mind-name) + "…";
 
-    Flickable {
+    // The ask field's shadow (a picture, so a VM draws it too: y_shadow.slint). Out here and not
+    // beside the field, because the Flickable below clips what it holds to its own box, and a
+    // shadow cut off in a straight line 4px left of the field is worse than none. It follows the
+    // field's row through the layout and the scroll.
+    YShadow {
+        x: ask-row.x;
+        y: flick.viewport-y + ask-row.y;
+        width: root.ask-width;
+        height: 56px;
+    }
+
+    flick := Flickable {
         width: 100%; height: 100%;
         viewport-width: self.width;
         viewport-height: body.preferred-height;
@@ -97,8 +109,8 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
-            // The ask field.
-            Rectangle {
+            // The ask field. Its shadow is drawn above, outside the Flickable.
+            ask-row := Rectangle {
                 height: 56px;
 
             Rectangle {
@@ -109,9 +121,6 @@ export component DesktopHome inherits Rectangle {
                 border-radius: Theme.r-xl;
                 border-width: 1px;
                 border-color: search-focus.has-focus ? Theme.accent : search-touch.has-hover ? Theme.border-interrupt : Theme.border-floating;
-                drop-shadow-blur: Theme.shadow-float-blur;
-                drop-shadow-offset-y: Theme.shadow-float-dy;
-                drop-shadow-color: Theme.shadow-float;
                 animate border-color { duration: Theme.dur-fast; }
                 accessible-role: button;
                 accessible-label: root.ask-words;

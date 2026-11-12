@@ -1,0 +1,40 @@
+// YShadow — the soft shadow under a floating surface, as a picture.
+//
+// Why a picture and not `drop-shadow-*`: the software renderer draws no drop shadows at all, and
+// the software renderer is what the shell and every app run on wherever there is no GPU, which is
+// every virtual machine (boot::choose_backend). A surface that asked for its shadow by property
+// had one on a laptop and none in the VM most people first see this OS in: the dock, the ask
+// field and every panel sat on the wallpaper like stickers. A nine-slice picture is drawn the
+// same by both renderers, and costs a blit.
+//
+// How to use it: a SIBLING drawn before the surface, with the surface's own x, y, width and
+// height. Not a child: a child is painted over its parent's fill, and the shadow's dark middle
+// would lie on the surface instead of under it.
+//
+//     YShadow { x: card.x; y: card.y; width: card.width; height: card.height; }
+//     card := Rectangle { ... }      // and no drop-shadow-* on it: one shadow, not two
+//
+// The surface must be at least 36px each way (the nine-slice's corners) and opaque. A surface that
+// fades in passes its own opacity as `strength`.
+//
+// The picture: crates/yantrik-ui-kit/slint/images/shadow-float.png, rendered by
+// scripts/render-shadow.py for a 16px corner (Theme.r-xl); a 12px corner wears it as well.
+import { Theme } from "theme.slint";
+
+export component YShadow {
+    // 0 to 1: how much of the shadow shows. A popover fading in hands its own progress here.
+    in property <float> strength: 1;
+
+    // The picture's margins round the surface it was drawn for (render-shadow.py: SIDE, TOP,
+    // BOTTOM), and the surface's corner inside them.
+    Image {
+        x: -56px;
+        y: -40px;
+        width: root.width + 112px;
+        height: root.height + 112px;
+        source: @image-url("images/shadow-float.png", nine-slice(58 74 90 74));
+        colorize: Theme.shadow-ink;
+        opacity: root.strength * Theme.shadow-strength;
+        accessible-role: none;
+    }
+}

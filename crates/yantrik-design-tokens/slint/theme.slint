@@ -226,9 +226,14 @@ export global Theme {
     // bar's words and the dock's plate have a ground without a lid over the picture. The colour
     // at the edge; each scrim fades from it to nothing. Light mode's wallpaper wears a pale veil,
     // so its scrim is pale too.
-    out property <color> wallpaper-scrim:   ThemeMode.dark ? #04070cb8 : #f4f6f9d9;
-    out property <length> wallpaper-scrim-top: 112px;
-    out property <length> wallpaper-scrim-bottom: 168px;
+    out property <color> wallpaper-scrim:   ThemeMode.dark ? #04070c99 : #f4f6f9d9;
+    out property <length> wallpaper-scrim-top: 120px;
+    out property <length> wallpaper-scrim-bottom: 160px;
+    // The ink and the strength of YShadow, the shadow drawn as a picture (y_shadow.slint): black
+    // in dark, the ground's own navy and under half as strong in light, where a black shadow on
+    // pale paper reads as dirt.
+    out property <color> shadow-ink:        ThemeMode.dark ? #000000 : #14253b;
+    out property <float> shadow-strength:   ThemeMode.dark ? 1.0 : 0.42;
     // A modal's scrim: no blur, the ground's own darkness.
     out property <color> scrim:             ThemeMode.dark ? #03070d8f : #14253b47;
     // A label drawn straight on the wallpaper, with no card behind it: white in either theme,
