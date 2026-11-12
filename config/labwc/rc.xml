@@ -588,8 +588,12 @@
       draw for itself, the shadow outside its own surface (themerc: window.*.shadow.*). The
       shell's own windows (the desktop, the OSD, the capture bar) carry no such id and are not
       touched; a maximised window has no border and no shadow, as before.
+
+      The action alone, with no `serverDecoration="yes"` on the rule: with it labwc first places
+      the window as one with a title bar and then takes the bar away, which left every window
+      27px lower than it asked to be, its foot on the dock (VM 542, 12 Nov 2026).
     -->
-    <windowRule identifier="yantrik-*" serverDecoration="yes">
+    <windowRule identifier="yantrik-*">
       <action name="SetDecorations" decorations="border" forceSSD="yes" />
     </windowRule>
     <!--
