@@ -3789,12 +3789,14 @@ mod person_tests {
         }
     }
 
-    /// The Lens and the chat send through `chat::builtin_turn`, which asks `turn_source::typed()`: true for a person
+    /// The Lens and the chat send through `chat::builtin_turn`, which is told `turn_source::typed()` (a queued message carries the mark it had when it was queued): true for a person
     /// at the Lens, false while the shell's `send_message` drives the callback.
     #[test]
     fn the_lens_is_typed_and_the_shells_send_message_is_not() {
         let chat = include_str!("wire/chat.rs");
-        assert!(chat.contains("send_message_reporting(sent, false, crate::turn_source::typed())"));
+        assert!(chat.contains("send_message_reporting(sent, false, typed)")
+            && chat.contains("dispatch(ui_weak, bridge, text, streams, false, crate::turn_source::typed())")
+            && chat.contains("lens_queue::due(&ui)"));
         let control = include_str!("control.rs");
         assert!(control.contains("crate::turn_source::from_the_socket(|| ui.invoke_send_message("));
         assert!(control.contains("crate::turn_source::refuse_unless_the_person()?;"));

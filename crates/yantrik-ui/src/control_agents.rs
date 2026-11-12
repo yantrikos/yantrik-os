@@ -1159,8 +1159,8 @@ mod tests {
         let grade = |name: &str| specs().into_iter().find(|s| s.name == name).unwrap().permission;
         assert_eq!(
             [grade("new_agent"), grade("send_to_agent"), grade("stop_agent"), grade("read_agent"), grade("show_agent"), grade("hand_off")],
-            ["sensitive", "standard", "standard", "safe", "safe", "sensitive"],
-            "the grades the design settled: hand_off is gated like new_agent"
+            ["sensitive", "sensitive", "standard", "safe", "safe", "sensitive"],
+            "the grades the design settled: hand_off and send_to_agent are gated like new_agent (send_to_agent puts words in a mind's conversation)"
         );
     }
 
