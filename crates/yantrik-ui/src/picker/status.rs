@@ -22,6 +22,8 @@ pub enum Fix {
     AddKey,
     /// Allow private context for the account (AI accounts).
     Allow,
+    /// Switch a free tier back On (Settings → AI → Free AI accounts).
+    TurnOn,
     /// Ask again now.
     Retry,
 }
@@ -33,6 +35,7 @@ impl Fix {
             Fix::SetUp => "Set up",
             Fix::AddKey => "Add key",
             Fix::Allow => "Choose",
+            Fix::TurnOn => "Turn on",
             Fix::Retry => "Try again",
         }
     }
@@ -65,6 +68,8 @@ pub enum Outcome {
     Ok,
     KeyRefused,
     KeyMissing,
+    /// A free tier the person switched Off: nothing was asked of it.
+    SwitchedOff,
     Unreachable(String),
 }
 
@@ -95,6 +100,8 @@ pub struct Input {
 fn short(model: &str) -> &str {
     model.split_once('/').map(|(_, m)| m).unwrap_or(model)
 }
+
+const SWITCHED_OFF: &str = "switched off · turn it on in Free AI accounts";
 
 pub fn judge(i: &Input) -> Status {
     if !i.on_gateway {
@@ -133,6 +140,8 @@ pub fn judge(i: &Input) -> Status {
                 return Status::new("connected", format!("connected · {short}"), Fix::None);
             }
             match c.outcome.as_str() {
+                "keys_not_known_yet" => return Status::new("checking", format!("checking · {short}"), Fix::None),
+                "tier_off" => return Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn),
                 "key_missing" | "vault_locked" | "upstream_401" | "upstream_403" => {
                     return Status::new("key-missing", "key missing", Fix::AddKey)
                 }
@@ -147,6 +156,7 @@ pub fn judge(i: &Input) -> Status {
     match &i.probe {
         Some(p) if i.now - p.at <= PROBE_FRESH_SECS => match &p.outcome {
             Outcome::Ok => Status::new("connected", format!("connected · {short}"), Fix::None),
+            Outcome::SwitchedOff => Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn),
             Outcome::KeyRefused | Outcome::KeyMissing => Status::new("key-missing", "key missing", Fix::AddKey),
             Outcome::Unreachable(_) => Status::new("unreachable", "unreachable", Fix::Retry),
         },

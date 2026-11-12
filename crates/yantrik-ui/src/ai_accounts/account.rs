@@ -93,6 +93,16 @@ pub fn withdrawn(t: &FreeTier, kept: &BTreeSet<String>, off: &BTreeSet<String>) 
     (t.needs_key && (values.is_empty() || !values.iter().all(|v| kept.contains(*v)))).then_some(Withdrawn::NoKey)
 }
 
+/// The account id a free tier is listed under, and its name there. One place, so a refusal for a
+/// tier that has left the list names it the way the list did.
+pub fn free_id(t: &FreeTier) -> String {
+    format!("free-{}", slug(t.id))
+}
+
+pub fn free_name(t: &FreeTier) -> String {
+    format!("{} (free)", t.name)
+}
+
 /// The vault ids a free tier's sign-up asks for, the provider's own key last.
 fn value_ids(t: &FreeTier) -> Vec<&'static str> {
     yantrik_ml::provider::pool::signup::signup(t.id).map(|s| s.values.iter().map(|v| v.id).collect()).unwrap_or_default()
@@ -150,8 +160,8 @@ pub fn accounts(saved: &[ProviderStoreEntry], free: &[FreeTier], kept: &BTreeSet
             None => KeyRef::None,
         };
         out.push(Account {
-            id: unique(format!("free-{}", slug(t.id))),
-            name: format!("{} (free)", t.name),
+            id: unique(free_id(t)),
+            name: free_name(t),
             provider_type: t.id.to_string(),
             base_url: t.base_url.to_string(),
             key,

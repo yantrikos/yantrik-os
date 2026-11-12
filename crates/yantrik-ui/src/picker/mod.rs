@@ -190,33 +190,43 @@ fn probe(bridge: &Arc<CompanionBridge>, model: &str) {
     }
     let bridge = bridge.clone();
     let _ = std::thread::Builder::new().name("model-probe".into()).spawn(move || {
-        let accounts = ai_accounts::accounts();
-        let outcome = match accounts.iter().find(|a| a.id == account) {
-            None => Outcome::KeyMissing,
-            Some(a) => {
-                let saved = crate::wire::settings::ProviderStore::load().entries;
-                let vault = |id: &str| ai_accounts::vault_value(&bridge, id);
-                match ai_accounts::keys::resolve(a, &saved, &vault) {
-                    Err(_) => Outcome::KeyMissing,
-                    Ok(r) if ai_accounts::models::needs_no_listing(a, yantrik_ml::provider::pool::tiers::FREE_TIERS) => {
-                        // No list to ask: the smallest request that needs the key, one token.
-                        match crate::wire::provider_models::check_key(&r.base_url, r.key.as_deref().unwrap_or(""), &m.model) {
-                            crate::wire::provider_models::KeyCheck::Works => Outcome::Ok,
-                            crate::wire::provider_models::KeyCheck::Refused => Outcome::KeyRefused,
-                            crate::wire::provider_models::KeyCheck::Unconfirmed(why) => Outcome::Unreachable(why),
-                        }
-                    }
-                    Ok(r) => match crate::wire::provider_models::list_models(&r.base_url, r.key.as_deref(), ai_accounts::keys::auth_for(a, r.key.as_deref())) {
-                        Ok(_) => Outcome::Ok,
-                        Err(crate::wire::provider_models::ListError::KeyRefused) => Outcome::KeyRefused,
-                        Err(e) => Outcome::Unreachable(e.to_string()),
-                    },
-                }
-            }
-        };
-        lock(&PROBES).insert(account.clone(), Probe { at: now(), outcome });
+        let outcome = probe_outcome(&bridge, &account, &m.model);
+        if let Some(outcome) = outcome {
+            lock(&PROBES).insert(account.clone(), Probe { at: now(), outcome });
+        }
         lock(&PROBING).remove(&account);
     });
+}
+
+/// What the account answers, or `None` when nothing is known yet (the keys were not read). It
+/// asks the gateway's own check first: a tier switched Off, or without its key, is not sent even a
+/// one-token request.
+fn probe_outcome(bridge: &Arc<CompanionBridge>, account: &str, model: &str) -> Option<Outcome> {
+    let accounts = ai_accounts::accounts();
+    let Some(a) = accounts.iter().find(|a| a.id == account) else { return Some(Outcome::KeyMissing) };
+    if let Some(refused) = ai_accounts::shared::refusal(a) {
+        return match refused.code {
+            "tier_off" => Some(Outcome::SwitchedOff),
+            "keys_not_known_yet" => None,
+            _ => Some(Outcome::KeyMissing),
+        };
+    }
+    let saved = crate::wire::settings::ProviderStore::load().entries;
+    let vault = |id: &str| ai_accounts::vault_value(bridge, id);
+    let Ok(r) = ai_accounts::keys::resolve(a, &saved, &vault) else { return Some(Outcome::KeyMissing) };
+    if ai_accounts::models::needs_no_listing(a, yantrik_ml::provider::pool::tiers::FREE_TIERS) {
+        // No list to ask: the smallest request that needs the key, one token.
+        return Some(match crate::wire::provider_models::check_key(&r.base_url, r.key.as_deref().unwrap_or(""), model) {
+            crate::wire::provider_models::KeyCheck::Works => Outcome::Ok,
+            crate::wire::provider_models::KeyCheck::Refused => Outcome::KeyRefused,
+            crate::wire::provider_models::KeyCheck::Unconfirmed(why) => Outcome::Unreachable(why),
+        });
+    }
+    Some(match crate::wire::provider_models::list_models(&r.base_url, r.key.as_deref(), ai_accounts::keys::auth_for(a, r.key.as_deref())) {
+        Ok(_) => Outcome::Ok,
+        Err(crate::wire::provider_models::ListError::KeyRefused) => Outcome::KeyRefused,
+        Err(e) => Outcome::Unreachable(e.to_string()),
+    })
 }
 
 /// The status of the mind answering now.
@@ -454,7 +464,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 open_settings(&ui, HARNESSES_SECTION);
                 ui.invoke_plan_provider(mind.into(), crate::provider_handoff::GATEWAY_ID.into());
             }
-            Fix::AddKey | Fix::Allow => open_settings(&ui, AI_SECTION),
+            Fix::AddKey | Fix::Allow | Fix::TurnOn => open_settings(&ui, AI_SECTION),
             Fix::Retry => lock(&PROBES).clear(),
             Fix::None => {}
         }

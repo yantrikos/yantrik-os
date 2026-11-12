@@ -266,6 +266,12 @@ impl Gateway {
         self.log.record(call);
     }
 
+    /// The target again, before a call is sent a second time: what was true at the first send may
+    /// not be (a tier switched Off, a key removed), and a refusal now stops the resend.
+    fn resolve_again(&self, target: &Target) -> Result<Target, Refusal> {
+        self.accounts.target(&target.account, &target.model)
+    }
+
     fn forward(&self, grant: &Grant, req: &Request, out: &mut impl Write, call: &mut Call) -> Result<(), Refusal> {
         let mut body: Value = serde_json::from_slice(&req.body)
             .map_err(|_| Refusal::new(400, "bad_request", "The request body is not JSON."))?;
@@ -325,9 +331,11 @@ impl Gateway {
             } else {
                 note_dropped(call, dropped.clone());
                 let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+                // Asked again: the person may have switched the account Off since the first send.
+                let fresh = self.resolve_again(&target)?;
                 reply = self
                     .upstream
-                    .chat(&target.base_url, target.key.as_deref(), &bytes)
+                    .chat(&fresh.base_url, fresh.key.as_deref(), &bytes)
                     .map_err(|u| Refusal::new(502, u.code, u.message))?;
                 // Remembered for every harness only when dropping it was the difference. The error
                 // text can echo what a caller sent, so a 400 alone is one caller's word; a success
@@ -345,9 +353,10 @@ impl Gateway {
             // The switch was the gateway's, not the caller's: the call goes again without it, once.
             body::drop_template_switch(&mut body);
             let bytes = serde_json::to_vec(&body).map_err(|_| Refusal::new(400, "bad_request", "The request could not be re-encoded."))?;
+            let fresh = self.resolve_again(&target)?;
             reply = self
                 .upstream
-                .chat(&target.base_url, target.key.as_deref(), &bytes)
+                .chat(&fresh.base_url, fresh.key.as_deref(), &bytes)
                 .map_err(|u| Refusal::new(502, u.code, u.message))?;
             // Remembered only when the switch was the difference: a 400 for another reason (a context
             // too long, a bad tool schema) fails again without it, and leaves the switch on.

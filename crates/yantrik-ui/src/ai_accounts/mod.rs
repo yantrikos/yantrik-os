@@ -80,7 +80,8 @@ pub fn vault_value(bridge: &CompanionBridge, id: &str) -> Option<String> {
 pub fn refresh(bridge: Arc<CompanionBridge>) {
     if !claim() {
         // A listing is running and may have read what was shared before this change: it lists
-        // again when it ends.
+        // again when it ends. Until then its stale list can stand; the gateway's check at each
+        // call holds meanwhile.
         AGAIN.store(true, Ordering::SeqCst);
         return;
     }
@@ -133,13 +134,16 @@ fn claim() -> bool {
 fn rebuild(bridge: &CompanionBridge) -> bool {
     let saved = ProviderStore::load().entries;
     // Which free tiers have their values kept: asked of the vault now, since the card's own
-    // read may not have come back yet at start.
-    let (mut kept, off) = crate::wire::free_ai::kept_and_off();
+    // read may not have come back yet at start. What is read is kept where the card and the
+    // gateway's check read it, so there is one answer.
     if let Ok(Reply::Tails(tails)) = bridge.provider_keys(Op::Tails, VAULT_TIMEOUT) {
-        kept = tails.into_keys().collect();
+        crate::wire::free_ai::note_kept(tails);
     }
+    let (kept, off) = crate::wire::free_ai::kept_and_off();
     let list = account::accounts(&saved, FREE_TIERS, &kept, &off);
-    // The accounts are known now; their models follow, which can take a while.
+    // The accounts are known now; their models follow, which can take a while. This list can be
+    // older than a change made while the vault was read: the second pass (`AGAIN`) corrects it,
+    // and the gateway's check at each call (`shared::refusal`) holds in the meantime.
     *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = list.clone();
     let vault = |id: &str| vault_value(bridge, id);
     let (built, waits): (Vec<AccountModels>, Vec<bool>) = list.iter().map(|a| list_one(a, &saved, &vault)).unzip();
@@ -153,13 +157,27 @@ fn rebuild(bridge: &CompanionBridge) -> bool {
     waits.into_iter().any(|w| w)
 }
 
-/// Put a list and its catalogue where every surface reads them, and tell the listeners. The one
-/// writer: a listing and [`shared::prune_to_shared`] both end here.
+/// Put a list and its catalogue where every surface reads them, and tell the listeners. The
+/// listing's last step and [`shared::prune_to_shared`] end here; `rebuild` also writes the list
+/// once, early, before the models are listed.
 pub(crate) fn install(list: Vec<Account>, catalogue: Catalogue) {
     *ACCOUNTS.write().unwrap_or_else(|e| e.into_inner()) = list;
     *CATALOGUE.write().unwrap_or_else(|e| e.into_inner()) = Some(catalogue);
     for f in LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
         f();
+    }
+}
+
+/// Wait until no listing is running or waiting to run again.
+#[cfg(test)]
+pub(crate) fn wait_idle_for_test() {
+    let end = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        std::thread::sleep(Duration::from_millis(50));
+        if !*REFRESHING.lock().unwrap_or_else(|e| e.into_inner()) && !AGAIN.load(Ordering::SeqCst) {
+            return;
+        }
+        assert!(std::time::Instant::now() < end, "the listing did not end");
     }
 }
 

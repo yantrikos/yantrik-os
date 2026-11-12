@@ -243,6 +243,16 @@ fn connected_is_said_only_after_a_real_call_or_a_probe() {
     assert_eq!(s.words, "key missing");
     let s = judge(&Input { gateway_down: Some("127.0.0.1:7460 is in use".into()), ..base.clone() });
     assert_eq!(s.state, "unreachable");
+    // A tier switched Off is said so, with a fix that turns it on; it is not "gone" and no key is asked for.
+    let s = judge(&Input { last_call: Some(call(990, 403, "tier_off")), ..base.clone() });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("not-allowed", "switched off · turn it on in Free AI accounts", Fix::TurnOn));
+    let s = judge(&Input { probe: Some(Probe { at: 990, outcome: Outcome::SwitchedOff }), ..base.clone() });
+    assert_eq!((s.words.as_str(), s.fix), ("switched off · turn it on in Free AI accounts", Fix::TurnOn));
+    // Keys not read yet is not "key missing".
+    let s = judge(&Input { last_call: Some(call(990, 503, "keys_not_known_yet")), ..base.clone() });
+    assert_eq!((s.state, s.fix), ("checking", Fix::None));
+    let s = judge(&Input { last_call: Some(call(990, 404, "account_not_found")), ..base.clone() });
+    assert_eq!(s.words, "not set up · that account is gone");
     let s = judge(&Input { model: String::new(), ..base.clone() });
     assert_eq!((s.state, s.fix), ("not-set-up", Fix::AddKey));
     // A call for another model says nothing about this one.

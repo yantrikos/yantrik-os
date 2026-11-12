@@ -783,3 +783,67 @@ fn a_retry_that_still_fails_is_not_remembered() {
     assert!(g.params_refused.lock().unwrap().is_empty(), "dropping it was not the difference, so nothing is remembered");
     assert_eq!(g.log.last_for("pi").unwrap().dropped, vec!["temperature".to_string()], "this call's log still says what it dropped");
 }
+
+/// Answers like `Fake` for the first `allowed` asks of a target, then says the account was
+/// switched Off.
+struct OffAfter {
+    inner: Fake,
+    asks: std::sync::atomic::AtomicUsize,
+    allowed: usize,
+}
+
+impl Accounts for OffAfter {
+    fn models(&self) -> Vec<ModelInfo> {
+        self.inner.models()
+    }
+    fn target(&self, account: &str, model: &str) -> Result<Target, Refusal> {
+        if self.asks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= self.allowed {
+            return Err(Refusal::new(403, "tier_off", "It isn't offered any more. Nothing was sent to it."));
+        }
+        self.inner.target(account, model)
+    }
+    fn private_mode(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn a_tier_switched_off_during_the_first_send_is_not_sent_the_retry() {
+    for (model, what) in [("typed/qwen3.5:27b", "the template-switch retry"), ("cloud/gpt-oss-120b", "the parameter-drop retry")] {
+        let tokens = Arc::new(Tokens::in_memory());
+        let pi = mint().unwrap();
+        tokens.register(&pi, Grant { harness: "pi".into(), private_context: false }).unwrap();
+        let upstream = Arc::new(RefusesBoth::default());
+        let g = Gateway {
+            tokens,
+            accounts: Arc::new(OffAfter { inner: Fake { private_mode: false, cloud: Sharing::Share, lane: None }, asks: Default::default(), allowed: 1 }),
+            upstream: upstream.clone(),
+            log: Arc::new(CallLog::in_memory()),
+            template_refused: Default::default(),
+            params_refused: Default::default(),
+        };
+        let ask = json!({"model": model, "effort": "easy", "temperature": 0.2, "messages": [{"role": "user", "content": "hi"}]});
+        let (status, body) = answer(&g, &request("POST", "/v1/chat/completions", Some(&pi), ask));
+        assert_eq!(status, 403, "{what}: {body}");
+        assert_eq!(upstream.sent.lock().unwrap().len(), 1, "{what}: only the first send left");
+    }
+}
+
+/// Answers 400 to anything naming a parameter it is told it dislikes, so a retry is always due.
+#[derive(Default)]
+struct RefusesBoth {
+    sent: Mutex<Vec<Value>>,
+}
+
+impl Upstream for RefusesBoth {
+    fn chat(&self, _base_url: &str, _key: Option<&str>, body: &[u8]) -> Result<Reply, Unreachable> {
+        let v: Value = serde_json::from_slice(body).unwrap();
+        let text = if v.get("chat_template_kwargs").is_some() {
+            json!({"error": {"message": "Unrecognized request argument supplied: chat_template_kwargs"}})
+        } else {
+            serde_json::from_str(TEMPERATURE_DEPRECATED).unwrap()
+        };
+        self.sent.lock().unwrap().push(v);
+        Ok(Reply { status: 400, content_type: "application/json".into(), body: Box::new(Cursor::new(text.to_string().into_bytes())) })
+    }
+}

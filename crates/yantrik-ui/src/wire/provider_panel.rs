@@ -175,6 +175,8 @@ pub(crate) fn wire(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStor
 
 /// What the companion is reloaded with.
 pub(crate) struct Reload {
+    /// The saved provider it is made from.
+    pub entry_id: String,
     pub provider_type: String,
     pub base_url: String,
     pub key: Option<String>,
@@ -184,9 +186,14 @@ pub(crate) struct Reload {
 /// Where a reload goes: the companion's bridge, or a test's list.
 pub(crate) type Sender = Arc<dyn Fn(Reload) + Send + Sync>;
 
-fn bridge_sender(bridge: &Arc<CompanionBridge>) -> Sender {
+/// The sender the shell uses. It notes which saved provider the companion now runs on, so the one
+/// refresh after a provider is removed (`ai_accounts::shared`) can tell when that one is gone.
+pub(crate) fn bridge_sender(bridge: &Arc<CompanionBridge>) -> Sender {
     let bridge = bridge.clone();
-    Arc::new(move |r: Reload| bridge.reload_llm(r.provider_type, r.base_url, r.key, r.model))
+    Arc::new(move |r: Reload| {
+        crate::provider_handoff::companion::note_on_saved(Some(r.entry_id));
+        bridge.reload_llm(r.provider_type, r.base_url, r.key, r.model)
+    })
 }
 
 /// Reload the companion onto `entry`: its saved model, or the catalogue's guess when none was
@@ -201,7 +208,7 @@ pub(crate) fn reload_now(entry: &ProviderStoreEntry, send: &dyn Fn(Reload)) -> R
         entry.base_url.clone()
     };
     tracing::info!(provider = %entry.provider_type, model = %model, "Hot-reloading LLM with the primary provider");
-    send(Reload { provider_type: entry.provider_type.clone(), base_url, key, model });
+    send(Reload { entry_id: entry.id.clone(), provider_type: entry.provider_type.clone(), base_url, key, model });
     Ok(())
 }
 

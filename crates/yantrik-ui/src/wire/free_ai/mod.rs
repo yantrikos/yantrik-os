@@ -34,6 +34,9 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 static SESSION: LazyLock<Mutex<Session>> = LazyLock::new(Default::default);
 /// Which values are kept, with their tails, as last read from the vault.
 static KEPT: LazyLock<Mutex<BTreeMap<String, String>>> = LazyLock::new(Default::default);
+/// Whether the vault has been read into `KEPT` at all: an empty `KEPT` that was never read says
+/// nothing about which keys are kept.
+static KEPT_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CHOICES: LazyLock<Mutex<Choices>> = LazyLock::new(|| Mutex::new(choices::load(&choices::path())));
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -44,6 +47,19 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// accounts list needs to know which free tiers are usable. No key.
 pub(crate) fn kept_and_off() -> (std::collections::BTreeSet<String>, std::collections::BTreeSet<String>) {
     (lock(&KEPT).keys().cloned().collect(), lock(&CHOICES).off.clone())
+}
+
+/// What the vault says is kept, as just read. The one writer of `KEPT` from a read: the card's own
+/// read and the accounts listing both end here.
+pub(crate) fn note_kept(tails: BTreeMap<String, String>) {
+    *lock(&KEPT) = tails;
+    KEPT_READ.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether `KEPT` was ever read from the vault since the shell started. Until it was, "not kept"
+/// means "not known yet", not "removed".
+pub(crate) fn kept_known() -> bool {
+    KEPT_READ.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// The vault values just removed are no longer kept: said at once, before the vault is read again.
@@ -69,8 +85,13 @@ pub(crate) fn toggle_tier(id: &str) {
 }
 
 #[cfg(test)]
+pub(crate) fn forget_read_for_test() {
+    KEPT_READ.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
 pub(crate) fn set_state_for_test(kept: &[&str], off: &[&str]) {
-    *lock(&KEPT) = kept.iter().map(|k| (k.to_string(), "…abcd".to_string())).collect();
+    note_kept(kept.iter().map(|k| (k.to_string(), "…abcd".to_string())).collect());
     lock(&CHOICES).off = off.iter().map(|o| o.to_string()).collect();
 }
 
@@ -151,7 +172,7 @@ impl Wiring {
         let x = self.clone();
         let _ = std::thread::Builder::new().name("free-ai-refresh".into()).spawn(move || {
             if let Ok(Reply::Tails(tails)) = x.bridge.provider_keys(Op::Tails, WORKER_TIMEOUT) {
-                *lock(&KEPT) = tails;
+                note_kept(tails);
             }
             let y = x.clone();
             let _ = slint::invoke_from_event_loop(move || y.render());
