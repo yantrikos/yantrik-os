@@ -111,7 +111,7 @@ fn out_of_private_mode_anyone_reads_and_in_it_an_unknown_caller_does_not() {
     assert!(content_for_owners(None, "notes.get", &["yantrik-notes"], false).is_ok());
     assert!(content_for_owners(None, "notes.get", &["yantrik-notes"], true).is_err());
     // This test binary is not in the install directory, so it is nobody's owner.
-    let me = PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+    let me = PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0, the_mind: false };
     let why = content_for_owners(Some(me), "notes.get", &["yantrik-notes"], true).unwrap_err();
     assert!(why.contains("notes.get"), "{why}");
     assert!(content_for_owners(Some(me), "notes.get", &["yantrik-notes"], false).is_ok());

@@ -1878,6 +1878,7 @@ mod tests {
             pid: 4242,
             uid: me,
             gid: me,
+            the_mind: false,
         }));
         assert!(!agent_is_calling(), "the person's own account, no token");
         {
