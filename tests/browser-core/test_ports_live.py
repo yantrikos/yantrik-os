@@ -121,8 +121,14 @@ class Fixture:
             mine.settimeout(60)
             mine.sendall(b'{"id":1,"method":"Browser.getVersion"}\0')
             try:
-                if b"\0" not in mine.recv(65536):
-                    raise OSError("short reply")
+                got, until = b"", time.monotonic() + 60
+                while b"\0" not in got:          # a reply may come in pieces: read to the NUL
+                    if time.monotonic() > until:
+                        raise OSError("no complete reply in 60 s")
+                    chunk = mine.recv(65536)
+                    if not chunk:
+                        raise OSError("closed before a complete reply")
+                    got += chunk
             except OSError as e:
                 raise RuntimeError("the %s's browser did not answer on its pipe (%s; exit %s)" % (who, e, proc.poll()))
             mine.settimeout(None)

@@ -12,6 +12,8 @@ fails as access denied. The page itself is held to the same gate as everything i
 is decided on the reader's thread, which must stay free to read the answer to the decision.
 """
 
+import collections
+import threading
 from concurrent import futures
 
 DECIDERS = 4       # `file:` requests decided at once: each may wait a stat round trip on the shell
@@ -25,10 +27,13 @@ class Fence:
     agent)` is set by the driver and is `None` until it is, which refuses everything: a fence
     with no rule is shut. Who is asking is the requesting tab's, never the last caller's."""
 
-    def __init__(self, call, agent_of):
+    def __init__(self, call, agent_of, idle=None):
         self.call = call
         self.agent_of = agent_of
         self.gate = None
+        self.idle = idle                  # called with a session once nothing is paused on it
+        self._pending = collections.Counter()
+        self._plock = threading.Lock()
         # A new window must not wait behind a slow decision (a stat the shell is slow to answer):
         # arming has a thread of its own, and decisions a few.
         self.arming = futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="file-arm")
@@ -36,7 +41,26 @@ class Fence:
 
     def paused(self, session, params):
         """A request the browser holds, from the reader's thread: queued, never decided here."""
-        self.deciding.submit(self._decide, session, params)
+        with self._plock:
+            self._pending[session] += 1
+        self.deciding.submit(self._decided, session, params)
+
+    def pending_on(self, session):
+        """How many requests paused on `session` are not yet decided."""
+        with self._plock:
+            return self._pending[session]
+
+    def _decided(self, session, params):
+        try:
+            self._decide(session, params)
+        finally:
+            with self._plock:
+                self._pending[session] -= 1
+                left = self._pending[session]
+                if not left:
+                    del self._pending[session]
+            if not left and self.idle:
+                self.idle(session)
 
     def arm(self, session, target, waiting, done):
         """A target the browser attached us to, from the reader's thread: a page (`target`) gets

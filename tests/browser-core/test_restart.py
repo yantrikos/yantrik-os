@@ -26,7 +26,7 @@ from yantrik_browser import cdp, driver as drv, guard, listener, pipes, ports  #
 FILE_URL = "file:///home/someone/p1.html"
 TABS = {
     "T1": {"targetId": "T1", "type": "page", "url": FILE_URL, "title": "p1"},
-    "T2": {"targetId": "T2", "type": "page", "url": "https://home.example/", "title": "Home"},
+    "T2": {"targetId": "T2", "type": "page", "url": "https://home.example/", "title": "Home", "attached": True},
 }
 
 
@@ -136,6 +136,69 @@ class TheServiceRestarts(unittest.TestCase):
         self.assertFalse(self.driver.sides.browsers[ports.PERSON].held_at_start)
         self.assertEqual(self.chromium.methods("Target.setAutoAttach"), [], "no window of theirs is held")
         self.assertEqual(self.chromium.methods("Target.closeTarget"), [])
+
+
+class TheDeadServicesSessionsAndTheRaces(TheServiceRestarts):
+    """The stale session (L1, L2) and the two races (M1, M2) of the review of 1f32cfb."""
+
+    def decided(self):
+        c = self.chromium
+        return c.methods("Fetch.continueRequest") + c.methods("Fetch.failRequest")
+
+    def test_a_pause_on_the_dead_sessions_id_is_decided_there_and_then_it_is_detached(self):
+        self.hand_over()
+        c = self.chromium
+        self.assertTrue(wait_for(lambda: c.methods("Page.reload")))
+        browser = self.driver.sides.browsers[ports.PERSON]
+        self.assertTrue(wait_for(lambda: browser.adopted and all(t.ready for t in browser.pages())))
+        c.reply({"method": "Fetch.requestPaused", "sessionId": "S-OLD",
+                 "params": {"requestId": "R-OLD", "request": {"url": FILE_URL + ".png"}}})
+        self.assertTrue(wait_for(lambda: [x for x in self.decided() if x[1] == "S-OLD"]),
+                        "a request paused on the stale session was not decided on it")
+        self.assertTrue(wait_for(lambda: c.methods("Target.detachFromTarget")), "the stale session was never detached")
+        self.assertEqual(c.methods("Target.detachFromTarget")[0][2], {"sessionId": "S-OLD"})
+        old = next(i for i, (m, s, _) in enumerate(c.log) if m.startswith("Fetch.") and s == "S-OLD" and m != "Fetch.enable")
+        gone = next(i for i, (m, _, _) in enumerate(c.log) if m == "Target.detachFromTarget")
+        self.assertLess(old, gone, "detached before what was paused on it was decided")
+        detached = [p["sessionId"] for _, _, p in c.methods("Target.detachFromTarget")]
+        self.assertNotIn("S-T1", detached)
+        self.assertNotIn("S-T2", detached)
+
+    def test_a_tab_another_session_was_on_is_stopped_after_its_fence_is_up(self):
+        self.hand_over()
+        c = self.chromium
+        self.assertTrue(wait_for(lambda: c.methods("Page.stopLoading", "S-T2")), "the gap's navigation was left")
+        self.assertLess(c.index("Fetch.enable", "S-T2"), c.index("Page.stopLoading", "S-T2"))
+        self.assertEqual(c.methods("Page.stopLoading", "S-T1"), [], "a tab no session was on is not stopped")
+
+    def test_status_that_connects_first_does_not_send_the_file_tab_to_access_denied(self):
+        self.holder.on_give = None            # the arrival lost the race: the first call is a status
+        self.driver._asset_gate = lambda: (lambda url, agent: url)     # a gate that allows what it is asked
+        self.hand_over()
+        self.driver.status()
+        c = self.chromium
+        self.assertTrue(wait_for(self.decided))
+        self.assertEqual(c.methods("Fetch.failRequest"), [], "the page's own request was refused: no gate")
+        self.assertTrue(c.methods("Fetch.continueRequest"))
+
+    def test_the_arrival_is_not_dropped_while_a_long_act_holds_the_lock(self):
+        held, release = threading.Event(), threading.Event()
+
+        def hold():
+            with self.driver.lock:
+                held.set()
+                release.wait(10)
+        t = threading.Thread(target=hold, daemon=True)
+        t.start()
+        held.wait(2)
+        with mock.patch("yantrik_browser.adopt.ARRIVAL_RETRY", 0.05):
+            self.hand_over()
+            time.sleep(0.4)
+            self.assertEqual(self.chromium.methods("Page.reload"), [], "ran under another's lock")
+            release.set()
+            self.assertTrue(wait_for(lambda: self.chromium.methods("Page.reload")),
+                            "the arrival was dropped while the lock was held")
+        t.join(2)
 
 
 class MindViewsBrowserIsStillHeld(unittest.TestCase):

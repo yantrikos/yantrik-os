@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import fence, ports, transport
+from . import adopt, fence, ports, transport
 from .pagelog import console_entry, exception_entry, log_entry
 
 WORLD = "yantrik-browser"
@@ -78,6 +78,8 @@ class Tab:
         self.session = None
         self.ready = False         # attached, fenced and enabled: what attach() makes
         self.attachments = 0       # how many times attach() has made it ready
+        self.attaching = threading.RLock()   # one attach at a time per tab
+        self.preattached = False   # the browser said another session was on it before this service saw it
         self.fenced = threading.Event()   # set once Fetch.enable is on for the session (fence.py)
         self.born = False          # attached before its first request (the browser held it for us)
         self.agent = None          # whose rule its `file:` requests are held to: True an agent's, False the
@@ -131,7 +133,9 @@ class Browser:
         self.tabs = {}                         # target id -> Tab, in the order they appeared
         self.by_session = {}
         self.active = None                     # the tab actions go to unless told otherwise
-        self.fence = fence.Fence(self.call, self._agent_of)   # decides every `file:` request a tab makes (fence.py)
+        self.stale = set()                     # sessions of a dead service seen on events (adopt.py)
+        self.adopted = False                   # the person's tabs have been adopted on this connection
+        self.fence = fence.Fence(self.call, self._agent_of, self._idle)   # decides every `file:` request a tab makes (fence.py)
         self.reader = None
         self.alive = False
 
@@ -167,6 +171,8 @@ class Browser:
             self.abandoned.clear()
         self.tabs.clear()
         self.by_session.clear()
+        self.stale.clear()
+        self.adopted = False
         self.active = None
         self.reader = threading.Thread(target=self._read, args=(ws, generation), name="cdp-reader",
                                        daemon=True)
@@ -180,26 +186,7 @@ class Browser:
         for info in self.call("Target.getTargets").get("targetInfos", []):
             self._saw_target(info)
         if not self.held_at_start:
-            self._adopt_pages()
-
-    def _adopt_pages(self):
-        """The person's browser outlives this service (the pipe stays open in the shell), so a tab
-        may carry the dead process's session: its `file:` requests paused for a decider that is gone,
-        and nobody to continue them. Every open page gets its session, its fence and, if a `file:`
-        frame is in it, the reload behind the fence now, not when a command first touches it: the
-        reload ends what the old session left paused. One tab that cannot be adopted is left to the
-        call that reaches it (attach raises there); the others do not wait on it."""
-        def adopt(tab):
-            try:
-                self.attach(tab)
-            except (CdpError, BrowserClosed):
-                pass
-        pages = self.pages()
-        workers = [threading.Thread(target=adopt, args=(t,), daemon=True, name="cdp-adopt") for t in pages]
-        for w in workers:
-            w.start()
-        for w in workers:
-            w.join(CALL_TIMEOUT * 2)
+            adopt.adopt_pages(self)
 
     def _open(self):
         """The transport to the browser: its pipe, or a WebSocket to its port."""
@@ -303,6 +290,7 @@ class Browser:
         if tab is None:
             tab = Tab(info["targetId"])
             tab.opened_by = info.get("openerId")
+            tab.preattached = bool(info.get("attached"))
             opener = self.tabs.get(tab.opened_by)
             tab.agent = opener.agent if opener else None      # a window is held to its opener's rule
             self.tabs[tab.id] = tab
@@ -325,6 +313,11 @@ class Browser:
         tab.fenced.clear()
         self.by_session[session] = tab
         self.fence.arm(session, tab.id, waiting, tab.fenced.set)
+
+    def _idle(self, session):
+        """The fence decided the last request paused on `session`: a stale one can go (adopt.py)."""
+        if session in self.stale:
+            self.fence.arming.submit(adopt.sweep, self)
 
     def _agent_of(self, session):
         """Whether the tab on this session is held to an agent's rule. On Mind View's browser, yes
@@ -355,10 +348,12 @@ class Browser:
                 tab.ready = False
             return
         if method == "Fetch.requestPaused":
+            adopt.learn(self, msg.get("sessionId"))
             self.fence.paused(msg.get("sessionId"), p)      # decided off the reader's thread
             return
         tab = self.by_session.get(msg.get("sessionId"))
         if tab is None:
+            adopt.learn(self, msg.get("sessionId"))
             return
         if method == "Runtime.executionContextCreated":
             ctx = p.get("context", {})
@@ -459,11 +454,17 @@ class Browser:
             tab.agent = False
         return tab
 
-    def attach(self, tab):
+    def attach(self, tab, wait=CALL_TIMEOUT):
         """The tab with a session, fenced and enabled. A page the browser held at its start was
         fenced before its first request. One it did not hold (open before this connection, or its
         session was lost) is fenced now, and if a `file:` frame is in it, that loaded unfenced: it
-        is loaded again behind the fence, and waited for."""
+        is loaded again behind the fence, and waited for up to `wait`. One thread at a time per tab."""
+        if tab.ready:
+            return tab
+        with tab.attaching:
+            return self._attach(tab, wait)
+
+    def _attach(self, tab, wait):
         if tab.ready:
             return tab
         if self.held_at_start:
@@ -475,6 +476,11 @@ class Browser:
             self.by_session[tab.session] = tab
             self.call("Fetch.enable", {"patterns": fence.PATTERNS}, session=tab.session)
             tab.fenced.set()
+            if tab.preattached and not self.held_at_start:
+                # Another session was on it: a navigation it held when the service went away has
+                # no event for anyone. Stop it (the reload below, for a `file:` frame, loads again).
+                tab.preattached = False
+                self.call("Page.stopLoading", session=tab.session)
         elif not tab.fenced.wait(CALL_TIMEOUT):
             raise CdpError("the browser did not let the fence onto this tab")
         tab.attachments += 1
@@ -483,17 +489,19 @@ class Browser:
         tree = self.call("Page.getFrameTree", session=tab.session)["frameTree"]
         tab.main_frame = tree["frame"]["id"]
         if not tab.born and (_may_have_drawn_file(tab, tree) if self.held_at_start else _holds_file_frame(tree)):
-            self._reload(tab)
+            self._reload(tab, wait)
         tab.ready = True
         return tab
 
-    def _reload(self, tab):
-        """Load the tab again behind the fence and wait for it to commit and finish."""
+    def _reload(self, tab, wait=CALL_TIMEOUT):
+        """Load the tab again behind the fence and wait for it to commit and finish, or for the
+        tab to be gone."""
         before = tab.navigations
         self.call("Page.reload", session=tab.session)
-        deadline = time.monotonic() + CALL_TIMEOUT
+        deadline = time.monotonic() + wait
         with self.cond:
-            while not (tab.navigations > before and tab.loaded) and self.alive and time.monotonic() < deadline:
+            while (not (tab.navigations > before and tab.loaded) and self.alive
+                   and tab.id in self.tabs and time.monotonic() < deadline):
                 self.cond.wait(0.2)
 
     def new_tab(self, url, agent=False):
