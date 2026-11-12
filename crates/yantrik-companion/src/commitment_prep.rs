@@ -122,9 +122,9 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
     let mut hands = Hands::new(registry, ctx, settings.budget);
     progress.attempts += 1;
     find_and_open(&mut hands, &mut progress, &settings.roots);
-    draft_email(&mut hands, &mut progress, &commitment);
-
     let window_closed = now >= commitment.deadline;
+    draft_email(&mut hands, &mut progress, &commitment, window_closed);
+
     let more = !progress.is_settled() && !window_closed && progress.attempts < MAX_ATTEMPTS;
     let (state, next_try) = if more {
         ("retry", Some(now + RETRY_BASE_SECS * f64::from(1u32 << (progress.attempts - 1))))
@@ -263,14 +263,16 @@ fn open_in_mind_view(hands: &mut Hands<'_>, rec: &mut FileRecord, app: &str, ope
 }
 
 /// Draft the email in Email with the thing being sent attached. No draft, and the reason, when
-/// there is nothing to attach: no draft is better than one that pretends.
-fn draft_email(hands: &mut Hands<'_>, progress: &mut Progress, c: &Commitment) {
+/// there is nothing to attach: no draft is better than one that pretends. While the window is
+/// open a file not found yet may still turn up, so the draft waits for it.
+fn draft_email(hands: &mut Hands<'_>, progress: &mut Progress, c: &Commitment, window_closed: bool) {
     if progress.draft.is_some() || progress.draft_settled {
         return;
     }
     let Some(rec) = progress.attachment() else { return };
     let Some(path) = rec.path.clone() else {
-        if rec.settled {
+        // Nothing to attach for good: the file is settled as not found, or the window has closed.
+        if rec.settled || window_closed {
             progress.draft_why = Some("no email was drafted, because there is nothing to attach".into());
             progress.draft_settled = true;
         }
