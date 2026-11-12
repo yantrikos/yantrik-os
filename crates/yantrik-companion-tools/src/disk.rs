@@ -2,11 +2,6 @@
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
 
-/// `s` as one single-quoted shell word.
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(DiskUsageTool));
     reg.register(Box::new(MountInfoTool));
@@ -218,95 +213,96 @@ impl Tool for AnalyzeDiskTool {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
         };
-        // The path goes into `sh -c` lines below: quoted, so `$(…)` or a backtick in a folder name
-        // is a name and not a command (`validate_path` does not refuse them).
-        let expanded = sh_quote(&expanded);
+        analyze(&expanded, path)
+    }
+}
 
-        let mut report = Vec::new();
+/// The report for the folder `expanded`, named `path` in the text.
+fn analyze(expanded: &str, path: &str) -> String {
+    // Each program is started on its own, with the path as one argument: no shell line, so a `$(…)`
+    // or a backtick in a folder name is only a name. The sorting and summing is done here.
+    let mut report = Vec::new();
 
-        // 1. Subdirectory sizes (top 10, sorted by size)
-        if let Ok(o) = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&format!("du -sh {}/* 2>/dev/null | sort -rh | head -10", expanded))
-            .output()
-        {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout);
-                if !text.trim().is_empty() {
-                    report.push(format!("Largest items in {}:", path));
-                    for line in text.lines() {
-                        report.push(format!("  {}", line));
-                    }
+    // 1. Subdirectory sizes (top 10, by size). `du -sb -- <each visible entry>`.
+    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(expanded)
+        .map(|d| d.flatten().map(|e| e.path()).filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))).collect())
+        .unwrap_or_default();
+    if !entries.is_empty() {
+        if let Ok(o) = std::process::Command::new("du").arg("-sb").arg("--").args(&entries).stderr(std::process::Stdio::null()).output() {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let mut sizes: Vec<(u64, &str)> = text
+                .lines()
+                .filter_map(|l| l.split_once('\t'))
+                .filter_map(|(n, p)| Some((n.trim().parse().ok()?, p)))
+                .collect();
+            sizes.sort_by(|a, b| b.0.cmp(&a.0));
+            if !sizes.is_empty() {
+                report.push(format!("Largest items in {}:", path));
+                for (bytes, p) in sizes.into_iter().take(10) {
+                    report.push(format!("  {}\t{}", super::format_size(bytes), p));
                 }
             }
         }
+    }
 
-        // 2. Old files (>30 days, summarized)
-        if let Ok(o) = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&format!(
-                "find {} -maxdepth 2 -type f -mtime +30 -printf '%s\\n' 2>/dev/null | awk '{{s+=$1; c++}} END {{printf \"%d files, %.0f\\n\", c, s}}'",
-                expanded
-            ))
-            .output()
-        {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if !text.is_empty() && !text.starts_with("0 files") {
-                    let parts: Vec<&str> = text.splitn(2, ", ").collect();
-                    if parts.len() == 2 {
-                        let count = parts[0];
-                        let bytes: u64 = parts[1].trim().parse().unwrap_or(0);
-                        let size_str = super::format_size(bytes);
-                        report.push(format!("\nOlder than 30 days: {} (~{}).", count, size_str));
-                    }
-                }
+    // 2. Old files (>30 days, summarized)
+    if let Ok(o) = std::process::Command::new("find")
+        .arg(expanded)
+        .args(["-maxdepth", "2", "-type", "f", "-mtime", "+30", "-printf", "%s\\n"])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        let text = String::from_utf8_lossy(&o.stdout);
+        let sizes: Vec<u64> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
+        if !sizes.is_empty() {
+            report.push(format!("\nOlder than 30 days: {} files (~{}).", sizes.len(), super::format_size(sizes.iter().sum())));
+        }
+    }
+
+    // 3. File type breakdown (top 8 extensions by count)
+    if let Ok(o) = std::process::Command::new("find")
+        .arg(expanded)
+        .args(["-maxdepth", "2", "-type", "f", "-name", "*.*"])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        let text = String::from_utf8_lossy(&o.stdout);
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for line in text.lines() {
+            if let Some((_, ext)) = line.rsplit_once('.') {
+                *counts.entry(ext).or_default() += 1;
             }
         }
-
-        // 3. File type breakdown (top 8 extensions by count)
-        if let Ok(o) = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&format!(
-                "find {} -maxdepth 2 -type f -name '*.*' 2>/dev/null | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -8",
-                expanded
-            ))
-            .output()
-        {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout);
-                if !text.trim().is_empty() {
-                    report.push("\nFile types:".to_string());
-                    for line in text.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            report.push(format!("  {}", trimmed));
-                        }
-                    }
-                }
+        let mut counts: Vec<_> = counts.into_iter().collect();
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        if !counts.is_empty() {
+            report.push("\nFile types:".to_string());
+            for (ext, n) in counts.into_iter().take(8) {
+                report.push(format!("  {:>6} {}", n, ext));
             }
         }
+    }
 
-        if report.is_empty() {
-            format!("Could not analyze {}. Directory may be empty or inaccessible.", path)
-        } else {
-            report.join("\n")
-        }
+    if report.is_empty() {
+        format!("Could not analyze {}. Directory may be empty or inaccessible.", path)
+    } else {
+        report.join("\n")
     }
 }
 
 #[cfg(test)]
 mod quote_tests {
-    use super::sh_quote;
+    use super::*;
 
     #[test]
     fn a_command_substitution_in_a_folder_name_stays_a_name() {
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("echo {}/x", sh_quote("/tmp/$(echo INJECTED)`echo INJECTED`'q")))
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        assert_eq!(text.trim(), "/tmp/$(echo INJECTED)`echo INJECTED`'q/x");
+        let dir = std::env::temp_dir().join(format!("disk-inj-{}-$(touch INJECTED)`touch INJECTED`'q", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/a.txt"), vec![0u8; 5000]).unwrap();
+        let out = analyze(&dir.to_string_lossy(), "the folder");
+        assert!(out.contains("sub"), "{out}");
+        assert!(out.contains("txt"), "{out}");
+        assert!(!dir.join("INJECTED").exists() && !std::path::Path::new("INJECTED").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

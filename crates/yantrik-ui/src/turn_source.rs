@@ -14,6 +14,13 @@ use crate::mind_view::{requester_now, Requester};
 /// How many turns the person started are being answered by the companion's worker right now. The worker
 /// takes one command at a time, so this is 0 or 1; a count, not a flag, so that a nested guard cannot end
 /// the outer one.
+///
+/// **Known residual: this record is process-wide, not per caller.** While a person's turn runs, any
+/// other in-process caller the shell classes as "the companion" (a chat-router reply, a future
+/// scheduler) passes this second line too. The companion's own thread-local gate
+/// (`check_call` → `person_started()`) still refuses such a caller; this line is a second check, not the
+/// only one. Closing it means a per-turn nonce the worker attaches on its own thread; not done, since
+/// it would add a secret to the socket protocol for a window of one turn.
 static PERSONS_TURNS: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {

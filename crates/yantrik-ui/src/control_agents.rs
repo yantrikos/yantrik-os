@@ -1085,7 +1085,6 @@ fn capitalised(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::agents::{AgentMeta, Store};
-
     use yantrik_harness::protocol;
 
     fn id(s: &str) -> AgentId {
