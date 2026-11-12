@@ -80,6 +80,9 @@ class Tab:
         self.attachments = 0       # how many times attach() has made it ready
         self.attaching = threading.RLock()   # one attach at a time per tab
         self.preattached = False   # the browser said another session was on it before this service saw it
+        self.gap = False           # another session was on it and no navigation has committed behind
+                                   # our fence yet: it may hold a request nobody decides (adopt.py)
+        self.fence_nav = 0         # its navigation count when our fence went up
         self.fenced = threading.Event()   # set once Fetch.enable is on for the session (fence.py)
         self.born = False          # attached before its first request (the browser held it for us)
         self.agent = None          # whose rule its `file:` requests are held to: True an agent's, False the
@@ -290,7 +293,7 @@ class Browser:
         if tab is None:
             tab = Tab(info["targetId"])
             tab.opened_by = info.get("openerId")
-            tab.preattached = bool(info.get("attached"))
+            tab.preattached = tab.gap = bool(info.get("attached"))
             opener = self.tabs.get(tab.opened_by)
             tab.agent = opener.agent if opener else None      # a window is held to its opener's rule
             self.tabs[tab.id] = tab
@@ -372,6 +375,9 @@ class Browser:
                 tab.url = frame.get("url", tab.url)
                 tab.world = None
                 tab.navigations += 1
+                if tab.gap and tab.fenced.is_set() and tab.navigations > tab.fence_nav:
+                    tab.gap = False        # a document committed behind our fence: the gap's is gone
+                    adopt.after_commit(self)
                 tab.held_keys.clear()      # a new document starts with nothing held
                 tab.cached_requests.clear()
         elif method == "Page.frameStartedLoading":
@@ -475,6 +481,7 @@ class Browser:
             tab.session, tab.born = got["sessionId"], False
             self.by_session[tab.session] = tab
             self.call("Fetch.enable", {"patterns": fence.PATTERNS}, session=tab.session)
+            tab.fence_nav = tab.navigations
             tab.fenced.set()
             if tab.preattached and not self.held_at_start:
                 # Another session was on it: a navigation it held when the service went away has
@@ -488,7 +495,8 @@ class Browser:
             self.call(method, session=tab.session)
         tree = self.call("Page.getFrameTree", session=tab.session)["frameTree"]
         tab.main_frame = tree["frame"]["id"]
-        if not tab.born and (_may_have_drawn_file(tab, tree) if self.held_at_start else _holds_file_frame(tree)):
+        if not tab.born and (_may_have_drawn_file(tab, tree) if self.held_at_start
+                             else tab.gap or _holds_file_frame(tree)):
             self._reload(tab, wait)
         tab.ready = True
         return tab
