@@ -11,6 +11,9 @@ environment, and never printed.
 `model:`, leaving every other key in the file as it was (above all `platform_toolsets`, the allowlist
 that keeps Hermes's own terminal, file, code, browser and web tools off). The model section the file
 had is kept once, beside it, and `revert` puts it back (or removes `model:` when there was none).
+A live section of the person's own that is edited since is copied, never written over (the shared
+table harnesses/tests/fixtures/keep_live_cases.json is the rule); the desktop is told where, on
+`NOTE: ` lines, since this runs as another account and its files are not readable from the desktop.
 The address must be this machine's own gateway (http, a loopback name, port 7460, no userinfo: the
 host of `http://127.0.0.1:@evil/` is `evil`), so a caller cannot use this to send Hermes's calls, or
 the token, anywhere else.
@@ -75,81 +78,150 @@ def _refuse_link(path):
         pass
 
 
-def _keep_live_model(path, kept, data):
-    """A kept section that this tool did not write (no `made_by` mark) is adopted, never replaced. If the
-    live `model` section differs from it and is not the gateway's own, that section is the person's newer
-    work: copy it, with the config's mode and owner, to `<config>.model-replaced-<unix time>.json`
-    (exclusive, never over an earlier copy), and name it in the kept file so Revert can say so (#1201)."""
+def _load_kept(kept):
+    """The kept section's record, or None when there is none. One that cannot be read is the person's
+    only copy of their section: it is reported in words and left as it is, never replaced."""
     try:
         with open(kept, encoding="utf-8") as f:
             before = json.load(f)
+    except FileNotFoundError:
+        return None
     except (OSError, ValueError):
-        return
-    if before.get("made_by") == "apply" or before.get("replaced"):
-        return
-    live = data.get("model")
-    if live == before.get("model") or (isinstance(live, dict) and is_gateway(str(live.get("base_url", "")))):
-        return
+        raise ModelError("the kept copy of the model section (%s) cannot be read; leaving it as it is" % kept)
+    if not isinstance(before, dict):
+        raise ModelError("the kept copy of the model section (%s) is not what this tool writes; leaving it as it is" % kept)
+    return before
+
+
+def _publish(path, record, mode=0o600, owner=None, exclusive=False):
+    """Write `record` as JSON to a temp file beside `path` (mode first, so a key is never readable by
+    others), then put it in place: `os.replace` over `path`, or, `exclusive`, a hard link that fails
+    rather than replace an existing file. Nothing is ever left half-written under `path`."""
+    tmp = "%s.tmp-%d" % (path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+        os.chmod(tmp, mode)
+        if owner and hasattr(os, "chown") and (os.stat(tmp).st_uid, os.stat(tmp).st_gid) != owner:
+            os.chown(tmp, *owner)
+        if exclusive:
+            os.link(tmp, path)
+        else:
+            os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def _keep_copy(path, data):
+    """Copy the live `model` section to `<config>.model-replaced-<unix time>.json`, with the config's mode
+    and owner (it can hold an API key), exclusive, never over an earlier copy. Returns its path."""
     st = os.stat(path)
     now = int(time.time())
+    record = {"had": "model" in data, "model": data.get("model")}
     for n in range(1000):
         copy = "%s.model-replaced-%d%s.json" % (path, now, "" if n == 0 else "-%d" % n)
         try:
-            fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            _publish(copy, record, stat.S_IMODE(st.st_mode), (st.st_uid, st.st_gid), exclusive=True)
         except FileExistsError:
             continue
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"had": "model" in data, "model": live}, f)
-        os.chmod(copy, stat.S_IMODE(st.st_mode))
-        if hasattr(os, "chown") and (os.stat(copy).st_uid, os.stat(copy).st_gid) != (st.st_uid, st.st_gid):
-            os.chown(copy, st.st_uid, st.st_gid)
-        before["adopted"] = True
-        before["replaced"] = copy
-        with open(kept, "w", encoding="utf-8") as f:
-            json.dump(before, f)
-        return
+        return copy
     raise ModelError("could not find a free name to keep a copy of the model section; nothing was changed")
 
 
+def _is_gateway_section(model):
+    return isinstance(model, dict) and is_gateway(str(model.get("base_url", "")))
+
+
+def _differs_from_kept(data, before):
+    """The live section is something to keep: there is one, and it is not the kept one."""
+    return "model" in data and (data["model"] != before.get("model") or not before.get("had"))
+
+
+def _copies_of(before):
+    """The copies the kept record names (a list; an earlier version of this file kept one string)."""
+    replaced = before.get("replaced") or []
+    return list(replaced if isinstance(replaced, list) else [replaced])
+
+
+def _keep_live_model(path, kept, before, data):
+    """The shared rule (harnesses/tests/fixtures/keep_live_cases.json is the rule; provider_handoff in
+    the desktop runs the same table): nothing of the person's is overwritten without a copy. When no
+    apply of this tool is in force (the live `model` section is not the gateway's), a live section that
+    differs from the kept one is the person's newer work, and is copied before anything writes over it.
+    Compared on every Apply, however many cycles came before; the copies are a list, and the kept
+    record names each (#1201, #1205)."""
+    replaced = _copies_of(before)
+    if _is_gateway_section(data.get("model")) or not _differs_from_kept(data, before):
+        return replaced
+    replaced.append(_keep_copy(path, data))
+    before["replaced"] = replaced
+    _publish(kept, before)
+    return replaced
+
+
 def apply(path, spec):
-    """Set the four `model` keys in the file at `path`, keeping the earlier section once."""
+    """Set the four `model` keys in the file at `path`, keeping the earlier section once. Returns the
+    copies made of the person's own section by this call."""
     _refuse_link(path)
     data, text = hermes_config._read(path)
     kept = _kept(path)
-    if not os.path.lexists(kept):
-        had = "model" in data
-        fd = os.open(kept, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"had": had, "model": data.get("model"), "made_by": "apply"}, f)
+    before = _load_kept(kept)
+    copies = []
+    if before is None:
+        _publish(kept, {"had": "model" in data, "model": data.get("model"), "made_by": "apply"}, exclusive=True)
     else:
-        _keep_live_model(path, kept, data)
+        copies = _keep_live_model(path, kept, before, data)
     model = data.get("model")
     # An older config names the model as a bare string; it becomes the mapping Hermes reads now.
     if not isinstance(model, dict):
         model = data["model"] = {}
     model.update(spec)
     hermes_config._write(path, data, text)
+    return copies
 
 
 def revert(path):
-    """Put the model section back as `apply` found it, and drop the kept copy."""
+    """Put the model section back as `apply` found it. A live section edited since (not the gateway's,
+    not the kept one) is copied first. Returns (older kept section set aside or None, copies of the
+    person's own section: those Apply kept and any made now)."""
     _refuse_link(path)
     kept = _kept(path)
-    try:
-        with open(kept, encoding="utf-8") as f:
-            before = json.load(f)
-    except FileNotFoundError:
-        return _revert_from_before_the_move(path)
+    before = _load_kept(kept)
+    if before is None:
+        _revert_from_before_the_move(path)
+        return None, []
     data, text = hermes_config._read(path)
+    copies = _copies_of(before)
+    if not _is_gateway_section(data.get("model")) and _differs_from_kept(data, before):
+        copies.append(_keep_copy(path, data))
     if before.get("had"):
         data["model"] = before.get("model")
     else:
         data.pop("model", None)
     hermes_config._write(path, data, text)
-    # A kept section this tool did not make is not this tool's to delete.
-    if not before.get("adopted"):
+    if before.get("made_by") == "apply":
         os.unlink(kept)
-    return before.get("replaced")
+        return None, copies
+    # A kept section this tool did not make is not this tool's to delete, and is not to be put back by
+    # every later Revert either: it is set aside under a new name.
+    return _set_aside(kept), copies
+
+
+def _set_aside(kept):
+    now = int(time.time())
+    for n in range(1000):
+        to = "%s.found-%d%s" % (kept, now, "" if n == 0 else "-%d" % n)
+        try:
+            os.link(kept, to)
+        except FileExistsError:
+            continue
+        os.unlink(kept)
+        return to
+    raise ModelError("could not find a free name to set the kept model section aside")
 
 
 def _revert_from_before_the_move(path):
@@ -169,23 +241,35 @@ def _revert_from_before_the_move(path):
     hermes_config._write(path, data, text)
 
 
+def _notes(found, copies):
+    """The lines the desktop shows the person (`NOTE: `); paths only, never a key. The copies are in the
+    Hermes account's own folder, which the desktop cannot open, so the way to read one is said."""
+    out = []
+    if found:
+        out.append("NOTE: Put back an older model section that was already kept beside it (set aside, not deleted, at %s)." % found)
+    if copies:
+        out.append("NOTE: Your own model settings that this replaced are kept at %s. They are in the Hermes account's folder; "
+                   "an administrator can read one with: sudo cat <that path>" % ", ".join(copies))
+    return out
+
+
 def main(argv):
     if len(argv) != 3 or argv[1] not in ("apply", "revert"):
         print("usage: hermes_model.py apply|revert CONFIG", file=sys.stderr)
         return 2
     try:
         if argv[1] == "apply":
-            apply(argv[2], parse(sys.stdin.read(MAX_BODY + 1)[:MAX_BODY]))
-            replaced = None
+            found, copies = None, apply(argv[2], parse(sys.stdin.read(MAX_BODY + 1)[:MAX_BODY]))
         else:
-            replaced = revert(argv[2])
-    except (ModelError, hermes_config.ConfigError, OSError) as exc:
+            found, copies = revert(argv[2])
+    except (ModelError, hermes_config.ConfigError, OSError, ValueError) as exc:
         # Our own words; the settings (which hold a token) are never in one.
-        print(exc, file=sys.stderr)
+        print(exc if isinstance(exc, (ModelError, hermes_config.ConfigError)) else "could not change the model settings: %s"
+              % type(exc).__name__, file=sys.stderr)
         return 1
     print("Hermes's model settings %s" % ("now point at Yantrik models" if argv[1] == "apply" else "are back as they were"))
-    if argv[1] == "revert" and replaced:
-        print("Your model settings from before this change are also kept at %s" % replaced)
+    for line in _notes(found, copies):
+        print(line)
     return 0
 
 

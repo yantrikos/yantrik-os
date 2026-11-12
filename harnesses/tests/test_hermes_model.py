@@ -154,6 +154,10 @@ class ModelTests(unittest.TestCase):
         run(["revert", self.path])
         self.assertEqual(self.load()["model"], "anthropic/claude-opus")
 
+    def read_json(self, path):
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
     def test_a_stray_kept_section_and_an_edited_live_one_are_both_kept(self):
         # #1201: a kept section no apply of this tool made, and a live model section edited since.
         old = {"had": True, "model": {"default": "old/model", "provider": "old"}}
@@ -165,15 +169,71 @@ class ModelTests(unittest.TestCase):
         copies = [f for f in os.listdir(self.dir.name) if ".model-replaced-" in f]
         self.assertEqual(len(copies), 1, copies)
         copy = os.path.join(self.dir.name, copies[0])
-        self.assertEqual(json.load(open(copy))["model"], {"default": "newer/edit", "provider": "nvidia"})
+        self.assertEqual(self.read_json(copy)["model"], {"default": "newer/edit", "provider": "nvidia"})
         self.assertEqual(os.stat(copy).st_mode & 0o7777, 0o640, "the copy has the original's mode")
+        self.assertIn(copy, out, "Apply names the copy too, as a NOTE line the desktop shows")
         code, out, err = run(["revert", self.path])
         self.assertEqual(code, 0, err)
         self.assertIn(copy, out, "the result names the copy")
+        self.assertIn("sudo cat", out, "it says how the person can open a copy the desktop cannot read")
         self.assertEqual(self.load()["model"], old["model"])
-        self.assertTrue(os.path.exists(self.path + hermes_model.KEPT_SUFFIX), "a kept section this tool did not make stays")
-        self.assertEqual(json.load(open(copy))["model"]["default"], "newer/edit")
+        self.assertFalse(os.path.exists(self.path + hermes_model.KEPT_SUFFIX), "set aside, so a later Revert does not go back to it")
+        aside = [f for f in os.listdir(self.dir.name) if ".found-" in f]
+        self.assertEqual(len(aside), 1, aside)
+        self.assertEqual(self.read_json(os.path.join(self.dir.name, aside[0]))["model"], old["model"], "set aside, not deleted")
+        self.assertEqual(self.read_json(copy)["model"]["default"], "newer/edit")
         self.assertNotIn(TOKEN, out + err)
+
+    def test_a_second_cycle_keeps_the_second_edit_and_names_only_what_it_holds(self):
+        # The review's five steps: stray kept section, live edited to A; apply, revert; edit to B; apply, revert.
+        old = {"default": "old/model", "provider": "old"}
+        Path(self.path + hermes_model.KEPT_SUFFIX).write_text(json.dumps({"had": True, "model": old}))
+        Path(self.path).write_text("model:\n  default: edit/A\n")
+        run(["apply", self.path], json.dumps(SPEC))
+        code, out, err = run(["revert", self.path])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.load()["model"], old)
+        Path(self.path).write_text("model:\n  default: edit/B\n")
+        run(["apply", self.path], json.dumps(SPEC))
+        code, out, err = run(["revert", self.path])
+        self.assertEqual(code, 0, err)
+        held = [self.read_json(os.path.join(self.dir.name, f))["model"]["default"] for f in os.listdir(self.dir.name) if ".model-replaced-" in f]
+        self.assertEqual(self.load()["model"], {"default": "edit/B"}, "edit/B is on disk")
+        self.assertEqual(held, ["edit/A"])
+        for f in os.listdir(self.dir.name):
+            if ".model-replaced-" in f:
+                self.assertNotIn(os.path.join(self.dir.name, f), out, "the second Revert names no copy that holds something else")
+
+    def test_a_kept_file_that_cannot_be_read_is_reported_in_words_and_left_alone(self):
+        kept = self.path + hermes_model.KEPT_SUFFIX
+        Path(self.path).write_text(THEIRS)
+        Path(kept).write_text('{"had": tr')
+        for argv, stdin in ((["apply", self.path], json.dumps(SPEC)), (["revert", self.path], "")):
+            code, out, err = run(argv, stdin)
+            self.assertEqual(code, 1)
+            self.assertIn("cannot be read", err)
+            self.assertNotIn("Traceback", err)
+        self.assertEqual(Path(kept).read_text(), '{"had": tr')
+        self.assertEqual(Path(self.path).read_text(), THEIRS)
+
+    def test_the_kept_file_is_replaced_whole_never_truncated_in_place(self):
+        # Rewriting the record writes a temp file at 600 and renames it over: the old record is whole until then.
+        kept = self.path + hermes_model.KEPT_SUFFIX
+        Path(kept).write_text(json.dumps({"had": True, "model": {"default": "old"}}))
+        Path(self.path).write_text("model:\n  default: edit\n")
+        before = os.stat(kept).st_ino
+        run(["apply", self.path], json.dumps(SPEC))
+        self.assertNotEqual(os.stat(kept).st_ino, before, "a new file was put in place")
+        self.assertEqual(os.stat(kept).st_mode & 0o777, 0o600)
+        self.assertEqual([f for f in os.listdir(self.dir.name) if ".tmp-" in f], [])
+
+    def test_an_edit_while_applied_is_kept_by_the_next_apply(self):
+        Path(self.path).write_text(THEIRS)
+        run(["apply", self.path], json.dumps(SPEC))
+        Path(self.path).write_text("model:\n  default: edited/while/applied\n")
+        code, out, err = run(["apply", self.path], json.dumps(SPEC))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len([f for f in os.listdir(self.dir.name) if ".model-replaced-" in f]), 1)
 
     def test_an_ordinary_apply_writes_no_replaced_copy(self):
         Path(self.path).write_text(THEIRS)

@@ -341,8 +341,9 @@ pub(crate) fn wire(ui: &App) {
                 }
                 provider_handoff::apply(&home(), &p).map(|m| m.replaced_note())
             });
+            ui.set_harness_notice("".into());
             match outcome {
-                Ok(Some(note)) => ui.set_harness_error(note.into()),
+                Ok(Some(note)) => ui.set_harness_notice(note.into()),
                 Ok(None) => {}
                 Err(e) => ui.set_harness_error(e.into()),
             }
@@ -360,8 +361,9 @@ pub(crate) fn wire(ui: &App) {
         let weak = ui.as_weak();
         ui.on_revert_provider(move |harness| {
             let Some(ui) = weak.upgrade() else { return };
+            ui.set_harness_notice("".into());
             match revert(&harness) {
-                Ok(Some(note)) => ui.set_harness_error(note.into()),
+                Ok(Some(note)) => ui.set_harness_notice(note.into()),
                 Ok(None) => {}
                 Err(e) => ui.set_harness_error(e.into()),
             }

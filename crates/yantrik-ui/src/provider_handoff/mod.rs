@@ -41,6 +41,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+mod keep;
+mod progress;
 mod replaced;
 pub(crate) use apply::{apply, backup_path, revert};
 use crate::private_file::{self, Publish};
@@ -209,26 +211,39 @@ pub(crate) struct Marker {
     pub model: String,
     pub at: String,
     pub files: Vec<Touched>,
+    /// Words for the person from this apply that are not in a file (moved Hermes: where its own
+    /// account's tool kept their model settings). Not stored.
+    #[serde(skip)]
+    pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Touched {
     pub path: PathBuf,
     /// The person's own file, kept aside the first time; `None` when there was none.
     pub backup: Option<PathBuf>,
-    /// The backup was found, not made: no marker named it. Revert puts its content back but never deletes it.
+    /// The backup was found, not made: no marker named it. Revert puts its content back, then sets it
+    /// aside (`.found-*`) and never deletes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub adopted: bool,
-    /// Where the live file was kept (`.yantrik-replaced-*`) when it differed from an adopted backup.
+    /// Copies (`.yantrik-replaced-*`) of the person's live file, made before it was written over.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced: Vec<PathBuf>,
+    /// sha256 of what was written to `path`: a live file that differs has been edited since, and is
+    /// copied before anything writes over it. `None` in a marker from before this was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replaced: Option<PathBuf>,
+    pub written: Option<String>,
+    /// Revert has put this file back; a retry of Revert skips it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restored: bool,
 }
 
 impl Marker {
-    /// A sentence naming the copy of the person's newer config that was kept, if one was.
+    /// What Apply kept of the person's own config, in words, if it kept anything.
     pub(crate) fn replaced_note(&self) -> Option<String> {
-        let copies: Vec<String> = self.files.iter().filter_map(|t| t.replaced.as_ref()).map(|p| replaced::sentence(p)).collect();
-        (!copies.is_empty()).then(|| copies.join(" "))
+        let mut notes: Vec<String> = self.files.iter().filter(|t| !t.replaced.is_empty()).map(replaced::apply_sentence).collect();
+        notes.extend(self.note.clone());
+        (!notes.is_empty()).then(|| notes.join(" "))
     }
 }
 
@@ -493,3 +508,7 @@ fn display(path: &Path, home: &Path) -> String {
 mod tests;
 #[cfg(test)]
 mod replaced_tests;
+#[cfg(test)]
+mod retry_tests;
+#[cfg(test)]
+mod rule_table_tests;

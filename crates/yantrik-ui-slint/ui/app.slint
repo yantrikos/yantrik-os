@@ -792,6 +792,7 @@ export component App inherits Window {
     in property <bool> harness-driving: false;
     in property <string> active-harness-id: "";
     in-out property <string> harness-error: "";
+    in-out property <string> harness-notice: "";
     callback use-harness(string);
     // Both change the machine, so both are jobs whose output lands back on the row.
     callback install-harness(string);
@@ -2193,6 +2194,7 @@ export component App inherits Window {
                 harness-rows: root.harness-rows;
                 harness-busy: root.harness-busy;
                 harness-error: root.harness-error;
+                harness-notice: root.harness-notice;
                 use-harness(id) => { root.use-harness(id); }
                 install-harness(id) => { root.install-harness(id); }
                 start-harness(id) => { root.start-harness(id); }
