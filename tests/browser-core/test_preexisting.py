@@ -17,11 +17,8 @@ import unittest
 import zlib
 
 from test_live import Bench, chrome
-from test_screenshot import png_pixel
 from raw_cdp import Raw
 from yantrik_browser import driver as drv  # noqa: E402  (on the path once test_live is imported)
-
-RED = (255, 0, 0)
 
 
 class Second(Bench):
@@ -70,23 +67,28 @@ class Preexisting(unittest.TestCase):
         time.sleep(1.0)
         return session
 
-    def popup_after_the_restart(self):
-        """The window the opener opened, as the surface finds it when it connects."""
+    def after_the_connection(self):
+        """What the surface finds when it connects: every page target that existed before it is
+        closed (adopt.py, #1200), the opener and any window it opened, so nothing drawn unfenced
+        stays on screen. Returns the driver and the pages left."""
         driver = drv.Driver(self.browser, judge=False, file_rule=False, home=lambda: self.home)
         self.browser.connect()
-        return driver, next(t for t in self.browser.pages() if t.opened_by)
+        return driver, [t for t in self.browser.pages()]
 
-    def test_a_window_open_before_the_connection_is_loaded_again_behind_the_fence(self):
+    def assertNothingOpenedBeforeSurvives(self, pages):
+        self.assertEqual([t for t in pages if t.opened_by], [], "a window opened before the connection stayed")
+        self.assertFalse([t for t in pages if "opener.html" in str(t.url)], "the opener stayed")
+
+    def test_a_window_open_before_the_connection_is_closed_when_it_connects(self):
         self.raw.evaluate(self.opener(), (
             "var x = window.open(''); x.document.write('<iframe src=\"file://%s/.ssh/key.html\" "
             "style=\"position:absolute;border:0;left:0;top:0;width:300px;height:300px\"></iframe>'); "
             "x.document.close()") % self.home, gesture=True)
         time.sleep(1.0)
-        driver, popup = self.popup_after_the_restart()
-        self.assertNotEqual(png_pixel(driver.screenshot(popup.id)["path"], 150, 150), RED, "it drew a hidden file")
-        self.assertTrue(popup.ready and not popup.born)
+        _, pages = self.after_the_connection()
+        self.assertNothingOpenedBeforeSurvives(pages)
 
-    def test_an_image_a_popup_loaded_while_the_connection_was_down_is_not_drawn_after_it(self):
+    def test_an_image_a_popup_loaded_while_the_connection_was_down_is_closed_when_it_connects(self):
         """H: an `about:blank` window, an `<img>` its opener put in it during the gap: no frame holds it."""
         session = self.opener()
         self.raw.evaluate(session, (
@@ -99,8 +101,8 @@ class Preexisting(unittest.TestCase):
             time.sleep(0.2)
         else:
             self.fail("the picture did not load in the window: the probe is broken")
-        driver, popup = self.popup_after_the_restart()
-        self.assertNotEqual(png_pixel(driver.screenshot(popup.id)["path"], 100, 100), RED, "it drew a hidden file")
+        _, pages = self.after_the_connection()
+        self.assertNothingOpenedBeforeSurvives(pages)
 
 
 if __name__ == "__main__":
