@@ -433,7 +433,7 @@ yantrik-os/
   ask not to report usage with `DO_NOT_TRACK=1`), your weather (from a public weather service, for a place you name or have saved), mail, calendar and connectors, and a problem
   report you chose to send. Its code runner has no network unless you ask for one in your
   own turn (the terminal, above, is not the code runner). Installing the packages a script needs is a web fetch, and so is a call
-  to a tool server you add, so neither happens with nobody there. A turn is yours only when you
+  to a tool server or YAML plugin you add, so neither happens with nobody there. A turn is yours only when you
   typed or spoke it: an urge, an automation, or a program asking the shell to send a message is not,
   and with nobody there the companion cannot open a browser, start a harness install or Google's
   sign-in page, or look up a place you did not save. When an app crashes or fails, the desktop writes a

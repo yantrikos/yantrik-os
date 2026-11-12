@@ -2,6 +2,11 @@
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path};
 
+/// `s` as one single-quoted shell word.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(DiskUsageTool));
     reg.register(Box::new(MountInfoTool));
@@ -213,6 +218,9 @@ impl Tool for AnalyzeDiskTool {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
         };
+        // The path goes into `sh -c` lines below: quoted, so `$(…)` or a backtick in a folder name
+        // is a name and not a command (`validate_path` does not refuse them).
+        let expanded = sh_quote(&expanded);
 
         let mut report = Vec::new();
 
@@ -284,5 +292,21 @@ impl Tool for AnalyzeDiskTool {
         } else {
             report.join("\n")
         }
+    }
+}
+
+#[cfg(test)]
+mod quote_tests {
+    use super::sh_quote;
+
+    #[test]
+    fn a_command_substitution_in_a_folder_name_stays_a_name() {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("echo {}/x", sh_quote("/tmp/$(echo INJECTED)`echo INJECTED`'q")))
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(text.trim(), "/tmp/$(echo INJECTED)`echo INJECTED`'q/x");
     }
 }

@@ -289,3 +289,55 @@ fn an_unattended_await_app_then_act_is_refused_like_the_app_action_it_is() {
         assert_eq!(check_call("await_app", "app", &call), Ok(()), "{call} in a turn the person started");
     }
 }
+
+/// Whether a process named `chromium` is running (read from /proc, so it needs no tool).
+fn chromium_running() -> bool {
+    std::fs::read_dir("/proc").into_iter().flatten().flatten().any(|e| {
+        std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim().starts_with("chromium"))
+    })
+}
+
+/// Round 7: `apply_workspace_template` started `chromium` by name with nobody there. It is person-only, and
+/// what it opens it opens through the shell's `open_app` (`app_act::gated_act`), never by program name.
+#[test]
+fn an_unattended_apply_workspace_template_is_refused_and_starts_no_chromium() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let before = chromium_running();
+    for name in ["browsing", "coding", "research", "writing"] {
+        let call = json!({ "name": name });
+        assert_eq!(class_of("apply_workspace_template", &call), Reach::Browser, "{call}");
+        let said = run_with(&reg, &db, "apply_workspace_template", &call);
+        assert!(said.starts_with("Refused:"), "{call}: {said}");
+    }
+    assert_eq!(chromium_running(), before, "no chromium was started");
+    let _person = yantrik_companion_core::background_research::person_turn();
+    assert_eq!(check_call("apply_workspace_template", "workspace", &json!({ "name": "browsing" })), Ok(()), "the person's own turn is not refused");
+}
+
+fn class_of(name: &str, args: &serde_json::Value) -> Reach {
+    let (_, category) = tools().into_iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("{name} is not a registered tool"));
+    reach(name, category, args)
+}
+
+/// A harness's own setup and its unit are started by the person, never by an urge.
+#[test]
+fn an_unattended_configure_or_start_harness_is_person_only() {
+    use serde_json::json;
+    for action in ["configure_harness", "start_harness"] {
+        let call = json!({ "app": "shell", "action": action, "args": { "id": "hermes" } });
+        assert_eq!(class_of("app_action", &call), Reach::Browser, "{action}");
+        let then = json!({ "app": "shell", "then_act": { "action": action, "args": { "id": "hermes" } } });
+        assert_eq!(class_of("await_app", &then), Reach::Browser, "{action} through await_app");
+    }
+}
+
+/// A YAML plugin runs `sh -c` of its own command, whatever category its file declares.
+#[test]
+fn every_yaml_plugin_tool_is_person_only() {
+    assert_eq!(yantrik_companion_tools::plugin::PLUGIN_CATEGORY, "plugin");
+    assert_eq!(reach("check_vpn", yantrik_companion_tools::plugin::PLUGIN_CATEGORY, &serde_json::json!({})), Reach::Browser);
+    let src = include_str!("../../yantrik-companion-tools/src/plugin.rs");
+    assert!(src.contains("tool_category: PLUGIN_CATEGORY"), "the category the file declares is not the one used");
+}

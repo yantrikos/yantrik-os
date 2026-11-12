@@ -44,11 +44,11 @@ const BROWSER_LOCAL: &[&str] = &["browser_cleanup", "browser_status"];
 /// Drive or open a browser from outside the `browser` category, or run something that can: `claude_code`
 /// runs `claude -p` with `Bash`, and `run_background` and `docker_exec` run whatever command they are
 /// given, which is `curl` of anything. (`run_command` runs only the programs of `safe_command`.)
-const BROWSER_NAMES: &[&str] = &["search_sources", "open_url", "claude_code", "run_background", "docker_exec"];
+const BROWSER_NAMES: &[&str] = &["search_sources", "open_url", "claude_code", "run_background", "docker_exec", "apply_workspace_template"];
 /// Categories whose every tool fetches from, or posts to, the open internet. `mcp` is here because a
 /// tool server the person added can be a fetch or a search (`fetch`, `brave-search`), and nothing in its
 /// tool list says so.
-const FETCH_CATEGORIES: &[&str] = &["network", "github", "mcp"];
+const FETCH_CATEGORIES: &[&str] = &["network", "github", "mcp", "plugin"];
 /// The one tool research unlocks.
 const SEARCH: &str = "web_search";
 /// Single tools that fetch or probe, from categories that are otherwise local. `network_dns_set` does
@@ -96,7 +96,9 @@ pub const LOCAL_APPS: &[&str] = &[
 pub const PERSON_ONLY_ACTIONS: &[(&str, &str)] =
     &[("shell", "send_message"), ("shell", "install_harness"), ("shell", "open_mind_browser"), ("email", "begin_google_sign_in"), ("weather", "add_location"),
       // Words or work handed to another mind (Hermes, an agent, a recipe), which then runs with its own tools.
-      ("shell", "send_to_agent"), ("shell", "new_agent"), ("shell", "hand_off"), ("shell", "run_recipe"), ("shell", "answer_recipe"), ("shell", "resume_recipe")];
+      ("shell", "send_to_agent"), ("shell", "new_agent"), ("shell", "hand_off"), ("shell", "run_recipe"), ("shell", "answer_recipe"), ("shell", "resume_recipe"),
+      // Starts a harness's own setup (a terminal running its model picker / onboarding), or a mind's unit.
+      ("shell", "configure_harness"), ("shell", "start_harness")];
 
 /// Whether this `app_action` starts a browser or fetches web content, by what it is given: the shell's
 /// `open_app` and `show_app` of a browser app, and `files_open` of a page or an address (Chromium
@@ -130,18 +132,13 @@ pub fn reach(name: &str, category: &str, args: &serde_json::Value) -> Reach {
     // `await_app` with a `then_act` is an `app_action` of that app, and is classed as one.
     let then_act = (name == "await_app").then(|| args.get("then_act").filter(|v| v.is_object())).flatten();
     if name == "app_action" || then_act.is_some() {
-        let (app, action, inner) = match then_act {
-            Some(act) => (
-                args.get("app").and_then(serde_json::Value::as_str).unwrap_or(""),
-                act.get("action").and_then(serde_json::Value::as_str).unwrap_or(""),
-                act.get("args").cloned().unwrap_or_default(),
-            ),
-            None => (
-                args.get("app").and_then(serde_json::Value::as_str).unwrap_or(""),
-                args.get("action").and_then(serde_json::Value::as_str).unwrap_or(""),
-                args.get("args").cloned().unwrap_or_default(),
-            ),
+        let app = args.get("app").and_then(serde_json::Value::as_str).unwrap_or("");
+        let (action, inner) = match then_act {
+            Some(act) => (act.get("action"), act.get("args")),
+            None => (args.get("action"), args.get("args")),
         };
+        let action = action.and_then(serde_json::Value::as_str).unwrap_or("");
+        let inner = inner.cloned().unwrap_or_default();
         let app = app_id(app);
         let action = action.trim();
         let person_only = BROWSER_APPS.contains(&app.as_str())

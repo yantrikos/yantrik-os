@@ -177,10 +177,10 @@ impl Tool for RecallWorkspaceTool {
 
 /// Built-in default workspace templates (fallback when no custom template found).
 const DEFAULT_TEMPLATES: &[(&str, &[&str])] = &[
-    ("coding", &["foot", "chromium"]),
-    ("writing", &["foot"]),
-    ("browsing", &["chromium"]),
-    ("research", &["chromium", "foot"]),
+    ("coding", &["terminal", "browser"]),
+    ("writing", &["terminal"]),
+    ("browsing", &["browser"]),
+    ("research", &["browser", "terminal"]),
 ];
 
 pub struct SaveWorkspaceTemplateTool;
@@ -202,7 +202,7 @@ impl Tool for SaveWorkspaceTemplateTool {
                         "name": {"type": "string", "description": "Template name (e.g. 'coding', 'writing', 'research')"},
                         "apps": {
                             "type": "array", "items": {"type": "string"},
-                            "description": "Apps to launch (e.g. ['foot', 'chromium'])"
+                            "description": "Apps to launch (e.g. ['terminal', 'browser'])"
                         },
                         "description": {"type": "string", "description": "What this workspace is for"}
                     },
@@ -330,7 +330,7 @@ impl Tool for ApplyWorkspaceTemplateTool {
                 let mut found_apps = Vec::new();
                 for r in &results {
                     if r.text.to_lowercase().contains(&format!("workspace template: {}", name.to_lowercase())) {
-                        // Parse apps from "Apps: foot, chromium" line
+                        // Parse apps from "Apps: terminal, browser" line
                         for line in r.text.lines() {
                             if line.starts_with("Apps:") {
                                 found_apps = line[5..].split(',').map(|s| s.trim().to_string()).collect();
@@ -368,19 +368,13 @@ impl Tool for ApplyWorkspaceTemplateTool {
         let mut launched = Vec::new();
         let mut failed = Vec::new();
 
+        // The one road (`app_act::gated_act`): each app is opened by the shell's `open_app`, so the
+        // browser rule, Mind View, `may_launch` and the card watch apply to each. Never a program run
+        // by name, and never a shell line of a model's text.
         for app in &apps {
-            match std::process::Command::new(app).spawn() {
+            match crate::app_act::gated_act(ctx, "shell", "open_app", &serde_json::json!({ "name": app }), "") {
                 Ok(_) => launched.push(app.as_str()),
-                Err(e) => {
-                    // Try via swaymsg exec (for Wayland apps)
-                    match std::process::Command::new("swaymsg")
-                        .args(["exec", app])
-                        .spawn()
-                    {
-                        Ok(_) => launched.push(app.as_str()),
-                        Err(_) => failed.push(format!("{} ({})", app, e)),
-                    }
-                }
+                Err(why) => failed.push(format!("{} ({})", app, why)),
             }
         }
 

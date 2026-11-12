@@ -280,7 +280,19 @@ fn marker_in(text: &str) -> Option<String> {
 
 /// The marker `text` holds or a helper it calls (to `depth` levels) holds, and the helpers on the way.
 fn walk(index: &Index, at: (&str, &str), text: &str, depth: usize, seen: &mut HashSet<usize>, via: &mut Vec<String>) -> Option<String> {
-    if let Some(marker) = marker_in(text) {
+    walk_with(marker_in, index, at, text, depth, seen, via)
+}
+
+fn walk_with(
+    detect: fn(&str) -> Option<String>,
+    index: &Index,
+    at: (&str, &str),
+    text: &str,
+    depth: usize,
+    seen: &mut HashSet<usize>,
+    via: &mut Vec<String>,
+) -> Option<String> {
+    if let Some(marker) = detect(text) {
         return Some(marker);
     }
     if depth == 0 {
@@ -292,7 +304,7 @@ fn walk(index: &Index, at: (&str, &str), text: &str, depth: usize, seen: &mut Ha
                 continue;
             }
             via.push(format!("{}::{name}", helper.module));
-            if let Some(marker) = walk(index, (&helper.krate, &helper.module), &helper.body, depth - 1, seen, via) {
+            if let Some(marker) = walk_with(detect, index, (&helper.krate, &helper.module), &helper.body, depth - 1, seen, via) {
                 return Some(marker);
             }
             via.pop();
@@ -371,6 +383,145 @@ fn tools_added_at_run_time_are_held_by_category_not_by_name() {
     for name in ["mcp__anything_at_all", "mcp__fetch_fetch"] {
         assert_ne!(reach(name, "mcp", &serde_json::json!({})), Reach::Local, "{name}");
     }
+}
+
+
+// ── The second scan: a program named by data, a shell line, or a network program's name in a literal ──
+//
+// `marker_in` finds `Command::new("chromium")`. It cannot find `Command::new(app)`, where the name is
+// data (a `const` table, a saved template, a model's argument): that is how `apply_workspace_template`
+// started Chromium with nobody there (round 7). So a tool that starts a process by a name it does not
+// spell, or goes through a shell line, or holds a network program's name as a string anywhere in its
+// module, is flagged unless it is non-local, or listed in [`SPAWNS_LOCAL`] with the reason it is fine.
+
+/// What in `text` starts a process by a name it does not spell, or runs a shell line.
+fn spawn_in(text: &str) -> Option<String> {
+    const NEW: &str = "Command::new(";
+    for (at, _) in text.match_indices(NEW) {
+        let rest = text[at + NEW.len()..].trim_start();
+        if !rest.starts_with('"') {
+            return Some("Command::new(<a name that is not a literal>)".into());
+        }
+        let program = rest[1..].split('"').next().unwrap_or("");
+        if matches!(program, "sh" | "bash" | "zsh" | "dash") {
+            return Some(format!("Command::new(\"{program}\")"));
+        }
+        if program == "swaymsg" {
+            return Some("swaymsg".into());
+        }
+    }
+    if text.contains("\"swaymsg\"") || text.contains("swaymsg exec") {
+        return Some("swaymsg exec".into());
+    }
+    if text.contains("\"-c\"") && (text.contains("\"sh\"") || text.contains("/bin/sh") || text.contains("\"bash\"")) {
+        return Some("sh -c".into());
+    }
+    None
+}
+
+/// A network program's name as a string literal (`"chromium"`), wherever it is in the text.
+fn network_word_in(text: &str) -> Option<String> {
+    NETWORK_PROGRAMS.iter().find(|w| text.contains(&format!("\"{w}\""))).map(|w| format!("\"{w}\" as a string"))
+}
+
+/// Tools that start a process by a computed name, a shell line, or hold a network program's name,
+/// and that are `Local` for the arguments the test gives, with the reason that is fine. Each reason
+/// was checked against the code: a tool is added here only when what it starts cannot reach out.
+const SPAWNS_LOCAL: &[(&str, &str)] = &[
+    ("analyze_disk", "a fixed `du`/`find`/`sort` line; the path is single-quoted (`disk::sh_quote`, pinned by its own test) after `validate_path`"),
+    ("list_processes", "a fixed `ps aux --sort=<one of three words> | head -n <usize>` line"),
+    ("system_control", "`wpctl set-volume`/`set-mute` with a number capped at 50: no text of the model's reaches the line"),
+    ("clipboard_transform", "`echo -n '<text with its single quotes removed>' | base64 -d`: a quoted word, a local decode"),
+    ("antivirus_scan", "`clamdscan` or `clamscan` of a local path, chosen in the code; the update (`freshclam`) is `antivirus_update`, which is not Local"),
+    ("package_search", "the backend's own query of its local package index (`apt-cache`, `pacman -Ss`, `apk search`), from a fixed table; `package_install` is not Local"),
+    ("package_info", "the backend's query of its local index (`apt-cache show`, `pacman -Si`, `apk info`), from a fixed table"),
+    ("package_list", "`dpkg --list`, `pacman -Q`, `apk list --installed`: what is installed, from a fixed table"),
+    ("package_remove", "`apt-get remove`, `pacman -R`, `apk del`: removes what is installed and fetches nothing, from a fixed table"),
+    ("run_command", "`safe_command::run` starts only a program on safe_command::PROGRAMS (`ls`, `cat`, `date`, ...); `curl` is on its deny-list"),
+    ("script_write", "coder.rs holds the `pip3` word in the table `install_deps` reads; this tool only writes a file"),
+    ("script_read", "as script_write: a file read"),
+    ("script_patch", "as script_write: a file edit"),
+    ("script_list", "as script_write: a directory listing"),
+    ("script_delete", "as script_write: a file removal"),
+    ("code_execute", "`coder::install_deps` is the package step, which asks this gate (`install_deps`) and is person-only; strict sandbox has no network"),
+    ("script_run", "as code_execute"),
+    ("list_windows", "window.rs names `chromium` only to match a window's title or app id; it starts nothing"),
+    ("focus_window", "as list_windows: raises a window that exists"),
+    ("close_window", "as list_windows: closes a window that exists"),
+    ("focus_context", "as list_windows: a table of window names for a context"),
+    ("clipboard_history", "clipboard.rs holds `curl` in its sensitive-text patterns, and `clipboard_fetch_url` (not Local) in the same file; this tool reads the history"),
+    ("clipboard_analyze", "as clipboard_history"),
+    ("text_action", "as clipboard_history: sends the text to the person's own model"),
+];
+
+fn spawners(sources: &[Source]) -> Vec<Finding> {
+    let index = Index::new(sources);
+    let mut found = Vec::new();
+    for source in sources {
+        for block in tool_blocks(&source.code).0 {
+            let (mut seen, mut via) = (HashSet::new(), Vec::new());
+            let mut marker = walk_with(spawn_in, &index, (&source.krate, &source.module), block, DEPTH, &mut seen, &mut via);
+            let mut how = via.join(" -> ");
+            // The whole module counts for the network words: a `const` table outside the block is the usual place.
+            if marker.is_none() {
+                marker = network_word_in(&source.code);
+                how = "its module".into();
+            }
+            let Some(marker) = marker else { continue };
+            for tool in tool_names(block) {
+                found.push(Finding { tool, marker: marker.clone(), via: how.clone() });
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_local_tool_that_starts_a_process_by_a_computed_name_or_a_shell_line_is_listed_with_a_reason() {
+    let registered = tools();
+    let (mut checked, mut unlisted) = (0, Vec::new());
+    for Finding { tool, marker, via } in spawners(&load_sources()) {
+        let Some((_, category)) = registered.iter().find(|(n, _)| *n == tool) else { continue };
+        checked += 1;
+        if reach(&tool, category, &serde_json::json!({})) == Reach::Local && !SPAWNS_LOCAL.iter().any(|(n, _)| *n == tool) {
+            unlisted.push(format!("`{tool}` is Local and holds {marker} ({via})"));
+        }
+    }
+    assert!(
+        unlisted.is_empty(),
+        "start what it starts through `app_act::gated_act`, or class it person-only in yantrik_companion_core::reach, or list it in          SPAWNS_LOCAL with the reason:
+{}",
+        unlisted.join("
+")
+    );
+    assert!(checked > 5, "the scan found {checked} tools: it is not reading the sources");
+}
+
+#[test]
+fn the_spawn_scan_catches_the_workspace_template_shape() {
+    // The round-7 route: a table outside the block, the name reaching `Command::new` as a variable.
+    let code = format!("const T: &[&str] = &[\"chromium\"];\n{}", tool("t", "for a in T {{ Command::new(a).spawn(); }}"));
+    assert_eq!(spawners(&[source("a", "m", &code)]).len(), 1);
+    let name_only = format!("const T: &[&str] = &[\"chromium\"];\n{}", tool("t", "launch(T)"));
+    assert_eq!(spawners(&[source("a", "m", &name_only)]).len(), 1, "a network word as a literal, anywhere in the module");
+    for body in ["Command::new(app).spawn()", "Command::new(\"swaymsg\").args([\"exec\", app]).spawn()", "Command::new(\"sh\").args([\"-c\", line]).output()"] {
+        assert_eq!(spawners(&[source("a", "m", &tool("t", body))]).len(), 1, "{body}");
+    }
+    let fixed = tool("t", "Command::new(\"ls\").output()");
+    assert!(spawners(&[source("a", "m", &fixed)]).is_empty());
+    // And through a helper.
+    let helper = format!("fn run(p: &str) {{ Command::new(p).spawn(); }}\n{}", tool("t", "run(x)"));
+    assert_eq!(spawners(&[source("a", "m", &helper)]).len(), 1);
+}
+
+#[test]
+fn apply_workspace_template_starts_nothing_by_name() {
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-companion-tools/src/workspace.rs")).unwrap();
+    let production = src.split("#[cfg(test)]").next().unwrap();
+    assert!(!production.contains("Command::new"), "workspace.rs starts no program itself");
+    assert!(!production.contains("swaymsg"), "and has no swaymsg fallback");
+    assert!(!production.contains("\"chromium\""), "and ships no chromium template");
+    assert!(production.contains("app_act::gated_act("), "each app is opened through the one road");
 }
 
 // ── The scan itself: each way a tool passed the round-4 test, as a small source ──

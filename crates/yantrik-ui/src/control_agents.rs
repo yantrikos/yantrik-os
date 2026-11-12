@@ -111,25 +111,10 @@ pub(crate) fn caller() -> Result<Caller, String> {
 /// while that caller is answering a turn from a phone, whose hold would not bind the agents that
 /// work goes to (security reviews, 29 Sep).
 pub(crate) fn delegating_caller() -> Result<Caller, String> {
-    refuse_the_companion(&crate::mind_view::requester_now())?;
+    crate::turn_source::refuse_the_companion(&crate::mind_view::requester_now())?;
     let caller = caller()?;
     refuse_from_phone(&caller)?;
     Ok(caller)
-}
-
-/// Refused when the caller is the companion (this process): with nobody there it must not put words
-/// in another mind's conversation, start an agent or start or steer a recipe. This is the shell's own
-/// line, independent of the companion's gate (`reach::PERSON_ONLY_ACTIONS`). An agent, which has a
-/// token and a place in the Agents screen, is not the companion and is held by its own rules.
-pub(crate) fn refuse_the_companion(who: &crate::mind_view::Requester) -> Result<(), String> {
-    match who {
-        crate::mind_view::Requester::Mind(name) if name == "the companion" => Err(
-            "the companion hands no work to another agent and starts or steers no recipe: it is the person who \
-             does that, from the Agents screen or `yos`. Nothing was sent."
-                .to_string(),
-        ),
-        _ => Ok(()),
-    }
 }
 
 /// Refused while `caller` is answering a turn from the person's phone.
@@ -1103,18 +1088,10 @@ mod tests {
     use crate::mind_view::Requester;
 
     #[test]
-    fn the_shell_refuses_the_companion_but_not_an_agent_or_the_person() {
-        let said = refuse_the_companion(&Requester::Mind("the companion".into())).unwrap_err();
-        assert!(said.contains("Nothing was sent"), "{said}");
-        assert!(refuse_the_companion(&Requester::Person).is_ok());
-        assert!(refuse_the_companion(&Requester::Mind("an agent".into())).is_ok());
-    }
-
-    #[test]
     fn every_hand_off_goes_through_the_companion_check_and_send_to_agent_is_sensitive() {
         let src = include_str!("control_agents.rs");
         let production = src.split("#[cfg(test)]").next().unwrap();
-        assert!(production.contains("refuse_the_companion(&crate::mind_view::requester_now())?;\n    let caller = caller()?;"), "delegating_caller asks the shell who is calling");
+        assert!(production.contains("turn_source::refuse_the_companion(&crate::mind_view::requester_now())?;\n    let caller = caller()?;"), "delegating_caller asks the shell who is calling");
         assert_eq!(production.matches("delegating_caller()?").count(), 3, "new_agent, send_to_agent, hand_off");
         let send = production.split("\"send_to_agent\",").nth(1).unwrap().split("Action::new(").next().unwrap();
         assert!(send.contains(".risk(\"sensitive\")"), "send_to_agent is graded sensitive");
