@@ -99,6 +99,21 @@ mod tests {
         assert_eq!(entries, wlrctl);
     }
 
+    /// A shell that did not start the app (it restarted under a running labwc, or an agent opened
+    /// it) knows the window only by the `yantrik-notes` it declares, and that lights Notes' pin.
+    #[test]
+    fn a_window_of_ours_the_shell_did_not_launch_lights_its_pin() {
+        let (discovered, _) = from_stream(&[top(1, "", SHELL_WINDOW_TITLE), top(2, "yantrik-notes", "Notes: Handover")], &[]);
+        let merged = windows::merge_windows(&[], discovered, None);
+        let wins: Vec<Win> =
+            merged.into_iter().map(|w| Win { title: w.title, app_id: w.app_id, subtitle: w.subtitle }).collect();
+        let pins = [Pin { app_id: "notes".into(), label: "Notes".into() }];
+        let entries = dock_model::entries(&pins, &wins, None, &mut LaunchOrder::default(), |id, _| id.to_string());
+        assert_eq!(entries.len(), 1, "no second tile: {entries:?}");
+        assert!(entries[0].pinned && entries[0].running(), "{entries:?}");
+        assert_eq!(entries[0].app_id, "notes");
+    }
+
     /// The front is the app window most recently in front, and not the shell's, nor a window that
     /// has gone since it had focus.
     #[test]
