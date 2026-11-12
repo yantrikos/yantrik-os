@@ -94,7 +94,9 @@ pub const LOCAL_APPS: &[&str] = &[
 /// which starts a turn whose words are the caller's (it also declares `open_ended`; this holds when no `describe` answers). Person-only,
 /// whatever the arguments.
 pub const PERSON_ONLY_ACTIONS: &[(&str, &str)] =
-    &[("shell", "send_message"), ("shell", "install_harness"), ("shell", "open_mind_browser"), ("email", "begin_google_sign_in"), ("weather", "add_location")];
+    &[("shell", "send_message"), ("shell", "install_harness"), ("shell", "open_mind_browser"), ("email", "begin_google_sign_in"), ("weather", "add_location"),
+      // Words or work handed to another mind (Hermes, an agent, a recipe), which then runs with its own tools.
+      ("shell", "send_to_agent"), ("shell", "new_agent"), ("shell", "hand_off"), ("shell", "run_recipe"), ("shell", "answer_recipe"), ("shell", "resume_recipe")];
 
 /// Whether this `app_action` starts a browser or fetches web content, by what it is given: the shell's
 /// `open_app` and `show_app` of a browser app, and `files_open` of a page or an address (Chromium
@@ -103,10 +105,8 @@ fn starts_a_browser(app: &str, action: &str, args: &serde_json::Value) -> bool {
     let name = args.get("name").and_then(serde_json::Value::as_str).unwrap_or("").trim();
     match (app, action) {
         ("shell", "open_app" | "show_app") => BROWSER_APPS.contains(&app_id(name).as_str()),
-        ("shell", "files_open") => {
-            let name = name.to_ascii_lowercase();
-            name.contains("://") || [".html", ".htm", ".xhtml"].iter().any(|ext| name.ends_with(ext))
-        }
+        // Whatever the file is, the handler may be a browser (`.pdf`, `.svg`, any type whose default is one).
+        ("shell", "files_open") => true,
         _ => false,
     }
 }
@@ -127,10 +127,23 @@ pub fn reach(name: &str, category: &str, args: &serde_json::Value) -> Reach {
         let sandbox = args.get("sandbox").and_then(serde_json::Value::as_str).unwrap_or("strict").trim().to_ascii_lowercase();
         return if CODE_NETWORK_SANDBOXES.contains(&sandbox.as_str()) { Reach::Browser } else { Reach::Local };
     }
-    if name == "app_action" {
-        let app = app_id(args.get("app").and_then(serde_json::Value::as_str).unwrap_or(""));
-        let action = args.get("action").and_then(serde_json::Value::as_str).unwrap_or("").trim();
-        let inner = args.get("args").cloned().unwrap_or_default();
+    // `await_app` with a `then_act` is an `app_action` of that app, and is classed as one.
+    let then_act = (name == "await_app").then(|| args.get("then_act").filter(|v| v.is_object())).flatten();
+    if name == "app_action" || then_act.is_some() {
+        let (app, action, inner) = match then_act {
+            Some(act) => (
+                args.get("app").and_then(serde_json::Value::as_str).unwrap_or(""),
+                act.get("action").and_then(serde_json::Value::as_str).unwrap_or(""),
+                act.get("args").cloned().unwrap_or_default(),
+            ),
+            None => (
+                args.get("app").and_then(serde_json::Value::as_str).unwrap_or(""),
+                args.get("action").and_then(serde_json::Value::as_str).unwrap_or(""),
+                args.get("args").cloned().unwrap_or_default(),
+            ),
+        };
+        let app = app_id(app);
+        let action = action.trim();
         let person_only = BROWSER_APPS.contains(&app.as_str())
             || PERSON_ONLY_ACTIONS.contains(&(app.as_str(), action))
             || starts_a_browser(&app, action, &inner);
@@ -225,6 +238,14 @@ mod tests {
             ("app-shell", "open_mind_browser", json!({})),
             ("shell", "files_open", json!({ "name": "report.htm" })),
             ("shell", "files_open", json!({ "name": "http://x.example/" })),
+            ("shell", "files_open", json!({ "name": "notes.txt" })),
+            ("shell", "files_open", json!({ "name": "manual.pdf" })),
+            ("shell", "send_to_agent", json!({ "agent": "hermes:main", "text": "x" })),
+            ("shell", "new_agent", json!({})),
+            ("shell", "hand_off", json!({})),
+            ("shell", "run_recipe", json!({})),
+            ("shell", "answer_recipe", json!({})),
+            ("shell", "resume_recipe", json!({})),
             ("shell", "install_harness", json!({ "id": "pi" })),
             ("shell", "send_message", json!({ "text": "search the web" })),
             ("email", "begin_google_sign_in", json!({})),
@@ -234,12 +255,22 @@ mod tests {
         }
         for (app, action, args) in [
             ("shell", "open_app", json!({ "name": "notes" })),
-            ("shell", "files_open", json!({ "name": "notes.txt" })),
             ("weather", "show_location", json!({ "name": "Oslo" })),
             ("email", "compose", json!({})),
         ] {
             assert_eq!(act(app, action, args.clone()), Reach::Local, "{app}.{action} {args}");
         }
+    }
+
+    #[test]
+    fn an_await_app_with_a_then_act_is_classed_as_the_app_action_it_is() {
+        let wait = |app: &str, then_act: serde_json::Value| reach("await_app", "app", &json!({ "app": app, "until": { "op": "changed" }, "then_act": then_act }));
+        assert_eq!(wait("shell", json!({ "action": "open_app", "args": { "name": "browser" } })), Reach::Browser);
+        assert_eq!(wait("shell", json!({ "action": "send_to_agent", "args": {} })), Reach::Browser);
+        assert_eq!(wait("terminal", json!({ "action": "run", "args": {} })), Reach::Browser);
+        assert_eq!(wait("weather", json!({ "action": "add_location", "args": {} })), Reach::Browser);
+        assert_eq!(wait("notes", json!({ "action": "open_note", "args": {} })), Reach::Local);
+        assert_eq!(reach("await_app", "app", &json!({ "app": "browser", "until": { "op": "changed" } })), Reach::Local, "a wait alone reads nothing out");
     }
 
     #[test]

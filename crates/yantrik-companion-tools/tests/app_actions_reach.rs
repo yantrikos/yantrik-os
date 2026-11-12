@@ -238,3 +238,50 @@ fn an_action_that_names_the_network_in_its_own_source_declares_it() {
     undeclared.sort();
     assert!(undeclared.is_empty(), "actions whose source reaches out and that declare nothing: {undeclared:?}");
 }
+
+/// Every companion tool that sends `app.act` takes the one road (`app_act::gated_act`, which asks what the
+/// call names, then the app's own declaration, then the cap, then the person), or sends only fixed
+/// actions of the shell it names itself in the source. A tool that builds an `app.act` from a model's
+/// words anywhere else is a second copy of the gate, and the first one to forget a step.
+#[test]
+fn every_tool_that_sends_app_act_goes_through_the_one_road_or_sends_fixed_actions() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    // Fixed shell actions, not a model's words: the card (`raise_card`), the start of an app, and the
+    // outward-facing helpers; `app_ask` is the road's own last step (`act_asking`, after the gate).
+    const ALLOWED: [&str; 4] = ["app_act.rs", "app_ask.rs", "app_start.rs", "outward.rs"];
+    let mut stray = Vec::new();
+    for file in files {
+        let name = file.file_name().unwrap().to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let production = text.split("#[cfg(test)]").next().unwrap();
+        let sends = production.contains("\"app.act\"") || production.contains("act_asking(");
+        if sends && !ALLOWED.contains(&name.as_str()) && name != "app_ui.rs" && name != "weather.rs" && name != "window.rs" && name != "research_offer.rs" {
+            stray.push(name);
+        }
+    }
+    assert!(stray.is_empty(), "tools that send app.act outside the one road: {stray:?}");
+    // The tools that take the road, and the ones that call `act_asking` themselves with fixed words.
+    for (file, needle) in [("app_ui.rs", "app_act::gated_act("), ("app_await.rs", "app_act::gated_act(")] {
+        let text = std::fs::read_to_string(src.join(file)).unwrap();
+        assert!(text.contains(needle), "{file} takes the one road");
+    }
+    let await_src = std::fs::read_to_string(src.join("app_await.rs")).unwrap();
+    assert!(!await_src.contains("\"app.act\""), "await_app does not send app.act itself");
+    assert!(await_src.contains("app_act::refused_first("), "and its then_act is refused before the app is started");
+    for file in ["app_ui.rs"] {
+        let text = std::fs::read_to_string(src.join(file)).unwrap();
+        assert!(!text.split("#[cfg(test)]").next().unwrap().contains("\"app.act\""), "{file} sends nothing itself");
+    }
+    // Fixed actions only: these name their action in the source.
+    for (file, fixed) in [("weather.rs", "allow_location_lookup"), ("window.rs", "window")] {
+        let text = std::fs::read_to_string(src.join(file)).unwrap();
+        assert!(text.contains(fixed), "{file} acts with a fixed action");
+    }
+    // And the app_ui.rs split keeps every file under the project's limit.
+    for file in ["app_ui.rs", "app_ask.rs", "app_act.rs", "app_await.rs"] {
+        let lines = std::fs::read_to_string(src.join(file)).unwrap().lines().count();
+        assert!(lines < 600, "{file} is {lines} lines");
+    }
+}

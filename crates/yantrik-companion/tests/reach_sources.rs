@@ -454,3 +454,13 @@ fn a_call_of_the_same_name_in_an_unrelated_module_is_not_followed() {
     let files = source("tools", "files", &tool("t", "files::read(path)"));
     assert!(flagged(&[net, files]).is_empty());
 }
+
+/// Where the person lives, which an unattended weather lookup may name, comes only from the location
+/// they set in `user_preferences`, never from memory text (an unattended `remember` can write any).
+#[test]
+fn the_persons_location_is_never_read_from_memory_text() {
+    let src = include_str!("../src/companion.rs");
+    let body = src.split("fn load_user_location(").nth(1).expect("load_user_location").split("\n}\n").next().unwrap();
+    assert!(body.contains("FROM user_preferences WHERE category = 'location'"), "{body}");
+    assert!(!body.contains("memories"), "the location is not read from memories: {body}");
+}

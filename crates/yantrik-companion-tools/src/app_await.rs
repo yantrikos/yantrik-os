@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use super::{PermissionLevel, Tool, ToolContext};
-use crate::app_ui::{beyond_cap, client, describe, describe_outcome, ACT_TIMEOUT};
+use crate::app_ui::{describe, describe_outcome};
 
 // ── Waiting for something to become true ──
 
@@ -217,7 +217,15 @@ impl Tool for AwaitAppTool {
         // The ordering is the whole point. Acting first and reading afterwards cannot distinguish
         // "the dialog opened" from "the dialog was already open", and a wait installed after a
         // click misses the result that arrived during the round trip.
-        if let Err(said) = crate::app_start::ensure(app, args.get("then_act").is_some_and(|v| v.is_object())) {
+        // A `then_act` is an `app_action` and is refused as one, before the app is started.
+        let then_act = args.get("then_act").filter(|v| v.is_object());
+        if let Some(act) = then_act {
+            let action = act.get("action").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if let Some(refusal) = crate::app_act::refused_first(app, action, &act.get("args").cloned().unwrap_or_default()) {
+                return refusal;
+            }
+        }
+        if let Err(said) = crate::app_start::ensure(app, then_act.is_some()) {
             return said;
         }
         let baseline = match describe(app) {
@@ -234,17 +242,10 @@ impl Tool for AwaitAppTool {
             if action.is_empty() {
                 return "Error: `then_act` needs an `action`.".to_string();
             }
-            if let Some(refusal) = beyond_cap(&baseline, app, action, ctx.max_permission) {
-                return refusal;
-            }
-            let call = serde_json::json!({
-                "action": action,
-                "args": act.get("args").cloned().unwrap_or(serde_json::json!({})),
-                "expect_revision": revision_of(&baseline),
-            });
-            match client(app, ACT_TIMEOUT).call("app.act", call) {
+            let inner = act.get("args").cloned().unwrap_or(serde_json::json!({}));
+            match crate::app_act::gated_act(ctx, app, action, &inner, &revision_of(&baseline)) {
                 Ok(reply) => dispatched = describe_outcome(app, action, &reply),
-                Err(e) => return format!("{app}.{action} failed: {}", e.message),
+                Err(said) => return said,
             }
         }
 

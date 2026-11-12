@@ -162,6 +162,9 @@ pub struct Queued {
     /// Its bubble: the row, in the transcript it was put in (`streaming::transcript`).
     pub row: usize,
     pub transcript: u64,
+    /// Whether the person typed it, as `turn_source::typed()` said when it was put in the queue: a message a
+    /// program on the socket sent stays one when it is sent later, from a timer.
+    pub typed: bool,
 }
 
 /// At most one queued message. A second replaces the first's words rather than lining up behind
@@ -176,14 +179,15 @@ pub struct Queue {
 impl Queue {
     /// Hold `text` for `agent`. A message already held keeps its bubble and takes the new words;
     /// otherwise `bubble` puts one in the conversation and gives its row. True when it replaced one.
-    pub fn hold(&mut self, text: &str, agent: &AgentId, mind: &str, transcript: u64, bubble: impl FnOnce() -> usize) -> bool {
+    pub fn hold(&mut self, text: &str, agent: &AgentId, mind: &str, transcript: u64, typed: bool, bubble: impl FnOnce() -> usize) -> bool {
         if let Some(held) = self.held.as_mut().filter(|h| h.transcript == transcript) {
             held.text = text.to_string();
             held.agent = agent.clone();
             held.mind = mind.to_string();
+            held.typed = typed;
             return true;
         }
-        self.held = Some(Queued { text: text.to_string(), agent: agent.clone(), mind: mind.to_string(), row: bubble(), transcript });
+        self.held = Some(Queued { text: text.to_string(), agent: agent.clone(), mind: mind.to_string(), row: bubble(), transcript, typed });
         false
     }
 
@@ -243,7 +247,7 @@ pub fn hold(ui: &App, text: &str, composer: &Composer) {
     let transcript = crate::streaming::transcript();
     let replaced = QUEUE.with(|q| {
         let mut q = q.borrow_mut();
-        let replaced = q.hold(text, &agent, &composer.mind, transcript, || {
+        let replaced = q.hold(text, &agent, &composer.mind, transcript, crate::turn_source::typed(), || {
             with_model(ui, |model| {
                 model.push(MessageData { role: QUEUED_ROLE.into(), content: text.into(), ..Default::default() });
                 model.row_count() - 1
@@ -277,14 +281,14 @@ pub fn cancel(ui: &App) {
 }
 
 /// The queued message, if its mind has finished: its bubble becomes the person's ordinary one,
-/// and the words are handed back to be sent as a turn. Taken once.
-pub fn due(ui: &App) -> Option<String> {
+/// and the words are handed back, with whether the person typed them, to be sent as a turn. Taken once.
+pub fn due(ui: &App) -> Option<(String, bool)> {
     let transcript = crate::streaming::transcript();
     let working = |agent: &AgentId| crate::agents::store().read(|s| s.agent(agent).is_some_and(|a| a.open_turn().is_some()));
     let held = QUEUE.with(|q| q.borrow_mut().due(working, transcript))?;
     with_model(ui, |model| set_role(model, held.row, "user", None));
     publish(ui, false);
-    Some(held.text)
+    Some((held.text, held.typed))
 }
 
 /// What the queued bubble says under the words: whose finishing sends it, and that a second
@@ -350,7 +354,7 @@ mod tests {
         let agent = AgentId::new("hermes", AgentId::MAIN);
         let mut queue = Queue::default();
         let mut rows = 4;
-        assert!(!queue.hold("and Austin?", &agent, "Hermes Agent", 7, || { rows += 1; rows }));
+        assert!(!queue.hold("and Austin?", &agent, "Hermes Agent", 7, true, || { rows += 1; rows }));
         assert_eq!(queue.due(|_| true, 7), None, "not while the turn runs");
         let sent = queue.due(|_| false, 7).expect("the turn ended");
         assert_eq!((sent.text.as_str(), sent.row), ("and Austin?", 5));
@@ -361,7 +365,7 @@ mod tests {
     fn a_cancelled_message_is_never_sent() {
         let agent = AgentId::new("hermes", AgentId::MAIN);
         let mut queue = Queue::default();
-        queue.hold("and Austin?", &agent, "Hermes Agent", 7, || 5);
+        queue.hold("and Austin?", &agent, "Hermes Agent", 7, true, || 5);
         assert_eq!(queue.cancel().map(|q| q.text), Some("and Austin?".to_string()));
         assert_eq!(queue.due(|_| false, 7), None);
     }
@@ -370,8 +374,8 @@ mod tests {
     fn a_second_message_replaces_the_first_in_the_same_bubble() {
         let agent = AgentId::new("hermes", AgentId::MAIN);
         let mut queue = Queue::default();
-        queue.hold("and Austin?", &agent, "Hermes Agent", 7, || 5);
-        let replaced = queue.hold("and Houston?", &agent, "Hermes Agent", 7, || panic!("no second bubble"));
+        queue.hold("and Austin?", &agent, "Hermes Agent", 7, true, || 5);
+        let replaced = queue.hold("and Houston?", &agent, "Hermes Agent", 7, true, || panic!("no second bubble"));
         assert!(replaced);
         let sent = queue.due(|_| false, 7).unwrap();
         assert_eq!((sent.text.as_str(), sent.row), ("and Houston?", 5));
@@ -381,8 +385,19 @@ mod tests {
     fn a_new_chat_lets_go_of_a_queued_message_unsent() {
         let agent = AgentId::new("hermes", AgentId::MAIN);
         let mut queue = Queue::default();
-        queue.hold("and Austin?", &agent, "Hermes Agent", 7, || 5);
+        queue.hold("and Austin?", &agent, "Hermes Agent", 7, true, || 5);
         assert_eq!(queue.due(|_| false, 8), None, "its conversation is gone");
         assert!(queue.held().is_none());
+    }
+
+    #[test]
+    fn a_queued_message_keeps_whether_the_person_typed_it() {
+        let agent = AgentId("hermes:main".into());
+        let mut queue = Queue::default();
+        queue.hold("and Austin?", &agent, "Hermes Agent", 7, false, || 5);
+        assert!(!queue.due(|_| false, 7).expect("sent").typed, "a message a program sent stays one");
+        queue.hold("and Austin?", &agent, "Hermes Agent", 7, true, || 5);
+        queue.hold("and Houston?", &agent, "Hermes Agent", 7, false, || panic!("no second bubble"));
+        assert!(!queue.due(|_| false, 7).unwrap().typed, "a replacement takes the replacing message's mark");
     }
 }

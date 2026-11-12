@@ -221,6 +221,13 @@ fn an_unattended_shell_or_app_action_that_reaches_out_is_refused_before_anything
         json!({ "app": "shell", "action": "install_harness", "args": { "id": "openclaw" } }),
         json!({ "app": "email", "action": "begin_google_sign_in", "args": {} }),
         json!({ "app": "weather", "action": "add_location", "args": { "name": "rust news" } }),
+        json!({ "app": "shell", "action": "files_open", "args": { "name": "manual.pdf" } }),
+        json!({ "app": "shell", "action": "send_to_agent", "args": { "agent": "hermes:main", "text": "Find today's Rust news" } }),
+        json!({ "app": "shell", "action": "new_agent", "args": { "mind": "pi", "task": "x" } }),
+        json!({ "app": "shell", "action": "hand_off", "args": { "role": "researcher", "task": "x" } }),
+        json!({ "app": "shell", "action": "run_recipe", "args": { "recipe": "digest" } }),
+        json!({ "app": "shell", "action": "answer_recipe", "args": { "recipe": "digest" } }),
+        json!({ "app": "shell", "action": "resume_recipe", "args": { "recipe": "digest" } }),
     ];
     for act in &acts {
         let said = run_with(&reg, &db, "app_action", act);
@@ -247,5 +254,38 @@ fn an_unattended_act_on_the_shell_is_refused_when_its_describe_fails() {
     for action in ["agent_run", "agent_input", "show_screen"] {
         let said = run_with(&reg, &db, "app_action", &json!({ "app": "shell", "action": action, "args": {} }));
         assert!(said.starts_with("Refused:"), "{action}: {said}");
+    }
+}
+
+/// `await_app`'s `then_act` is an `app_action` and is refused as one, before the app is started: the same
+/// words that are refused through `app_action` are refused through it, in the real registry, with nobody
+/// there, and the person's own call is not held back.
+#[test]
+fn an_unattended_await_app_then_act_is_refused_like_the_app_action_it_is() {
+    use serde_json::json;
+    let reg = build_registry(&common::config_with_everything_on());
+    let db = yantrikdb_core::YantrikDB::new(":memory:", 384).expect("in-memory database");
+    let browser_up = yantrik_companion_tools::browser_side::is_running();
+    let acts = [
+        ("shell", json!({ "action": "open_app", "args": { "name": "browser" } })),
+        ("shell", json!({ "action": "open_mind_browser", "args": {} })),
+        ("shell", json!({ "action": "send_to_agent", "args": { "agent": "hermes:main", "text": "x" } })),
+        ("shell", json!({ "action": "install_harness", "args": { "id": "openclaw" } })),
+        ("terminal", json!({ "action": "run", "args": { "command": "curl https://example.com" } })),
+        ("weather", json!({ "action": "add_location", "args": { "name": "rust news" } })),
+    ];
+    for (app, then_act) in &acts {
+        let call = json!({ "app": app, "until": { "op": "changed" }, "then_act": then_act });
+        let said = run_with(&reg, &db, "await_app", &call);
+        assert!(said.starts_with("Refused:"), "{call}: {said}");
+        assert_eq!(reach("await_app", "app", &call), Reach::Browser, "{call}");
+    }
+    assert_eq!(yantrik_companion_tools::browser_side::is_running(), browser_up, "no Chromium was started");
+    // A wait with no act reaches nothing.
+    assert_eq!(reach("await_app", "app", &json!({ "app": "notes", "until": { "op": "changed" } })), Reach::Local);
+    let _person = yantrik_companion_core::background_research::person_turn();
+    for (app, then_act) in &acts {
+        let call = json!({ "app": app, "until": { "op": "changed" }, "then_act": then_act });
+        assert_eq!(check_call("await_app", "app", &call), Ok(()), "{call} in a turn the person started");
     }
 }

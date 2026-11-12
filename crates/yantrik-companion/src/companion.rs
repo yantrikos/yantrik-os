@@ -5153,7 +5153,7 @@ fn load_user_interests(conn: &rusqlite::Connection) -> Vec<String> {
     interests
 }
 
-/// Load user location from memory or config.
+/// The person's own `user_preferences` location, or empty.
 fn load_user_location(conn: &rusqlite::Connection) -> String {
     // Try preferences table
     if let Ok(location) = conn.query_row(
@@ -5166,17 +5166,7 @@ fn load_user_location(conn: &rusqlite::Connection) -> String {
         }
     }
 
-    // Try memories
-    if let Ok(location) = conn.query_row(
-        "SELECT content FROM memories WHERE content LIKE '%lives in%' OR content LIKE '%located in%' OR content LIKE '%location%' ORDER BY created_at DESC LIMIT 1",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
-        if !location.is_empty() {
-            return location;
-        }
-    }
-
+    // Only what the person set: never memory text, which an unattended `remember` can write.
     String::new()
 }
 

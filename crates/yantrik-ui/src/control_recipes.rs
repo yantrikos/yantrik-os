@@ -175,6 +175,7 @@ fn request(
     let want = args["recipe"].as_str().unwrap_or_default().trim();
     // An agent answering the person's phone answers, pauses and resumes no recipe: the recipe's
     // agents would carry on unheld.
+    crate::control_agents::refuse_the_companion(&crate::mind_view::requester_now())?;
     crate::control_agents::refuse_from_phone(&crate::control_agents::caller()?)?;
     let view = resolve(want)?;
     if !allowed(&view) {
