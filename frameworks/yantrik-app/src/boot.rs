@@ -245,12 +245,19 @@ pub fn window_app_id(id: &str) -> String {
     format!("yantrik-{id}")
 }
 
-/// Give every window this process makes from here on its app id ([`window_app_id`]). Called before
-/// each window is made; the first call is the one that matters. A platform that takes no app id
-/// (a test's headless one) says so and is left alone.
+/// Give every window this process shows from here on its app id ([`window_app_id`]).
+///
+/// Called after a window is made and before it is shown, and that order matters both ways. Slint
+/// keeps the id on its platform, and `set_xdg_app_id` refuses when there is none yet: it does not
+/// start one, and the first component made is what does. Called before the first window, it
+/// returned `NoPlatform` and every window went up with no app id (VM 542, 12 Nov 2026). And the
+/// compositor is told the id when the surface is created, which Slint does at the first show.
+///
+/// A refusal is worth a warning: with no app id the compositor's rule for our windows does not
+/// reach this one.
 pub fn name_windows(id: &str) {
     if let Err(e) = slint::set_xdg_app_id(window_app_id(id)) {
-        tracing::debug!(app = id, error = %e, "This platform takes no window app id");
+        tracing::warn!(app = id, error = %e, "This app's windows have no app id");
     }
 }
 
