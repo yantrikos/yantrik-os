@@ -177,8 +177,9 @@ export global Theme {
     out property <color> bg-elevated: ThemeOverrides.enabled ? ThemeOverrides.bg-elevated-override
         : (ThemeMode.dark ? #1c293b : #ffffff);
     out property <color> bg-input:    ThemeMode.dark ? #0e1724 : #f8fafc;
-    // The accent at 12% over the ground: a selected row (with its 2px leading rule).
-    out property <color> bg-selected: ThemeMode.dark ? #1d2d42 : #dde6f1;
+    // A selected row's fill (with its 2px leading rule): a clear step above a card, so the row
+    // is found before it is read. It was the accent at 12% over the ground, one more navy.
+    out property <color> bg-selected: ThemeMode.dark ? #2a3a51 : #d3deec;
 
     // ─── Glass ────────────────────────────────────────────────────
     //
@@ -390,14 +391,24 @@ export global Theme {
     out property <color> keycap-fill:       ThemeMode.dark ? #152133 : #eef2f7;
     out property <color> keycap-border:     ThemeMode.dark ? #35465e : #14253b29;
     out property <color> separator:         ThemeMode.dark ? #ffffff0e : #0000000f;
+    // The line where two panes of a window meet: the bar and what is under it, the sidebar and
+    // the page. Darker than both, as the gap between two machined parts is, where `separator`
+    // is a lighter rule drawn on one surface. A light rule between a raised pane and a deeper
+    // one made the two read as one sheet with a scratch on it (sharper pass, 12 Nov 2026).
+    out property <color> seam:              ThemeMode.dark ? #000000a6 : #14253b33;
+    // A window's own hairline, inside the compositor's dark keyline: lighter than a card's, so
+    // the window is the first edge the eye finds on a dark photograph.
+    out property <color> window-edge:       ThemeMode.dark ? #ffffff2e : #14253b3d;
+    // The lit top edge of a raised plate (a button): one pixel, inside its border.
+    out property <color> edge-lit:          ThemeMode.dark ? #ffffff29 : #ffffff;
     out property <color> hover-fill:        ThemeMode.dark ? #ffffff0a : #0000000a;
     // An ordinary button at rest: a plate, not an outline. A lit face with a faint edge, as on
     // macOS and Windows; a toolbar of 1px outlines read as a wireframe of an interface. White
     // over the ground in dark, so it reads on every level; a near-white card in light.
-    out property <color> control-fill:         ThemeMode.dark ? #ffffff14 : #ffffffd9;
-    out property <color> control-fill-hover:   ThemeMode.dark ? #ffffff1f : #ffffff;
-    out property <color> control-fill-pressed: ThemeMode.dark ? #ffffff0d : #f1f3f6;
-    out property <color> control-edge:         ThemeMode.dark ? #ffffff1a : #14253b29;
+    out property <color> control-fill:         ThemeMode.dark ? #ffffff1c : #ffffffd9;
+    out property <color> control-fill-hover:   ThemeMode.dark ? #ffffff2b : #ffffff;
+    out property <color> control-fill-pressed: ThemeMode.dark ? #ffffff12 : #f1f3f6;
+    out property <color> control-edge:         ThemeMode.dark ? #ffffff24 : #14253b29;
     out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff14 : #00000012;
     out property <color> tint-cyan:         ThemeMode.dark ? #38d8cd1c : #08747e17;
     out property <color> tint-amber:        ThemeMode.dark ? #d4a57414 : #b0784014;
@@ -522,9 +533,12 @@ export global Theme {
     //
     // Standard radius scale
     out property <length> r-xs: 4px;
-    out property <length> r-sm: 6px;
-    out property <length> r-md: 8px;
-    out property <length> r-lg: 12px;
+    // Controls turn a 6px corner and panels a 10px one (they were 8 and 12): at 28 to 32px
+    // tall an 8px corner makes a button a lozenge, and a row of them reads soft. macOS turns
+    // 5 to 6 on a control and 10 on a window; Windows 4 and 8.
+    out property <length> r-sm: 5px;
+    out property <length> r-md: 6px;
+    out property <length> r-lg: 10px;
     out property <length> r-xl: 16px;
     // Legacy aliases (kept for backward compatibility)
     out property <length> radius-bubble: root.r-xl;

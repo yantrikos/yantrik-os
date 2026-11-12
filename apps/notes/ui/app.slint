@@ -189,7 +189,7 @@ export component NotesApp inherits AppWindow {
      Text{text:"Markdown files · Stored on this device";color:Theme.text-dim;font-size:10px;height:20px;vertical-alignment:center;}
     }
    }
-   Rectangle{width:1px;background:Theme.separator;}
+   Rectangle{width:1px;background:Theme.seam;}
    VerticalLayout {spacing:0px;horizontal-stretch:1;
     if root.opened : Rectangle {height:54px;background:Theme.bg-surface;
      HorizontalLayout{padding-left:20px;padding-right:14px;spacing:6px;
@@ -280,7 +280,7 @@ export component NotesApp inherits AppWindow {
        VerticalLayout{alignment:start;Text{text:root.content;color:Theme.text-primary;font-size:Theme.fs-body;wrap:word-wrap;}}
       }
      }
-     Rectangle{width:1px;background:Theme.separator;}
+     Rectangle{width:1px;background:Theme.seam;}
      VerticalLayout{spacing:8px;horizontal-stretch:1;
       Text{text:"On disk";color:Theme.text-secondary;font-size:Theme.fs-caption;}
       if !root.theirs-gone : Text{text:root.theirs-fields;color:Theme.text-dim;font-size:Theme.fs-caption;overflow:elide;}

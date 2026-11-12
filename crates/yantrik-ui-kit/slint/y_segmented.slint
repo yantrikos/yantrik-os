@@ -27,8 +27,8 @@ export component YSegmented inherits Rectangle {
     horizontal-stretch: 0;
     border-radius: Theme.r-md;
     border-width: 1px;
-    border-color: Theme.outline-border;
-    background: transparent;
+    border-color: Theme.control-edge;
+    background: Theme.seam.with-alpha(0.25);
 
     HorizontalLayout {
         padding: 2px;
@@ -39,9 +39,9 @@ export component YSegmented inherits Rectangle {
             min-width: 30px;
             horizontal-stretch: 0;
             border-radius: Theme.r-sm;
-            background: seg.in-force ? Theme.tint-accent : seg-ta.has-hover ? Theme.hover-fill : transparent;
-            border-width: seg-keys.has-focus ? 2px : 0px;
-            border-color: Theme.focus-ring;
+            background: seg.in-force ? Theme.control-fill-hover : seg-ta.has-hover ? Theme.hover-fill : transparent;
+            border-width: seg-keys.has-focus ? 2px : seg.in-force ? 1px : 0px;
+            border-color: seg-keys.has-focus ? Theme.focus-ring : Theme.control-edge;
             animate background { duration: Theme.dur-fast; }
 
             seg-keys := FocusScope {
@@ -69,9 +69,9 @@ export component YSegmented inherits Rectangle {
                 padding-right: Theme.sp-2;
                 Text {
                     text: item;
-                    color: seg.in-force ? Theme.accent : Theme.text-secondary;
+                    color: seg.in-force ? Theme.text-primary : Theme.text-secondary;
                     font-size: Theme.fs-caption;
-                    font-weight: seg.in-force ? 700 : 400;
+                    font-weight: seg.in-force ? 600 : 400;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }

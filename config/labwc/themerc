@@ -33,11 +33,12 @@ button.spacing: 2
 
 # ── Active window ───────────────────────────────────────────────────
 # The title bar is bg-surface, so it reads as the top edge of the app rather than a separate
-# object sitting on it; the border is one step lighter so a focused window still has an outline
-# against the desktop.
+# object sitting on it. The border is a dark keyline: an app draws its own light hairline just
+# inside it, and the two are one crisp edge on any wallpaper. The shell rewrites these colours
+# for the theme in force (crates/yantrik-ui/src/wire/theme_files.rs).
 window.active.title.bg.color: #161622
 window.active.label.text.color: #e8eaef
-window.active.border.color: #2a2a3c
+window.active.border.color: #04070b
 window.active.button.unpressed.image.color: #e8eaef
 window.active.button.hover.bg.color: #232336
 window.active.button.close.hover.bg.color: #e05263
@@ -47,7 +48,7 @@ window.active.button.close.hover.bg.color: #e05263
 # difference between focused and not should be legible without reading the title.
 window.inactive.title.bg.color: #0c0c14
 window.inactive.label.text.color: #4a5060
-window.inactive.border.color: #1a1a28
+window.inactive.border.color: #04070b
 window.inactive.button.unpressed.image.color: #4a5060
 window.inactive.button.hover.bg.color: #1f1f2e
 

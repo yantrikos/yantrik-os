@@ -104,6 +104,16 @@ export component YButton inherits Rectangle {
         border-color: root.fg;
     }
 
+    // A plate's lit top edge: one pixel inside the border, clear of the corners. It is what
+    // makes the plate a raised thing and not a tinted patch.
+    if root.variant != 0 && !root.filled && !(root.icon-only && !root.hovered) && !root.pressed && !keyboard.has-focus : Rectangle {
+        x: Theme.r-md;
+        y: 1px;
+        width: parent.width - 2 * Theme.r-md;
+        height: 1px;
+        background: Theme.edge-lit;
+    }
+
     animate background { duration: Theme.dur-fast; }
     animate opacity { duration: Theme.dur-fast; }
 
