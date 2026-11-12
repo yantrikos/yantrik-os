@@ -48,9 +48,10 @@ pub fn first_window<A: App>(boot: &Boot<A::Settings>, theme: &theme::ThemeSettin
 /// A window of the app, themed and given its chrome: what a person's start shows first and what
 /// their arrival at a service start makes.
 pub(crate) fn made_window<A: App>(theme: &theme::ThemeSettings) -> Result<A::Ui, String> {
-    // Before the window exists: the compositor reads the app id when the surface is made.
-    boot::name_windows(A::ID);
     let ui = A::Ui::make().map_err(|e| e.to_string())?;
+    // After the window is made (there is no platform to keep the id before that) and before it
+    // is shown (the compositor is told the id when the surface is created): boot::name_windows.
+    boot::name_windows(A::ID);
     ui.apply_theme(theme);
     ui.connect_chrome();
     Ok(ui)
@@ -335,6 +336,19 @@ mod tests {
         assert_eq!(flat.matches("first_window::<A>(").count(), 1, "and no other");
         assert_eq!(flat.matches("Ui::make()").count(), 1, "the one place that makes a window (made_window)");
         assert!(flat.contains("made_window::<A>(theme)"), "and it is the shared one");
+    }
+
+    /// A window is named after it is made: before the first one there is no platform, and Slint
+    /// refuses the app id without saying more than an error nobody saw (`boot::name_windows`).
+    /// Naming needs a display, so the order is pinned as the text of `made_window`.
+    #[test]
+    fn a_window_is_given_its_app_id_after_it_is_made() {
+        let whole = include_str!("runner.rs");
+        let run = whole.split("#[cfg(test)]").next().unwrap_or_default();
+        let made = run.find("A::Ui::make()").expect("made_window makes the window");
+        let named = run.find("boot::name_windows(A::ID)").expect("made_window names it");
+        assert!(made < named, "the app id is set after the window is made, never before");
+        assert_eq!(run.matches("boot::name_windows(").count(), 1, "in the one place a window is made");
     }
 
     #[test]
