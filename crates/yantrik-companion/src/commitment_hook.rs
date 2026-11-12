@@ -75,8 +75,37 @@ impl CompanionService {
         run_urge(&self.registry, &ctx, urge, now_ts(), &Settings::for_person())
     }
 
+    /// The brief card's rows about preparing: the question, shown (which is what marks it asked), or
+    /// the way back after the person turned it off. Their buttons are person-only
+    /// (`commitment_consent`).
+    pub fn commitment_brief_actions(&self) -> Vec<crate::commitment_consent::BriefAction> {
+        if self.incognito {
+            return Vec::new();
+        }
+        crate::commitment_consent::brief_actions(&self.db.conn(), now_ts())
+    }
+
+    /// The person pressed a brief-card button about preparing. Called only from the shell's click
+    /// handler; what was said back, if the click answered anything.
+    pub fn person_answers_commitment_prep(&self, action_id: &str) -> Option<String> {
+        crate::commitment_consent::person_answer(&self.db.conn(), action_id)
+    }
+
     /// Housekeeping for what was prepared: expired items are closed, and old ones deleted.
     pub fn commitment_housekeeping(&self) -> u64 {
+        // A draft whose item has expired, or whose promise was forgotten, is cleared from Email.
+        crate::commitment_slot::owe_for_expired(&self.db.conn(), now_ts());
+        let ctx = ToolContext {
+            db: &self.db,
+            max_permission: self.max_permission_now().min(PermissionLevel::Standard),
+            registry_metadata: None,
+            task_manager: Some(&self.task_manager),
+            incognito: self.incognito,
+            agent_spawner: None,
+        };
+        if !crate::commitment_slot::owed(&self.db.conn()).is_empty() && !self.incognito {
+            crate::commitment_slot::pay(&self.registry, &ctx, crate::commitment_prep::BUDGET);
+        }
         AnticipationEngine::cleanup_expired(&self.db.conn())
     }
 }

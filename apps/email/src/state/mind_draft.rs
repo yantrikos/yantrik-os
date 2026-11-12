@@ -20,9 +20,27 @@ pub struct MindDraft {
     /// `compose` replaces it.
     #[serde(default)]
     pub touched: bool,
+    /// The promise this draft was prepared for (`commitment_prep`), so forgetting the promise, or
+    /// its item expiring, clears the draft (`forget_prepared`). Absent for any other Mind's draft.
+    #[serde(default)]
+    pub commitment: Option<String>,
 }
 
 impl MindDraft {
+    /// What the entry for it says: "Draft Yantrik prepared for maya@example.com".
+    pub fn label(&self) -> String {
+        match self.text.to.trim() {
+            "" => "Draft Yantrik prepared".to_string(),
+            to => format!("Draft Yantrik prepared for {to}"),
+        }
+    }
+
+    /// The names of the files it carries, for the bar over the composer.
+    pub fn file_names(&self) -> String {
+        let name = |p: &String| Path::new(p).file_name().map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned());
+        self.attachments.iter().map(name).collect::<Vec<_>>().join(", ")
+    }
+
     pub fn is_empty(&self) -> bool {
         self.text.is_empty() && self.attachments.is_empty()
     }

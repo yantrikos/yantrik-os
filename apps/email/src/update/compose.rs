@@ -45,8 +45,7 @@ pub fn compose_new(m: &mut Model, fx: &mut Effects<Email>) {
                 m.composer.status = "Draft restored".into();
             }
         }
-        // Nothing of the person's is kept: Compose opens the draft Yantrik prepared, if there is one.
-        Ok(None) if matches!(m.composer.mind, Ok(Some(_))) => mind_draft::show(m, fx),
+        // Plain Compose is a blank composer. The draft Yantrik prepared is reached by its own entry.
         Ok(None) => {
             m.composer.text = Draft::default();
             m.composer.status.clear();
@@ -63,8 +62,8 @@ pub fn compose_new(m: &mut Model, fx: &mut Effects<Email>) {
 /// surface on purpose: a draft can be read before it leaves, and mail that has already gone
 /// cannot be taken back. `attach`, when given, is a file the draft is to carry; it is kept with
 /// the draft, and the draft is not sent from here until the mail service can send it.
-pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach: String, fx: &mut Effects<Email>) -> Result<(), Refused> {
-    mind_draft::compose(m, to, subject, body, attach, fx)
+pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach: String, commitment: String, fx: &mut Effects<Email>) -> Result<(), Refused> {
+    mind_draft::compose(m, to, subject, body, attach, commitment, fx)
 }
 
 /// Reply, or reply to all: the composer opened on the message that is open. None of this needs a
@@ -72,17 +71,19 @@ pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach:
 pub fn reply(m: &mut Model, all: bool, fx: &mut Effects<Email>) {
     let Some(open) = m.open.as_ref() else { return };
     // A reply quotes the message and names its sender and subject; where a Mind looks it starts
-    // empty (`mind_view`).
-    m.composer.text = if m.for_mind { Draft::default() } else { rows::reply(&open.detail, all) };
+    // empty (`mind_view`). The slot is parked first: it must not take the reply's text.
+    let text = if m.for_mind { Draft::default() } else { rows::reply(&open.detail, all) };
     opened_on_new_text(m);
+    m.composer.text = text;
     fx.changed(part::COMPOSE_TEXT);
     fx.changed(part::STATUS);
 }
 
 pub fn forward(m: &mut Model, fx: &mut Effects<Email>) {
     let detail = m.open.as_ref().map(|o| o.detail.clone()).unwrap_or_default();
-    m.composer.text = if m.for_mind { Draft::default() } else { rows::forward(&detail) };
+    let text = if m.for_mind { Draft::default() } else { rows::forward(&detail) };
     opened_on_new_text(m);
+    m.composer.text = text;
     fx.changed(part::COMPOSE_TEXT);
     fx.changed(part::STATUS);
 }

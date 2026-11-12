@@ -1,5 +1,7 @@
-//! The person's say over `commitment_prep` (#1184): answering its question, switching it on or
-//! off, and forgetting a promise, which takes what was prepared from it along.
+//! The person's say over `commitment_prep` (#1184): refusing it, and forgetting a promise, which
+//! takes what was prepared from it along. These tools can only say no: the yes, and turning it back
+//! on, are person-only (`commitment_consent`, answered by a click the shell wires), because a tool
+//! can be called by a model that has just read an email, or by a recipe step.
 
 use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
 use crate::commitment_store as store;
@@ -21,11 +23,11 @@ impl Tool for CommitmentPrepSettingTool {
             "type": "function",
             "function": {
                 "name": "commitment_prep_setting",
-                "description": "Record the user's answer about getting promised things ready (opening the files they named in Mind View and drafting the email, never sending). 'yes' answers 'Shall I get these ready for promises like this?'; 'no' or 'off' stops it; 'on' turns it back on.",
+                "description": "Stop getting promised things ready (opening the files the user named in Mind View and drafting the email), when the user says no or asks for it off. It cannot turn it on: only the user can, with the button on their brief.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "choice": { "type": "string", "description": "yes, no, on or off" }
+                        "choice": { "type": "string", "description": "no or off" }
                     },
                     "required": ["choice"]
                 }
@@ -36,21 +38,12 @@ impl Tool for CommitmentPrepSettingTool {
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
         let conn = &ctx.db.conn();
         match args.get("choice").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase().as_str() {
-            "yes" => {
-                store::set_consent(conn, true);
-                store::set_enabled(conn, true);
-                "Got it. I'll get promised things ready, and never send anything.".to_string()
-            }
             "no" | "off" => {
-                store::set_consent(conn, false);
-                store::set_enabled(conn, false);
-                "Okay. I won't get promised things ready.".to_string()
+                store::refuse(conn);
+                "Okay. I won't get promised things ready. Only you can turn it back on, from your brief.".to_string()
             }
-            "on" => {
-                store::set_enabled(conn, true);
-                "Getting promised things ready is on.".to_string()
-            }
-            _ => "Error: choice must be yes, no, on or off".to_string(),
+            "yes" | "on" => "Error: only the user can turn this on, with the button on their brief. I can only stop it.".to_string(),
+            _ => "Error: choice must be no or off".to_string(),
         }
     }
 }

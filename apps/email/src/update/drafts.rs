@@ -36,6 +36,7 @@ pub fn file_op(m: &mut Model, op: FileOp, fx: &mut Effects<Email>) {
         return;
     }
     m.composer.writing = true;
+    m.composer.saving = matches!(op, FileOp::Save { .. });
     let path = m.files.draft.clone();
     fx.spawn_or(Command::Unfinished(Work::Draft), move |_| {
         let outcome = match &op {
@@ -51,6 +52,7 @@ pub fn file_op(m: &mut Model, op: FileOp, fx: &mut Effects<Email>) {
 /// The next file operation, once the one before it has landed.
 pub fn next_file_op(m: &mut Model, fx: &mut Effects<Email>) {
     m.composer.writing = false;
+    m.composer.saving = false;
     if let Some(op) = m.composer.queued.take() {
         file_op(m, op, fx);
     }
@@ -170,6 +172,11 @@ pub fn offer_unsent(m: &mut Model, fx: &mut Effects<Email>) {
 /// when it lands otherwise (`mailbox::listed`).
 pub fn person_here(m: &mut Model, fx: &mut Effects<Email>) {
     m.person_here = true;
+    // The person's window needs the mailbox, whatever an agent's start did or did not look at.
+    m.compose_only = false;
+    if !m.looked {
+        super::mailbox::look(m, crate::command::Look::Start, fx);
+    }
     if m.start_look_over {
         offer_unsent(m, fx);
     }

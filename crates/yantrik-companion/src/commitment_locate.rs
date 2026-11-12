@@ -139,10 +139,13 @@ pub fn locate(hands: &mut Hands<'_>, file: &NamedFile, kind: FileKind, roots: &[
             }
         }
     }
+    // A listing that was cut short may be missing the file that tells the candidates apart: one
+    // visible candidate among a cut list is not "the one", so none is chosen.
     match candidates.len() {
-        1 => Located::Found(candidates.remove(0)),
         0 if cut => Located::TooMany,
         0 => Located::Missing,
+        _ if cut => Located::TooMany,
+        1 => Located::Found(candidates.remove(0)),
         n => Located::Ambiguous(n),
     }
 }

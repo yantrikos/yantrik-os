@@ -242,9 +242,15 @@ fn wire_brief_dismiss(ui: &App) {
 /// Wire section action callbacks — navigate to relevant app screens.
 fn wire_brief_section_action(ui: &App, ctx: &AppContext) {
     let ui_weak = ui.as_weak();
-    let _bridge = ctx.bridge.clone();
+    let bridge = ctx.bridge.clone();
     ui.on_morning_brief_section_action(move |action_id| {
         let action = action_id.to_string();
+        // The person's own click: the yes or no about preparing promised things, or turning it back
+        // on. Nothing but this click gives it (`commitment_consent`).
+        if crate::commitment_brief::is_answer(&action) {
+            bridge.answer_commitment_prep(action);
+            return;
+        }
         if action.starts_with("navigate:") {
             let screen_name = &action["navigate:".len()..];
             let screen_id = match screen_name {

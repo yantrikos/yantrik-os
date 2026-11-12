@@ -120,7 +120,7 @@ fn the_file_and_the_refusal_to_send_survive_a_restart() {
     assert!(!kept_file(&paths).exists(), "the end of the app did not hand it to the person's draft");
 
     let again = started_at(&paths);
-    again.ui(|ui| ui.invoke_compose_new());
+    again.ui(|ui| ui.invoke_open_prepared());
     assert_eq!(again.ui(|ui| ui.get_compose_body()), "Here it is.");
     assert_eq!(state(&again)["draft_attachments"].as_array().map(Vec::len), Some(1), "the file is still carried");
     again.ui(|ui| ui.invoke_send_email("maya@example.com".into(), "".into(), "".into(), "Q4 deck".into(), "Here it is.".into()));
@@ -188,4 +188,241 @@ fn a_sent_minds_draft_empties_its_slot_and_not_the_persons() {
     assert_eq!(mail.asked_for("email.send_message").len(), 1);
     assert!(!paths.data_dir().join(files::MIND_DRAFT).exists());
     assert!(!kept_file(&paths).exists());
+}
+
+// ── Round 3 (review of 40fd3b3e): the prepared draft is its own entry, and the person's ──
+
+fn slot_file(paths: &Paths) -> std::path::PathBuf {
+    paths.data_dir().join(files::MIND_DRAFT)
+}
+
+fn with_commitment(attach: &str, commitment: &str) -> serde_json::Value {
+    let mut args = compose_args(attach);
+    args["commitment"] = json!(commitment);
+    args
+}
+
+/// The review's probe: the executor composes the Maya draft with the deck, the person presses
+/// Cancel, then Compose, and writes to Bob.
+#[test]
+fn plain_compose_is_blank_and_the_persons_mail_to_bob_goes_while_mayas_draft_waits() {
+    let file = HomeFile::new("probe");
+    let paths = Paths::temporary(Email::ID);
+    let mail = with_inbox().answering("email.send_message", json!({}));
+    let (app, _) = start_at(paths.clone(), &mail, FakeMind::new());
+    quiet(&app);
+    act(&app, "compose", compose_args(&file.path())).unwrap();
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+
+    app.ui(|ui| ui.invoke_compose_new());
+    assert_eq!(app.ui(|ui| (ui.get_compose_to().to_string(), ui.get_compose_body().to_string())), (String::new(), String::new()), "blank");
+    assert!(!app.ui(|ui| ui.get_composing_prepared()));
+    assert_eq!(state(&app)["draft_attachments"], json!([]), "Maya's deck is not on Bob's mail");
+    type_into_composer(&app, &draft("bob@example.com", "Lunch?"));
+    app.ui(|ui| ui.invoke_send_email("bob@example.com".into(), "".into(), "".into(), "Plans".into(), "Lunch?".into()));
+    quiet(&app);
+    let sent = mail.asked_for("email.send_message");
+    assert_eq!(sent.len(), 1, "Bob's mail went");
+    assert!(sent[0].to_string().contains("bob@example.com") && !sent[0].to_string().contains("Q4-deck"), "{sent:?}");
+
+    // Maya's draft is untouched, still carries its file, and is reached by its own entry.
+    assert_eq!(app.ui(|ui| ui.get_prepared_label().to_string()), "Draft Yantrik prepared for maya@example.com");
+    assert!(slot_file(&paths).exists(), "slot");
+    assert!(!kept_file(&paths).exists(), "Bob's draft is cleared once it went");
+    // The person has not touched it, so a later Mind compose is not refused with a false sentence.
+    assert!(act(&app, "compose", compose_args("")).is_ok());
+}
+
+#[test]
+fn the_prepared_entry_opens_it_with_its_file_shown() {
+    let file = HomeFile::new("entry");
+    let app = started_at(&Paths::temporary(Email::ID));
+    act(&app, "compose", compose_args(&file.path())).unwrap();
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    assert!(!app.ui(|ui| ui.get_is_composing()));
+    app.ui(|ui| ui.invoke_open_prepared());
+    assert!(app.ui(|ui| ui.get_is_composing() && ui.get_composing_prepared()));
+    assert_eq!(app.ui(|ui| ui.get_prepared_file().to_string()), "Q4-deck.ydeck");
+    assert_eq!(app.ui(|ui| ui.get_compose_body().to_string()), "Here it is.");
+}
+
+#[test]
+fn discard_prepared_draft_removes_the_slot_and_leaves_the_persons_draft() {
+    let file = HomeFile::new("discard");
+    let paths = Paths::temporary(Email::ID);
+    let kept = kept_with_cc(&paths);
+    let app = started_at(&paths);
+    // The person's own draft is in the way, so the Mind's compose is refused; clear it, then prepare.
+    state::clear_draft(&kept_file(&paths)).unwrap();
+    let app = { drop(app); started_at(&paths) };
+    act(&app, "compose", compose_args(&file.path())).unwrap();
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    assert!(!slot_file(&paths).exists());
+    assert!(!app.ui(|ui| ui.get_is_composing()) && app.ui(|ui| ui.get_prepared_label().to_string()).is_empty());
+    assert_eq!(state(&app)["draft_attachments"], json!([]));
+    let _ = kept;
+}
+
+#[test]
+fn remove_attachment_then_send_sends_the_persons_own_mail_and_clears_both() {
+    let file = HomeFile::new("remove");
+    let paths = Paths::temporary(Email::ID);
+    let mail = with_inbox().answering("email.send_message", json!({}));
+    let (app, _) = start_at(paths.clone(), &mail, FakeMind::new());
+    quiet(&app);
+    act(&app, "compose", compose_args(&file.path())).unwrap();
+    app.ui(|ui| ui.invoke_remove_attachment());
+    quiet(&app);
+    assert!(!slot_file(&paths).exists(), "no longer a prepared draft");
+    assert_eq!(state(&app)["draft_attachments"], json!([]));
+    assert!(kept_file(&paths).exists(), "what is in the composer is the person's own draft now");
+    // What they write after removing the file is kept as theirs.
+    type_into_composer(&app, &draft("maya@example.com", "Here it is, without the deck."));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    assert_eq!(state::load_draft(&kept_file(&paths)).unwrap().unwrap().body, "Here it is, without the deck.");
+    app.ui(|ui| ui.invoke_compose_new());
+    app.ui(|ui| ui.invoke_send_email("maya@example.com".into(), "".into(), "".into(), "Plans".into(), "Here it is, without the deck.".into()));
+    quiet(&app);
+    assert_eq!(mail.asked_for("email.send_message").len(), 1, "it can be sent now");
+    assert!(!kept_file(&paths).exists() && !slot_file(&paths).exists());
+}
+
+#[test]
+fn remove_attachment_is_refused_over_a_draft_of_the_persons_own() {
+    let file = HomeFile::new("remove-refused");
+    let paths = Paths::temporary(Email::ID);
+    let app = started_at(&paths);
+    act(&app, "compose", compose_args(&file.path())).unwrap();
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    kept_with_cc(&paths);
+    let app = { drop(app); started_at(&paths) };
+    app.ui(|ui| ui.invoke_open_prepared());
+    app.ui(|ui| ui.invoke_remove_attachment());
+    quiet(&app);
+    assert!(notice(&app).starts_with("You have an unsent message of your own"), "{}", notice(&app));
+    assert!(slot_file(&paths).exists(), "nothing was overwritten or lost");
+    assert_eq!(state::load_draft(&kept_file(&paths)).unwrap().unwrap().body, "half written");
+}
+
+#[test]
+fn cancel_on_an_emptied_slot_discards_it_and_the_refusal_is_not_said_after() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started_at(&paths);
+    act(&app, "compose", compose_args("")).unwrap();
+    type_into_composer(&app, &Draft::default());
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    assert!(!slot_file(&paths).exists(), "nothing left to keep");
+    assert!(app.ui(|ui| ui.get_prepared_label().to_string()).is_empty());
+    assert!(act(&app, "compose", compose_args("")).is_ok(), "no false 'you have an unsent message'");
+}
+
+#[test]
+fn a_save_still_in_flight_is_the_persons_text() {
+    let app = started_at(&Paths::temporary(Email::ID));
+    app.ui(|ui| ui.invoke_compose_new());
+    type_into_composer(&app, &draft("a@example.com", "closing now"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    // The save has not landed: `kept` is still empty.
+    assert!(app.model(|m| m.composer.saving || m.composer.writing));
+    let refused = app.act("compose", compose_args("")).map(|p| p.settle());
+    let said = match &refused { Ok(Err(e)) | Err(e) => e.clone(), Ok(Ok(v)) => v.to_string() };
+    assert!(said.starts_with("You have an unsent message of your own"), "{refused:?}");
+}
+
+#[test]
+fn forgetting_a_promise_clears_its_untouched_draft_and_only_its_own() {
+    let file = HomeFile::new("forget");
+    let paths = Paths::temporary(Email::ID);
+    let app = started_at(&paths);
+    act(&app, "compose", with_commitment(&file.path(), "7")).unwrap();
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    let raw = std::fs::read_to_string(slot_file(&paths)).unwrap();
+    assert!(raw.contains("\"commitment\": \"7\""), "the id is kept in mind_draft.json: {raw}");
+    act(&app, "forget_prepared", json!({ "commitment": "8" })).unwrap();
+    assert!(slot_file(&paths).exists(), "another promise's forgetting leaves it");
+    act(&app, "forget_prepared", json!({ "commitment": "7" })).unwrap();
+    assert!(!slot_file(&paths).exists());
+    assert!(app.ui(|ui| ui.get_prepared_label().to_string()).is_empty());
+
+    // One the person changed is theirs now, and stays.
+    act(&app, "compose", with_commitment(&file.path(), "9")).unwrap();
+    type_into_composer(&app, &draft("maya@example.com", "my own wording"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    act(&app, "forget_prepared", json!({ "commitment": "9" })).unwrap();
+    assert!(slot_file(&paths).exists());
+}
+
+#[test]
+fn discard_and_remove_are_the_persons_buttons_and_no_intent() {
+    let mut table = yantrik_app::intents::Intents::<Email>::new();
+    <Email as App>::intents(&mut table);
+    let names: Vec<String> = table.specs().iter().map(|s| s.name.clone()).collect();
+    for name in &names {
+        assert!(!name.contains("discard") && !name.contains("remove") && !name.contains("open_prepared"), "{name}");
+    }
+    // And a Mind's window refuses them if it is ever pressed.
+    for c in [crate::Command::OpenPrepared, crate::Command::DiscardPrepared, crate::Command::RemoveAttachment] {
+        assert!(crate::mind_view::refuses(&c), "{c:?}");
+    }
+}
+
+// ── MEDIUM-D: a draft needs no account, so no mail look ──
+
+fn service_start(paths: &Paths, mail: &crate::backend::fake::FakeMail) -> yantrik_testing::TestApp<Email> {
+    crate::backend::fake::install(paths, mail);
+    yantrik_testing::TestApp::<Email>::start_service_at(paths.clone())
+}
+
+#[test]
+fn an_email_started_only_to_compose_looks_at_no_mail() {
+    let file = HomeFile::new("service");
+    let paths = Paths::temporary(Email::ID);
+    let mail = with_inbox();
+    let app = service_start(&paths, &mail);
+    quiet(&app);
+    act(&app, "compose", compose_args(&file.path())).unwrap();
+    app.advance(std::time::Duration::from_secs(60));
+    quiet(&app);
+    assert!(mail.asked().is_empty(), "no Look was queued and no mail service was asked: {:?}", mail.asked());
+    assert_eq!(app.model(|m| m.composer.attachments.len()), 1, "the draft was made");
+}
+
+#[test]
+fn an_agents_start_that_is_not_asked_to_compose_still_looks_after_its_grace() {
+    let paths = Paths::temporary(Email::ID);
+    let mail = with_inbox();
+    let app = service_start(&paths, &mail);
+    quiet(&app);
+    assert!(mail.asked().is_empty());
+    app.advance(std::time::Duration::from_secs(10));
+    quiet(&app);
+    assert!(!mail.asked().is_empty(), "the look an agent's intents need was made");
+}
+
+#[test]
+fn the_first_intent_that_needs_the_mailbox_looks_at_once_after_a_compose() {
+    let paths = Paths::temporary(Email::ID);
+    let mail = with_inbox();
+    let app = service_start(&paths, &mail);
+    quiet(&app);
+    act(&app, "compose", compose_args("")).unwrap();
+    assert!(mail.asked().is_empty());
+    let _ = act(&app, "select_folder", json!({ "folder": "INBOX" }));
+    assert!(!mail.asked().is_empty());
+}
+
+#[test]
+fn the_persons_start_looks_at_once_as_it_always_did() {
+    let mail = with_inbox();
+    let (app, _) = start_at(Paths::temporary(Email::ID), &mail, FakeMind::new());
+    quiet(&app);
+    assert!(!mail.asked().is_empty());
 }

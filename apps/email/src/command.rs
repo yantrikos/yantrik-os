@@ -188,7 +188,16 @@ pub enum Command {
     // ── Writing ──
     ComposeNew,
     /// `compose`: the composer opened as Compose opens it, then these three filled in.
-    Compose { to: String, subject: String, body: String, attach: String },
+    Compose { to: String, subject: String, body: String, attach: String, commitment: String },
+    /// `forget_prepared`: the draft prepared for this promise goes, if it is still untouched.
+    ForgetPrepared(String),
+    /// The person's own buttons (never an intent): the entry that opens the prepared draft, and
+    /// its two ways out.
+    OpenPrepared,
+    DiscardPrepared,
+    RemoveAttachment,
+    /// An agent's start looks at the mail service only if nothing has said it is not needed.
+    LookIfWanted,
     Reply { all: bool },
     Forward,
     /// The window's own edits: the composer and the search box.

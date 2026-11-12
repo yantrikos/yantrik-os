@@ -63,6 +63,7 @@ impl App for Email {
         }
         let mut model = Model::new(backend::for_app(&boot.paths), boot.mind.clone(), files, kept);
         model.for_mind = boot.for_mind;
+        model.service = boot.service;
         model.composer.mind = state::load_mind_draft(&model.files.mind_draft);
         model.composer.kept_unsure = sending.is_some() || files::is_unsure(&model.files.draft);
         // Said once the first look lands, unless the person has chosen about the draft first.
@@ -86,8 +87,16 @@ impl App for Email {
         // One look at the mail service, which starts it if it is not running. Not for the
         // fixture, which has no service behind it. Intents need the account, so an agent's start
         // has it; the person's recovery below does not belong to it.
+        //
+        // An agent's start looks after a short grace instead, and not at all if all it was asked
+        // to do is `compose`: a draft needs no account, so no IMAP or SMTP session is opened for
+        // it (`Command::LookIfWanted`; the first intent that needs the mailbox looks at once).
         if !m.looked {
-            fx.then(Command::Look(command::Look::Start));
+            if m.service {
+                fx.after(update::mailbox::LOOK_GRACE_TIMER, update::mailbox::LOOK_GRACE, Command::LookIfWanted);
+            } else {
+                fx.then(Command::Look(command::Look::Start));
+            }
         }
     }
 

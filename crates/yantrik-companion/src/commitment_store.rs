@@ -19,6 +19,9 @@ pub const QUESTION: &str = "Shall I get these ready for promises like this?";
 const ENABLED: &str = "enabled";
 const CONSENT: &str = "consent";
 const ASKED: &str = "asked";
+const ASKING: &str = "asking";
+const ANSWERED_BY: &str = "answered_by";
+const ANSWERED_ITEM: &str = "answered_item";
 
 /// Commitments whose deadline falls within `hours` of `now` and has not passed.
 pub fn approaching_at(conn: &Connection, hours: f64, now: f64) -> Vec<Commitment> {
@@ -39,6 +42,10 @@ pub fn commitment(conn: &Connection, id: i64) -> Option<Commitment> {
 
 /// Forget a commitment: it is deleted, and so is the item prepared from it. `true` if it was there.
 pub fn forget(conn: &Connection, id: i64) -> bool {
+    // The draft it made in Email goes with it: the clear is owed, and paid by the worker.
+    if AnticipationEngine::for_commitment(conn, &id.to_string()).is_some_and(|i| i.data["draft"].is_object()) {
+        crate::commitment_slot::owe(conn, &id.to_string());
+    }
     AnticipationEngine::delete_for_commitment(conn, &id.to_string());
     conn.execute("DELETE FROM wm_commitments WHERE id = ?1", params![id]).unwrap_or(0) > 0
 }
@@ -68,26 +75,53 @@ pub fn enabled(conn: &Connection) -> bool {
     get(conn, ENABLED).as_deref() != Some("off")
 }
 
-pub fn set_enabled(conn: &Connection, on: bool) {
-    set(conn, ENABLED, if on { "on" } else { "off" });
-}
-
 /// The person said yes to having promises prepared.
 pub fn consented(conn: &Connection) -> bool {
     get(conn, CONSENT).as_deref() == Some("yes")
 }
 
-pub fn set_consent(conn: &Connection, yes: bool) {
-    set(conn, CONSENT, if yes { "yes" } else { "no" });
+/// Refusing is safe for anyone to do, a model turn included: nothing is opened or drafted. It is
+/// the only answer the model-callable tool gives; the yes is `commitment_consent::person_answer`.
+pub fn refuse(conn: &Connection) {
+    set(conn, CONSENT, "no");
+    set(conn, ENABLED, "off");
+    remove(conn, ASKING);
 }
 
-/// Whether the question has been put to the person already.
+/// The person's answer, with who gave it and which item's question it answered. Only
+/// `commitment_consent` calls this.
+pub(crate) fn record_answer(conn: &Connection, yes: bool, by: &str, item: &str) {
+    set(conn, CONSENT, if yes { "yes" } else { "no" });
+    set(conn, ENABLED, if yes { "on" } else { "off" });
+    set(conn, ANSWERED_BY, by);
+    set(conn, ANSWERED_ITEM, item);
+    remove(conn, ASKING);
+}
+
+/// Who gave the answer, and to which item's question.
+pub fn answered(conn: &Connection) -> Option<(String, String)> {
+    Some((get(conn, ANSWERED_BY)?, get(conn, ANSWERED_ITEM)?))
+}
+
+/// The item whose question is outstanding: it was shown to the person and not yet answered.
+pub fn asking(conn: &Connection) -> Option<String> {
+    get(conn, ASKING)
+}
+
+/// Whether the question has been put to the person already: shown, not stored.
 pub fn asked(conn: &Connection) -> bool {
     get(conn, ASKED).is_some()
 }
 
-pub fn mark_asked(conn: &Connection) {
+/// The question of `item` was shown to the person.
+pub(crate) fn mark_asked(conn: &Connection, item: &str) {
     set(conn, ASKED, "yes");
+    set(conn, ASKING, item);
+}
+
+fn remove(conn: &Connection, key: &str) {
+    ensure(conn);
+    let _ = conn.execute("DELETE FROM commitment_prep_settings WHERE key = ?1", params![key]);
 }
 
 #[cfg(test)]
@@ -107,15 +141,14 @@ mod tests {
         let conn = db();
         assert!(enabled(&conn));
         assert!(!consented(&conn), "never assumed");
-        set_consent(&conn, true);
-        assert!(consented(&conn));
-        set_enabled(&conn, false);
-        assert!(!enabled(&conn));
-        set_enabled(&conn, true);
-        assert!(enabled(&conn));
         assert!(!asked(&conn));
-        mark_asked(&conn);
+        mark_asked(&conn, "commitment-prep-1");
         assert!(asked(&conn));
+        record_answer(&conn, true, "person", "commitment-prep-1");
+        assert!(consented(&conn));
+        assert_eq!(answered(&conn), Some(("person".into(), "commitment-prep-1".into())));
+        refuse(&conn);
+        assert!(!enabled(&conn) && !consented(&conn));
     }
 
     #[test]

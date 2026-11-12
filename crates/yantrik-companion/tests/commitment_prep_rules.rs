@@ -11,7 +11,7 @@ use yantrik_companion::anticipation::AnticipationEngine;
 use yantrik_companion::commitment_extractor::extract_commitments_at;
 use yantrik_companion::commitment_hook::{note_commitments_in, run_urge};
 use yantrik_companion::commitment_prep::{commitment_to_prepare, Outcome, CONFIDENCE_FLOOR};
-use yantrik_companion::commitment_store;
+use yantrik_companion::{commitment_consent, commitment_slot, commitment_store};
 use yantrik_companion::world_model::{CommitmentSource, WorldModel};
 use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::tools::ToolContext;
@@ -82,18 +82,18 @@ fn the_first_promise_asks_once_and_only_records_what_would_be_prepared() {
     let item = the_item(&outcomes);
     assert_eq!(item.data["state"], "proposed");
     assert!(item.description.ends_with("Shall I get these ready for promises like this?"), "{}", item.description);
+    assert!(!commitment_store::asked(&rig.db.conn()), "stored is not shown: nobody has been asked yet");
     assert!(item.description.contains("Nothing would be sent."));
     assert!(rig.calls().is_empty(), "nothing was searched, opened or drafted: {:?}", rig.calls());
     // Not asked again, and still nothing done, on the next cycles.
     assert!(matches!(rig.cycle(window() + HOUR).as_slice(), [Outcome::AlreadyPrepared]));
     assert!(rig.calls().is_empty());
 
-    // A second promise before the answer is recorded, without the question.
+    // A second promise before the answer is recorded too, and nothing is done for it.
     rig.say("I'll send Sam the budget spreadsheet on Friday.", MONDAY);
     let outcomes = rig.cycle(friday_window());
     let second = outcomes.iter().find_map(|o| match o { Outcome::Prepared(i) if i.data["promisee"] == "Sam" => Some(i), _ => None }).expect("Sam's item");
     assert_eq!(second.data["state"], "proposed");
-    assert!(!second.description.contains("Shall I"), "asked once: {}", second.description);
     assert!(rig.calls().is_empty());
 }
 
@@ -102,7 +102,7 @@ fn yes_makes_the_next_run_prepare_it() {
     let rig = Rig::asked(&[DECK, SHEET]);
     rig.say(SAID, MONDAY);
     assert_eq!(the_item(&rig.cycle(window())).data["state"], "proposed");
-    commitment_store::set_consent(&rig.db.conn(), true);
+    assert!(rig.person_answers(commitment_consent::YES, window() + HOUR).is_some());
     let outcomes = rig.cycle(window() + HOUR);
     assert_eq!(the_item(&outcomes).data["state"], "prepared");
     assert_eq!(rig.items(), 1, "the record was updated, not duplicated");
@@ -113,7 +113,7 @@ fn yes_makes_the_next_run_prepare_it() {
 fn the_switch_stops_everything() {
     let rig = Rig::new(&[DECK, SHEET]);
     rig.say(SAID, MONDAY);
-    commitment_store::set_enabled(&rig.db.conn(), false);
+    commitment_store::refuse(&rig.db.conn());
     assert!(matches!(rig.cycle(window()).as_slice(), [Outcome::Nothing(_)]));
     assert!(rig.calls().is_empty());
 }
@@ -232,6 +232,20 @@ fn too_many_files_to_list_is_said_and_not_guessed() {
     assert!(the_item(&outcomes).data["missing"][0].as_str().unwrap().contains("too many files"), "{:?}", the_item(&outcomes).data["missing"]);
 }
 
+#[test]
+fn a_cut_listing_with_one_visible_candidate_chooses_none() {
+    // `q4-deck-v1.pdf` is hidden past the tool's cap; `q4-deck-final.pdf` is listed. One candidate
+    // seen is not "the one" when the list was cut.
+    let mut files: Vec<String> = vec!["/home/p/Documents/q4-deck-final.pdf".into()];
+    files.extend((0..60).map(|i| format!("/home/p/Documents/report-{i}.pdf")));
+    files.push("/home/p/Documents/q4-deck-v1.pdf".into());
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let (rig, outcomes) = said_with(&refs, "I'm sending Maya the Q4 deck on Thursday.");
+    let item = the_item(&outcomes);
+    assert!(item.data["missing"][0].as_str().unwrap().contains("too many files"), "{:?}", item.data["missing"]);
+    assert!(rig.app_calls().iter().all(|(_, a)| a != "open" && a != "compose"), "nothing opened or attached: {:?}", rig.app_calls());
+}
+
 // ── MEDIUM-5: where a window landed ─────────────────────────────────
 
 #[test]
@@ -303,7 +317,7 @@ fn a_final_refusal_is_said_in_words_and_not_retried() {
     let outcomes = rig.cycle(window());
     let item = the_item(&outcomes);
     assert_eq!(item.data["state"], "prepared");
-    assert_eq!(item.data["missing"][0], "couldn't draft the email: I'm not allowed to do that in Email without asking you");
+    assert_eq!(item.data["missing"][0], "couldn't draft the email: I'm not allowed to do that in Email while you're away");
     assert!(!item.data.to_string().contains("reaches the internet"));
 }
 

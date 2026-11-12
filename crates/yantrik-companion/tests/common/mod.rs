@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use yantrik_companion::anticipation::{AnticipationEngine, PreparedItem};
 use yantrik_companion::commitment_extractor::{extract_commitments_at, to_world_model_commitments};
 use yantrik_companion::commitment_prep::{approaching_trigger, commitment_to_prepare, prepare_with, Outcome, Settings};
-use yantrik_companion::commitment_store;
+use yantrik_companion::{commitment_consent, commitment_store};
 use yantrik_companion::world_model::{CommitmentSource, WorldModel};
 use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::tools::{Tool, ToolContext, ToolRegistry};
@@ -134,7 +134,7 @@ impl Rig {
     /// A rig whose person has said yes to having promises prepared.
     pub fn new(files: &[&str]) -> Self {
         let rig = Self::asked(files);
-        commitment_store::set_consent(&rig.db.conn(), true);
+        rig.person_turns_it_on();
         rig
     }
 
@@ -157,6 +157,20 @@ impl Rig {
         AnticipationEngine::ensure_table(&db.conn());
         let settings = Settings { roots: vec![DOCS.into(), "/home/p/Desktop".into(), "/home/p/Downloads".into()], budget: Duration::from_secs(60) };
         Self { db, registry, world, settings, incognito: false }
+    }
+
+    /// The person's own button: preparing off, then back on, which is consent by the person-only act.
+    pub fn person_turns_it_on(&self) {
+        commitment_store::refuse(&self.db.conn());
+        assert!(commitment_consent::person_answer(&self.db.conn(), commitment_consent::TURN_ON).is_some());
+    }
+
+    /// The person is shown the question on their brief at `now`, and presses the button `which`
+    /// (`YES` or `NO`) on it.
+    pub fn person_answers(&self, which: &str, now: f64) -> Option<String> {
+        let shown = commitment_consent::brief_actions(&self.db.conn(), now);
+        let button = shown.iter().find(|a| a.action_id.starts_with(which))?;
+        commitment_consent::person_answer(&self.db.conn(), &button.action_id)
     }
 
     pub fn say(&self, text: &str, now: f64) -> usize {

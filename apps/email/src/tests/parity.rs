@@ -70,7 +70,17 @@ const BEFORE: &[Golden] = &[
             ("body", true, r#""#),
             // #1184: a Mind's `compose` may attach a file to the draft; the draft is then kept, not sent.
             ("attach", false, r#"Absolute path of a file to attach to the draft. A draft with a file attached cannot be sent from here yet"#),
+            // #1184: the promise a prepared draft is for, so forgetting the promise clears it.
+            ("commitment", false, r#"The promise this draft is prepared for, so forgetting the promise clears the draft"#),
         ],
+    },
+    // #1184: clears only the draft prepared for a named, forgotten promise; the person's own Discard
+    // and Remove attachment are buttons, not actions.
+    Golden {
+        name: "forget_prepared",
+        risk: "standard",
+        description: r#"Clear the draft that was prepared for a promise that has been forgotten"#,
+        params: &[("commitment", true, r#""#)],
     },
     Golden {
         name: "begin_google_sign_in",

@@ -98,8 +98,15 @@ pub fn classify(app: &str, said: &str) -> Failed {
     {
         return Failed::Later(format!("{name} wasn't ready, so I'll try again"));
     }
+    // Email's own refusals say what they are: nothing here is a gate that would ask the person.
+    if has(&["file to attach", "only files in your home", "protected place", "no home folder"]) || lower.contains("cannot_attach") {
+        return Failed::Final(format!("{name} wouldn't take that file, so I didn't attach it"));
+    }
+    if has(&["could not be read, so it was not replaced", "could not be kept"]) {
+        return Failed::Final(format!("{name} couldn't keep the draft, so I didn't make it"));
+    }
     if lower.starts_with("refused") {
-        return Failed::Final(format!("I'm not allowed to do that in {name} without asking you"));
+        return Failed::Final(format!("I'm not allowed to do that in {name} while you're away"));
     }
     Failed::Final(format!("{name} couldn't do that"))
 }
@@ -123,7 +130,16 @@ mod tests {
     #[test]
     fn a_refusal_is_final_and_does_not_leak_the_gate_sentence() {
         let f = classify("email", "Refused: `app_action` reaches the internet and research is off.");
-        assert_eq!(f, Failed::Final("I'm not allowed to do that in Email without asking you".into()));
+        assert_eq!(f, Failed::Final("I'm not allowed to do that in Email while you're away".into()));
+    }
+
+    #[test]
+    fn email_own_refusals_get_their_own_words_not_the_reach_sentence() {
+        let f = classify("email", "The file to attach is not there.");
+        assert_eq!(f, Failed::Final("Email wouldn't take that file, so I didn't attach it".into()));
+        let f = classify("email", "The draft Yantrik prepared earlier could not be read, so it was not replaced: x");
+        assert_eq!(f, Failed::Final("Email couldn't keep the draft, so I didn't make it".into()));
+        assert!(!f.words().contains("while you're away"));
     }
 
     #[test]

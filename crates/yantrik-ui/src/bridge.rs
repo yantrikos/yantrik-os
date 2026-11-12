@@ -244,6 +244,8 @@ pub enum CompanionCommand {
     GetMorningBrief {
         reply_tx: Sender<MorningBriefSnapshot>,
     },
+    /// The person pressed a brief-card button about preparing promised things.
+    PrepAnswer { action_id: String },
     /// Shut down the worker.
     Shutdown,
 }
@@ -880,6 +882,11 @@ impl CompanionBridge {
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
         let _ = self.cmd_tx.send(CompanionCommand::GetMorningBrief { reply_tx });
         reply_rx
+    }
+
+    /// The person's click on a brief-card button about preparing promised things: their answer.
+    pub fn answer_commitment_prep(&self, action_id: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::PrepAnswer { action_id });
     }
 
     /// Record a system event in the companion's memory.
@@ -2870,7 +2877,7 @@ fn worker_loop(
                     crate::app_context::time_of_day_greeting(),
                     user_name
                 );
-                let sections: Vec<MorningBriefSectionData> = companion
+                let mut sections: Vec<MorningBriefSectionData> = companion
                     .active_context
                     .sections_by_priority()
                     .into_iter()
@@ -2907,6 +2914,7 @@ fn worker_loop(
                         }
                     })
                     .collect();
+                sections.extend(crate::commitment_brief::sections(&companion));
 
                 let snapshot = if sections.is_empty() {
                     MorningBriefSnapshot {
@@ -2924,6 +2932,11 @@ fn worker_loop(
                 };
 
                 let _ = reply_tx.send(snapshot);
+            }
+            Ok(CompanionCommand::PrepAnswer { action_id }) => {
+                if let Some(said) = companion.person_answers_commitment_prep(&action_id) {
+                    tracing::info!(said, "The person answered about preparing promised things");
+                }
             }
             Ok(CompanionCommand::RenameUser { name }) => {
                 companion.config.user_name = name.clone();

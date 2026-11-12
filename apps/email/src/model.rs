@@ -193,6 +193,8 @@ pub struct Composer {
     pub announce_unsent: Option<&'static str>,
     /// True while the draft file is being written or removed.
     pub writing: bool,
+    /// The write in flight is a save of the person's text (not a removal).
+    pub saving: bool,
     /// What to do to the draft file once the write in flight lands: only the latest.
     pub queued: Option<FileOp>,
 }
@@ -294,6 +296,13 @@ pub struct Search {
 }
 
 pub struct Model {
+    /// Started for an agent, with no window (`Boot::service`).
+    pub service: bool,
+    /// Started for an agent and only asked to `compose` so far: nothing has needed the mailbox, so
+    /// no look at the mail service has been made, and no IMAP or SMTP session opened.
+    pub compose_only: bool,
+    /// The intent that needed the mailbox before it had been looked at: it runs once the look lands.
+    pub deferred: Option<crate::command::Command>,
     /// Drawn for a Mind (`Boot::for_mind`): the window masks mail (`crate::mind_view`).
     pub for_mind: bool,
     pub mail: Arc<dyn MailService>,
@@ -340,6 +349,9 @@ pub struct Model {
 impl Model {
     pub fn new(mail: Arc<dyn MailService>, mind: Arc<dyn Mind>, files: Files, kept: Result<Option<Draft>, String>) -> Model {
         Model {
+            service: false,
+            compose_only: false,
+            deferred: None,
             for_mind: false,
             mail,
             mind,
@@ -371,6 +383,7 @@ impl Model {
                 closed_during_send: false,
                 announce_unsent: None,
                 writing: false,
+                saving: false,
                 queued: None,
             },
             setup: Setup::default(),

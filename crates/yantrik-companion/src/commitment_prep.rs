@@ -6,13 +6,15 @@
 //! the only tools it calls are `glob` and `app_action`, there is no send step, and Email publishes
 //! no action that sends. Email cannot send attachments yet either, and the item says so.
 //!
-//! It is earned, not assumed: the first time, the item only records what would be prepared and
-//! asks "Shall I get these ready for promises like this?" (`commitment_store`). Until the person
-//! says yes, nothing is opened or drafted. It does not run in incognito, and it has a switch.
+//! It is earned, not assumed: until the person says yes, the item only records what would be
+//! prepared. The question is put on their brief card, and the yes is theirs alone
+//! (`commitment_consent`): no tool or model can give it. It does not run in incognito, and it has
+//! a switch.
 //!
 //! Every step goes through [`Hands`], which is `ToolRegistry::execute`: the same permission, taint
-//! and reach gates as any other call, each step in the audit. Nothing reaches the network, so it
-//! works with research off.
+//! and reach gates as any other call, each step in the audit. Nothing here reaches the network
+//! (`glob`, and local app actions), so it works with research off. Email's `compose` starts Email
+//! without looking at the mail (no IMAP or SMTP session is opened for a draft).
 //!
 //! A step that fails for now (an app starting, Mind View briefly down, a file not saved yet) is
 //! tried again with a growing pause while the window is open; one that fails for good is said and
@@ -151,19 +153,17 @@ fn item_id(commitment_id: i64) -> String {
     format!("commitment-prep-{commitment_id}")
 }
 
-/// Record what would be prepared, and ask once. Nothing is opened or drafted.
+/// Record what would be prepared, and the question. Nothing is opened or drafted. The question is
+/// marked asked when the brief shows it (`commitment_consent::brief_actions`), not here: an item
+/// that expires unseen has asked nobody.
 fn propose(ctx: &ToolContext<'_>, c: &Commitment, files: &[NamedFile], now: f64) -> PreparedItem {
-    let first = !store::asked(&ctx.db.conn());
     let labels: Vec<&str> = files.iter().map(|f| f.label.as_str()).collect();
     let mut line = format!("{}: not prepared yet. I would open the {} in Mind View", for_promise(c), labels.join(" and the "));
     if let Some(sent) = files.iter().find(|f| f.role == Role::Attach) {
         line.push_str(&format!(" and draft the email with the {} attached", sent.label));
     }
-    line.push_str(". Nothing would be sent.");
-    if first {
-        line.push(' ');
-        line.push_str(store::QUESTION);
-    }
+    line.push_str(". Nothing would be sent. ");
+    line.push_str(store::QUESTION);
     let item = PreparedItem {
         id: item_id(c.id),
         trigger: PreparationTrigger::CommitmentDeadline { commitment_id: c.id.to_string() },
@@ -172,7 +172,7 @@ fn propose(ctx: &ToolContext<'_>, c: &Commitment, files: &[NamedFile], now: f64)
         data: json!({
             "commitment_id": c.id, "promisee": c.promisee, "deadline": c.deadline, "state": "proposed",
             "would_prepare": files.iter().map(|f| json!({ "label": f.label, "role": f.encode().split(':').next() })).collect::<Vec<_>>(),
-            "asks": first.then_some(store::QUESTION), "sent": false,
+            "asks": store::QUESTION, "sent": false,
         }),
         relevant_at: now,
         expires_at: now.max(c.deadline) + KEEP_AFTER_DEADLINE_SECS,
@@ -181,9 +181,6 @@ fn propose(ctx: &ToolContext<'_>, c: &Commitment, files: &[NamedFile], now: f64)
         created_at: now,
     };
     AnticipationEngine::store(&ctx.db.conn(), &item);
-    if first {
-        store::mark_asked(&ctx.db.conn());
-    }
     item
 }
 
@@ -281,7 +278,7 @@ fn draft_email(hands: &mut Hands<'_>, progress: &mut Progress, c: &Commitment, w
     let label = rec.label.clone();
     let to = if c.promisee.contains('@') { c.promisee.clone() } else { String::new() };
     let greeting = named(c).map(|who| format!("Hi {who},\n\n")).unwrap_or_default();
-    let args = json!({ "to": to, "subject": label, "body": format!("{greeting}Here is the {label}.\n"), "attach": path });
+    let args = json!({ "to": to, "subject": label, "body": format!("{greeting}Here is the {label}.\n"), "attach": path, "commitment": c.id.to_string() });
     match hands.act("email", "compose", args) {
         Ok(_) => {
             progress.draft = Some(DraftRecord { to, subject: label, attached: path });

@@ -9,7 +9,8 @@
 use yantrik_app::effects::Effects;
 use yantrik_app::Refused;
 
-use crate::model::{part, Model};
+use super::say;
+use crate::model::{part, FileOp, Keep, Model};
 use crate::state::{checked_attachment, save_mind_draft, clear_mind_draft, Draft, MindDraft};
 use crate::Email;
 
@@ -21,13 +22,20 @@ const PREPARED_STATUS: &str = "Draft prepared for you";
 
 const PERSON_WRITING: &str = "You have an unsent message of your own, and a draft from Yantrik would not replace it. Send or discard yours first.";
 
-/// Why a Mind's `compose` cannot start now, if the person has text of their own in the way.
-fn person_has_text(m: &Model) -> Option<&'static str> {
+/// Why a Mind's `compose` cannot start now: the person has text of their own in the way. Said only
+/// when it is true: an emptied slot, or one nobody touched, is not the person's text. Saves still
+/// in flight count, because the text in them is the person's and is not yet in `kept`.
+fn person_has_text(m: &Model) -> Option<Refused> {
     let c = &m.composer;
-    let kept = !matches!(c.kept, Ok(None));
+    let kept = matches!(&c.kept, Ok(Some(d)) if !d.is_empty());
     let open_theirs = c.open && !c.in_slot && !c.text.is_empty();
-    let edited = matches!(&c.mind, Ok(Some(slot)) if slot.touched) || (c.open && c.in_slot && edited_since_shown(m));
-    (kept || open_theirs || edited || c.unsent_at_start.is_some() || c.sending.is_some()).then_some(PERSON_WRITING)
+    let saving = c.saving || matches!(c.queued, Some(FileOp::Save { .. }));
+    let edited = matches!(&c.mind, Ok(Some(slot)) if slot.touched && !slot.text.is_empty())
+        || (c.open && c.in_slot && edited_since_shown(m));
+    if kept || open_theirs || saving || edited || c.unsent_at_start.is_some() || c.sending.is_some() {
+        return Some(Refused::new("person_is_writing", PERSON_WRITING));
+    }
+    c.kept.as_ref().err().map(|e| Refused::new("kept_unreadable", format!("Your own saved draft could not be read, so a draft from Yantrik was not started: {e}")))
 }
 
 /// The window's text is no longer what the slot holds: the person has been typing in it.
@@ -40,19 +48,24 @@ fn home() -> Option<std::path::PathBuf> {
 }
 
 /// `compose` from a Mind: a new draft in the Mind's slot, shown in the composer.
-pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach: String, fx: &mut Effects<Email>) -> Result<(), Refused> {
+pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach: String, commitment: String, fx: &mut Effects<Email>) -> Result<(), Refused> {
+    // A draft needs no account: until something needs the mailbox, no look at it is made.
+    if !m.looked {
+        m.compose_only = true;
+    }
     if let Err(e) = &m.composer.mind {
         return Err(Refused::new("draft_unreadable", format!("The draft Yantrik prepared earlier could not be read, so it was not replaced: {e}")));
     }
-    if let Some(why) = person_has_text(m) {
-        return Err(Refused::new("person_is_writing", why));
+    if let Some(refused) = person_has_text(m) {
+        return Err(refused);
     }
     let attachments = if attach.trim().is_empty() {
         Vec::new()
     } else {
         vec![checked_attachment(&attach, home().as_deref()).map_err(|e| Refused::new("cannot_attach", e))?]
     };
-    let slot = MindDraft { text: Draft { to, subject, body, ..Draft::default() }, attachments, touched: false };
+    let commitment = Some(commitment.trim().to_string()).filter(|c| !c.is_empty());
+    let slot = MindDraft { text: Draft { to, subject, body, ..Draft::default() }, attachments, touched: false, commitment };
     save_mind_draft(&m.files.mind_draft, &slot).map_err(|e| Refused::new("not_kept", format!("The draft could not be kept: {e}")))?;
     m.composer.mind = Ok(Some(slot));
     show(m, fx);
@@ -85,6 +98,10 @@ pub fn park(m: &mut Model) {
         slot.text = text;
         slot.touched = true;
     }
+    // Cancel on a slot with nothing left in it discards it: there is nothing to keep.
+    if slot.is_empty() {
+        return discard(m);
+    }
     if let Err(e) = save_mind_draft(&m.files.mind_draft, slot) {
         tracing::warn!(error = %e, "the draft Yantrik prepared could not be kept");
     }
@@ -97,5 +114,63 @@ pub fn discard(m: &mut Model) {
     m.composer.attachments.clear();
     if let Err(e) = clear_mind_draft(&m.files.mind_draft) {
         tracing::warn!(error = %e, "the prepared draft's file could not be removed");
+    }
+}
+
+/// The person's entry "Draft Yantrik prepared for Maya": opens the prepared draft in the composer.
+/// Plain Compose never does.
+pub fn open_prepared(m: &mut Model, fx: &mut Effects<Email>) {
+    if !matches!(m.composer.mind, Ok(Some(_))) {
+        return say(m, fx, "There is no draft prepared by Yantrik to open.");
+    }
+    if m.composer.open && !m.composer.in_slot && !m.composer.text.is_empty() {
+        return say(m, fx, "You have a message open. Cancel keeps it as a draft; then open the prepared one.");
+    }
+    show(m, fx);
+}
+
+/// The person's **Discard prepared draft**: the slot is emptied and its file removed. The person's
+/// own draft is not touched.
+pub fn discard_prepared(m: &mut Model, fx: &mut Effects<Email>) {
+    if !matches!(m.composer.mind, Ok(Some(_))) {
+        return;
+    }
+    let shown = m.composer.in_slot && m.composer.open;
+    discard(m);
+    if shown {
+        m.composer.open = false;
+        m.composer.text = Draft::default();
+        fx.changed(part::COMPOSE_TEXT);
+    }
+    m.composer.status.clear();
+    fx.changed(part::STATUS);
+}
+
+/// The person's **Remove attachment**: the file goes from the draft, and what is in the composer is
+/// then the person's own draft (`draft.json`), sendable like any other; what they write from here on
+/// is kept there. Refused while they have a draft of their own, which this would overwrite.
+pub fn remove_attachment(m: &mut Model, fx: &mut Effects<Email>) {
+    if !(m.composer.in_slot && m.composer.open) {
+        return say(m, fx, "Open the prepared draft first.");
+    }
+    let c = &m.composer;
+    if !matches!(c.kept, Ok(None)) || c.saving || matches!(c.queued, Some(FileOp::Save { .. })) {
+        return say(m, fx, "You have an unsent message of your own. Send or discard it first, then remove the file from this one.");
+    }
+    let text = m.composer.text.clone();
+    discard(m);
+    m.composer.status = "File removed. This is now your own draft.".into();
+    fx.changed(part::STATUS);
+    if !text.is_empty() {
+        super::drafts::file_op(m, FileOp::Save { draft: text, keep: Keep::Quietly, unsure: false, release_lane: false }, fx);
+    }
+}
+
+/// `forget_prepared`: the promise was forgotten, or its item expired. The draft prepared for it goes
+/// unless the person has made it their own by changing it; a draft prepared for another promise stays.
+pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>) {
+    let ours = matches!(&m.composer.mind, Ok(Some(slot)) if !slot.touched && slot.commitment.as_deref() == Some(commitment.trim()) && !commitment.trim().is_empty());
+    if ours {
+        discard_prepared(m, fx);
     }
 }

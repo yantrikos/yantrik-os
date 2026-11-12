@@ -28,6 +28,11 @@ fn listing() -> JobKey {
 /// The timer that asks again while mail is waiting for the credential vault. Arming it restarts it;
 /// a look that finds the vault open stops it. This is how mail resumes by itself after an unlock.
 pub const VAULT_WAIT: TimerId = TimerId("email.vault");
+
+/// An agent's start waits this long before it looks at the mail service, so a start that is only
+/// asked to `compose` is not made to open a mail session for it.
+pub const LOOK_GRACE_TIMER: TimerId = TimerId("email.look-grace");
+pub const LOOK_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 const VAULT_WAIT_EVERY: Duration = Duration::from_secs(5);
 
 /// What a job replaced before it started carries. The framework drops a replaced job's
@@ -82,6 +87,8 @@ pub fn looked(m: &mut Model, why: Look, folder: &str, loaded: Loaded, fx: &mut E
             super::drafts::offer_unsent(m, fx);
         }
     }
+    // An intent that came before the first look is answered now, from what the look found.
+    super::release_deferred(m, fx);
 }
 
 /// The credential vault is shut and the password is in it: nothing was asked of the mail server,
