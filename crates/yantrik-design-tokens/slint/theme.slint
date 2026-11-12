@@ -8,6 +8,9 @@
 // Embedded so every window — shell and apps — renders the same face on any box. Barlow for
 // UI text (three weights, normalised into one family), JetBrains Mono for anything tabular.
 // Windows opt in with `default-font-family: Theme.font-ui;`.
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-Medium.ttf";
+import "fonts/Inter-SemiBold.ttf";
 import "fonts/Barlow-Regular.ttf";
 import "fonts/Barlow-Medium.ttf";
 import "fonts/Barlow-SemiBold.ttf";
@@ -388,12 +391,26 @@ export global Theme {
     out property <color> keycap-border:     ThemeMode.dark ? #35465e : #14253b29;
     out property <color> separator:         ThemeMode.dark ? #ffffff0e : #0000000f;
     out property <color> hover-fill:        ThemeMode.dark ? #ffffff0a : #0000000a;
+    // An ordinary button at rest: a plate, not an outline. A lit face with a faint edge, as on
+    // macOS and Windows; a toolbar of 1px outlines read as a wireframe of an interface. White
+    // over the ground in dark, so it reads on every level; a near-white card in light.
+    out property <color> control-fill:         ThemeMode.dark ? #ffffff14 : #ffffffd9;
+    out property <color> control-fill-hover:   ThemeMode.dark ? #ffffff1f : #ffffff;
+    out property <color> control-fill-pressed: ThemeMode.dark ? #ffffff0d : #f1f3f6;
+    out property <color> control-edge:         ThemeMode.dark ? #ffffff1a : #14253b29;
     out property <color> hover-fill-strong: ThemeMode.dark ? #ffffff14 : #00000012;
     out property <color> tint-cyan:         ThemeMode.dark ? #38d8cd1c : #08747e17;
     out property <color> tint-amber:        ThemeMode.dark ? #d4a57414 : #b0784014;
 
     // ─── Typefaces ────────────────────────────────────────────────
-    out property <string> font-ui: "Barlow";
+    // The face every control, label and paragraph is set in. Inter: drawn for screens, with a
+    // tall x-height and open shapes that stay crisp at 12 to 14px in a renderer that neither
+    // hints nor does subpixel work, which is the software renderer every VM runs. It was Barlow,
+    // a semi-condensed face with the feel of signage: handsome large, soft at the sizes an
+    // interface is mostly made of (sharper pass, 12 Nov 2026).
+    out property <string> font-ui: "Inter";
+    // Barlow stays for the few large words the desktop says: the greeting, the lock clock.
+    out property <string> font-display: "Barlow";
     out property <string> font-mono: "JetBrains Mono";
 
     // ─── Typography scale ─────────────────────────────────────────

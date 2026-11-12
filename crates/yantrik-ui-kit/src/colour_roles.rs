@@ -446,8 +446,11 @@ fn the_approval_card_has_its_own_ground() {
     assert_eq!(token(theme, "chat-card").trim(), "ThemeMode.dark ? Theme.chat-bar : Theme.chat-raised");
     assert_eq!(hexes(token(theme, "chat-raised"))[1], "#ffffff", "white in light");
     let button = read("crates/yantrik-ui-kit/slint/y_button.slint");
-    assert!(button.contains(": root.variant != 0 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)"),
-        "the outline kind is transparent at rest, in both modes");
+    // The ordinary button is a plate of the ground's own white (dark) or a near-white card (light),
+    // so it reads on the approval card as on any other ground; bare only as a toolbar's icon.
+    assert!(button.contains(": root.variant != 0 ? (root.pressed ? Theme.control-fill-pressed : root.hovered ? Theme.control-fill-hover : root.icon-only ? transparent : Theme.control-fill)"),
+        "the ordinary kind is a plate at rest, and bare as an icon-only button");
+    assert_eq!(hexes(token(theme, "control-fill")), ["#ffffff14", "#ffffffd9"], "8% white in dark, a near-white card in light");
 }
 
 /// A day's events were told by colour (accent, amber, purple for one, two, three) and amber is
