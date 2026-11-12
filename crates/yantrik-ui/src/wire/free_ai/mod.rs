@@ -46,6 +46,34 @@ pub(crate) fn kept_and_off() -> (std::collections::BTreeSet<String>, std::collec
     (lock(&KEPT).keys().cloned().collect(), lock(&CHOICES).off.clone())
 }
 
+/// The vault values just removed are no longer kept: said at once, before the vault is read again.
+fn forget_kept(ids: &[&str]) {
+    let mut kept = lock(&KEPT);
+    for id in ids {
+        kept.remove(*id);
+    }
+}
+
+/// Change what was chosen and keep it (no key in it). The one place `CHOICES` is written.
+pub(crate) fn change_choices(change: impl FnOnce(&mut Choices)) {
+    let mut c = lock(&CHOICES);
+    change(&mut c);
+    if let Err(e) = choices::save(&choices::path(), &c) {
+        tracing::warn!(error = %e, "the free AI card's choices were not saved");
+    }
+}
+
+/// A tier switched Off becomes On, and an On one Off.
+pub(crate) fn toggle_tier(id: &str) {
+    change_choices(|c| { if !c.off.remove(id) { c.off.insert(id.to_string()); } });
+}
+
+#[cfg(test)]
+pub(crate) fn set_state_for_test(kept: &[&str], off: &[&str]) {
+    *lock(&KEPT) = kept.iter().map(|k| (k.to_string(), "…abcd".to_string())).collect();
+    lock(&CHOICES).off = off.iter().map(|o| o.to_string()).collect();
+}
+
 #[derive(Clone)]
 struct Wiring {
     ui: slint::Weak<App>,
@@ -72,7 +100,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let x = w.clone();
     g.on_unskip(move |id| x.choose(|c| { c.skipped.remove(id.as_str()); }));
     let x = w.clone();
-    g.on_toggle(move |id| x.choose(|c| { if !c.off.remove(id.as_str()) { c.off.insert(id.to_string()); } }));
+    g.on_toggle(move |id| {
+        toggle_tier(&id);
+        x.sharing_changed();
+    });
     let x = w.clone();
     g.on_remove(move |id| { lock(&SESSION).confirm_remove = Some(id.to_string()); x.render(); });
     let x = w.clone();
@@ -128,13 +159,14 @@ impl Wiring {
     }
 
     fn choose(&self, change: impl FnOnce(&mut Choices)) {
-        {
-            let mut c = lock(&CHOICES);
-            change(&mut c);
-            if let Err(e) = choices::save(&choices::path(), &c) {
-                tracing::warn!(error = %e, "the free AI card's choices were not saved");
-            }
-        }
+        change_choices(change);
+        self.render();
+    }
+
+    /// A tier switched, a key kept or removed: the account list, the catalogue, the picker and the
+    /// runs-on line are refreshed now (`ai_accounts::shared`), and the card is drawn again.
+    fn sharing_changed(&self) {
+        crate::ai_accounts::shared::sharing_changed(self.bridge.clone());
         self.render();
     }
 
@@ -223,6 +255,8 @@ impl Wiring {
                 lock(&CHOICES).stage.remove(&provider);
                 let _ = choices::save(&choices::path(), &lock(&CHOICES));
                 tracing::info!(provider = %provider, "a free AI key was checked with its provider and kept in the vault");
+                // Offered at once, not at the next restart.
+                crate::ai_accounts::shared::sharing_changed(x.bridge.clone());
             }
         });
         if spawned.is_err() {
@@ -236,6 +270,7 @@ impl Wiring {
         let x = self.clone();
         let _ = std::thread::Builder::new().name("free-ai-remove".into()).spawn(move || {
             let ids: Vec<&str> = yantrik_ml::provider::pool::signup::signup(&id).map(|s| s.values.iter().map(|v| v.id).collect()).unwrap_or_default();
+            let all_ids = ids.clone();
             let mut failed = None;
             for value_id in ids {
                 match x.bridge.provider_keys(Op::Remove { id: value_id.to_string() }, WORKER_TIMEOUT) {
@@ -245,12 +280,17 @@ impl Wiring {
                 }
             }
             match failed {
-                None => tracing::info!(provider = %id, "a free AI key was removed from the vault"),
+                None => {
+                    tracing::info!(provider = %id, "a free AI key was removed from the vault");
+                    forget_kept(&all_ids);
+                }
                 Some(why) => {
                     tracing::warn!(provider = %id, "a free AI key could not be removed");
                     lock(&SESSION).rejected.insert(id.clone(), why.to_string());
                 }
             }
+            // Some values may be gone even when one failed: the vault is read, not assumed.
+            crate::ai_accounts::shared::sharing_changed(x.bridge.clone());
             x.refresh();
         });
         self.render();
