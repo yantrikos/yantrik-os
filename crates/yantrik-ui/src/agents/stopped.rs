@@ -40,14 +40,16 @@ pub fn reading(heard: Heard) -> Option<State> {
 /// after all. An agent with a command the shell still runs for it stays `stopping`: it is not at
 /// rest. Called on the Agents tick.
 pub fn settle(host: &Host) {
-    settle_with(|agent, turns| host.stop_heard(agent, turns));
+    settle_with(|_| true, |agent, turns| host.stop_heard(agent, turns));
 }
 
-fn settle_with(heard_of: impl Fn(&AgentId, &[u64]) -> Heard) {
+/// `settle`, for the agents `only` names. The store is one per process, so a test settles its own
+/// agents and never another test's that runs beside it.
+fn settle_with(only: impl Fn(&AgentId) -> bool, heard_of: impl Fn(&AgentId, &[u64]) -> Heard) {
     let unsettled: Vec<(AgentId, State, bool)> = super::store().read(|s| {
         s.agents()
             .iter()
-            .filter(|a| matches!(a.state, State::Stopping | State::StoppedWaiting))
+            .filter(|a| matches!(a.state, State::Stopping | State::StoppedWaiting) && only(&a.meta.id))
             .map(|a| (a.meta.id.clone(), a.state, a.cards().any(|c| c.running())))
             .collect()
     });
@@ -104,17 +106,17 @@ mod tests {
     fn settle_reads_stopped_waiting_after_the_grace_and_upgrades_when_the_harness_closes() {
         let agent = stopped_agent("settle-grace");
         note(&agent, vec![7]);
-        settle_with(|_, _| Heard::Waiting);
+        settle_with(|a| *a == agent, |_, _| Heard::Waiting);
         assert_eq!(state_of(&agent), State::Stopping, "within the grace: still stopping, as the Lens says");
-        settle_with(|_, _| Heard::Unknown);
+        settle_with(|a| *a == agent, |_, _| Heard::Unknown);
         assert_eq!(state_of(&agent), State::StoppedWaiting, "grace over, flight open");
-        settle_with(|_, _| Heard::Unknown);
+        settle_with(|a| *a == agent, |_, _| Heard::Unknown);
         assert_eq!(state_of(&agent), State::StoppedWaiting, "and it stays so");
-        settle_with(|_, _| Heard::Yes);
+        settle_with(|a| *a == agent, |_, _| Heard::Yes);
         assert_eq!(state_of(&agent), State::Stopped, "the harness closed the turn after all");
 
         let restarted = stopped_agent("settle-restart");
-        settle_with(|_, _| panic!("no record of the Stop: the host is not asked"));
+        settle_with(|a| *a == restarted, |_, _| panic!("no record of the Stop: the host is not asked"));
         assert_eq!(state_of(&restarted), State::StoppedWaiting);
     }
 
@@ -128,10 +130,10 @@ mod tests {
         store.command_started(&agent, "j1", "make", "/tmp");
         store.close_turn_stopped(&agent);
         note(&agent, vec![9]);
-        settle_with(|_, _| Heard::Yes);
+        settle_with(|a| *a == agent, |_, _| Heard::Yes);
         assert_eq!(state_of(&agent), State::Stopping, "the command runs on: not Stopped, so not idle on the wire");
         store.command_finished(&agent, "j1", "make", Some(0), false);
-        settle_with(|_, _| Heard::Yes);
+        settle_with(|a| *a == agent, |_, _| Heard::Yes);
         assert_eq!(state_of(&agent), State::Stopped, "at rest once the command ended");
     }
 }
