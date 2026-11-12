@@ -593,6 +593,22 @@ class Words(unittest.TestCase):
         for label in ("Order history", "Sign in", "Accept all", "Search", "Sender name", "Deals"):
             self.assertIsNone(commit.reads_as_commitment(label), label)
 
+    def test_a_link_target_reads_as_what_it_is_from_this_page(self):
+        here = "https://news.example.com/top"
+        self.assertEqual(drv.fold_target("https://news.example.com/pages/other.html", here),
+                         "/pages/other.html")
+        self.assertEqual(drv.fold_target("https://www.hn.example.com/item?id=12", here),
+                         "hn.example.com/item?id=12")
+        self.assertEqual(drv.fold_target("#top", here), drv.THIS_PAGE)
+        self.assertEqual(drv.fold_target("https://news.example.com", here), drv.THIS_PAGE)
+        self.assertEqual(drv.fold_target("https://www.example.com/", here), "example.com/")
+        # A tracking URL is shortened at a whole path segment, never cut through one.
+        path = "/archive/" + "/".join("story%02d" % n for n in range(12))
+        long = drv.fold_target("https://news.example.com" + path
+                               + "?utm_source=newsletter&utm_medium=email", here)
+        self.assertTrue(long.endswith("…") and len(long) <= drv.TARGET_CAP, long)
+        self.assertTrue(path.startswith(long[:-1]) and long[-2] != "/", long)
+
 
 class FakeBrowser:
     """A cdp.Browser that becomes ready on schedule: connect() is refused `fails` times then
