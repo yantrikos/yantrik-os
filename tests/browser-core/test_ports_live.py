@@ -69,7 +69,7 @@ class Fixture:
         self.http = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
         self.site = "http://127.0.0.1:%d" % self.http.server_address[1]
-        self.procs = []
+        self.procs, self.streams = [], []
         self.hub = pipes.Pipes()           # both browsers' streams, as the service holds them
 
     def start(self, who, profile="default", as_side=None, give=True):
@@ -85,7 +85,8 @@ class Fixture:
         log = open(os.path.join(self.home, "%s-%d.log" % (who, len(self.procs))), "wb")
         proc, mine = pipe_chrome.launch(chrome(), args, log, env=dict(os.environ))
         self.procs.append(proc)
-        self.stream = mine                   # our end: kept open while the browser runs
+        self.stream = mine                   # our end: kept open while the browser runs (it exits when the stream ends)
+        self.streams.append(mine)
         if give:
             self.hub.give(as_side or SIDE[who], mine, proc.pid)
         return proc
