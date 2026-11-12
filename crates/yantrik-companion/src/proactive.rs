@@ -314,18 +314,11 @@ impl ProactiveEngine {
             }
             "conflict_alerting" | "memoryweaver" => {
                 // Internal housekeeping urges — only deliver if instinct provided
-                // a concrete suggested_message (e.g. milestone celebrations).
+                // a concrete suggested_message (e.g. a scheduled summary).
                 if msg.is_empty() {
                     return String::new();
                 }
                 msg.clone()
-            }
-            "bond_milestone" | "bondmilestone" => {
-                if msg.is_empty() {
-                    reason.clone()
-                } else {
-                    msg.clone()
-                }
             }
             "scheduler" => {
                 if msg.is_empty() {

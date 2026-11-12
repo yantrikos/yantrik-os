@@ -43,6 +43,8 @@ use crate::resonance::ResonanceEngine;
 use crate::query_planner::{self, PlanDecision};
 use crate::urges::UrgeQueue;
 
+mod bond_service;
+
 /// Core tools always included in the LLM prompt — no discover_tools needed for these.
 /// These cover the most common user needs. Everything else is discoverable.
 /// Tools ALWAYS sent on every request (tiny set — the model's core abilities).
@@ -1127,7 +1129,7 @@ impl CompanionService {
                 let is_core = matches!(
                     name,
                     // Exact name() values from each instinct impl
-                    "scheduler" | "automation" | "BondMilestone" | "SelfAwareness"
+                    "scheduler" | "automation" | "SelfAwareness"
                     | "morning_brief" | "activity_reflector" | "serendipity"
                     | "Aftermath" | "SocraticSpark" | "EveningReflection"
                     | "ConversationalCallback" | "SilenceReveal"
@@ -4070,30 +4072,6 @@ impl CompanionService {
         // The person is here, talking — to whichever mind. `idle_seconds` is what the
         // companion's own instincts read before speaking unprompted.
         self.last_interaction_ts = now_ts();
-    }
-
-    /// Write down one receipt — a thing the person did — and take the level it gives. Nothing
-    /// else changes the bond.
-    pub fn record_bond_receipt(&mut self, receipt: &crate::bond::Receipt) {
-        if !self.config.bond.enabled || self.incognito {
-            return;
-        }
-        let conn = self.db.conn();
-        BondTracker::record_receipt(&conn, receipt);
-        let state = BondTracker::get_state(&conn);
-        drop(conn);
-        self.bond_level = state.bond_level;
-        self.bond_score = state.bond_score;
-    }
-
-    /// The table of what each app was asked and answered, for `describe` and `yos`.
-    pub fn bond_table(&self) -> Vec<crate::bond::BondRow> {
-        crate::bond_table::rows(&self.db.conn())
-    }
-
-    /// Why the score last fell, newest first.
-    pub fn bond_why_it_fell(&self, limit: usize) -> Vec<String> {
-        BondTracker::why_it_fell(&self.db.conn(), limit)
     }
 
     /// Get current bond level.

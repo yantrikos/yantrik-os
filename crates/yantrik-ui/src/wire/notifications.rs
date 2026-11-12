@@ -320,7 +320,7 @@ fn wire_toasts(ui: &App) {
         if let Some(harness) = id.strip_prefix(crate::wire::harness_provider::WIRED_TOAST) {
             if action_id == "undo" {
                 crate::wire::harness_provider::undo_wired(harness);
-                crate::bond_receipts::undone(harness, "models", "wire_harness");
+                crate::bond_receipts::undone("models", "wire_harness");
             }
             if let Some(ui) = weak.upgrade() {
                 crate::wire::toast::remove(&ui, &id);

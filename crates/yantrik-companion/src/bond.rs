@@ -23,7 +23,8 @@ use rusqlite::{params, Connection};
 
 // Re-export data types from core
 pub use yantrik_companion_core::bond::{
-    BondLevel, BondRow, BondState, Receipt, ReceiptKind, OFFER_CLEAN_STREAK, SCORE_CEILING,
+    ActionFacts, BondLevel, BondRow, BondState, Receipt, ReceiptKind, ScoreFold, OFFER_CLEAN_STREAK,
+    PAIR_RISE_CAP, RECEIPT_RETENTION_DAYS, SCORE_CEILING,
 };
 
 /// The `bond_events.event_type` a receipt is stored under.
@@ -67,6 +68,7 @@ impl BondTracker {
             CREATE INDEX IF NOT EXISTS idx_bond_events_created ON bond_events(created_at);",
         )
         .expect("failed to create bond tables");
+        Self::drop_old_receipts(conn);
     }
 
     /// The bond as the receipts have it.
@@ -102,37 +104,50 @@ impl BondTracker {
         }
     }
 
-    /// The score and how many receipts it is made of: each receipt in the order it happened,
-    /// the running total held between zero and [`SCORE_CEILING`]. Time never enters.
+    /// The score and how many receipts it is made of (see [`ScoreFold`]).
     fn receipt_score(conn: &Connection) -> (f64, i64) {
+        // Order by `rowid` alone: the order they were written in. A clock stepped back must not
+        // move a refusal ahead of older allows.
         let Ok(mut stmt) = conn.prepare(
-            "SELECT delta FROM bond_events WHERE event_type = ?1 ORDER BY created_at, rowid",
+            "SELECT delta, json_extract(context, '$.app'), json_extract(context, '$.action')
+             FROM bond_events WHERE event_type = ?1 ORDER BY rowid",
         ) else {
             return (0.0, 0);
         };
-        let Ok(deltas) = stmt.query_map(params![RECEIPT_EVENT], |row| row.get::<_, f64>(0)) else {
+        let Ok(found) = stmt.query_map(params![RECEIPT_EVENT], |row| {
+            Ok((row.get::<_, f64>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?))
+        }) else {
             return (0.0, 0);
         };
-        deltas
-            .flatten()
-            .fold((0.0, 0), |(score, n), d| ((score + d).clamp(0.0, SCORE_CEILING), n + 1))
+        let mut fold = ScoreFold::default();
+        for (delta, app, action) in found.flatten() {
+            fold.add(delta, app.as_deref().unwrap_or(""), action.as_deref().unwrap_or(""));
+        }
+        fold.finish()
     }
 
     /// Write down one receipt. Returns `false` when a receipt from the same record is already
-    /// there: the same press is counted once. A receipt that lowers the score carries the
-    /// sentence that says why.
+    /// there: the same press is counted once. A receipt with no record of its own (an undo) is
+    /// given a fresh id, so each one counts. A receipt that lowers the score carries the sentence
+    /// that says why. Receipts past [`RECEIPT_RETENTION_DAYS`] are dropped as this one is written.
     pub fn record_receipt(conn: &Connection, receipt: &Receipt) -> bool {
-        let event_id = if receipt.source_id.is_empty() {
+        Self::drop_old_receipts(conn);
+        let source_id = if receipt.source_id.is_empty() {
             uuid7::uuid7().to_string()
         } else {
-            format!("{RECEIPT_EVENT}:{}:{}", receipt.kind.as_str(), receipt.source_id)
+            receipt.source_id.clone()
         };
+        let event_id = format!("{RECEIPT_EVENT}:{}:{source_id}", receipt.kind.as_str());
         let context = serde_json::json!({
             "kind": receipt.kind.as_str(),
             "app": receipt.app,
             "action": receipt.action,
-            "leaves_machine": receipt.leaves_machine,
-            "source_id": receipt.source_id,
+            "grade": receipt.facts.grade,
+            "cannot_be_undone": receipt.facts.cannot_be_undone,
+            "open_ended": receipt.facts.open_ended,
+            "fetches_address": receipt.facts.fetches_address,
+            "leaves_machine": receipt.facts.leaves_machine,
+            "source_id": source_id,
             "why": receipt.why_it_fell(),
         })
         .to_string();
@@ -145,11 +160,29 @@ impl BondTracker {
         .unwrap_or(false)
     }
 
+    /// Forget every receipt: the person's own act, from a button and nowhere else. The score
+    /// returns to Stranger and the table empties. The old counters and presence stay. Returns
+    /// how many were dropped.
+    pub fn forget_receipts(conn: &Connection) -> usize {
+        conn.execute("DELETE FROM bond_events WHERE event_type = ?1", params![RECEIPT_EVENT]).unwrap_or(0)
+    }
+
+    /// Drop receipts older than [`RECEIPT_RETENTION_DAYS`]. The only way time touches the score,
+    /// and it only forgets: reading never moves it.
+    fn drop_old_receipts(conn: &Connection) {
+        let cutoff = now_ts() - RECEIPT_RETENTION_DAYS as f64 * 86_400.0;
+        conn.execute(
+            "DELETE FROM bond_events WHERE event_type = ?1 AND created_at < ?2",
+            params![RECEIPT_EVENT, cutoff],
+        )
+        .ok();
+    }
+
     /// Why the score fell, newest first: the sentence stored with each receipt that lowered it.
     pub fn why_it_fell(conn: &Connection, limit: usize) -> Vec<String> {
         let Ok(mut stmt) = conn.prepare(
             "SELECT json_extract(context, '$.why') FROM bond_events
-             WHERE event_type = ?1 AND delta < 0 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+             WHERE event_type = ?1 AND delta < 0 ORDER BY rowid DESC LIMIT ?2",
         ) else {
             return Vec::new();
         };

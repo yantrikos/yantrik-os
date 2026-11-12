@@ -17,7 +17,7 @@ pub fn default_category(instinct_name: &str) -> InstinctCategory {
             InstinctCategory::Wellbeing
         }
         "Humor" | "ConnectionWeaver" | "ContextBridge" | "RelationshipRadar"
-        | "ConversationalCallback" | "BondMilestone" | "QuestionAsking" => {
+        | "ConversationalCallback" | "QuestionAsking" => {
             InstinctCategory::Social
         }
         "SkillForge" | "MentorMatch" | "FutureSelf" | "GrowthMirror"
@@ -39,7 +39,7 @@ pub fn default_time_sensitivity(instinct_name: &str) -> TimeSensitivity {
         // Tier 1: Today
         "morning_brief" | "GoalKeeper" | "NightOwl" | "EmailWatch"
         | "EmotionalAwareness" | "Aftermath" | "EveningReflection"
-        | "BondMilestone" | "CognitiveLoad" | "PredictiveWorkflow"
+        | "CognitiveLoad" | "PredictiveWorkflow"
         | "weather_watch" | "WeatherWatch" | "ConflictAlerting" | "Cortex"
         | "open_loops_guardian" => TimeSensitivity::Today,
         // Tier 2: Soon

@@ -91,6 +91,9 @@ struct Browser {
     model: Rc<VecModel<FileEntry>>,
     clipboard: Option<Clipboard>,
     undo: Vec<String>,
+    /// Whether a Mind trashed what `undo` would put back; the person's Undo on that is a bond
+    /// receipt, on what they trashed themselves it is not.
+    undo_by_mind: bool,
     generation: u64,
     preview: u64,
     listing_cancel: Option<Arc<AtomicBool>>,
@@ -465,6 +468,9 @@ impl Browser {
             set_notice(ui, "A file operation is already running. Wait or cancel it first.", None);
             return;
         }
+        if matches!(job, Job::Trash(_)) {
+            self.undo_by_mind = crate::shell_view::asked_by_mind();
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.job_cancel = Some(cancel.clone());
         let sink = self.sink.clone();
@@ -789,6 +795,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         model,
         clipboard: None,
         undo: vec![],
+        undo_by_mind: false,
         generation: 0,
         preview: 0,
         listing_cancel: None,
@@ -1092,6 +1099,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     bind!(on_file_undo_trash, |u, s| {
         let ids = s.undo.clone();
         if !ids.is_empty() {
+            if s.undo_by_mind && !crate::shell_view::asked_by_mind() {
+                crate::bond_receipts::undone("files", "trash");
+            }
             s.job(&u, Job::Undo(ids));
         }
     });

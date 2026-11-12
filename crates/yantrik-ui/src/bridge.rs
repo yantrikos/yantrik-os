@@ -116,6 +116,9 @@ pub enum CompanionCommand {
     /// One thing the person did — a card answered, a For-you item marked, something undone.
     /// The only way the bond moves; it is written on this thread, where the store lives.
     BondReceipt(yantrik_companion::bond::Receipt),
+    /// The person's "forget the bond history". Sent only from a UI callback
+    /// (`bond_receipts::forget`), never from the control socket.
+    ForgetBondHistory,
     /// Reload the LLM backend from a new provider config.
     /// Used when user adds/edits a provider in settings.
     ReloadLLM {
@@ -823,6 +826,11 @@ impl CompanionBridge {
     /// Hand the companion one receipt: a thing the person did. The only way the bond moves.
     pub fn bond_receipt(&self, receipt: yantrik_companion::bond::Receipt) {
         let _ = self.cmd_tx.send(CompanionCommand::BondReceipt(receipt));
+    }
+
+    /// Forget every bond receipt. The person's own button only.
+    pub fn forget_bond_history(&self) {
+        let _ = self.cmd_tx.send(CompanionCommand::ForgetBondHistory);
     }
 
     /// Request bond data.
@@ -1750,6 +1758,11 @@ fn worker_loop(
             }
             Ok(CompanionCommand::NoteConversationTurn) => {
                 companion.note_conversation_turn();
+                push_bond(&companion, &ui_weak);
+            }
+            Ok(CompanionCommand::ForgetBondHistory) => {
+                companion.forget_bond_history();
+                cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
                 push_bond(&companion, &ui_weak);
             }
             Ok(CompanionCommand::BondReceipt(receipt)) => {
@@ -3109,7 +3122,6 @@ pub fn instinct_color(name: &str) -> slint::Color {
         "reminder" => slint::Color::from_rgb_u8(0x8B, 0xE8, 0x6B),             // soft green
         "pattern_surfacing" => slint::Color::from_rgb_u8(0xC4, 0x8B, 0xE8),    // lavender
         "conflict_alerting" => slint::Color::from_rgb_u8(0xE8, 0xA0, 0x6B),    // orange
-        "bond_milestone" => slint::Color::from_rgb_u8(0xE8, 0xD4, 0x6B),       // gold
         "self_awareness" => slint::Color::from_rgb_u8(0x6B, 0xE8, 0xC4),       // teal
         "humor" => slint::Color::from_rgb_u8(0xE8, 0x6B, 0xC4),                // pink
         _ => slint::Color::from_rgb_u8(0xD4, 0xA0, 0x3C),                      // default amber

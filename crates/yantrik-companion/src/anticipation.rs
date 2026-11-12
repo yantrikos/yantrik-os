@@ -225,8 +225,12 @@ impl AnticipationEngine {
 
     /// Record the outcome of a prepared item.
     ///
-    /// The person using an item is a receipt for the bond, and so is dismissing it; an item
-    /// that merely expired or went unnoticed is neither, so it moves nothing.
+    /// The person using an item is a receipt for the bond. Dismissing one is often just "not
+    /// now", and an item that expired or went unnoticed says nothing either, so those move
+    /// nothing.
+    ///
+    /// Nothing in the product calls this yet: the executor that opens a prepared item is #1184
+    /// (PR #1186). The rise it feeds is blocked on that.
     pub fn record_outcome(conn: &Connection, id: &str, outcome: PrepOutcome) {
         let changed = conn
             .execute(
@@ -236,20 +240,10 @@ impl AnticipationEngine {
             .unwrap_or(0);
         let kind = match outcome {
             PrepOutcome::Useful => ReceiptKind::PreparedUsed,
-            PrepOutcome::Dismissed => ReceiptKind::ForYouNotUseful,
-            PrepOutcome::Ignored | PrepOutcome::Expired => return,
+            PrepOutcome::Dismissed | PrepOutcome::Ignored | PrepOutcome::Expired => return,
         };
         if changed > 0 {
-            BondTracker::record_receipt(
-                conn,
-                &Receipt {
-                    kind,
-                    app: String::new(),
-                    action: String::new(),
-                    leaves_machine: false,
-                    source_id: id.to_string(),
-                },
-            );
+            BondTracker::record_receipt(conn, &Receipt::bare(kind, id));
         }
     }
 
@@ -459,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn using_an_item_raises_the_bond_and_dismissing_it_lowers_it_and_a_lapse_moves_nothing() {
+    fn using_an_item_raises_the_bond_and_dismissing_or_a_lapse_moves_nothing() {
         let conn = setup();
         BondTracker::ensure_tables(&conn);
         let now = now_ts();
@@ -491,10 +485,11 @@ mod tests {
 
         stage("no");
         AnticipationEngine::record_outcome(&conn, "no", PrepOutcome::Dismissed);
-        assert!(score() < earned);
+        assert_eq!(score(), earned, "a dismissal is often just \"not now\": no receipt, no false reason");
+        assert!(BondTracker::why_it_fell(&conn, 10).is_empty());
 
         AnticipationEngine::record_outcome(&conn, "used0", PrepOutcome::Useful);
-        assert_eq!(BondTracker::get_state(&conn).receipts, 4, "the same item is counted once");
+        assert_eq!(BondTracker::get_state(&conn).receipts, 3, "the same item is counted once");
     }
 
     #[test]

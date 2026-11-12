@@ -217,6 +217,10 @@ export component App inherits Window {
     /// Never offered for `dangerous` or for an action the app says cannot be undone.
     callback approval-allow-session(string);
     callback approval-deny(string);
+    /// The person's "forget the bond history": drops every bond receipt, the table and the offers.
+    /// A button's callback and nothing else; the control surface has no action for it, so no mind
+    /// can press it (crates/yantrik-ui/src/bond_receipts.rs). The Bond screen draws the button.
+    callback forget-bond-history();
 
     // ── Agents glue: the Lens's "open in Agents" (crates/yantrik-ui/src/wire/agents.rs) ──
     in property <bool> lens-can-open-in-agents: false;

@@ -86,7 +86,7 @@ pub fn enforce(on: bool, bridge: &Arc<CompanionBridge>) {
         // What was waiting for an answer from the person on an agent's behalf is withdrawn: an
         // Allow pressed during Private mode would be an agent acting in it.
         for card in crate::approvals::pending() {
-            let _ = crate::approvals::deny(&card.id);
+            let _ = crate::approvals::withdraw(&card.id);
         }
         // The agents' commands, which run as the person, stop.
         crate::control_agent_terminal::shutdown();

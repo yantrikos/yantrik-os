@@ -426,7 +426,6 @@ const FILE_LISTING_CAP: usize = 40;
 struct DescribedBond {
     loaded: bool,
     level: serde_json::Value,
-    score: serde_json::Value,
     interactions: serde_json::Value,
 }
 
@@ -443,14 +442,12 @@ fn describe_bond(bond: &crate::BondData) -> DescribedBond {
         return DescribedBond {
             loaded: false,
             level: serde_json::Value::Null,
-            score: serde_json::Value::Null,
             interactions: serde_json::Value::Null,
         };
     }
     DescribedBond {
         loaded: true,
         level: bond.bond_level.to_string().into(),
-        score: (bond.bond_score as f64).into(),
         interactions: bond.total_interactions.into(),
     }
 }
@@ -511,7 +508,7 @@ pub fn publish(
             }
 
             let bond = describe_bond(&ui.get_bond_data());
-            let (bond_table, bond_offers, bond_why_it_fell) = crate::bond_describe::describe();
+            let bond_table = crate::bond_describe::table_for_minds();
 
             // From the launch registry, not the Slint window-list model. The model is only
             // refreshed while the desktop screen is showing, so a describe from any other screen
@@ -924,16 +921,13 @@ pub fn publish(
                 // `describe_bond`. `bond_loaded` says which of the two a reader is looking at.
                 .with("bond_loaded", bond.loaded)
                 .with("bond", bond.level)
-                .with("bond_score", bond.score)
-                // The count as well as the score: the score caps at 5.0, and on a machine
-                // that reached it a reader has no other way to see a turn being counted.
+                // The level, never the score: a number a Mind could quote at the person.
                 .with("bond_interactions", bond.interactions)
-                // What each app was asked, for each action, and what the person answered: the
-                // table, the offers it has earned, and why trust last fell. Receipts only
-                // (`bond_describe`); an offer is applied only by the person's own press.
+                // What each app was asked, for each action, and what the person answered: counts
+                // and whether it still asks, from receipts (`bond_describe`). The offers, the
+                // reasons trust fell and the receipt ids are the desktop's own to read, not a
+                // Mind's.
                 .with("bond_table", bond_table)
-                .with("bond_offers", bond_offers)
-                .with("bond_why_it_fell", bond_why_it_fell)
                 .with("active_project", ui.get_active_project().to_string())
                 // The time told in full — date, weekday, time, UTC offset, zone — so a mind
                 // learning what day it is is a read rather than an act: `agent_run date` is
@@ -2918,9 +2912,9 @@ mod bond_not_loaded_tests {
         let d = super::describe_bond(&unloaded);
         assert!(!d.loaded, "nothing has been pushed, so the bond is not loaded");
         assert!(
-            d.level.is_null() && d.score.is_null() && d.interactions.is_null(),
-            "and no level, score or count is reported in its place: got {:?} / {:?} / {:?}",
-            d.level, d.score, d.interactions
+            d.level.is_null() && d.interactions.is_null(),
+            "and no level or count is reported in its place: got {:?} / {:?}",
+            d.level, d.interactions
         );
 
         let pushed = crate::BondData {
@@ -2933,7 +2927,6 @@ mod bond_not_loaded_tests {
         let d = super::describe_bond(&pushed);
         assert!(d.loaded);
         assert_eq!(d.level, "Partner-in-Crime");
-        assert_eq!(d.score, 5.0);
         assert_eq!(d.interactions, 155);
     }
 }
