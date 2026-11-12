@@ -20,6 +20,7 @@ import json
 import os
 import stat
 import sys
+import time
 from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -74,6 +75,42 @@ def _refuse_link(path):
         pass
 
 
+def _keep_live_model(path, kept, data):
+    """A kept section that this tool did not write (no `made_by` mark) is adopted, never replaced. If the
+    live `model` section differs from it and is not the gateway's own, that section is the person's newer
+    work: copy it, with the config's mode and owner, to `<config>.model-replaced-<unix time>.json`
+    (exclusive, never over an earlier copy), and name it in the kept file so Revert can say so (#1201)."""
+    try:
+        with open(kept, encoding="utf-8") as f:
+            before = json.load(f)
+    except (OSError, ValueError):
+        return
+    if before.get("made_by") == "apply" or before.get("replaced"):
+        return
+    live = data.get("model")
+    if live == before.get("model") or (isinstance(live, dict) and is_gateway(str(live.get("base_url", "")))):
+        return
+    st = os.stat(path)
+    now = int(time.time())
+    for n in range(1000):
+        copy = "%s.model-replaced-%d%s.json" % (path, now, "" if n == 0 else "-%d" % n)
+        try:
+            fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"had": "model" in data, "model": live}, f)
+        os.chmod(copy, stat.S_IMODE(st.st_mode))
+        if hasattr(os, "chown") and (os.stat(copy).st_uid, os.stat(copy).st_gid) != (st.st_uid, st.st_gid):
+            os.chown(copy, st.st_uid, st.st_gid)
+        before["adopted"] = True
+        before["replaced"] = copy
+        with open(kept, "w", encoding="utf-8") as f:
+            json.dump(before, f)
+        return
+    raise ModelError("could not find a free name to keep a copy of the model section; nothing was changed")
+
+
 def apply(path, spec):
     """Set the four `model` keys in the file at `path`, keeping the earlier section once."""
     _refuse_link(path)
@@ -83,7 +120,9 @@ def apply(path, spec):
         had = "model" in data
         fd = os.open(kept, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"had": had, "model": data.get("model")}, f)
+            json.dump({"had": had, "model": data.get("model"), "made_by": "apply"}, f)
+    else:
+        _keep_live_model(path, kept, data)
     model = data.get("model")
     # An older config names the model as a bare string; it becomes the mapping Hermes reads now.
     if not isinstance(model, dict):
@@ -107,7 +146,10 @@ def revert(path):
     else:
         data.pop("model", None)
     hermes_config._write(path, data, text)
-    os.unlink(kept)
+    # A kept section this tool did not make is not this tool's to delete.
+    if not before.get("adopted"):
+        os.unlink(kept)
+    return before.get("replaced")
 
 
 def _revert_from_before_the_move(path):
@@ -134,13 +176,16 @@ def main(argv):
     try:
         if argv[1] == "apply":
             apply(argv[2], parse(sys.stdin.read(MAX_BODY + 1)[:MAX_BODY]))
+            replaced = None
         else:
-            revert(argv[2])
+            replaced = revert(argv[2])
     except (ModelError, hermes_config.ConfigError, OSError) as exc:
         # Our own words; the settings (which hold a token) are never in one.
         print(exc, file=sys.stderr)
         return 1
     print("Hermes's model settings %s" % ("now point at Yantrik models" if argv[1] == "apply" else "are back as they were"))
+    if argv[1] == "revert" and replaced:
+        print("Your model settings from before this change are also kept at %s" % replaced)
     return 0
 
 

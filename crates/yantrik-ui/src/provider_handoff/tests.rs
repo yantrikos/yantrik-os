@@ -225,7 +225,7 @@ fn revert_refuses_a_record_naming_files_it_never_writes_and_moves_nothing() {
     let victim = home.0.join("important.txt");
     std::fs::write(&victim, "keep me").unwrap();
     let mut m = marker(&home.0, "deepseek").unwrap();
-    m.files.push(Touched { path: victim.clone(), backup: None });
+    m.files.push(Touched { path: victim.clone(), backup: None, adopted: false, replaced: None });
     std::fs::write(marker_path(&home.0, "deepseek"), serde_json::to_string(&m).unwrap()).unwrap();
     let err = revert(&home.0, "deepseek").unwrap_err();
     assert!(err.contains("never writes"), "{err}");
@@ -586,11 +586,11 @@ fn revert_after_hermes_moved_skips_the_config_it_had_in_the_persons_home_but_not
         provider_name: "Yantrik".into(),
         model: "picked".into(),
         at: String::new(),
-        files: vec![Touched { path: config.clone(), backup: Some(backup_path(&config)) }],
+        files: vec![Touched { path: config.clone(), backup: Some(backup_path(&config)), adopted: false, replaced: None }],
     };
     assert!(apply::files_to_restore(&m, adapter, &home.0, true).unwrap().is_empty(), "nothing to put back");
     // A marker naming anything else is still refused, moved or not.
-    m.files.push(Touched { path: home.0.join("important.txt"), backup: None });
+    m.files.push(Touched { path: home.0.join("important.txt"), backup: None, adopted: false, replaced: None });
     let err = apply::files_to_restore(&m, adapter, &home.0, true).unwrap_err();
     assert!(err.contains("never writes"), "{err}");
     // And a Hermes that has not moved keeps writing its file back.

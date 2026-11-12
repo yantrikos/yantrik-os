@@ -1707,8 +1707,8 @@ pub fn publish(
             .arg(Param::text("harness").describe("Harness id with can_revert_provider")),
             move |args| {
                 let harness = args["harness"].as_str().unwrap_or_default().trim().to_string();
-                crate::wire::harness_provider::revert(&harness)?;
-                Ok(serde_json::json!({ "reverted": harness }))
+                let note = crate::wire::harness_provider::revert(&harness)?;
+                Ok(serde_json::json!({ "reverted": harness, "note": note }))
             },
         )
         .action(

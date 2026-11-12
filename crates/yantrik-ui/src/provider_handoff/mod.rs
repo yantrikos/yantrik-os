@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+mod replaced;
 pub(crate) use apply::{apply, backup_path, revert};
 use crate::private_file::{self, Publish};
 use crate::wire::settings::ProviderStoreEntry;
@@ -215,6 +216,20 @@ pub(crate) struct Touched {
     pub path: PathBuf,
     /// The person's own file, kept aside the first time; `None` when there was none.
     pub backup: Option<PathBuf>,
+    /// The backup was found, not made: no marker named it. Revert puts its content back but never deletes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adopted: bool,
+    /// Where the live file was kept (`.yantrik-replaced-*`) when it differed from an adopted backup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<PathBuf>,
+}
+
+impl Marker {
+    /// A sentence naming the copy of the person's newer config that was kept, if one was.
+    pub(crate) fn replaced_note(&self) -> Option<String> {
+        let copies: Vec<String> = self.files.iter().filter_map(|t| t.replaced.as_ref()).map(|p| replaced::sentence(p)).collect();
+        (!copies.is_empty()).then(|| copies.join(" "))
+    }
 }
 
 /// A harness that can be given a provider.
@@ -476,3 +491,5 @@ fn display(path: &Path, home: &Path) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod replaced_tests;

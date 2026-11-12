@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use super::{
     adapter_for, Handoff, companion, hermes, marker, marker_path, mind, own_models_path, Marker, Plan, Touched, GATEWAY_ID,
 };
+use super::replaced;
 use crate::private_file::{self, Publish};
 
 /// One apply or revert at a time, whichever path started it.
@@ -18,9 +19,9 @@ pub(crate) fn apply(home: &Path, plan: &Plan) -> Result<Marker, String> {
     let earlier = marker(home, &plan.harness);
     let mut files = Vec::new();
     for w in &plan.writes {
-        let backup = keep_original(&w.path, earlier.as_ref())?;
+        let kept = keep_original(&w.path, &w.content, earlier.as_ref())?;
         private_file::write(&w.path, w.content.as_bytes(), Publish::Replace, || Ok(()))?;
-        files.push(Touched { path: w.path.clone(), backup });
+        files.push(Touched { path: w.path.clone(), backup: kept.backup, adopted: kept.adopted, replaced: kept.replaced });
     }
     let m = Marker {
         provider_id: plan.provider_id.clone(),
@@ -73,7 +74,9 @@ pub(crate) fn apply(home: &Path, plan: &Plan) -> Result<Marker, String> {
 
 /// Put back what the person had: each kept file over the one written, or the written file
 /// removed when there was none before. Then restart the harness if it is running.
-pub(crate) fn revert(home: &Path, harness: &str) -> Result<(), String> {
+///
+/// Returns a sentence naming any copy of the person's newer config that Apply kept, if there is one.
+pub(crate) fn revert(home: &Path, harness: &str) -> Result<Option<String>, String> {
     let _one_at_a_time = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let adapter = adapter_for(harness).ok_or_else(|| format!("{harness} cannot be given a provider here"))?;
     let m = marker(home, harness).ok_or_else(|| format!("{harness} was not given a provider here"))?;
@@ -83,6 +86,11 @@ pub(crate) fn revert(home: &Path, harness: &str) -> Result<(), String> {
         match &t.backup {
             Some(b) => {
                 private_file::check_target(b)?;
+                if t.adopted {
+                    // Not made by this apply, so not deleted by this revert.
+                    replaced::restore_keeping_backup(b, &t.path)?;
+                    continue;
+                }
                 std::fs::rename(b, &t.path).map_err(|e| format!("could not put back {}: {e}", t.path.display()))?;
             }
             None => {
@@ -106,8 +114,9 @@ pub(crate) fn revert(home: &Path, harness: &str) -> Result<(), String> {
     if harness == companion::ID {
         companion::reload(home);
     }
-    tracing::info!(harness = %harness, "put a harness's own settings back");
-    Ok(())
+    let note = m.replaced_note();
+    tracing::info!(harness = %harness, note = note.as_deref().unwrap_or(""), "put a harness's own settings back");
+    Ok(note)
 }
 
 /// The files a marker says were written, checked before anything moves: a marker naming any other
@@ -141,25 +150,48 @@ pub(super) fn files_to_restore<'a>(
     Ok(out)
 }
 
+/// What `keep_original` decided for one file.
+struct Kept {
+    backup: Option<PathBuf>,
+    /// The backup was already there and no marker named it: this apply did not make it.
+    adopted: bool,
+    /// Where the live file was copied because it differed from the adopted backup.
+    replaced: Option<PathBuf>,
+}
+
 /// The person's own file, kept once beside it. A copy already there is theirs — from an earlier
 /// assignment, or one that failed after writing — and is never replaced, so Revert can always
 /// return what they had before this code first touched it.
-fn keep_original(path: &Path, earlier: Option<&Marker>) -> Result<Option<PathBuf>, String> {
+///
+/// A copy that no marker names is adopted, but if the live file differs from it, and is not what
+/// this apply is about to write (a crash after the write), the live file is first copied to
+/// `.yantrik-replaced-*`: it is newer work of the person's and is not lost. Nothing is written
+/// before the copy exists, so a crash at any point leaves a state the next apply reads the same way.
+fn keep_original(path: &Path, writing: &str, earlier: Option<&Marker>) -> Result<Kept, String> {
     if let Some(t) = earlier.and_then(|m| m.files.iter().find(|t| t.path == path)) {
-        return Ok(t.backup.clone());
+        return Ok(Kept { backup: t.backup.clone(), adopted: t.adopted, replaced: t.replaced.clone() });
     }
     let b = backup_path(path);
     if std::fs::symlink_metadata(&b).is_ok() {
         private_file::check_target(&b)?;
-        return Ok(Some(b));
+        let mut replaced = None;
+        if std::fs::symlink_metadata(path).is_ok() {
+            private_file::check_target(path)?;
+            let live = std::fs::read(path).map_err(|e| format!("could not keep a copy of {}: {e}", path.display()))?;
+            let backup = std::fs::read(&b).map_err(|e| format!("could not read {}: {e}", b.display()))?;
+            if live != backup && live != writing.as_bytes() {
+                replaced = Some(replaced::keep_live(path, &live)?);
+            }
+        }
+        return Ok(Kept { backup: Some(b), adopted: true, replaced });
     }
     if std::fs::symlink_metadata(path).is_err() {
-        return Ok(None);
+        return Ok(Kept { backup: None, adopted: false, replaced: None });
     }
     private_file::check_target(path)?;
     let original = std::fs::read(path).map_err(|e| format!("could not keep a copy of {}: {e}", path.display()))?;
     private_file::write(&b, &original, Publish::CreateOnly, || Ok(()))?;
-    Ok(Some(b))
+    Ok(Kept { backup: Some(b), adopted: false, replaced: None })
 }
 
 pub(crate) fn backup_path(path: &Path) -> PathBuf {

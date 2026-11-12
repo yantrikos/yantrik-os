@@ -154,6 +154,33 @@ class ModelTests(unittest.TestCase):
         run(["revert", self.path])
         self.assertEqual(self.load()["model"], "anthropic/claude-opus")
 
+    def test_a_stray_kept_section_and_an_edited_live_one_are_both_kept(self):
+        # #1201: a kept section no apply of this tool made, and a live model section edited since.
+        old = {"had": True, "model": {"default": "old/model", "provider": "old"}}
+        Path(self.path + hermes_model.KEPT_SUFFIX).write_text(json.dumps(old))
+        Path(self.path).write_text("model:\n  default: newer/edit\n  provider: nvidia\n")
+        os.chmod(self.path, 0o640)
+        code, out, err = run(["apply", self.path], json.dumps(SPEC))
+        self.assertEqual(code, 0, err)
+        copies = [f for f in os.listdir(self.dir.name) if ".model-replaced-" in f]
+        self.assertEqual(len(copies), 1, copies)
+        copy = os.path.join(self.dir.name, copies[0])
+        self.assertEqual(json.load(open(copy))["model"], {"default": "newer/edit", "provider": "nvidia"})
+        self.assertEqual(os.stat(copy).st_mode & 0o7777, 0o640, "the copy has the original's mode")
+        code, out, err = run(["revert", self.path])
+        self.assertEqual(code, 0, err)
+        self.assertIn(copy, out, "the result names the copy")
+        self.assertEqual(self.load()["model"], old["model"])
+        self.assertTrue(os.path.exists(self.path + hermes_model.KEPT_SUFFIX), "a kept section this tool did not make stays")
+        self.assertEqual(json.load(open(copy))["model"]["default"], "newer/edit")
+        self.assertNotIn(TOKEN, out + err)
+
+    def test_an_ordinary_apply_writes_no_replaced_copy(self):
+        Path(self.path).write_text(THEIRS)
+        run(["apply", self.path], json.dumps(SPEC))
+        run(["apply", self.path], json.dumps(SPEC))
+        self.assertEqual([f for f in os.listdir(self.dir.name) if "replaced" in f], [])
+
 
 if __name__ == "__main__":
     unittest.main()
