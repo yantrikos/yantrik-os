@@ -45,3 +45,7 @@ crossbeam-channel = { workspace = true }
 [dev-dependencies]
 # Only to spell the `LLMBackend` trait's return type on a stub mind in the bond scoring tests.
 anyhow = "1"
+# The reach scans parse each source file (tests/common/syntax.rs): test items are dropped by the syntax
+# tree, not by counting braces. Both are already in the lock file (syn 2.0.117, proc-macro2 1.x).
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }

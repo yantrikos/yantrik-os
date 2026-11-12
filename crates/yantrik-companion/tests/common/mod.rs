@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod scan;
+pub mod syntax;
 
 use std::path::{Path, PathBuf};
 

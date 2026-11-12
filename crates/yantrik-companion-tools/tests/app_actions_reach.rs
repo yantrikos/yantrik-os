@@ -16,6 +16,11 @@
 
 use std::path::{Path, PathBuf};
 
+// The one parser the reach scans share (`yantrik-companion/tests/common/syntax.rs`), not a copy of it.
+#[path = "../../yantrik-companion/tests/common/syntax.rs"]
+mod syntax;
+use syntax::without_test_items;
+
 use yantrik_companion_core::background_research;
 use yantrik_companion_core::reach::{reach, Reach, LOCAL_APPS, PERSON_ONLY_ACTIONS};
 use yantrik_companion_tools::app_reach::refused_unattended;
@@ -96,10 +101,8 @@ fn surface_from(app: &str, files: &[PathBuf]) -> Surface {
         // Comments talk about the declarations without making them. Whatever follows `#[cfg(test)]`
         // is a test's own surface, not the app's.
         let whole = std::fs::read_to_string(file).unwrap_or_default();
-        let src: String = whole
-            .split("\n#[cfg(test)]\nmod ")
-            .next()
-            .unwrap_or_default()
+        let src: String = without_test_items(&whole)
+            .unwrap_or_else(|e| panic!("{} does not parse: {e}", file.display()))
             .lines()
             .map(|l| if l.trim_start().starts_with("//") { "" } else { l })
             .collect::<Vec<_>>()
@@ -255,7 +258,7 @@ fn every_tool_that_sends_app_act_goes_through_the_one_road_or_sends_fixed_action
     for file in files {
         let name = file.file_name().unwrap().to_string_lossy().to_string();
         let text = std::fs::read_to_string(&file).unwrap();
-        let production = text.split("#[cfg(test)]").next().unwrap();
+        let production = without_test_items(&text).unwrap_or_else(|e| panic!("{name} does not parse: {e}"));
         let sends = production.contains("\"app.act\"") || production.contains("act_asking(");
         if sends && !ALLOWED.contains(&name.as_str()) && name != "app_ui.rs" && name != "weather.rs" && name != "window.rs" && name != "research_offer.rs" {
             stray.push(name);
@@ -272,7 +275,7 @@ fn every_tool_that_sends_app_act_goes_through_the_one_road_or_sends_fixed_action
     assert!(await_src.contains("app_act::refused_first("), "and its then_act is refused before the app is started");
     for file in ["app_ui.rs"] {
         let text = std::fs::read_to_string(src.join(file)).unwrap();
-        assert!(!text.split("#[cfg(test)]").next().unwrap().contains("\"app.act\""), "{file} sends nothing itself");
+        assert!(!without_test_items(&text).unwrap().contains("\"app.act\""), "{file} sends nothing itself");
     }
     // Fixed actions only: these name their action in the source.
     for (file, fixed) in [("weather.rs", "allow_location_lookup"), ("window.rs", "window")] {

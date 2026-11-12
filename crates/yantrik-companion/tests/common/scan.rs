@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use super::syntax::without_test_items;
 use super::{rust_files, tool_names};
 
 /// Programs that fetch, or install, or open a URL, when a tool starts one with `Command::new("…")`.
@@ -86,22 +87,79 @@ pub fn trailing_ident(s: &str) -> &str {
     &s[start..]
 }
 
-/// The end of the `{ … }` that opens at `open`, counting braces.
+/// The end of the `{ … }` that opens at `open`, counting braces that are code: not the ones inside
+/// string, raw-string and char literals or comments.
 pub fn matching_end(code: &str, open: usize) -> usize {
-    let mut depth = 0usize;
-    for (i, c) in code[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return open + i + 1;
+    let bytes = code.as_bytes();
+    let (mut depth, mut i) = (0usize, open);
+    while i < bytes.len() {
+        let rest = &code[i..];
+        if rest.starts_with("//") {
+            i += rest.find('\n').unwrap_or(rest.len());
+        } else if rest.starts_with("/*") {
+            i += rest.find("*/").map_or(rest.len(), |e| e + 2);
+        } else if let Some(len) = literal_len(rest) {
+            i += len;
+        } else {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return i + 1;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
+            i += code[i..].chars().next().map_or(1, char::len_utf8);
         }
     }
     code.len()
+}
+
+/// The length of the string, raw string or char literal that `rest` starts with (none for a lifetime).
+fn literal_len(rest: &str) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    let raw = rest.strip_prefix('b').unwrap_or(rest);
+    let prefix = rest.len() - raw.len();
+    if let Some(after) = raw.strip_prefix('r') {
+        let hashes = after.bytes().take_while(|b| *b == b'#').count();
+        if after[hashes..].starts_with('"') {
+            let close = format!("\"{}", "#".repeat(hashes));
+            let from = prefix + 1 + hashes + 1;
+            return Some(rest[from..].find(&close).map_or(rest.len(), |e| from + e + close.len()));
+        }
+    }
+    match bytes[prefix.min(bytes.len() - 1)] {
+        b'"' => {
+            let mut i = prefix + 1;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'\\' => i += 2,
+                    b'"' => return Some(i + 1),
+                    _ => i += 1,
+                }
+            }
+            Some(bytes.len())
+        }
+        b'\'' => {
+            // A char literal closes right after one character or one escape; a lifetime (`'a`) does not.
+            let body = &rest[prefix + 1..];
+            let mut chars = body.chars();
+            let first = chars.next()?;
+            let skip = if first == '\\' {
+                1 + chars.next()?.len_utf8()
+            } else {
+                first.len_utf8()
+            };
+            if first == '\\' {
+                // `'\u{1F600}'`, `'\x41'`: up to the closing quote.
+                return body[skip..].find('\'').map(|e| prefix + 1 + skip + e + 1);
+            }
+            body[skip..].starts_with('\'').then_some(prefix + 1 + skip + 1)
+        }
+        _ => None,
+    }
 }
 
 /// The `impl Tool for` blocks of a file, and the rest of it.
@@ -301,29 +359,6 @@ pub fn walk_with(
     None
 }
 
-/// `code` without its `#[cfg(test)]` items: the attribute and the item after it (a `mod { … }` block, a
-/// `fn`, a `use …;`), by brace matching. What follows an item is kept, so a tool that comes after a
-/// `#[cfg(test)] mod fake {}` is still read.
-pub fn without_test_items(code: &str) -> String {
-    const ATTR: &str = "#[cfg(test)]";
-    let mut out = String::new();
-    let mut rest = code;
-    while let Some(at) = rest.find(ATTR) {
-        out.push_str(&rest[..at]);
-        let after = &rest[at + ATTR.len()..];
-        // The item ends at the first `;` before any `{` (a `use`, a `const`), else at its matching `}`.
-        let end = match (after.find('{'), after.find(';')) {
-            (Some(open), Some(semi)) if semi < open => semi + 1,
-            (Some(open), _) => matching_end(after, open),
-            (None, Some(semi)) => semi + 1,
-            (None, None) => after.len(),
-        };
-        rest = &after[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
 /// Every source file of the scanned crates, test items removed.
 pub fn load_sources() -> Vec<Source> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -347,7 +382,8 @@ pub fn load_sources() -> Vec<Source> {
             sources.push(Source {
                 krate: (*krate).to_string(),
                 module,
-                code: without_test_items(&text),
+                code: without_test_items(&text)
+                    .unwrap_or_else(|e| panic!("{} does not parse: {e}", file.display())),
             });
         }
     }

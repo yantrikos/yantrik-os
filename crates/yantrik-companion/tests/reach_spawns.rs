@@ -9,9 +9,10 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use common::scan::{
-    load_sources, raw_sources, source, tool, tool_blocks, walk_with, without_test_items, Finding,
+    load_sources, raw_sources, source, tool, tool_blocks, walk_with, Finding,
     Index, Source, DEPTH, NETWORK_PROGRAMS,
 };
+use common::syntax::{hidden_spawns, without_test_items};
 use common::{tool_names, tools};
 use yantrik_companion_core::reach::{reach, Reach};
 
@@ -196,7 +197,7 @@ fn apply_workspace_template_starts_nothing_by_name() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-companion-tools/src/workspace.rs"),
     )
     .unwrap();
-    let production = src.split("#[cfg(test)]").next().unwrap();
+    let production = without_test_items(&src).unwrap();
     assert!(
         !production.contains("Command::new"),
         "workspace.rs starts no program itself"
@@ -224,7 +225,7 @@ fn a_test_module_before_a_tool_does_not_hide_the_tool() {
         "#[cfg(test)]\npub mod fake {{ pub fn f() {{ let x = 1; }} }}\n#[cfg(test)]\nuse std::io;\n{}\n#[cfg(test)]\nmod tests {{ fn t() {{ Command::new(\"ls\"); }} }}\n",
         tool("late_tool", "Command::new(x).spawn()")
     );
-    let code = without_test_items(&text);
+    let code = without_test_items(&text).unwrap();
     assert!(code.contains("late_tool"), "{code}");
     assert!(
         !code.contains("fake") && !code.contains("mod tests"),
@@ -243,16 +244,9 @@ fn a_test_module_before_a_tool_does_not_hide_the_tool() {
 fn the_scanned_crates_have_no_way_to_start_a_process_that_the_scan_cannot_see() {
     let mut found = Vec::new();
     for (path, text) in raw_sources() {
-        for word in [
-            "process::Command as",
-            "Command as ",
-            "libc::exec",
-            "unistd::exec",
-            "posix_spawn",
-        ] {
-            if text.contains(word) {
-                found.push(format!("{path}: `{word}`"));
-            }
+        match hidden_spawns(&text) {
+            Ok(list) => found.extend(list.into_iter().map(|w| format!("{path}: {w}"))),
+            Err(e) => found.push(format!("{path} does not parse: {e}")),
         }
     }
     assert!(
@@ -260,6 +254,87 @@ fn the_scanned_crates_have_no_way_to_start_a_process_that_the_scan_cannot_see() 
         "start a process with `Command::new(…)` so the reach scans see it:\n{}",
         found.join("\n")
     );
+}
+
+#[test]
+fn a_file_that_does_not_parse_fails_and_names_the_problem() {
+    assert!(without_test_items("fn f( {").is_err());
+    assert!(hidden_spawns("impl {").is_err());
+}
+
+/// Round-9 MEDIUM 1: braces inside a test's literals do not move where the test item ends.
+#[test]
+fn braces_in_a_test_modules_strings_hide_nothing_after_it() {
+    let text = format!(
+        "#[cfg(test)]\nmod tests {{ fn t() {{ let s = \"an unclosed {{{{\"; let c = '{{'; let r = r#\"}}\"#; }} }}\n{}\n",
+        tool("late", "Command::new(x).spawn()")
+    );
+    let code = without_test_items(&text).unwrap();
+    assert!(!code.contains("unclosed") && code.contains("late"), "{code}");
+    assert_eq!(spawners(&[source("a", "m", &code)]).len(), 1);
+    // The same literals in production code do not end a tool block early either.
+    let body = "let s = \"{\"; let c = '{'; let l: &'static str = \"x\"; Command::new(x).spawn()";
+    let text = tool("t", body);
+    let (blocks, _) = tool_blocks(&text);
+    assert!(blocks.len() == 1 && blocks[0].contains("Command::new(x)"), "{blocks:?}");
+}
+
+/// `#[cfg(test)]` anywhere, in any spelling, hides only that item.
+#[test]
+fn a_test_item_in_the_middle_of_a_file_hides_nothing_after_it() {
+    let text = format!(
+        "{}\n#[cfg(all(test, unix))]\nmod m {{ fn t() {{ let s = \"{{\"; }} }}\n#[cfg(any(test, feature = \"x\"))]\nfn kept() {{}}\nimpl S {{ #[cfg(test)] fn only_test(&self) {{}} fn real(&self) {{}} }}\n{}\n",
+        tool("first", "1"),
+        tool("last", "Command::new(x).spawn()")
+    );
+    let code = without_test_items(&text).unwrap();
+    for gone in ["mod m", "only_test"] {
+        assert!(!code.contains(gone), "{gone} should be dropped: {code}");
+    }
+    for kept in ["first", "kept", "real", "last"] {
+        assert!(code.contains(kept), "{kept} should stay: {code}");
+    }
+}
+
+/// The 73 lines of `companion.rs` (6435-6507 at round 9) that a hand-made brace count dropped.
+#[test]
+fn companion_rs_is_scanned_past_its_placeholder_tests() {
+    let sources = load_sources();
+    let companion = sources
+        .iter()
+        .find(|s| s.krate == "yantrik-companion" && s.module == "companion")
+        .expect("companion.rs is scanned");
+    for name in ["WITHHELD_AUDIT_LINE", "purge_vault_audit_lines_in", "fn withhold_text"] {
+        assert!(companion.code.contains(name), "{name} is production code and must be scanned");
+    }
+    assert!(!companion.code.contains("recipe_placeholder_tests"));
+}
+
+/// Round-9 LOW 1: aliases, brace imports and the exec family, found in the syntax tree.
+#[test]
+fn a_spawn_by_alias_or_exec_is_found_in_the_syntax() {
+    for code in [
+        "type Cmd = std::process::Command;",
+        "use std::process::{Command as C, Stdio};",
+        "use std::process::Command as C;",
+        "use tokio::process::*;",
+        "use libc::{execvp, c_int};",
+        "use nix::unistd::{execv};",
+        "fn f() { unsafe { libc::system(p) }; }",
+        "fn f() { libc::execve(a, b, c); }",
+        "fn f() { nix::unistd::execvp(a, b); }",
+        "fn f() { posix_spawn(a); }",
+        "fn f() { let g = Command::new; g(x); }",
+    ] {
+        assert!(!hidden_spawns(code).unwrap().is_empty(), "{code}");
+    }
+    for code in [
+        "use std::process::{Command, Stdio};",
+        "use libc::{c_int, getpwuid};",
+        "fn f() { Command::new(\"ls\"); libc::getuid(); }",
+    ] {
+        assert_eq!(hidden_spawns(code).unwrap(), Vec::<String>::new(), "{code}");
+    }
 }
 
 /// Round-8 LOW 3: an option cannot ride in as a package name (`apk search -U` refreshes the index), and
