@@ -49,9 +49,22 @@ pub(crate) fn kept_and_off() -> (std::collections::BTreeSet<String>, std::collec
     (lock(&KEPT).keys().cloned().collect(), lock(&CHOICES).off.clone())
 }
 
-/// What the vault says is kept, as just read. The one writer of `KEPT` from a read: the card's own
-/// read and the accounts listing both end here.
-pub(crate) fn note_kept(tails: BTreeMap<String, String>) {
+/// Removals made so far, numbered, and which value each removed: a read of the vault that began
+/// before a removal may still hold the removed value.
+static REMOVALS: Mutex<(u64, Vec<(u64, String)>)> = Mutex::new((0, Vec::new()));
+
+/// Taken just before the vault is read, and handed to [`note_kept`] with what the read found.
+pub(crate) fn read_began() -> u64 {
+    lock(&REMOVALS).0
+}
+
+/// What the vault says is kept, as just read (`began` is [`read_began`] from before the read). The
+/// one writer of `KEPT` from a read: the card's own read and the accounts listing both end here.
+/// A value removed after the read began is not written back as kept.
+pub(crate) fn note_kept(mut tails: BTreeMap<String, String>, began: u64) {
+    for (_, id) in lock(&REMOVALS).1.iter().filter(|(n, _)| *n > began) {
+        tails.remove(id);
+    }
     *lock(&KEPT) = tails;
     KEPT_READ.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -63,11 +76,18 @@ pub(crate) fn kept_known() -> bool {
 }
 
 /// The vault values just removed are no longer kept: said at once, before the vault is read again.
-fn forget_kept(ids: &[&str]) {
+pub(crate) fn forget_kept(ids: &[&str]) {
+    let mut removals = lock(&REMOVALS);
     let mut kept = lock(&KEPT);
     for id in ids {
+        removals.0 += 1;
+        let n = removals.0;
+        removals.1.push((n, id.to_string()));
         kept.remove(*id);
     }
+    // Only reads that began recently can be older than a removal.
+    let excess = removals.1.len().saturating_sub(256);
+    removals.1.drain(..excess);
 }
 
 /// Change what was chosen and keep it (no key in it). The one place `CHOICES` is written.
@@ -91,7 +111,7 @@ pub(crate) fn forget_read_for_test() {
 
 #[cfg(test)]
 pub(crate) fn set_state_for_test(kept: &[&str], off: &[&str]) {
-    note_kept(kept.iter().map(|k| (k.to_string(), "…abcd".to_string())).collect());
+    note_kept(kept.iter().map(|k| (k.to_string(), "…abcd".to_string())).collect(), read_began());
     lock(&CHOICES).off = off.iter().map(|o| o.to_string()).collect();
 }
 
@@ -171,8 +191,9 @@ impl Wiring {
     fn refresh(&self) {
         let x = self.clone();
         let _ = std::thread::Builder::new().name("free-ai-refresh".into()).spawn(move || {
+            let began = read_began();
             if let Ok(Reply::Tails(tails)) = x.bridge.provider_keys(Op::Tails, WORKER_TIMEOUT) {
-                note_kept(tails);
+                note_kept(tails, began);
             }
             let y = x.clone();
             let _ = slint::invoke_from_event_loop(move || y.render());

@@ -187,10 +187,16 @@ pub(crate) struct Reload {
 pub(crate) type Sender = Arc<dyn Fn(Reload) + Send + Sync>;
 
 /// The sender the shell uses. It notes which saved provider the companion now runs on, so the one
-/// refresh after a provider is removed (`ai_accounts::shared`) can tell when that one is gone.
+/// refresh after a provider is removed (`ai_accounts::shared`) can tell when that one is gone. A
+/// provider deleted between the key being read and this send is not sent: the key was read for
+/// one that is no longer saved.
 pub(crate) fn bridge_sender(bridge: &Arc<CompanionBridge>) -> Sender {
     let bridge = bridge.clone();
     Arc::new(move |r: Reload| {
+        if !ProviderStore::load().entries.iter().any(|e| e.id == r.entry_id) {
+            tracing::info!("the companion was not moved: the saved provider was removed while its key was read");
+            return;
+        }
         crate::provider_handoff::companion::note_on_saved(Some(r.entry_id));
         bridge.reload_llm(r.provider_type, r.base_url, r.key, r.model)
     })

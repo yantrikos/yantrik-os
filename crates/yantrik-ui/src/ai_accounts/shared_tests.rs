@@ -276,3 +276,122 @@ fn a_companion_on_yantrik_models_is_left_alone_when_a_saved_provider_goes() {
     f.changed();
     assert!(f.told.try_iter().next().is_none(), "the gateway checks every call it makes");
 }
+
+fn saved(id: &str, primary: bool, key_ref: Option<&str>) -> crate::wire::settings::ProviderStoreEntry {
+    crate::wire::settings::ProviderStoreEntry {
+        id: id.into(),
+        name: id.into(),
+        provider_type: "openai".into(),
+        base_url: format!("https://{id}.example.test/v1"),
+        api_key: None,
+        api_key_ref: key_ref.map(str::to_string),
+        unmigrated_key: None,
+        auth_type: "bearer".into(),
+        is_primary: primary,
+        is_fallback: false,
+        model: "m".into(),
+    }
+}
+
+fn save_providers(entries: Vec<crate::wire::settings::ProviderStoreEntry>) {
+    crate::wire::settings::ProviderStore { entries }.save().expect("save the providers");
+}
+
+/// What the companion was told, waiting up to `wait` for the reload thread's word.
+fn told_within(f: &Fixture, wait: std::time::Duration) -> Vec<CompanionCommand> {
+    std::thread::sleep(wait);
+    f.told.try_iter().collect()
+}
+
+#[test]
+fn a_move_to_the_new_primary_that_cannot_get_its_key_leaves_the_companion_stopped() {
+    let h = home("move_fails");
+    let f = Fixture::new(&h);
+    free_ai::set_state_for_test(&values(), &[]);
+    // The companion runs on A; B is primary but its key cannot be had (a reference the vault does not hold).
+    crate::provider_handoff::companion::note_on_saved(Some("a".into()));
+    save_providers(vec![saved("b", true, Some("no-such-ref"))]);
+    f.changed();
+    let told = told_within(&f, std::time::Duration::from_millis(800));
+    assert!(matches!(told.first(), Some(CompanionCommand::StopLLM)), "stopped first, before anything is tried");
+    assert!(!told.iter().any(|c| matches!(c, CompanionCommand::ReloadLLM { .. })), "no reload: not for A, and B's key was not had");
+    assert!(!f.bridge.is_online());
+}
+
+#[test]
+fn a_working_move_replaces_the_stop_with_the_new_primary() {
+    let h = home("move_works");
+    let f = Fixture::new(&h);
+    free_ai::set_state_for_test(&values(), &[]);
+    crate::provider_handoff::companion::note_on_saved(Some("a".into()));
+    save_providers(vec![saved("b", true, None)]);
+    f.changed();
+    let told = told_within(&f, std::time::Duration::from_millis(800));
+    assert!(matches!(told.first(), Some(CompanionCommand::StopLLM)), "the removed provider is out first: {}", told.len());
+    match told.get(1) {
+        Some(CompanionCommand::ReloadLLM { base_url, .. }) => assert_eq!(base_url, "https://b.example.test/v1"),
+        _ => panic!("the companion was not moved onto the new primary"),
+    }
+    assert!(!told.iter().any(|c| matches!(c, CompanionCommand::ReloadLLM { base_url, .. } if base_url.contains("//a."))));
+}
+
+#[test]
+fn a_reload_for_a_provider_deleted_while_its_key_was_read_is_not_sent() {
+    let h = home("reload_races_delete");
+    let f = Fixture::new(&h);
+    let send = crate::wire::provider_panel::bridge_sender(&f.bridge);
+    let reload = |id: &str| crate::wire::provider_panel::Reload { entry_id: id.into(), provider_type: "openai".into(), base_url: "https://x.example.test/v1".into(), key: None, model: "m".into() };
+    save_providers(vec![saved("kept", false, None)]);
+    send(reload("gone"));
+    assert!(f.told.try_iter().next().is_none(), "nothing is sent for a provider that is no longer saved");
+    send(reload("kept"));
+    assert!(matches!(f.told.try_iter().collect::<Vec<_>>().as_slice(), [CompanionCommand::ReloadLLM { .. }]));
+}
+
+#[test]
+fn a_companion_put_on_the_config_provider_is_not_stopped_when_the_old_saved_one_goes() {
+    let h = home("config_provider");
+    let f = Fixture::new(&h);
+    free_ai::set_state_for_test(&values(), &[]);
+    crate::provider_handoff::companion::note_on_saved(Some("old".into()));
+    // The primary is cleared in Settings: the companion goes to the config provider.
+    crate::provider_handoff::companion::reload_config(&f.bridge, "https://config.example.test/v1".into(), None, "m".into());
+    assert!(matches!(f.told.try_iter().collect::<Vec<_>>().as_slice(), [CompanionCommand::ReloadLLM { .. }]));
+    // The old saved provider is then deleted: the companion is not on it, so it is left alone.
+    save_providers(vec![]);
+    f.changed();
+    assert!(f.told.try_iter().next().is_none(), "a working config provider is not stopped");
+}
+
+#[test]
+fn a_tier_switched_off_clears_its_probe_and_is_asked_the_gateways_question() {
+    let h = home("probe_off");
+    let f = Fixture::new(&h);
+    free_ai::set_state_for_test(&values(), &[]);
+    list_now();
+    crate::picker::probe_for_test("free-groq", Some(crate::picker::status::Outcome::Ok));
+    free_ai::toggle_tier("groq");
+    aa::shared::sharing_changed(f.bridge.clone());
+    assert!(!crate::picker::probe_for_test("free-groq", None), "the older success is dropped with the account");
+    aa::wait_idle_for_test();
+    // Not in the list any more, and still asked first: switched Off, not "key missing" or "checking".
+    assert_eq!(crate::picker::probe_outcome(&f.bridge, "free-groq", "openai/gpt-oss-20b"), Some(crate::picker::status::Outcome::SwitchedOff));
+    assert_eq!(crate::picker::probe_outcome(&f.bridge, "no-such-account", "m"), Some(crate::picker::status::Outcome::Gone));
+}
+
+#[test]
+fn a_read_that_began_before_a_removal_does_not_write_the_key_back() {
+    let h = home("kept_race");
+    let _f = Fixture::new(&h);
+    free_ai::set_state_for_test(&values(), &[]);
+    let tails = |ids: &[&'static str]| ids.iter().map(|k| (k.to_string(), "…abcd".to_string())).collect::<std::collections::BTreeMap<_, _>>();
+    let gone = values()[0];
+    let began = free_ai::read_began();
+    free_ai::forget_kept(&[gone]); // removed while the listing's read was out
+    free_ai::note_kept(tails(&values()), began); // the read comes back holding it
+    assert!(!free_ai::kept_and_off().0.contains(gone), "not written back as kept");
+    // A read that began after the removal is believed.
+    let after = free_ai::read_began();
+    free_ai::note_kept(tails(&values()), after);
+    assert!(free_ai::kept_and_off().0.contains(gone), "a later read can say it is kept again");
+}

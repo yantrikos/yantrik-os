@@ -1036,7 +1036,7 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
                 let url = ui.get_settings_llm_api_url().to_string();
                 let model = ui.get_settings_llm_api_model().to_string();
                 if !url.trim().is_empty() {
-                    bridge.reload_llm("api".into(), url, crate::wire::ai_status::config_key(), model);
+                    crate::provider_handoff::companion::reload_config(&bridge, url, crate::wire::ai_status::config_key(), model);
                 }
             }
         }

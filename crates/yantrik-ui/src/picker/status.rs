@@ -70,6 +70,8 @@ pub enum Outcome {
     KeyMissing,
     /// A free tier the person switched Off: nothing was asked of it.
     SwitchedOff,
+    /// The model's account or the model is no longer offered.
+    Gone,
     Unreachable(String),
 }
 
@@ -85,6 +87,9 @@ pub struct Input {
     pub last_call: Option<Call>,
     /// The probe of the model's account, if one was made.
     pub probe: Option<Probe>,
+    /// The gateway's own refusal code for the model's account now (`shared::refusal_for_id`), if
+    /// it would refuse: a withdrawal outranks any older success below.
+    pub withdrawn: Option<&'static str>,
     /// The gateway is not listening, and why.
     pub gateway_down: Option<String>,
     /// A mind with its own models: when it last answered a turn, if it did since the shell
@@ -133,6 +138,12 @@ pub fn judge(i: &Input) -> Status {
         return Status::new("not-set-up", "not set up · pick a model", Fix::AddKey);
     }
     let short = short(&i.model);
+    match i.withdrawn {
+        Some("tier_off") => return Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn),
+        Some("key_missing") => return Status::new("key-missing", "key missing", Fix::AddKey),
+        Some("keys_not_known_yet") => return Status::new("checking", format!("checking · {short}"), Fix::None),
+        _ => {}
+    }
     // The newest real call for this model decides, while it is fresh.
     if let Some(c) = i.last_call.as_ref().filter(|c| format!("{}/{}", c.account, c.model) == i.model) {
         if i.now - c.at <= CALL_FRESH_SECS {
@@ -158,6 +169,7 @@ pub fn judge(i: &Input) -> Status {
             Outcome::Ok => Status::new("connected", format!("connected · {short}"), Fix::None),
             Outcome::SwitchedOff => Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn),
             Outcome::KeyRefused | Outcome::KeyMissing => Status::new("key-missing", "key missing", Fix::AddKey),
+            Outcome::Gone => Status::new("not-set-up", "not set up · that model is gone", Fix::AddKey),
             Outcome::Unreachable(_) => Status::new("unreachable", "unreachable", Fix::Retry),
         },
         _ => Status::new("checking", format!("checking · {short}"), Fix::None),

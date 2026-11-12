@@ -1772,13 +1772,7 @@ fn worker_loop(
                 execute_suppression_logged = false;
                 tracing::info!("LLM reloaded successfully");
             }
-            Ok(CompanionCommand::StopLLM) => {
-                tracing::info!("Stopping the LLM backend: no provider is set");
-                companion.config.llm.api_base_url = None;
-                companion.config.llm.api_key = None;
-                companion.swap_llm(std::sync::Arc::new(crate::provider_handoff::companion::NoProvider));
-                online.store(false, Ordering::Relaxed);
-            }
+            Ok(CompanionCommand::StopLLM) => crate::provider_handoff::companion::stop(&mut companion, &online),
             Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
                 if companion.is_incognito() {
                     tracing::debug!("Incognito: skipping RecordSystemEvent");

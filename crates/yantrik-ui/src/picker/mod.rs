@@ -183,14 +183,15 @@ fn add_file(path: &std::path::Path) -> Result<(), String> {
 /// Ask the model's account whether it answers, off the UI thread, at most one at a time per
 /// account; the answer stands for a few minutes (status::PROBE_FRESH_SECS).
 fn probe(bridge: &Arc<CompanionBridge>, model: &str) {
-    let Some(m) = ai_accounts::catalogue().find(model).cloned() else { return };
-    let account = m.account.clone();
+    // The catalogue may no longer hold the model (a tier switched Off, an account removed): it is
+    // still asked about, so the answer is a reason and not "checking" for ever.
+    let Some((account, name)) = model.split_once('/').map(|(a, m)| (a.to_string(), m.to_string())) else { return };
     if !lock(&PROBING).insert(account.clone()) {
         return;
     }
     let bridge = bridge.clone();
     let _ = std::thread::Builder::new().name("model-probe".into()).spawn(move || {
-        let outcome = probe_outcome(&bridge, &account, &m.model);
+        let outcome = probe_outcome(&bridge, &account, &name);
         if let Some(outcome) = outcome {
             lock(&PROBES).insert(account.clone(), Probe { at: now(), outcome });
         }
@@ -201,16 +202,16 @@ fn probe(bridge: &Arc<CompanionBridge>, model: &str) {
 /// What the account answers, or `None` when nothing is known yet (the keys were not read). It
 /// asks the gateway's own check first: a tier switched Off, or without its key, is not sent even a
 /// one-token request.
-fn probe_outcome(bridge: &Arc<CompanionBridge>, account: &str, model: &str) -> Option<Outcome> {
-    let accounts = ai_accounts::accounts();
-    let Some(a) = accounts.iter().find(|a| a.id == account) else { return Some(Outcome::KeyMissing) };
-    if let Some(refused) = ai_accounts::shared::refusal(a) {
+pub(crate) fn probe_outcome(bridge: &Arc<CompanionBridge>, account: &str, model: &str) -> Option<Outcome> {
+    if let Some(refused) = ai_accounts::shared::refusal_for_id(account) {
         return match refused.code {
             "tier_off" => Some(Outcome::SwitchedOff),
             "keys_not_known_yet" => None,
             _ => Some(Outcome::KeyMissing),
         };
     }
+    let accounts = ai_accounts::accounts();
+    let Some(a) = accounts.iter().find(|a| a.id == account) else { return Some(Outcome::Gone) };
     let saved = crate::wire::settings::ProviderStore::load().entries;
     let vault = |id: &str| ai_accounts::vault_value(bridge, id);
     let Ok(r) = ai_accounts::keys::resolve(a, &saved, &vault) else { return Some(Outcome::KeyMissing) };
@@ -227,6 +228,23 @@ fn probe_outcome(bridge: &Arc<CompanionBridge>, account: &str, model: &str) -> O
         Err(crate::wire::provider_models::ListError::KeyRefused) => Outcome::KeyRefused,
         Err(e) => Outcome::Unreachable(e.to_string()),
     })
+}
+
+/// Forget what was found about every account not in `kept`: one that left the list (a tier
+/// switched Off, an account removed) must not keep saying "connected" from an older probe.
+pub(crate) fn keep_probes_of(kept: &[String]) {
+    lock(&PROBES).retain(|account, _| kept.contains(account));
+}
+
+#[cfg(test)]
+pub(crate) fn probe_for_test(account: &str, found: Option<Outcome>) -> bool {
+    match found {
+        Some(outcome) => {
+            lock(&PROBES).insert(account.to_string(), Probe { at: now(), outcome });
+            true
+        }
+        None => lock(&PROBES).contains_key(account),
+    }
 }
 
 /// The status of the mind answering now.
@@ -247,6 +265,7 @@ fn status_now(minds: &[MindSeen]) -> status::Status {
         model,
         last_call: crate::gateway::log().last_for(&mind.id),
         probe: lock(&PROBES).get(&account).cloned(),
+        withdrawn: ai_accounts::shared::refusal_for_id(&account).map(|r| r.code),
         gateway_down: crate::gateway::state().err(),
         own_answered_at: own.as_ref().map(|(at, _)| *at),
         own_model: own.map(|(_, m)| m).unwrap_or_default(),

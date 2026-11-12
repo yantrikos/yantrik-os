@@ -314,3 +314,28 @@ fn switching_mind_never_relabels_what_an_earlier_mind_said() {
     let lens = include_str!("../../../yantrik-ui-slint/ui/components/intent_lens.slint");
     assert!(lens.contains("root.messages[idx - 1].mind != msg.mind"), "a new mind starts a new group");
 }
+
+#[test]
+fn a_withdrawal_outranks_an_older_success() {
+    let base = Input { now: 1_000, on_gateway: true, model: "free-groq/gpt-oss-20b".into(), ..Input::default() };
+    let fresh_call = Some(Call { account: "free-groq".into(), model: "gpt-oss-20b".into(), ..call(990, 200, "") });
+    let ok_probe = Some(Probe { at: 990, outcome: Outcome::Ok });
+    let connected = judge(&Input { last_call: fresh_call.clone(), probe: ok_probe.clone(), ..base.clone() });
+    assert_eq!(connected.state, "connected", "before the tier is switched Off");
+    let off = judge(&Input { last_call: fresh_call.clone(), probe: ok_probe.clone(), withdrawn: Some("tier_off"), ..base.clone() });
+    assert_eq!((off.state, off.fix, off.words.as_str()), ("not-allowed", Fix::TurnOn, "switched off · turn it on in Free AI accounts"));
+    let no_key = judge(&Input { last_call: fresh_call, probe: ok_probe, withdrawn: Some("key_missing"), ..base.clone() });
+    assert_eq!((no_key.state, no_key.fix), ("key-missing", Fix::AddKey));
+    let gone = judge(&Input { probe: Some(Probe { at: 990, outcome: Outcome::Gone }), ..base });
+    assert_eq!((gone.state, gone.words.as_str()), ("not-set-up", "not set up · that model is gone"), "no endless checking");
+}
+
+#[test]
+fn probes_of_accounts_that_left_the_list_are_forgotten() {
+    super::probe_for_test("free-groq", Some(Outcome::Ok));
+    super::probe_for_test("mine", Some(Outcome::Ok));
+    super::keep_probes_of(&["mine".to_string()]);
+    assert!(!super::probe_for_test("free-groq", None));
+    assert!(super::probe_for_test("mine", None));
+    super::keep_probes_of(&[]);
+}

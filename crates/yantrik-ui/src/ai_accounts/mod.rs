@@ -136,8 +136,9 @@ fn rebuild(bridge: &CompanionBridge) -> bool {
     // Which free tiers have their values kept: asked of the vault now, since the card's own
     // read may not have come back yet at start. What is read is kept where the card and the
     // gateway's check read it, so there is one answer.
+    let began = crate::wire::free_ai::read_began();
     if let Ok(Reply::Tails(tails)) = bridge.provider_keys(Op::Tails, VAULT_TIMEOUT) {
-        crate::wire::free_ai::note_kept(tails);
+        crate::wire::free_ai::note_kept(tails, began);
     }
     let (kept, off) = crate::wire::free_ai::kept_and_off();
     let list = account::accounts(&saved, FREE_TIERS, &kept, &off);

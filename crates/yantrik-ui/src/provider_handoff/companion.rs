@@ -86,6 +86,35 @@ impl yantrik_ml::LLMBackend for NoProvider {
     }
 }
 
+/// The worker's side of `StopLLM`: no address, no key, and a backend that fails every call.
+pub(crate) fn stop(companion: &mut yantrik_companion::CompanionService, online: &std::sync::atomic::AtomicBool) {
+    tracing::info!("Stopping the LLM backend: no provider is set");
+    companion.config.llm.api_base_url = None;
+    companion.config.llm.api_key = None;
+    companion.swap_llm(Arc::new(NoProvider));
+    online.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Put the companion on the provider from Settings' own fields (nothing saved is primary): it no
+/// longer runs on a saved provider, so none is noted.
+pub(crate) fn reload_config(bridge: &CompanionBridge, base_url: String, key: Option<String>, model: String) {
+    note_on_saved(None);
+    bridge.reload_llm("api".into(), base_url, key, model);
+}
+
+/// The saved provider the companion ran on is gone. Stopped first, now and in this thread, so the
+/// removed provider's key is out of the companion whatever follows; only then moved onto the
+/// primary, when there is one. A move that cannot get its key leaves the companion stopped, not on
+/// the removed provider. The channel keeps the order: a later `ReloadLLM` replaces the stop.
+pub(crate) fn stop_then_move(bridge: &Arc<CompanionBridge>, primary: Option<&ProviderStoreEntry>) {
+    note_on_saved(None);
+    bridge.stop_llm();
+    match primary {
+        Some(primary) => crate::wire::provider_panel::reload_primary(bridge, primary),
+        None => tracing::info!("the companion has no provider: it is stopped, not left on a removed one"),
+    }
+}
+
 /// Put the companion on what its file says, or back on the primary provider when there is none,
 /// or on no provider at all when there is no primary either.
 pub(crate) fn reload(home: &Path) {
@@ -102,11 +131,7 @@ pub(crate) fn reload_with(bridge: &Arc<CompanionBridge>, home: &Path) {
         }
         None => match crate::wire::settings::ProviderStore::load().primary() {
             Some(primary) => crate::wire::provider_panel::reload_primary(bridge, primary),
-            None => {
-                tracing::info!("the companion has no provider: it is stopped, not left on a removed one");
-                note_on_saved(None);
-                bridge.stop_llm();
-            }
+            None => stop_then_move(bridge, None),
         },
     }
 }

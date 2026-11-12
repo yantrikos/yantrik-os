@@ -22,6 +22,7 @@ use crate::wire::settings::ProviderStore;
 /// After anything that changes what is shared. One function, called from every place.
 pub fn sharing_changed(bridge: Arc<CompanionBridge>) {
     prune_to_shared();
+    crate::picker::keep_probes_of(&super::accounts().into_iter().map(|a| a.id).collect::<Vec<_>>());
     companion_off_a_removed_provider(&bridge, &home());
     super::refresh(bridge);
 }
@@ -32,10 +33,12 @@ fn home() -> std::path::PathBuf {
 
 /// The built-in companion, when it is not on Yantrik models, holds its provider's key in memory
 /// and talks to it itself: the gateway's check never sees that. When the saved provider it runs on
-/// is gone, it moves to the new primary, or, with none, is stopped so its next turn reaches no one.
+/// is gone, it is stopped at once, then moved to the new primary if there is one: a move that
+/// cannot get its key leaves it stopped, so its next turn reaches no one.
 fn companion_off_a_removed_provider(bridge: &Arc<CompanionBridge>, home: &std::path::Path) {
-    if crate::provider_handoff::companion::primary_gone(home, &ProviderStore::load()) {
-        crate::provider_handoff::companion::reload_with(bridge, home);
+    let saved = ProviderStore::load();
+    if crate::provider_handoff::companion::primary_gone(home, &saved) {
+        crate::provider_handoff::companion::stop_then_move(bridge, saved.primary());
     }
 }
 
