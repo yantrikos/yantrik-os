@@ -18,6 +18,7 @@ sys.path[:0] = [os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk",
 from yantrik_browser import ports  # noqa: E402
 
 CONF = os.path.join(ROOT, "crates", "yantrik-browser-ports", "browsers.conf")
+OLD_MIND_VIEW_PORT = "92" + "23"      # written so that this file does not spell it either
 
 
 def read(*path):
@@ -32,17 +33,17 @@ def code_of(text):
 
 
 class TheDefinition(unittest.TestCase):
-    def test_the_ports_are_the_decided_ones(self):
-        self.assertEqual((ports.PERSON_PORT, ports.MIND_VIEW_PORT), (9222, 9223))
-        with self.assertRaises(ValueError):
-            ports.port_of(ports.PERSON)       # the person's Browser has a pipe, not a port (#1137)
-        self.assertEqual(ports.port_of(ports.MIND), 9223)
+    def test_neither_browser_has_a_port_to_ask_for(self):
+        """The person's Browser (#1137) and Mind View's (#1200) are held over pipes. Only the
+        number the person's Browser used to listen on is left, to be refused, and Mind View's old
+        number is spelled nowhere at all."""
+        self.assertEqual(ports.PERSON_PORT, 9222)
+        for gone in ("MIND_VIEW_PORT", "port_of", "address"):
+            self.assertFalse(hasattr(ports, gone), "ports.%s is a way back to a port" % gone)
+        self.assertNotIn("mind_view_port", ports.read_conf())
 
     def test_the_browsers_never_share_a_port_or_a_profile(self):
-        first, last = ports.IDENTITY_PORTS
-        self.assertNotIn(ports.PERSON_PORT, range(first, last + 1))
-        self.assertNotIn(ports.MIND_VIEW_PORT, range(first, last + 1))
-        self.assertLess(ports.MIND_VIEW_PORT, first)
+        self.assertFalse(hasattr(ports, "IDENTITY_PORTS"), "the identities run with no DevTools switch at all")
         self.assertNotEqual(ports.MIND_VIEW_PROFILE, ports.IDENTITY_PROFILES)
 
     def test_mind_views_profile_is_under_the_data_home_and_the_persons_is_not(self):
@@ -60,7 +61,7 @@ class TheDefinition(unittest.TestCase):
         m = re.search(r"tcp dport \{ [^}]*?(\d+)-(\d+) \} meta skuid", update)
         self.assertTrue(m, "the guard's port range")
         low, high = int(m.group(1)), int(m.group(2))
-        for port in (ports.PERSON_PORT, ports.MIND_VIEW_PORT, *ports.IDENTITY_PORTS):
+        for port in (ports.PERSON_PORT,):
             self.assertTrue(low <= port <= high, "%d is outside the guard %d-%d" % (port, low, high))
 
 
@@ -87,9 +88,31 @@ class NothingSpellsThemTwice(unittest.TestCase):
     def test_no_code_outside_the_definition_spells_a_port_or_the_profile(self):
         for path in self.SOURCES:
             code = code_of(read(*path))
-            for number in (str(ports.PERSON_PORT), str(ports.MIND_VIEW_PORT)):
+            for number in (str(ports.PERSON_PORT), OLD_MIND_VIEW_PORT):
                 self.assertIsNone(re.search(r"(?<![\d.])%s(?![\d])" % number, code), "%s spells %s" % ("/".join(path), number))
             self.assertNotIn("mind-view-browser", code, "/".join(path))
+
+    def test_mind_views_old_port_is_in_no_source_a_reader_could_fall_back_to(self):
+        """#1200: every reader of that port is gone, so nothing may fall back to it. Tests may
+        name it (to prove it is not listened on); production sources and the conf may not."""
+        roots = [("apps", "browser"), ("crates",), ("deploy",), ("apps", "arcade")]
+        skip = {"dispatch-vectors.json", "args.rs", "vectors.rs", "yos-selftest.py"}
+        pattern = re.compile(r"(?<![\d.])%s(?![\d])|mind_view_port|MIND_VIEW_PORT" % OLD_MIND_VIEW_PORT)
+        offenders = []
+        for root in roots:
+            for here, dirs, names in os.walk(os.path.join(ROOT, *root)):
+                dirs[:] = [d for d in dirs if d not in ("target", "tests", "__pycache__")]
+                for name in names:
+                    if name in skip or not name.endswith((".rs", ".py", ".conf", ".sh", ".toml")) and name not in ("yos", "yantrik-update"):
+                        continue
+                    path = os.path.join(here, name)
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        text = f.read()
+                    if name.endswith(".rs"):
+                        text = code_of(text)
+                    if pattern.search(text):
+                        offenders.append(os.path.relpath(path, ROOT))
+        self.assertEqual(offenders, [])
 
     def test_the_rust_constants_are_built_from_the_python_packages_file(self):
         build = read("crates", "yantrik-browser-ports", "build.rs")

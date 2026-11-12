@@ -21,7 +21,7 @@ const ROADS: &[(&str, &str)] = &[
 fn no_road_names_a_port_or_finds_a_browser_by_its_program() {
     for (road, src) in ROADS {
         let code = code(src);
-        for banned in ["9222", "9223", "pgrep", "pkill", "mind-view-browser"] {
+        for banned in ["9222", "9223", "pgrep", "pkill", "mind-view-browser", "MIND_VIEW_PORT"] {
             assert!(!code.contains(banned), "{road} spells `{banned}`");
         }
     }
@@ -46,8 +46,12 @@ fn the_companions_roads_fetch_targets_only_through_the_checked_reader() {
 }
 
 #[test]
-fn arcade_checks_what_holds_the_port_before_and_after_it_waits() {
+fn arcade_opens_a_game_only_through_the_persons_browser_route_and_never_by_a_port() {
     let play = code(ROADS[4].1);
-    assert!(play.matches("vet_now(side)?").count() >= 2, "before the wait and again just before the tab is opened");
     assert!(play.contains("yantrik_app::for_mind::from_env()"), "whose Arcade it is picks the browser");
+    assert!(play.contains("persons_browser::play("), "the person's play goes through the browser service");
+    assert!(play.contains("MIND_PLAYS_THROUGH_ITS_BROWSER"), "a mind's play is refused, and told its own road");
+    for gone in ["/json/new", "debugger_alive", "vet_now"] {
+        assert!(!play.contains(gone), "arcade still reaches a browser by a port: {gone}");
+    }
 }

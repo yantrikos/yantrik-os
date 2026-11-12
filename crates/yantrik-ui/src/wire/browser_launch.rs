@@ -3,10 +3,12 @@
 //! The person's Browser runs with a DevTools pipe (#1137: no port; `browser_pipe` hands the stream
 //! to the browser service) and its own default profile, named nowhere
 //! (Chrome 136 and later refuse DevTools on the default directory when `--user-data-dir` names it,
-//! so naming the person's own profile would take their DevTools away). A browser started for a mind runs in Mind View on Mind View's port with Mind View's
-//! profile, whatever flags the caller passed. The two never share a port or a profile, so a mind's
-//! web tools have nothing of the person's to reach, and the person's tools nothing of a mind's.
-//! Ports and paths are `yantrik_browser_ports`'s, which reads `browsers.conf`.
+//! so naming the person's own profile would take their DevTools away). A browser started for a mind
+//! runs in Mind View with Mind View's profile, whatever flags the caller passed, and with a DevTools
+//! pipe handed to the browser service by the same hand-over (#1200): no port, so no job of the
+//! machine can speak raw DevTools to it and go round the service's fence. The two never share a
+//! profile, so a mind's web tools have nothing of the person's to reach, and the person's tools
+//! nothing of a mind's. Profiles and flags are `yantrik_browser_ports`'s, which reads `browsers.conf`.
 
 use std::path::Path;
 
@@ -57,7 +59,8 @@ pub fn browser_names() -> String {
     BROWSERS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
 }
 
-use yantrik_browser_ports::{listener, procs, Place, Side};
+use super::browser_pipe::Role;
+use yantrik_browser_ports::{procs, Side, PIPE_FLAG};
 
 /// The switches that name a debugging port, its allowed origin, or a profile. A caller's own are
 /// dropped from a mind's launch, which has them from `launch_flags` and nowhere else.
@@ -81,17 +84,49 @@ pub fn person_args(program: &str, own: &[&str]) -> Vec<String> {
     args
 }
 
-/// A launch in Mind View: the caller's arguments, and for a browser the mind's own port and
-/// profile in place of any the caller named. A browser hands a second launch over to the one
-/// already running on its profile, and a window then appears wherever that one is: the person's
-/// desktop (PR #582, S3). A mind's browser has a profile of its own, so it is its own process.
-pub fn mind_view_args(program: &Path, args: &[&str]) -> Vec<String> {
+/// Whether a launch in Mind View is Mind View's browser: the `browser` app, which is a Chromium.
+/// The app id is the shell's own routing and not an argument a caller passes.
+fn is_mind_views_browser(app_id: &str, program: &Path) -> bool {
+    app_id == "browser" && is_chromium(program)
+}
+
+/// The role a launch has in the DevTools hand-over, said here and in `dock::spawn_persons_browser`
+/// and nowhere else: the person's Browser's own arm, or a launch in Mind View's seat of the
+/// `browser` app. Anything else (a `.desktop` file whose arguments carry the pipe switch, another
+/// app in Mind View) has none, so it is given no pipe.
+pub fn pipe_role(app_id: &str, program: &Path, in_mind_view: bool, persons_browser: bool) -> Option<Role> {
+    if persons_browser {
+        Some(Role::Person)
+    } else if in_mind_view && is_mind_views_browser(app_id, program) {
+        Some(Role::MindView)
+    } else {
+        None
+    }
+}
+
+/// A launch in Mind View: the caller's arguments, and for Mind View's browser its own profile and
+/// DevTools pipe in place of any the caller named, starting on a blank page: a page named on the
+/// command line would load before the browser service has the pipe, and so before it can fence the
+/// page's first request. A browser hands a second launch over to the one already running on its
+/// profile, and a window then appears wherever that one is: the person's desktop (PR #582, S3). A
+/// mind's browser has a profile of its own, so it is its own process.
+pub fn mind_view_args(app_id: &str, program: &Path, args: &[&str]) -> Vec<String> {
     let name = program_name(program);
     if is_chromium(program) {
         let _ = std::fs::create_dir_all(yantrik_browser_ports::mind_view_profile());
-        let mut out: Vec<String> =
-            args.iter().filter(|a| !OWN_BY_SIDE.iter().any(|p| a.starts_with(p))).map(|a| a.to_string()).collect();
-        out.extend(yantrik_browser_ports::launch_flags(Side::MindView));
+        let browser = is_mind_views_browser(app_id, program);
+        // The caller's switches only: its own port, origin and profile are dropped, and for the
+        // browser its pages are too.
+        let mut out: Vec<String> = args
+            .iter()
+            .filter(|a| !OWN_BY_SIDE.iter().any(|p| a.starts_with(p)) && (!browser || a.starts_with('-')))
+            .map(|a| a.to_string())
+            .collect();
+        // Another Chromium app in Mind View is not given a pipe: nothing would hold it (`pipe_role`).
+        out.extend(yantrik_browser_ports::launch_flags(Side::MindView).into_iter().filter(|f| browser || f != PIPE_FLAG));
+        if browser {
+            out.push("about:blank".into());
+        }
         return out;
     }
     let mut out: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -104,8 +139,9 @@ pub fn mind_view_args(program: &Path, args: &[&str]) -> Vec<String> {
 }
 
 /// Open Mind View's browser for a mind that needs one (its first web call, with none open): the
-/// nested desktop started if it is not, the browser in it, on its port and profile. Runs where it
-/// may take a while (off the UI thread). Says why when it cannot, in words the mind can pass on.
+/// nested desktop started if it is not, the browser in it, on its profile, with its DevTools pipe
+/// handed to the browser service. Runs where it may take a while (off the UI thread). Says why when
+/// it cannot, in words the mind can pass on.
 pub fn open_in_mind_view() -> Result<(), String> {
     if !crate::wire::settings::minds_open_in_mind_view() {
         return Err("the setting \"minds open apps in Mind View\" is off, so a mind has no browser of its own".into());
@@ -118,25 +154,16 @@ pub fn open_in_mind_view() -> Result<(), String> {
 }
 
 /// Before a browser starts: Mind View's browsers an earlier build left on the person's port are
-/// stopped (they would keep the person's own Browser from having it), and a browser for Mind View
-/// is not started on a port something else holds. No second Chromium on an occupied port.
-pub fn preflight(side: Side) -> Result<(), String> {
+/// stopped (they would keep the person's own Browser from having it). Mind View's own has no port
+/// to be taken (#1200): a browser an earlier build left running on its profile is stopped by the
+/// update (`stop_mind_view.py`) before this one starts, and one that is running now was handed to
+/// the service by the shell that started it.
+pub fn preflight(_side: Side) -> Result<(), String> {
     let stopped = procs::stop_mind_view_off_port();
     if stopped > 0 {
         tracing::info!(stopped, "Stopped a Mind View browser an earlier build left on the person's port");
     }
-    if side != Side::MindView {
-        return Ok(());
-    }
-    match listener::identify(Side::MindView.port()) {
-        Err(listener::Why::Nobody) => Ok(()),
-        // Mind View's own browser: the launch hands over to it and starts nothing.
-        Ok(l) if l.place == Place::MindView && l.uid == listener::own_uid() => Ok(()),
-        Ok(_) | Err(listener::Why::Unclear(_)) => Err(format!(
-            "port {} is held by something that is not Mind View's browser, so none was started",
-            Side::MindView.port()
-        )),
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -172,27 +199,51 @@ mod tests {
         assert_eq!(person_args("firefox", &[]), Vec::<String>::new());
     }
 
-    /// The bug: Mind View's browser used to be started with the person's port (the flags came
-    /// from the Browser pin) and nothing but a profile of its own.
+    /// The bug (#1085): Mind View's browser used to be started with the person's port. Then (#1200)
+    /// with a port of its own, which any job could speak raw DevTools to. Now a pipe and a profile.
     #[test]
-    fn a_minds_browser_gets_mind_views_port_and_profile_whatever_the_caller_passed() {
-        let persons = person_args("chromium", &["--no-first-run"]);
+    fn a_minds_browser_gets_a_pipe_and_mind_views_profile_whatever_the_caller_passed() {
+        let persons = person_args("chromium", &["--no-first-run", "--remote-debugging-port=9999", "--remote-allow-origins=*", "--user-data-dir=/home/p/.config/chromium"]);
         let refs: Vec<&str> = persons.iter().map(String::as_str).collect();
-        let args = mind_view_args(Path::new("/usr/bin/chromium"), &refs);
-        assert_eq!(flag(&args, "--remote-debugging-port="), vec!["--remote-debugging-port=9223"]);
-        assert_eq!(flag(&args, "--remote-allow-origins="), vec!["--remote-allow-origins=http://127.0.0.1:9223"]);
+        let args = mind_view_args("browser", Path::new("/usr/bin/chromium"), &refs);
+        assert_eq!(flag(&args, "--remote-debugging-"), vec!["--remote-debugging-pipe"], "the pipe, never a port: {args:?}");
+        assert!(flag(&args, "--remote-allow-origins=").is_empty(), "{args:?}");
         let profile = flag(&args, "--user-data-dir=");
         assert_eq!(profile.len(), 1, "{args:?}");
         assert!(profile[0].ends_with("yantrik/mind-view-browser/chromium"), "{profile:?}");
-        assert!(!args.iter().any(|a| a.contains("9222") || a.ends_with("-pipe")), "a mind never gets the person's pipe: {args:?}");
+        assert!(!args.iter().any(|a| a.contains("9222") || a.contains("port=") || a.contains("address")), "{args:?}");
         assert!(args.contains(&"--no-first-run".to_string()));
+        assert!(args.contains(&"--disable-blink-features=AutomationControlled".to_string()), "a pipe makes navigator.webdriver true otherwise");
+    }
+
+    /// A page named on the command line would load before the service holds the pipe and fences it.
+    #[test]
+    fn mind_views_browser_starts_on_a_blank_page_whatever_it_was_asked_to_open() {
+        let args = mind_view_args("browser", Path::new("/usr/bin/chromium"), &["--no-first-run", "file:///home/p/.ssh/x.html", "https://example.com"]);
+        assert_eq!(args.last().map(String::as_str), Some("about:blank"), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("example.com") || a.contains(".ssh")), "{args:?}");
+    }
+
+    /// Only Mind View's browser is handed over, and by the shell's own routing: another Chromium
+    /// app in Mind View is given no pipe (nothing would hold it), nor a `.desktop` entry's flag.
+    #[test]
+    fn only_the_browser_arm_and_mind_views_browser_have_a_role() {
+        let chromium = Path::new("/usr/bin/chromium");
+        assert_eq!(pipe_role("browser", chromium, false, true), Some(Role::Person));
+        assert_eq!(pipe_role("browser", chromium, true, false), Some(Role::MindView));
+        assert_eq!(pipe_role("browser", chromium, false, false), None, "on the person's desktop but not by the Browser's arm");
+        assert_eq!(pipe_role("browser", Path::new("/usr/bin/firefox"), true, false), None);
+        assert_eq!(pipe_role("chromium-app", chromium, true, false), None, "another app");
+        let other = mind_view_args("chromium-app", chromium, &[]);
+        assert!(!other.iter().any(|a| a.contains("remote-debugging")), "no pipe nobody holds: {other:?}");
+        assert!(other.iter().any(|a| a.starts_with("--user-data-dir=")));
     }
 
     #[test]
     fn firefox_in_mind_view_gets_its_own_profile_and_no_debugging_port() {
-        let args = mind_view_args(Path::new("/usr/bin/firefox"), &[]);
+        let args = mind_view_args("browser", Path::new("/usr/bin/firefox"), &[]);
         assert_eq!(&args[..2], ["--no-remote", "--profile"]);
         assert!(args[2].ends_with("firefox"), "{args:?}");
-        assert!(mind_view_args(Path::new("/usr/bin/foot"), &[]).is_empty());
+        assert!(mind_view_args("foot", Path::new("/usr/bin/foot"), &[]).is_empty());
     }
 }

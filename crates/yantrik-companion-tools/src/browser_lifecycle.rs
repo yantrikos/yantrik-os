@@ -557,7 +557,7 @@ mod tests {
     fn a_process_is_told_by_its_type_flag_in_either_command_line_form() {
         assert_eq!(kind_of(b"/usr/lib/chromium/chromium --type=renderer --lang=en"), "renderer");
         assert_eq!(kind_of(b"chromium\0--type=gpu-process\0--x\0"), "gpu");
-        assert_eq!(kind_of(b"chromium --remote-debugging-port=9223"), "main");
+        assert_eq!(kind_of(b"chromium --remote-debugging-port=9444"), "main");
     }
 
     /// The watchdog and `browser_cleanup` count, trim and kill a mind's browsers; the person's

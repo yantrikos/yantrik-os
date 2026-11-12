@@ -14,7 +14,6 @@ import http.server
 import os
 import shutil
 import socket
-import subprocess
 import sys
 import tempfile
 import threading
@@ -23,15 +22,10 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
-sys.path[:0] = [os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk", "python")]
+sys.path[:0] = [HERE, os.path.join(ROOT, "apps", "browser"), os.path.join(ROOT, "sdk", "python")]
 
-from yantrik_browser import cdp, commit, driver as drv  # noqa: E402
-
-
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+import pipe_chrome  # noqa: E402
+from yantrik_browser import cdp, commit, driver as drv, pipes  # noqa: E402
 
 
 def chrome():
@@ -103,6 +97,11 @@ class Site(http.server.SimpleHTTPRequestHandler):
 class Bench:
     """One browser and one site for the whole run."""
 
+    # Whether the service connects before `start` returns. A pipe has one DevTools client for the
+    # browser's life: a test that needs windows made before the service ever attached
+    # (test_preexisting) turns this off, or the service's auto-attach would hold what it opens.
+    service_first = True
+
     @classmethod
     def start(cls):
         cls.tmp = tempfile.mkdtemp(prefix="yb-test-")
@@ -110,23 +109,24 @@ class Bench:
         cls.http = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=cls.http.serve_forever, daemon=True).start()
         cls.site = "http://127.0.0.1:%d" % cls.http.server_address[1]
-        port = free_port()
-        cls.cdp = "http://127.0.0.1:%d" % port
         cls.log = open(os.path.join(cls.tmp, "chrome.log"), "wb")
-        cls.proc = subprocess.Popen([
-            chrome(), "--headless=new", "--no-first-run", "--no-default-browser-check",
-            "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=%d" % port,
-            "--remote-allow-origins=%s" % cls.cdp, "--user-data-dir=%s" % cls.tmp,
-            "--window-size=1280,800", "about:blank"],
-            stdout=cls.log, stderr=cls.log)
-        browser = cdp.Browser(cls.cdp)
+        # Over a pipe, held at start, as Mind View's browser is (#1200); the flag is its launch's
+        # (a pipe makes navigator.webdriver true, which a bot check reads).
+        flags = ["--headless=new", "--disable-blink-features=AutomationControlled",
+                 "--user-data-dir=%s" % cls.tmp, "--window-size=1280,800", "about:blank"]
+        cls.proc = None
         try:
-            wait_ready(browser, cls.proc, cls.log.name)
+            cls.proc, mine = pipe_chrome.launch(chrome(), flags, cls.log)
+            cls.holder = pipes.PipeHolder()
+            cls.holder.give(mine, cls.proc.pid)
+            browser = cdp.Browser(opener=cls.holder.open, held_at_start=True)
+            if cls.service_first:
+                wait_ready(browser, cls.proc, cls.log.name)
         except Exception:
-            # setUpModule raising skips tearDownModule: tear down what start made here, or the
-            # Chrome process and the server leak.
-            cls.proc.kill()
-            cls.proc.wait()
+            # setUpModule raising skips tearDownModule: tear down what start made, or it leaks.
+            if cls.proc is not None:
+                cls.proc.kill()
+                cls.proc.wait()
             cls.http.shutdown()
             cls.log.close()
             shutil.rmtree(cls.tmp, ignore_errors=True)

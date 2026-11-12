@@ -126,7 +126,7 @@ class Restarted:
         mine, theirs = socket.socketpair()
         self.chromium = self.chromium_class(theirs)
         self.chromium.start()
-        self.holder = pipes.PipeHolder()
+        self.holder = pipes.Pipes()
         g = guard.Guard(identify=lambda port: (_ for _ in ()).throw(listener.Unidentified("nothing", nobody=True)),
                         uid=base.ME, side_of=lambda: ports.PERSON, pipes=self.holder)
         self.driver = drv.Driver(judge=False, guard_=g, file_rule=lambda path: True,
@@ -138,7 +138,7 @@ class Restarted:
         return self.driver.sides.browsers[ports.PERSON]
 
     def hand_over(self):
-        self.holder.give(self.mine, os.getpid())
+        self.holder.give(ports.PERSON, self.mine, os.getpid())
 
 
 class TheServiceRestarts(Restarted, unittest.TestCase):
@@ -290,7 +290,7 @@ class TheDeadServicesSessionsAndTheRaces(TheServiceRestarts):
         self.assertEqual(c.methods("Page.stopLoading", "S-T1"), [], "a tab no session was on is not stopped")
 
     def test_status_that_connects_first_does_not_send_the_file_tab_to_access_denied(self):
-        self.holder.on_give = None            # the arrival lost the race: the first call is a status
+        self.holder.holder(ports.PERSON).on_give = None            # the arrival lost the race: the first call is a status
         self.driver._asset_gate = lambda: (lambda url, agent: url)     # a gate that allows what it is asked
         self.hand_over()
         self.driver.status()

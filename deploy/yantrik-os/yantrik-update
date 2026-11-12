@@ -3280,17 +3280,15 @@ reconcile_mind_socket() { # <owner>
   systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
 }
 
-# The browsers' DevTools ports: Mind View's browser (what every mind's web tools drive) on 9223,
-# the companion's other identities on 9224-9322. The person's Browser no longer has a port (#1137:
-# it runs with --remote-debugging-pipe, held by the browser service); 9222 stays in the rule as
-# defence in depth, so a browser an older build left there, or anything else that listens on it,
-# still answers root and the person only. Step 3 of #1137 takes it out. Loopback
-# TCP has no owner: until this, every account on the machine could open those ports and drive the
-# person's logged-in browser, read its cookies, submit its forms, past every gate. Now only root
-# and the person connect, by account alone: both browsers run as the person, so this cannot tell
-# them apart. The browser service does (#477, #1085): a mind goes to 9223, the person's own `yos
-# web` to 9222, and a port is used only while a browser on the right profile holds it. And the
-# other direction: a closed browser's port is free, and any account could listen there and be
+# The browsers' DevTools ports. Neither browser has one any more: the person's Browser (#1137) and
+# Mind View's (#1200) run with --remote-debugging-pipe, held by the browser service, because a port
+# is reachable by every process of the machine and a job that speaks raw DevTools to it goes round
+# the service's fence. The range stays in this rule as defence in depth, so a browser an older build
+# left on a port, or anything else that listens there, still answers root and the person only.
+# Loopback TCP has no owner: before this, every account on the machine could open those ports and
+# drive a logged-in browser, read its cookies, submit its forms, past every gate. This guard cannot
+# tell the person's own jobs from the person (one account); removing the ports is what does. And
+# the other direction: a closed browser's port is free, and any account could listen there and be
 # taken for it (`browser_login` types a vault password into whatever answers), so a DevTools
 # port answering from any other account has its data dropped. Written by this updater's own code.
 DEVTOOLS_GUARD=/etc/yantrik/devtools-guard.nft
@@ -3298,8 +3296,8 @@ DEVTOOLS_UNIT=/etc/systemd/system/yantrik-devtools-guard.service
 
 devtools_guard_text() {
   cat <<EOF
-# Yantrik OS: the browsers' DevTools ports (9222-9322 on loopback; the person's Browser uses a pipe
-# now, and 9222 is kept as defence in depth) and the VNC ports (5900-5909: nothing of this OS
+# Yantrik OS: the browsers' DevTools ports (9222-9322 on loopback; both browsers use a pipe
+# now, and the range is kept as defence in depth) and the VNC ports (5900-5909: nothing of this OS
 # starts a VNC server; a wayvnc someone starts by hand asks no password on loopback) are opened
 # and answered by root and $1 only: either
 # is the whole desktop to whoever reaches it, past the mind door, the cards and Private mode.

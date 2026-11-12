@@ -141,11 +141,11 @@ def start_browser_for_the_person():
     mine, theirs = socket.socketpair()
     browser = FakeChromium(theirs)
     browser.start()
-    holder = pipes.PipeHolder()
-    holder.give(mine, os.getpid())
+    hub = pipes.Pipes()
+    hub.give(ports.PERSON, mine, os.getpid())
     g = guard.Guard(identify=lambda port: (_ for _ in ()).throw(listener.Unidentified("nothing", nobody=True)),
-                    uid=ME, side_of=lambda: ports.PERSON, pipes=holder)
-    return browser, holder, drv.Driver(judge=False, guard_=g)
+                    uid=ME, side_of=lambda: ports.PERSON, pipes=hub)
+    return browser, hub.holder(ports.PERSON), drv.Driver(judge=False, guard_=g)
 
 
 class TheServiceDrivesThePersonsBrowserOverThePipe(unittest.TestCase):
@@ -189,9 +189,8 @@ class TheServiceDrivesThePersonsBrowserOverThePipe(unittest.TestCase):
         self.assertFalse(self.driver.status()["open"])
 
     def test_no_browser_handed_over_is_not_open_and_not_tried_elsewhere(self):
-        holder = pipes.PipeHolder()
         g = guard.Guard(identify=lambda port: (_ for _ in ()).throw(listener.Unidentified("nothing", nobody=True)),
-                        uid=ME, side_of=lambda: ports.PERSON, pipes=holder)
+                        uid=ME, side_of=lambda: ports.PERSON, pipes=pipes.Pipes())
         d = drv.Driver(judge=False, guard_=g)
         self.assertFalse(d.status()["open"])
 
@@ -213,15 +212,18 @@ class TheHandOver(unittest.TestCase):
         patch = mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.PERSON)
         patch.start()
         self.addCleanup(patch.stop)
-        self.holder = pipes.PipeHolder()
-        self.path = self.holder.serve(os.path.join(self.dir, "browser-pipe.sock"))
-        self.addCleanup(self.holder.stop)
+        self.hub = pipes.Pipes()
+        self.holder = self.hub.holder(ports.PERSON)
+        self.path = self.hub.serve(os.path.join(self.dir, "browser-pipe.sock"))
+        self.addCleanup(self.hub.stop)
 
-    def offer(self, pid=None, sock=None):
+    def offer(self, pid=None, sock=None, side=None):
+        """What the shell sends: a line naming the pid (and the side, when given) and the stream."""
         mine, theirs = socket.socketpair()
         conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         conn.connect(self.path)
-        socket.send_fds(conn, [json.dumps({"pid": pid or os.getpid()}).encode() + b"\n"], [(sock or theirs).fileno()])
+        header = {"pid": pid or os.getpid(), **({"side": side} if side else {})}
+        socket.send_fds(conn, [json.dumps(header).encode() + b"\n"], [(sock or theirs).fileno()])
         conn.settimeout(5)
         self.addCleanup(conn.close)
         return conn.recv(200).decode().strip(), mine
@@ -247,6 +249,47 @@ class TheHandOver(unittest.TestCase):
         self.assertIn("mind's browser", reply)
         self.assertIsNone(self.holder.current())
 
+    def test_mind_views_browser_is_handed_over_by_the_same_path_and_held_apart(self):
+        """#1200: one socket, one set of checks; the side the shell names, and the profile the
+        process owns, put the pipe in Mind View's slot and not the person's."""
+        with the_identity_checks_pass(), \
+                mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.MIND_VIEW):
+            reply, _ = self.offer(side=ports.MIND)
+        self.assertEqual(reply, "ok")
+        self.assertIsNotNone(self.hub.holder(ports.MIND).current())
+        self.assertIsNone(self.holder.current(), "the person's slot is not Mind View's")
+
+    def test_each_side_takes_only_the_browser_of_its_own_profile(self):
+        """A person's browser offered as Mind View's, and Mind View's as the person's, are refused:
+        the header is the shell's claim and the profile the process owns is the fact."""
+        with the_identity_checks_pass():
+            reply, _ = self.offer(side=ports.MIND)           # place_of_pid says PERSON (setUp)
+            self.assertIn("not Mind View's", reply)
+        with the_identity_checks_pass(), \
+                mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.MIND_VIEW):
+            reply, _ = self.offer(side=ports.PERSON)
+            self.assertIn("mind's browser", reply)
+        with the_identity_checks_pass():
+            self.assertIn("no such side", self.offer(side="admin")[0])
+        for side in (ports.PERSON, ports.MIND):
+            self.assertIsNone(self.hub.holder(side).current())
+
+    def test_mind_views_browser_goes_through_the_same_identity_checks(self):
+        """Not a copy of them: the shell, the child, the pipe flag and the stream are asked for a
+        Mind View offer exactly as for the person's, so the refusals are the same sentences."""
+        with mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.MIND_VIEW):
+            reply, _ = self.offer(side=ports.MIND)            # this test process is not the installed shell
+        self.assertIn("only the desktop's shell", reply)
+        self.assertIsNone(self.hub.holder(ports.MIND).current())
+        seen = []
+        real = pipes.handover.browser_is_the_callers
+        with the_identity_checks_pass(), \
+                mock.patch.object(pipes.handover, "browser_is_the_callers", lambda *a, **k: seen.append(a) or real(*a, **k)), \
+                mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.MIND_VIEW):
+            reply, _ = self.offer(side=ports.MIND)
+        self.assertEqual(len(seen), 1)
+        self.assertNotEqual(reply, "ok", "this process is not a child of the shell, started with the pipe")
+
     def test_a_live_browsers_pipe_is_not_taken_away_by_a_later_offer(self):
         with the_identity_checks_pass():
             self.assertEqual(self.offer()[0], "ok")
@@ -260,7 +303,7 @@ class TheHandOver(unittest.TestCase):
     def test_the_hand_over_connection_is_a_lease_held_while_the_browser_is(self):
         """M3: the shell reads the connection closing as 'the service lost the pipe'."""
         alive = {"yes": True}
-        holder = pipes.PipeHolder(start_of=lambda pid: 1 if alive["yes"] else 2)
+        holder = pipes.Pipes(start_of=lambda pid: 1 if alive["yes"] else 2)
         path = holder.serve(os.path.join(self.dir, "lease.sock"))
         self.addCleanup(holder.stop)
         mine, theirs = socket.socketpair()
@@ -416,11 +459,12 @@ class TheHandOverChecksWhoIsGivingWhat(unittest.TestCase):
         copy = os.path.join(self.tmp, "yantrik-ui")
         shutil.copy(os.path.realpath(sys.executable), copy)
         proc = self.proc_of(os.getpid(), exe=copy)
-        holder = pipes.PipeHolder(proc=proc)
+        hub = pipes.Pipes(proc=proc)
         a, _b = socket.socketpair()
         peer = mock.Mock(pid=os.getpid(), uid=os.getuid())
-        self.assertIn("only the desktop's shell", holder.take(a, peer=peer))
-        self.assertIsNone(holder.current())
+        self.assertIn("only the desktop's shell", hub.take(a, peer=peer))
+        for side in (ports.PERSON, ports.MIND):
+            self.assertIsNone(hub.holder(side).current())
 
 
 class NothingListensOnThePersonsOldPort(unittest.TestCase):
@@ -434,16 +478,16 @@ class NothingListensOnThePersonsOldPort(unittest.TestCase):
             made.append(s.family)
             return s
         with mock.patch.object(socket, "socket", spy):
-            holder = pipes.PipeHolder()
+            hub = pipes.Pipes()
             d = drv.Driver(judge=False, guard_=guard.Guard(identify=lambda p: (_ for _ in ()).throw(
-                listener.Unidentified("nothing", nobody=True)), uid=ME, side_of=lambda: ports.PERSON, pipes=holder))
+                listener.Unidentified("nothing", nobody=True)), uid=ME, side_of=lambda: ports.PERSON, pipes=hub))
             d.status()
         self.assertNotIn(socket.AF_INET, made)
         self.assertNotIn(socket.AF_INET6, made)
 
     def test_the_persons_launch_gives_no_port_and_nothing_else_spells_9222_for_listening(self):
         flags = open(os.path.join(ROOT, "crates", "yantrik-browser-ports", "src", "lib.rs"), encoding="utf-8").read()
-        self.assertIn('return vec![PIPE_FLAG.into()]', flags)
+        self.assertIn('Side::Person => vec![PIPE_FLAG.into()]', flags)
 
     def test_nothing_in_the_deploy_tools_reaches_the_persons_browser_by_port(self):
         """M4: release-check, yos and its web helpers drive the Browser through its service; no port is spelled."""
@@ -455,14 +499,44 @@ class NothingListensOnThePersonsOldPort(unittest.TestCase):
             for spelled in ("9222", "yos.CDP", "/json/version", "/json/new", "/json/list", "person_port"):
                 self.assertNotIn(spelled, source, "%s still reaches for %s" % (tool, spelled))
 
-    def test_a_mind_is_sent_to_9223_whoever_is_open(self):
+    def test_a_mind_is_sent_to_mind_views_pipe_whoever_is_open(self):
+        """#1200: Mind View's browser is held over a pipe like the person's: no address, no TCP."""
         for persons_open in (True, False):
-            g = guard.Guard(identify=lambda p: None, uid=ME, side_of=lambda: ports.MIND,
-                            pipes=pipes.PipeHolder() if not persons_open else mock.Mock())
+            hub = pipes.Pipes()
+            if persons_open:
+                hub.give(ports.PERSON, socket.socketpair()[0], os.getpid())
+            g = guard.Guard(identify=lambda p: None, uid=ME, side_of=lambda: ports.MIND, pipes=hub)
             d = drv.Driver(judge=False, guard_=g)
-            self.assertEqual(d.sides.browsers[ports.MIND].address, "http://127.0.0.1:9223")
-            self.assertIsNone(d.sides.browsers[ports.MIND].opener)
-            self.assertIsNone(d.sides.browsers[ports.PERSON].address)
+            for side in (ports.MIND, ports.PERSON):
+                self.assertIsNone(d.sides.browsers[side].address)
+                self.assertIsNotNone(d.sides.browsers[side].opener)
+            self.assertTrue(d.sides.browsers[ports.MIND].held_at_start, "every page is held until fenced")
+            self.assertFalse(d.sides.browsers[ports.PERSON].held_at_start)
+
+    def test_a_browser_cannot_be_given_an_address_by_the_service_or_by_mistake(self):
+        from yantrik_browser import cdp
+        with self.assertRaises(ValueError):
+            cdp.Browser()                                    # no default port to fall back to
+        with self.assertRaises(ValueError):
+            cdp.Browser("http://127.0.0.1:1", opener=lambda: None)
+
+    def test_the_service_with_mind_view_up_opens_no_tcp_socket_either(self):
+        made = []
+        real = socket.socket
+
+        def spy(family=-1, type=-1, *a, **kw):
+            s = real(family, type, *a, **kw)
+            made.append(s.family)
+            return s
+        hub = pipes.Pipes()
+        hub.give(ports.MIND, socket.socketpair()[0], os.getpid())
+        with mock.patch.object(socket, "socket", spy), \
+                mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.MIND_VIEW):
+            d = drv.Driver(judge=False, guard_=guard.Guard(identify=lambda p: (_ for _ in ()).throw(
+                listener.Unidentified("nothing", nobody=True)), uid=ME, side_of=lambda: ports.MIND, pipes=hub))
+            d.status()
+        self.assertNotIn(socket.AF_INET, made)
+        self.assertNotIn(socket.AF_INET6, made)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
-//! The person's Browser's DevTools pipe, made here and handed to the browser service (#1137).
+//! A browser's DevTools pipe, made here and handed to the browser service: the person's Browser
+//! (#1137) and Mind View's (#1200), through this one path.
 //!
 //! Chromium started with `--remote-debugging-pipe` reads CDP on fd 3 and writes it on fd 4 and
 //! listens on no port. The shell starts the browser (window, session environment, registry: the
@@ -13,11 +14,15 @@
 //! is checked before anything is sent (`browser_peer`): the socket's directory belongs to the
 //! person's account, so whoever binds the path is asked who it is.
 //!
-//! Only the person's Browser gets one, and only the launch the dock's `Launch::Browser` arm makes
-//! (`dock::spawn_persons_browser`): a catalogue entry or a `.desktop` file whose arguments carry
-//! the pipe switch is started like any other app, with no pipe (review of aff60d15, N3). A Mind
-//! View browser is launched with its own port, and `browser_launch::mind_view_args` drops the pipe
-//! flag from whatever a caller passed.
+//! Only two launches get one, each said by the arm that makes it and never read off the arguments
+//! (review of aff60d15, N3): the person's Browser (the dock's `Launch::Browser` arm,
+//! `dock::spawn_persons_browser`) and Mind View's Chromium (a launch in Mind View's seat of the
+//! `browser` app, `browser_launch::pipe_role`). A catalogue entry or a `.desktop` file whose
+//! arguments carry the pipe switch is started like any other app, with no pipe. Neither browser has
+//! a DevTools port: a port is reachable by every process of the machine, and a job that speaks raw
+//! DevTools to it goes round the fence the browser service puts on a browser's tabs (#1200). Which
+//! of the two a stream is for goes to the service with it (`Role`), and the service checks the
+//! profile the process owns against the role, so neither can be offered as the other.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -52,6 +57,24 @@ const RETRY: Duration = Duration::from_millis(500);
 const LEASE_LOOK: Duration = Duration::from_secs(2);
 /// A second copy of a browser already open hands over and exits within this; it is not offered.
 const SETTLE: Duration = Duration::from_millis(1500);
+
+/// Which browser a stream is for. The launch says it; the service checks it against the profile
+/// the process owns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Person,
+    MindView,
+}
+
+impl Role {
+    /// The word the service reads in the hand-over's header.
+    pub fn side(self) -> &'static str {
+        match self {
+            Role::Person => "person",
+            Role::MindView => "mind",
+        }
+    }
+}
 
 /// The service's hand-over socket, in the session's socket directory.
 pub fn socket_path() -> PathBuf {
@@ -100,21 +123,24 @@ pub fn attach(command: &mut Command) -> std::io::Result<Handoff> {
     Ok(Handoff { mine, theirs })
 }
 
-/// The launcher's one call: if this launch is the person's Browser (`persons_browser`, said by the
-/// one arm that starts it, never read off the arguments) asking for a pipe, its fds 3 and 4 are
-/// made here and the shell's end is returned, to be offered once the browser runs. A pipe that
-/// cannot be made is logged and the browser starts without one (it cannot then be driven).
-pub fn attach_for(command: &mut Command, args: &[&str], persons_browser: bool) -> Option<Handoff> {
-    if !wants(args, persons_browser) {
-        return None;
-    }
-    attach(command).map_err(|e| tracing::warn!(error = %e, "No DevTools pipe for the Browser")).ok()
+/// The launcher's one call: if this launch is one of the two browsers that get a pipe (`role`,
+/// said by the launch itself, never read off the arguments), its fds 3 and 4 are made here and the
+/// shell's end is returned with the role, to be offered once the browser runs. A pipe that cannot
+/// be made is logged and the browser starts without one (it cannot then be driven).
+pub fn attach_for(command: &mut Command, args: &[&str], role: Option<Role>) -> Option<(Role, Handoff)> {
+    let role = role.filter(|role| wants(args, *role))?;
+    attach(command).map_err(|e| tracing::warn!(error = %e, ?role, "No DevTools pipe for the browser")).ok().map(|h| (role, h))
 }
 
-/// Whether this launch is the person's Browser asking for a pipe: the Browser arm's own launch
-/// (a Firefox there asks for none), never another launch that happens to carry the flag.
-pub fn wants(args: &[&str], persons_browser: bool) -> bool {
-    persons_browser && args.contains(&PIPE_FLAG)
+/// Whether a launch of `role` asks for a pipe. The person's Browser's own launch carries the flag
+/// in its arguments (a Firefox there asks for none). Mind View's Chromium has its arguments made by
+/// `browser_launch::mind_view_args`, which always adds it, and a launch that is not a Chromium is
+/// given no role at all (`browser_launch::pipe_role`).
+pub fn wants(args: &[&str], role: Role) -> bool {
+    match role {
+        Role::Person => args.contains(&PIPE_FLAG),
+        Role::MindView => true,
+    }
 }
 
 fn alive(pid: u32) -> bool {
@@ -126,14 +152,14 @@ impl Handoff {
     /// The browser is running as `pid`: close the browser's end here and offer ours to the
     /// service, on a thread that lives as long as the browser. A browser that is gone by then (a
     /// second copy that handed over to the first) is not offered.
-    pub fn offer(self, pid: u32) {
+    pub fn offer(self, pid: u32, role: Role) {
         let Handoff { mine, theirs } = self;
         drop(theirs);
         let spawned = std::thread::Builder::new().name("browser-pipe".into()).spawn(move || {
             std::thread::sleep(SETTLE);
             // Read afresh for every offer: a restarted service has a new pid, and the service
             // manager records the current one on every start it performs.
-            keep_offered(&socket_path(), &mine, pid, || ServiceIdentity::installed(service_pid()));
+            keep_offered(&socket_path(), &mine, pid, role, || ServiceIdentity::installed(service_pid()));
         });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "Could not start the thread that hands the Browser's pipe over");
@@ -143,7 +169,7 @@ impl Handoff {
 
 /// Offer `mine` to the service until the browser exits; each time the service lets go, again.
 /// `identity` is asked for before each offer, so the pid it expects is the service's current one.
-fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, identity: impl Fn() -> std::io::Result<ServiceIdentity>) {
+fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, role: Role, identity: impl Fn() -> std::io::Result<ServiceIdentity>) {
     let started = Instant::now();
     let mut said = false;
     while alive(pid) {
@@ -151,9 +177,9 @@ fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, identity: impl Fn() -> st
             Ok(identity) => identity,
             Err(e) => return tracing::error!(pid, error = %e, "Cannot tell which process is the browser service; the Browser's pipe is not offered"),
         };
-        match send(path, mine, pid, &identity) {
+        match send(path, mine, pid, role, &identity) {
             Ok(lease) => {
-                tracing::info!(pid, "The Browser's DevTools pipe is with the browser service");
+                tracing::info!(pid, "The browser's DevTools pipe is with the browser service");
                 said = false;
                 wait_for_lease_end(&lease, pid);
                 tracing::info!(pid, "The browser service let go of the Browser's pipe; offering it again");
@@ -195,10 +221,10 @@ pub enum Refusal {
     Final(String),
 }
 
-/// One hand-over: connect, check who answers, then the JSON line `{"pid":N}` with `fd` in
+/// One hand-over: connect, check who answers, then the JSON line `{"pid":N,"side":"person"|"mind"}` with `fd` in
 /// SCM_RIGHTS, then the service's reply line. The connection is returned: it is the lease, and
 /// stays open while the service holds the stream.
-pub fn send(path: &Path, fd: &OwnedFd, pid: u32, identity: &ServiceIdentity) -> Result<UnixStream, Refusal> {
+pub fn send(path: &Path, fd: &OwnedFd, pid: u32, role: Role, identity: &ServiceIdentity) -> Result<UnixStream, Refusal> {
     let retry = |e: String| Refusal::Retry(e);
     let stream = UnixStream::connect(path).map_err(|e| retry(format!("{}: {e}", path.display())))?;
     match identity.check(&stream) {
@@ -210,7 +236,7 @@ pub fn send(path: &Path, fd: &OwnedFd, pid: u32, identity: &ServiceIdentity) -> 
     }
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-    let line = format!("{{\"pid\":{pid}}}\n");
+    let line = format!("{{\"pid\":{pid},\"side\":\"{}\"}}\n", role.side());
     let mut iov = libc::iovec { iov_base: line.as_ptr() as *mut _, iov_len: line.len() };
     // SAFETY: CMSG_SPACE is arithmetic.
     let space = unsafe { libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) } as usize;
@@ -247,13 +273,23 @@ mod tests {
     use super::super::browser_peer::tests::{this_process_is_not_the_service, this_process_is_the_service};
     use std::os::unix::net::UnixListener;
 
-    /// N3: the pipe goes with the Browser arm's own launch; a catalogue entry, a `.desktop` file
-    /// or a Mind View launch whose arguments carry the flag is not the person's Browser.
+    /// N3: the pipe goes with a launch that was given a role by the arm that makes it; a catalogue
+    /// entry or a `.desktop` file whose arguments carry the flag has no role, so no pipe.
     #[test]
-    fn only_the_persons_browser_asks_for_a_pipe() {
-        assert!(wants(&["--no-first-run", PIPE_FLAG], true));
-        assert!(!wants(&[PIPE_FLAG], false), "the flag in a launch's arguments is not what makes it the Browser");
-        assert!(!wants(&["--no-first-run"], true), "a Firefox there asks for no pipe");
+    fn only_a_launch_with_a_role_asks_for_a_pipe() {
+        assert!(wants(&["--no-first-run", PIPE_FLAG], Role::Person));
+        assert!(!wants(&["--no-first-run"], Role::Person), "a Firefox there asks for none");
+        assert!(wants(&[], Role::MindView), "Mind View's arguments always carry it");
+        let mut command = Command::new("true");
+        assert!(attach_for(&mut command, &[PIPE_FLAG], None).is_none(), "the flag in a launch's arguments is not what makes it a browser");
+        assert!(attach_for(&mut command, &[PIPE_FLAG], Some(Role::Person)).is_some_and(|(role, _)| role == Role::Person));
+        assert!(attach_for(&mut command, &[], Some(Role::MindView)).is_some_and(|(role, _)| role == Role::MindView));
+    }
+
+    /// #1200: the header names the side, in the words the service reads.
+    #[test]
+    fn the_header_says_which_browser_the_stream_is_for() {
+        assert_eq!((Role::Person.side(), Role::MindView.side()), ("person", "mind"));
     }
 
     /// The child's fd 4 is the stream's other end, and what it writes there arrives NUL-ended.
@@ -315,9 +351,9 @@ mod tests {
             (&conn).write_all(b"ok\n").unwrap();
             (got, conn)
         });
-        let lease = send(&path, &mine, 4242, &this_process_is_the_service("handover")).unwrap();
+        let lease = send(&path, &mine, 4242, Role::MindView, &this_process_is_the_service("handover")).unwrap();
         let ((line, received), _conn) = server.join().unwrap();
-        assert_eq!(line.trim(), "{\"pid\":4242}");
+        assert_eq!(line.trim(), "{\"pid\":4242,\"side\":\"mind\"}");
         drop(lease);
         // The received fd is the same stream: a write on it arrives at `theirs`.
         UnixStream::from(received).write_all(b"x").unwrap();
@@ -337,7 +373,7 @@ mod tests {
             conn.read_to_end(&mut seen).unwrap();
             seen
         });
-        let err = send(&path, &mine, 4242, &this_process_is_not_the_service("impostor")).unwrap_err();
+        let err = send(&path, &mine, 4242, Role::Person, &this_process_is_not_the_service("impostor")).unwrap_err();
         assert!(matches!(&err, Refusal::Final(why) if why.contains("not the browser service")), "{err:?}");
         assert!(server.join().unwrap().is_empty(), "not a byte, and no fd, reached the impostor");
     }
@@ -350,7 +386,7 @@ mod tests {
         let (mine, theirs) = socketpair().unwrap();
         let mut browser = Command::new("sleep").arg("30").spawn().unwrap();
         let pid = browser.id();
-        let shell = std::thread::spawn(move || keep_offered(&path, &mine, pid, || Ok(this_process_is_the_service("lease"))));
+        let shell = std::thread::spawn(move || keep_offered(&path, &mine, pid, Role::MindView, || Ok(this_process_is_the_service("lease"))));
         // The first service takes the stream and goes away; the second takes it again and stays.
         let (first, _) = listener.accept().unwrap();
         let (_, one) = receive(&first);
@@ -389,7 +425,7 @@ mod tests {
             }
         };
         let offered = path.clone();
-        let shell = std::thread::spawn(move || keep_offered(&offered, &mine, pid, identity));
+        let shell = std::thread::spawn(move || keep_offered(&offered, &mine, pid, Role::Person, identity));
         let (first, _) = listener.accept().unwrap();
         let _ = receive(&first);
         (&first).write_all(b"ok
@@ -440,7 +476,7 @@ c.recv(1)
             let _ = conn.read(&mut buf);
             conn.write_all(b"refused: only the desktop's shell hands over a browser\n").unwrap();
         });
-        let err = send(&path, &mine, 1, &this_process_is_the_service("refusal")).unwrap_err();
+        let err = send(&path, &mine, 1, Role::Person, &this_process_is_the_service("refusal")).unwrap_err();
         server.join().unwrap();
         assert!(matches!(&err, Refusal::Final(why) if why.contains("refused")), "{err:?}");
     }

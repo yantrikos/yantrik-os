@@ -137,9 +137,10 @@ def sweep(browser, retry=False):
             pass
 
 
-def person_arrived(driver, serial, holder, ports, errors):
-    """The person's pipe was given. Connect to it, retrying until the driver's lock is taken or
-    this hand-over is no longer the held one: an arrival is never dropped because a call is busy."""
+def arrived(driver, side, serial, holder, errors):
+    """A browser's pipe was given. Connect to it, retrying until the driver's lock is taken or
+    this hand-over is no longer the held one: an arrival is never dropped because a call is busy.
+    Mind View's browser connects here too, which holds and fences whatever page it already has."""
     while True:
         held = holder.held
         if held is None or held.serial != serial:
@@ -147,7 +148,7 @@ def person_arrived(driver, serial, holder, ports, errors):
         if driver.lock.acquire(timeout=ARRIVAL_RETRY):
             break
     try:
-        browser = driver.sides.ready(ports.PERSON)
+        browser = driver.sides.ready(side)
         if browser is not None:
             browser.connect()
     except errors:
