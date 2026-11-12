@@ -2,7 +2,7 @@
 //
 // Grounded like the macOS Dock, not floating: centred, exactly as wide as its buttons, its bottom
 // edge on the screen's bottom edge, 16px round on the top corners and square below. The compositor
-// keeps maximised windows above it (config/labwc/rc.xml reserves Theme.taskbar-height, 48px).
+// keeps maximised windows above it (config/labwc/rc.xml reserves Theme.taskbar-height, 64px).
 //
 //   [Apps] │ pinned and running apps … │ [Yantrik Mind]
 //
@@ -548,7 +548,7 @@ export component GroundedDock inherits Rectangle {
                 // The mind is not an app, so it is not a tile: the ring glyph in the mind's teal on
                 // no fill, inside a 1px teal circle, where every app is a filled rounded square.
                 // The one place teal appears in the dock. A mind that cannot be reached is grey
-                // rather than a teal that lies. Same 32px footprint as a tile; the 40px button
+                // rather than a teal that lies. Same 48px footprint as a tile; the 52px button
                 // around it is the hit area.
                 Rectangle {
                     width: Theme.dock-icon;
