@@ -1175,6 +1175,7 @@ EOF
     # Only after the new build answered: restart_and_verify does not return from a rollback. Not
     # with --no-restart either, where new keys could name actions the running shell does not have.
     refresh_session_chrome || true
+    end_stale_switcher
   else
     info "not restarting (--no-restart); the new build, and any new keys, take effect on next session start"
   fi
@@ -1606,6 +1607,41 @@ reload_labwc() { # <owner> <pid>...
   return "$ok"
 }
 
+# ── The Alt+Tab renderer, without a new login (#1211) ──
+#
+# labwc starts yantrik-switcher once and starts another only when it exits (packaging/labwc). An
+# update replaced the file and left the old process drawing Alt+Tab until the next login. So after
+# an apply or a roll-back, a renderer whose image is not the installed file is ended with SIGTERM;
+# labwc starts the new one. Found by pid, never by name: a process of the account whose
+# /proc/<pid>/exe is (or was, "... (deleted)") $BIN_DIR/yantrik-switcher and whose parent is one
+# of that account's labwc. The image's sha256 is compared with the file's, which is "the binary
+# changed" however many updates came since, and leaves it alone when they match.
+end_stale_switcher() { # [owner]
+  local bin="$BIN_DIR/yantrik-switcher" owner="${1:-$(desktop_owner)}" uid pid exe ppid have want n=0 as=()
+  [ -x "$bin" ] || return 0
+  uid="$(id -u "$owner" 2>/dev/null)" || return 0
+  want="$(sha256sum < "$bin" 2>/dev/null | cut -d' ' -f1)"
+  [ "$(id -u)" = 0 ] && as=(runuser -u "$owner" --)
+  local labwcs; labwcs=" $(session_labwc_pids "$uid" | tr '\n' ' ')"
+  for pid in $(pgrep -u "$uid" 2>/dev/null); do
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+    [ "${exe% (deleted)}" = "$bin" ] || continue
+    ppid="$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null)"
+    case "$labwcs" in *" $ppid "*) ;; *) continue ;; esac
+    n=$((n + 1))
+    have="$(sha256sum < "/proc/$pid/exe" 2>/dev/null | cut -d' ' -f1)"
+    if [ -n "$have" ] && [ "$have" = "$want" ]; then
+      info "Alt+Tab renderer (pid $pid) already runs the installed binary; left running"
+    elif "${as[@]}" kill -TERM "$pid" 2>/dev/null; then
+      info "ended the Alt+Tab renderer (pid $pid, labwc's child): it ran an older yantrik-switcher; labwc starts the new one"
+    else
+      warn "could not end the Alt+Tab renderer (pid $pid); the new one draws after the next login"
+    fi
+  done
+  [ "$n" != 0 ] || info "Alt+Tab renderer: none was running for $owner"
+  return 0
+}
+
 refresh_session_chrome() {
   [ -d "$SHARE_DIR/labwc" ] || return 0
   local owner uid home pids
@@ -1667,6 +1703,7 @@ cmd_rollback() {
   # The restored build's keys into the person's home: the same gap as an update, the other way
   # round (#854).
   refresh_session_chrome || true
+  end_stale_switcher
 }
 
 # ── status ──────────────────────────────────────────────────────────────────────────────
@@ -5503,6 +5540,45 @@ STUB
   is "and is sent SIGHUP" "129" "$hup"
   t "which the output says" "re-read its config" "$out"
   is "a uid with no labwc has none" "" "$(session_labwc_pids 2147483646)"
+
+  # The Alt+Tab renderer (#1211): a renamed `sleep` is the installed yantrik-switcher, a renamed
+  # `bash` the stand-in labwc that started it. Replaced by a different file, it is ended (SIGTERM,
+  # status 143); replaced by the same bytes, left running; and a process that is the same name
+  # elsewhere, or that labwc did not start, is never signalled.
+  if [ "$(id -u)" != 0 ]; then
+    local sb="$root/swbin" sw_labwc="$root/ylabwc-selftest-sh" sw_pid sw_out sw_rc
+    mkdir -p "$sb" "$root/swother"
+    cp "$(command -v bash)" "$sw_labwc"; cp "$(command -v sleep)" "$sb/yantrik-switcher"
+    cp "$(command -v sleep)" "$root/swother/yantrik-switcher"
+    sw_stand() { # <labwc stand-in's name> <switcher path>: a switcher whose parent has that name; sets sw_pid
+      cp "$sw_labwc" "$root/$1"
+      "$root/$1" -c '"$1" 30 & echo $!; wait' _ "$2" > "$root/sw.pid" 2>/dev/null &
+      sleep 0.4; sw_pid="$(cat "$root/sw.pid")"
+    }
+    sw_end() { YANTRIK_SELFTEST=1 YANTRIK_LABWC_NAME=ylabwc-selftest BIN_DIR="$sb" end_stale_switcher "$(id -un)" 2>&1; }
+    sw_alive() { kill -0 "$sw_pid" 2>/dev/null && echo alive || echo ended; }
+    sw_stand ylabwc-selftest "$sb/yantrik-switcher"
+    sw_out="$(sw_end)"
+    is "an apply with the same switcher leaves the renderer running" "alive" "$(sw_alive)"
+    t "and says so" "left running" "$sw_out"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_out="$(sw_end)"; sleep 0.3
+    is "an apply that changes the switcher ends the old renderer" "ended" "$(sw_alive)"
+    t "and the log names the pid" "ended the Alt+Tab renderer (pid $sw_pid" "$sw_out"
+    cp "$(command -v sleep)" "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    t "with nothing running, it says none was" "none was running" "$(sw_end)"
+    sw_stand ylabwc-selftest "$root/swother/yantrik-switcher"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_end >/dev/null
+    is "a process with that name that is another file is never touched" "alive" "$(sw_alive)"
+    kill "$sw_pid" 2>/dev/null
+    cp "$(command -v sleep)" "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_stand not-a-labwc "$sb/yantrik-switcher"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_end >/dev/null
+    is "the binary, but not labwc's child, is never touched" "alive" "$(sw_alive)"
+    kill "$sw_pid" 2>/dev/null; wait 2>/dev/null
+  fi
 
   # The first update of a machine already in the field (VM 520, 18 Oct): its OLD updater runs the
   # apply, and the only code of this build it runs is `reconcile`. So `reconcile` itself must bring
