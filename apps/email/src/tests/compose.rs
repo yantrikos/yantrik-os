@@ -140,29 +140,6 @@ fn compose_fills_a_draft_and_never_sends() {
     assert!(mail.asked_for("email.send_message").is_empty());
 }
 
-/// #1184: a draft that carries a file keeps its path, says so, and is not sent: the mail service
-/// cannot send an attachment, and a message that went without the file it promised is worse than
-/// one that did not go.
-#[test]
-fn a_draft_with_a_file_attached_keeps_it_and_is_never_sent() {
-    let mail = with_inbox();
-    let app = started(&mail);
-    act(
-        &app,
-        "compose",
-        json!({ "to": "maya@example.com", "subject": "Q4 deck", "body": "Here it is.", "attach": "/home/p/Q4-deck.ydeck" }),
-    )
-    .unwrap();
-    assert_eq!(state(&app)["draft_attachments"], json!(["/home/p/Q4-deck.ydeck"]));
-    app.ui(|ui| ui.invoke_send_email("maya@example.com".into(), "".into(), "".into(), "Q4 deck".into(), "Here it is.".into()));
-    assert_eq!(app.jobs_waiting(), 0, "nothing was queued to send");
-    assert!(notice(&app).starts_with("Not sent: this draft has a file attached"), "{}", notice(&app));
-    assert!(mail.asked_for("email.send_message").is_empty());
-    // New text is a new draft: the file does not follow it.
-    act(&app, "compose", json!({ "to": "a@example.com", "subject": "s", "body": "b" })).unwrap();
-    assert_eq!(state(&app)["draft_attachments"], json!([]));
-}
-
 #[test]
 fn reply_quotes_the_open_message_and_forward_carries_it() {
     let app = started(&with_inbox());

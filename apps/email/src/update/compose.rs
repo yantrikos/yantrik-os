@@ -2,9 +2,11 @@
 //! draft file itself is `drafts.rs`.
 
 use yantrik_app::effects::Effects;
+use yantrik_app::Refused;
 use yantrik_app::jobs::{Concurrency, JobKey, Scope};
 
 use super::drafts::{file_op, UNSURE, UNSURE_STATUS};
+use super::mind_draft;
 use super::say;
 use crate::backend::calls::{self, Outgoing};
 use crate::command::{Command, Listing, Work};
@@ -14,6 +16,9 @@ use crate::{rows, Email};
 
 /// The composer opened on new text: nothing from an earlier send is pending on it.
 fn opened_on_new_text(m: &mut Model) {
+    // A Mind's draft being left keeps what it holds, in its slot.
+    mind_draft::park(m);
+    m.composer.in_slot = false;
     m.composer.attachments.clear();
     m.composer.open = true;
     m.composer.unsure = false;
@@ -40,6 +45,8 @@ pub fn compose_new(m: &mut Model, fx: &mut Effects<Email>) {
                 m.composer.status = "Draft restored".into();
             }
         }
+        // Nothing of the person's is kept: Compose opens the draft Yantrik prepared, if there is one.
+        Ok(None) if matches!(m.composer.mind, Ok(Some(_))) => mind_draft::show(m, fx),
         Ok(None) => {
             m.composer.text = Draft::default();
             m.composer.status.clear();
@@ -52,32 +59,13 @@ pub fn compose_new(m: &mut Model, fx: &mut Effects<Email>) {
     }
 }
 
-/// `compose`: the composer opened as Compose opens it, with these filled in. Sending is not
-/// offered on the surface on purpose: a draft can be read before it leaves, and mail that has
-/// already gone cannot be taken back. `attach`, when given, is a file the draft is to carry; it is
-/// kept with the draft, and the draft is not sent from here until the mail service can send it.
-pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach: String, fx: &mut Effects<Email>) {
-    compose_new(m, fx);
-    if !attach.trim().is_empty() {
-        m.composer.attachments = vec![attach.trim().to_string()];
-        m.composer.status = ATTACHED_STATUS.into();
-    }
-    m.composer.text.to = to;
-    m.composer.text.subject = subject;
-    m.composer.text.body = body;
-    fx.changed(part::COMPOSE_TEXT);
-    // New text: not the message whose send may have gone, so it is not said or kept as one.
-    if m.composer.unsure {
-        m.composer.unsure = false;
-        m.composer.status = "Draft restored".into();
-        if m.notice == UNSURE {
-            super::clear_notice(m, fx);
-        }
-    }
+/// `compose`: a Mind's draft, in its own slot (`mind_draft`). Sending is not offered on the
+/// surface on purpose: a draft can be read before it leaves, and mail that has already gone
+/// cannot be taken back. `attach`, when given, is a file the draft is to carry; it is kept with
+/// the draft, and the draft is not sent from here until the mail service can send it.
+pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach: String, fx: &mut Effects<Email>) -> Result<(), Refused> {
+    mind_draft::compose(m, to, subject, body, attach, fx)
 }
-
-/// What the composer says while a draft carries a file the mail service cannot send.
-const ATTACHED_STATUS: &str = "A file is attached to this draft. Email cannot send attachments yet, so it will not be sent from here.";
 
 /// Reply, or reply to all: the composer opened on the message that is open. None of this needs a
 /// network call; the message is already on screen.
@@ -134,11 +122,33 @@ pub fn send(m: &mut Model, mail: Draft, fx: &mut Effects<Email>) {
     );
 }
 
+/// A Mind's draft went: its slot is emptied, unless the person changed it since Send, which is
+/// then kept in the slot. The person's own draft is not touched either way.
+fn sent_from_slot(m: &mut Model, went: Option<Draft>, fx: &mut Effects<Email>) {
+    m.sync_status = "Message sent".into();
+    m.composer.status.clear();
+    fx.discard_draft(SENDING);
+    if went.as_ref() != Some(&m.composer.text) && !m.composer.text.is_empty() {
+        mind_draft::park(m);
+        say(m, fx, "The message was sent as it was when Send was pressed. What was changed since is kept as the prepared draft.");
+    } else {
+        m.composer.open = false;
+        mind_draft::discard(m);
+    }
+    let folder = m.folder.clone();
+    if let Err(e) = super::mailbox::load_folder(m, &folder, Listing::AfterSend, fx) {
+        tracing::warn!(error = %e, "the folder was not read again after a send");
+    }
+}
+
 pub fn sent(m: &mut Model, outcome: Result<(), String>, fx: &mut Effects<Email>) {
     fx.changed(part::STATUS);
     match outcome {
         Ok(()) => {
             let went = m.composer.sending.take();
+            if m.composer.in_slot {
+                return sent_from_slot(m, went, fx);
+            }
             // It went, so its lane copy is not needed: the text is in Sent.
             fx.discard_draft(SENDING);
             m.composer.unsure = false;
@@ -184,6 +194,9 @@ pub fn sent(m: &mut Model, outcome: Result<(), String>, fx: &mut Effects<Email>)
 pub fn keep_after_send(m: &mut Model, unsure: bool, went: Option<Draft>, fx: &mut Effects<Email>) {
     m.composer.sending = None;
     m.composer.unsure = unsure;
+    if m.composer.in_slot {
+        return mind_draft::park(m);
+    }
     let text = if m.composer.text.is_empty() { went.unwrap_or_default() } else { m.composer.text.clone() };
     if !text.is_empty() {
         file_op(m, FileOp::Save { draft: text, keep: Keep::Quietly, unsure, release_lane: true }, fx);
@@ -197,6 +210,14 @@ pub fn cancel(m: &mut Model, draft: Draft, fx: &mut Effects<Email>) {
     m.composer.open = false;
     m.composer.closed_during_send = m.composer.sending.is_some();
     fx.changed(part::STATUS);
+    // A Mind's draft goes back to its slot: it is not the person's draft, and its files are not
+    // carried by that file.
+    if m.composer.in_slot {
+        m.composer.text = draft;
+        mind_draft::park(m);
+        m.composer.status.clear();
+        return;
+    }
     // The draft file is the person's: closing a Mind's composer neither saves nor clears it.
     if m.for_mind {
         m.composer.status.clear();
@@ -213,6 +234,12 @@ pub fn cancel(m: &mut Model, draft: Draft, fx: &mut Effects<Email>) {
 }
 
 pub fn save_draft(m: &mut Model, draft: Draft, fx: &mut Effects<Email>) {
+    if m.composer.in_slot && !draft.is_empty() {
+        m.composer.text = draft;
+        mind_draft::park(m);
+        m.composer.status = "Draft saved".into();
+        return;
+    }
     if draft.is_empty() {
         m.composer.status.clear();
         return say(m, fx, "There is nothing in the composer to save.");

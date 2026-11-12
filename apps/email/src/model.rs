@@ -10,7 +10,7 @@ use yantrik_ipc_contracts::email::EmailFolder;
 
 use crate::backend::MailService;
 use crate::files::Files;
-use crate::state::{Counted, Draft, MailState, MessageRow, Triage};
+use crate::state::{Counted, Draft, MailState, MessageRow, MindDraft, Triage};
 
 /// The parts of the model `render` draws separately. The composer's text, the search box and
 /// the setup fields are the window's own while the person types, so they are written only when
@@ -167,6 +167,13 @@ pub struct Composer {
     /// fields do not carry them, and the mail service cannot send them, so a draft that has any is
     /// never sent from here: it is said, and nothing goes.
     pub attachments: Vec<String>,
+    /// The draft a Mind made, in its own slot (`state::mind_draft`): never the person's kept
+    /// draft, and kept with its attachments across a restart. An error is a slot that is there
+    /// and could not be read.
+    pub mind: Result<Option<MindDraft>, String>,
+    /// The composer is showing the Mind's draft, so Cancel, Save, a send and the end of the app
+    /// go to its slot and never to the person's draft.
+    pub in_slot: bool,
     /// What is being sent, while a send is in flight: the window says so, a second press cannot
     /// send the message twice, and an edit made meanwhile is told apart from what went.
     pub sending: Option<Draft>,
@@ -355,6 +362,8 @@ impl Model {
                 status: String::new(),
                 kept,
                 attachments: Vec::new(),
+                mind: Ok(None),
+                in_slot: false,
                 sending: None,
                 unsent_at_start: None,
                 kept_unsure: false,

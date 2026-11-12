@@ -8,7 +8,7 @@
 
 use yantrik_app::effects::Effects;
 
-use super::{clear_notice, say};
+use super::{clear_notice, mind_draft, say};
 use crate::command::{Command, Ending, Work};
 use crate::files;
 use crate::model::{part, FileOp, Keep, Model, COMPOSING, SENDING};
@@ -142,7 +142,9 @@ pub fn write_unsent(m: &mut Model, fx: &mut Effects<Email>) {
 pub fn ending(m: &mut Model, how: Ending, fx: &mut Effects<Email>) {
     // A Mind's composer text is not the person's, and a queued save is not written for a Mind:
     // neither goes to the draft lane.
-    let open = (m.composer.open && !m.composer.text.is_empty() && !m.for_mind).then(|| m.composer.text.clone());
+    // A Mind's draft is kept in its slot, with its files, and not as the person's text.
+    mind_draft::park(m);
+    let open = (m.composer.open && !m.composer.text.is_empty() && !m.for_mind && !m.composer.in_slot).then(|| m.composer.text.clone());
     let queued = match &m.composer.queued {
         Some(FileOp::Save { draft, .. }) => Some(draft.clone()),
         _ => None,
