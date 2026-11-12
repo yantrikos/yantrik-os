@@ -138,10 +138,15 @@ mod tests {
     fn a_minds_browser_is_not_another_browser() {
         let me = unsafe { libc::getuid() };
         let proc = tree("minds");
+        let root = tree("minds-profiles");
+        let owned = Profiles { mind_view: root.join("mind-view"), identities: root.join("identities") };
+        std::fs::create_dir_all(owned.identities.join("work")).unwrap();
+        std::fs::create_dir_all(&owned.mind_view).unwrap();
+        std::os::unix::fs::symlink("host-410", owned.mind_view.join("SingletonLock")).unwrap();
+        std::os::unix::fs::symlink("host-411", owned.identities.join("work").join("SingletonLock")).unwrap();
         browser(&proc, 410, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/minds/mind-view --remote-debugging-port=9223");
-        assert!(!another_browser_is_open(&proc, None, me, &profiles()), "Mind View's browser");
         browser(&proc, 411, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/minds/identities/work --remote-debugging-port=9300");
-        assert!(!another_browser_is_open(&proc, None, me, &profiles()), "a Mind's other identity");
+        assert!(!another_browser_is_open(&proc, None, me, &owned), "Mind View's and an identity's browsers");
         let proc = tree("headless");
         browser(&proc, 420, "/usr/bin/chromium --headless=new --remote-debugging-port=9300 --user-data-dir=/tmp/x");
         assert!(!another_browser_is_open(&proc, None, me, &profiles()), "a headless browser");
