@@ -211,7 +211,7 @@ export component NotesApp inherits AppWindow {
     }
     Rectangle {vertical-stretch:1;clip:true;
      if !root.opened : VerticalLayout {padding:50px;alignment:center;spacing:18px;
-      Icon{commands:Icons.notes;size:46px;tint:Theme.amber;}
+      HorizontalLayout{alignment:center; Icon{commands:Icons.notes;size:46px;tint:Theme.amber;} }
       Text{text:"A little space to think.";color:Theme.text-primary;font-size:30px;font-weight:600;wrap:word-wrap;horizontal-alignment:center;}
       Text{text:"Gather ideas. Keep the details. Make something of them.\nChoose a note, or start a fresh page.";color:Theme.text-secondary;font-size:14px;wrap:word-wrap;horizontal-alignment:center;}
       HorizontalLayout{alignment:center;YButton{label:"Create a note";variant:0;clicked=>{root.action("new");}}}
