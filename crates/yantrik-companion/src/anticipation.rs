@@ -243,9 +243,9 @@ impl AnticipationEngine {
             PrepOutcome::Dismissed | PrepOutcome::Ignored | PrepOutcome::Expired => return,
         };
         if changed > 0 {
-            // Filed under one fixed app, so the per-sender rise cap holds for prepared work.
+            // Filed under the reserved app `PREPARED_APP`, so the per-sender rise cap holds for prepared work.
             let mut receipt = Receipt::bare(kind, id);
-            receipt.app = "prepared".into();
+            receipt.app = crate::bond::PREPARED_APP.into();
             BondTracker::record_receipt(conn, &receipt);
         }
     }
@@ -515,6 +515,14 @@ mod tests {
         }
         let state = BondTracker::get_state(&conn);
         assert_eq!(state.receipts, 50);
+        let filed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bond_events WHERE json_extract(context, '$.app') = ?1",
+                [crate::bond::PREPARED_APP],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(filed, 50, "all under the one reserved app");
         assert!(state.bond_score <= crate::bond::PAIR_RISE_CAP + 1e-9, "got {}", state.bond_score);
     }
 

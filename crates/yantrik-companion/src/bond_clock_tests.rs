@@ -82,7 +82,7 @@ fn a_receipt_that_ages_out_while_nothing_is_written_goes_at_startup() {
 }
 
 #[test]
-fn a_clock_a_little_behind_the_stamps_deletes_nothing_and_keeps_the_order_written() {
+fn stamps_half_a_day_ahead_are_not_dropped_and_order_follows_rowid() {
     let conn = conn();
     card(&conn, false, "notes", "create", false, "no");
     backdate(&conn, "no", -0.5); // stamped half a day ahead of the clock
@@ -115,4 +115,48 @@ fn one_receipt_stamped_in_the_future_does_not_stop_retention() {
         (at[0] - now_ts()).abs() < 30.0,
         "C carries the real clock, not A's stamp"
     );
+}
+
+const DAY: f64 = 86_400.0;
+
+/// Write one receipt at `at` through the real path.
+fn write_at(conn: &Connection, id: &str, at: f64) {
+    let mut r = Receipt::bare(ReceiptKind::CardAllowed, id);
+    r.app = "notes".into();
+    r.action = "create".into();
+    assert!(BondTracker::record_receipt_at(conn, &r, at));
+}
+
+#[test]
+fn an_impossible_clock_at_1970_or_2000_erases_nothing() {
+    for bad in [0.0, 946_684_800.0] {
+        let conn = conn();
+        let real = now_ts();
+        write_at(&conn, "a", real - 2.0 * DAY);
+        write_at(&conn, "b", real);
+        BondTracker::ensure_tables_at(&conn, bad);
+        write_at(&conn, "c", bad);
+        assert_eq!(stamps(&conn).len(), 3, "nothing dropped at clock {bad}");
+    }
+}
+
+#[test]
+fn a_receipt_written_under_an_impossible_clock_goes_once_the_clock_is_right() {
+    let conn = conn();
+    let real = now_ts();
+    write_at(&conn, "kept", real - DAY);
+    write_at(&conn, "odd", 946_684_800.0);
+    BondTracker::ensure_tables_at(&conn, real);
+    assert_eq!(stamps(&conn), vec![real - DAY]);
+}
+
+#[test]
+fn a_clock_two_days_back_forgets_what_was_written_after_it_and_keeps_older() {
+    let conn = conn();
+    let real = now_ts();
+    write_at(&conn, "old", real - 10.0 * DAY);
+    write_at(&conn, "recent", real - 0.5 * DAY);
+    write_at(&conn, "today", real);
+    BondTracker::ensure_tables_at(&conn, real - 2.0 * DAY); // still after the floor
+    assert_eq!(stamps(&conn), vec![real - 10.0 * DAY], "only the older one stays");
 }

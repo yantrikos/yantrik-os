@@ -30,12 +30,26 @@ pub use yantrik_companion_core::bond::{
 /// The `bond_events.event_type` a receipt is stored under.
 pub(crate) const RECEIPT_EVENT: &str = "receipt";
 
+/// The earliest date the clock can truly show: 2026-11-01 00:00 UTC. This code did not exist
+/// before it, so a clock reading earlier (a dead RTC at 1970 or 2000, before time sync) is
+/// impossible and is not trusted to judge a receipt "too far ahead".
+pub(crate) const EARLIEST_TRUE_CLOCK: f64 = 1_793_491_200.0;
+
+/// The reserved `app` that prepared-work receipts are filed under. The leading `~` can never be
+/// a Mind's name, so prepared work shares one rise cap and collides with no sender.
+pub(crate) const PREPARED_APP: &str = "~prepared";
+
 /// Reads and writes the bond.
 pub struct BondTracker;
 
 impl BondTracker {
     /// Ensure bond tables exist. Called once on startup.
     pub fn ensure_tables(conn: &Connection) {
+        Self::ensure_tables_at(conn, now_ts());
+    }
+
+    /// [`Self::ensure_tables`] with the clock given, so a test can set it.
+    pub(crate) fn ensure_tables_at(conn: &Connection, now: f64) {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS bond_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -68,7 +82,7 @@ impl BondTracker {
             CREATE INDEX IF NOT EXISTS idx_bond_events_created ON bond_events(created_at);",
         )
         .expect("failed to create bond tables");
-        Self::drop_old_receipts(conn);
+        Self::drop_old_receipts(conn, now);
     }
 
     /// The bond as the receipts have it.
@@ -141,8 +155,13 @@ impl BondTracker {
     /// given a fresh id, so each one counts. A receipt that lowers the score carries the sentence
     /// that says why. Receipts past [`RECEIPT_RETENTION_DAYS`] are dropped as this one is written.
     pub fn record_receipt(conn: &Connection, receipt: &Receipt) -> bool {
-        let stamp = now_ts();
-        Self::drop_old_receipts(conn);
+        Self::record_receipt_at(conn, receipt, now_ts())
+    }
+
+    /// [`Self::record_receipt`] with the clock given, so a test can set it.
+    pub(crate) fn record_receipt_at(conn: &Connection, receipt: &Receipt, now: f64) -> bool {
+        let stamp = now;
+        Self::drop_old_receipts(conn, now);
         let source_id = if receipt.source_id.is_empty() {
             uuid7::uuid7().to_string()
         } else {
@@ -180,15 +199,20 @@ impl BondTracker {
     }
 
     /// Drop receipts more than [`RECEIPT_RETENTION_DAYS`] old by the clock, at startup and on each
-    /// write, and receipts stamped more than a day ahead of it: those were written under a bad
-    /// clock and their age cannot be known. A clock set back moves the cutoff earlier, so it
-    /// deletes less, never early; a clock that jumps forward may forget early, the safe side for
-    /// privacy. Order is by `rowid`, never by stamp. Reading never calls this.
-    fn drop_old_receipts(conn: &Connection) {
-        let now = now_ts();
+    /// write. That arm always runs. A second arm drops receipts stamped more than a day ahead of
+    /// the clock, but only once the clock shows [`EARLIEST_TRUE_CLOCK`] or later, so a boot at
+    /// 1970 or 2000 erases nothing, and a receipt written while the clock was impossible is
+    /// dropped once the clock is right. Two faults still forget, both on the side of privacy: a
+    /// clock set back by more than a day, to a date after [`EARLIEST_TRUE_CLOCK`], forgets every
+    /// receipt written after the date it shows; a clock far ahead forgets older ones. Order is by
+    /// `rowid`, never by stamp. Reading never calls this.
+    fn drop_old_receipts(conn: &Connection, now: f64) {
+        let oldest = now - RECEIPT_RETENTION_DAYS as f64 * 86_400.0;
+        // Beyond any stamp, so the future arm cannot match, while the clock is impossible.
+        let newest = if now >= EARLIEST_TRUE_CLOCK { now + 86_400.0 } else { f64::INFINITY };
         conn.execute(
             "DELETE FROM bond_events WHERE event_type = ?1 AND (created_at < ?2 OR created_at > ?3)",
-            params![RECEIPT_EVENT, now - RECEIPT_RETENTION_DAYS as f64 * 86_400.0, now + 86_400.0],
+            params![RECEIPT_EVENT, oldest, newest],
         )
         .ok();
     }
