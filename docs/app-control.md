@@ -813,9 +813,12 @@ framework opens there at all any more; see the last section.)
   within 8 s", which does not say where a slow start may still land). The answer is settled, and
   `open_app`'s also carries `app`: the opened app's own summary (`state`) and its actions with the
   arguments each takes (`actions`, e.g. `new {text?}`, `save_as {path}`), so the next call can act.
-- `open_url`, `launch_browser` and `open_app browser` open Mind View's browser (port 9223, its own
-  profile), or are refused; a mind's `web_*` and `browser_*` tools drive only it. The person's Browser
-  (9222, their profile) is theirs alone: the port is picked by who calls (`browsers.conf`).
+- `open_app browser` opens Mind View's browser (its own profile), or is refused, and a mind's
+  `browser` tool drives only it. Neither browser has a DevTools port (#1137, #1200): each runs with
+  `--remote-debugging-pipe` and the shell hands its stream to the browser service, which picks the
+  browser by who calls. The person's Browser (their profile) is theirs alone. The built-in
+  companion's own `open_url`, `launch_browser` and `browser_*` tools had no road but that port; they
+  say to use the `browser` tool.
 - `agent_run` mirrors the command and its output into a terminal in Mind View. The view is text
   and colours only (no screen clears, no carriage returns, no titles), capped per command; the
   answer and the Agents screen keep the full output.
