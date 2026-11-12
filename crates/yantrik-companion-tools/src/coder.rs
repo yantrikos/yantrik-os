@@ -23,8 +23,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use yantrik_ipc_contracts::home_paths::workshops;
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
+use crate::coder_deps::install_deps;
+use crate::spawn::SandboxMode;
 
 const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
 const OUTPUT_DIR: &str = "/home/yantrik/.config/yantrik/scripts/output";
@@ -200,7 +203,7 @@ const PIP_NAME_MAP: &[(&str, &str)] = &[
     ("yfinance", "yfinance"),
 ];
 
-fn detect_python_deps(content: &str) -> Vec<String> {
+pub(crate) fn detect_python_deps(content: &str) -> Vec<String> {
     let mut packages = HashSet::new();
     for line in content.lines() {
         let trimmed = line.trim();
@@ -237,7 +240,7 @@ fn detect_python_deps(content: &str) -> Vec<String> {
     sorted
 }
 
-fn detect_node_deps(content: &str) -> Vec<String> {
+pub(crate) fn detect_node_deps(content: &str) -> Vec<String> {
     let mut packages = HashSet::new();
     let builtin = ["fs", "path", "os", "http", "https", "url", "util", "crypto",
                    "stream", "events", "child_process", "cluster", "net", "dns",
@@ -280,34 +283,6 @@ fn detect_node_deps(content: &str) -> Vec<String> {
     let mut sorted: Vec<_> = packages.into_iter().collect();
     sorted.sort();
     sorted
-}
-
-/// Install dependencies before execution. Returns error message if installation fails.
-fn install_deps(language: &str, deps: &[String]) -> Option<String> {
-    if deps.is_empty() { return None; }
-
-    let (cmd, args_prefix): (&str, &[&str]) = match language {
-        "python" => ("pip3", &["install", "-q", "--break-system-packages"]),
-        "node" | "javascript" | "typescript" => ("npm", &["install", "--no-save", "--silent"]),
-        "ruby" => ("gem", &["install", "--no-document"]),
-        _ => return None,
-    };
-
-    tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
-
-    let mut command = std::process::Command::new(cmd);
-    command.args(args_prefix);
-    command.args(deps);
-    command.current_dir(scripts_dir());
-
-    match command.output() {
-        Ok(output) if output.status.success() => None,
-        Ok(output) => {
-            let err = String::from_utf8_lossy(&output.stderr);
-            Some(format!("Dependency install failed ({cmd}): {}", err.chars().take(500).collect::<String>()))
-        }
-        Err(e) => Some(format!("Could not run {cmd}: {e}")),
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -442,31 +417,6 @@ struct ExecutionResult {
     sandboxed: bool,
 }
 
-// ── Sandbox modes ──
-
-/// Controls how isolated the script execution environment is.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum SandboxMode {
-    /// Full isolation: no network, read-only filesystem, PID namespace.
-    /// Default for code_execute and script_run.
-    Strict,
-    /// Filesystem isolation but network allowed.
-    /// For web portals, API calls, data fetching scripts.
-    Network,
-    /// No sandbox. Only used if bwrap unavailable.
-    None,
-}
-
-impl SandboxMode {
-    fn from_str(s: &str) -> Self {
-        match s {
-            "network" | "web" => Self::Network,
-            "none" | "unsafe" => Self::None,
-            _ => Self::Strict,
-        }
-    }
-}
-
 /// Check if bubblewrap is available on this system.
 fn has_bwrap() -> bool {
     let result = std::process::Command::new("/usr/bin/bwrap")
@@ -485,81 +435,6 @@ fn has_bwrap() -> bool {
             false
         }
     }
-}
-
-/// Build bwrap arguments for sandboxed execution.
-fn build_bwrap_args(
-    sandbox: SandboxMode,
-    workspace: &Path,
-    output: &Path,
-) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
-
-    // Read-only system mounts
-    for dir in &["/usr", "/lib", "/bin", "/etc"] {
-        if Path::new(dir).exists() {
-            args.push("--ro-bind".into());
-            args.push(dir.to_string());
-            args.push(dir.to_string());
-        }
-    }
-    // /sbin for system tools some scripts may need
-    if Path::new("/sbin").exists() {
-        args.push("--ro-bind".into());
-        args.push("/sbin".into());
-        args.push("/sbin".into());
-    }
-    // lib64 symlink (needed on some systems)
-    if Path::new("/usr/lib64").exists() {
-        args.push("--symlink".into());
-        args.push("usr/lib64".into());
-        args.push("/lib64".into());
-    }
-
-    // Writable workspace (scripts + output)
-    args.push("--bind".into());
-    args.push(workspace.to_string_lossy().to_string());
-    args.push(workspace.to_string_lossy().to_string());
-    if output != workspace && output.starts_with(workspace) {
-        // output is inside workspace, already covered
-    } else if output.exists() {
-        args.push("--bind".into());
-        args.push(output.to_string_lossy().to_string());
-        args.push(output.to_string_lossy().to_string());
-    }
-
-    // Writable /tmp for temp files
-    args.push("--tmpfs".into());
-    args.push("/tmp".into());
-
-    // /dev and /proc (needed for basic operation)
-    args.push("--dev".into());
-    args.push("/dev".into());
-    args.push("--proc".into());
-    args.push("/proc".into());
-
-    // PID namespace (always isolate PIDs)
-    args.push("--unshare-pid".into());
-
-    // Network isolation
-    match sandbox {
-        SandboxMode::Strict => {
-            args.push("--unshare-net".into());
-        }
-        SandboxMode::Network => {
-            args.push("--share-net".into());
-        }
-        SandboxMode::None => unreachable!("bwrap not used in None mode"),
-    }
-
-    // Die when parent dies (prevent orphan processes)
-    args.push("--die-with-parent".into());
-
-    // Resource limits via inner ulimit wrapper
-    // (bwrap doesn't set ulimits directly — we wrap the command)
-
-    args.push("--".into());
-    args
 }
 
 /// A script's private stand-in HOME for one unsandboxed run, removed with everything in it when
@@ -611,15 +486,8 @@ fn execute_script(
 
     // Build command: either bwrap-wrapped or direct
     let mut cmd = if use_bwrap {
-        let bwrap_args = build_bwrap_args(sandbox, &scripts, &out_dir);
-        let mut c = std::process::Command::new("/usr/bin/bwrap");
-        c.env_remove("LD_PRELOAD"); // bwrap is native, LD_PRELOAD can interfere
-        c.args(&bwrap_args);
-
-        // Inside bwrap: ulimit wrapper for resource limits, then interpreter
-        // Use sh -c to set ulimits before running the script
-        c.arg("sh");
-        c.arg("-c");
+        // Inside bwrap: ulimit wrapper for resource limits, then interpreter, as one `sh -c`
+        // that spawn::sandboxed_script starts (the only place a Mind's script gets a shell).
 
         // Build the inner command with resource limits
         let mut inner = String::new();
@@ -645,20 +513,34 @@ fn execute_script(
             inner.push_str(args);
         }
 
-        c.arg(inner);
-        c
+        crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &inner)
     } else {
-        let mut c = std::process::Command::new(interpreter);
+        let mut words: Vec<String> = Vec::new();
         if language == "typescript" {
-            c.arg("ts-node");
+            words.push("ts-node".into());
         }
-        c.arg(filepath);
+        words.push(filepath.to_string_lossy().into_owned());
         if !args.is_empty() {
-            c.args(shell_words::split(args).unwrap_or_else(|_|
+            words.extend(shell_words::split(args).unwrap_or_else(|_|
                 args.split_whitespace().map(String::from).collect()
             ));
         }
-        c
+        // Unsandboxed, so in the outside view: the workshops root does not exist for it.
+        match crate::spawn::mind_command(&crate::spawn::home(), interpreter, &words) {
+            Ok(c) => c,
+            Err(e) => {
+                return ExecutionResult {
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: e,
+                    duration_secs: 0.0,
+                    timed_out: false,
+                    generated_files: vec![],
+                    error_analysis: None,
+                    sandboxed: false,
+                };
+            }
+        }
     };
 
     // Working directory (only for non-bwrap — bwrap runs from /)
@@ -670,8 +552,7 @@ fn execute_script(
     }
 
     // Environment: inherit + custom + output dir hint
-    cmd.env("YANTRIK_OUTPUT_DIR", out_dir.to_str().unwrap_or("/tmp"));
-    cmd.env("YANTRIK_SCRIPTS_DIR", scripts.to_str().unwrap_or("/tmp"));
+    crate::coder_deps::script_env(&mut cmd, &out_dir, &scripts, language);
     // A stand-in HOME, so a script's dotfiles and caches never land in the real one. Inside bwrap
     // /tmp is the sandbox's own tmpfs, so it serves. Outside, /tmp is the shared one — where
     // another account could have made ~/.config or ~/.bashrc-alikes first for the script to pick
@@ -960,10 +841,13 @@ impl Tool for CodeExecuteTool {
             "node" | "javascript" => detect_node_deps(code),
             _ => vec![],
         };
-        if let Some(err) = install_deps(language, &deps) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return err;
-        }
+        let skipped = match install_deps(language, &deps) {
+            Ok(note) => note,
+            Err(err) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                return err;
+            }
+        };
 
         // Execute in sandbox
         let result = execute_script(&tmp_path, language, "", &HashMap::new(), timeout, None, sandbox);
@@ -971,7 +855,7 @@ impl Tool for CodeExecuteTool {
         // Clean up temp file
         let _ = std::fs::remove_file(&tmp_path);
 
-        format_result(&result, &format!("inline_{language}"))
+        format!("{skipped}{}", format_result(&result, &format!("inline_{language}")))
     }
 }
 
@@ -1154,6 +1038,12 @@ impl Tool for ScriptRunTool {
             .map(SandboxMode::from_str)
             .unwrap_or(SandboxMode::Strict);
 
+        // A program keeps the directory it starts in: not a Mind's workshop.
+        if let Some(dir) = working_dir {
+            if let Err(e) = workshops::refuse(dir) {
+                return e;
+            }
+        }
         if name.is_empty() {
             return "Error: name is required".to_string();
         }
@@ -1171,12 +1061,11 @@ impl Tool for ScriptRunTool {
             return format!("Error: script file {} not found on disk", entry.filename);
         }
 
-        // Auto-install dependencies (runs OUTSIDE sandbox — needs network + write to site-packages)
-        if !entry.dependencies.is_empty() {
-            if let Some(err) = install_deps(&entry.language, &entry.dependencies) {
-                return err;
-            }
-        }
+        // Auto-install dependencies, in the outside view and with no install hooks (coder_deps.rs).
+        let skipped = match install_deps(&entry.language, &entry.dependencies) {
+            Ok(note) => note,
+            Err(err) => return err,
+        };
 
         // Execute in sandbox
         let result = execute_script(&filepath, &entry.language, script_args, &env_vars, timeout, working_dir, sandbox);
@@ -1200,7 +1089,7 @@ impl Tool for ScriptRunTool {
         }
         save_registry(&registry);
 
-        format_result(&result, &entry.name)
+        format!("{skipped}{}", format_result(&result, &entry.name))
     }
 }
 

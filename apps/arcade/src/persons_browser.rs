@@ -66,9 +66,7 @@ fn browser_with_the_pipe(proc: &Path) -> Option<u32> {
 /// Chromium folds its whole argument vector into argv[0] as one space-joined string, so the first
 /// element is read as words and the rest as given (the 520 gate on #1151).
 fn has_the_pipe_switch(cmdline: &[u8]) -> bool {
-    let mut args = cmdline.split(|b| *b == 0);
-    let first = args.next().unwrap_or_default();
-    first.split(|b| *b == b' ').chain(args).any(|arg| arg == PIPE_FLAG)
+    yantrik_browser_ports::cmdline_words(cmdline).iter().any(|arg| *arg == PIPE_FLAG)
 }
 
 /// Whether Chromium's `SingletonLock` in `profile` names `pid`: a symlink to `<host>-<pid>`, made

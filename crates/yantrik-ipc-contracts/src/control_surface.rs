@@ -247,6 +247,20 @@ impl std::fmt::Debug for Explainer {
 /// session to run commands, not once per command. Full bypass runs it unasked; plan refuses it.
 pub const OPEN_ENDED: &str = "What it runs can do anything you can.";
 
+/// The sentence that makes an action the person's to allow, every time: it is asked about in
+/// every mode, full bypass included, and no session rule or standing rule answers for it
+/// (#1124, H1). [`Action::always_asks`] appends it, `gate::decide` refuses a call that carries no
+/// grant, and the shell's `request_approval` raises the card whatever its table says: the way
+/// the taint already forces a card in every mode, with a declaration in place of a conversation's
+/// record. For what widens what a Mind may do on its own afterwards (a workshop grant), where an
+/// answer given once must not stand for the next one.
+pub const ALWAYS_ASKS: &str = "The person allows each one on a card, in every mode.";
+
+/// Does `purpose` declare [`ALWAYS_ASKS`]? Case aside, as the gate reads its other sentences.
+pub fn always_asks(purpose: &str) -> bool {
+    purpose.to_lowercase().contains(&ALWAYS_ASKS.to_lowercase())
+}
+
 /// The sentence that makes an action a way off the machine for free text: what it is given may
 /// leave this machine (a report, a prompt to a hosted model, a message). [`Action::leaves_machine`]
 /// appends it. The MCP bridge reads it (`yos-mcp`): from a conversation that has read the person's
@@ -403,6 +417,13 @@ impl Action {
     /// input; the grade still says how much the action itself costs.
     pub fn open_ended(mut self) -> Self {
         self.description = with_open_ended(&self.description);
+        self
+    }
+
+    /// Declare that the person allows every call of this action on a card, in every mode, and that
+    /// no session rule covers it. See [`ALWAYS_ASKS`].
+    pub fn always_asks(mut self) -> Self {
+        self.description = with_sentence(&self.description, ALWAYS_ASKS);
         self
     }
 
