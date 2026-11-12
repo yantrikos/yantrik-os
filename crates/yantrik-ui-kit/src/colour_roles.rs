@@ -222,7 +222,8 @@ fn the_reserved_families_are_where_the_roles_are() {
     assert_eq!(in_a_reserved_family("#f2b73e"), Some("amber (needs you)"), "the retired amber preset");
     assert_eq!(in_a_reserved_family("#38d8cd"), Some("teal (a mind)"), "the minds' teal");
     assert_eq!(in_a_reserved_family("#69c8bc"), Some("teal (a mind)"), "the dock's mind teal");
-    assert_eq!(in_a_reserved_family("#8fb4e3"), None, "the soft blue");
+    assert_eq!(in_a_reserved_family("#8fb4e3"), None, "the soft blue as it was until 12 Nov 2026");
+    assert_eq!(in_a_reserved_family("#74aaf5"), None, "the soft blue: the same hue with more chroma");
     assert_eq!(in_a_reserved_family("#b98aef"), None, "violet");
     assert_eq!(in_a_reserved_family("#f27aa0"), None, "pink");
     assert_eq!(hue("#808080"), None, "a grey has no hue");

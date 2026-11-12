@@ -57,19 +57,19 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     }
     // Panel origin is (20, 20); buttons are 32px tall, so a point 4px in from the left edge and
     // level with the middle is clear of the label.
-    near(px(&p, 20 + 20 + 6, 20 + 20 + 16), (0x8F, 0xB4, 0xE3), "primary button fill is soft blue");
+    near(px(&p, 20 + 20 + 6, 20 + 20 + 16), (0x74, 0xAA, 0xF5), "primary button fill is soft blue");
     near(px(&p, 20 + 360 + 6, 20 + 20 + 16), (0xE5, 0x48, 0x4D), "destructive button fill is red");
     let panel = px(&p, 20 + 190 + 6, 20 + 20 + 16);
     near(panel, px(&p, 20 + 600, 20 + 60), "secondary button has no fill, so it shows the panel");
     near(px(&p, 20 + 190 + 40, 20 + 20), (0x4A, 0x53, 0x5B), "secondary button's top edge is the 1px outline");
     near(px(&p, 20 + 20 + 6, 20 + 140 + 28), (0x1E, 0x25, 0x2B), "an off tile is the tile fill");
-    near(px(&p, 20 + 240 + 6, 20 + 140 + 28), (0x8F, 0xB4, 0xE3), "an on tile is the accent");
+    near(px(&p, 20 + 240 + 6, 20 + 140 + 28), (0x74, 0xAA, 0xF5), "an on tile is the accent");
     assert_ne!(px(&p, 20 + 20 + 6, 20 + 140 + 28), panel, "an off tile does not vanish into the panel");
 
     // The ink on an accent fill is the theme's deepest ground, not white (2.1:1 on this blue):
     // the primary's label, the approval card's primary, and the on tile's title. Each box is
     // inset past the rounded corners, where the darker panel shows through.
-    let fill = (0x8F, 0xB4, 0xE3);
+    let fill = (0x74, 0xAA, 0xF5);
     for (x, y, w, h, what) in [(52, 46, 126, 20, "Save"), (222, 102, 126, 20, "Allow once"), (272, 170, 150, 36, "the on tile")] {
         let ink = darkest(&p, x, y, w, h);
         let ratio = contrast(ink, fill);

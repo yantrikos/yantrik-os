@@ -45,7 +45,11 @@ export global AccentPreset {
     // The dark-theme value of each preset, once. The `resolved-` tokens below read these, and
     // `accent` and the Settings swatches read those, so the picker cannot show one colour and
     // apply another (it did, #583).
-    out property <color> swatch-0: #8fb4e3;
+    // The system blue gained chroma on 12 Nov 2026 (it was #8fb4e3, 60% saturation): as the fill
+    // of a tile that is on or a switch, the paler blue read as a tint of the navy under it and
+    // not as a state. Same hue, same lightness, so every contrast it was signed off at holds or
+    // improves (7.9:1 as ink on the ground, and for the ground's ink on it).
+    out property <color> swatch-0: #74aaf5;
     out property <color> swatch-2: #b98aef;
     out property <color> swatch-4: #f27aa0;
 
@@ -62,27 +66,27 @@ export global AccentPreset {
     out property <color> accent-light:
         index == 2 ? (ThemeMode.dark ? #d0a8f6 : #9060c8)
       : index == 4 ? (ThemeMode.dark ? #f69cbb : #d06080)
-      :              (ThemeMode.dark ? #a9c5ec : #4a82c2);
+      :              (ThemeMode.dark ? #9cc3f9 : #4a82c2);
 
     out property <color> accent-dim:
         index == 2 ? (ThemeMode.dark ? #7c4fae : #b090d0)
       : index == 4 ? (ThemeMode.dark ? #aa4570 : #d898b0)
-      :              (ThemeMode.dark ? #6f95c4 : #9dbbe0);
+      :              (ThemeMode.dark ? #5a8fd8 : #9dbbe0);
 
     out property <color> accent-glow:
         index == 2 ? (ThemeMode.dark ? #b98aef40 : #7338b430)
       : index == 4 ? (ThemeMode.dark ? #f27aa040 : #bd356330)
-      :              (ThemeMode.dark ? #8fb4e340 : #2b64a830);
+      :              (ThemeMode.dark ? #74aaf540 : #2b64a830);
 
     out property <color> accent-glow-strong:
         index == 2 ? (ThemeMode.dark ? #b98aef70 : #7338b450)
       : index == 4 ? (ThemeMode.dark ? #f27aa070 : #bd356350)
-      :              (ThemeMode.dark ? #8fb4e370 : #2b64a850);
+      :              (ThemeMode.dark ? #74aaf570 : #2b64a850);
 
     out property <color> tint:
         index == 2 ? (ThemeMode.dark ? #b98aef1c : #7338b417)
       : index == 4 ? (ThemeMode.dark ? #f27aa01c : #bd356317)
-      :              (ThemeMode.dark ? #8fb4e31c : #2b64a817);
+      :              (ThemeMode.dark ? #74aaf51c : #2b64a817);
 
     // Label for current accent (for settings display)
     out property <string> label:
@@ -105,7 +109,7 @@ export global ThemeOverrides {
     in-out property <color> text-primary-override: #edf2f8;
     in-out property <color> text-secondary-override: #b0bdce;
     in-out property <color> text-dim-override:     #8d9eb3;
-    in-out property <color> accent-override:       #8fb4e3;
+    in-out property <color> accent-override:       #74aaf5;
 }
 
 // The person's "reduce motion" choice. Components that move something across the screen (a
@@ -332,7 +336,7 @@ export global Theme {
 
     // The ink on an accent fill: every label, glyph, knob and count that sits on Theme.accent,
     // and the one colour for it (never white, never text-primary, never bg-deep by hand). The
-    // dark accents are light (#8fb4e3, #b98aef), and white on them was 2.1:1 and 2.7:1, so in
+    // dark accents are light (#74aaf5, #b98aef), and white on them is 2.4:1 and 2.7:1, so in
     // dark mode the ink is the theme's own deepest ground: it follows a theme's palette
     // (nightfall.toml's #0a0d17) through bg-deep and is 7:1 or better on every preset. The
     // light accents are dark (#2b64a8, #7338b4) and carry white at 5.4:1 or better. A test holds

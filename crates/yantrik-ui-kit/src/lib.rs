@@ -900,7 +900,7 @@ mod consent_buttons_are_pointer_only {
         assert!(!list.contains('#'), "a swatch is a token, not a hex literal:\n{list}");
         assert!(list.contains("Soft blue") && !list.contains("Cyan"), "preset 0 is the soft blue");
         let theme = read("crates/yantrik-design-tokens/slint/theme.slint");
-        assert!(theme.contains("swatch-0: #8fb4e3"), "swatch-0 is the default accent");
+        assert!(theme.contains("swatch-0: #74aaf5"), "swatch-0 is the default accent");
         assert!(theme.contains("ThemeMode.dark ? swatch-0 :"), "the preset reads the same token the swatch does");
         assert!(!theme.contains("accent-override:       #38d8cd"), "the theme-file fallback is not the retired teal accent");
         assert!(theme.contains(":              \"Soft blue\";"), "the preset's label, and the one any index not offered gets");
