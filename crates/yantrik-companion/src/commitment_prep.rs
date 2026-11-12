@@ -149,7 +149,7 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
     Outcome::Prepared(item)
 }
 
-fn item_id(commitment_id: i64) -> String {
+pub(crate) fn item_id(commitment_id: i64) -> String {
     format!("commitment-prep-{commitment_id}")
 }
 

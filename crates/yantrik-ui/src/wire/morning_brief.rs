@@ -31,7 +31,7 @@ use crate::{App, BriefSection};
 pub fn wire(ui: &App, ctx: &AppContext) {
     wire_brief_card(ui, ctx);
     wire_brief_dismiss(ui);
-    wire_brief_section_action(ui, ctx);
+    wire_brief_section_action(ui);
 }
 
 /// Where the dated marker lives — beside the rest of the shell's state. Deliberately not in
@@ -196,12 +196,20 @@ fn populate_brief_card(ui_weak: &slint::Weak<App>, snapshot: &MorningBriefSnapsh
     let sections: Vec<BriefSection> = snapshot
         .sections
         .iter()
-        .map(|s| BriefSection {
-            icon: SharedString::from(&s.icon),
-            label: SharedString::from(&s.label),
-            content: SharedString::from(&s.content),
-            expanded: s.expanded,
-            action_id: SharedString::from(&s.action_id),
+        .map(|s| {
+            // A question about preparing is drawn with buttons of its own, and its row fires nothing.
+            let d = crate::commitment_brief::drawn(&s.action_id);
+            BriefSection {
+                icon: SharedString::from(&s.icon),
+                label: SharedString::from(&s.label),
+                content: SharedString::from(&s.content),
+                expanded: s.expanded,
+                action_id: SharedString::from(&d.row_action_id),
+                yes_id: d.yes_id.into(),
+                yes_label: d.yes_label.into(),
+                no_id: d.no_id.into(),
+                no_label: d.no_label.into(),
+            }
         })
         .collect();
 
@@ -239,18 +247,12 @@ fn wire_brief_dismiss(ui: &App) {
     });
 }
 
-/// Wire section action callbacks — navigate to relevant app screens.
-fn wire_brief_section_action(ui: &App, ctx: &AppContext) {
+/// Wire section action callbacks — navigate to relevant app screens. A row never answers a question
+/// (`commitment_brief`): the person's yes and no are `PrepState.answer`.
+fn wire_brief_section_action(ui: &App) {
     let ui_weak = ui.as_weak();
-    let bridge = ctx.bridge.clone();
     ui.on_morning_brief_section_action(move |action_id| {
         let action = action_id.to_string();
-        // The person's own click: the yes or no about preparing promised things, or turning it back
-        // on. Nothing but this click gives it (`commitment_consent`).
-        if crate::commitment_brief::is_answer(&action) {
-            bridge.answer_commitment_prep(action);
-            return;
-        }
         if action.starts_with("navigate:") {
             let screen_name = &action["navigate:".len()..];
             let screen_id = match screen_name {

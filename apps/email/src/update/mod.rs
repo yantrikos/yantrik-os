@@ -61,12 +61,10 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
         Command::OriginalOpened(sentence) => say(m, fx, sentence),
         Command::ComposeNew => compose::compose_new(m, fx),
         Command::Compose { to, subject, body, attach, commitment } => return compose::compose(m, to, subject, body, attach, commitment, fx),
-        Command::ForgetPrepared(commitment) => mind_draft::forget_prepared(m, &commitment, fx),
+        Command::ForgetPrepared(commitment) => return mind_draft::forget_prepared(m, &commitment, fx),
         Command::OpenPrepared => mind_draft::open_prepared(m, fx),
         Command::DiscardPrepared => mind_draft::discard_prepared(m, fx),
         Command::RemoveAttachment => mind_draft::remove_attachment(m, fx),
-        Command::LookIfWanted if !m.compose_only => mailbox::look(m, crate::command::Look::Start, fx),
-        Command::LookIfWanted => {}
         Command::Reply { all } => compose::reply(m, all, fx),
         Command::Forward => compose::forward(m, fx),
         Command::Edited { text, query } => {

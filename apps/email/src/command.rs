@@ -196,8 +196,6 @@ pub enum Command {
     OpenPrepared,
     DiscardPrepared,
     RemoveAttachment,
-    /// An agent's start looks at the mail service only if nothing has said it is not needed.
-    LookIfWanted,
     Reply { all: bool },
     Forward,
     /// The window's own edits: the composer and the search box.

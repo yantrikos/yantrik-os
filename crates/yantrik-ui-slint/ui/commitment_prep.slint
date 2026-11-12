@@ -1,0 +1,91 @@
+// Getting promised things ready: the person's own yes, no and turn-on (#1184).
+//
+// The answer is the person's alone, so it has its own buttons and its own callback, `PrepState.answer`.
+// It is never a row's expand toggle: a click that only folds a row cannot answer. Every button is
+// `pointer-only` (no Tab and Enter, no accessibility default action), so only a deliberate click
+// presses it. Rust (wire/commitment_prep.rs) is the only code that listens, and says the answer back in
+// a toast.
+//
+// Two places use this: the question and the way back on the morning brief card
+// (components/morning_brief.slint), and the switch in Settings > Companion (PrepSwitch below), which
+// is always there when the brief has gone.
+
+import { Theme } from "theme.slint";
+import { YButton } from "components/y_button.slint";
+
+export global PrepState {
+    // Whether getting promised things ready is on; the shell keeps it current.
+    in-out property <bool> on: true;
+    // The question that waits, when one does: its sentence and the ids of its two buttons.
+    in-out property <string> question;
+    in-out property <string> yes-id;
+    in-out property <string> no-id;
+    callback answer(string);
+}
+
+// The buttons of one answer. `no-id` empty means a single button (turn back on).
+export component PrepChoices inherits HorizontalLayout {
+    in property <string> yes-label: "Yes";
+    in property <string> yes-id;
+    in property <string> no-label: "No";
+    in property <string> no-id;
+    spacing: Theme.sp-2;
+    alignment: start;
+
+    YButton {
+        label: root.yes-label;
+        pointer-only: true;
+        clicked => { PrepState.answer(root.yes-id); }
+    }
+    if root.no-id != "": YButton {
+        label: root.no-label;
+        variant: 1;
+        pointer-only: true;
+        clicked => { PrepState.answer(root.no-id); }
+    }
+}
+
+// Settings > Companion: the switch, and the question when one waits.
+export component PrepSwitch inherits VerticalLayout {
+    spacing: Theme.sp-2;
+
+    Rectangle { height: 1px; background: Theme.border-subtle; }
+    HorizontalLayout {
+        spacing: Theme.sp-3;
+        Text {
+            text: "Get promised things ready";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        Text {
+            text: PrepState.on ? "On" : "Off";
+            color: PrepState.on ? Theme.amber : Theme.text-dim;
+            font-size: Theme.fs-body;
+            vertical-alignment: center;
+        }
+        YButton {
+            label: PrepState.on ? "Turn off" : "Turn on";
+            variant: 1;
+            pointer-only: true;
+            clicked => { PrepState.answer(PrepState.on ? "commitment_prep:off" : "commitment_prep:on"); }
+        }
+    }
+    Text {
+        text: "Opens the files a promise names in Mind View and drafts the email. Nothing is ever sent.";
+        color: Theme.text-dim;
+        font-size: Theme.fs-caption;
+        wrap: word-wrap;
+    }
+    if PrepState.question != "": VerticalLayout {
+        spacing: Theme.sp-2;
+        Text {
+            text: PrepState.question;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        PrepChoices { yes-id: PrepState.yes-id; no-id: PrepState.no-id; }
+    }
+}

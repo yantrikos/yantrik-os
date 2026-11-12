@@ -395,16 +395,72 @@ fn an_email_started_only_to_compose_looks_at_no_mail() {
     assert_eq!(app.model(|m| m.composer.attachments.len()), 1, "the draft was made");
 }
 
+/// P3: an owed clear alone is no reason to open a mail session, however long Email stays up.
 #[test]
-fn an_agents_start_that_is_not_asked_to_compose_still_looks_after_its_grace() {
+fn an_agent_start_with_only_forget_prepared_makes_no_mail_call() {
     let paths = Paths::temporary(Email::ID);
     let mail = with_inbox();
     let app = service_start(&paths, &mail);
     quiet(&app);
-    assert!(mail.asked().is_empty());
-    app.advance(std::time::Duration::from_secs(10));
+    act(&app, "forget_prepared", json!({ "commitment": "7" })).unwrap();
+    app.advance(std::time::Duration::from_secs(60));
     quiet(&app);
-    assert!(!mail.asked().is_empty(), "the look an agent's intents need was made");
+    assert!(mail.asked().is_empty(), "no mail call: {:?}", mail.asked());
+}
+
+/// P4: there is no grace timer to lose a race to; a compose that arrives late is as quiet as one
+/// that arrives at once.
+#[test]
+fn a_compose_after_ten_seconds_makes_no_mail_call() {
+    let paths = Paths::temporary(Email::ID);
+    let mail = with_inbox();
+    let app = service_start(&paths, &mail);
+    quiet(&app);
+    app.advance(std::time::Duration::from_secs(10));
+    act(&app, "compose", compose_args("")).unwrap();
+    app.advance(std::time::Duration::from_secs(60));
+    quiet(&app);
+    assert!(mail.asked().is_empty(), "{:?}", mail.asked());
+}
+
+/// P1: the person is typing in the prepared draft when the clear arrives.
+#[test]
+fn forget_prepared_while_the_person_types_in_it_refuses_and_their_text_survives() {
+    let file = HomeFile::new("p1");
+    let paths = Paths::temporary(Email::ID);
+    let app = started_at(&paths);
+    act(&app, "compose", with_commitment(&file.path(), "7")).unwrap();
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.ui(|ui| ui.invoke_open_prepared());
+    type_into_composer(&app, &draft("maya@example.com", "my own careful wording, half done"));
+    let said = act(&app, "forget_prepared", json!({ "commitment": "7" })).unwrap_err();
+    assert!(said.to_string().to_lowercase().contains("try again"), "kept owed by classify: {said}");
+    assert!(app.model(|m| m.composer.open && m.composer.in_slot), "the window was not closed");
+    assert_eq!(app.model(|m| m.composer.text.body.clone()), "my own careful wording, half done");
+    assert!(slot_file(&paths).exists(), "the slot is kept");
+    // And it is theirs now: a later forget, with the window closed, leaves it.
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    act(&app, "forget_prepared", json!({ "commitment": "7" })).unwrap();
+    assert!(slot_file(&paths).exists());
+    assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("my own careful wording"));
+}
+
+#[test]
+fn forget_prepared_while_the_prepared_view_is_open_but_unedited_waits_and_keeps_the_window() {
+    let file = HomeFile::new("open");
+    let paths = Paths::temporary(Email::ID);
+    let app = started_at(&paths);
+    act(&app, "compose", with_commitment(&file.path(), "7")).unwrap();
+    assert!(act(&app, "forget_prepared", json!({ "commitment": "7" })).is_err());
+    assert!(app.model(|m| m.composer.open && m.composer.in_slot), "the window is still open under the person");
+    assert!(slot_file(&paths).exists());
+    // Closed unedited, the clear is paid.
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    act(&app, "forget_prepared", json!({ "commitment": "7" })).unwrap();
+    assert!(!slot_file(&paths).exists());
 }
 
 #[test]

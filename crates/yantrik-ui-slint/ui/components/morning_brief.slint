@@ -5,6 +5,7 @@
 
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
+import { PrepChoices } from "../commitment_prep.slint";
 
 // ── Section data ──────────────────────────────────────────────────
 
@@ -14,6 +15,12 @@ export struct BriefSection {
     content: string,
     expanded: bool,
     action-id: string,
+    // A question with its own buttons (getting promised things ready): the ids of its yes and no.
+    // The row is not clickable, so folding it never answers. Empty for every other section.
+    yes-id: string,
+    yes-label: string,
+    no-id: string,
+    no-label: string,
 }
 
 // ── Collapsible section ───────────────────────────────────────────
@@ -178,13 +185,24 @@ export component MorningBriefCard inherits Rectangle {
         }
 
         // Sections
-        for section[idx] in sections: BriefSectionRow {
-            icon: section.icon;
-            label: section.label;
-            content: section.content;
-            expanded: section.expanded;
-            action-id: section.action-id;
-            section-clicked(id) => { root.section-action(id); }
+        for section[idx] in sections: VerticalLayout {
+            if section.yes-id == "": BriefSectionRow {
+                icon: section.icon;
+                label: section.label;
+                content: section.content;
+                expanded: section.expanded;
+                action-id: section.action-id;
+                section-clicked(id) => { root.section-action(id); }
+            }
+            // The person's question: text and real buttons, no toggle. The answer goes by PrepState.
+            if section.yes-id != "": VerticalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 4px;
+                Text { text: section.icon + " " + section.label; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; wrap: word-wrap; }
+                Text { text: section.content; color: Theme.text-secondary; font-size: Theme.fs-caption; wrap: word-wrap; }
+                PrepChoices { yes-id: section.yes-id; yes-label: section.yes-label; no-id: section.no-id; no-label: section.no-label; }
+            }
         }
 
         // Footer

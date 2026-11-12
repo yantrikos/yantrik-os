@@ -77,6 +77,7 @@ import { WhisperCardItem } from "components/whisper_card.slint";
 export { InboxState, NoticeCardData } from "components/for_you.slint";
 export { InitiativeState, FamilyRowData, BindingRowData } from "components/initiative_settings.slint";
 import { BriefSection } from "components/morning_brief.slint";
+export { PrepState } from "commitment_prep.slint";
 import { ClipboardEntryData } from "components/clipboard_panel.slint";
 import { CheatRowData } from "components/cheat_sheet.slint";
 import { AppGridItem } from "components/app_grid.slint";
@@ -108,7 +109,6 @@ export component App inherits Window {
     title: "Yantrik OS";
     default-font-size: Theme.fs-body;
     background: Theme.bg-deep;
-
 
     // Screen state: 0=boot, 1=desktop, 2=onboarding, 3=lock, 4=bond, 5=personality,
     //   6=memory, 7=settings, 8=files, 9=notifications, 10=system, 21=package_manager

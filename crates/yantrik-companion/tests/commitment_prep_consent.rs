@@ -79,7 +79,8 @@ fn only_the_person_only_path_gives_the_yes_and_it_records_who_and_which_item() {
     assert!(!commitment_store::consented(&rig.db.conn()));
     // Shown, a yes for another item is ignored too.
     let shown = commitment_consent::brief_actions(&rig.db.conn(), at);
-    assert_eq!(shown.len(), 2, "a yes and a no: {shown:?}");
+    assert_eq!(shown.len(), 1, "one row, with its own yes and no buttons: {shown:?}");
+    let no = commitment_consent::no_for(&shown[0].action_id).expect("a no for the yes");
     assert!(commitment_consent::person_answer(&rig.db.conn(), &format!("{}commitment-prep-999", commitment_consent::YES)).is_none());
     assert!(!commitment_store::consented(&rig.db.conn()));
     // The button on the item answers it.
@@ -87,7 +88,7 @@ fn only_the_person_only_path_gives_the_yes_and_it_records_who_and_which_item() {
     assert!(commitment_store::consented(&rig.db.conn()));
     assert_eq!(commitment_store::answered(&rig.db.conn()), Some(("person".into(), item)));
     // And a repeated click, with no question outstanding, changes nothing.
-    assert!(commitment_consent::person_answer(&rig.db.conn(), &shown[1].action_id).is_none());
+    assert!(commitment_consent::person_answer(&rig.db.conn(), &no).is_none());
     assert!(commitment_store::consented(&rig.db.conn()));
 }
 
@@ -103,7 +104,7 @@ fn the_question_is_asked_when_it_is_shown_not_when_it_is_stored() {
     assert!(commitment_consent::brief_actions(&rig.db.conn(), thursday() + 10.0 * DAY).is_empty());
     assert!(!commitment_store::asked(&rig.db.conn()));
     // Shown while it is live: asked, and the question is outstanding for that item.
-    assert_eq!(commitment_consent::brief_actions(&rig.db.conn(), window() + 60.0).len(), 2);
+    assert_eq!(commitment_consent::brief_actions(&rig.db.conn(), window() + 60.0).len(), 1);
     assert!(commitment_store::asked(&rig.db.conn()));
     assert!(commitment_store::asking(&rig.db.conn()).is_some());
 }
@@ -142,8 +143,12 @@ fn prepared_rig() -> (Rig, i64) {
 }
 
 fn pay(rig: &Rig) -> usize {
+    pay_with(rig, true)
+}
+
+fn pay_with(rig: &Rig, email_running: bool) -> usize {
     let ctx = ToolContext { db: &rig.db, max_permission: PermissionLevel::Standard, registry_metadata: None, task_manager: None, incognito: false, agent_spawner: None };
-    commitment_slot::pay(&rig.registry, &ctx, std::time::Duration::from_secs(60))
+    commitment_slot::pay(&rig.registry, &ctx, std::time::Duration::from_secs(60), email_running)
 }
 
 fn forgets(rig: &Rig) -> Vec<serde_json::Value> {
@@ -188,4 +193,64 @@ fn a_promise_with_no_draft_owes_nothing_and_a_busy_email_keeps_the_clear_owed() 
     assert_eq!(pay(&rig), 0, "not now");
     assert_eq!(commitment_slot::owed(&rig.db.conn()), vec![id.to_string()]);
     assert_eq!(pay(&rig), 1, "later");
+}
+
+/// P3, on the companion's side: a clear never starts Email, so with Email not running nothing is
+/// asked and the clear stays owed until it is.
+#[test]
+fn a_clear_never_starts_email_and_stays_owed_until_it_runs() {
+    let (rig, id) = prepared_rig();
+    commitment_store::forget(&rig.db.conn(), id);
+    let before = rig.calls().len();
+    assert_eq!(pay_with(&rig, false), 0);
+    assert_eq!(rig.calls().len(), before, "no call was made, so nothing could start Email");
+    assert_eq!(commitment_slot::owed(&rig.db.conn()), vec![id.to_string()]);
+    assert_eq!(pay_with(&rig, true), 1);
+}
+
+/// HIGH-1: Email's answer while the person has the draft open keeps the clear owed.
+#[test]
+fn a_draft_the_person_has_open_keeps_the_clear_owed() {
+    let (rig, id) = prepared_rig();
+    let open = "The person has the prepared draft open, so it was left alone; try again when it is closed.";
+    rig.world.lock().unwrap().refused.push(("email.forget_prepared".into(), open.into(), true));
+    commitment_store::forget(&rig.db.conn(), id);
+    assert_eq!(pay(&rig), 0);
+    assert_eq!(commitment_slot::owed(&rig.db.conn()), vec![id.to_string()]);
+    assert_eq!(pay(&rig), 1, "once it is closed");
+}
+
+/// LOW-4: after the person's own No the brief never asks again; the way back is the switch.
+/// After a model-turn refuse the brief offers it.
+#[test]
+fn after_the_persons_own_no_the_brief_shows_no_turn_back_on_row_but_a_models_refuse_does() {
+    let rig = Rig::asked(&[DECK, SHEET]);
+    rig.say(SAID, MONDAY);
+    rig.cycle(window());
+    let at = window() + 60.0;
+    assert!(rig.person_answers(commitment_consent::NO, at).is_some());
+    assert!(!commitment_store::enabled(&rig.db.conn()));
+    assert!(commitment_consent::brief_actions(&rig.db.conn(), at + DAY).is_empty(), "no row after the person's No");
+    let status = commitment_consent::status(&rig.db.conn(), at);
+    assert!(!status.on, "the switch in Settings shows it off");
+    assert!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_ON).is_some(), "and turns it on");
+    // A model turn that refuses is not the person's choice: the brief offers the way back.
+    commitment_store::refuse(&rig.db.conn());
+    let shown = commitment_consent::brief_actions(&rig.db.conn(), at + 2.0 * DAY);
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].action_id, commitment_consent::TURN_ON);
+}
+
+/// MEDIUM-3: Settings can turn it off and on, and the tool's sentences point there.
+#[test]
+fn the_settings_switch_turns_it_off_and_on_and_the_tool_points_at_settings() {
+    let rig = rig_with_tools(&[DECK]);
+    rig.person_turns_it_on();
+    assert!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF).is_some());
+    assert!(!commitment_store::enabled(&rig.db.conn()));
+    assert!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF).is_none(), "off twice is nothing");
+    for said in [call(&rig, "commitment_prep_setting", json!({ "choice": "on" })), call(&rig, "commitment_prep_setting", json!({ "choice": "off" }))] {
+        assert!(said.contains("Settings \u{2192} Companion"), "{said}");
+        assert!(!said.contains("brief"), "{said}");
+    }
 }

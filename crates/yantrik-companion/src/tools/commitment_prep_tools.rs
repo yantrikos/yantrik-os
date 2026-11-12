@@ -23,7 +23,7 @@ impl Tool for CommitmentPrepSettingTool {
             "type": "function",
             "function": {
                 "name": "commitment_prep_setting",
-                "description": "Stop getting promised things ready (opening the files the user named in Mind View and drafting the email), when the user says no or asks for it off. It cannot turn it on: only the user can, with the button on their brief.",
+                "description": "Stop getting promised things ready (opening the files the user named in Mind View and drafting the email), when the user says no or asks for it off. It cannot turn it on: only the user can, with the switch in Settings \u{2192} Companion.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -40,9 +40,9 @@ impl Tool for CommitmentPrepSettingTool {
         match args.get("choice").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase().as_str() {
             "no" | "off" => {
                 store::refuse(conn);
-                "Okay. I won't get promised things ready. Only you can turn it back on, from your brief.".to_string()
+                "Okay. I won't get promised things ready. Only you can turn it back on, in Settings \u{2192} Companion.".to_string()
             }
-            "yes" | "on" => "Error: only the user can turn this on, with the button on their brief. I can only stop it.".to_string(),
+            "yes" | "on" => "Error: only the user can turn this on, in Settings \u{2192} Companion. I can only stop it.".to_string(),
             _ => "Error: choice must be no or off".to_string(),
         }
     }

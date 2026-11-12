@@ -85,6 +85,9 @@ pub fn consented(conn: &Connection) -> bool {
 pub fn refuse(conn: &Connection) {
     set(conn, CONSENT, "no");
     set(conn, ENABLED, "off");
+    // Not the person's choice: the brief offers the way back, which it does not after their own No.
+    set(conn, ANSWERED_BY, "model");
+    set(conn, ANSWERED_ITEM, "");
     remove(conn, ASKING);
 }
 

@@ -32,7 +32,7 @@ export component PreparedBar inherits Rectangle {
     in property <string> file: "";
     callback discard();
     callback remove-attachment();
-    height: 40px;
+    height: root.file == "" ? 40px : 56px;
     border-radius: 8px;
     background: Theme.bg-card;
     border-width: 1px;
@@ -42,11 +42,12 @@ export component PreparedBar inherits Rectangle {
         padding-right: 8px;
         spacing: 8px;
         Text {
-            text: root.file == "" ? "Prepared by Yantrik" : "Prepared by Yantrik. Attached: " + root.file;
+            text: root.file == "" ? "Prepared by Yantrik" : "Prepared by Yantrik. Attached: " + root.file + ". Email can't send attachments yet; remove it to send.";
             color: Theme.text-secondary;
             font-size: Theme.fs-caption;
             vertical-alignment: center;
-            overflow: elide;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
         }
         if root.file != "" : YButton { label: "Remove attachment"; variant: 1; size: 0; clicked => { root.remove-attachment(); } }
         YButton { label: "Discard prepared draft"; variant: 1; size: 0; clicked => { root.discard(); } }

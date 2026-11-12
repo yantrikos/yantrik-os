@@ -102,6 +102,9 @@ pub fn classify(app: &str, said: &str) -> Failed {
     if has(&["file to attach", "only files in your home", "protected place", "no home folder"]) || lower.contains("cannot_attach") {
         return Failed::Final(format!("{name} wouldn't take that file, so I didn't attach it"));
     }
+    if has(&["your own saved draft could not be read"]) {
+        return Failed::Final(format!("{name} couldn't read the draft you saved, so I left it alone and didn't make mine"));
+    }
     if has(&["could not be read, so it was not replaced", "could not be kept"]) {
         return Failed::Final(format!("{name} couldn't keep the draft, so I didn't make it"));
     }
@@ -139,6 +142,13 @@ mod tests {
         assert_eq!(f, Failed::Final("Email wouldn't take that file, so I didn't attach it".into()));
         let f = classify("email", "The draft Yantrik prepared earlier could not be read, so it was not replaced: x");
         assert_eq!(f, Failed::Final("Email couldn't keep the draft, so I didn't make it".into()));
+        assert!(!f.words().contains("while you're away"));
+    }
+
+    #[test]
+    fn an_unreadable_saved_draft_of_the_persons_has_its_own_sentence() {
+        let f = classify("email", "Your own saved draft could not be read, so a draft from Yantrik was not started: bad json");
+        assert_eq!(f, Failed::Final("Email couldn't read the draft you saved, so I left it alone and didn't make mine".into()));
         assert!(!f.words().contains("while you're away"));
     }
 

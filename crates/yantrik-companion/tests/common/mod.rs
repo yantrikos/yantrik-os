@@ -169,8 +169,9 @@ impl Rig {
     /// (`YES` or `NO`) on it.
     pub fn person_answers(&self, which: &str, now: f64) -> Option<String> {
         let shown = commitment_consent::brief_actions(&self.db.conn(), now);
-        let button = shown.iter().find(|a| a.action_id.starts_with(which))?;
-        commitment_consent::person_answer(&self.db.conn(), &button.action_id)
+        let yes = &shown.first()?.action_id;
+        let button = if which == commitment_consent::NO { commitment_consent::no_for(yes)? } else { yes.clone() };
+        commitment_consent::person_answer(&self.db.conn(), &button)
     }
 
     pub fn say(&self, text: &str, now: f64) -> usize {

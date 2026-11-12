@@ -49,10 +49,6 @@ fn home() -> Option<std::path::PathBuf> {
 
 /// `compose` from a Mind: a new draft in the Mind's slot, shown in the composer.
 pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach: String, commitment: String, fx: &mut Effects<Email>) -> Result<(), Refused> {
-    // A draft needs no account: until something needs the mailbox, no look at it is made.
-    if !m.looked {
-        m.compose_only = true;
-    }
     if let Err(e) = &m.composer.mind {
         return Err(Refused::new("draft_unreadable", format!("The draft Yantrik prepared earlier could not be read, so it was not replaced: {e}")));
     }
@@ -166,11 +162,28 @@ pub fn remove_attachment(m: &mut Model, fx: &mut Effects<Email>) {
     }
 }
 
+/// What `forget_prepared` says while the person has the prepared draft open. `commitment_hands::classify`
+/// keeps a clear owed on "try again".
+const SLOT_OPEN: &str = "The person has the prepared draft open, so it was left alone; try again when it is closed.";
+
 /// `forget_prepared`: the promise was forgotten, or its item expired. The draft prepared for it goes
 /// unless the person has made it their own by changing it; a draft prepared for another promise stays.
-pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>) {
-    let ours = matches!(&m.composer.mind, Ok(Some(slot)) if !slot.touched && slot.commitment.as_deref() == Some(commitment.trim()) && !commitment.trim().is_empty());
-    if ours {
-        discard_prepared(m, fx);
+///
+/// It never touches a slot the person has open in the composer, whoever asks: it refuses, and marks the
+/// slot theirs if the window's text is no longer what it was, so a later clear leaves it alone too.
+/// The window is not closed under them, edited or not.
+pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>) -> Result<(), Refused> {
+    let commitment = commitment.trim();
+    let ours = matches!(&m.composer.mind, Ok(Some(slot)) if !slot.touched && slot.commitment.as_deref() == Some(commitment) && !commitment.is_empty());
+    if !ours {
+        return Ok(());
     }
+    if m.composer.in_slot && m.composer.open {
+        if edited_since_shown(m) {
+            park(m);
+        }
+        return Err(Refused::new("prepared_open", SLOT_OPEN));
+    }
+    discard_prepared(m, fx);
+    Ok(())
 }

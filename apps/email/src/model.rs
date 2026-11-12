@@ -298,8 +298,9 @@ pub struct Search {
 pub struct Model {
     /// Started for an agent, with no window (`Boot::service`).
     pub service: bool,
-    /// Started for an agent and only asked to `compose` so far: nothing has needed the mailbox, so
-    /// no look at the mail service has been made, and no IMAP or SMTP session opened.
+    /// Started for an agent and nothing has needed the mailbox yet, so no look at the mail service
+    /// has been made and no IMAP or SMTP session opened. Only an intent in `needs_mailbox`, or the
+    /// person's arrival, ends it.
     pub compose_only: bool,
     /// The intent that needed the mailbox before it had been looked at: it runs once the look lands.
     pub deferred: Option<crate::command::Command>,

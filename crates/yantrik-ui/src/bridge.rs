@@ -244,8 +244,8 @@ pub enum CompanionCommand {
     GetMorningBrief {
         reply_tx: Sender<MorningBriefSnapshot>,
     },
-    /// The person pressed a brief-card button about preparing promised things.
-    PrepAnswer { action_id: String },
+    /// The person pressed a button about preparing promised things; an empty id only asks.
+    PrepAnswer { action_id: String, reply_tx: Sender<crate::commitment_brief::Reply> },
     /// Shut down the worker.
     Shutdown,
 }
@@ -884,9 +884,11 @@ impl CompanionBridge {
         reply_rx
     }
 
-    /// The person's click on a brief-card button about preparing promised things: their answer.
-    pub fn answer_commitment_prep(&self, action_id: String) {
-        let _ = self.cmd_tx.send(CompanionCommand::PrepAnswer { action_id });
+    /// The person's press of a button about preparing promised things, and what it leaves showing.
+    pub fn answer_commitment_prep(&self, action_id: String) -> Receiver<crate::commitment_brief::Reply> {
+        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
+        let _ = self.cmd_tx.send(CompanionCommand::PrepAnswer { action_id, reply_tx });
+        reply_rx
     }
 
     /// Record a system event in the companion's memory.
@@ -2933,10 +2935,8 @@ fn worker_loop(
 
                 let _ = reply_tx.send(snapshot);
             }
-            Ok(CompanionCommand::PrepAnswer { action_id }) => {
-                if let Some(said) = companion.person_answers_commitment_prep(&action_id) {
-                    tracing::info!(said, "The person answered about preparing promised things");
-                }
+            Ok(CompanionCommand::PrepAnswer { action_id, reply_tx }) => {
+                let _ = reply_tx.send(companion.person_answers_commitment_prep(&action_id));
             }
             Ok(CompanionCommand::RenameUser { name }) => {
                 companion.config.user_name = name.clone();

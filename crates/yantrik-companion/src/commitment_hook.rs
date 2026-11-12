@@ -75,9 +75,8 @@ impl CompanionService {
         run_urge(&self.registry, &ctx, urge, now_ts(), &Settings::for_person())
     }
 
-    /// The brief card's rows about preparing: the question, shown (which is what marks it asked), or
-    /// the way back after the person turned it off. Their buttons are person-only
-    /// (`commitment_consent`).
+    /// The brief card's row about preparing: the question, shown (which is what marks it asked), or
+    /// the way back after a model turned it off. Its buttons are person-only (`commitment_consent`).
     pub fn commitment_brief_actions(&self) -> Vec<crate::commitment_consent::BriefAction> {
         if self.incognito {
             return Vec::new();
@@ -85,10 +84,13 @@ impl CompanionService {
         crate::commitment_consent::brief_actions(&self.db.conn(), now_ts())
     }
 
-    /// The person pressed a brief-card button about preparing. Called only from the shell's click
-    /// handler; what was said back, if the click answered anything.
-    pub fn person_answers_commitment_prep(&self, action_id: &str) -> Option<String> {
-        crate::commitment_consent::person_answer(&self.db.conn(), action_id)
+    /// The person pressed a button about preparing (brief card or Settings). Called only from the
+    /// shell's own button callback. What was said back, if the press answered anything, and what the
+    /// surfaces show now; an empty `action_id` only asks what they show.
+    pub fn person_answers_commitment_prep(&self, action_id: &str) -> (Option<String>, crate::commitment_consent::Status) {
+        let conn = self.db.conn();
+        let said = crate::commitment_consent::person_answer(&conn, action_id);
+        (said, crate::commitment_consent::ask(&conn, now_ts()))
     }
 
     /// Housekeeping for what was prepared: expired items are closed, and old ones deleted.
@@ -104,7 +106,9 @@ impl CompanionService {
             agent_spawner: None,
         };
         if !crate::commitment_slot::owed(&self.db.conn()).is_empty() && !self.incognito {
-            crate::commitment_slot::pay(&self.registry, &ctx, crate::commitment_prep::BUDGET);
+            // Email is not started for a clear: it waits, owed, until Email is next running.
+            let running = yantrik_companion_tools::app_start::is_running("email");
+            crate::commitment_slot::pay(&self.registry, &ctx, crate::commitment_prep::BUDGET, running);
         }
         AnticipationEngine::cleanup_expired(&self.db.conn())
     }

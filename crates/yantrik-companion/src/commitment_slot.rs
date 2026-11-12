@@ -4,8 +4,9 @@
 //! person forgets the promise, or its item expires, the slot must not outlive it. A tool cannot
 //! call another tool, so the end of a promise only *owes* a clear (a row in a small table); the
 //! worker's housekeeping pays it by asking Email, through the same gated `app_action` door as every
-//! other step, to forget the draft of that commitment. Email clears it only if the draft is still
-//! the one made for that commitment and the person has not made it their own.
+//! other step, to forget the draft of that commitment, but only while Email is already running:
+//! Email is never started just to pay a clear. Email clears it only if the draft is still the one
+//! made for that commitment, the person has not made it their own, and they do not have it open.
 
 use rusqlite::{params, Connection};
 use serde_json::json;
@@ -52,7 +53,8 @@ pub fn owe_for_expired(conn: &Connection, now: f64) {
 
 /// The clear was paid: the item says so, so an expired item does not owe it again.
 fn mark_cleared(conn: &Connection, commitment_id: &str) {
-    let item = format!("commitment-prep-{commitment_id}");
+    let Ok(id) = commitment_id.parse::<i64>() else { return };
+    let item = crate::commitment_prep::item_id(id);
     let Ok(data) = conn.query_row("SELECT data FROM prepared_items WHERE id = ?1", params![item], |r| r.get::<_, String>(0)) else { return };
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&data) else { return };
     v["slot_cleared"] = json!(true);
@@ -61,7 +63,14 @@ fn mark_cleared(conn: &Connection, commitment_id: &str) {
 
 /// Pay what is owed: ask Email to forget each draft. A clear that cannot be done now stays owed; one
 /// that cannot be done at all is dropped, for the person can still discard the draft themselves.
-pub fn pay(registry: &ToolRegistry, ctx: &ToolContext<'_>, budget: std::time::Duration) -> usize {
+///
+/// Email is never started to pay a clear: with `email_running` false nothing is asked and everything
+/// stays owed until Email is next running. A running Email refuses while the person has the draft
+/// open (`Failed::Later`), which also leaves it owed.
+pub fn pay(registry: &ToolRegistry, ctx: &ToolContext<'_>, budget: std::time::Duration, email_running: bool) -> usize {
+    if !email_running {
+        return 0;
+    }
     let owed = owed(&ctx.db.conn());
     let mut hands = Hands::new(registry, ctx, budget);
     let mut done = 0;
