@@ -9,6 +9,7 @@
 // Dismiss: Escape or click outside.
 
 import { Theme } from "theme.slint";
+import { YShadow } from "y_shadow.slint";
 import { QuestionRequest, QuestionCard } from "question_card.slint";
 import { Icon, Icons } from "icon.slint";
 import { MessageData, ContentBlock } from "message_bubble.slint";
@@ -1374,7 +1375,15 @@ export component IntentLens inherits Rectangle {
     // answer and had no way to reply, with only the corner of the mic button showing past the
     // dock to hint that something was there. Nothing in the layout said "full height" on
     // purpose; it simply never subtracted the chrome it was underneath.
-    Rectangle {
+    //
+    // Its shadow is a picture under it (y_shadow.slint): a VM draws no `drop-shadow`, and the
+    // panel clips, so the shadow is a sibling drawn first. It follows the panel as it slides in.
+    YShadow {
+        visible: root.is-open;
+        x: lens-panel.x; y: lens-panel.y;
+        width: lens-panel.width; height: lens-panel.height;
+    }
+    lens-panel := Rectangle {
         x: root.is-open ? root.width - root.panel-width - Theme.chat-panel-gap : root.width;
         y: Theme.status-bar-height + Theme.chat-panel-gap;
         width: root.panel-width;
@@ -1424,11 +1433,6 @@ export component IntentLens inherits Rectangle {
                 Theme.cyan-glow 100%
             );
         }
-
-        // Deep shadow on left side
-        drop-shadow-blur: 30px;
-        drop-shadow-color: Theme.overlay-backdrop;
-        drop-shadow-offset-x: -8px;
 
         // Block click-through to the outside TouchArea
         TouchArea { width: 100%; height: 100%; }
