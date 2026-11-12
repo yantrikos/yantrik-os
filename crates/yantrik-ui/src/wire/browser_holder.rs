@@ -56,7 +56,8 @@ pub const NOT_DRIVABLE: &str = "A Browser was already open that Yantrik did not 
 
 /// Whether the person's account runs a Chromium main process (not one of its helpers) that is
 /// not `ours`: a browser the shell did not start with a pipe, which a dock launch then joins and
-/// nothing can drive. Read from the command line's first argument, which a Chromium keeps.
+/// nothing can drive. Read from the command line's words (`cmdline_words`: a Chromium's main
+/// process folds its whole argv into argv[0] shortly after it starts), the program being the first.
 ///
 /// The Minds' browsers are not that: a browser that owns a Mind's profile (`place_in`: its
 /// `SingletonLock` or an open `LOCK`, as the listener decides; a `--user-data-dir` in its text
@@ -70,7 +71,7 @@ pub fn another_browser_is_open(proc: &Path, ours: Option<u32>, uid: u32, profile
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { return false };
         let at = proc.join(pid.to_string());
         let Ok(raw) = std::fs::read(at.join("cmdline")) else { return false };
-        let argv: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|a| !a.is_empty()).collect();
+        let argv = yantrik_browser_ports::cmdline_words(&raw);
         let program = argv.first().and_then(|w| w.rsplit(|b| *b == b'/').next()).unwrap_or_default();
         let chromium = matches!(
             program,
@@ -129,6 +130,39 @@ mod tests {
         std::fs::write(proc.join(pid.to_string()).join("cmdline"), line.replace(' ', "\0")).unwrap();
     }
 
+    fn host() -> String {
+        yantrik_browser_ports::this_host().unwrap_or_else(|| "h".into())
+    }
+
+    /// A cmdline as Chromium 150 leaves it once it retitles itself: argv folded into argv[0].
+    fn retitled(proc: &Path, pid: u32, line: &str) {
+        entry(proc, pid, 1, None);
+        std::fs::write(proc.join(pid.to_string()).join("cmdline"), format!("{line}\0")).unwrap();
+    }
+
+    #[test]
+    fn a_retitled_main_process_is_another_browser_and_retitled_minds_and_helpers_are_not() {
+        let me = unsafe { libc::getuid() };
+        let proc = tree("retitled");
+        retitled(&proc, 450, "/usr/lib/chromium/chromium --no-first-run https://example.com/a/b");
+        assert!(another_browser_is_open(&proc, None, me, &profiles()), "a retitled main process");
+        let proc = tree("retitled-not");
+        retitled(&proc, 451, "/usr/lib/chromium/chromium --type=renderer --no-sandbox https://example.com/a/b");
+        assert!(!another_browser_is_open(&proc, None, me, &profiles()), "a retitled helper");
+        retitled(&proc, 452, "/usr/bin/chromium --headless=new --remote-debugging-port=9300");
+        assert!(!another_browser_is_open(&proc, None, me, &profiles()), "a retitled headless browser");
+        retitled(&proc, 453, "/usr/bin/chromium --headless --disable-gpu");
+        assert!(!another_browser_is_open(&proc, None, me, &profiles()));
+        // A retitled Mind View browser: owned by its lock, whatever its text.
+        let root = tree("retitled-profiles");
+        let owned = Profiles { mind_view: root.join("mind-view"), identities: root.join("identities") };
+        std::fs::create_dir_all(&owned.mind_view).unwrap();
+        std::os::unix::fs::symlink(format!("{}-454", host()), owned.mind_view.join("SingletonLock")).unwrap();
+        let only = tree("retitled-only-mind");
+        retitled(&only, 454, "/usr/bin/chromium --remote-debugging-port=9223 https://x/y");
+        assert!(!another_browser_is_open(&only, None, me, &owned), "a retitled Mind View browser");
+    }
+
     fn profiles() -> Profiles {
         Profiles { mind_view: "/home/p/.local/share/minds/mind-view".into(), identities: "/home/p/.local/share/minds/identities".into() }
     }
@@ -142,8 +176,8 @@ mod tests {
         let owned = Profiles { mind_view: root.join("mind-view"), identities: root.join("identities") };
         std::fs::create_dir_all(owned.identities.join("work")).unwrap();
         std::fs::create_dir_all(&owned.mind_view).unwrap();
-        std::os::unix::fs::symlink("host-410", owned.mind_view.join("SingletonLock")).unwrap();
-        std::os::unix::fs::symlink("host-411", owned.identities.join("work").join("SingletonLock")).unwrap();
+        std::os::unix::fs::symlink(format!("{}-410", host()), owned.mind_view.join("SingletonLock")).unwrap();
+        std::os::unix::fs::symlink(format!("{}-411", host()), owned.identities.join("work").join("SingletonLock")).unwrap();
         browser(&proc, 410, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/minds/mind-view --remote-debugging-port=9223");
         browser(&proc, 411, "/usr/bin/chromium --user-data-dir=/home/p/.local/share/minds/identities/work --remote-debugging-port=9300");
         assert!(!another_browser_is_open(&proc, None, me, &owned), "Mind View's and an identity's browsers");
@@ -165,7 +199,7 @@ mod tests {
         let root = tree("owned-profiles");
         let owned = Profiles { mind_view: root.join("mind-view"), identities: root.join("identities") };
         std::fs::create_dir_all(&owned.mind_view).unwrap();
-        std::os::unix::fs::symlink("host-430", owned.mind_view.join("SingletonLock")).unwrap();
+        std::os::unix::fs::symlink(format!("{}-430", host()), owned.mind_view.join("SingletonLock")).unwrap();
         browser(&proc, 430, "/usr/bin/chromium --remote-debugging-port=9223");
         assert!(!another_browser_is_open(&proc, None, me, &owned), "owns Mind View's profile, names none");
     }

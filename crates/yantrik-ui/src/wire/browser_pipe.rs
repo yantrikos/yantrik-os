@@ -306,6 +306,9 @@ mod tests {
     use super::super::browser_peer::tests::{this_process_is_not_the_service, this_process_is_the_service};
     use std::os::unix::net::UnixListener;
 
+    /// `OWN_BROWSER` is one slot for the whole process: the tests that set or read it take turns.
+    static OWN_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn fake_proc(name: &str, cmdline: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("yb-notice-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -318,6 +321,7 @@ mod tests {
     /// that gave up (a final refusal) leaves the Browser running, and it is still the shell's own.
     #[test]
     fn the_own_browser_slot_is_cleared_only_once_the_holder_has_exited() {
+        let _slot = OWN_SLOT.lock().unwrap_or_else(|e| e.into_inner());
         let mut child = Command::new("sleep").arg("30").spawn().unwrap();
         let pid = child.id();
         OWN_BROWSER.store(pid, std::sync::atomic::Ordering::SeqCst);
@@ -346,6 +350,7 @@ mod tests {
     /// stays; the person's own other browser is what raises it.
     #[test]
     fn a_failed_launch_record_is_not_overwritten_by_the_notice() {
+        let _slot = OWN_SLOT.lock().unwrap_or_else(|e| e.into_inner());
         let me = unsafe { libc::getuid() };
         let proc = fake_proc("failed", "/usr/bin/chromium --no-first-run");
         let pid = a_gone_pid();
@@ -361,6 +366,7 @@ mod tests {
 
     #[test]
     fn the_notice_is_not_raised_for_a_minds_browser_or_a_launch_still_running() {
+        let _slot = OWN_SLOT.lock().unwrap_or_else(|e| e.into_inner());
         let me = unsafe { libc::getuid() };
         let minds = fake_proc("minds", "/usr/bin/chromium --headless=new --remote-debugging-port=9300");
         note_not_drivable("notice-test-minds", &minds, a_gone_pid(), me, &profiles());
