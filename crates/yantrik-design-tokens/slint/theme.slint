@@ -211,13 +211,24 @@ export global Theme {
     out property <color> border-structural: ThemeMode.dark ? #ffffff12 : #14253b1a;
     out property <color> border-floating:   ThemeMode.dark ? #ffffff1c : #14253b24;
     out property <color> border-interrupt:  ThemeMode.dark ? #ffffff29 : #14253b2e;
-    // A floating surface's shadow (blur 20, down 6) and an interruptive one's (blur 32, down 10).
-    out property <color> shadow-float:      ThemeMode.dark ? #00000047 : #14253b1f;
-    out property <color> shadow-interrupt:  ThemeMode.dark ? #00000066 : #14253b2e;
-    out property <length> shadow-float-blur: 20px;
-    out property <length> shadow-float-dy: 6px;
-    out property <length> shadow-interrupt-blur: 32px;
-    out property <length> shadow-interrupt-dy: 10px;
+    // A floating surface's shadow (blur 32, down 12) and an interruptive one's (blur 48, down 16).
+    // They were 28% black at blur 20: over a night photograph that is no shadow at all, and the
+    // dock, the ask field and every panel sat ON the wallpaper like stickers, where a floating
+    // surface should sit above it (shell pass, 12 Nov 2026). Deeper and wider, so the edge of a
+    // surface reads from its shadow and the hairline only sharpens it.
+    out property <color> shadow-float:      ThemeMode.dark ? #0000008c : #14253b33;
+    out property <color> shadow-interrupt:  ThemeMode.dark ? #000000a6 : #14253b47;
+    out property <length> shadow-float-blur: 32px;
+    out property <length> shadow-float-dy: 12px;
+    out property <length> shadow-interrupt-blur: 48px;
+    out property <length> shadow-interrupt-dy: 16px;
+    // The photograph under the bar and under the dock, darkened towards the screen's edge so the
+    // bar's words and the dock's plate have a ground without a lid over the picture. The colour
+    // at the edge; each scrim fades from it to nothing. Light mode's wallpaper wears a pale veil,
+    // so its scrim is pale too.
+    out property <color> wallpaper-scrim:   ThemeMode.dark ? #04070cb8 : #f4f6f9d9;
+    out property <length> wallpaper-scrim-top: 112px;
+    out property <length> wallpaper-scrim-bottom: 168px;
     // A modal's scrim: no blur, the ground's own darkness.
     out property <color> scrim:             ThemeMode.dark ? #03070d8f : #14253b47;
     // A label drawn straight on the wallpaper, with no card behind it: white in either theme,
@@ -399,8 +410,10 @@ export global Theme {
     // "say one thing, large, and nothing else near it" — and a desktop whose largest text is
     // the same size as a section header has no focal point at all.
     out property <length> fs-hero: 44px * TextScale.factor;
-    // The desktop's greeting (36/500) and reading-oriented UI: chat, memory statements (15).
-    out property <length> fs-greeting: 36px * TextScale.factor;
+    // The desktop's greeting (44/500) and reading-oriented UI: chat, memory statements (15).
+    // It was 36, a size the ask field under it matched in weight; at 44 the greeting is the one
+    // large thing on the desktop and the field reads as what you do next.
+    out property <length> fs-greeting: 44px * TextScale.factor;
     out property <length> fs-reading: 15px * TextScale.factor;
     out property <int>    fw-hero: 600;
     out property <length> fs-hero-sub: 17px * TextScale.factor;

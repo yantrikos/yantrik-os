@@ -344,6 +344,28 @@ export component DesktopScreen inherits Rectangle {
             width: 100%; height: 100%; background: #f3f5f8b0;
         }
 
+        // ── The two edges of the photograph ──
+        //
+        // The bar has no plate on the bare desktop (status_bar.slint, `airy`) and the dock is a
+        // small plate on a wide picture, so the picture itself darkens towards the top and the
+        // bottom edge: the bar's words get their ground, the dock gets something to stand on, and
+        // nothing lids the sky. Two strips, not a full-screen vignette: the procedural wallpapers
+        // this desktop once had cost 6.6% of a core in full-screen gradient passes, so these
+        // cover a third of the screen between them and repaint only when the desktop does (the
+        // clock, once a minute).
+        if root.wallpaper-path != "" : Rectangle {
+            y: 0;
+            width: 100%;
+            height: Theme.wallpaper-scrim-top;
+            background: @linear-gradient(180deg, Theme.wallpaper-scrim 0%, Theme.wallpaper-scrim.with-alpha(0.34) 46%, Theme.wallpaper-scrim.with-alpha(0) 100%);
+        }
+        if root.wallpaper-path != "" && ThemeMode.dark : Rectangle {
+            y: parent.height - self.height;
+            width: 100%;
+            height: Theme.wallpaper-scrim-bottom;
+            background: @linear-gradient(180deg, Theme.wallpaper-scrim.with-alpha(0) 0%, Theme.wallpaper-scrim.with-alpha(0.3) 58%, Theme.wallpaper-scrim.with-alpha(0.62) 100%);
+        }
+
         // ── The desktop's own right-click ──
         //
         // The compositor's root menu cannot stand in for one, because the shell is a fullscreen

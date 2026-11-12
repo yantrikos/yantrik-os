@@ -3086,6 +3086,8 @@ export component App inherits Window {
             x: 0;
             y: 0;
             width: 100%;
+            // The bare desktop, with the photograph behind the bar and nothing in front of it.
+            airy: root.current-screen == 1 && !root.app-window-in-front;
             clock-text: root.clock-text;
             date-text: root.date-text;
             today-open: root.today-open;

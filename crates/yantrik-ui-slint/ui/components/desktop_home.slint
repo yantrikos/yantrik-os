@@ -46,8 +46,10 @@ export component DesktopHome inherits Rectangle {
     // As tall as what it holds: the Bench below starts here, and a Flickable that ran on down the
     // screen would take the pointer from the icons under it.
     out property <length> content-height: body.preferred-height + 8px;
-    // The ask field's width when the Continue row sits beside it.
-    property <length> ask-width: root.agent-mode ? root.width - 8px : min(root.width - 8px, 340px);
+    // The ask field: the one control on the desktop, so it is wide enough to be the second thing
+    // seen after the greeting (it was 340px, the width of the Continue card beside it, and the
+    // two read as a pair of equal boxes). The Continue row is under it now.
+    property <length> ask-width: root.agent-mode ? root.width - 8px : min(root.width - 8px, 520px);
 
     property <int> columns: max(2, min(6, floor((self.width - 48px) / 104px)));
     // The box says where its words go: it opens the chat with the mind that answers, and that
@@ -64,13 +66,15 @@ export component DesktopHome inherits Rectangle {
             width: parent.width;
             height: self.preferred-height;
             alignment: start;
-            spacing: 20px;
+            spacing: 12px;
             padding: 4px;
 
             // Straight on the wallpaper, so it wears the wallpaper label's shadow (Theme.label-shadow):
             // a copy of itself 1px lower in black keeps white legible over the photograph's light parts.
             Rectangle {
-                height: greeting.preferred-height;
+                // 12px more under the greeting than between the field and its Continue row: the
+                // greeting is a line of its own, the two under it are one group.
+                height: greeting.preferred-height + 12px;
                 Text {
                     x: 0;
                     y: 1px;
@@ -93,7 +97,7 @@ export component DesktopHome inherits Rectangle {
                 }
             }
 
-            // The ask field and, in everyday mode, the Continue row beside it.
+            // The ask field.
             Rectangle {
                 height: 56px;
 
@@ -104,7 +108,7 @@ export component DesktopHome inherits Rectangle {
                 background: Theme.bg-card;
                 border-radius: Theme.r-xl;
                 border-width: 1px;
-                border-color: search-touch.has-hover || search-focus.has-focus ? Theme.accent : Theme.border-floating;
+                border-color: search-focus.has-focus ? Theme.accent : search-touch.has-hover ? Theme.border-interrupt : Theme.border-floating;
                 drop-shadow-blur: Theme.shadow-float-blur;
                 drop-shadow-offset-y: Theme.shadow-float-dy;
                 drop-shadow-color: Theme.shadow-float;
@@ -137,42 +141,51 @@ export component DesktopHome inherits Rectangle {
                     }
                 }
             }
+            }
 
-            // One thing to pick up, when there is one: the last thing opened, beside the ask field.
+            // One thing to pick up, when there is one: the last thing opened, as a line under the
+            // ask field. A quiet plate that hugs its words, not a second card: it was a 56px box
+            // the width of the field, and a desktop with two equal boxes has no first thing.
             // Nothing at all when there is none.
             if !root.agent-mode && root.has-continue : Rectangle {
-                x: root.ask-width + 12px;
-                width: max(0px, parent.width - self.x - 8px);
-                height: 56px;
-                border-radius: Theme.r-lg;
-                background: recent-touch.has-hover ? Theme.bg-elevated : Theme.bg-card;
-                border-width: recent-focus.has-focus ? 2px : 1px;
-                border-color: recent-focus.has-focus ? Theme.accent : Theme.border-floating;
-                drop-shadow-blur: Theme.shadow-float-blur;
-                drop-shadow-offset-y: Theme.shadow-float-dy;
-                drop-shadow-color: Theme.shadow-float;
-                accessible-role: button;
-                accessible-label: "Continue " + root.continue-title;
-                accessible-action-default => { root.open-continue(); }
-                recent-focus := FocusScope {
-                    key-pressed(e) => {
-                        if (e.text == "\n" || e.text == " ") { root.open-continue(); return accept; }
-                        reject
+                height: 40px;
+                Rectangle {
+                    x: 0px;
+                    width: min(root.ask-width, continue-row.preferred-width);
+                    height: 40px;
+                    border-radius: 10px;
+                    background: recent-touch.pressed ? Theme.label-plate-selected : Theme.label-plate;
+                    border-width: recent-focus.has-focus ? 2px : 1px;
+                    border-color: recent-focus.has-focus ? Theme.accent
+                                : recent-touch.has-hover ? Theme.label-on-wallpaper.with-alpha(0.28) : Theme.label-on-wallpaper.with-alpha(0.12);
+                    animate background, border-color { duration: Theme.dur-fast; }
+                    accessible-role: button;
+                    accessible-label: "Continue " + root.continue-title;
+                    accessible-action-default => { root.open-continue(); }
+                    recent-focus := FocusScope {
+                        key-pressed(e) => {
+                            if (e.text == "\n" || e.text == " ") { root.open-continue(); return accept; }
+                            reject
+                        }
+                    }
+                    recent-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-continue(); } }
+                    continue-row := HorizontalLayout {
+                        padding-left: 12px; padding-right: 14px; spacing: 8px;
+                        // The plate is dark in both themes (Theme.label-plate), so its ink is the
+                        // wallpaper label's white and never a theme text colour.
+                        Icon { commands: Icons.file; size: 16px; tint: Theme.label-on-wallpaper.with-alpha(0.72); y: (parent.height - self.height) / 2; }
+                        Text {
+                            text: "Continue " + root.continue-title;
+                            font-size: Theme.fs-body; font-weight: 600; color: Theme.label-on-wallpaper;
+                            vertical-alignment: center; overflow: elide;
+                        }
+                        if root.continue-subtitle != "" : Text {
+                            text: root.continue-subtitle;
+                            font-size: Theme.fs-body; color: Theme.label-on-wallpaper.with-alpha(0.72);
+                            vertical-alignment: center; overflow: elide;
+                        }
                     }
                 }
-                recent-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-continue(); } }
-                HorizontalLayout {
-                    padding-left: 16px; padding-right: 14px; spacing: 10px;
-                    Icon { commands: Icons.file; size: 18px; tint: Theme.text-secondary; y: (parent.height - self.height) / 2; }
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 2px;
-                        horizontal-stretch: 1;
-                        Text { text: "Continue " + root.continue-title; font-size: Theme.fs-body; font-weight: 600; color: Theme.text-primary; overflow: elide; }
-                        if root.continue-subtitle != "" : Text { text: root.continue-subtitle; font-size: Theme.fs-caption; color: Theme.text-secondary; overflow: elide; }
-                    }
-                }
-            }
             }
 
             // What the mind is proposing. Tapping one sends it to the mind: the suggestion IS a
