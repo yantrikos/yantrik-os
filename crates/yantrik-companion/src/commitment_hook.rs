@@ -54,6 +54,18 @@ pub fn run_urge(registry: &ToolRegistry, ctx: &ToolContext<'_>, urge: &UrgeSpec,
     true
 }
 
+/// The reply to a press (or, with an empty `action_id`, to the poll) as of `now`; see
+/// `CompanionService::person_answers_commitment_prep`.
+pub fn reply_to_press(conn: &rusqlite::Connection, incognito: bool, action_id: &str, now: f64) -> crate::commitment_consent::Reply {
+    use crate::commitment_consent::{person_answer_at, status, Status};
+    let said = person_answer_at(conn, action_id, now);
+    if incognito {
+        // Nothing is put to the person, so Settings shows the switch and no question to press.
+        return (said, Status { question: None, ..status(conn, now) }, Vec::new());
+    }
+    (said, status(conn, now), crate::commitment_cards::cards(conn, now))
+}
+
 impl CompanionService {
     /// Note the promises in a message the person sent.
     pub fn note_commitments(&self, text: &str, turn_id: u64) -> usize {
@@ -89,13 +101,7 @@ impl CompanionService {
     /// what the surfaces show now; an empty `action_id` only asks what they show. In incognito nothing
     /// is put to the person, so nothing is marked asked and no card is raised.
     pub fn person_answers_commitment_prep(&self, action_id: &str) -> crate::commitment_consent::Reply {
-        let conn = self.db.conn();
-        let said = crate::commitment_consent::person_answer(&conn, action_id);
-        if self.incognito {
-            return (said, crate::commitment_consent::status(&conn, now_ts()), Vec::new());
-        }
-        let cards = crate::commitment_cards::cards(&conn, now_ts());
-        (said, crate::commitment_consent::status(&conn, now_ts()), cards)
+        reply_to_press(&self.db.conn(), self.incognito, action_id, now_ts())
     }
 
     /// Housekeeping for what was prepared: expired items are closed, and old ones deleted.

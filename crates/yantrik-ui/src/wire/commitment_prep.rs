@@ -13,7 +13,8 @@ use std::time::Duration;
 use crossbeam_channel::Receiver;
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use yantrik_companion::commitment_cards::Card;
-use yantrik_companion::commitment_consent::{Status, TURN_OFF, TURN_ON, WHERE};
+use yantrik_companion::commitment_consent::{Status, TURN_OFF, TURN_ON};
+use yantrik_companion::commitment_reply::{self, Shown};
 
 use crate::app_context::AppContext;
 use crate::commitment_brief::Reply;
@@ -25,7 +26,7 @@ const ASK_EVERY: u32 = 25;
 
 pub fn wire(ui: &App, ctx: &AppContext) {
     let bridge = ctx.bridge.clone();
-    let pending: Rc<RefCell<Vec<(Receiver<Reply>, bool)>>> = Rc::new(RefCell::new(Vec::new()));
+    let pending: Rc<RefCell<Vec<(Receiver<Reply>, Option<String>)>>> = Rc::new(RefCell::new(Vec::new()));
 
     let g = ui.global::<PrepState>();
     g.set_off_id(TURN_OFF.into());
@@ -33,7 +34,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let queue = pending.clone();
     let asker = bridge.clone();
     ui.global::<PrepState>().on_answer(move |action_id| {
-        queue.borrow_mut().push((asker.answer_commitment_prep(action_id.to_string()), true));
+        queue.borrow_mut().push((asker.answer_commitment_prep(action_id.to_string()), Some(action_id.to_string())));
     });
 
     let weak = ui.as_weak();
@@ -43,18 +44,15 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let Some(ui) = weak.upgrade() else { return };
         let mut n = ticks.borrow_mut();
         if *n % ASK_EVERY == 0 && bridge.is_online() {
-            pending.borrow_mut().push((bridge.answer_commitment_prep(String::new()), false));
+            pending.borrow_mut().push((bridge.answer_commitment_prep(String::new()), None));
         }
         *n += 1;
         let mut waiting = pending.borrow_mut();
         waiting.retain(|(rx, pressed)| match rx.try_recv() {
-            Ok((said, status, cards)) => {
-                show(&ui, &status, &cards);
-                if *pressed {
-                    match said {
-                        Some(said) => answered(&ui, &said),
-                        None => stale(&ui, &status),
-                    }
+            Ok(reply) => {
+                show(&ui, &reply.1, &reply.2);
+                if let Some(pressed) = pressed {
+                    pressed_reply(&ui, &commitment_reply::shown(pressed, &reply));
                 }
                 false
             }
@@ -81,11 +79,15 @@ fn show(ui: &App, status: &Status, cards: &[Card]) {
     g.set_no_id(no.into());
 }
 
-/// The person's press answered: say what it did, and take the answered rows off the brief card.
-fn answered(ui: &App, said: &str) {
-    super::toast::local(&ui.as_weak(), "Yantrik", said, "", 1);
-    let rest: Vec<_> = ui.get_morning_brief_sections().iter().filter(|s| s.yes_id.is_empty()).collect();
-    ui.set_morning_brief_sections(ModelRc::new(VecModel::from(rest)));
+/// The person's press: say what it did (or why it did nothing), and take the answered rows off the
+/// brief card, giving it the question that is outstanding now when the press answered nothing.
+fn pressed_reply(ui: &App, shown: &Shown) {
+    super::toast::local(&ui.as_weak(), "Yantrik", &shown.toast, "", 1);
+    let mut rows: Vec<_> = ui.get_morning_brief_sections().iter().filter(|s| s.yes_id.is_empty()).collect();
+    if let Some(q) = &shown.brief_question {
+        rows.push(super::morning_brief::section(&crate::commitment_brief::question_row(q)));
+    }
+    ui.set_morning_brief_sections(ModelRc::new(VecModel::from(rows)));
 }
 
 fn card_data(c: &Card) -> PrepCardData {
@@ -98,15 +100,4 @@ fn card_data(c: &Card) -> PrepCardData {
         no_label: c.no_label.into(),
         no_id: c.no_id.clone().into(),
     }
-}
-
-/// A press that answered nothing (the question had moved on, or was answered already) says so, and
-/// the brief card is given the question that is outstanding now, if there is one.
-fn stale(ui: &App, status: &Status) {
-    super::toast::local(&ui.as_weak(), "Yantrik", &format!("That question has changed; the current one is in {WHERE}."), "", 1);
-    let mut rows: Vec<_> = ui.get_morning_brief_sections().iter().filter(|s| s.yes_id.is_empty()).collect();
-    if let Some(q) = &status.question {
-        rows.push(super::morning_brief::section(&crate::commitment_brief::question_row(q)));
-    }
-    ui.set_morning_brief_sections(ModelRc::new(VecModel::from(rows)));
 }

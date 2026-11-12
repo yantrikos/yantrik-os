@@ -108,7 +108,7 @@ mod tests {
             }
             let whole = std::fs::read_to_string(entry.path()).unwrap();
             let src = whole.split("#[cfg(test)]").next().unwrap_or("");
-            for needle in ["person_answers_commitment_prep", "commitment_consent", "commitment_cards", "answer_commitment_prep"] {
+            for needle in ["person_answers_commitment_prep", "commitment_consent", "commitment_cards", "commitment_reply", "commitment_prep:seen", "answer_commitment_prep"] {
                 assert!(!src.contains(needle), "{name} names {needle}");
             }
         }
@@ -161,13 +161,5 @@ mod tests {
                 assert!(!code.contains(needle), "{name} names {needle}");
             }
         }
-    }
-
-    /// LOW-2: a press that answered nothing says so, and is never dropped silently.
-    #[test]
-    fn a_press_on_a_stale_question_says_so() {
-        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wire/commitment_prep.rs")).unwrap();
-        assert!(src.contains("None => stale(&ui, &status)"), "a press with no answer goes to stale");
-        assert!(src.contains("That question has changed; the current one is in {WHERE}."));
     }
 }

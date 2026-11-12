@@ -20,6 +20,8 @@ pub const YES: &str = "commitment_prep:yes:";
 pub const NO: &str = "commitment_prep:no:";
 pub const TURN_ON: &str = "commitment_prep:on";
 pub const TURN_OFF: &str = "commitment_prep:off";
+/// Puts one prepared card away. It never changes consent.
+pub const SEEN: &str = "commitment_prep:seen:";
 
 /// Where the person turns it back on, in the words of every sentence that points at it.
 pub const WHERE: &str = "Settings \u{2192} Companion";
@@ -123,6 +125,19 @@ pub fn question_action(q: &Question) -> BriefAction {
 /// A press of one of the buttons. What was said back to the person, or `None` when the press is not
 /// this module's or does not answer anything (a stale card, a repeated press).
 pub fn person_answer(conn: &rusqlite::Connection, action_id: &str) -> Option<String> {
+    person_answer_at(conn, action_id, crate::anticipation::now_ts())
+}
+
+/// [`person_answer`] as of `now`, which decides which prepared cards are on screen for a "Got it".
+pub fn person_answer_at(conn: &rusqlite::Connection, action_id: &str, now: f64) -> Option<String> {
+    if let Some(item) = action_id.strip_prefix(SEEN) {
+        // Only a card on screen now; the item is put away, and the switch is left as it is.
+        if !crate::commitment_cards::prepared(conn, now).iter().any(|i| i.id == item) {
+            return None;
+        }
+        AnticipationEngine::mark_surfaced(conn, item);
+        return Some("Put away. Getting promised things ready is still on.".into());
+    }
     if action_id == TURN_ON {
         if store::enabled(conn) {
             return None;
