@@ -73,8 +73,11 @@ mod tests {
     #[test]
     fn a_child_reads_fd_3_and_writes_fd_4_and_holds_nothing_else() {
         // An fd of ours with no close-on-exec, as a session's redirection would be.
-        let leaked = std::fs::File::open("/dev/null").unwrap().into_raw_fd();
-        unsafe { libc::fcntl(leaked, libc::F_SETFD, 0) };
+        // Moved above 10 whatever number the runner's own descriptors leave free (a low one would
+        // be 3, 4 or 5, which `attach` makes or keeps), and inheritable.
+        let opened = std::fs::File::open("/dev/null").unwrap().into_raw_fd();
+        let leaked = unsafe { libc::fcntl(opened, libc::F_DUPFD, 10) };
+        unsafe { libc::close(opened) };
         assert!(leaked > 5, "the fd under test must be one the child could keep");
         let mut command = Command::new("sh");
         command.arg("-c").arg("read -r line <&3; echo \"got:$line\" >&4; ls /proc/self/fd | tr '\\n' ' ' >&4");
