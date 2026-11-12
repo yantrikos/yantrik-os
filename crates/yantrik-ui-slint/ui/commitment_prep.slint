@@ -108,7 +108,7 @@ export component PrepSwitch inherits VerticalLayout {
 
 // A card on the desktop, where the person is: it stays until its item is answered or expires. Its
 // buttons are `PrepChoices`, so they are pointer-only and press `PrepState.answer`, as the brief's do.
-export component PrepCard inherits Rectangle {
+export component PrepAsk inherits Rectangle {
     in property <PrepCardData> card;
 
     width: 300px;

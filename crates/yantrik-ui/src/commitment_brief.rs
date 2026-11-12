@@ -141,17 +141,17 @@ mod tests {
     }
 
     /// The shell cards (the question, and what was prepared with Turn off) are the person's alone too:
-    /// drawn only by `PrepCard`, whose buttons are `PrepChoices` (pointer-only, `PrepState.answer`),
+    /// drawn only by `PrepAsk`, whose buttons are `PrepChoices` (pointer-only, `PrepState.answer`),
     /// never by a notification or a whisper action a socket program can invoke, and named by no
     /// file of the notification store's wiring or the control surface.
     #[test]
     fn the_shell_cards_are_pointer_only_person_only_and_named_by_no_notification_path() {
         let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui");
         let prep = std::fs::read_to_string(ui.join("commitment_prep.slint")).unwrap();
-        let card = prep.split_once("export component PrepCard").expect("the card").1;
+        let card = prep.split_once("export component PrepAsk").expect("the card").1;
         assert!(card.contains("PrepChoices {") && !card.contains("YButton {") && !card.contains("TouchArea"), "its buttons are PrepChoices, nothing clickable of its own");
         let stack = std::fs::read_to_string(ui.join("components/whisper_card.slint")).unwrap();
-        assert!(stack.contains("PrepCard { card: prep; }"), "the stack draws the card");
+        assert!(stack.contains("PrepAsk { card: prep; }"), "the stack draws the card");
         assert!(!stack.contains("PrepState.answer"), "the stack never presses the answer");
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for name in ["wire/notifications.rs", "wire/for_you.rs", "wire/callbacks.rs", "cards.rs", "notice_inbox.rs"] {
