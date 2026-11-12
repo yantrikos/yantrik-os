@@ -76,6 +76,9 @@
     (crates/yantrik-design-tokens/slint/theme.slint) and the grounded dock is 64px
     (crates/yantrik-ui-slint/ui/components/grounded_dock.slint; Theme.taskbar-height). If either changes, change these.
 
+    labwc only applies a changed <margin> on a reload after an output apply, so an update applies
+    it by a no-change output apply (see yantrik-update, nudge_compositor).
+
     The proper fix is for the panel to speak layer-shell and declare its own exclusive zone; this
     is the honest workaround until it does, and it is the one labwc recommends.
 
