@@ -1,6 +1,6 @@
 {
   "rule": "THE TABLE IS THE RULE. When 'Use Yantrik models' is applied or reverted, nothing of the person's is lost or overwritten without a copy, a copy keeps the original's mode, the result names every copy that holds the person's work and no other, and an older backup that was found beside the config is put back once and then set aside (never deleted, never adopted again). Two programs follow it: the desktop (crates/yantrik-ui/src/provider_handoff, which runs this table in rule_table_tests.rs) and Hermes's account tool (harnesses/lib/install/hermes_model.py, which runs it in harnesses/tests/test_keep_live_table.py). A change to the rule is a change here first; both suites run every row and a row that one side cannot satisfy fails that side.",
-  "values": "A value is a small JSON object standing for the person's config (the desktop's file content; Hermes's `model` section). 'live' is what is live at the start (null: nothing), 'stray' is a backup / kept section that no apply of this tool made (null: none). Steps: {do: apply|revert, names: [values held by the copies the result names, in any order: every copy kept so far for this config]}, {do: edit, value} (the whole value is replaced), {do: edit_applied, key, value} (one key of the applied value changes and the gateway address stays; the copy that holds it is expected as {\"has\": {key: value}}: an object holding those keys, since a copy of an applied value also holds the tool's own keys), and, desktop only, {do: apply_fails} (the apply fails after the live write: nothing is named), {do: revert_stops_after_restore}. 'only' limits a row to one side and the row then carries a 'why'; each suite asserts it ran every row not left out. 'live' may be \"plan_output\": the person's config already holds exactly what Apply writes. A revert step may say found_named: every older backup set aside is named in its text. 'expect' is read after the last step: live (a value, null, or \"applied\" = the tool's own), copies (the value of every copy on disk), stray (what is at the backup / kept name), found (every older backup set aside, by value). Every value the person ever had must also be somewhere on disk: live, stray, found or a copy.",
+  "values": "A value is a small JSON object standing for the person's config (the desktop's file content; Hermes's `model` section). 'live' is what is live at the start (null: nothing), 'stray' is a backup / kept section that no apply of this tool made (null: none). Steps: {do: apply|revert, names: [values held by the copies the result names, in any order: every copy kept so far for this config]}, {do: edit, value} (the whole value is replaced), {do: edit_applied, key, value} (one key of the applied value changes and the gateway address stays; the copy that holds it is expected as {\"has\": {key: value}}: an object holding those keys, since a copy of an applied value also holds the tool's own keys), {do: apply_fails} (an apply that fails after the live write: nothing is named; the Hermes tool plays it as an apply whose output is ignored, which is what the desktop sees when its step after the tool fails), and, desktop only, {do: revert_stops_after_restore}. 'only' limits a row to one side and the row then carries a 'why'; each suite asserts the exact names of the rows it left out. 'live' may be \"plan_output\": the person's config already holds exactly what Apply writes. A revert step may say found_named: every older backup set aside is named in its text. 'expect' is read after the last step: live (a value, null, or \"applied\" = the tool's own), copies (the value of every copy on disk), stray (what is at the backup / kept name), found (every older backup set aside, by value). Every value the person ever had must also be somewhere on disk: live, stray, found or a copy.",
   "cases": [
     {
       "name": "a stray backup and an edited live file are both kept",
@@ -76,21 +76,19 @@
     },
     {
       "name": "an apply that fails after the live write, then a retry: its own file is not the person's",
-      "only": ["rust"], "why": "needs an apply that fails after the live write, or a revert that stops partway: the Hermes tool does each in one process and has no such point to stop at",
       "live": {"v": "L"}, "stray": null,
       "steps": [{"do": "apply_fails"}, {"do": "apply", "names": []}, {"do": "revert", "names": []}],
       "expect": {"live": {"v": "L"}, "copies": [], "stray": null, "found": []}
     },
     {
       "name": "the same with a stray: one copy, of the person's file, named on the retry; none holds Yantrik's own",
-      "only": ["rust"], "why": "needs an apply that fails after the live write, or a revert that stops partway: the Hermes tool does each in one process and has no such point to stop at",
       "live": {"v": "edited"}, "stray": {"v": "old"},
       "steps": [{"do": "apply_fails"}, {"do": "apply", "names": [{"v": "edited"}]}, {"do": "revert", "names": [{"v": "edited"}]}],
       "expect": {"live": {"v": "old"}, "copies": [{"v": "edited"}], "stray": null, "found": [{"v": "old"}]}
     },
     {
       "name": "a revert that stopped after the backup was put back: the person's restored file is not overwritten on the next apply, and Revert then returns it",
-      "only": ["rust"], "why": "needs an apply that fails after the live write, or a revert that stops partway: the Hermes tool does each in one process and has no such point to stop at",
+      "only": ["rust"], "why": "needs a Revert that stops after it put the backup back: the Hermes tool's Revert is one process that ends with its config write, so there is no such point to stop at",
       "live": {"v": "L"}, "stray": null,
       "steps": [{"do": "apply", "names": []}, {"do": "revert_stops_after_restore"}, {"do": "apply", "names": []}, {"do": "revert", "names": []}],
       "expect": {"live": {"v": "L"}, "copies": [], "stray": null, "found": []}
@@ -109,24 +107,27 @@
     },
     {
       "name": "a failed re-apply after an edit, then a retry: the copy is still named (round 3, A)",
-      "only": ["rust"], "why": "needs an apply that fails after the live write, or a revert that stops partway: the Hermes tool does each in one process and has no such point to stop at",
       "live": {"v": "L"}, "stray": null,
       "steps": [{"do": "apply", "names": []}, {"do": "edit", "value": {"v": "E"}}, {"do": "apply_fails"}, {"do": "apply", "names": [{"v": "E"}]}, {"do": "revert", "names": [{"v": "E"}]}],
       "expect": {"live": {"v": "L"}, "copies": [{"v": "E"}], "stray": null, "found": []}
     },
     {
       "name": "a failed re-apply, then revert: the tool's own file is not copied as the person's (round 3, B)",
-      "only": ["rust"], "why": "needs an apply that fails after the live write, or a revert that stops partway: the Hermes tool does each in one process and has no such point to stop at",
       "live": {"v": "L"}, "stray": null,
       "steps": [{"do": "apply", "names": []}, {"do": "apply_fails"}, {"do": "revert", "names": []}],
       "expect": {"live": {"v": "L"}, "copies": [], "stray": null, "found": []}
     },
     {
       "name": "a failed re-apply after an edit, then revert straight away: the edit's copy is named (round 3, A and B)",
-      "only": ["rust"], "why": "needs an apply that fails after the live write, or a revert that stops partway: the Hermes tool does each in one process and has no such point to stop at",
       "live": {"v": "L"}, "stray": null,
       "steps": [{"do": "apply", "names": []}, {"do": "edit", "value": {"v": "E"}}, {"do": "apply_fails"}, {"do": "revert", "names": [{"v": "E"}]}],
       "expect": {"live": {"v": "L"}, "copies": [{"v": "E"}], "stray": null, "found": []}
+    },
+    {
+      "name": "a stray kept section, then an edit that keeps the gateway address, then revert: the edit is kept (round 4, E)",
+      "live": {"v": "L"}, "stray": {"v": "old"},
+      "steps": [{"do": "apply", "names": [{"v": "L"}]}, {"do": "edit_applied", "key": "context_length", "value": 200000}, {"do": "revert", "names": [{"v": "L"}, {"has": {"context_length": 200000}}], "found_named": true}],
+      "expect": {"live": {"v": "old"}, "copies": [{"v": "L"}, {"has": {"context_length": 200000}}], "stray": null, "found": [{"v": "old"}]}
     },
     {
       "name": "a live file already holding exactly what Apply writes is put back byte for byte (round 3, C)",

@@ -1,6 +1,6 @@
 //! The keep-the-person's-config rule, run from the table both sides share
 //! (harnesses/tests/fixtures/keep_live_cases.json: THE TABLE IS THE RULE; the Python side,
-//! hermes_model.py, runs every row of it too, in harnesses/tests/test_keep_live_table.py).
+//! hermes_model.py, runs the rows it can in harnesses/tests/test_keep_live_table.py).
 //! Real apply and revert in a temp home; fake keys only.
 
 use super::*;
@@ -8,6 +8,9 @@ use serde_json::Value;
 
 const TABLE: &str = include_str!("../../../../harnesses/tests/fixtures/keep_live_cases.json");
 const FAKE_TOKEN_NOTE: &str = "ygw-";
+/// The rows this side does not run (each carries a `why` in the table): none. A row that gains an
+/// `only` without "rust" changes the set of names left out and fails the test.
+const LEFT_OUT: [&str; 0] = [];
 
 fn offer() -> Offer {
     Offer { token: Token(yantrik_gateway::tokens::mint().unwrap()), model: "picked".into(), models: Vec::new() }
@@ -69,14 +72,18 @@ fn run_case(case: &Value) {
     std::fs::create_dir_all(&dir).unwrap();
     let live = dir.join("deepseek.json");
     let mut ever: Vec<Value> = Vec::new();
-    // "plan_output": the person's file already holds exactly what the first Apply writes (#1205 round 3).
+    // "plan_output": the person's file already holds exactly what the first Apply writes, byte for byte:
+    // the plan's own content (pretty JSON and a newline), not a re-serialisation of it (#1205 round 4).
     let mut first_plan = (case["live"] == "plan_output").then(|| gateway_plan(&home));
-    let plan_value = first_plan.as_ref().map(|p| serde_json::from_str::<Value>(&p.writes[0].content).unwrap());
+    let plan_content = first_plan.as_ref().map(|p| p.writes[0].content.clone());
     for (key, path) in [("live", live.clone()), ("stray", backup_path(&live))] {
-        let v = if case[key] == "plan_output" { plan_value.clone().unwrap() } else { case[key].clone() };
-        if !v.is_null() {
-            std::fs::write(path, v.to_string()).unwrap();
-            ever.push(v);
+        if case[key] == "plan_output" {
+            let content = plan_content.clone().unwrap();
+            std::fs::write(path, &content).unwrap();
+            ever.push(serde_json::from_str(&content).unwrap());
+        } else if !case[key].is_null() {
+            std::fs::write(path, case[key].to_string()).unwrap();
+            ever.push(case[key].clone());
         }
     }
     for (i, step) in case["steps"].as_array().unwrap().iter().enumerate() {
@@ -103,7 +110,7 @@ fn run_case(case: &Value) {
                 let mut v = value_of(&live);
                 v[step["key"].as_str().unwrap()] = step["value"].clone();
                 std::fs::write(&live, v.to_string()).unwrap();
-                ever.push(serde_json::json!({"has": {step["key"].as_str().unwrap(): step["value"].clone()}}));
+                ever.push(v);
             }
             "edit" => {
                 std::fs::write(&live, step["value"].to_string()).unwrap();
@@ -122,7 +129,8 @@ fn run_case(case: &Value) {
     let on_disk = |p: &Path| if p.exists() { value_of(p) } else { Value::Null };
     let expect = &case["expect"];
     if expect["live"] == "plan_output" {
-        assert_eq!(on_disk(&live), plan_value.clone().unwrap(), "{name}: live is the person's own bytes");
+        let bytes = std::fs::read(&live).unwrap_or_else(|e| panic!("{name}: the person's file is gone after Revert: {e}"));
+        assert_eq!(bytes, plan_content.clone().unwrap().into_bytes(), "{name}: live is the person's own bytes");
     } else if expect["live"] == "applied" {
         assert!(on_disk(&live)["base_url"].as_str().unwrap_or("").starts_with("http://127.0.0.1"), "{name}: live is the tool's own");
     } else {
@@ -145,17 +153,15 @@ fn run_case(case: &Value) {
 #[test]
 fn every_row_of_the_shared_table() {
     let table: Value = serde_json::from_str(TABLE).unwrap();
-    let (mut ran, mut left_out) = (0, 0);
+    let mut left_out: Vec<String> = Vec::new();
     for case in table["cases"].as_array().unwrap() {
         let only = case["only"].as_array();
         if only.is_some_and(|o| !o.iter().any(|s| s == "rust")) {
             assert!(!case["why"].as_str().unwrap_or("").is_empty(), "a row left out of this side says why: {}", case["name"]);
-            left_out += 1;
+            left_out.push(case["name"].as_str().unwrap().to_string());
             continue;
         }
         run_case(case);
-        ran += 1;
     }
-    assert_eq!(ran + left_out, table["cases"].as_array().unwrap().len());
-    assert!(ran >= 10, "the table has rows for this side: {ran}");
+    assert_eq!(left_out, LEFT_OUT, "the rows this side left out");
 }

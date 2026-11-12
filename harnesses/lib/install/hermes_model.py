@@ -135,19 +135,36 @@ def _keep_copy(path, data):
 
 
 def _digest(model):
-    """sha256 of a `model` section's canonical JSON (never printed)."""
-    return hashlib.sha256(json.dumps(model, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    """sha256 of a `model` section's canonical JSON (never printed). A section whose keys are of
+    different types (`1:` beside `one:`) cannot be put in order: that is said in words and nothing is
+    touched, rather than a traceback."""
+    try:
+        return hashlib.sha256(json.dumps(model, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    except TypeError:
+        raise ModelError("the model section has keys of different kinds (a number beside a word, say), which this tool cannot compare; "
+                         "not touching the config")
+
+
+def _extra_keys(model):
+    return {k: v for k, v in model.items() if k not in KEYS} if isinstance(model, dict) else {}
 
 
 def _is_own_section(model, before):
     """The live section is what this tool wrote: its digest is among the ones the kept record holds
     (every section this tool wrote or was about to write). Pointing at the gateway is not enough: the
-    person can add a key (`context_length`) and keep the address. A record from before digests were kept
-    has none, and then the address is all there is to go by."""
+    person can add a key (`context_length`) and keep the address.
+    A record with no digests (made by the code before this file kept them, or a kept section no Apply
+    made) goes by its shape instead: the gateway's address, all four keys, and no key beyond the ones the
+    kept section had (that is all the older code wrote). `apply` then starts the list, so this is used
+    once per record. What it cannot know: an edit that changes the value of one of the four keys, for a
+    record that never had a list (applied under the older code, edited, then a Revert with no Apply in
+    between): the edited value is Yantrik's to put back over, as the older code did."""
     if not isinstance(model, dict):
         return False
     if "written" not in before:
-        return is_gateway(str(model.get("base_url", "")))
+        kept = before.get("model") if before.get("had") else None
+        return (is_gateway(str(model.get("base_url", ""))) and all(k in model for k in KEYS)
+                and _extra_keys(model) == _extra_keys(kept))
     return _digest(model) in before["written"]
 
 
@@ -183,14 +200,19 @@ def apply(path, spec):
     copies made of the person's own section by this call."""
     _refuse_link(path)
     data, text = hermes_config._read(path)
+    if isinstance(data.get("model"), dict):
+        _digest(data["model"])  # a section that cannot be compared is refused before anything is kept or written
     kept = _kept(path)
     before = _load_kept(kept)
     copies = []
+    live_by_shape = None
     if before is None:
         # A copy: `model.update` below changes the live section in place, and the record keeps what was there.
         before = {"had": "model" in data, "model": copy.deepcopy(data.get("model")), "made_by": "apply", "written": []}
         _publish(kept, before, exclusive=True)
     else:
+        if "written" not in before and _is_own_section(data.get("model"), before):
+            live_by_shape = _digest(data["model"])
         copies = _keep_live_model(path, kept, before, data)
     model = data.get("model")
     # An older config names the model as a bare string; it becomes the mapping Hermes reads now.
@@ -198,12 +220,13 @@ def apply(path, spec):
         model = data["model"] = {}
     model.update(spec)
     # Recorded before the config is written, and added to what is there: a write that fails leaves the
-    # section of the apply before it still known as this tool's.
-    if "written" in before:
-        digest = _digest(model)
-        if digest not in before["written"]:
-            before["written"].append(digest)
-            _publish(kept, before)
+    # section of the apply before it still known as this tool's. A record with no list gets one now (the
+    # keep decision above is made, and went by shape that one time): every later Apply or Revert goes by digest.
+    written = before.setdefault("written", [])
+    new = [d for d in (live_by_shape, _digest(model)) if d and d not in written]
+    if new:
+        written.extend(new)
+        _publish(kept, before)
     hermes_config._write(path, data, text)
     return copies
 

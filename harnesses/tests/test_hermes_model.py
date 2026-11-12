@@ -221,9 +221,14 @@ class ModelTests(unittest.TestCase):
         kept = self.path + hermes_model.KEPT_SUFFIX
         Path(kept).write_text(json.dumps({"had": True, "model": {"default": "old"}}))
         Path(self.path).write_text("model:\n  default: edit\n")
+        # A second name keeps the first file's inode taken, so the filesystem cannot hand it out again.
+        hold = kept + ".hold"
+        os.link(kept, hold)
         before = os.stat(kept).st_ino
         run(["apply", self.path], json.dumps(SPEC))
         self.assertNotEqual(os.stat(kept).st_ino, before, "a new file was put in place")
+        self.assertEqual(json.loads(Path(hold).read_text()), {"had": True, "model": {"default": "old"}}, "the old record stayed whole")
+        os.unlink(hold)
         self.assertEqual(os.stat(kept).st_mode & 0o777, 0o600)
         self.assertEqual([f for f in os.listdir(self.dir.name) if ".tmp-" in f], [])
 
