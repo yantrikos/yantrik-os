@@ -235,14 +235,21 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RecentLines {
     }
 }
 
-/// The Wayland app id of an app's windows: `yantrik-<id>`, the name of its desktop file.
+/// The Wayland app id of an app's windows: the stem of its `.desktop` file, which is its program
+/// (`yantrik-container-manager` for the app whose `App::ID` is `containers`).
 ///
-/// Our windows told the compositor no app id at all, so labwc's rules, a taskbar and Alt+Tab's
-/// renderer knew a window only by its title (#877). With one, a single labwc rule
-/// (`identifier="yantrik-*"`, config/labwc/rc.xml) reaches every app's windows and none of
-/// anybody else's, which is how they get the compositor's shadow.
+/// Our windows told the compositor no app id at all, so labwc's rules and a taskbar knew a window
+/// only by its title (#877). With one, a single labwc rule (`identifier="yantrik-*"`,
+/// config/labwc/rc.xml) reaches every app's windows and none of anybody else's, which is how they
+/// get the compositor's shadow, and a taskbar finds the app's name and icon by the id.
+///
+/// The program comes from the framework's list of its apps (`FRAMEWORK_APPS`), which a test in
+/// `yantrik-shell-core` holds to the apps and their desktop files. An id that list does not know
+/// (an app under test) is `yantrik-<id>`.
 pub fn window_app_id(id: &str) -> String {
-    format!("yantrik-{id}")
+    yantrik_ipc_contracts::framework_apps::by_id(id)
+        .map(|app| app.program.to_string())
+        .unwrap_or_else(|| format!("yantrik-{id}"))
 }
 
 /// Give every window this process shows from here on its app id ([`window_app_id`]).
@@ -270,5 +277,72 @@ pub fn choose_backend() {
     let backend = std::env::var("SLINT_BACKEND").unwrap_or_default();
     if software && (backend.is_empty() || backend == "winit") {
         std::env::set_var("SLINT_BACKEND", "winit-software");
+    }
+}
+
+#[cfg(test)]
+mod app_id_tests {
+    use super::window_app_id;
+    use std::path::{Path, PathBuf};
+
+    fn root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// Every `App::ID` under `apps/`, read from the source the way the shell's guard reads it.
+    fn app_ids() -> Vec<String> {
+        let mut ids = Vec::new();
+        for entry in std::fs::read_dir(root().join("apps")).expect("apps/") {
+            let lib = entry.expect("entry").path().join("src/lib.rs");
+            let Ok(text) = std::fs::read_to_string(&lib) else { continue };
+            for line in text.lines() {
+                if let Some(rest) = line.trim().strip_prefix("const ID: &'static str = \"") {
+                    ids.push(rest.split('"').next().expect("closing quote").to_string());
+                }
+            }
+        }
+        ids.sort();
+        ids
+    }
+
+    /// The id is the stem of the app's `.desktop` file, which is what a taskbar looks the app's
+    /// name and icon up by (#877), for every app and not only the ones whose id is the program.
+    #[test]
+    fn every_apps_window_id_has_its_desktop_file() {
+        let ids = app_ids();
+        assert!(ids.len() >= 19, "found only {ids:?}");
+        for id in ids {
+            let app_id = window_app_id(&id);
+            let file = root().join("apps/desktop-files").join(format!("{app_id}.desktop"));
+            assert!(file.exists(), "`{id}` declares `{app_id}`, which has no {}", file.display());
+        }
+    }
+
+    /// The one labwc rule that gives our windows their border and shadow, and that it reaches the
+    /// id of every app: the pattern is the rule's glob, so a renamed id or a changed rule fails.
+    #[test]
+    fn the_labwc_rule_reaches_every_apps_window() {
+        let rc = include_str!("../../../config/labwc/rc.xml");
+        let rule = rc
+            .split("<windowRule identifier=\"yantrik-*\">")
+            .nth(1)
+            .and_then(|after| after.split("</windowRule>").next())
+            .expect("config/labwc/rc.xml has the yantrik-* window rule");
+        assert!(rule.contains(r#"<action name="SetDecorations" decorations="border" forceSSD="yes" />"#), "{rule}");
+        assert!(!rule.contains("serverDecoration"), "it places a window 27px low: {rule}");
+        let prefix = "yantrik-";
+        for id in app_ids() {
+            assert!(window_app_id(&id).starts_with(prefix), "`{id}` is not matched by yantrik-*");
+        }
+    }
+
+    /// The Mind desk's rule in the nested compositor names the id the framework gives the desk:
+    /// the one place that sets it is `made_window`.
+    #[test]
+    fn the_mind_desks_rule_names_its_window_id() {
+        let rc = include_str!("../../../config/labwc-mind/rc.xml");
+        let id = window_app_id("mind-desk");
+        assert_eq!(id, "yantrik-mind-desk");
+        assert!(rc.contains(&format!(r#"<windowRule identifier="{id}""#)), "labwc-mind/rc.xml");
     }
 }

@@ -348,7 +348,10 @@ mod tests {
         let made = run.find("A::Ui::make()").expect("made_window makes the window");
         let named = run.find("boot::name_windows(A::ID)").expect("made_window names it");
         assert!(made < named, "the app id is set after the window is made, never before");
-        assert_eq!(run.matches("boot::name_windows(").count(), 1, "in the one place a window is made");
+        assert_eq!(run.matches("boot::name_windows(").count(), 1, "in the one place the runner makes a window");
+        // `cx/windows.rs` makes later windows (`open_window`) without naming them, and does not
+        // need to: Slint's app id is process-wide, and `open_window` refuses unless one of the
+        // app's windows is already open, so the id was set when that one was made.
     }
 
     #[test]

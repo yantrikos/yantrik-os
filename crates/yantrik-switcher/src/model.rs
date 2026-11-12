@@ -337,9 +337,9 @@ pub fn name(w: &Window) -> String {
 }
 
 /// One of our apps, from its window's title: exactly its name ("Notes"), or its name with what it
-/// has open ("Notes: Handover", "plan.md - Editor"). Our windows set no app_id (#877), so the
-/// title is all there is; the shell's own window list matches exactly (it must not count a note
-/// as a second Notes), but for an icon the app is what matters.
+/// has open ("Notes: Handover", "plan.md - Editor"). A window of ours that declares no app_id
+/// (an older app build) has only its title; the shell's own window list matches exactly (it must not
+/// count a note as a second Notes), but for an icon the app is what matters.
 pub fn our_app(title: &str) -> Option<&'static str> {
     yantrik_ui_kit::app_names::app_id_for_title(title).or_else(|| {
         yantrik_ui_kit::app_names::APP_NAMES
