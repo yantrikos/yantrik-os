@@ -214,7 +214,7 @@ impl Headless {
             .env("TMPDIR", &tmp)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        let (mine, theirs) = match crate::pipe::attach(&mut command) {
+        let (mine, theirs) = match yantrik_browser_ports::stream::attach(&mut command) {
             Ok(ends) => ends,
             Err(e) => {
                 remove_profile(&tmp);

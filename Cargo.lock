@@ -11229,6 +11229,9 @@ dependencies = [
 [[package]]
 name = "yantrik-browser-ports"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "yantrik-calendar"

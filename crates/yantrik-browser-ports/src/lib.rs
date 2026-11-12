@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 pub mod listener;
 pub mod procs;
+pub mod stream;
 
 include!(concat!(env!("OUT_DIR"), "/ports.rs"));
 

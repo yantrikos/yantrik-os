@@ -109,7 +109,8 @@ class PagesDrawnBeforeTheHold(unittest.TestCase):
         browser = self.hold(proc, holder)
         after = self.targets_after(browser)       # the first thing asked of the browser since the hold
         self.assertEqual([t["url"] for t in after], ["about:blank"], after)
-        self.assertEqual([t["targetId"] for t in after], blank_before, "the untouched blank page is the same one")
+        self.assertEqual(len(after), 1)
+        self.assertNotIn(after[0]["targetId"], blank_before, "even the blank page of before is replaced: its URL says nothing of what it shows")
         self.assertEqual({t.url for t in browser.pages()}, {"about:blank"})
         self.assertIsNone(proc.poll(), "the browser itself is still running")
 
@@ -142,6 +143,72 @@ class PagesDrawnBeforeTheHold(unittest.TestCase):
             with self.assertRaises(cdp.CdpError):
                 browser.connect()
         self.assertFalse(browser.alive, "a connection that could not clean the window is not used")
+
+
+    OPENER = ("<title>Opener</title><body style=\"margin:0;width:800px;height:600px\" onclick=\"go()\">"
+              "<script>function go(){var w=window.open('');"
+              "w.document.write('<body style=\\\"margin:0\\\"><iframe src=\\\"file://%(home)s/.ssh/key.html\\\" "
+              "style=\\\"position:absolute;border:0;left:0;top:0;width:300px;height:300px\\\"></iframe>');"
+              "w.document.close();%(after)s}</script>click me")
+
+    def a_blank_popup_written_by_a_file_page(self, after):
+        """The reviewer's reproduction: a `file:` page, clicked once before the hold, writes the
+        protected file into a popup whose URL stays `about:blank`. Returns the browser's holder
+        once the opener is gone (closed, or `after` made it navigate itself to `about:blank`)."""
+        opener = os.path.join(self.home, "opener.html")
+        with open(opener, "w") as f:
+            f.write(self.OPENER % {"home": self.home, "after": after})
+        proc, holder = self.browser_with("file://" + opener)
+        raw = Raw(holder)
+        end = time.monotonic() + 30
+        while not [t for t in self.pages(raw) if t["title"] == "Opener"]:
+            self.assertLess(time.monotonic(), end, "the opener never loaded")
+            time.sleep(0.2)
+        first = [t for t in self.pages(raw) if t["title"] == "Opener"][0]
+        session = raw.call("Target.attachToTarget", {"targetId": first["targetId"], "flatten": True})["sessionId"]
+        for kind in ("mousePressed", "mouseReleased"):
+            raw.call("Input.dispatchMouseEvent", {"type": kind, "x": 400, "y": 400, "button": "left", "clickCount": 1}, session)
+        end = time.monotonic() + 30
+        while True:
+            popups = [t for t in self.pages(raw) if t["targetId"] != first["targetId"] and t["url"] == "about:blank"]
+            if popups:
+                break
+            self.assertLess(time.monotonic(), end, "the opener never made its popup")
+            time.sleep(0.2)
+        time.sleep(1.0)
+        psession = raw.call("Target.attachToTarget", {"targetId": popups[0]["targetId"], "flatten": True})["sessionId"]
+        shot = os.path.join(self.home, "popup-before.png")
+        with open(shot, "wb") as f:
+            f.write(base64.b64decode(raw.call("Page.captureScreenshot", {}, psession)["data"]))
+        self.assertEqual(png_pixel(shot, 150, 150), RED, "the blank-URL popup shows the protected file before the hold")
+        raw.call("Target.detachFromTarget", {"sessionId": psession})
+        if after:
+            time.sleep(0.5)                               # it navigates itself to about:blank
+        else:
+            raw.call("Target.closeTarget", {"targetId": first["targetId"]})
+        raw.close()
+        return proc, holder, {popups[0]["targetId"], first["targetId"]}
+
+    def assertNothingLeftOf(self, browser, before):
+        after = self.targets_after(browser)       # the first thing asked since the hold: no call touched anything
+        self.assertEqual([t["url"] for t in after], ["about:blank"], after)
+        self.assertFalse({t["targetId"] for t in after} & before, "a page of before the hold is still open")
+        session = browser.call("Target.attachToTarget", {"targetId": after[0]["targetId"], "flatten": True})["sessionId"]
+        shot = os.path.join(self.home, "after.png")
+        with open(shot, "wb") as f:
+            f.write(base64.b64decode(browser.call("Page.captureScreenshot", {}, session)["data"]))
+        self.assertNotEqual(png_pixel(shot, 150, 150), RED, "the protected file is still on screen")
+        self.assertEqual(png_pixel(shot, 150, 150), (255, 255, 255), "the one page left is blank")
+
+    def test_a_blank_popup_a_file_page_wrote_into_is_gone_with_its_opener_closed(self):
+        proc, holder, before = self.a_blank_popup_written_by_a_file_page("")
+        self.assertNothingLeftOf(self.hold(proc, holder), before)
+
+    def test_a_blank_popup_a_file_page_wrote_into_is_gone_with_its_opener_gone_blank(self):
+        proc, holder, before = self.a_blank_popup_written_by_a_file_page("location.href='about:blank';")
+        browser = self.hold(proc, holder)
+        self.assertNothingLeftOf(browser, before)
+        self.assertIsNone(proc.poll(), "the browser itself is still running")
 
 
 if __name__ == "__main__":

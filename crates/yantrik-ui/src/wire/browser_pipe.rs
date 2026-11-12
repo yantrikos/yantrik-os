@@ -85,40 +85,18 @@ pub struct Handoff {
     pub(super) theirs: OwnedFd,
 }
 
+#[cfg(test)]
 pub(super) fn socketpair() -> std::io::Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0 as RawFd; 2];
-    // SAFETY: `fds` is two ints, as socketpair(2) wants.
-    let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: both fds are new and ours.
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+    let (mine, theirs) = std::os::unix::net::UnixStream::pair()?;
+    Ok((mine.into(), theirs.into()))
 }
 
 /// Make `command`'s fds 3 and 4 the browser's end of a new stream; the other end is the result.
-/// Nothing else of the shell's descriptors reaches the child: every one here is close-on-exec.
+/// The one path of every browser that runs on a pipe, the Arcade's too: `yantrik_browser_ports::
+/// stream::attach`. Nothing else of the shell's descriptors reaches the child.
 pub fn attach(command: &mut Command) -> std::io::Result<Handoff> {
-    let (mine, theirs) = socketpair()?;
-    // Above 4, so dup2 onto 3 and 4 cannot land on itself; close-on-exec, so it is gone after exec.
-    // SAFETY: plain fcntl on an fd we own.
-    let high = unsafe { libc::fcntl(theirs.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
-    if high < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `high` is a new fd and ours.
-    let theirs = unsafe { OwnedFd::from_raw_fd(high) };
-    let raw = theirs.as_raw_fd();
-    // SAFETY: only async-signal-safe calls (dup2) between fork and exec.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::dup2(raw, 3) < 0 || libc::dup2(raw, 4) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    Ok(Handoff { mine, theirs })
+    let (mine, theirs) = yantrik_browser_ports::stream::attach(command)?;
+    Ok(Handoff { mine: mine.into(), theirs })
 }
 
 /// The launcher's one call: if this launch is one of the two browsers that get a pipe (`role`,
@@ -155,11 +133,14 @@ impl Handoff {
     pub fn offer(self, pid: u32, role: Role) {
         let Handoff { mine, theirs } = self;
         drop(theirs);
+        // Opened here, right after the spawn and before the reaper thread exists, while the pid
+        // still names this child and nobody else.
+        let leader = super::browser_offer::Leader::of(pid);
         let spawned = std::thread::Builder::new().name("browser-pipe".into()).spawn(move || {
             std::thread::sleep(SETTLE);
             // Read afresh for every offer: a restarted service has a new pid, and the service
             // manager records the current one on every start it performs.
-            super::browser_offer::keep_offered(&socket_path(), &mine, pid, role, SAY_AFTER, || ServiceIdentity::installed(service_pid()));
+            super::browser_offer::keep_offered(&socket_path(), &mine, &leader, role, SAY_AFTER, || ServiceIdentity::installed(service_pid()));
         });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "Could not start the thread that hands the Browser's pipe over");

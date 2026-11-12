@@ -3,7 +3,7 @@
 //! and what it does with a browser nobody takes.
 
 use std::io::Read;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -15,9 +15,60 @@ const RETRY: Duration = Duration::from_millis(500);
 /// How often a lease is checked for a browser that has gone.
 const LEASE_LOOK: Duration = Duration::from_secs(2);
 
-fn alive(pid: u32) -> bool {
-    // SAFETY: signal 0 only asks whether the process exists.
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+/// The browser this shell started, held by a pidfd opened right after the spawn. A bare pid number
+/// is freed when the reaper (`dock`) collects the child, and may then name another process of the
+/// person's; the pidfd names the one process for good. So "is it still running" and "stop it" are
+/// both asked of the pidfd, and the browser's group is signalled only while the pidfd says its
+/// leader has not exited: an unreaped leader pins its pid as the group's id.
+pub(super) struct Leader {
+    pid: u32,
+    fd: Option<OwnedFd>,
+}
+
+impl Leader {
+    /// Open the pidfd for `pid`, a child just spawned: before anything has reaped it. A kernel
+    /// without `pidfd_open` (before 5.3) leaves the bare pid, as before.
+    pub(super) fn of(pid: u32) -> Leader {
+        // SAFETY: pidfd_open takes a pid and flags; the result is a new fd of ours or -1.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0 as libc::c_uint) };
+        if fd < 0 {
+            tracing::warn!(pid, error = %std::io::Error::last_os_error(), "No pidfd for the browser; it is watched by its pid");
+            return Leader { pid, fd: None };
+        }
+        // SAFETY: `fd` is a new descriptor and ours.
+        Leader { pid, fd: Some(unsafe { OwnedFd::from_raw_fd(fd as i32) }) }
+    }
+
+    /// Whether the browser's leader is still running (a pidfd turns readable when it exits).
+    fn alive(&self) -> bool {
+        let Some(fd) = &self.fd else {
+            // SAFETY: signal 0 only asks whether the process exists.
+            return unsafe { libc::kill(self.pid as i32, 0) == 0 };
+        };
+        let mut one = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd, no wait.
+        unsafe { libc::poll(&mut one, 1, 0) <= 0 }
+    }
+
+    /// SIGKILL to the browser and its group, if the leader has not exited. The browser leads a
+    /// group of its own (`attach_for`), so its helpers go with it. Says whether it signalled.
+    fn kill(&self) -> bool {
+        let Some(fd) = &self.fd else {
+            // SAFETY: SIGKILL to the group of a child this process started, and to the child itself.
+            unsafe {
+                libc::kill(-(self.pid as i32), libc::SIGKILL);
+                return libc::kill(self.pid as i32, libc::SIGKILL) == 0;
+            }
+        };
+        if !self.alive() {
+            return false;
+        }
+        // SAFETY: SIGKILL to the group the unreaped leader pins, then to the leader through its pidfd.
+        unsafe {
+            libc::kill(-(self.pid as i32), libc::SIGKILL);
+            libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0u32) == 0
+        }
+    }
 }
 
 /// Offer `mine` to the service until the browser exits; each time the service lets go, again.
@@ -27,16 +78,17 @@ fn alive(pid: u32) -> bool {
 /// starting or of the service letting go, or at a final refusal: a Mind View browser nobody holds
 /// is unfenced, and every later launch would hand over to it and exit, so the service would never
 /// hold Mind View again (#1200). The person's Browser is never stopped: it is theirs.
-pub(super) fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, role: Role, bound: Duration, identity: impl Fn() -> std::io::Result<ServiceIdentity>) {
+pub(super) fn keep_offered(path: &Path, mine: &OwnedFd, leader: &Leader, role: Role, bound: Duration, identity: impl Fn() -> std::io::Result<ServiceIdentity>) {
+    let pid = leader.pid;
     let mut unheld_since = Instant::now();
     let mut said = false;
-    while alive(pid) {
+    while leader.alive() {
         let identity = match identity() {
             Ok(identity) => identity,
             Err(e) => {
                 tracing::error!(pid, error = %e, "Cannot tell which process is the browser service; the Browser's pipe is not offered");
                 if role == Role::MindView {
-                    stop_unheld(pid, "nothing can say which process is the browser service");
+                    stop_unheld(leader, "nothing can say which process is the browser service");
                 }
                 return;
             }
@@ -45,20 +97,20 @@ pub(super) fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, role: Role, bo
             Ok(lease) => {
                 tracing::info!(pid, "The browser's DevTools pipe is with the browser service");
                 said = false;
-                wait_for_lease_end(&lease, pid);
+                wait_for_lease_end(&lease, leader);
                 tracing::info!(pid, "The browser service let go of the Browser's pipe; offering it again");
                 unheld_since = Instant::now();
             }
             Err(Refusal::Final(why)) => {
                 if role == Role::MindView {
-                    return stop_unheld(pid, &why);
+                    return stop_unheld(leader, &why);
                 }
                 return tracing::warn!(pid, %why, "The Browser's DevTools pipe was not handed over, and will not be offered again; the Browser cannot be driven until it is opened again");
             }
             Err(Refusal::Retry(why)) => {
                 if unheld_since.elapsed() > bound {
                     if role == Role::MindView {
-                        return stop_unheld(pid, &why);
+                        return stop_unheld(leader, &why);
                     }
                     if !said {
                         said = true;
@@ -72,24 +124,21 @@ pub(super) fn keep_offered(path: &Path, mine: &OwnedFd, pid: u32, role: Role, bo
     }
 }
 
-/// Stops a Mind View browser the service does not hold: it is this shell's own child and leads a
-/// group of its own (`attach_for`), so its helpers go with it. The next `browser` call opens one
+/// Stops a Mind View browser the service does not hold: it is this shell's own child (held by its
+/// pidfd, so never another process that reused the number) and leads a group of its own
+/// (`attach_for`), so its helpers go with it. The next `browser` call opens one
 /// the service takes.
-fn stop_unheld(pid: u32, why: &str) {
-    tracing::warn!(pid, %why, "Mind View's browser was not taken by the browser service; stopping it, since nothing holds or fences it");
-    // SAFETY: SIGKILL to the group of a child this process started, and to the child itself.
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
+fn stop_unheld(leader: &Leader, why: &str) {
+    tracing::warn!(pid = leader.pid, %why, "Mind View's browser was not taken by the browser service; stopping it, since nothing holds or fences it");
+    leader.kill();
 }
 
 /// Block until the service closes the hand-over connection, or the browser is gone.
-fn wait_for_lease_end(lease: &UnixStream, pid: u32) {
+fn wait_for_lease_end(lease: &UnixStream, leader: &Leader) {
     lease.set_read_timeout(Some(LEASE_LOOK)).ok();
     let mut reader = lease;
     let mut one = [0u8; 1];
-    while alive(pid) {
+    while leader.alive() {
         match reader.read(&mut one) {
             Ok(0) => return,
             Ok(_) => {}
@@ -117,7 +166,7 @@ mod tests {
         let (mine, theirs) = socketpair().unwrap();
         let mut browser = Command::new("sleep").arg("30").spawn().unwrap();
         let pid = browser.id();
-        let shell = std::thread::spawn(move || keep_offered(&path, &mine, pid, Role::MindView, Duration::from_secs(30), || Ok(this_process_is_the_service("lease"))));
+        let shell = std::thread::spawn(move || keep_offered(&path, &mine, &Leader::of(pid), Role::MindView, Duration::from_secs(30), || Ok(this_process_is_the_service("lease"))));
         // The first service takes the stream and goes away; the second takes it again and stays.
         let (first, _) = listener.accept().unwrap();
         let (_, one) = receive(&first);
@@ -156,7 +205,7 @@ mod tests {
             }
         };
         let offered = path.clone();
-        let shell = std::thread::spawn(move || keep_offered(&offered, &mine, pid, Role::Person, Duration::from_secs(30), identity));
+        let shell = std::thread::spawn(move || keep_offered(&offered, &mine, &Leader::of(pid), Role::Person, Duration::from_secs(30), identity));
         let (first, _) = listener.accept().unwrap();
         let _ = receive(&first);
         (&first).write_all(b"ok
@@ -251,7 +300,7 @@ c.recv(1)
         let (mut child, Handoff { mine, theirs }) = a_browser(Role::MindView);
         drop(theirs);
         assert_eq!(unsafe { libc::getpgid(child.id() as i32) }, child.id() as i32, "it leads a group of its own");
-        keep_offered(&path, &mine, child.id(), Role::MindView, Duration::from_secs(30), || Ok(this_process_is_the_service("final-mind")));
+        keep_offered(&path, &mine, &Leader::of(child.id()), Role::MindView, Duration::from_secs(30), || Ok(this_process_is_the_service("final-mind")));
         assert!(was_killed(&mut child), "the browser nobody holds is stopped");
         assert_eq!(offers.load(std::sync::atomic::Ordering::SeqCst), 1);
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -266,7 +315,7 @@ c.recv(1)
         let offers = answering(listener, "retry: that browser does not run on Mind View's profile (yet)\n", stop.clone());
         let (mut child, Handoff { mine, theirs }) = a_browser(Role::MindView);
         drop(theirs);
-        keep_offered(&path, &mine, child.id(), Role::MindView, Duration::from_millis(1200), || Ok(this_process_is_the_service("retry-mind")));
+        keep_offered(&path, &mine, &Leader::of(child.id()), Role::MindView, Duration::from_millis(1200), || Ok(this_process_is_the_service("retry-mind")));
         assert!(was_killed(&mut child), "stopped once the bound ran out");
         assert!(offers.load(std::sync::atomic::Ordering::SeqCst) >= 2, "offered again before that");
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -280,7 +329,7 @@ c.recv(1)
         let _offers = answering(listener, "refused: nope\n", stop.clone());
         let (mut child, Handoff { mine, theirs }) = a_browser(Role::Person);
         drop(theirs);
-        keep_offered(&path, &mine, child.id(), Role::Person, Duration::from_millis(50), || Ok(this_process_is_the_service("final-person")));
+        keep_offered(&path, &mine, &Leader::of(child.id()), Role::Person, Duration::from_millis(50), || Ok(this_process_is_the_service("final-person")));
         assert!(child.try_wait().unwrap().is_none(), "still running");
         child.kill().unwrap();
         child.wait().unwrap();
@@ -303,5 +352,25 @@ c.recv(1)
             server.join().unwrap();
             assert_eq!(matches!(err, Refusal::Retry(_)), retry, "{reply:?}: {err:?}");
         }
+    }
+
+    /// #1200 review, LOW-1: the pidfd names the one process. A leader that has exited and been
+    /// reaped (so its number is free to be reused) is not alive, and nothing is signalled for it;
+    /// one still running is stopped.
+    #[test]
+    fn a_leader_that_was_reaped_is_not_signalled_and_a_live_one_is() {
+        let mut gone = Command::new("sleep").arg("60").spawn().unwrap();
+        let leader = Leader::of(gone.id());
+        assert!(leader.fd.is_some(), "this kernel has pidfd_open");
+        assert!(leader.alive());
+        gone.kill().unwrap();
+        gone.wait().unwrap();
+        assert!(!leader.alive(), "reaped");
+        assert!(!leader.kill(), "nothing is signalled for a process that has gone");
+
+        let mut running = Command::new("sleep").arg("60").spawn().unwrap();
+        let leader = Leader::of(running.id());
+        assert!(leader.kill());
+        assert!(was_killed(&mut running));
     }
 }

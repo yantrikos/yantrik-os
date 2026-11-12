@@ -3,14 +3,13 @@
 //! Chromium started with `--remote-debugging-pipe` reads CDP on its fd 3 and writes it on its
 //! fd 4, each message ended by a NUL byte, and listens on no port (#1200). Here the Arcade starts
 //! the browser and drives it itself, so there is nothing to hand over: the browser's two fds are
-//! one end of a socket pair made here, and the other end is this module's `Pipe`. No other process
+//! one end of a socket pair made by `yantrik_browser_ports::stream::attach` (the one hand-over path
+//! the shell's browsers use too), and the other end is this module's `Pipe`. No other process
 //! can reach the stream (a socket, unlike a pipe, cannot be opened again through `/proc/<pid>/fd`),
 //! and no other process can find a port to speak to.
 
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::process::Command;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -18,54 +17,6 @@ use serde_json::Value;
 /// How long a read waits for a message before it says there is none yet: the longest a job takes
 /// to notice it has been cancelled.
 const LOOK: Duration = Duration::from_millis(150);
-
-/// Makes `command`'s fds 3 and 4 the browser's end of a new stream. Returns this end, and the
-/// browser's, which must stay open until the command has been spawned and then be dropped, so the
-/// stream ends when the browser does.
-pub fn attach(command: &mut Command) -> std::io::Result<(UnixStream, OwnedFd)> {
-    use std::os::unix::process::CommandExt as _;
-    // Close-on-exec on both ends (std's). Fds the Arcade itself inherited without that flag (a
-    // parent's jobserver pipe, a shell's redirections) are closed in the child by `close_from_5`.
-    let (mine, theirs) = UnixStream::pair()?;
-    // Above 4, so dup2 onto 3 and 4 cannot land on itself; the copy is close-on-exec too.
-    // SAFETY: plain fcntl on an fd we own.
-    let high = unsafe { libc::fcntl(theirs.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
-    if high < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `high` is a new fd and ours.
-    let theirs = unsafe { OwnedFd::from_raw_fd(high) };
-    let raw = theirs.as_raw_fd();
-    // SAFETY: only async-signal-safe calls (dup2) between fork and exec.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::dup2(raw, 3) < 0 || libc::dup2(raw, 4) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            close_from_5();
-            Ok(())
-        });
-    }
-    Ok((mine, theirs))
-}
-
-/// Closes every fd from 5 up in the child, so the browser holds fds 0 to 4 and nothing else, even
-/// an fd this process inherited that was never close-on-exec. Runs between fork and exec, so it
-/// makes raw syscalls only: no allocation, no directory listing.
-fn close_from_5() {
-    // SAFETY: close_range and close on fds the child owns; both are async-signal-safe.
-    unsafe {
-        if libc::syscall(libc::SYS_close_range, 5u32, u32::MAX, 0u32) == 0 {
-            return;
-        }
-        // An older kernel: close one by one up to the soft limit, bounded in case it is huge.
-        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-        let top = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 { limit.rlim_cur.min(65536) as i32 } else { 1024 };
-        for fd in 5..top {
-            libc::close(fd);
-        }
-    }
-}
 
 /// This end of the stream: JSON messages out and in, each ended by a NUL.
 pub struct Pipe {
@@ -116,6 +67,7 @@ impl Pipe {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::process::Command;
 
     fn pair() -> (Pipe, UnixStream) {
         let (a, b) = UnixStream::pair().unwrap();
@@ -152,7 +104,7 @@ mod tests {
     fn a_child_reads_its_fd_3_and_writes_its_fd_4_on_the_one_stream() {
         let mut command = Command::new("sh");
         command.arg("-c").arg("read -r line <&3; printf '%s\\0' '{\"id\":7}' >&4; ls /proc/self/fd | tr '\\n' ' ' >&4");
-        let (mine, theirs) = attach(&mut command).unwrap();
+        let (mine, theirs) = yantrik_browser_ports::stream::attach(&mut command).unwrap();
         let mut child = command.spawn().unwrap();
         drop(theirs);
         let mut pipe = Pipe::new(mine).unwrap();

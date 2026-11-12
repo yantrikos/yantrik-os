@@ -48,26 +48,27 @@ def close_drawn_pages(browser, infos):
     while: the service takes its stream only once the shell has offered it and the checks have
     passed, and again after every restart of the service. What a page drew in that window was never
     fenced, and would stay on screen (and in a screenshot of the window) until a call touched its
-    tab. So every page target that is not an untouched `about:blank` is closed here, before the
-    connection is used, and the page targets that stay are returned. Closing the last page would
-    close the browser, so a blank one is made first. A page that cannot be closed fails the
-    connection: nothing of it is left on screen to be trusted."""
-    pages = [i for i in infos if i.get("type") == "page"]
-    unclean = [i for i in pages if i.get("url") != "about:blank"]
-    if not unclean:
-        return infos
-    if len(unclean) == len(pages):
-        browser.call("Target.createTarget", {"url": "about:blank"})
-    for info in unclean:
+    tab. A page cannot be judged untouched by its URL: an `about:blank` page that a `file:` page
+    wrote into still shows what it wrote. So, with the fence already up for new pages, ONE fresh
+    `about:blank` is opened first (closing the last page would close the browser, and Mind View is
+    never left with none), and then EVERY page target that existed before it is closed, whatever
+    its URL. Returns the targets that stay: the fresh page and what is not a page. A page that
+    cannot be closed fails the connection: nothing of it is left on screen to be trusted."""
+    old = [i for i in infos if i.get("type") == "page"]
+    fresh = browser.call("Target.createTarget", {"url": "about:blank"})
+    for info in old:
         browser.call("Target.closeTarget", {"targetId": info["targetId"]})
-    gone = {i["targetId"] for i in unclean}
+    gone = {i["targetId"] for i in old}
     # The browser closes a page after it answers, so the page is waited for to be gone: on return
     # nothing of it is on screen.
     end = time.monotonic() + CLOSE_WAIT
     while True:
         left = [i for i in browser.call("Target.getTargets").get("targetInfos", []) if i.get("targetId") in gone]
         if not left:
-            return [i for i in infos if i.get("targetId") not in gone]
+            kept = [i for i in infos if i.get("targetId") not in gone]
+            if fresh.get("targetId"):
+                kept.append({"targetId": fresh["targetId"], "type": "page", "url": "about:blank"})
+            return kept
         if time.monotonic() > end:
             from .cdp import CdpError
             raise CdpError("a page the browser drew before it was held would not close")

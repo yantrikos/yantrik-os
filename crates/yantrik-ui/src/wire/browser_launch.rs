@@ -119,10 +119,29 @@ const SESSION_FILES: [&str; 5] = ["Sessions", "Current Session", "Current Tabs",
 /// removed before the start, so what it opens is the blank page it is told to and nothing a page
 /// of the last run held, which would load before the service has fenced it (#1200). A second launch
 /// of a browser already running hands over to it and exits; the files are only what it has saved.
+///
+/// The profile is written by a browser a mind drives, so it is not trusted to be what it was: if
+/// the profile or its `Default` is a symlink nothing is removed (the shell would delete wherever
+/// the link leads), and `Default` is opened without following a link and the names removed
+/// through that open directory, so a swap after the check leads nowhere either.
 fn forget_last_session(profile: &Path) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if !std::fs::symlink_metadata(profile).map(|m| m.is_dir()).unwrap_or(false) {
+        return;
+    }
+    let default = profile.join("Default");
+    let Ok(dir) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_CLOEXEC).open(&default) else {
+        return;
+    };
+    // The open directory, by its descriptor: the same inode whatever the name `Default` becomes.
+    let held = Path::new("/proc/self/fd").join(std::os::fd::AsRawFd::as_raw_fd(&dir).to_string());
     for name in SESSION_FILES {
-        let path = profile.join("Default").join(name);
-        let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        let path = held.join(name);
+        let _ = match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.is_dir() => std::fs::remove_dir_all(&path),
+            Ok(_) => std::fs::remove_file(&path),
+            Err(_) => continue,
+        };
     }
 }
 
@@ -298,6 +317,36 @@ mod tests {
         assert!(!profile.join("Default/Sessions").exists() && !profile.join("Default/Current Session").exists());
         assert!(profile.join("Default/Cookies").exists(), "only the session goes");
         let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    /// #1200 review, LOW-5: a `Default` (or a session entry) that is a symlink is never followed.
+    #[test]
+    fn a_symlinked_default_is_not_followed_out_of_the_profile() {
+        let base = std::env::temp_dir().join(format!("yb-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let outside = base.join("outside");
+        std::fs::create_dir_all(outside.join("Sessions")).unwrap();
+        std::fs::write(outside.join("Current Tabs"), b"theirs").unwrap();
+        // The profile's `Default` leads elsewhere.
+        let profile = base.join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::os::unix::fs::symlink(&outside, profile.join("Default")).unwrap();
+        forget_last_session(&profile);
+        assert!(outside.join("Sessions").exists() && outside.join("Current Tabs").exists(), "followed Default out of the profile");
+        // The profile itself is a link.
+        let linked = base.join("linked");
+        std::os::unix::fs::symlink(base.join("real"), &linked).unwrap();
+        std::fs::create_dir_all(base.join("real/Default")).unwrap();
+        std::fs::write(base.join("real/Default/Current Tabs"), b"theirs").unwrap();
+        forget_last_session(&linked);
+        assert!(base.join("real/Default/Current Tabs").exists(), "followed the profile link");
+        // A session entry that is a link goes, and what it led to stays.
+        let own = base.join("own");
+        std::fs::create_dir_all(own.join("Default")).unwrap();
+        std::os::unix::fs::symlink(&outside, own.join("Default/Sessions")).unwrap();
+        forget_last_session(&own);
+        assert!(!own.join("Default/Sessions").exists() && outside.join("Sessions").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

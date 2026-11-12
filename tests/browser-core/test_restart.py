@@ -204,7 +204,17 @@ class MindViewChromium(RestartedChromium):
         self.tabs = {"T1": {"targetId": "T1", "type": "page", "url": FILE_URL, "title": "p1", "attached": True},
                      "T2": {"targetId": "T2", "type": "page", "url": "about:blank", "title": "about:blank"}}
 
+    made = 0
+
     def answer(self, msg):
+        if msg["method"] == "Target.createTarget":
+            self.log.append((msg["method"], None, msg.get("params", {})))
+            self.made += 1
+            tid = "N%d" % self.made          # never an id a page that is closed here already had
+            self.tabs[tid] = {"targetId": tid, "type": "page", "url": msg["params"]["url"], "title": "New"}
+            self.reply({"id": msg["id"], "result": {"targetId": tid}})
+            self.reply({"method": "Target.targetCreated", "params": {"targetInfo": self.tabs[tid]}})
+            return
         if msg["method"] == "Target.closeTarget":
             self.log.append((msg["method"], None, msg.get("params", {})))
             self.tabs.pop(msg["params"]["targetId"], None)
@@ -217,29 +227,40 @@ class MindViewChromium(RestartedChromium):
 class MindViewRestarts(Restarted, unittest.TestCase):
     """#1200 review, LOW-7: Mind View on a pipe is held from its start, so none of the person's
     adoption (a reload, stale sessions learned and swept) applies. What a page left paused is not
-    adopted: the page is closed, with no call."""
+    adopted: the page is closed, with no call, and so is every other page that was open before the
+    connection, `about:blank` or not: a fresh blank page is made first, and it is the one left."""
     chromium_class = MindViewChromium
     side, place = ports.MIND, listener.MIND_VIEW
 
-    def test_the_page_the_dead_service_left_paused_is_closed_and_the_blank_one_is_kept(self):
+    def test_the_page_the_dead_service_left_paused_is_closed_and_one_fresh_blank_page_is_left(self):
         self.hand_over()
         c = self.chromium
         self.assertTrue(wait_for(lambda: c.methods("Target.closeTarget")), "the page was not closed unprompted")
-        self.assertEqual([p for _, _, p in c.methods("Target.closeTarget")], [{"targetId": "T1"}])
+        self.assertEqual([p for _, _, p in c.methods("Target.closeTarget")], [{"targetId": "T1"}, {"targetId": "T2"}])
+        self.assertEqual([p for _, _, p in c.methods("Target.createTarget")], [{"url": "about:blank"}])
+        self.assertLess(next(i for i, (m, _, _) in enumerate(c.log) if m == "Target.setAutoAttach"),
+                        next(i for i, (m, _, _) in enumerate(c.log) if m == "Target.createTarget"),
+                        "the fence is up before the fresh page is opened")
+        self.assertLess(next(i for i, (m, _, _) in enumerate(c.log) if m == "Target.createTarget"),
+                        next(i for i, (m, _, _) in enumerate(c.log) if m == "Target.closeTarget"),
+                        "the fresh page is opened before any old one is closed")
         self.assertTrue(c.methods("Target.setAutoAttach"), "held from its start from here on")
         self.assertEqual(c.methods("Page.reload"), [], "closed, not reloaded for a later touch to find")
         browser = self.the_browser()
-        self.assertTrue(wait_for(lambda: [t.id for t in browser.pages()] == ["T2"]), "only the blank page is left")
+        self.assertTrue(wait_for(lambda: [t.id for t in browser.pages()] == ["N1"]), "only the fresh blank page is left")
         self.assertEqual(browser.stale, set(), "no stale session is learned: nothing is left that could hold one")
 
-    def test_a_second_restart_with_nothing_but_the_blank_page_closes_nothing(self):
+    def test_a_second_restart_with_nothing_but_a_blank_page_still_replaces_it(self):
+        """A blank page is not known to be untouched (a `file:` page may have written into it), so
+        it is closed as well and one fresh page is made."""
         del self.chromium.tabs["T1"]
         self.hand_over()
-        self.assertTrue(wait_for(lambda: self.chromium.methods("Target.setAutoAttach")))
-        self.the_browser()
-        time.sleep(0.3)
-        self.assertEqual(self.chromium.methods("Target.closeTarget"), [])
-        self.assertEqual(self.chromium.methods("Target.createTarget"), [])
+        c = self.chromium
+        self.assertTrue(wait_for(lambda: c.methods("Target.setAutoAttach")))
+        browser = self.the_browser()
+        self.assertTrue(wait_for(lambda: [t.id for t in browser.pages()] == ["N1"]))
+        self.assertEqual([p for _, _, p in c.methods("Target.closeTarget")], [{"targetId": "T2"}])
+        self.assertEqual(len(c.methods("Target.createTarget")), 1)
 
 
 class TheDeadServicesSessionsAndTheRaces(TheServiceRestarts):
