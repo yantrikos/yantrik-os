@@ -24,7 +24,8 @@ const LOOK: Duration = Duration::from_millis(150);
 /// stream ends when the browser does.
 pub fn attach(command: &mut Command) -> std::io::Result<(UnixStream, OwnedFd)> {
     use std::os::unix::process::CommandExt as _;
-    // Close-on-exec on both ends (std's), so nothing else of the Arcade's reaches the browser.
+    // Close-on-exec on both ends (std's). Fds the Arcade itself inherited without that flag (a
+    // parent's jobserver pipe, a shell's redirections) are closed in the child by `close_from_5`.
     let (mine, theirs) = UnixStream::pair()?;
     // Above 4, so dup2 onto 3 and 4 cannot land on itself; the copy is close-on-exec too.
     // SAFETY: plain fcntl on an fd we own.
@@ -41,10 +42,29 @@ pub fn attach(command: &mut Command) -> std::io::Result<(UnixStream, OwnedFd)> {
             if libc::dup2(raw, 3) < 0 || libc::dup2(raw, 4) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
+            close_from_5();
             Ok(())
         });
     }
     Ok((mine, theirs))
+}
+
+/// Closes every fd from 5 up in the child, so the browser holds fds 0 to 4 and nothing else, even
+/// an fd this process inherited that was never close-on-exec. Runs between fork and exec, so it
+/// makes raw syscalls only: no allocation, no directory listing.
+fn close_from_5() {
+    // SAFETY: close_range and close on fds the child owns; both are async-signal-safe.
+    unsafe {
+        if libc::syscall(libc::SYS_close_range, 5u32, u32::MAX, 0u32) == 0 {
+            return;
+        }
+        // An older kernel: close one by one up to the soft limit, bounded in case it is huge.
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        let top = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 { limit.rlim_cur.min(65536) as i32 } else { 1024 };
+        for fd in 5..top {
+            libc::close(fd);
+        }
+    }
 }
 
 /// This end of the stream: JSON messages out and in, each ended by a NUL.
