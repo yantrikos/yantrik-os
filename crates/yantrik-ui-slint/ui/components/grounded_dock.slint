@@ -11,7 +11,8 @@
 // opens over it names them.
 //
 // State is drawn in the fewest ways that stay readable, none of them colourful:
-//   running      a static 3px white marker under the icon
+//   running      a static 3px white marker in the bar's bottom padding, 1px under the button (below the
+//                tile, never on it)
 //   focused      a neutral raised fill
 //   2+ windows   a small neutral numeral
 //   a mind needs the person    a 6px amber dot on the mind button; amber means nothing else
@@ -100,10 +101,11 @@ component DockBtn inherits Rectangle {
 
     @children
 
-    // Running: static, white, under the icon.
+    // Running: static, white, in the bar's bottom padding: the button ends at the padding's top, and
+    // the marker starts 1px below that, on a whole pixel, so it is never on the tile.
     if root.running : Rectangle {
         x: (parent.width - self.width) / 2;
-        y: parent.height - Theme.dock-marker-h - 1px;
+        y: parent.height + 1px;
         width: Theme.dock-marker-w;
         height: Theme.dock-marker-h;
         border-radius: Theme.dock-marker-h / 2;
@@ -446,7 +448,7 @@ export component GroundedDock inherits Rectangle {
             // ── Pinned and running apps ──
             //
             // Only this page's buttons take room. A `for` cannot hold an `if`, so every button has
-            // a slot of its own: 44px (the button and its trailing gap) on this page, 0px off it, in
+            // a slot of its own: Theme.dock-button + Theme.dock-gap (the button and its trailing gap) on this page, 0px off it, in
             // a layout with no spacing of its own. The last slot's gap hangs off the end.
             if root.buttons.length > 0 : HorizontalLayout {
                 width: Math.max(0, Math.min(root.cap, root.buttons.length - root.start)) * root.slot - Theme.dock-gap;

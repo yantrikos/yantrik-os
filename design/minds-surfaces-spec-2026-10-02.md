@@ -115,7 +115,7 @@ The object that connects them is the **work card**: a run's mind, state, desk pr
 - Apps and the mind are fixed anchors; only the middle overflows.
 
 **States**
-- running: a static 3px white marker;
+- running: a static 3px white marker in the bar's bottom padding, 1px below the button and so below the tile, never on it;
 - focused: a neutral raised fill;
 - several windows: a small neutral numeral;
 - a mind request: a 6px amber dot on the mind icon.
