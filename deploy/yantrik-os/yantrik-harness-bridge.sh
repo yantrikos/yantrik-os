@@ -207,9 +207,16 @@ harness_bridge_wait_idle() {
 # <HARNESS_BRIDGE_RESTART> stands in for it: `fail` for one that does not happen, anything else a
 # file the ask is written to, so the selftest can read which verb, unit and account -- the things
 # that must not be wrong.
+#
+# Two failures, told apart by the number: 1 when the ask itself did not happen, 2 when the ask
+# happened and only the stamp of it did not. They mean different things to whoever is reporting the
+# update. A stamp is what the half hour of the retry is read from, so its loss is worth saying out
+# loud -- and so a caller that waits on the guard needs to know it did not hold -- but a gateway
+# that was asked and did not answer with a stamp is a mind given the new bridge all the same, and
+# must not be reported as one still on the old.
 harness_bridge_signal() {
   harness_bridge_signal_do "$@" || return 1
-  harness_bridge_stamp_write
+  harness_bridge_stamp_write || return 2
 }
 harness_bridge_signal_do() {
   if selftest_standins && [ -n "${HARNESS_BRIDGE_RESTART:-}" ]; then
@@ -229,22 +236,43 @@ harness_bridge_restart() { harness_bridge_signal restart; }
 harness_bridge_stamp_file() {
   local v owner uid; v="$(harness_bridge_knob HARNESS_BRIDGE_STAMP "")"
   [ -n "$v" ] && { printf '%s' "$v"; return 0; }
-  owner="$(harness_bridge_owner)" && uid="$(id -u "$owner" 2>/dev/null)" || return 1
+  owner="$(harness_bridge_owner)" || return 1
+  # Whose runtime directory this is: the owner's, so that the person's write and root's read of the
+  # mtime agree on one file. Turning the owner's name back into a number was the step that went
+  # wrong -- a `check` under the shell's sudo rule came out as /run/user/0, and the person read the
+  # refused write that followed -- so a caller that already is the owner uses its own number, which
+  # the kernel knows without asking anywhere. Only when they differ is the owner looked up: root,
+  # whose own directory is never this one, and root reads the file whatever the mode.
+  uid="$(id -u)"
+  [ "$(id -un)" = "$owner" ] || uid="$(id -u "$owner" 2>/dev/null)" || return 1
   printf '/run/user/%s/yantrik-hermes-bridge-signalled' "$uid"
 }
 # Written as the desktop's account, never as root: the directory is that person's, so anything in
 # it (a link to /etc/shadow, say) is theirs to plant, and root following it would hand them a root
 # write (review of #1110). As them, `touch` can reach only what they could already touch. No chmod:
-# root reads the mtime whatever the mode.
+# root reads the mtime whatever the mode. Fails, and says so in words that mean it, unless the file
+# was left newer than it was: the half hour of the guard is read off that mtime, and a write that
+# did not happen but was never mentioned is how a retry came back and asked for a second reload
+# while the first was still draining. touch keeps its own reason off the person's screen; what it
+# means is said here, because a stamp is written by nothing else and nowhere else.
 harness_bridge_stamp_write() {
-  local f owner; f="$(harness_bridge_stamp_file)" || return 0
-  if [ "$(id -u)" = 0 ]; then
-    owner="$(harness_bridge_owner)" || return 0
-    runuser -u "$owner" -- touch -- "$f" 2>/dev/null
-  else
-    touch -- "$f" 2>/dev/null
+  local f owner was now
+  f="$(harness_bridge_stamp_file 2>/dev/null)"
+  if [ -n "$f" ]; then
+    # Whole nanoseconds, not seconds: the selftest signals twice within one, and a stamp that really
+    # was rewritten must not read as one that was not.
+    was="$(stat -c '%.9Y' -- "$f" 2>/dev/null)"
+    if [ "$(id -u)" = 0 ]; then
+      owner="$(harness_bridge_owner)" || owner=""
+      [ -n "$owner" ] && runuser -u "$owner" -- touch -- "$f" 2>/dev/null
+    else
+      touch -- "$f" 2>/dev/null
+    fi
+    now="$(stat -c '%.9Y' -- "$f" 2>/dev/null)" && [ "$now" != "$was" ] && return 0
   fi
-  return 0
+  printf '  no stamp of the new bridge at %s -- the half hour the retry waits on will not hold\n' \
+    "${f:-unknown}" >&2
+  return 1
 }
 # Was the gateway signalled, or the note written, within the last 30 minutes?
 harness_bridge_signalled_recently() {
@@ -281,7 +309,7 @@ harness_bridge_fresh_within() {
 # be done is said here and left as a note, which makes `status` and the update's closing line
 # report "not done" with the reason until a later try, or the person, gives the mind the bridge.
 harness_bridge_update() {
-  local why="" unit bound="${2:-}" now
+  local why="" unit bound="${2:-}" now rc=0
   unit="$(harness_bridge_unit)"
   case "$bound" in ''|*[!0-9]*) bound="$(harness_bridge_seconds HARNESS_BRIDGE_WAIT_SECONDS 300)" ;; esac
   # Only a bridge this gateway holds: an old yos-mcp in the Mind's unit is not this restart's to
@@ -295,7 +323,11 @@ harness_bridge_update() {
     # confirm: the bridge is new once it has restarted, which may be up to its own cap from now.
     local fresh; fresh="$(harness_bridge_seconds HARNESS_BRIDGE_RELOAD_SECONDS 60)"
     [ "${2:-}" = 0 ] && fresh=0
-    if ! harness_bridge_signal reload; then why="asking $unit to reload failed"
+    # Only 1 is a reload that did not happen. 2 is the stamp of it, which says a line already and
+    # leaves the mind given the new bridge all the same -- reporting that as a failed reload would
+    # send the person to restart a unit that has reloaded.
+    rc=0; harness_bridge_signal reload || rc=$?
+    if [ "$rc" = 1 ]; then why="asking $unit to reload failed"
     elif harness_bridge_fresh_within "$fresh"; then
       harness_bridge_note_clear; say "Gave the mind the new bridge: $unit reloaded"; return 0
     else
@@ -314,8 +346,9 @@ harness_bridge_update() {
     now="$(harness_bridge_idle)"
     if [ "$now" != idle ]; then
       why="Hermes started a turn just as the restart was due, so it was left running"
-    elif ! harness_bridge_restart; then
-      why="restarting $unit failed"
+    else
+      rc=0; harness_bridge_restart || rc=$?
+      [ "$rc" = 1 ] && why="restarting $unit failed"
     fi
   fi
   [ -n "$why" ] || { harness_bridge_note_clear
