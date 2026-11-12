@@ -250,7 +250,8 @@ export component DesktopScreen inherits Rectangle {
     // every screen for a bar that was not being drawn there. The same mistake the taskbar had,
     // found the same way: by asking why a reserved strip was empty.
     //
-    // The desktop still starts below it; that is what the offset on the layer below is for.
+    // The desktop's content still starts below it; that is what Layer 2's offset is for. The
+    // wallpaper (Layer 0) does not: it runs under the bar.
 
     // ── Layer 0: the wallpaper, the whole screen ──
     //
@@ -360,7 +361,9 @@ export component DesktopScreen inherits Rectangle {
             y: 0;
             width: 100%;
             height: Theme.wallpaper-scrim-top;
-            background: @linear-gradient(180deg, Theme.wallpaper-scrim 0%, Theme.wallpaper-scrim.with-alpha(0.26) 44%, Theme.wallpaper-scrim.with-alpha(0) 100%);
+            // Flat across the bar, then the fade: 30% of the scrim's 120px is the bar's 36px
+            // (Theme.status-bar-height / Theme.wallpaper-scrim-top; a gradient stop is a literal).
+            background: @linear-gradient(180deg, Theme.wallpaper-scrim 0%, Theme.wallpaper-scrim 30%, Theme.wallpaper-scrim.with-alpha(0) 100%);
         }
         if root.wallpaper-path != "" && ThemeMode.dark : Rectangle {
             y: parent.height - self.height;

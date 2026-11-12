@@ -10,6 +10,9 @@ A picture is drawn the same by both renderers and costs a blit.
 Two layers, as light gives: a wide soft one well below the surface (the room's light) and a tight
 one just under its edge (the contact). White with alpha, so the component can ink it per theme.
 
+These numbers ARE the Level 2 shadow now: design/art-direction-2026-10-20.md, the amendment of
+12 Nov 2026 under "Ground and elevation". Change them there and here together.
+
 Usage: python3 scripts/render-shadow.py    (needs Pillow; the PNG is committed beside this)
 """
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
