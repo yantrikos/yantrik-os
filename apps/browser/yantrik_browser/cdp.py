@@ -82,6 +82,7 @@ class Tab:
         self.preattached = False   # the browser said another session was on it before this service saw it
         self.gap = False           # another session was on it and no navigation has committed behind
                                    # our fence yet: it may hold a request nobody decides (adopt.py)
+        self.watch = False         # its gap closed with no reload: a `file:` commit we did not start re-opens it
         self.fence_nav = 0         # its navigation count when our fence went up
         self.fenced = threading.Event()   # set once Fetch.enable is on for the session (fence.py)
         self.born = False          # attached before its first request (the browser held it for us)
@@ -375,7 +376,9 @@ class Browser:
                 tab.url = frame.get("url", tab.url)
                 tab.world = None
                 tab.navigations += 1
-                if tab.gap and tab.fenced.is_set() and tab.navigations > tab.fence_nav:
+                if adopt.regap(self, tab):
+                    pass                   # a `file:` commit nobody here started: reloaded behind the fence
+                elif tab.gap and tab.fenced.is_set() and tab.navigations > tab.fence_nav:
                     tab.gap = False        # a document committed behind our fence: the gap's is gone
                     adopt.after_commit(self)
                 tab.held_keys.clear()      # a new document starts with nothing held
@@ -483,13 +486,9 @@ class Browser:
             self.call("Fetch.enable", {"patterns": fence.PATTERNS}, session=tab.session)
             tab.fence_nav = tab.navigations
             tab.fenced.set()
-            if tab.preattached and not self.held_at_start:
-                # Another session was on it: a navigation it held when the service went away has
-                # no event for anyone. Stop it (the reload below, for a `file:` frame, loads again).
-                tab.preattached = False
-                self.call("Page.stopLoading", session=tab.session)
         elif not tab.fenced.wait(CALL_TIMEOUT):
             raise CdpError("the browser did not let the fence onto this tab")
+        adopt.stop_preattached(self, tab)       # every pass, until a stop succeeds (adopt.py)
         tab.attachments += 1
         for method in ("Page.enable", "Runtime.enable", "Network.enable", "Log.enable"):
             self.call(method, session=tab.session)

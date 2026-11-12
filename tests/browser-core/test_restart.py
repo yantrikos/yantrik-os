@@ -89,6 +89,23 @@ class CommitsLate(RestartedChromium):
                          daemon=True).start()
 
 
+class StopFailsOnce(RestartedChromium):
+    """The first `Page.stopLoading` on S-T2 is refused (no T1: only the https tab is adopted)."""
+
+    def __init__(self, sock):
+        super().__init__(sock)
+        del self.tabs["T1"]
+        self.refused = 0
+
+    def answer(self, msg):
+        if msg["method"] == "Page.stopLoading" and msg.get("sessionId") == "S-T2" and not self.refused:
+            self.refused = 1
+            self.log.append((msg["method"], "S-T2", {}))
+            self.reply({"id": msg["id"], "error": {"message": "refused"}})
+            return
+        super().answer(msg)
+
+
 def wait_for(cond, seconds=5):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -115,6 +132,10 @@ class Restarted:
         self.driver = drv.Driver(judge=False, guard_=g, file_rule=lambda path: True,
                                  home=lambda: "/home/someone")
         self.mine = mine
+
+    def the_browser(self):
+        self.assertTrue(wait_for(lambda: ports.PERSON in self.driver.sides.browsers))
+        return self.driver.sides.browsers[ports.PERSON]
 
     def hand_over(self):
         self.holder.give(self.mine, os.getpid())
@@ -349,6 +370,83 @@ class MindViewsBrowserIsStillHeld(unittest.TestCase):
         self.assertEqual(chromium.methods("Target.attachToTarget"), [], "auto-attach hands Mind View its pages")
         self.assertEqual(len(chromium.methods("Target.setAutoAttach")), 1)
         browser.close()
+
+
+class TheStopFailsFirst(Restarted, unittest.TestCase):
+    chromium_class = StopFailsOnce
+
+    def test_a_gap_is_not_closed_and_nothing_detached_until_a_stop_succeeds(self):
+        """MEDIUM-1: a failed Page.stopLoading leaves the gap; the retry sends a second one, and only
+        after it succeeds does the stale session go."""
+        self.hand_over()
+        c = self.chromium
+        self.assertTrue(wait_for(lambda: c.methods("Page.stopLoading", "S-T2")))
+        browser = self.driver.sides.browsers[ports.PERSON]
+        self.assertTrue(wait_for(lambda: browser.adopted))
+        c.reply({"method": "Network.loadingFailed", "sessionId": "S-OLD", "params": {"requestId": "R-OLD"}})
+        # the retry (driven by the stale session) re-enters attach: a second stop, then the detach
+        self.assertTrue(wait_for(lambda: len(c.methods("Page.stopLoading", "S-T2")) >= 2), "no second stop was sent")
+        self.assertTrue(wait_for(lambda: c.methods("Target.detachFromTarget")), "never detached after the stop succeeded")
+        self.assertEqual(c.refused, 1)
+        second = [i for i, (m, s, _) in enumerate(c.log) if m == "Page.stopLoading" and s == "S-T2"][1]
+        gone = next(i for i, (m, _, _) in enumerate(c.log) if m == "Target.detachFromTarget")
+        self.assertLess(second, gone, "detached before a stop had succeeded")
+        self.assertFalse(browser.tabs["T2"].gap)
+
+    def test_with_the_stop_never_succeeding_the_gap_stays_and_nothing_is_detached(self):
+        c = self.chromium
+        real = c.answer
+
+        def always_refuse(msg):
+            if msg["method"] == "Page.stopLoading":
+                c.log.append((msg["method"], msg.get("sessionId"), {}))
+                c.reply({"id": msg["id"], "error": {"message": "refused"}})
+                return
+            real(msg)
+        c.answer = always_refuse
+        self.hand_over()
+        self.assertTrue(wait_for(lambda: c.methods("Page.stopLoading", "S-T2")))
+        browser = self.driver.sides.browsers[ports.PERSON]
+        self.assertTrue(wait_for(lambda: browser.adopted))
+        c.reply({"method": "Network.loadingFailed", "sessionId": "S-OLD", "params": {"requestId": "R-OLD"}})
+        self.assertTrue(wait_for(lambda: len(c.methods("Page.stopLoading", "S-T2")) >= 2))
+        time.sleep(0.3)
+        self.assertTrue(browser.tabs["T2"].gap)
+        self.assertEqual(c.methods("Target.detachFromTarget"), [])
+
+
+class TheFileCommitWeDidNotStart(Restarted, unittest.TestCase):
+
+    def test_a_file_commit_on_a_pre_attached_https_tab_opens_the_gap_and_reloads_once(self):
+        """LOW-1: a navigation the dead service let through, committing after the gap closed."""
+        del self.chromium.tabs["T1"]
+        self.hand_over()
+        c = self.chromium
+        browser = self.the_browser()
+        self.assertTrue(wait_for(lambda: "T2" in browser.tabs and browser.tabs["T2"].ready and not browser.tabs["T2"].gap))
+        self.assertEqual(c.methods("Page.reload"), [])
+        c.tabs["T2"]["url"] = FILE_URL
+        c.reply({"method": "Page.frameNavigated", "sessionId": "S-T2",
+                 "params": {"frame": {"id": "F-T2", "url": FILE_URL}}})
+        self.assertTrue(wait_for(lambda: len(c.methods("Page.reload", "S-T2")) == 1), "the late file: commit was not reloaded")
+        self.assertTrue(wait_for(lambda: not browser.tabs["T2"].gap), "the reload's commit did not close the gap")
+        time.sleep(0.3)
+        self.assertEqual(len(c.methods("Page.reload", "S-T2")), 1, "reloaded more than once")
+
+    def test_a_late_file_commit_holds_the_cleanup_back_until_the_reload_commits(self):
+        del self.chromium.tabs["T1"]
+        from yantrik_browser import adopt
+        self.hand_over()
+        c = self.chromium
+        browser = self.the_browser()
+        self.assertTrue(wait_for(lambda: "T2" in browser.tabs and browser.tabs["T2"].ready and not browser.tabs["T2"].gap))
+        with browser.cond:
+            tab = browser.tabs["T2"]
+            tab.url = FILE_URL
+            tab.navigations += 1
+            self.assertTrue(adopt.regap(browser, tab))
+            self.assertTrue(tab.gap)
+        self.assertTrue(wait_for(lambda: not tab.gap))
 
 
 if __name__ == "__main__":

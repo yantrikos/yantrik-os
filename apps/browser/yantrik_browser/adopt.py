@@ -18,18 +18,20 @@ ADOPT_WAIT = 3.0       # seconds adoption waits on one tab's reload: far below t
 ARRIVAL_RETRY = 0.5    # seconds between tries for the driver lock when the pipe arrives
 
 
+def _try_adopt(browser, tab, wait=ADOPT_WAIT):
+    """Adopt one tab; a failure leaves it a gap (the stale session stays: fail closed)."""
+    from .cdp import BrowserClosed, CdpError
+    try:
+        browser.attach(tab, wait=wait)
+    except (CdpError, BrowserClosed):
+        pass
+
+
 def adopt_pages(browser):
     """Every open page gets its session and its fence now, not when a command first touches it.
     One tab that cannot be adopted is left to the call that reaches it; the others do not wait
     on it. The reload wait is bounded (ADOPT_WAIT), so the caller's lock is not held for long."""
-    from .cdp import BrowserClosed, CdpError
-
-    def adopt(tab):
-        try:
-            browser.attach(tab, wait=ADOPT_WAIT)
-        except (CdpError, BrowserClosed):
-            pass
-    workers = [threading.Thread(target=adopt, args=(t,), daemon=True, name="cdp-adopt")
+    workers = [threading.Thread(target=_try_adopt, args=(browser, t), daemon=True, name="cdp-adopt")
                for t in snapshot(browser)]
     for w in workers:
         w.start()
@@ -52,27 +54,50 @@ def after_commit(browser):
         browser.fence.arming.submit(sweep, browser, True)
 
 
+def stop_preattached(browser, tab):
+    """Stop what the dead service's session may have paused on a pre-attached tab (a `file:`
+    navigation has no event for anyone). `preattached` is cleared only once the browser has
+    answered the stop, so every later pass through attach sends it again."""
+    if tab.preattached and tab.session and not browser.held_at_start:
+        browser.call("Page.stopLoading", session=tab.session)
+        tab.preattached = False
+
+
 def close_gap_unreloaded(browser, tab):
     """A pre-attached tab with no `file:` frame is not reloaded (a reload re-sends a POST without
     asking, and drops what the person typed). Fetch pauses only `file:` requests, and Blink refuses
     those from a non-`file:` document, so the one request such a tab could hold on the dead
-    service's session is a `file:` navigation, which `Page.stopLoading` (answered by now) cancelled.
-    Nothing can be paused on it: its gap is closed."""
-    if tab.gap and not browser.held_at_start:
+    service's session is a `file:` navigation, which a successful `Page.stopLoading` cancelled.
+    Without that stop the gap stays (fail closed)."""
+    if tab.gap and not tab.preattached and not browser.held_at_start:
         tab.gap = False
+        tab.watch = True
         after_commit(browser)
+
+
+def regap(browser, tab):
+    """A main-frame commit on a watched tab. To a `file:` URL we did not start (a navigation the
+    dead service let through that was already commit-pending, so no stop cancelled it): the gap is
+    open again, and the tab is loaded once more behind the fence. Any other commit ends the watch.
+    Called from the reader's thread, so the reload is done on another."""
+    if not tab.watch:
+        return False
+    if not str(tab.url).startswith("file:"):
+        tab.watch = False
+        return False
+    tab.watch = False
+    tab.gap, tab.fence_nav = True, tab.navigations
+    tab.ready = False                    # the next attach reloads it (a `file:` frame is in it)
+    browser.fence.arming.submit(_try_adopt, browser, tab)
+    return True
 
 
 def _retry(browser, tabs):
     """Adopt again a gap tab that is not ready (its adoption failed or timed out), so a tab that is
     never touched by a call cannot hold the cleanup back for the whole connection."""
-    from .cdp import BrowserClosed, CdpError
     for tab in tabs:
         if tab.gap and not tab.ready:
-            try:
-                browser.attach(tab, wait=ADOPT_WAIT)
-            except (CdpError, BrowserClosed):
-                pass       # still a gap: the stale session stays (fail closed)
+            _try_adopt(browser, tab)
 
 
 def learn(browser, session):
