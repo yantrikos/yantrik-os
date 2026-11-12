@@ -141,7 +141,7 @@ impl BondTracker {
     /// given a fresh id, so each one counts. A receipt that lowers the score carries the sentence
     /// that says why. Receipts past [`RECEIPT_RETENTION_DAYS`] are dropped as this one is written.
     pub fn record_receipt(conn: &Connection, receipt: &Receipt) -> bool {
-        let stamp = Self::next_stamp(conn);
+        let stamp = now_ts();
         Self::drop_old_receipts(conn);
         let source_id = if receipt.source_id.is_empty() {
             uuid7::uuid7().to_string()
@@ -179,36 +179,16 @@ impl BondTracker {
         conn.execute("DELETE FROM bond_events WHERE event_type = ?1", params![RECEIPT_EVENT]).unwrap_or(0)
     }
 
-    /// The time a receipt written now is stamped with: the clock, but never before the newest
-    /// receipt, so a clock that steps back cannot move a stamp backwards. Order is by `rowid`,
-    /// not by stamp, so a stamp only says when.
-    fn next_stamp(conn: &Connection) -> f64 {
-        let now = now_ts();
-        Self::newest_receipt_stamp(conn).map_or(now, |last| now.max(last))
-    }
-
-    fn newest_receipt_stamp(conn: &Connection) -> Option<f64> {
-        conn.query_row(
-            "SELECT MAX(created_at) FROM bond_events WHERE event_type = ?1",
-            params![RECEIPT_EVENT],
-            |row| row.get::<_, Option<f64>>(0),
-        )
-        .ok()
-        .flatten()
-    }
-
     /// Drop receipts more than [`RECEIPT_RETENTION_DAYS`] old by the clock, at startup and on each
-    /// write. Only when the clock is not behind the newest receipt: a clock that runs backwards
-    /// deletes nothing. A clock that jumps forward may delete early, which is the safe side for
-    /// privacy; an offer that comes back grants nothing. Reading never calls this.
+    /// write, and receipts stamped more than a day ahead of it: those were written under a bad
+    /// clock and their age cannot be known. A clock set back moves the cutoff earlier, so it
+    /// deletes less, never early; a clock that jumps forward may forget early, the safe side for
+    /// privacy. Order is by `rowid`, never by stamp. Reading never calls this.
     fn drop_old_receipts(conn: &Connection) {
         let now = now_ts();
-        if Self::newest_receipt_stamp(conn).is_some_and(|newest| now < newest) {
-            return;
-        }
         conn.execute(
-            "DELETE FROM bond_events WHERE event_type = ?1 AND created_at < ?2",
-            params![RECEIPT_EVENT, now - RECEIPT_RETENTION_DAYS as f64 * 86_400.0],
+            "DELETE FROM bond_events WHERE event_type = ?1 AND (created_at < ?2 OR created_at > ?3)",
+            params![RECEIPT_EVENT, now - RECEIPT_RETENTION_DAYS as f64 * 86_400.0, now + 86_400.0],
         )
         .ok();
     }
@@ -294,3 +274,7 @@ pub(crate) fn now_ts() -> f64 {
 #[cfg(test)]
 #[path = "bond_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bond_clock_tests.rs"]
+mod clock_tests;

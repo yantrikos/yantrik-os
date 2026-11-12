@@ -311,12 +311,12 @@ pub(super) fn offer_undo(ui: &App, b: &mut Bench, done: Vec<Archived>, by_mind: 
     );
 }
 
-/// Undo on the toast: put the batch back, never over something that has taken its name since.
 /// Whether an archive undo is a receipt: something went back, and a Mind archived it.
 fn undo_counts(back: usize, toast_id: &str) -> bool {
     back > 0 && toast_id.contains(&format!(":{MIND_MADE}"))
 }
 
+/// Undo on the toast: put the batch back, never over something that has taken its name since.
 pub fn undo_archive(ui: &App, toast_id: &str) {
     // The toast's own id says which batch.
     let restored = super::with(|b| b.archived.iter().position(|(id, _)| id == toast_id).map(|at| b.archived.remove(at))).flatten();

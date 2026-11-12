@@ -243,7 +243,10 @@ impl AnticipationEngine {
             PrepOutcome::Dismissed | PrepOutcome::Ignored | PrepOutcome::Expired => return,
         };
         if changed > 0 {
-            BondTracker::record_receipt(conn, &Receipt::bare(kind, id));
+            // Filed under one fixed app, so the per-sender rise cap holds for prepared work.
+            let mut receipt = Receipt::bare(kind, id);
+            receipt.app = "prepared".into();
+            BondTracker::record_receipt(conn, &receipt);
         }
     }
 
@@ -490,6 +493,29 @@ mod tests {
 
         AnticipationEngine::record_outcome(&conn, "used0", PrepOutcome::Useful);
         assert_eq!(BondTracker::get_state(&conn).receipts, 3, "the same item is counted once");
+    }
+
+    #[test]
+    fn prepared_work_is_capped_like_any_other_sender() {
+        let conn = setup();
+        BondTracker::ensure_tables(&conn);
+        let now = now_ts();
+        for n in 0..50 {
+            let id = format!("p{n}");
+            AnticipationEngine::store(&conn, &PreparedItem {
+                id: id.clone(),
+                trigger: PreparationTrigger::UserRequested,
+                kind: PreparedKind::ContextSummary,
+                description: "test".into(),
+                data: serde_json::json!({}),
+                relevant_at: now, expires_at: now + 100.0,
+                surfaced: true, outcome: None, created_at: now,
+            });
+            AnticipationEngine::record_outcome(&conn, &id, PrepOutcome::Useful);
+        }
+        let state = BondTracker::get_state(&conn);
+        assert_eq!(state.receipts, 50);
+        assert!(state.bond_score <= crate::bond::PAIR_RISE_CAP + 1e-9, "got {}", state.bond_score);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use super::*;
 use crate::bond_table;
 
-fn conn() -> Connection {
+pub(super) fn conn() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     BondTracker::ensure_tables(&conn);
     conn
@@ -21,7 +21,7 @@ fn card_with(conn: &Connection, allowed: bool, app: &str, action: &str, facts: A
     assert!(BondTracker::record_receipt(conn, &receipt(kind, app, action, facts, id)), "{id} was counted");
 }
 
-fn card(conn: &Connection, allowed: bool, app: &str, action: &str, leaves: bool, id: &str) {
+pub(super) fn card(conn: &Connection, allowed: bool, app: &str, action: &str, leaves: bool, id: &str) {
     card_with(conn, allowed, app, action, facts("sensitive", leaves), id);
 }
 
@@ -32,6 +32,8 @@ fn shell_allows(grade: &str, cannot_be_undone: bool) -> bool {
 }
 
 /// `n` For-you "Useful" answers: the receipts no cap holds back, to start a score above zero.
+/// Test fixture only: no production receipt has an empty `app` (For-you falls back to
+/// `unknown-harness`), so an empty one is uncapped here and nowhere else.
 fn earn_from_for_you(conn: &Connection, n: usize) {
     for i in 0..n {
         let r = receipt(ReceiptKind::ForYouUseful, "", "", facts("", false), &format!("fy{i}"));
@@ -409,74 +411,6 @@ fn one_trivial_card_raised_over_and_over_cannot_buy_a_level() {
 }
 
 // ── Keeping and forgetting ───────────────────────────────────────────
-
-#[test]
-fn receipts_are_kept_for_a_hundred_and_eighty_days() {
-    let conn = conn();
-    card(&conn, true, "notes", "create", false, "old");
-    card(&conn, true, "files", "move", false, "recent");
-    card(&conn, true, "notes", "list", false, "newest");
-    let days = |n: i64| (n as f64) * 86_400.0;
-    conn.execute(
-        "UPDATE bond_events SET created_at = created_at - ?1 WHERE event_id LIKE '%:old'",
-        params![days(RECEIPT_RETENTION_DAYS + 1)],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE bond_events SET created_at = created_at - ?1 WHERE event_id LIKE '%:recent'",
-        params![days(RECEIPT_RETENTION_DAYS - 1)],
-    )
-    .unwrap();
-    // Reading drops nothing: only a write (or a start) forgets.
-    assert_eq!(BondTracker::get_state(&conn).receipts, 3);
-    card(&conn, true, "email", "send", true, "new");
-    let left: Vec<String> = bond_table::rows(&conn).iter().map(|r| r.app.clone()).collect();
-    assert_eq!(left, vec!["email", "files", "notes"], "the 181-day-old receipt went, the 179-day-old stayed");
-}
-
-fn stamps(conn: &Connection) -> Vec<f64> {
-    let mut stmt = conn.prepare("SELECT created_at FROM bond_events WHERE event_type = 'receipt' ORDER BY rowid").unwrap();
-    stmt.query_map([], |row| row.get::<_, f64>(0)).unwrap().flatten().collect()
-}
-
-fn backdate(conn: &Connection, id: &str, days: f64) {
-    conn.execute("UPDATE bond_events SET created_at = created_at - ?1 WHERE event_id LIKE ?2", params![days * 86_400.0, format!("%:{id}")])
-        .unwrap();
-}
-
-#[test]
-fn a_receipt_backdated_181_days_is_gone_after_one_write_and_a_restart() {
-    let conn = conn();
-    card(&conn, false, "notes", "create", false, "old");
-    backdate(&conn, "old", 181.0);
-    card(&conn, true, "notes", "create", false, "a1");
-    BondTracker::ensure_tables(&conn); // a restart
-    assert!(BondTracker::why_it_fell(&conn, 5).is_empty(), "the old refusal and its why are gone");
-    assert_eq!(BondTracker::get_state(&conn).receipts, 1);
-}
-
-#[test]
-fn a_receipt_that_ages_out_while_nothing_is_written_goes_at_startup() {
-    let conn = conn();
-    card(&conn, true, "notes", "create", false, "old");
-    backdate(&conn, "old", 400.0);
-    assert_eq!(BondTracker::get_state(&conn).receipts, 1, "reading drops nothing");
-    BondTracker::ensure_tables(&conn);
-    assert_eq!(BondTracker::get_state(&conn).receipts, 0);
-}
-
-#[test]
-fn a_clock_behind_the_receipts_deletes_nothing_and_reorders_nothing() {
-    let conn = conn();
-    card(&conn, false, "notes", "create", false, "no");
-    backdate(&conn, "no", -2.0); // the newest stamp is two days ahead of the clock
-    card(&conn, true, "notes", "create", false, "a1");
-    BondTracker::ensure_tables(&conn);
-    assert_eq!(BondTracker::get_state(&conn).receipts, 2, "nothing is dropped while the clock is behind");
-    let at = stamps(&conn);
-    assert!(at.windows(2).all(|w| w[0] <= w[1]), "stamps never run backwards: {at:?}");
-    assert_eq!(bond_table::rows(&conn)[0].clean_streak, 1, "and the order is the order written");
-}
 
 #[test]
 fn two_trivial_pairs_together_cannot_reach_a_level() {
