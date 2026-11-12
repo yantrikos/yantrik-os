@@ -41,6 +41,32 @@ def holding(**by_port):
     return identify
 
 
+class FakePipes:
+    """The holder of the person's pipe, with a browser held (or not) and nothing else of pipes.py."""
+    proc = "/nonexistent-proc"
+
+    def __init__(self, held=True, uid=ME, place=listener.PERSON):
+        self.held = held
+        self.uid, self.place = uid, place
+        self.serial = 1
+
+    def open(self):
+        raise cdp.BrowserClosed()
+
+    def current(self):
+        return type("Held", (), {"pid": 4242, "serial": self.serial})() if self.held else None
+
+    def uid_of(self, pid):
+        return self.uid
+
+
+def persons_browser(pipes):
+    """A Guard whose person-side browser is whatever `pipes` holds."""
+    patch = mock.patch.object(listener, "place_of_pid", lambda proc, pid: pipes.place)
+    patch.start()
+    return guard.Guard(identify=holding(), uid=ME, pipes=pipes), patch
+
+
 def everywhere(place):
     """An `identify` under which every port is held by a browser on this profile."""
     return lambda port: listener.Listener(port, ME, 1, (1,), place)
@@ -160,8 +186,11 @@ class IsTheShell(unittest.TestCase):
 class Vetting(unittest.TestCase):
     def test_each_side_accepts_its_own_browser(self):
         self.assertIsNotNone(guard.Guard(identify=everywhere(listener.MIND_VIEW), uid=ME).vet(ports.MIND))
-        for place in (listener.PERSON,):     # the person's, either way it was started
-            self.assertIsNotNone(guard.Guard(identify=everywhere(place), uid=ME).vet(ports.PERSON), place)
+        g, patch = persons_browser(FakePipes())
+        self.addCleanup(patch.stop)
+        held = g.vet(ports.PERSON)
+        self.assertIsNotNone(held)
+        self.assertEqual(held.port, 0, "the person's Browser is a pipe, not a port")
 
     def test_a_mind_is_refused_whatever_else_holds_its_port(self):
         for place in (listener.PERSON, listener.IDENTITY):
@@ -172,24 +201,76 @@ class Vetting(unittest.TestCase):
             self.assertIn("no page was opened, read or changed and no tab list is shown", text)
             self.assertIn("Only the person can change this", text)
 
-    def test_the_person_is_refused_a_minds_browser_on_their_port(self):
+    def test_the_person_is_refused_a_minds_browser_handed_over_as_theirs(self):
+        g, patch = persons_browser(FakePipes(place=listener.MIND_VIEW))
+        self.addCleanup(patch.stop)
         with self.assertRaises(guard.Denied) as refused:
-            guard.Guard(identify=everywhere(listener.MIND_VIEW), uid=ME).vet(ports.PERSON)
-        self.assertIn("Mind View's own browser", str(refused.exception))
+            g.vet(ports.PERSON)
+        self.assertIn("Mind View's own", str(refused.exception))
 
-    def test_another_account_and_what_cannot_be_established_are_refused_for_both(self):
+    def test_another_account_and_what_cannot_be_established_are_refused(self):
+        g = guard.Guard(identify=lambda p: listener.Listener(p, ME + 1, 1, (1,), listener.MIND_VIEW), uid=ME)
+        with self.assertRaises(guard.Denied):
+            g.vet(ports.MIND)
+        pg, patch = persons_browser(FakePipes(uid=ME + 1))
+        self.addCleanup(patch.stop)
+        with self.assertRaises(guard.Denied):
+            pg.vet(ports.PERSON)
         for side in (ports.PERSON, ports.MIND):
-            g = guard.Guard(identify=lambda p: listener.Listener(p, ME + 1, 1, (1,), listener.MIND_VIEW), uid=ME)
-            with self.assertRaises(guard.Denied):
-                g.vet(side)
-            nothing = guard.Guard(identify=holding(), uid=ME)
-            self.assertIsNone(nothing.vet(side), "nothing listening is not a refusal: the browser is simply not open")
+            nothing = guard.Guard(identify=holding(), uid=ME, pipes=FakePipes(held=False))
+            self.assertIsNone(nothing.vet(side), "nothing there is not a refusal: the browser is simply not open")
 
-            def unclear(port):
-                raise listener.Unidentified("two different sockets listen there")
+        def unclear(port):
+            raise listener.Unidentified("two different sockets listen there")
+        with self.assertRaises(guard.Denied) as refused:
+            guard.Guard(identify=unclear, uid=ME).vet(ports.MIND)
+        self.assertIn("could not be established", str(refused.exception))
+
+    def test_a_browser_an_older_build_left_on_the_old_port_is_refused_by_name_never_used(self):
+        asked = []
+
+        def identify(port):
+            asked.append(port)
+            return listener.Listener(port, ME, 1, (1,), listener.PERSON)
+        g = guard.Guard(identify=identify, uid=ME, pipes=FakePipes(held=False))
+        with self.assertRaises(guard.Denied) as refused:
+            g.vet(ports.PERSON)
+        self.assertIn("started before this update", str(refused.exception))
+        self.assertIn("Close it and open your Browser again", str(refused.exception))
+
+    def test_a_port_beside_the_pipe_is_refused_loudly_on_every_call(self):
+        """L6: a Browser that holds the pipe and a port too is not left to be driven."""
+        g, patch = persons_browser(FakePipes(held=True))
+        self.addCleanup(patch.stop)
+        g.identify = holding(**{str(ports.PERSON_PORT): listener.PERSON})
+        for _ in range(2):
             with self.assertRaises(guard.Denied) as refused:
-                guard.Guard(identify=unclear, uid=ME).vet(side)
-            self.assertIn("could not be established", str(refused.exception))
+                g.vet(ports.PERSON)
+            self.assertIn("lets any process of this account drive it", str(refused.exception))
+
+    def test_a_port_that_cannot_be_identified_is_refused_too(self):
+        g, patch = persons_browser(FakePipes(held=True))
+        self.addCleanup(patch.stop)
+        g.identify = holding(**{str(ports.PERSON_PORT): listener.Unidentified("two different sockets listen there")})
+        with self.assertRaises(guard.Denied):
+            g.vet(ports.PERSON)
+
+    def test_with_the_pipe_and_no_port_the_browser_is_used(self):
+        g, patch = persons_browser(FakePipes(held=True))
+        self.addCleanup(patch.stop)
+        self.assertIsNotNone(g.vet(ports.PERSON))
+
+    def test_the_person_has_no_port_to_fall_back_to(self):
+        with self.assertRaises(ValueError):
+            ports.port_of(ports.PERSON)
+        d = drv.Driver(judge=False, guard_=guard.Guard(identify=holding(), uid=ME, side_of=lambda: ports.PERSON,
+                                                       pipes=FakePipes(held=False)))
+        browser = d.sides.browsers[ports.PERSON]
+        self.assertIsNone(browser.address)
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("TCP was tried")):
+            with mock.patch.object(cdp.Browser, "_version", side_effect=AssertionError("the port was asked")):
+                with self.assertRaises(cdp.BrowserClosed):
+                    browser.connect()
 
 
 class CallerGone(unittest.TestCase):
@@ -275,20 +356,19 @@ class CallerGone(unittest.TestCase):
 
 
 class FirstCallAndOldAddress(unittest.TestCase):
-    """A mind's first web call starts Mind View's browser; a person's browser on an old address is
-    not "not open"."""
+    """A mind's first web call starts Mind View's browser."""
 
     def setUp(self):
         patch = mock.patch.object(cdp.Browser, "connect", lambda self: None)
         patch.start()
         self.addCleanup(patch.stop)
 
-    def driver(self, side, listening, starter, old=False):
+    def driver(self, side, listening, starter):
         def identify(port):
             if not listening[0] or port != ports.MIND_VIEW_PORT:
                 raise listener.Unidentified("nothing is listening there", nobody=True)
             return listener.Listener(port, ME, 1, (1,), listener.MIND_VIEW)
-        g = guard.Guard(identify=identify, uid=ME, side_of=lambda: side, starter=starter, old_address=lambda p: old)
+        g = guard.Guard(identify=identify, uid=ME, side_of=lambda: side, starter=starter, pipes=FakePipes(held=False))
         return drv.Driver(judge=False, guard_=g)
 
     def test_a_minds_first_call_being_tabs_starts_it_too(self):
@@ -347,22 +427,35 @@ class FirstCallAndOldAddress(unittest.TestCase):
             pass                                  # no browser of theirs is opened for them
         self.driver(ports.MIND, [False], never).status()      # a look starts nothing
 
-    def test_a_persons_browser_on_the_old_address_is_not_called_closed(self):
-        d = self.driver(ports.PERSON, [False], None, old=True)
-        for act in (lambda: d.read(), lambda: d.tabs()):
-            with self.assertRaises(drv.PageRefused) as refused:
-                act()
-            self.assertIn("old address ([::1])", str(refused.exception))
-            self.assertIn("Close it and open it again", str(refused.exception))
-            self.assertNotIn("not open", str(refused.exception))
-        # A mind's side is not told about the person's browser at all.
-        d = self.driver(ports.MIND, [True], None, old=True)
-        with d.held():
-            pass
+    def test_a_minds_first_call_gets_its_own_whatever_the_persons_browser_is_doing(self):
+        """The 2 Nov bug (#1137): a mind's web_go landed in the person's browser. Whether the person's
+        Browser is open or not, in either start order, a mind's call is Mind View's, port 9223."""
+        for persons_open in (True, False):
+            up, calls = [False], []
+            pipes = FakePipes(held=persons_open)
+            patch = mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.PERSON)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+            def identify(port):
+                if not up[0] or port != ports.MIND_VIEW_PORT:
+                    raise listener.Unidentified("nothing is listening there", nobody=True)
+                return listener.Listener(port, ME, 1, (1,), listener.MIND_VIEW)
+            g = guard.Guard(identify=identify, uid=ME, side_of=lambda: ports.MIND,
+                            starter=lambda: (calls.append(1), up.__setitem__(0, True)), pipes=pipes)
+            d = drv.Driver(judge=False, guard_=g)
+            with d.held():
+                self.assertEqual(d.browser.address, "http://127.0.0.1:9223", persons_open)
+                self.assertIsNone(d.browser.opener)
+            self.assertEqual(calls, [1], "Mind View's was started for it")
+            # The person's Browser opening afterwards changes nothing for the next mind call.
+            pipes.held = True
+            with d.held():
+                self.assertEqual(d.browser.address, "http://127.0.0.1:9223")
 
 
 class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
-    """The port choice per caller, with the person's Browser open on its port in every case."""
+    """The choice per caller, with the person's Browser open in every case."""
 
     def setUp(self):
         # A connect() reaching a refused browser is a failure of the guard, not a "browser closed".
@@ -370,20 +463,30 @@ class TheDriverSendsEachCallerToItsOwnBrowser(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
 
-    def test_a_mind_gets_mind_views_port_and_the_person_theirs(self):
-        table = {ports.PERSON_PORT: listener.PERSON, ports.MIND_VIEW_PORT: listener.MIND_VIEW}
-        for side, port in ((ports.MIND, 9223), (ports.PERSON, 9222)):
-            d = driver_for(lambda p, t=table: listener.Listener(p, ME, 1, (1,), t[p]), side)
+    def test_a_mind_gets_mind_views_port_and_the_person_their_pipe(self):
+        patch = mock.patch.object(listener, "place_of_pid", lambda proc, pid: listener.PERSON)
+        patch.start()
+        self.addCleanup(patch.stop)
+        for side, port in ((ports.MIND, 9223), (ports.PERSON, None)):
+            g = guard.Guard(identify=holding(**{str(ports.MIND_VIEW_PORT): listener.MIND_VIEW}), uid=ME,
+                            side_of=lambda s=side: s, pipes=FakePipes())
+            d = drv.Driver(judge=False, guard_=g)
             with mock.patch.object(cdp.Browser, "connect", lambda self: None):
                 with d.held():
-                    self.assertEqual(d.browser.address, "http://127.0.0.1:%d" % port, side)
+                    if port:
+                        self.assertEqual(d.browser.address, "http://127.0.0.1:%d" % port, side)
+                    else:
+                        self.assertIsNone(d.browser.address, "the person's Browser has no address")
+                        self.assertIsNotNone(d.browser.opener, "it is the pipe's")
 
-    def test_a_mind_never_gets_the_persons_port_even_when_mind_views_browser_is_closed(self):
-        d = driver_for(holding(**{str(ports.PERSON_PORT): listener.PERSON}), ports.MIND)
+    def test_a_mind_never_gets_the_persons_browser_even_when_mind_views_is_closed(self):
+        g = guard.Guard(identify=holding(), uid=ME, side_of=lambda: ports.MIND, pipes=FakePipes())
+        d = drv.Driver(judge=False, guard_=g)
         with self.assertRaises(drv.PageRefused):          # it tries to start Mind View's own, and cannot here
             with d.held():
                 pass
-        self.assertEqual(d.browser.address, "http://127.0.0.1:9223", "never the person's port")
+        self.assertEqual(d.browser.address, "http://127.0.0.1:9223", "never the person's")
+        self.assertIsNone(d.browser.opener)
 
     def test_a_refused_call_opens_nothing_and_says_so(self):
         # The person's Browser is on Mind View's port: a mind's every action is refused.

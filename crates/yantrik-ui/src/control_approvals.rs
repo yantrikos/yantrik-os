@@ -1188,9 +1188,24 @@ fn who_is_asking(claimed: &str) -> approvals::Verified {
     // Which of the person's agents it is for: from the token beside the arguments, checked against
     // the same kernel-verified caller, never from anything the request says (design decision 4).
     let (agent, doubt) = agent_fact(crate::control_agent_terminal::calling_agent());
+    if verified.mind_by_pid {
+        verified.attached_mind = background_name(&agent, &verified.attached_mind);
+    }
     verified.agent = agent;
     verified.discrepancies.extend(doubt);
     verified
+}
+
+/// A card for the harness's gateway agent (`hermes:gateway`, #411) names the mind with
+/// "(background)": its work is a job, a task or another chat's, not the conversation the person is
+/// in. The mind's name is the one the kernel's pid walk found; the harness id when it found none.
+fn background_name(agent: &str, shown: &str) -> String {
+    let id = crate::agents::AgentId(agent.to_string());
+    if agent.is_empty() || id.conversation() != crate::agents::AgentId::GATEWAY {
+        return shown.to_string();
+    }
+    let name = if shown.trim().is_empty() { id.harness() } else { shown.trim() };
+    format!("{name} (background)")
 }
 
 /// The agent a call is for, as a card and a log may show it, and the sentence the card owes the
@@ -4085,5 +4100,21 @@ mod grant_spends_tests {
         );
         let direct = spending_agent_with(&args, false).expect("a token came with the call");
         assert!(direct.is_err(), "the same arguments from a direct caller: {direct:?}");
+    }
+}
+
+#[cfg(test)]
+mod gateway_card_tests {
+    use super::background_name;
+
+    /// The harness's gateway agent (#411) is named as background work, on top of the mind the
+    /// kernel found; every other agent, and a call with no agent, is named as it was.
+    #[test]
+    fn a_gateway_agents_card_says_background() {
+        assert_eq!(background_name("hermes:gateway", "Hermes"), "Hermes (background)");
+        assert_eq!(background_name("hermes:gateway", ""), "hermes (background)", "the harness id when no name was found");
+        assert_eq!(background_name("hermes:main", "Hermes"), "Hermes");
+        assert_eq!(background_name("pi:c-7f3a91", "Pi"), "Pi");
+        assert_eq!(background_name("", "Hermes"), "Hermes");
     }
 }

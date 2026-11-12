@@ -111,5 +111,24 @@ class Parse(unittest.TestCase):
         )
 
 
+class AbstractSockets(unittest.TestCase):
+    def test_a_kernel_without_the_scope_warns_and_the_mind_still_starts(self):
+        import io
+        from contextlib import redirect_stderr
+        import yantrik_landlock
+
+        def refuse():
+            raise yantrik_landlock.Unavailable(0, "Landlock ABI 0")
+
+        real, yantrik_landlock.scope_abstract_unix = yantrik_landlock.scope_abstract_unix, refuse
+        try:
+            err = io.StringIO()
+            with redirect_stderr(err):
+                launch.close_abstract_sockets()
+        finally:
+            yantrik_landlock.scope_abstract_unix = real
+        self.assertIn("abstract sockets stay open", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
