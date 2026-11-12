@@ -206,17 +206,17 @@ mod tests {
         assert!(d < at - 3, "and dock_model sits above the note, not between it and windows");
     }
 
-    /// The dock's tiles are the spec's 32px (§3, changed from 24px on 3 October: a 24px tile left a
-    /// 13px glyph, "not crisp but blunt"), and the token and the spec say the same (#585 S1).
+    /// The dock's tiles are the spec's 48px (§3; 24px until 3 October, "not crisp but blunt", then
+    /// 32px until the sharper pass of 12 November), and the token and the spec say the same (#585 S1).
     #[test]
-    fn dock_icons_are_the_specs_32px() {
+    fn dock_icons_are_the_specs_48px() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let theme = std::fs::read_to_string(root.join("../yantrik-design-tokens/slint/theme.slint")).unwrap();
         let line = theme.lines().find(|l| l.contains("out property <length> dock-icon:")).unwrap();
-        assert!(line.contains(": 32px;"), "{line}");
+        assert!(line.contains(": 48px;"), "{line}");
         assert!(!theme.contains("spec allows 24-36px"));
         let spec = std::fs::read_to_string(root.join("../../design/minds-surfaces-spec-2026-10-02.md")).unwrap();
-        assert!(spec.contains("40×40 buttons with 32px app tiles"), "the spec says 32px too");
+        assert!(spec.contains("52×52 buttons with 48px app tiles"), "the spec says 48px too");
     }
 
     /// One wheel area under the whole bar, and every dock button forwards the wheel: a button's own
@@ -243,8 +243,8 @@ mod tests {
         let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/components/grounded_dock.slint")).unwrap();
         let mind = &src[src.find("// ── The mind ──").expect("the mind button")..];
         let mind = &mind[..mind.find("// ── Show desktop ──").expect("the next section")];
-        assert!(mind.contains("DockBtn {"), "the same 40px button, so the same hit area and label");
-        assert!(mind.contains("width: Theme.dock-icon;") && mind.contains("height: Theme.dock-icon;"), "the same 32px footprint");
+        assert!(mind.contains("DockBtn {"), "the same button as an app's, so the same hit area and label");
+        assert!(mind.contains("width: Theme.dock-icon;") && mind.contains("height: Theme.dock-icon;"), "the same footprint as a tile");
         assert!(mind.contains("background: transparent;"), "no fill");
         assert!(mind.contains("border-width: 1px;") && !mind.contains("border-width: 2px"), "at most a 1px edge");
         assert!(mind.contains("Theme.mind :") && mind.contains("commands: Icons.companion;"), "the ring in the mind's teal");
