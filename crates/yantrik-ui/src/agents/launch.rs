@@ -289,16 +289,37 @@ fn stop_one(host: &Host, agent: &AgentId) -> Stopped {
     stopped
 }
 
-/// Everything a stop does, but the note.
+/// Everything a stop does, but the note: the agent's commands are killed, the turn and the agent
+/// ended, its reach let go and the cards it was waiting on taken back. (A stop of one turn,
+/// [`stop_turn`], leaves the agent and so its reach: the turn after must run under it.)
 fn halt(host: &Host, agent: &AgentId) -> Stopped {
     let killed = crate::control_agent_terminal::jobs().kill_agent(agent);
     let stopped = host.stop_agent(agent);
     // Stopped, it acts no more; its token names nothing now either.
     super::reaches::release(agent);
-    // A card for work that is no longer happening is refused, never granted. The approval store's
-    // own tick redraws the Lens, and the pane with it.
-    let approvals = crate::approvals::withdraw_for_agent(&agent.0).len();
-    Stopped { stopped, commands: killed.len(), approvals, children: Vec::new() }
+    Stopped { stopped, commands: killed.len(), approvals: withdraw(agent), children: Vec::new() }
+}
+
+/// A card for work that is no longer happening is refused, never granted. The approval store's
+/// own tick redraws the Lens, and the pane with it.
+fn withdraw(agent: &AgentId) -> usize {
+    crate::approvals::withdraw_for_agent(&agent.0).len()
+}
+
+/// The Lens's Stop (#1058): the running turn is dropped, so the harness's next heartbeat is
+/// answered "dropped", and the commands it started are killed. The agent and its conversation
+/// stay, unlike [`stop_on`]: the person stopped a turn, not the mind. `turn` is the newest one the
+/// person saw; every turn up to it is stopped, in flight or still queued for the harness, and a
+/// newer one is left alone (`stopped` is false when nothing was).
+pub fn stop_turn(host: &Host, agent: &AgentId, turn: u64) -> Stopped {
+    // The turn is dropped first, and only if it is still the one the person saw is anything else
+    // done: the commands and cards belong to whatever runs now.
+    if !host.stop_turn(agent, turn) {
+        return Stopped::default();
+    }
+    let killed = crate::control_agent_terminal::jobs().kill_agent(agent);
+    super::store().note(agent, "Stop asked from the Lens.");
+    Stopped { stopped: true, commands: killed.len(), approvals: withdraw(agent), children: Vec::new() }
 }
 
 /// Whether an agent can still be spoken to: its harness attached, and — for a harness with
@@ -308,5 +329,5 @@ pub fn reachable(agent: &AgentId, live: &[AgentId], attached: &[String]) -> bool
     let harness = agent.harness();
     !builtin(harness)
         && attached.iter().any(|a| a == harness)
-        && (agent.conversation() == AgentId::MAIN || live.contains(agent))
+        && (agent.conversation() == AgentId::MAIN || agent.conversation() == AgentId::GATEWAY || live.contains(agent))
 }

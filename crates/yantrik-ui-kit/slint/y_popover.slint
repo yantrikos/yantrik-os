@@ -33,6 +33,7 @@
 // Slint's software renderer cannot scale an item, so this is fade and drift, not fade and scale.
 // Animations are declarative: no timer, and nothing redraws once it has settled.
 import { Theme } from "theme.slint";
+import { YShadow } from "y_shadow.slint";
 
 export component YPopover inherits Rectangle {
     in property <bool> open: false;
@@ -82,6 +83,15 @@ export component YPopover inherits Rectangle {
         clicked => { root.close-requested(); }
     }
 
+    // The panel's shadow, a picture under it that arrives with it (y_shadow.slint).
+    YShadow {
+        x: panel.x;
+        y: panel.y;
+        width: panel.width;
+        height: panel.height;
+        strength: root.t;
+    }
+
     panel := Rectangle {
         x: root.panel-x;
         y: root.panel-y + (1 - root.t) * (root.above ? Theme.sp-1 : -Theme.sp-1);
@@ -94,9 +104,6 @@ export component YPopover inherits Rectangle {
         background: Theme.panel-solid;
         border-width: Theme.hairline;
         border-color: Theme.border-card;
-        drop-shadow-blur: Theme.shadow-lg-blur;
-        drop-shadow-offset-y: Theme.shadow-lg-dy;
-        drop-shadow-color: Theme.overlay-shadow;
         accessible-role: groupbox;
         accessible-label: root.label;
 

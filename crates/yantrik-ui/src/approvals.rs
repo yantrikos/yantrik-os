@@ -788,6 +788,7 @@ pub fn open_ended(purpose: &str) -> bool {
 /// rule is for.
 pub fn may_offer_session_rule(grade: &str, purpose: &str) -> bool {
     crate::approvals_bond::session_rule_allowed(grade, unrecoverable(purpose))
+        && !yantrik_ipc_transport::gate::always_asks(purpose)
 }
 
 /// The warning line, or empty.

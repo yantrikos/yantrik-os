@@ -72,3 +72,12 @@ osd.window-switcher.item.padding.y: 8
 osd.window-switcher.item.active.bg.color: #232a30
 osd.window-switcher.item.active.border.width: 2
 osd.window-switcher.item.active.border.color: #ffffff
+
+# ── Shadows ─────────────────────────────────────────────────────────
+# A decorated window's drop shadow (rc.xml: <dropShadows>yes</dropShadows>). The focused window
+# stands further off the desktop than the others, so the one being worked in is the one that
+# reads as nearest; that is most of what tells stacked windows apart on a dark photograph.
+window.active.shadow.size: 56
+window.active.shadow.color: #00000085
+window.inactive.shadow.size: 36
+window.inactive.shadow.color: #0000004d

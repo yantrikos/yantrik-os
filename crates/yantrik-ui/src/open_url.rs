@@ -25,6 +25,12 @@ const ARRIVAL: Duration = Duration::from_secs(12);
 const POLL: Duration = Duration::from_millis(300);
 
 /// Open an ordinary link in the person's browser (`xdg-open`), and bring it to the front.
+///
+/// Not walled (#1124, gate 5): `xdg-open` starts the default browser outside the wall, in the
+/// shell's own mount namespace, with no DevTools pipe, so it sees the workshops and `yos web`
+/// cannot drive it. Routing it through the Browser's launcher needs the dock to take a URL and to
+/// hand it to an instance already open, which this PR does not change; a dock launch that joins
+/// such a browser says so (`browser_holder::NOT_DRIVABLE`). Follow-up issue: see the PR comment.
 pub fn open(url: &str) -> Result<(), String> {
     let url = web_address(url)?;
     let before = foreign_windows();
@@ -44,7 +50,7 @@ pub fn open(url: &str) -> Result<(), String> {
 /// session cannot drive it. It comes to the front like any page.
 pub fn open_apart(url: &str) -> Result<(), String> {
     let url = web_address(url)?;
-    let (browser, _) = crate::wire::dock::find_browser().ok_or("there is no browser on this machine")?;
+    let (browser, _) = crate::wire::browser_launch::find_browser().ok_or("there is no browser on this machine")?;
     let profile = yantrik_ml::private_dir::state_dir("provider-pages")
         .map_err(|e| format!("no private profile for the browser: {e}"))?;
     let program = crate::wire::dock::find_program(browser).ok_or("there is no browser on this machine")?;
@@ -91,14 +97,16 @@ fn web_address(url: &str) -> Result<&str, String> {
     }
 }
 
-/// The windows that are not the shell's own (ours declare no app id), as (app id, title).
+/// The windows of another program, as (app id, title): not the shell's own (they declare no app
+/// id) and not our apps' (`windows::is_ours`: they declare `yantrik-<program>`, and one that opens
+/// or retitles while a sign-in starts is not the page).
 fn foreign_windows() -> Vec<(String, String)> {
     crate::windows::refresh_compositor_windows();
-    crate::windows::shell_windows()
-        .into_iter()
-        .filter(|w| !w.wayland_app_id.is_empty())
-        .map(|w| (w.wayland_app_id, w.title))
-        .collect()
+    only_foreign(crate::windows::shell_windows().into_iter().map(|w| (w.wayland_app_id, w.title)))
+}
+
+fn only_foreign(windows: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
+    windows.into_iter().filter(|(app, _)| !app.is_empty() && !crate::windows::is_ours(app)).collect()
 }
 
 /// The title of a window in `now` that was not in `before`: one that appeared, or one whose
@@ -167,6 +175,23 @@ mod tests {
         let two = vec![w("foot", "Terminal"), w("foot", "Terminal")];
         assert_eq!(arrived(&two[..1], &two).as_deref(), Some("Terminal"));
         assert_eq!(arrived(&two, &two), None);
+    }
+
+    /// Email retitles while it starts a provider sign-in: that is not the page's window, and the
+    /// browser's is the one that comes forward.
+    #[test]
+    fn one_of_our_apps_retitling_is_not_the_page() {
+        let before = only_foreign([w("yantrik-email", "Email"), w("chromium", "Liveperf - Chromium"), w("", "Yantrik OS")]);
+        assert_eq!(before, vec![w("chromium", "Liveperf - Chromium")]);
+        let now = only_foreign([
+            w("yantrik-email", "Email: Sign in"),
+            w("Yantrik-Notes", "Notes: Handover"),
+            w("chromium", "Liveperf - Chromium"),
+            w("chromium", "Sign up - Chromium"),
+        ]);
+        assert_eq!(arrived(&before, &now).as_deref(), Some("Sign up - Chromium"));
+        let only_ours = only_foreign([w("yantrik-email", "Email: Sign in"), w("chromium", "Liveperf - Chromium")]);
+        assert_eq!(arrived(&before, &only_ours), None, "an app's retitle brings nothing forward");
     }
 
     /// A page apart gets its own profile and never a debugging port.

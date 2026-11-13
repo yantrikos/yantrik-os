@@ -83,7 +83,10 @@ def one_line(text: str, limit: int = 160) -> str:
 
 def restart_fix(harness: str) -> Dict[str, str]:
     if harness == "hermes":
-        command = "systemctl --user restart hermes-gateway"
+        # Under the mind account (#411) the gateway is a system service the person cannot restart
+        # themselves; the proofs run as that account, which has the mind door in its environment.
+        command = ("sudo -n /opt/yantrik/bin/yantrik-update harness restart hermes"
+                   if os.environ.get("YANTRIK_MIND_RUN", "").strip() else "systemctl --user restart hermes-gateway")
     elif harness == "mind":
         command = "systemctl start yantrik-mind.service"
     else:

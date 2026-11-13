@@ -156,7 +156,7 @@ pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCred> {
             &mut len,
         )
     };
-    (rc == 0).then_some(PeerCred { pid: cred.pid, uid: cred.uid, gid: cred.gid })
+    (rc == 0).then_some(PeerCred { pid: cred.pid, uid: cred.uid, gid: cred.gid, the_mind: false })
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -286,7 +286,7 @@ mod desktop_program_tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_caller_that_is_not_one_is_refused_in_words_naming_the_graded_door() {
-        let me = PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+        let me = PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0, the_mind: false };
         let why = desktop_programs_only(Some(me), "email.send_message").unwrap_err();
         assert!(why.starts_with("email.send_message answers the desktop's own programs, and the caller is /"), "{why}");
         assert!(why.ends_with("the graded action on app.act answers any caller"), "{why}");
@@ -581,7 +581,7 @@ mod program_tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn another_program_is_refused_in_words() {
-        let me = PeerCred { pid: std::process::id() as i32, uid: own_euid(), gid: 0 };
+        let me = PeerCred { pid: std::process::id() as i32, uid: own_euid(), gid: 0, the_mind: false };
         let why = must_be_program(Some(me), "email-service").unwrap_err();
         assert!(why.contains("email-service only"), "{why}");
     }
