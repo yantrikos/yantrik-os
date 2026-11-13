@@ -629,13 +629,13 @@ fn launch_browser(args: &serde_json::Value) -> String {
         format!("--user-data-dir={}", profile.display()),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
-        "--disable-background-networking".into(),
-        "--disable-component-update".into(),
         // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
         "--disable-blink-features=AutomationControlled".into(),
         // Anti-detection: realistic viewport size
         "--window-size=1920,1080".into(),
     ];
+    // The one list of Chromium's calls home, shared with the headless start.
+    chrome_args.extend(super::browser_spawn::quiet_args());
     // Headed by default, and that is the point rather than an oversight. What makes a site
     // trust this browser is not a flag: it is a real profile with a real logged-in session, on
     // the user's own machine and their own address. A headless window on a datacentre IP is

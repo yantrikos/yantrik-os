@@ -206,11 +206,8 @@ const PIP_NAME_MAP: &[(&str, &str)] = &[
 
 pub(crate) fn detect_python_deps(content: &str) -> Vec<String> {
     let mut packages = HashSet::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        // Skip comments
-        if trimmed.starts_with('#') { continue; }
-
+    // A line may hold several statements: `import x; print(x.y)` imports x (gate 9, bar 5 note).
+    for trimmed in content.lines().filter(|l| !l.trim_start().starts_with('#')).flat_map(|l| l.split(';')).map(str::trim) {
         let module = if let Some(rest) = trimmed.strip_prefix("import ") {
             // Handle "import x, y, z" and "import x as y"
             rest.split(',')
