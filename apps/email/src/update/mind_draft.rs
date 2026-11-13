@@ -152,6 +152,8 @@ pub fn discard(m: &mut Model) {
     if let Err(e) = clear_mind_draft(&m.files.mind_draft) {
         tracing::warn!(error = %e, "the prepared draft's file could not be removed");
     }
+    // The slot is free: a touched draft waiting on a shelf comes into the entry.
+    promote_waiting(m);
 }
 
 /// The person's entry "Draft Yantrik prepared for Maya": opens the prepared draft in the composer.
@@ -215,13 +217,12 @@ pub fn discard_prepared(m: &mut Model, fx: &mut Effects<Email>) {
     }
     m.composer.status.clear();
     fx.changed(part::STATUS);
-    promote_waiting(m);
 }
 
 /// A draft the person touched, waiting on a shelf, whose slot is free comes into the slot, where the
 /// entry "Draft Yantrik prepared" opens it. Without this a touched shelf whose card is gone would be
 /// on disk with no way in.
-fn promote_waiting(m: &mut Model) {
+pub fn promote_waiting(m: &mut Model) {
     if !matches!(m.composer.mind, Ok(None)) {
         return;
     }
@@ -250,8 +251,13 @@ fn promote_waiting(m: &mut Model) {
 }
 
 /// A touched draft whose promise is gone becomes the person's own draft when they have none (the
-/// one place Compose reopens), and goes into the slot otherwise. Never writes over their draft.
+/// one place Compose reopens), and waits for the slot otherwise. Never writes over their draft.
+/// One that carries a file never moves: `draft.json` cannot hold the file, and the person's draft
+/// would then be sent without it. It stays on its shelf for the "Draft Yantrik prepared" entry.
 fn keep_for_person(m: &mut Model, shelf: &std::path::Path, d: MindDraft, fx: &mut Effects<Email>) {
+    if !d.attachments.is_empty() {
+        return;
+    }
     let c = &m.composer;
     let free = matches!(c.kept, Ok(None)) && !c.open && !c.writing && !c.saving && c.queued.is_none() && c.unsent_at_start.is_none() && c.sending.is_none();
     if free && crate::state::save_draft(&m.files.draft, &d.text).is_ok() {
@@ -300,6 +306,16 @@ pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>)
             Ok(Some(d)) if !d.touched => remove_shelf(&shelf),
             Ok(Some(d)) => keep_for_person(m, &shelf, d, fx),
             _ => {}
+        }
+    }
+    // A touched draft in the slot is theirs and stays, but its promise is closed: it keeps no id, so
+    // opening another card keeps it in the slot instead of shelving it where no card opens it.
+    if let Ok(Some(slot)) = &mut m.composer.mind {
+        if slot.touched && slot.commitment.as_deref() == Some(commitment) {
+            slot.commitment = None;
+            if let Err(e) = save_mind_draft(&m.files.mind_draft, slot) {
+                tracing::warn!(error = %e, "the prepared draft could not be kept");
+            }
         }
     }
     let ours = matches!(&m.composer.mind, Ok(Some(slot)) if !slot.touched && slot.commitment.as_deref() == Some(commitment) && !commitment.is_empty());

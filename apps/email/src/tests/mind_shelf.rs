@@ -27,7 +27,11 @@ fn home_file(name: &str, tag: &str) -> std::path::PathBuf {
 }
 
 fn compose(app: &yantrik_testing::TestApp<Email>, to: &str, file: &std::path::Path, commitment: &str) {
-    let args = json!({ "to": to, "subject": "report", "body": "Here.", "attach": file.to_string_lossy(), "commitment": commitment });
+    compose_with(app, to, &file.to_string_lossy(), commitment);
+}
+
+fn compose_with(app: &yantrik_testing::TestApp<Email>, to: &str, attach: &str, commitment: &str) {
+    let args = json!({ "to": to, "subject": "report", "body": "Here.", "attach": attach, "commitment": commitment });
     act(app, "compose", args).unwrap();
     app.ui(|ui| ui.invoke_cancel_compose());
     quiet(app);
@@ -108,8 +112,13 @@ fn shelf_text(paths: &Paths, id: &str) -> Option<String> {
 /// Two promises prepared, the person edits A's draft and then opens B's: A's edit waits, touched,
 /// on A's shelf, and B holds the slot.
 fn a_touched_and_b_in_the_slot(paths: &Paths, app: &yantrik_testing::TestApp<Email>, file: &std::path::Path) {
-    compose(app, "maya@example.com", file, "24");
-    compose(app, "ravi@example.com", file, "25");
+    touched_a(paths, app, &file.to_string_lossy());
+}
+
+/// The same, with `attach` on both drafts: empty means drafts that carry no file.
+fn touched_a(paths: &Paths, app: &yantrik_testing::TestApp<Email>, attach: &str) {
+    compose_with(app, "maya@example.com", attach, "24");
+    compose_with(app, "ravi@example.com", attach, "25");
     app.run(Command::OpenPreparedFor("24".into()));
     quiet(app);
     super::compose::type_into_composer(app, &super::compose::draft("maya@example.com", "my own careful wording"));
@@ -180,19 +189,42 @@ fn l1_opening_a_draft_whose_slot_write_fails_loses_neither_draft_and_says_so() {
 }
 
 #[test]
-fn l2_a_touched_draft_stays_reachable_after_its_promise_is_forgotten() {
+fn l2_a_touched_draft_with_no_file_becomes_the_persons_own_draft_when_its_promise_is_forgotten() {
     let paths = Paths::temporary(Email::ID);
     let app = started(&paths);
-    let a = home_file("alpha.ydeck", "l2");
-    a_touched_and_b_in_the_slot(&paths, &app, &a);
+    touched_a(&paths, &app, "");
     app.ui(|ui| ui.invoke_cancel_compose());
     quiet(&app);
     act(&app, "forget_prepared", json!({ "commitment": "24" })).unwrap();
     assert!(shelf_text(&paths, "24").is_none(), "the shelf is cleared: its text moved");
-    // The person's own route: Compose opens their kept draft.
     app.ui(|ui| ui.invoke_compose_new());
     quiet(&app);
     assert_eq!(app.model(|m| m.composer.text.body.clone()), "my own careful wording");
+}
+
+#[test]
+fn n1_a_touched_draft_with_a_file_never_loses_it_when_its_promise_is_forgotten() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "n1");
+    a_touched_and_b_in_the_slot(&paths, &app, &a);
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).unwrap();
+    let own = std::fs::read_to_string(paths.data_dir().join("draft.json")).unwrap_or_default();
+    assert!(!own.contains("my own careful wording"), "the text did not go to draft.json without its file: {own}");
+    app.ui(|ui| ui.invoke_compose_new());
+    quiet(&app);
+    assert_ne!(app.model(|m| m.composer.text.body.clone()), "my own careful wording", "Compose does not reopen it");
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    // B goes; A, text and file, comes into the entry, where the attachment keeps it unsendable.
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    app.ui(|ui| ui.invoke_open_prepared());
+    quiet(&app);
+    assert_eq!(app.model(|m| m.composer.text.body.clone()), "my own careful wording");
+    assert_eq!(state(&app)["draft_attachments"], json!([a.canonicalize().unwrap().to_string_lossy()]));
     let _ = std::fs::remove_dir_all(a.parent().unwrap());
 }
 
@@ -218,5 +250,94 @@ fn l2_with_their_own_draft_in_the_way_the_touched_one_waits_for_the_prepared_ent
     app.ui(|ui| ui.invoke_open_prepared());
     quiet(&app);
     assert_eq!(app.model(|m| m.composer.text.body.clone()), "my own careful wording");
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+/// A touched, with their own draft in the way (the l2b situation), then B's slot emptied.
+fn l2b(paths: &Paths, app: &yantrik_testing::TestApp<Email>, attach: &str) {
+    touched_a(paths, app, attach);
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(app);
+    app.ui(|ui| ui.invoke_compose_new());
+    super::compose::type_into_composer(app, &super::compose::draft("bob@example.com", "my own draft"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(app);
+    act(app, "forget_prepared", json!({ "commitment": "24" })).unwrap();
+    assert!(shelf_text(paths, "24").is_some(), "A waits on its shelf");
+}
+
+fn entry_shows_a(app: &yantrik_testing::TestApp<Email>) {
+    assert!(app.ui(|ui| ui.get_prepared_label().to_string()).contains("maya@example.com"));
+    app.ui(|ui| ui.invoke_open_prepared());
+    quiet(app);
+    assert_eq!(app.model(|m| m.composer.text.body.clone()), "my own careful wording");
+}
+
+#[test]
+fn l3_removing_the_attachment_from_the_slot_brings_the_waiting_draft_into_the_entry() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "l3r");
+    touched_a(&paths, &app, &a.to_string_lossy());
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.run(Command::OpenPrepared);
+    quiet(&app);
+    app.run(Command::RemoveAttachment);
+    quiet(&app);
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    entry_shows_a(&app);
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn l3_sending_the_slot_draft_brings_the_waiting_draft_into_the_entry() {
+    let paths = Paths::temporary(Email::ID);
+    let (app, _) = start_at(paths.clone(), &with_inbox().answering("email.send_message", json!({})), FakeMind::new());
+    quiet(&app);
+    touched_a(&paths, &app, "");
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.run(Command::OpenPrepared);
+    quiet(&app);
+    let body = app.model(|m| m.composer.text.body.clone());
+    app.ui(|ui| ui.invoke_send_email("ravi@example.com".into(), "".into(), "".into(), "report".into(), body.into()));
+    quiet(&app);
+    entry_shows_a(&app);
+}
+
+#[test]
+fn l3_a_restart_with_an_empty_slot_brings_the_waiting_draft_into_the_entry() {
+    let paths = Paths::temporary(Email::ID);
+    {
+        let app = started(&paths);
+        l2b(&paths, &app, "");
+        // The slot went while nothing promoted (a process that ended first): only A's shelf is left.
+        std::fs::remove_file(slot_file(&paths)).unwrap();
+    }
+    let app = started(&paths);
+    entry_shows_a(&app);
+}
+
+#[test]
+fn leftover_1_a_touched_slot_draft_whose_promise_is_forgotten_stays_in_the_slot() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "lo1");
+    a_touched_and_b_in_the_slot(&paths, &app, &a);
+    // Back to A, edit it, park it: A is touched and in the slot, B on its shelf.
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(&app);
+    super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "edited again"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).unwrap();
+    app.run(Command::OpenPreparedFor("25".into()));
+    quiet(&app);
+    assert!(!paths.data_dir().join("mind_draft.24.json").exists(), "it was not shelved under a dead id");
+    assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("edited again"), "it stayed in the slot");
     let _ = std::fs::remove_dir_all(a.parent().unwrap());
 }

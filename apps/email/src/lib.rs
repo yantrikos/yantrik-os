@@ -66,6 +66,8 @@ impl App for Email {
         model.service = boot.service;
         model.compose_only = boot.service;
         model.composer.mind = state::load_mind_draft(&model.files.mind_draft);
+        // A restart with an empty slot: a touched draft left on a shelf comes into the entry.
+        update::mind_draft::promote_waiting(&mut model);
         model.composer.kept_unsure = sending.is_some() || files::is_unsure(&model.files.draft);
         // Said once the first look lands, unless the person has chosen about the draft first.
         model.composer.announce_unsent = from_lanes.as_ref().map(|_| match sending {
