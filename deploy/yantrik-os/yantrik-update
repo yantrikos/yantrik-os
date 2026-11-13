@@ -2567,14 +2567,20 @@ chromium_policy_ever() {    # has this machine ever had the file put in place
   local m; m="$(chromium_policy_marker)"
   [ -f "$m" ] && [ "$(stat -c %u "$m" 2>/dev/null)" = "$ROOT_UID" ] && [ -s "$m" ]
 }
-chromium_policy_record() {  # root appends sha256 $1 to the marker, in a state dir that is root's
+chromium_policy_record() {  # root adds sha256 $1 to the marker; refuses unless the state dir and marker are root's
   local m d; m="$(chromium_policy_marker)"; d="$(dirname "$m")"
   chromium_policy_known "$1" && [ -f "$m" ] && grep -qxF "$1" "$m" && return 0
+  local script='d=$1 h=$2 m=$3 u=$4
+    [ -e "$d" ] || [ -L "$d" ] || mkdir -m 0755 "$d" || exit 1
+    { [ ! -L "$d" ] && [ -d "$d" ] && [ "$(stat -c %u "$d")" = "$u" ] && [ -z "$(find "$d" -maxdepth 0 -perm /022)" ]; } || exit 1
+    if [ -e "$m" ] || [ -L "$m" ]; then { [ -f "$m" ] && [ ! -L "$m" ]; } || exit 1; fi
+    t="$(mktemp "$d/.chromium-policy.XXXXXX")" || exit 1
+    { [ ! -f "$m" ] || cat "$m"; printf "%s\n" "$h"; } > "$t" && chmod 0644 "$t" && mv -f "$t" "$m" || { rm -f "$t"; exit 1; }'
   if [ "$(id -u)" = 0 ]; then
-    { [ -d "$d" ] || install -d -m 0755 "$d"; } && printf '%s\n' "$1" >> "$m" && chmod 0644 "$m"
+    sh -c "$script" sh "$d" "$1" "$m" "$ROOT_UID"
   else
-    sudo -n sh -c '[ -d "$1" ] || install -d -m 0755 "$1"; printf "%s\n" "$2" >> "$3" && chmod 0644 "$3"' sh "$d" "$1" "$m" 2>/dev/null
-  fi
+    sudo -n sh -c "$script" sh "$d" "$1" "$m" "$ROOT_UID" 2>/dev/null
+  fi || { warn "not recording the Chromium policy in $d: it is not a folder of root's alone, or its marker is not a plain file"; return 1; }
 }
 # The root the policy goes into: / on a machine; a variable only so the selftest can name a scratch one.
 CHROMIUM_ROOT=/
@@ -5425,6 +5431,33 @@ cmd_selftest() {
   is "a machine that never had it gets it (no marker, no file)" "yes" "$([ -e "$pol" ] && echo yes || echo no)"
   rm -f "$mk"; chromium_try >/dev/null; rm -f "$pol"; chromium_try >/dev/null
   is "a file found in place is recorded, so deleting it afterwards sticks" "no" "$([ -e "$pol" ] && echo yes || echo no)"
+  # The image builds record the marker (MEDIUM 1): a deletion before the first update sticks.
+  rm -rf "$cr/img"; mkdir -p "$cr/img/opt/yantrik"
+  sh "$here/stage-chromium-policy.sh" "$cr/img" "$cp/share/chromium/yantrik-no-phone-home.json" opt/yantrik/update-state/chromium-policy
+  local ipol="$cr/img/etc/chromium/policies/managed/yantrik-no-phone-home.json" imk="$cr/img/opt/yantrik/update-state/chromium-policy"
+  is "an image tree carries the marker: shipped sha256, 644, folder 755" "yes|644|755" \
+    "$([ "$(cat "$imk")" = "$(sha256sum "$ipol" | cut -d' ' -f1)" ] && echo yes || echo no)|$(stat -c %a "$imk")|$(stat -c %a "$cr/img/opt/yantrik/update-state")"
+  rm -f "$ipol"
+  (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+   UPDATE_STATE_DIR="$cr/img/opt/yantrik/update-state" CHROMIUM_ROOT="$cr/img" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+   sudo() { return 1; }; reconcile_chromium_policy >/dev/null 2>&1)
+  is "a file deleted from a fresh image before the first update stays deleted" "no" "$([ -e "$ipol" ] && echo yes || echo no)"
+  # The marker is written only through a root-owned plain folder and file (LOW 1).
+  rm -f "$mk"; rm -rf "$cp/update-state"; mkdir -m 0755 "$cp/update-state"
+  : > "$cp/other"; ln -s "$cp/other" "$mk"
+  local rc=0; (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(id -u)"
+    sudo() { [ "$1" = -n ] && shift; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  is "a symlinked marker is refused and not written through" "1|0" "$rc|$(wc -c < "$cp/other" | tr -d ' ')"
+  rm -f "$mk"; chmod 0777 "$cp/update-state"; rc=0
+  (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(id -u)"
+    sudo() { [ "$1" = -n ] && shift; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  is "a state dir others can write is refused" "1|no" "$rc|$([ -e "$mk" ] && echo yes || echo no)"
+  rc=0
+  (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(( $(id -u) + 1 ))"
+    sudo() { [ "$1" = -n ] && shift; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  chmod 0755 "$cp/update-state"
+  is "a state dir not owned by root is refused" "1" "$rc"
+  rm -rf "$cp/update-state"
   # A policy file that is not what the build shipped is not installed from.
   rm -f "$pol" "$mk"
   printf '{"X":1}\n' > "$cp/share/chromium/yantrik-no-phone-home.json"

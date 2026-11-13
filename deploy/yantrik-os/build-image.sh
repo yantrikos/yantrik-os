@@ -206,8 +206,8 @@ echo "   session unit enabled, boots to graphical.target"
 # ── Chromium's own calls home are off by policy (#1175) ──
 # The same install step the ISO build and `yantrik-update reconcile` run, from the payload.
 step "chromium no-phone-home policy (#1175)" virt-customize -a "$IMAGE" \
-  --run-command 'sh /opt/yantrik/share/chromium/stage-chromium-policy.sh / /opt/yantrik/share/chromium/yantrik-no-phone-home.json' \
-  --run-command 'test "$(stat -c %a:%U /etc/chromium/policies/managed/yantrik-no-phone-home.json)" = 644:root'
+  --run-command 'sh /opt/yantrik/share/chromium/stage-chromium-policy.sh / /opt/yantrik/share/chromium/yantrik-no-phone-home.json opt/yantrik/update-state/chromium-policy' \
+  --run-command 'test "$(stat -c %a:%U /etc/chromium/policies/managed/yantrik-no-phone-home.json)" = 644:root && test "$(stat -c %a:%U /opt/yantrik/update-state/chromium-policy)" = 644:root'
 
 # ── Whose files these are (#397) ────────────────────────────────────────────────────────
 #

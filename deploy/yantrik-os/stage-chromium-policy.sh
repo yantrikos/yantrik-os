@@ -3,7 +3,10 @@
 # stage-chromium-policy.sh — Chromium's no-phone-home policy, put into a root (#1175)
 # ═══════════════════════════════════════════════════════════════════════════════════════
 #
-#   sh stage-chromium-policy.sh ROOT POLICY.json     install into ROOT/etc/chromium/policies/managed
+#   sh stage-chromium-policy.sh ROOT POLICY.json [MARKER]   install into ROOT/etc/chromium/policies/managed
+#       MARKER (a path under ROOT, e.g. opt/yantrik/update-state/chromium-policy): only the image
+#       builds pass it. It records the shipped file's sha256, so a deletion before the first
+#       `yantrik-update` is the person's and is respected.
 #   sh stage-chromium-policy.sh selftest
 #
 # The one install step. The ISO build, the cloud-image build and `yantrik-update reconcile` all
@@ -53,6 +56,28 @@ install_policy() {
     else
         install -m 0644 "$src" "$dest"
     fi
+}
+
+# The marker, the same format `yantrik-update`'s chromium_policy_record writes: one sha256 per line.
+# Its folder is made 0755 if missing (the parent must exist) and must be ours alone; the file is root's, 0644.
+record_marker() {
+    root="${1%/}" src="$2" mk="${3#/}"
+    md="$(dirname "$root/$mk")"
+    [ -d "$(dirname "$md")" ] || { echo "stage-chromium-policy: no $(dirname "$md")" >&2; return 1; }
+    if [ -e "$md" ] || [ -L "$md" ]; then
+        folder_ok "$md" || refuse "$md is a link, not a folder, not owned by $(id -un), or writable by others" || return $?
+    else
+        mkdir -m 0755 "$md"
+    fi
+    if [ -e "$root/$mk" ] || [ -L "$root/$mk" ]; then
+        { [ -f "$root/$mk" ] && [ ! -L "$root/$mk" ]; } || refuse "$root/$mk exists and is not a regular file" || return $?
+    fi
+    h="$(sha256sum "$src" | cut -d' ' -f1)"
+    tmp="$(mktemp "$md/.chromium-policy.XXXXXX")"
+    { [ ! -f "$root/$mk" ] || cat "$root/$mk"; printf '%s\n' "$h"; } > "$tmp"
+    chmod 0644 "$tmp"
+    [ "$(id -u)" != 0 ] || chown root:root "$tmp"
+    mv -f "$tmp" "$root/$mk"
 }
 
 selftest() {
@@ -110,12 +135,29 @@ PY
         || fail "yantrik-update reconcile does not install the policy"
     [ ! -f "$here/build-release.sh" ] || { grep -qF 'stage-chromium-policy.sh' "$here/build-release.sh" \
         && grep -qE 'sha256sum .* chromium/\*' "$here/build-release.sh"; } || fail "the release bundle does not ship and hash it"
+    # The marker for an image: shipped sha256, file 0644, folder 0755 and ours alone.
+    mkdir -p "$t/m/opt/yantrik"
+    install_policy "$t/m" "$here/chromium-managed-policy.json"
+    record_marker "$t/m" "$here/chromium-managed-policy.json" opt/yantrik/update-state/chromium-policy
+    mkr="$t/m/opt/yantrik/update-state/chromium-policy"
+    [ "$(cat "$mkr")" = "$(sha256sum "$here/chromium-managed-policy.json" | cut -d' ' -f1)" ] || fail "the marker does not hold the shipped sha256"
+    [ "$(stat -c %a "$mkr")" = 644 ] && [ "$(stat -c %a "$t/m/opt/yantrik/update-state")" = 755 ] || fail "marker modes are not 0644/0755"
+    [ "$(id -u)" != 0 ] || [ "$(stat -c %U "$mkr")" = root ] || fail "marker not root-owned"
+    mkdir -p "$t/m2/opt/yantrik/update-state"; chmod 0777 "$t/m2/opt/yantrik/update-state"
+    if record_marker "$t/m2" "$here/chromium-managed-policy.json" opt/yantrik/update-state/chromium-policy 2>/dev/null; then fail "a writable marker folder was used"; fi
+    mkdir -p "$t/m3/opt/yantrik/update-state"; ln -s "$t/mine.before" "$t/m3/opt/yantrik/update-state/chromium-policy"
+    if record_marker "$t/m3" "$here/chromium-managed-policy.json" opt/yantrik/update-state/chromium-policy 2>/dev/null; then fail "a symlinked marker was used"; fi
+    cmp -s "$t/mine.before" "$t/root/$DIR/mine.json" || fail "written through a symlinked marker"
+    for f in build-debian-iso.sh build-image.sh; do
+        [ ! -f "$here/$f" ] || grep -qF 'update-state/chromium-policy' "$here/$f" || fail "$f does not record the marker"
+    done
     echo "stage-chromium-policy selftest: all passed"
 }
 
 case "${1:-}" in
     selftest) selftest ;;
-    ""|-h|--help) echo "usage: stage-chromium-policy.sh ROOT POLICY.json | selftest" >&2; exit 2 ;;
-    *) [ $# -eq 2 ] || { echo "usage: stage-chromium-policy.sh ROOT POLICY.json" >&2; exit 2; }
-       install_policy "$1" "$2" ;;
+    ""|-h|--help) echo "usage: stage-chromium-policy.sh ROOT POLICY.json [MARKER] | selftest" >&2; exit 2 ;;
+    *) { [ $# -eq 2 ] || [ $# -eq 3 ]; } || { echo "usage: stage-chromium-policy.sh ROOT POLICY.json [MARKER]" >&2; exit 2; }
+       install_policy "$1" "$2"
+       [ $# -lt 3 ] || record_marker "$1" "$2" "$3" ;;
 esac

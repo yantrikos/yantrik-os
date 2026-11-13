@@ -3,12 +3,14 @@
 //! two the desktop shell starts (Mind View's browser, the provider-pages window) cannot differ. The
 //! person's own Browser (`Side::Person`) is never given these: it keeps its own settings.
 //!
-//! Debian's `/usr/bin/chromium` wrapper (and `/etc/chromium.d/*`, `~/.config/chromium-flags.conf`)
-//! put their `CHROMIUM_FLAGS` BEFORE the arguments the caller passes: `exec chromium $CHROMIUM_FLAGS "$@"`.
-//! Chromium keeps the last value of a repeated switch, so ours is the one that holds, and a wrapper's
-//! own `--disable-features` is replaced by ours and never the other way round. [`append_quiet`] merges
-//! the caller's own `--disable-features=` (in the same argument list) into the one we pass, so only
-//! the wrapper's flags, which are not in that list, can be replaced.
+//! Debian's `/usr/bin/chromium` wrapper sources `/etc/chromium.d/*` (and honours the
+//! `CHROMIUM_USER_FLAGS` variable, Debian's per-user hook; `~/.config/chromium-flags.conf` is Arch's,
+//! not Debian's) and puts the resulting `CHROMIUM_FLAGS` BEFORE the arguments the caller passes:
+//! `exec chromium $CHROMIUM_FLAGS "$@"`. Chromium keeps the last value of a repeated switch, so our
+//! switches come last and win. [`append_quiet`] merges the caller's own `--disable-features=` (in the
+//! same argument list) into the one we pass. A `--disable-features` set by `/etc/chromium.d/*` or
+//! `CHROMIUM_USER_FLAGS` is NOT in that list: it is replaced by ours, not merged. Code cannot see it;
+//! VM 520 checks the shipped wrapper and its `/etc/chromium.d/` for one.
 
 /// The Optimization Guide and the other features that call Google on an idle profile, by the names
 /// Chromium 153 (and the Debian trixie package) knows them. `--disable-background-networking` does
