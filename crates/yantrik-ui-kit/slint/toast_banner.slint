@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme, TextScale } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 
 export struct ToastActionData {
@@ -161,9 +161,10 @@ export component ToastBanner inherits Rectangle {
                                 // Two lines, then an ellipsis. One line held 39 characters in
                                 // Barlow but 34 in Inter, which is 10% wider, so ordinary sentences
                                 // ("Your screenshot was saved to Pictures") were cut. Two lines hold
-                                // about 70 characters. The cap is a `height`, as on the body below.
+                                // about 70 characters. The cap is a `height`, as on the body below,
+                                // and it follows Make text bigger as the text does.
                                 wrap: word-wrap;
-                                height: min(self.preferred-height, 36px);
+                                height: min(self.preferred-height, 36px * TextScale.factor);
                                 overflow: elide;
                             }
                         }
@@ -195,7 +196,8 @@ export component ToastBanner inherits Rectangle {
                         // Two full lines at fs-caption (15px apart in Inter), then an ellipsis.
                         // It is a `height`, not a `max-height`: inside a layout the max was not
                         // kept, and a long body drew five lines (seen on the slint viewer, 13 Nov).
-                        height: min(self.preferred-height, 32px);
+                        // The cap follows Make text bigger as the text does.
+                        height: min(self.preferred-height, 32px * TextScale.factor);
                         overflow: elide;
                     }
 
