@@ -66,6 +66,7 @@ impl App for Email {
         model.service = boot.service;
         model.compose_only = boot.service;
         model.composer.mind = state::load_mind_draft(&model.files.mind_draft);
+        update::mind_draft::adopt_newer_shelf(&mut model);
         // A restart with an empty slot: a touched draft left on a shelf comes into the entry.
         update::mind_draft::promote_waiting(&mut model);
         model.composer.kept_unsure = sending.is_some() || files::is_unsure(&model.files.draft);

@@ -156,6 +156,20 @@ fn break_the_slot_write(paths: &Paths) {
     std::fs::create_dir(&slot).unwrap();
 }
 
+/// The slot's write is made to fail while the slot file stays readable: `write_whole` writes
+/// `<slot>.part` and renames it, so a folder there stops it, as a full disk would.
+fn block_the_slot_write(paths: &Paths) {
+    let mut part = slot_file(paths).into_os_string();
+    part.push(".part");
+    std::fs::create_dir(part).unwrap();
+}
+
+fn unblock_the_slot_write(paths: &Paths) {
+    let mut part = slot_file(paths).into_os_string();
+    part.push(".part");
+    std::fs::remove_dir(part).unwrap();
+}
+
 #[test]
 fn l1_a_compose_whose_write_fails_leaves_the_shelf_it_would_replace() {
     let paths = Paths::temporary(Email::ID);
@@ -179,7 +193,7 @@ fn l1_opening_a_draft_whose_slot_write_fails_loses_neither_draft_and_says_so() {
     let a = home_file("alpha.ydeck", "l1o");
     compose(&app, "maya@example.com", &a, "24");
     compose(&app, "ravi@example.com", &a, "25");
-    break_the_slot_write(&paths);
+    block_the_slot_write(&paths);
     app.run(Command::OpenPreparedFor("24".into()));
     quiet(&app);
     assert!(super::notice(&app).contains("could not be opened"), "{}", super::notice(&app));
@@ -355,12 +369,12 @@ fn failed_open_with_a_touched_slot(paths: &Paths, app: &yantrik_testing::TestApp
     app.ui(|ui| ui.invoke_cancel_compose());
     quiet(app);
     let held = std::fs::read_to_string(slot_file(paths)).unwrap();
-    break_the_slot_write(paths);
+    block_the_slot_write(paths);
     app.run(Command::OpenPreparedFor("25".into()));
     quiet(app);
     assert!(super::notice(app).contains("could not be opened"), "{}", super::notice(app));
-    std::fs::remove_dir(slot_file(paths)).unwrap();
-    std::fs::write(slot_file(paths), &held).unwrap();
+    unblock_the_slot_write(paths);
+    assert_eq!(std::fs::read_to_string(slot_file(paths)).unwrap(), held, "the slot file was never changed");
     held
 }
 
@@ -479,4 +493,111 @@ fn r2_a_promoted_draft_whose_promise_was_forgotten_is_not_shelved_under_the_dead
     assert!(super::notice(&app).contains("was not moved"), "{}", super::notice(&app));
     assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("my own careful wording"), "A stayed in the slot");
     let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn r7_park_failed_at_cancel_then_a_failed_open_keeps_the_newest_text() {
+    let paths = Paths::temporary(Email::ID);
+    {
+        let app = started(&paths);
+        compose_with(&app, "maya@example.com", "", "24");
+        compose_with(&app, "ravi@example.com", "", "25");
+        app.run(Command::OpenPreparedFor("24".into()));
+        quiet(&app);
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "older edit"));
+        app.ui(|ui| ui.invoke_cancel_compose());
+        quiet(&app);
+        break_the_slot_write(&paths);
+        app.run(Command::OpenPrepared);
+        quiet(&app);
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "newest edit"));
+        app.ui(|ui| ui.invoke_cancel_compose()); // park's save fails here; `unsaved` is false from now on
+        quiet(&app);
+        app.run(Command::OpenPreparedFor("25".into()));
+        quiet(&app);
+        assert!(super::notice(&app).contains("could not be opened"), "{}", super::notice(&app));
+        assert!(shelf_text(&paths, "24").is_some_and(|t| t.contains("newest edit")), "the newest text is on its shelf");
+        std::fs::remove_dir(slot_file(&paths)).unwrap();
+    }
+    let app = started(&paths);
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("newest edit"))), "reachable from the entry");
+}
+
+/// F2: 24 is "v1" in the slot; "v2" is typed and the open of 25 fails with the slot readable (park's
+/// save and the slot write both blocked), so v2 waits on 24's shelf. The disk recovers and v3 is
+/// parked. Returns with the slot holding v3 and open.
+fn v2_left_on_the_shelf_then_v3_saved(paths: &Paths, app: &yantrik_testing::TestApp<Email>) {
+    compose_with(app, "maya@example.com", "", "24");
+    compose_with(app, "ravi@example.com", "", "25");
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(app);
+    super::compose::type_into_composer(app, &super::compose::draft("maya@example.com", "v1"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(app);
+    app.run(Command::OpenPrepared);
+    quiet(app);
+    super::compose::type_into_composer(app, &super::compose::draft("maya@example.com", "v2"));
+    block_the_slot_write(paths);
+    app.run(Command::OpenPreparedFor("25".into()));
+    quiet(app);
+    assert!(super::notice(app).contains("could not be opened"), "{}", super::notice(app));
+    assert!(shelf_text(paths, "24").is_some_and(|t| t.contains("v2")), "v2 is kept on its shelf");
+    unblock_the_slot_write(paths);
+    app.run(Command::OpenPrepared);
+    quiet(app);
+    super::compose::type_into_composer(app, &super::compose::draft("maya@example.com", "v3"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(app);
+    assert!(!paths.data_dir().join("mind_draft.24.json").exists(), "the slot caught up, so the older copy went");
+    app.run(Command::OpenPrepared);
+    quiet(app);
+}
+
+#[test]
+fn f2_after_a_failed_open_a_send_of_later_text_does_not_offer_the_older_version() {
+    let paths = Paths::temporary(Email::ID);
+    let (app, _) = start_at(paths.clone(), &with_inbox().answering("email.send_message", json!({})), FakeMind::new());
+    quiet(&app);
+    v2_left_on_the_shelf_then_v3_saved(&paths, &app);
+    let body = app.model(|m| m.composer.text.body.clone());
+    app.ui(|ui| ui.invoke_send_email("maya@example.com".into(), "".into(), "".into(), "Plans".into(), body.into()));
+    quiet(&app);
+    nothing_of_24_comes_back(&paths, &app);
+}
+
+#[test]
+fn f2_after_a_failed_open_discard_prepared_does_not_offer_the_older_version() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    v2_left_on_the_shelf_then_v3_saved(&paths, &app);
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    nothing_of_24_comes_back(&paths, &app);
+}
+
+#[test]
+fn f2_a_restart_with_the_slot_on_24_and_a_touched_shelf_for_24_takes_the_shelf_as_newer() {
+    let paths = Paths::temporary(Email::ID);
+    {
+        let app = started(&paths);
+        compose_with(&app, "maya@example.com", "", "24");
+        compose_with(&app, "ravi@example.com", "", "25");
+        app.run(Command::OpenPreparedFor("24".into()));
+        quiet(&app);
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v1"));
+        app.ui(|ui| ui.invoke_cancel_compose());
+        quiet(&app);
+        app.run(Command::OpenPrepared);
+        quiet(&app);
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v2"));
+        block_the_slot_write(&paths);
+        app.run(Command::OpenPreparedFor("25".into()));
+        quiet(&app);
+        assert!(shelf_text(&paths, "24").is_some_and(|t| t.contains("v2")));
+        unblock_the_slot_write(&paths);
+    }
+    let app = started(&paths);
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("v2"))), "the newer text is in the slot");
+    assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("v2"), "and on disk");
+    assert!(!paths.data_dir().join("mind_draft.24.json").exists(), "the shelf was removed after the slot was written");
 }

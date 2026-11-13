@@ -107,6 +107,9 @@ fn shelve_held(m: &mut Model, incoming: Option<&str>) -> Result<Option<std::path
         return Err(Refused::new("person_is_writing", PERSON_WRITING));
     }
     save_mind_draft(&shelf, held).map_err(|e| Refused::new("not_kept", format!("The draft Yantrik prepared earlier could not be kept, so a new one was not started: {e}")))?;
+    if matches!(&m.composer.left_on_shelf, Some((s, _)) if *s == shelf) {
+        m.composer.left_on_shelf = None;
+    }
     Ok(Some(shelf))
 }
 
@@ -140,8 +143,44 @@ pub fn park(m: &mut Model) {
     if slot.is_empty() {
         return discard(m);
     }
-    if let Err(e) = save_mind_draft(&m.files.mind_draft, slot) {
-        tracing::warn!(error = %e, "the draft Yantrik prepared could not be kept");
+    let saved = save_mind_draft(&m.files.mind_draft, slot);
+    let held_for = slot.commitment.clone();
+    match saved {
+        Ok(()) => drop_left_on_shelf(m, held_for.as_deref()),
+        Err(e) => tracing::warn!(error = %e, "the draft Yantrik prepared could not be kept"),
+    }
+}
+
+/// The copy a failed open left on a shelf is older than the slot once the slot has been written
+/// since (`held_for` is the slot's promise, if it holds one): it goes, but only while it still loads
+/// as exactly the draft recorded, so nothing the person changed there is removed. A record for
+/// another promise is stale and is only forgotten.
+fn drop_left_on_shelf(m: &mut Model, held_for: Option<&str>) {
+    let Some((shelf, recorded)) = m.composer.left_on_shelf.take() else { return };
+    if held_for.is_none() || recorded.commitment.as_deref() != held_for {
+        return;
+    }
+    if matches!(load_mind_draft(&shelf), Ok(Some(on_shelf)) if on_shelf == recorded) {
+        remove_shelf(&shelf);
+    }
+}
+
+/// At start: a slot that holds promise C while a touched shelf for C exists means the last slot
+/// write after a failed open never happened, so the shelf is the newer copy. It is written to the
+/// slot first, atomically, and only then removed; if that write fails both stay.
+pub fn adopt_newer_shelf(m: &mut Model) {
+    let Ok(Some(slot)) = &m.composer.mind else { return };
+    let Some(shelf) = slot.commitment.as_deref().and_then(|c| shelf_path(&m.files.mind_draft, c)) else { return };
+    let Ok(Some(newer)) = load_mind_draft(&shelf) else { return };
+    if !newer.touched || newer.commitment != slot.commitment {
+        return;
+    }
+    match save_mind_draft(&m.files.mind_draft, &newer) {
+        Ok(()) => {
+            remove_shelf(&shelf);
+            m.composer.mind = Ok(Some(newer));
+        }
+        Err(e) => tracing::warn!(error = %e, "a newer prepared draft on its shelf could not be moved into the slot"),
     }
 }
 
@@ -149,18 +188,15 @@ pub fn park(m: &mut Model) {
 pub fn discard(m: &mut Model) {
     let discarded = match std::mem::replace(&mut m.composer.mind, Ok(None)) {
         Ok(Some(d)) => Some(d),
-        other => {
-            m.composer.mind = other;
-            None
-        }
+        _ => None,
     };
-    m.composer.mind = Ok(None);
     m.composer.in_slot = false;
     m.composer.attachments.clear();
     if let Err(e) = clear_mind_draft(&m.files.mind_draft) {
         tracing::warn!(error = %e, "the prepared draft's file could not be removed");
     }
     // Its own shelf, when it holds the very draft discarded, is a duplicate that would come back.
+    drop_left_on_shelf(m, discarded.as_ref().and_then(|d| d.commitment.as_deref()));
     if let Some(d) = discarded {
         let shelf = d.commitment.as_deref().and_then(|c| shelf_path(&m.files.mind_draft, c));
         if let Some(shelf) = shelf.filter(|s| matches!(load_mind_draft(s), Ok(Some(on_shelf)) if on_shelf == d)) {
@@ -199,8 +235,6 @@ pub fn open_prepared_for(m: &mut Model, commitment: &str, fx: &mut Effects<Email
     if m.composer.open && !m.composer.in_slot && !m.composer.text.is_empty() {
         return say(m, fx, "You have a message open. Cancel keeps it as a draft; then open the prepared one.");
     }
-    // Text typed in the window that park has yet to carry to the slot file.
-    let unsaved = m.composer.in_slot && edited_since_shown(m);
     park(m);
     // A draft of the person's with no promise has no shelf to go to: it stays where it is.
     if matches!(&m.composer.mind, Ok(Some(h)) if h.commitment.is_none() && h.touched) {
@@ -215,16 +249,19 @@ pub fn open_prepared_for(m: &mut Model, commitment: &str, fx: &mut Effects<Email
     if let Err(e) = save_mind_draft(&m.files.mind_draft, &waiting) {
         // The shelf copy goes only when the slot file on disk holds the same draft: then a discard
         // or send of the slot cannot promote a duplicate. If park's own write failed too, the slot
-        // file is older (or unreadable) and the shelf holds the only copy of the newest text.
-        if let (Some(copy), Ok(Some(held))) = (shelved, &m.composer.mind) {
-            // A slot file that cannot be read to compare is trusted only when nothing was typed since
-            // it was last written; newly typed text may exist nowhere else.
+        // file is older and the shelf holds the only copy of the newest text; a slot file that
+        // cannot be read is never a copy, so the shelf stays then too.
+        if let (Some(copy), Ok(Some(held))) = (shelved, m.composer.mind.clone()) {
             let same = match load_mind_draft(&m.files.mind_draft) {
-                Ok(on_disk) => on_disk.as_ref() == Some(held),
-                Err(_) => !unsaved,
+                Ok(on_disk) => on_disk.as_ref() == Some(&held),
+                Err(_) => false,
             };
             if same {
                 remove_shelf(&copy);
+            } else {
+                // Kept as the copy this failed open left: the slot's draft is a later version of it,
+                // so it goes once the slot catches up (a good save in `park`) or the draft is discarded.
+                m.composer.left_on_shelf = Some((copy, held));
             }
         }
         return say(m, fx, &format!("The draft could not be opened, and nothing was lost: {e}"));
@@ -291,7 +328,9 @@ fn keep_for_person(m: &mut Model, shelf: &std::path::Path, d: MindDraft, fx: &mu
         // Its promise is closed: the shelf keeps the draft and its file but no id, so once promoted
         // to the slot it is kept there instead of being shelved where no card opens it.
         if d.commitment.is_some() {
-            let _ = save_mind_draft(shelf, &MindDraft { commitment: None, ..d });
+            if let Err(e) = save_mind_draft(shelf, &MindDraft { commitment: None, ..d }) {
+                tracing::warn!(error = %e, "a kept prepared draft could not be rewritten without its closed promise");
+            }
         }
         return;
     }

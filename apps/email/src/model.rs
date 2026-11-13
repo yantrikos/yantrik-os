@@ -174,6 +174,9 @@ pub struct Composer {
     /// The composer is showing the Mind's draft, so Cancel, Save, a send and the end of the app
     /// go to its slot and never to the person's draft.
     pub in_slot: bool,
+    /// The shelf copy a failed open left, with the draft it holds: older than the slot once the
+    /// slot is written again, and removed then (`update::mind_draft`).
+    pub left_on_shelf: Option<(std::path::PathBuf, MindDraft)>,
     /// What is being sent, while a send is in flight: the window says so, a second press cannot
     /// send the message twice, and an edit made meanwhile is told apart from what went.
     pub sending: Option<Draft>,
@@ -377,6 +380,7 @@ impl Model {
                 attachments: Vec::new(),
                 mind: Ok(None),
                 in_slot: false,
+                left_on_shelf: None,
                 sending: None,
                 unsent_at_start: None,
                 kept_unsure: false,
