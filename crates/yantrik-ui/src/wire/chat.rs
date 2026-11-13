@@ -72,12 +72,13 @@ fn builtin_turn(
     handover: Option<&crate::agents::handover::Handover>,
     streams: &streaming::Streams,
     shown: bool,
+    typed: bool,
 ) {
     let sent = match handover {
         Some(h) => crate::agents::handover::with_handover(h, text),
         None => text.to_string(),
     };
-    let (answer, by_model) = bridge.send_message_reporting(sent, false);
+    let (answer, by_model) = bridge.send_message_reporting(sent, false, typed);
     let (tx, rx) = crossbeam_channel::unbounded::<String>();
     let bridge = bridge.clone();
     let asked = text.to_string();
@@ -181,6 +182,7 @@ fn dispatch(
     text: &str,
     streams: &streaming::Streams,
     shown: bool,
+    typed: bool,
 ) {
     let words = (!shown).then_some(text);
     // A person just said something — to whichever mind. The Synthesis Gate, which decides
@@ -204,7 +206,7 @@ fn dispatch(
 
     let Some(host) = super::harness::host() else {
         // No host yet (very early boot). The builtin is the only thing that could answer.
-        builtin_turn(ui_weak, bridge, text, None, streams, shown);
+        builtin_turn(ui_weak, bridge, text, None, streams, shown, typed);
         return;
     };
 
@@ -237,7 +239,7 @@ fn dispatch(
             let names: Vec<String> = handed.iter().map(|a| format!("{} ({})", a.path, crate::picker::attach::size_words(a.size))).collect();
             format!("{text}\n\n[Files I handed over: {}]", names.join(", "))
         };
-        builtin_turn(ui_weak, bridge, &said, handover.as_ref(), streams, shown);
+        builtin_turn(ui_weak, bridge, &said, handover.as_ref(), streams, shown, typed);
         crate::picker::files_sent(ui_weak);
         return;
     }
@@ -361,7 +363,7 @@ fn submit(ui_weak: &slint::Weak<App>, bridge: &Arc<CompanionBridge>, text: &str,
             if let (Some(why), Some(agent)) = (super::lens_queue::closes_questions(text), composer.agent.as_ref()) {
                 super::lens_queue::close_questions(agent, why);
             }
-            dispatch(ui_weak, bridge, text, streams, false);
+            dispatch(ui_weak, bridge, text, streams, false, crate::turn_source::typed());
         }
         super::lens_queue::Enter::Queue => {
             if let Some(ui) = ui_weak.upgrade() {
@@ -440,8 +442,8 @@ fn wire_queue(ui: &App, ctx: &AppContext) {
     let timer = Timer::default();
     timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(250), move || {
         let Some(ui) = ui_weak.upgrade() else { return };
-        if let Some(text) = super::lens_queue::due(&ui) {
-            dispatch(&ui_weak, &bridge, &text, &streams, true);
+        if let Some((text, typed)) = super::lens_queue::due(&ui) {
+            dispatch(&ui_weak, &bridge, &text, &streams, true, typed);
         }
     });
     // The timer lives as long as the shell, the idiom every wire module uses.
@@ -680,7 +682,7 @@ mod tests {
         );
         assert_eq!(body.matches("dispatch(").count(), 1, "and the queued message, sent when its mind finishes, goes through `dispatch` too");
         let submit = SELF_SRC.split_once("fn submit(").expect("submit").1;
-        assert!(submit[..submit.find("\n}\n").unwrap()].contains("dispatch(ui_weak, bridge, text, streams, false)"), "what is sent goes through `dispatch`");
+        assert!(submit[..submit.find("\n}\n").unwrap()].contains("dispatch(ui_weak, bridge, text, streams, false, crate::turn_source::typed())"), "what is sent goes through `dispatch`");
     }
 
     /// The builtin's own path still has to exist. `dispatch` sends to it by id rather than by

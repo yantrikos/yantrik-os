@@ -270,11 +270,14 @@ pub fn spawn_parallel_agents(
             let llm = llm.clone();
             let config = config.clone();
             let agent_id = format!("sub-{i}");
-            // The turn's taint goes with it: what it read, and who asked for it.
+            // The turn's taint goes with it: what it read, and who asked for it. So does whether
+            // a person started it: a search they asked for is not refused because it fanned out.
             let carried = yantrik_companion_core::taint::carry();
+            let person = yantrik_companion_core::background_research::carry();
 
             std::thread::spawn(move || {
                 yantrik_companion_core::taint::adopt(carried);
+                let _person = yantrik_companion_core::background_research::adopt(person);
                 match SubAgent::new(task.clone(), agent_id.clone(), llm, config) {
                     Ok(agent) => {
                         tracing::info!(agent = %agent_id, task = %task, "Sub-agent started");
@@ -306,4 +309,18 @@ pub fn spawn_parallel_agents(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    /// A sub-agent runs on a new thread, where the person's mark does not follow by itself: it is
+    /// carried the way the turn's taint is, or a search the person asked for would be refused.
+    #[test]
+    fn a_sub_agent_continues_the_turn_the_person_started() {
+        let src = include_str!("sub_agent.rs").split("#[cfg(test)]").next().unwrap();
+        let carry = src.find("background_research::carry()").expect("the mark is read before the thread starts");
+        let spawn = src.find("std::thread::spawn(move ||").expect("a thread per sub-agent");
+        let adopt = src.find("background_research::adopt(person)").expect("and adopted on it");
+        assert!(carry < spawn && spawn < adopt);
+    }
 }

@@ -3122,9 +3122,10 @@ mod first_prompt_attribution_tests {
         assert!(wiring.contains("g.on_answer_question("));
         assert_eq!(wiring.matches("answer_typed(").count(), 1, "defined here, called elsewhere");
         // The reply box is the person's: `send_message`, the one way the control surface types
-        // into it, refuses an agent before anything is sent.
+        // into it, refuses an agent, a mind and the companion before anything is sent.
         let control = read("src/control.rs");
-        assert!(control.contains("if yantrik_app_runtime::control::agent_is_calling() {\n                    return Err(\"send_message puts words in the person's chat"));
+        assert!(control.contains("crate::turn_source::refuse_unless_the_person()?;"));
+        assert!(read("src/turn_source.rs").contains("send_message puts words in the person's chat"));
         let chat = read("src/wire/chat.rs");
         let chat = chat.split("#[cfg(test)]").next().unwrap();
         assert_eq!(chat.matches("answer_typed(").count(), 1, "one caller: the composer's submit");

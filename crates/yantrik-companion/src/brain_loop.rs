@@ -300,6 +300,7 @@ fn candidate_to_urge_spec(candidate: &BrainCandidate) -> UrgeSpec {
         category,
         guaranteed: false,
         autonomy: AutonomyTier::NotifySuggestion,
+        searches: false,
     }
 }
 

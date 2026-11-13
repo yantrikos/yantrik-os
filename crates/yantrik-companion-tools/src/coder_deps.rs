@@ -60,12 +60,11 @@ fn installer(language: &str) -> Option<(&'static str, &'static [&'static str])> 
     }
 }
 
-/// An install that is ready to run: the installer's name, the command, the names left out.
-pub type Planned = (&'static str, Command, Vec<String>);
-
 /// The install of `deps` for `language`, with the command that runs it in the outside view.
-/// `Ok(None)` when there is nothing to install; `Err` is the view's refusal.
-pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<Planned>, String> {
+/// `Ok(None)` when there is nothing to install; `Err` is the view's refusal. `Some` is an install
+/// that is ready to run: the installer's name, the command, the names left out. (The tuple is
+/// spelled out here and not behind a `type` alias: the reach scan refuses an alias of a `Command`.)
+pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<(&'static str, Command, Vec<String>)>, String> {
     let Some((program, fixed)) = installer(language) else { return Ok(None) };
     let (plain, skipped) = vet(deps);
     if plain.is_empty() {
@@ -104,6 +103,10 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
         // Nothing is installed: ruby, or no name was plain. A name left out is still named.
         return Ok(if installer(language).is_some() { skipped_note(&vet(deps).1) } else { String::new() });
     };
+    // pip and npm reach their public registries, outside the sandbox: that is a fetch from the open
+    // web, and it waits for a turn the person started or for research to be on. Asked only when an
+    // install would really run, so a refusal still leaves nothing written.
+    crate::coder_sandbox::allow_install()?;
     tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
     match command.output() {
         Ok(output) if output.status.success() => Ok(skipped_note(&skipped)),

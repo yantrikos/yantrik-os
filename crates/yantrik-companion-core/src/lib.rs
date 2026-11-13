@@ -5,13 +5,18 @@
 //! It has zero database or LLM runtime dependencies.
 
 pub mod bond;
+pub mod background_research;
 pub mod config;
+mod config_intervals;
 pub mod connectors;
 pub mod evolution;
 pub mod instincts;
 pub mod judge_config;
 pub mod permission;
+pub mod reach;
 pub mod sanitize;
+pub mod ssh_hosts;
+pub mod weather_places;
 pub mod taint;
 pub mod tools;
 pub mod types;

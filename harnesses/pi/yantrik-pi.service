@@ -12,6 +12,10 @@ RestartSec=5
 # the `node` it runs on in ~/.local/bin (harnesses/lib/install/npm.sh). So that is on PATH here.
 # An install somewhere else goes in `path` in ~/.config/yantrik/pi.json, which is prepended.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The tools this runs are asked not to report usage: DO_NOT_TRACK is the cross-tool convention
+# (consoledonottrack.com), the one telemetry opt-out set for every harness we launch, next to the
+# claude CLI's CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC. No tool-specific name is guessed at.
+Environment=DO_NOT_TRACK=1
 # Pi's provider keys are Pi's own business and live in ~/.pi/agent. Nothing in this unit and
 # nothing in the image holds one.
 

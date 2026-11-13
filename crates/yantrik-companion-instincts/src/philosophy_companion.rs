@@ -39,6 +39,10 @@ impl Instinct for PhilosophyCompanionInstinct {
         "PhilosophyCompanion"
     }
 
+    fn searches_web(&self) -> bool {
+        true
+    }
+
     fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
         // Gate: bond >= Confidant (philosophical companionship requires deep trust)
         if state.bond_level < BondLevel::Confidant {

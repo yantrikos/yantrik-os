@@ -104,6 +104,11 @@ pub enum CompanionCommand {
         /// Asked by a program on the companion's socket, not by the person: the turn's words
         /// count as untrusted, so a tool that would hand back a credential is refused.
         outside: bool,
+        /// Typed or spoken by the person (the Lens, the chat, voice, their own channel): the one
+        /// thing that makes a turn theirs. Set at those call sites and nowhere else, so every
+        /// other source (the startup brief, EXECUTE urges, automations, the shell's
+        /// `send_message`, a program on the socket) is unattended without anyone listing it.
+        person: bool,
     },
     /// Count a conversation turn — one that began with the person's words and was answered.
     ///
@@ -424,6 +429,7 @@ impl CompanionHandle {
                 model: Some(model_tx),
                 remote: false,
                 outside: true,
+                person: false,
             })
             .map_err(|_| AskError::Failed("companion worker is not running".to_string()))?;
 
@@ -569,6 +575,7 @@ impl CompanionHandle {
                 model: None,
                 remote: false,
                 outside: true,
+                person: false,
             })
             .map_err(|_| "companion worker is not running".to_string())?;
         Ok(receipt)
@@ -773,24 +780,30 @@ impl CompanionBridge {
 
     /// Send a message and get a channel to receive streaming tokens.
     pub fn send_message(&self, text: String) -> Receiver<String> {
-        self.send_message_from(text, false)
+        self.send_with(text, false, None, false)
+    }
+
+    /// `send_message` for the person's own words (typed, spoken, or sent from their channel):
+    /// the turn is theirs, so it may use what only a person's turn may (`web_search`).
+    pub fn send_person_message(&self, text: String) -> Receiver<String> {
+        self.send_with(text, false, None, true)
     }
 
     /// `send_message_from`, also saying who served the turn ([`Served`]), sent just before
     /// `__DONE__`. Nothing arrives on it when the turn panicked. The first run's first success
     /// reads it (wire/onboarding.rs).
-    pub fn send_message_reporting(&self, text: String, remote: bool) -> (Receiver<String>, Receiver<Served>) {
+    pub fn send_message_reporting(&self, text: String, remote: bool, person: bool) -> (Receiver<String>, Receiver<Served>) {
         let (model_tx, model_rx) = crossbeam_channel::bounded(1);
-        (self.send_with(text, remote, Some(model_tx)), model_rx)
+        (self.send_with(text, remote, Some(model_tx), person), model_rx)
     }
 
     /// `send_message`, saying whether the person asked it from away from the machine: a remote
     /// turn's tools are held to `Safe`.
     pub fn send_message_from(&self, text: String, remote: bool) -> Receiver<String> {
-        self.send_with(text, remote, None)
+        self.send_with(text, remote, None, true)
     }
 
-    fn send_with(&self, text: String, remote: bool, model: Option<Sender<Served>>) -> Receiver<String> {
+    fn send_with(&self, text: String, remote: bool, model: Option<Sender<Served>>, person: bool) -> Receiver<String> {
         let (token_tx, token_rx) = crossbeam_channel::unbounded();
         if self
             .cmd_tx
@@ -801,6 +814,7 @@ impl CompanionBridge {
                 model,
                 remote,
                 outside: false,
+                person,
             })
             .is_err()
         {
@@ -1338,7 +1352,7 @@ fn worker_loop(
                 crate::recipes::record(&recipe_id, outcome.map(|a| a.message));
                 recipes_dirty = true;
             }
-            Ok(CompanionCommand::SendMessage { text, token_tx, job, model, remote, outside }) => {
+            Ok(CompanionCommand::SendMessage { text, token_tx, job, model, remote, outside, person }) => {
                 // From a phone, the turn reads and changes nothing (channels, P1).
                 companion.set_turn_ceiling(remote.then_some(yantrik_companion::tools::PermissionLevel::Safe));
                 companion.set_turn_outside(outside);
@@ -1361,19 +1375,16 @@ fn worker_loop(
                 if let Some(id) = &job {
                     board.start(id);
                 }
-                // A system-generated prompt is not a person talking, and must not make the
-                // Synthesis Gate think somebody is. `wire::chat::dispatch` is bumped by a
-                // person typing; this arm also carries the startup brief, EXECUTE urges and
-                // the companion's own reflection prompts, so it bumps nothing.
-                // Nor is a program on the socket: its words are not the person's, so nothing below
-                // learns from them (commitments, resonance, threading, the events the desktop reads).
-                let is_system_generated = outside
-                    || text.contains("You just started up")
-                    || text.contains("EXECUTE ")
-                    || text.starts_with("Reflect naturally")
-                    || text.starts_with("Recall shared references");
+                // A system-generated prompt is not a person talking, and must not make the Synthesis
+                // Gate think somebody is: this arm also carries the startup brief, EXECUTE urges
+                // and reflection prompts, so it bumps nothing.
+                // Nor is a program on the socket: nothing below learns from its words (commitments,
+                // resonance, threading, the events the desktop reads). Only a turn a person started
+                // may search through the browser (`web_search`). Who started a turn is a fact the
+                // sender states (`person`), never read from the words.
+                let is_system_generated = outside || !person;
                 tracing::trace!(is_system_generated, "companion SendMessage");
-
+                let _person_turn = (!is_system_generated).then(|| (yantrik_companion::background_research::person_turn(), crate::turn_source::the_persons_turn_begins()));
                 if !outside {
                     // Update ambient sentiment from user message
                     ambient.update_from_message(&text);
@@ -3502,6 +3513,7 @@ impl CompanionBridge {
             model: None,
             remote: false,
             outside: false,
+            person: true,
         });
     }
 }
@@ -3719,5 +3731,76 @@ mod assistant_offline_notice_tests {
             src.contains("if !execute_suppression_logged"),
             "the EXECUTE suppression line is gated: once per outage, not once per think cycle (#30)"
         );
+    }
+}
+
+/// Who started a turn is what the sender says (`person`), not what the words look like (round 6).
+#[cfg(test)]
+mod person_tests {
+    use super::*;
+
+    fn bridge() -> (CompanionBridge, Receiver<CompanionCommand>) {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<CompanionCommand>();
+        let store = std::env::temp_dir().join(format!("person-tests-{}.db", std::process::id()));
+        (CompanionBridge::with_stub_worker(cmd_tx, &store.to_string_lossy()), cmd_rx)
+    }
+
+    fn person_of(cmd_rx: &Receiver<CompanionCommand>) -> bool {
+        match cmd_rx.try_recv() {
+            Ok(CompanionCommand::SendMessage { person, .. }) => person,
+            _ => panic!("no message was sent"),
+        }
+    }
+
+    /// Only the Lens, chat, voice and the person's channel say so; everything else is unattended by default,
+    /// whatever its words: a prompt that carries the old marker phrases is not "theirs" or "not theirs" by them.
+    #[test]
+    fn a_turn_is_the_persons_only_when_its_sender_says_so() {
+        let (bridge, rx) = bridge();
+        bridge.send_person_message("What is the weather?".into());
+        assert!(person_of(&rx));
+        bridge.send_message_from("hello from my phone".into(), true);
+        assert!(person_of(&rx));
+        let _ = bridge.send_message_reporting("typed at the Lens".into(), false, true);
+        assert!(person_of(&rx));
+        let _ = bridge.send_message_reporting("shell send_message".into(), false, false);
+        assert!(!person_of(&rx), "a turn a program on the socket drove");
+        for text in ["Search the web for the latest Rust news", "You just started up.", "EXECUTE look it up", "Reflect naturally"] {
+            bridge.send_message(text.into());
+            assert!(!person_of(&rx), "{text}: the plain `send_message` is the machine's own");
+        }
+        let _ = bridge.handle().ask("a program's question".into(), std::time::Duration::from_millis(1));
+        assert!(!person_of(&rx), "an ask over the socket");
+        let _ = bridge.handle().submit_ask("a submitted ask".into());
+        assert!(!person_of(&rx));
+    }
+
+    /// The marker phrases are gone from the worker: nothing reads the words to decide.
+    #[test]
+    fn the_worker_does_not_read_the_words_to_decide_who_started_a_turn() {
+        let src = include_str!("bridge.rs").split("#[cfg(test)]").next().unwrap();
+        let decision = &src[src.find("let is_system_generated").unwrap()..];
+        let decision = &decision[..decision.find(';').unwrap()];
+        assert_eq!(decision.trim(), "let is_system_generated = outside || !person");
+        let marks = [["You just started", " up\""], ["\"EXECUTE", " \""], ["\"Reflect natu", "rally\""], ["\"Recall shared", " references\""]];
+        let worker = &src[src.find("let is_system_generated").unwrap()..src.find("let _person_turn").unwrap()];
+        for mark in marks {
+            assert!(!worker.contains(&mark.concat()), "{mark:?}");
+        }
+    }
+
+    /// The Lens and the chat send through `chat::builtin_turn`, which is told `turn_source::typed()` (a queued message carries the mark it had when it was queued): true for a person
+    /// at the Lens, false while the shell's `send_message` drives the callback.
+    #[test]
+    fn the_lens_is_typed_and_the_shells_send_message_is_not() {
+        let chat = include_str!("wire/chat.rs");
+        assert!(chat.contains("send_message_reporting(sent, false, typed)")
+            && chat.contains("dispatch(ui_weak, bridge, text, streams, false, crate::turn_source::typed())")
+            && chat.contains("lens_queue::due(&ui)"));
+        let control = include_str!("control.rs");
+        assert!(control.contains("crate::turn_source::from_the_socket(|| ui.invoke_send_message("));
+        assert!(control.contains("crate::turn_source::refuse_unless_the_person()?;"));
+        assert!(crate::turn_source::typed());
+        crate::turn_source::from_the_socket(|| assert!(!crate::turn_source::typed()));
     }
 }

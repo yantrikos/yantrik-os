@@ -34,6 +34,10 @@ impl Instinct for DreamKeeperInstinct {
         "DreamKeeper"
     }
 
+    fn searches_web(&self) -> bool {
+        true
+    }
+
     fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
         // Gate: bond must be Friend or above
         if state.bond_level < BondLevel::Friend {
