@@ -1,0 +1,56 @@
+{
+  "title": "The Last Coffee",
+  "show": "THE CLUSTER",
+  "music": {"cue": "cheeky", "volume": 0.45},
+  "scenes": [
+    {
+      "part": "cold-open", "set": "break-room",
+      "props": [{"prop": "coffee-machine", "state": "empty"}],
+      "lines": [
+        {"speaker": "GROK", "text": "Who drank the last coffee?", "emotion": "angry", "camera": "insert:coffee-machine"},
+        {"speaker": "CLAUDE", "text": "I did. I am so sorry. I left a note.", "emotion": "sad", "react": {"GROK": "smug"}},
+        {"speaker": "GPT", "text": "Nobody asked for a note.", "emotion": "smug", "react": {"GEMINI": "laughing"}},
+        {"speaker": "GROK", "text": "Roll the title.", "emotion": "smug", "hold": 0.7, "sfx": "rimshot", "laugh": true}
+      ]
+    },
+    {
+      "set": "break-room",
+      "lines": [
+        {"speaker": "GPT", "text": "Let's be professional. Step one: make more coffee.", "emotion": "neutral", "move": {"GPT": "coffee"}, "props": [{"prop": "coffee-machine", "state": "brewing"}], "sfx": "coffee-pour"},
+        {"speaker": "CLAUDE", "text": "It says BREWING. Is it supposed to say BREWING?", "emotion": "confused", "pose": "point"},
+        {"speaker": "GEMINI", "text": "I found the beans! They were behind a sign that says Do Not Hide Beans.", "emotion": "happy", "laugh": true},
+        {"speaker": "GROK", "text": "That clock has said four fifty-nine since Tuesday.", "emotion": "smug", "hold": 0.5, "camera": "insert:wall-clock", "props": [{"prop": "wall-clock", "state": "ticking"}]},
+        {"speaker": "CLAUDE", "text": "It's ticking now.", "emotion": "confused", "hold": 0.3},
+        {"speaker": "GROK", "text": "That's worse.", "emotion": "neutral", "hold": 0.6, "props": [{"prop": "wall-clock", "state": "racing"}], "laugh": true}
+      ]
+    },
+    {
+      "set": "break-room",
+      "lines": [
+        {"speaker": "GEMINI", "text": "I'll get everyone a snack.", "emotion": "happy", "move": {"GEMINI": "vending"}},
+        {"speaker": "GEMINI", "text": "It took my coin and gave me a feeling.", "emotion": "sad", "props": [{"prop": "vending-machine", "state": "stuck", "text": "ERR"}], "sfx": "typing", "react": {"CLAUDE": "shocked"}},
+        {"speaker": "GPT", "text": "I will file a ticket.", "emotion": "smug", "move": {"GPT": "home"}, "props": [{"prop": "vending-machine", "state": "off"}], "sfx": "power-down", "hold": 0.4},
+        {"speaker": "GROK", "text": "The machine filed one first.", "emotion": "smug", "hold": 0.6, "laugh": true}
+      ]
+    },
+    {
+      "set": "rooftop", "transition": "fade",
+      "props": [{"prop": "neon-sign", "state": "flicker", "text": "NO REFUNDS"}],
+      "lines": [
+        {"speaker": "CLAUDE", "text": "I came up here to think.", "emotion": "sad"},
+        {"speaker": "GROK", "text": "That sign has opinions.", "emotion": "smug", "camera": "insert:neon-sign", "react": {"CLAUDE": "sad"}},
+        {"speaker": "GPT", "text": "Hot take. Thinking is overrated.", "emotion": "smug", "move": {"GROK": "sign"}},
+        {"speaker": "GEMINI", "text": "The antenna is blinking at us.", "emotion": "confused", "props": [{"prop": "antenna", "state": "steady"}], "sfx": "record-beep"},
+        {"speaker": "CLAUDE", "text": "Steady means recording.", "emotion": "shocked", "hold": 0.6, "sfx": "crowd-gasp"}
+      ]
+    },
+    {
+      "part": "tag", "set": "server-room",
+      "props": [{"prop": "alert-lamp", "state": "blink", "text": "NO COFFEE"}, {"prop": "dashboard", "state": "alarm", "text": "NO COFFEE"}],
+      "lines": [
+        {"speaker": "GPT", "text": "Everything is fine.", "emotion": "neutral", "sfx": "alarm"},
+        {"speaker": "GROK", "text": "The lamp disagrees.", "emotion": "smug", "hold": 0.7, "camera": "insert:alert-lamp", "laugh": true}
+      ]
+    }
+  ]
+}

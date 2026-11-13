@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "sample_rate": 44100,
+  "models": {
+    "ljspeech": {
+      "file": "en_US-ljspeech-medium.onnx",
+      "url": "en/en_US/ljspeech/medium/en_US-ljspeech-medium",
+      "sha256": {
+        "onnx": "6f52a751e2349abe7a76735eb09dc1875298c77ea2342ffd2fef79ff81b87f22",
+        "onnx.json": "141d612cc0a95ed7efc1ca936b845c2364967f2e9217c5dbfcf69fc4d6c65860"
+      },
+      "license": "public domain",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/ljspeech/medium/MODEL_CARD",
+      "dataset": "https://keithito.com/LJ-Speech-Dataset/",
+      "training": "from scratch"
+    },
+    "john": {
+      "file": "en_US-john-medium.onnx",
+      "url": "en/en_US/john/medium/en_US-john-medium",
+      "sha256": {
+        "onnx": "789c6c875726e627ddee93d51d8727859abe9c091c3d141591f4b83c2072e988",
+        "onnx.json": "af60f177b6b550f3d7a302720c0fb89e7f94a82b5dca464775ef63b1c69ba09a"
+      },
+      "license": "public domain",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/john/medium/MODEL_CARD",
+      "dataset": "https://librivox.org",
+      "training": "finetuned from kristin (itself from scratch)"
+    },
+    "cori": {
+      "file": "en_GB-cori-medium.onnx",
+      "url": "en/en_GB/cori/medium/en_GB-cori-medium",
+      "sha256": {
+        "onnx": "1899f98e5fb8310154f3c2973f4b8a929ba7245e722b3d3a85680b833d95f10d",
+        "onnx.json": "e262c16d7f192f69d4edd6b4ef8a5915379e67495fcc402f1ab15eeb33da3d36"
+      },
+      "license": "public domain",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_GB/cori/medium/MODEL_CARD",
+      "dataset": "https://librivox.org",
+      "training": "from scratch"
+    },
+    "norman": {
+      "file": "en_US-norman-medium.onnx",
+      "url": "en/en_US/norman/medium/en_US-norman-medium",
+      "sha256": {
+        "onnx": "b9739443232a80a59c7d18810dd856899bf16a7964725f5ab81ea49b1351cb71",
+        "onnx.json": "6c2db7f558a4a8deb9fe822583c1c5105f6c4e834dd0f9de8ad17a888ee9fe1d"
+      },
+      "license": "public domain",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/e7229f7d33a10e145e109b886d661984201ac3c4/en/en_US/norman/medium/MODEL_CARD",
+      "dataset": "https://librivox.org",
+      "training": "from scratch"
+    }
+  },
+  "voices": {
+    "claude": {
+      "about": "warm, careful, a touch slower; ljspeech (the OS voice) pitched slightly down with a soft top end",
+      "model": "ljspeech",
+      "length_scale": 1.06,
+      "noise_scale": 0.55,
+      "noise_w": 0.7,
+      "pitch": 0.98,
+      "fx": "highshelf=f=6000:g=-2,acompressor=threshold=-20dB:ratio=3"
+    },
+    "gpt": {
+      "about": "smooth, quick salesman; john (mid male) with a touch of brightness and speed",
+      "model": "john",
+      "length_scale": 0.9,
+      "noise_scale": 0.72,
+      "noise_w": 0.85,
+      "pitch": 1,
+      "fx": "equalizer=f=3000:t=q:w=1.2:g=3,acompressor=threshold=-18dB:ratio=4"
+    },
+    "gemini": {
+      "about": "bright, hyper, high; cori (UK female) pitched up and rushed",
+      "model": "cori",
+      "length_scale": 0.84,
+      "noise_scale": 0.8,
+      "noise_w": 0.9,
+      "pitch": 1.06,
+      "fx": "equalizer=f=4500:t=q:w=1.5:g=3,highpass=f=140"
+    },
+    "grok": {
+      "about": "dry, low, unbothered; norman (deep male) a little lower, slower, with a flat radio top-cut",
+      "model": "norman",
+      "length_scale": 1.12,
+      "noise_scale": 0.45,
+      "noise_w": 0.5,
+      "pitch": 0.93,
+      "fx": "lowpass=f=5200,equalizer=f=180:t=q:w=1:g=3,acompressor=threshold=-16dB:ratio=5"
+    }
+  },
+  "source": {
+    "repo": "rhasspy/piper-voices",
+    "revision": "e7229f7d33a10e145e109b886d661984201ac3c4"
+  }
+}
