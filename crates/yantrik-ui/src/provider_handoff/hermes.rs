@@ -51,6 +51,13 @@ fn model_body(offer: &Offer) -> String {
     .to_string()
 }
 
+/// The sentences the tool asked to be shown, from its relayed output. The updater's relay (`hi_relay` →
+/// `info`) indents every line by two spaces, so a `NOTE: ` line arrives as `  NOTE: …`.
+fn notes(stdout: &str) -> Option<String> {
+    let notes: Vec<&str> = stdout.lines().filter_map(|l| l.trim_start().strip_prefix("NOTE: ")).collect();
+    (!notes.is_empty()).then(|| notes.join(" "))
+}
+
 /// `yantrik-update harness model hermes apply|revert`, with the settings (apply) on stdin, never in
 /// an argument list. `Ok` when the account's tool changed the file, with what it asked to be told to
 /// the person (its `NOTE: ` lines: where it kept a copy of their own model settings); otherwise its
@@ -70,9 +77,7 @@ pub(crate) fn post_model(op: &str, body: Option<&str>) -> Result<Option<String>,
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if out.status.success() {
         tracing::info!(op, "changed the model of the moved Hermes");
-        let out = String::from_utf8_lossy(&out.stdout);
-        let notes: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("NOTE: ")).collect();
-        return Ok((!notes.is_empty()).then(|| notes.join(" ")));
+        return Ok(notes(&String::from_utf8_lossy(&out.stdout)));
     }
     let said = String::from_utf8_lossy(&out.stderr);
     let line = said.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
@@ -168,4 +173,29 @@ fn plan_file(adapter: &Hermes, home: &Path, offer: &Offer) -> Result<Plan, Strin
             what: "its model, the gateway's address and its gateway token (the file's comments are not kept; Revert puts yours back)".into(),
         }],
     ))
+}
+
+#[cfg(test)]
+mod notes_tests {
+    use super::notes;
+
+    #[test]
+    fn relayed_note_lines_are_found_through_their_indent() {
+        // Exactly what `hi_relay` + `info` print: `printf '  %s\n'` on every line.
+        let relayed = "  hermes's model settings changed; Hermes finishes its turns and restarts\n  \
+                       NOTE: Your own model settings that this replaced are kept at /x/config.yaml.model-replaced-1.\n  \
+                       NOTE: Put back an older model section that was already kept beside it.\n  \
+                       the gateway reloaded\n";
+        assert_eq!(
+            notes(relayed).as_deref(),
+            Some("Your own model settings that this replaced are kept at /x/config.yaml.model-replaced-1. Put back an older model section that was already kept beside it.")
+        );
+    }
+
+    #[test]
+    fn unindented_note_lines_and_no_notes() {
+        assert_eq!(notes("NOTE: bare.\n").as_deref(), Some("bare."));
+        assert_eq!(notes("  settings changed\n  a NOTE: in the middle\n"), None);
+        assert_eq!(notes(""), None);
+    }
 }
