@@ -87,20 +87,12 @@ jobs:
         with:
           key: ci-v1
 
-      # Why this is here: the test job has been killed while compiling test binaries (exit 143,
-      # "the runner has received a shutdown signal", minutes of silence, no test output). A
-      # runner that is out of memory or disk says nothing about it, so this writes down what the
-      # machine looked like every 20 s and the last step prints it even when the job dies. It
-      # costs a few KB and one sleeping process.
-      - name: Sample memory, disk and the biggest processes
-        run: |
-          nohup bash -c 'while true; do
-            { echo "=== $(date -u +%FT%TZ)"; free -m; df -h / /mnt; ps -eo rss,comm --sort=-rss | head -6; } >> /tmp/resource-samples.txt 2>&1
-            sleep 20
-          done' > /dev/null 2>&1 &
-
+      # ci-sampler.sh prints the machine's memory, swap and disk into this step's log every 20 s;
+      # see the script for why (the test job was being killed with nothing to say why).
       - name: Build
-        run: cargo build --workspace --locked
+        run: |
+          .github/ci-sampler.sh &
+          cargo build --workspace --locked
 
       # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
       # (installed above) cannot map its uid and every outside-view test fails before it starts.
@@ -114,24 +106,15 @@ jobs:
         run: sudo mkdir -p /var/lib/yantrik/workshops
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          .github/ci-sampler.sh &
+          cargo test --workspace --locked
 
       # The kernel's direct set for the mind account is read from the person's policy by the
       # proxy's own code (`yantrik-egress direct`). The updater's selftest runs it on real policy
       # files here, where it has just been built.
       - name: The mind's direct set comes from the person's policy
         run: YANTRIK_EGRESS_BIN=target/debug/yantrik-egress bash deploy/yantrik-os/yantrik-update selftest
-
-      - name: What the machine looked like (last 60 samples and the peak)
-        if: always()
-        run: |
-          f=/tmp/resource-samples.txt
-          [ -f "$f" ] || { echo "no samples"; exit 0; }
-          grep -n '^===' "$f" | tail -60 | cut -d: -f1 | head -1 | { read start; tail -n +"${start:-1}" "$f"; }
-          echo "--- peak"
-          awk '/^Mem:/{u=$3; if(u>m)m=u} /^Swap:/{w=$3; if(w>sw)sw=w} END{print "peak mem used MB:", m, " peak swap used MB:", sw}' "$f"
-          awk '$NF=="/" && $1 ~ /^\/dev/{gsub("%","",$5); if($5>d)d=$5} END{print "peak / used %:", d}' "$f"
-          awk '/^ *[0-9]+ [a-z]/ && $1>r{r=$1; c=$2} END{print "largest single process RSS KB:", r, c}' "$f"
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
