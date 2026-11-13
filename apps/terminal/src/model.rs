@@ -38,6 +38,16 @@ pub fn tabs_full(open: usize) -> Option<String> {
     (open >= MAX_TABS).then(|| format!("Terminal has {MAX_TABS} tabs. Close a tab before opening another."))
 }
 
+impl Model {
+    /// Whether any tab has a foreground job other than its shell. `running` (what `describe`
+    /// shows) is a probe's last reading and is only fresh for a job the `run` act started; the pty
+    /// itself is asked too, so a typed or pasted command counts. The idle wait never ends the app
+    /// over it.
+    pub fn working(&self) -> bool {
+        self.tabs.iter().any(|t| t.facts.running.is_some() || t.session.job_in_front())
+    }
+}
+
 /// What a probe found out about one shell by reading `/proc`: where it is, and what is running
 /// in it. Read off the UI thread; the model keeps the last one.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -59,6 +69,10 @@ pub struct Tab {
     pub due: bool,
     /// The session's revision when the last frame looked.
     pub revision: u64,
+    /// A Mind opened this shell, so it runs in the outside view (no Mind workshop exists in it).
+    pub outside: bool,
+    /// Which Mind opened it (`owner.rs`): only that Mind types into it or reads it.
+    pub owner: Option<crate::owner::Owner>,
 }
 
 /// What a prompt is about to end.

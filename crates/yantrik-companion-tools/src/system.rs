@@ -213,11 +213,9 @@ impl Tool for SystemControlTool {
 
 /// Run wpctl (PipeWire/WirePlumber volume control).
 fn run_wpctl(args: &str) -> String {
-    match std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&format!("wpctl {args}"))
-        .output()
-    {
+    // The words go to wpctl as its own argv, one program and no shell: `args` is built from fixed
+    // words and a number (#1124, round 9).
+    match std::process::Command::new("wpctl").args(args.split_whitespace()).output() {
         Ok(output) if output.status.success() => "OK".to_string(),
         Ok(output) => {
             let err = String::from_utf8_lossy(&output.stderr);

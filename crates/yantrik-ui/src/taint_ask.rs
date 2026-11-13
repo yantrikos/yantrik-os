@@ -37,7 +37,7 @@
 //! flag, and a caller that skips the bridge entirely and declares nothing gets what the mode gives.
 
 use crate::mind_mode::Decision;
-use yantrik_ipc_transport::gate::{fetches_address, leaves_machine, open_ended};
+use yantrik_ipc_transport::gate::{always_asks, fetches_address, leaves_machine, open_ended};
 
 /// Hand-offs to another mind, and commands: mirrored from `HANDOFFS` and `COMMANDS` in
 /// `yos-mcp`, which the selftest holds to this list.
@@ -75,7 +75,10 @@ pub fn resolve(
     purposes: &str,
 ) -> Decision {
     let tainted = (flagged(flag) || shell_record) && is_sink(app, action, purposes);
-    settle(decision, tainted)
+    // An action that declares itself the person's to allow every time (#1124, H1: a workshop
+    // grant) is asked in every mode on the strength of the declaration, with no conversation's
+    // record needed: the same turn of `Run` into `Ask`, and nothing else changes.
+    settle(decision, tainted || always_asks(purposes))
 }
 
 /// Whether the request says its call is tainted. Only a boolean `true` (or the text `true`, as a
@@ -151,6 +154,27 @@ mod tests {
         // The machine's ceiling stands too: nothing a card could not satisfy is shown.
         let over = settle(full.decide("dangerous", "shell", "agent_run", Declared::default(), "standard", now), true);
         assert!(matches!(over, Decision::Refuse { ref why } if why.contains("tool_permission")), "{over:?}");
+    }
+
+    /// #1124 H1: `workshop_create` raises a card in all five modes, a session rule covering it or
+    /// not, with no taint and no flag: the declaration alone does it. The card offers no session rule.
+    #[test]
+    fn a_workshop_grant_is_asked_in_every_mode_whatever_rule_covers_it() {
+        let now = Instant::now();
+        let action = crate::control_workshop::specs().into_iter().find(|a| a.name == "workshop_create").unwrap();
+        for mode in [Mode::Ask, Mode::Auto, Mode::Bypass, Mode::BypassAll] {
+            let mut modes = Modes::new(Mode::Ask);
+            modes.person_set_mode(mode, Bypass::Hour, now, 0);
+            modes.person_add_rule_at("shell", "workshop_create", "sensitive", "Ask for a workshop.", now).ok();
+            let table = modes.decide("sensitive", "shell", "workshop_create", Declared::default(), "dangerous", now);
+            assert_eq!(resolve(table, None, false, "shell", "workshop_create", &action.description), Decision::Ask, "{mode:?}");
+        }
+        // The same action without the declaration would have run in bypass: the declaration is what asks.
+        assert!(matches!(
+            resolve(full_bypass_run(), None, false, "shell", "workshop_create", "Ask for a workshop."),
+            Decision::Run { .. }
+        ));
+        assert!(!crate::approvals::may_offer_session_rule("sensitive", &action.description), "no standing yes is offered");
     }
 
     #[test]

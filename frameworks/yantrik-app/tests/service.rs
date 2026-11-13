@@ -43,6 +43,7 @@ impl yantrik_app::Window for ServiceWin {
 struct Model {
     /// What the store holds, loaded by the service start.
     notes: Vec<String>,
+    working: bool,
     /// The service-safe start ran, and how often.
     served_starts: u32,
     /// The person's start ran (recovery, anything they see), and how often.
@@ -56,6 +57,7 @@ struct Model {
 #[derive(Debug, Clone)]
 enum Command {
     Load,
+    Work(bool),
     Add(String),
     PersonStart,
     Launched,
@@ -96,6 +98,7 @@ impl App for Service {
                 m.served_starts += 1;
                 m.notes = vec!["from the store".into()];
             }
+            Command::Work(on) => m.working = on,
             Command::Add(text) => m.notes.push(text),
             Command::PersonStart => m.person_starts += 1,
             Command::Launched => m.launches += 1,
@@ -121,6 +124,10 @@ impl App for Service {
             Event::Opened(_) => Some(Command::Opened),
             _ => None,
         }
+    }
+
+    fn busy(m: &Model) -> bool {
+        m.working
     }
 
     fn describe(m: &Model) -> View {
@@ -280,6 +287,17 @@ fn the_idle_wait_ends_a_windowless_instance_and_an_agent_starts_it_over() {
     assert_eq!(app.exit_reason(), None, "the wait started again at the call");
     app.advance(Duration::from_secs(1));
     assert_eq!(app.exit_reason(), Some(ExitReason::LastWindowClosed));
+}
+
+#[test]
+fn a_busy_windowless_instance_is_not_ended_by_the_idle_wait_and_is_once_it_is_not() {
+    let app = TestApp::<Service>::start_service();
+    app.run(Command::Work(true));
+    app.advance(IDLE * 3);
+    assert_eq!(app.exit_reason(), None, "work in flight re-arms the wait");
+    app.run(Command::Work(false));
+    app.advance(IDLE);
+    assert_eq!(app.exit_reason(), Some(ExitReason::LastWindowClosed), "idle and not busy: reaped");
 }
 
 #[test]

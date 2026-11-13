@@ -269,14 +269,20 @@ pub fn check(argv: &[String], home: &str) -> Result<(), String> {
         return Err("date takes only a +FORMAT here".into());
     }
 
-    // What prints file contents is never given a protected place. grep's first operand is its
-    // pattern unless -e/--regexp gave one.
+    // No program is given a protected place: what prints contents would read it, and `ls` or `du`
+    // would list its names, which are bytes a sealed job chose (a Mind's workshop is a text channel
+    // into another conversation by its file names alone; #1124, L1). grep's first operand is its
+    // pattern unless -e/--regexp gave one. With no operand `ls` and `du` look at the working folder.
+    let skip = usize::from(program == "grep" && !pattern_given);
+    let here = ["."];
+    let looked_at: &[&str] = if operands.is_empty() && matches!(program, "ls" | "du") { &here } else { &operands };
+    for p in looked_at.iter().skip(skip) {
+        if protected(p) {
+            return Err(format!("{program} may not look at {p}: it is, or leads into, a place the AI never reads"));
+        }
+    }
     if READS_CONTENT.contains(&program) {
-        let skip = usize::from(program == "grep" && !pattern_given);
         for p in operands.iter().skip(skip) {
-            if protected(p) {
-                return Err(format!("{program} may not read {p}: it is, or leads into, a place the AI never reads"));
-            }
             // A regular file, where its links lead: not a folder (diff reads the same-named file
             // inside one), not a device (/dev/input is a keyboard), not /sys.
             if *p != "-" && !std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false) {
@@ -292,6 +298,11 @@ fn check_find(args: &[String]) -> Result<(), String> {
     let mut i = 0;
     while i < args.len() && !args[i].starts_with('-') {
         i += 1;
+    }
+    // Where it looks, `.` when it was told nowhere: the names it prints are a sealed job's to choose.
+    let roots: Vec<&str> = if i == 0 { vec!["."] } else { args[..i].iter().map(String::as_str).collect() };
+    if let Some(r) = roots.iter().find(|r| protected(r)) {
+        return Err(format!("find may not look in {r}: it is, or leads into, a place the AI never reads"));
     }
     while i < args.len() {
         let w = args[i].as_str();
@@ -451,6 +462,18 @@ mod tests {
             "uptime /var/log/wtmp",
             "cat ~/.npmrc",
             "sha256sum ~/.ssh/id_rsa",
+            // #1124 L1: the names in a Mind's workshop are bytes its sealed jobs chose.
+            "ls -la ~/.local/share/yantrik/workshops",
+            "ls -la /home/p/.local/share/yantrik/workshops/hermes/shop",
+            "find ~/.local/share/yantrik/workshops",
+            "find /home/p/.local/share/yantrik/workshops -name '*.md' -type f",
+            "du -sh ~/.local/share/yantrik/workshops/hermes",
+            "stat ~/.local/share/yantrik/workshops",
+            // The root moved out of the home (round 5): the whole base is held, every account's.
+            "ls -la /var/lib/yantrik/workshops",
+            "ls -la /var/lib/yantrik/workshops/1000/hermes/shop",
+            "find /var/lib/yantrik/workshops -name '*.md' -type f",
+            "du -sh /var/lib/yantrik/workshops/1000/hermes",
             "sh -c id",
             "bash",
         ] {
