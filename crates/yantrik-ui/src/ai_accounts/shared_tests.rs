@@ -399,3 +399,58 @@ fn a_read_that_began_before_a_removal_does_not_write_the_key_back() {
     free_ai::note_kept(tails(&values()), after);
     assert!(free_ai::kept_and_off().0.contains(gone), "a later read can say it is kept again");
 }
+
+fn mind_on_the_gateway() -> crate::picker::menu::MindSeen {
+    crate::picker::menu::MindSeen { id: "lens".into(), name: "Lens".into(), attached: true, active: true, state: String::new(), on_gateway: true, private_context: true, builtin_runs_on: None }
+}
+
+/// What the picker and the panel would show for the mind now (`status_now`, less the gateway's
+/// own listening, which is not up under test): the real `answering()` over the live list.
+fn status_shown() -> crate::picker::status::Status {
+    crate::picker::status_for(&mind_on_the_gateway(), None)
+}
+
+#[test]
+fn the_picker_says_switched_off_with_turn_on_for_a_tier_that_is_off_and_never_not_set_up() {
+    let _h = setup("the_picker_says_switched_off_");
+    // A stale list on purpose: the model is still offered, so the gateway's own check refuses it.
+    free_ai::toggle_tier("groq");
+    assert!(offered());
+    let s = status_shown();
+    assert_eq!((s.state, s.fix), ("not-allowed", crate::picker::status::Fix::TurnOn), "{}", s.words);
+    assert!(s.words.starts_with("switched off"), "{}", s.words);
+    assert!(!s.words.contains("not set up"), "{}", s.words);
+    // Switched back On: no longer refused, and not "switched off".
+    free_ai::toggle_tier("groq");
+    assert_ne!(status_shown().state, "not-allowed");
+
+    // Its key removed: key missing, with Add key.
+    free_ai::set_state_for_test(&[], &[]);
+    let s = status_shown();
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("key-missing", "key missing", crate::picker::status::Fix::AddKey));
+
+    // Keys not read yet: checking, not "not set up · pick a model".
+    free_ai::forget_read_for_test();
+    let s = status_shown();
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("checking", "checking", crate::picker::status::Fix::None));
+}
+
+#[test]
+fn a_pick_that_left_because_its_tier_is_off_or_its_key_is_missing_says_that_reason() {
+    let _h = setup("a_pick_that_left_because_");
+    let said = || crate::answering::gone_words("Lens", PICK, None);
+    // On and usable: #1162's sentence, unchanged.
+    assert!(said().contains("isn't offered by any of your accounts any more"), "{}", said());
+    free_ai::toggle_tier("groq");
+    let off = said();
+    assert!(off.contains("switched off") && off.contains("gpt-oss-20b") && off.contains("Lens waits until you pick again"), "{off}");
+    assert!(!off.contains("isn't offered by any of your accounts"), "{off}");
+    free_ai::toggle_tier("groq");
+    free_ai::set_state_for_test(&[], &[]);
+    let key = crate::answering::gone_words("Lens", PICK, Some("home/qwen3:8b"));
+    assert!(key.contains("key is missing") && key.contains("Lens is using your default, qwen3:8b."), "{key}");
+    // Keys not read yet is no cause to name; and another account's pick keeps #1162's words.
+    free_ai::forget_read_for_test();
+    assert!(said().contains("isn't offered by any of your accounts any more"), "{}", said());
+    assert!(crate::answering::gone_words("Lens", "mine/x", None).contains("isn't offered by any of your accounts any more"));
+}

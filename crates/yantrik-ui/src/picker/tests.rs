@@ -356,3 +356,27 @@ fn probes_of_accounts_that_left_the_list_are_forgotten() {
     assert!(super::probe_for_test("mine", None));
     super::keep_probes_of(&[]);
 }
+
+#[test]
+fn a_withdrawn_tier_the_gateway_refused_is_never_connected_and_says_why() {
+    // The real resolver gives no answer for a withdrawn tier (the gateway refuses it first), so
+    // `judge` is handed only the refusal. A probe and a call that were fine must not matter.
+    let said = |code: &'static str| {
+        let refusal = yantrik_gateway::Refusal::new(403, code, "x");
+        let i = Input { now: 1_000, on_gateway: true, answer: None, refusal: Some(refusal), last_call: Some(call(990, 200, "ok")), probe: Some(Probe { at: 990, outcome: Outcome::Ok }), ..Input::default() };
+        judge(&i)
+    };
+    let off = said("tier_off");
+    assert_eq!((off.state, off.words.as_str(), off.fix), ("not-allowed", "switched off \u{b7} turn it on in Free AI accounts", Fix::TurnOn));
+    for code in ["key_missing", "vault_locked"] {
+        let s = said(code);
+        assert_eq!((s.state, s.words.as_str(), s.fix), ("key-missing", "key missing", Fix::AddKey), "{code}");
+    }
+    let s = said("keys_not_known_yet");
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("checking", "checking", Fix::None));
+    for code in ["tier_off", "key_missing", "vault_locked", "keys_not_known_yet"] {
+        let s = said(code);
+        assert_ne!(s.state, "connected", "{code}");
+        assert!(!s.words.contains("not set up"), "{code}: {}", s.words);
+    }
+}

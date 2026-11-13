@@ -16,7 +16,7 @@ pub mod attach;
 pub mod blocked;
 pub mod choices;
 pub mod menu;
-mod probe;
+pub(crate) mod probe;
 pub(crate) use probe::{keep_probes_of, probe_outcome};
 #[cfg(test)]
 pub(crate) use probe::probe_for_test;
@@ -196,6 +196,11 @@ fn status_now(minds: &[MindSeen]) -> status::Status {
     let Some(mind) = active(minds) else {
         return status::Status { state: "not-set-up", words: "no mind is answering".into(), fix: Fix::None };
     };
+    status_for(mind, crate::gateway::state().err())
+}
+
+/// The status for `mind`, with the gateway's own listening (`gateway_down`) handed in.
+pub(crate) fn status_for(mind: &MindSeen, gateway_down: Option<String>) -> status::Status {
     let (answer, refusal) = match mind.on_gateway.then(|| crate::answering::answering(&mind.id)) {
         Some(Ok(a)) => (Some(a), None),
         Some(Err(r)) => (None, Some(r)),
@@ -216,7 +221,7 @@ fn status_now(minds: &[MindSeen]) -> status::Status {
         last_call: crate::gateway::log().last_for(&mind.id),
         probe: probe::found(&account),
         withdrawn: ai_accounts::shared::refusal_for_id(&account).map(|r| r.code),
-        gateway_down: crate::gateway::state().err(),
+        gateway_down,
         own_answered_at: own.as_ref().map(|(at, _)| *at),
         own_model: own.map(|(_, m)| m).unwrap_or_default(),
         builtin_runs_on: mind.builtin_runs_on.clone(),

@@ -201,6 +201,11 @@ fn refused(refusal: Option<&Refusal>) -> Status {
         Some(("private_mode", _)) => private_mode(),
         Some(("account_not_found", _)) => Status::new("not-set-up", "not set up · that account is gone", Fix::AddKey),
         Some(("pick_gone", sentence)) => Status::new("pick-gone", sentence, Fix::PickAgain),
+        // A withdrawn tier is refused by the gateway before any model is named (#1162 made
+        // `answering` ask it), so these reach here, not the `withdrawn` check above.
+        Some(("tier_off", _)) => Status::new("not-allowed", SWITCHED_OFF, Fix::TurnOn),
+        Some(("key_missing" | "vault_locked", _)) => Status::new("key-missing", "key missing", Fix::AddKey),
+        Some(("keys_not_known_yet", _)) => Status::new("checking", "checking", Fix::None),
         _ => Status::new("not-set-up", "not set up · pick a model", Fix::AddKey),
     }
 }

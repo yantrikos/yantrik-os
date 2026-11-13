@@ -24,7 +24,7 @@ pub(super) fn forget() {
 }
 
 /// The account part of `<account>/<model>`.
-pub(super) fn account_of(model: &str) -> &str {
+pub(crate) fn account_of(model: &str) -> &str {
     model.split_once('/').map(|(a, _)| a).unwrap_or_default()
 }
 
