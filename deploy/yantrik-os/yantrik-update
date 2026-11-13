@@ -1659,6 +1659,45 @@ reload_labwc() { # <owner> <pid>...
   return "$ok"
 }
 
+# A reload reads a changed <margin> but labwc puts it in force only at the next output apply
+# (measured on labwc 0.8.3: after a SIGHUP a newly maximised window still ended at the old line).
+# An output apply does apply it, to new windows and to ones already maximised, which it refits:
+# `wlr-randr --output X --scale S` with the S the output already has changed nothing else and the
+# new margin was in force at once. So, as the session's owner and on the display the shell recorded
+# as the person's, each enabled output gets back the scale it reports, nothing else. The caller runs
+# it only when the margin line of rc.xml changed. The proper fix is the shell declaring an
+# exclusive zone through layer-shell (see rc.xml). It never fails an update: every problem is a
+# warn/info line.
+nudge_compositor() { # <owner> <uid>
+  local owner="$1" uid="$2" dir="/run/user/$2" wr disp name scale n=0 as=()
+  selftest_standins && [ -n "${YANTRIK_RUNTIME_DIR:-}" ] && dir="$YANTRIK_RUNTIME_DIR"
+  [ "$(id -u)" = 0 ] && as=(runuser -u "$owner" --)
+  wr="$(command -v wlr-randr)" || { info "no wlr-randr: a changed margin applies at the next login"; return 0; }
+  # The person's display is the one the shell recorded (a nested Mind View compositor runs as the
+  # same account in the same directory, so the sockets alone cannot say which is the person's).
+  # Read as the owner, 64 bytes at most, under a time limit: the owner controls this path, and a
+  # FIFO or a link to a device must not stop root's update (the shell's own reader refuses them too).
+  disp="$("${as[@]}" timeout 5 head -c 64 -- "$dir/yantrik/person-display" 2>/dev/null)"
+  case "$disp" in *[!A-Za-z0-9_.-]*) disp= ;; esac
+  case "$disp" in wayland-[0-9]*) [ -S "$dir/$disp" ] || disp= ;; *) disp= ;; esac
+  [ -n "$disp" ] || { info "the person's display is not recorded or not there: a changed margin applies at the next login"; return 0; }
+  local run=("${as[@]}" env -i PATH=/usr/bin:/bin LANG=C.UTF-8 XDG_RUNTIME_DIR="$dir" WAYLAND_DISPLAY="$disp"
+             timeout --kill-after=5 10 "$wr")
+  local raw list
+  raw="$("${run[@]}" 2>/dev/null)" || { warn "wlr-randr could not list the outputs: a changed margin applies at the next login"; return 0; }
+  list="$(awk '/^[^ \t]/ {o=$1; en=0} /^[ \t]+Enabled:[ \t]+yes/ {en=1; seen[o]=1}
+        /^[ \t]+Scale:/ && en {print o, $2; done[o]=1} END {for (k in seen) if (!(k in done)) print k, "-"}' <<<"$raw")"
+  while read -r name scale; do
+    [ -n "$name" ] || continue
+    case "$name$scale" in *[!A-Za-z0-9_.:-]*) scale=- ;; esac
+    case "$scale" in ''|-|*[!0-9.]*) info "no scale readable for output $name: left alone"; continue ;; esac
+    if "${run[@]}" --output "$name" --scale "$scale" >/dev/null 2>&1; then n=$((n+1))
+    else warn "wlr-randr could not re-apply scale $scale to $name"; fi
+  done <<<"$list"
+  [ "$n" = 0 ] || info "the compositor re-applied $n output(s) at their own scale, so the new margin is in force"
+  return 0
+}
+
 refresh_session_chrome() {
   [ -d "$SHARE_DIR/labwc" ] || return 0
   local owner uid home pids
@@ -1675,13 +1714,19 @@ refresh_session_chrome() {
   home="$(getent passwd "$owner" | cut -d: -f6)"
   selftest_standins && [ -n "${YANTRIK_CHROME_HOME:-}" ] && home="$YANTRIK_CHROME_HOME"
   [ -n "$home" ] && [ -d "$home" ] || { warn "compositor keys: $owner has no home directory"; return 1; }
-  local as=()
+  local as=() rcx="$home/.config/labwc/rc.xml"
   if [ "$(id -u)" = 0 ]; then
     as=(runuser -u "$owner" --)
   elif [ "$(id -u)" != "$uid" ]; then
     warn "compositor keys: the desktop is $owner's and this runs as $(id -un); they apply at the next login"
     return 1
   fi
+  # The person's rc.xml is the person's file, so the margin is read as its owner (never root, who
+  # would follow the person's links) under a time limit, matching only the element (a comment that
+  # names <margin> does not count). Its output and exit code are compared before and after the
+  # copy: missing (2), no margin (1), found (0) and a stuck read (124, the same both times) differ.
+  local margin=("${as[@]}" timeout 5 grep -E '^[[:space:]]*<margin ' -- "$rcx") margin_before
+  margin_before="$("${margin[@]}" 2>/dev/null; echo "$?")"
   # A time limit like every other process this runs: the copy is a few files and an fc-cache.
   local chrome=("${as[@]}" env -i HOME="$home" PATH=/usr/bin:/bin LANG=C.UTF-8
                 timeout --kill-after=10 120 "$BIN_DIR/yantrik-session-chrome")
@@ -1700,6 +1745,7 @@ refresh_session_chrome() {
   fi
   # shellcheck disable=SC2086  # pgrep's pids, one per line, split on purpose
   reload_labwc "$owner" $pids || rc=1
+  [ "$margin_before" = "$("${margin[@]}" 2>/dev/null; echo "$?")" ] || nudge_compositor "$owner" "$uid" || true
   # Claimed only when the copy and the reload both happened.
   [ "$rc" = 0 ] && info "the new keys work now, with no new login"
   return "$rc"
@@ -5669,7 +5715,7 @@ STUB
     cp -a "$cs/labwc" "$op/share/labwc"
     printf '<keys from 16 Oct/>\n' > "$oh/.config/labwc/rc.xml"
     as_old_updater() { # what an updater from before #854 runs after installing this build
-      env YANTRIK_SELFTEST=1 YANTRIK_PREFIX="$op" YANTRIK_LABWC_NAME=ylabwc-selftest \
+      timeout --kill-after=5 60 env YANTRIK_SELFTEST=1 YANTRIK_PREFIX="$op" YANTRIK_LABWC_NAME=ylabwc-selftest \
           YANTRIK_CHROME_HOME="$oh" "$@" "$0" reconcile 2>&1
     }
     "$fake" 30 & fpid=$!
@@ -5693,6 +5739,107 @@ STUB
     out="$(as_old_updater)"
     t "with no desktop running, reconcile says the login will do it" "no desktop is running for" "$out"
     is "and changes nothing" "<keys from 16 Oct/>" "$(cat "$oh/.config/labwc/rc.xml")"
+
+    # The nudge: a stand-in wlr-randr prints two outputs (one disabled) from a fixture and records
+    # its arguments, the display it ran on and the names of the variables it ran with. Two real
+    # sockets sit in a scratch runtime dir: wayland-0 is a nested Mind View's, and the shell
+    # recorded wayland-1 as the person's.
+    local wb="$root/wbin" rd="$root/run" calls="$root/wlr-calls" envs="$root/wlr-env" disps="$root/wlr-disp"
+    mkdir -p "$wb" "$rd/yantrik"
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$rd/wayland-0"
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$rd/wayland-1"
+    printf 'wayland-1\n' > "$rd/yantrik/person-display"
+    printf '%s\n' 'eDP-1 "Panel (eDP-1)"' '  Enabled: yes' '  Modes:' '    1920x1080 px, 60.000000 Hz (preferred, current)' \
+      '  Position: 0,0' '  Transform: normal' '  Scale: 1.000000' \
+      'HDMI-A-1 "TV (HDMI-A-1)"' '  Enabled: no' '  Scale: 1.500000' > "$wb/fixture-a"
+    sed -e 's/^  Enabled: yes/  Enabled: X/' -e 's/^  Enabled: no/  Enabled: yes/' -e 's/^  Enabled: X/  Enabled: no/' "$wb/fixture-a" > "$wb/fixture-b"
+    grep -v 'Scale: 1.500000' "$wb/fixture-b" > "$wb/fixture-c"
+    cat > "$wb/wlr-randr" <<EOF
+#!/bin/sh
+printf 'args:%s\n' "\$*" >> "$calls"
+printf '%s\n' "\$WAYLAND_DISPLAY" >> "$disps"
+env | cut -d= -f1 | grep -Ev '^(PWD|SHLVL|_|OLDPWD)\$' | sort | paste -sd, >> "$envs"
+[ "\$#" = 0 ] && cat "$wb/fixture-a"
+exit 0
+EOF
+    chmod +x "$wb/wlr-randr"
+    # This build's rc.xml carries a margin line; the person's old one carries another unless a test says so.
+    local marg='<margin bottom="64"/>' oldrc
+    printf '<keys new/>\n%s\n' "$marg" > "$op/share/labwc/rc.xml"
+    nudge_run() { # extra env for the old updater, if any; $oldrc is the person's rc.xml before
+      "$fake" 30 & fpid=$!; sleep 0.3
+      rm -f "$oh/.config/labwc/rc.xml"
+      if [ -n "${rcfifo:-}" ]; then mkfifo "$oh/.config/labwc/fifo"; ln -s fifo "$oh/.config/labwc/rc.xml"
+      else printf '%s\n' "${oldrc:-<keys from 16 Oct/>
+<margin bottom=\"48\"/>}" > "$oh/.config/labwc/rc.xml"; fi
+      : > "$calls"; : > "$envs"; : > "$disps"
+      [ -z "${rcfifo:-}" ] || chmod 555 "$oh/.config/labwc"
+      out="$(as_old_updater YANTRIK_RUNTIME_DIR="$rd" PATH="$wb:$PATH" "$@")"; rc=$?
+      chmod 755 "$oh/.config/labwc"
+      kill "$fpid" 2>/dev/null; wait "$fpid" 2>/dev/null; return "$rc"
+    }
+    nudge_run
+    is "after a chrome replacement that changed the margin wlr-randr lists, then re-applies each enabled output's own scale" \
+      "args:|args:--output eDP-1 --scale 1.000000" "$(paste -sd'|' "$calls")"
+    is "every call went to wayland-1, the person's, never the nested wayland-0" "wayland-1" "$(sort -u "$disps")"
+    is "and ran under env -i with only the variables it was given" "LANG,PATH,WAYLAND_DISPLAY,XDG_RUNTIME_DIR" "$(sort -u "$envs")"
+    sed -i "s#fixture-a#fixture-b#" "$wb/wlr-randr"
+    nudge_run
+    is "the other output's 1.500000 is applied as it was read, and only that one" \
+      "args:|args:--output HDMI-A-1 --scale 1.500000" "$(paste -sd'|' "$calls")"
+    sed -i "s#fixture-b#fixture-c#" "$wb/wlr-randr"
+    nudge_run
+    is "an enabled output with no Scale line is not applied" "args:" "$(paste -sd'|' "$calls")"
+    t "and is said to be left alone" "no scale readable for output HDMI-A-1: left alone" "$out"
+    sed -i "s#fixture-c#fixture-a#" "$wb/wlr-randr"
+    rm "$rd/yantrik/person-display"
+    nudge_run
+    is "with no record of the person's display wlr-randr is not called" "" "$(cat "$calls")"
+    t "and the margin is said to apply at the next login" "applies at the next login" "$out"
+    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
+    printf 'wayland-7\n' > "$rd/yantrik/person-display"
+    nudge_run
+    is "a record naming a socket that is not there: wlr-randr is not called" "" "$(cat "$calls")"
+    t "and the margin is said to apply at the next login" "applies at the next login" "$out"
+    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
+    printf 'wayland-1\n' > "$rd/yantrik/person-display"
+    # Chrome replaced, margin unchanged: the share's rc.xml and the person's differ elsewhere only.
+    oldrc="$(printf '<keys from 16 Oct/>\n%s' "$marg")" nudge_run
+    is "chrome replaced, margin unchanged: no output apply" "" "$(cat "$calls")"
+    is "though the chrome was replaced" "<keys new/>" "$(head -1 "$oh/.config/labwc/rc.xml")"
+    is "and it is not claimed to be in force" "" "$(printf '%s' "$out" | grep -F "in force")"
+    oldrc="$(printf '<keys from 16 Oct/>\n<margin bottom="48"/>')" nudge_run
+    is "chrome replaced, margin changed: the output is applied" "args:|args:--output eDP-1 --scale 1.000000" "$(paste -sd'|' "$calls")"
+    # A comment naming <margin bottom> changing is not a margin change (the pattern is anchored).
+    oldrc="$(printf '<keys from 16 Oct/>\n<!-- the <margin bottom> above: old -->\n%s' "$marg")" nudge_run
+    is "a comment that names <margin bottom> changing is not a margin change: no output apply" "" "$(cat "$calls")"
+    # The person's rc.xml is a link to a FIFO: the read is bounded, the update finishes, nothing is applied.
+    # The directory is read-only so the copy cannot replace the link: the read stays stuck (124) both times.
+    rcfifo=1 nudge_run; failrc=$?
+    rm -f "$oh/.config/labwc/fifo"; unset rcfifo
+    is "rc.xml a FIFO: the update finishes" "0" "$failrc"
+    is "and no output apply runs" "" "$(cat "$calls")"
+    # The display record is a FIFO: the bounded read gives nothing, so the next login applies it.
+    rm "$rd/yantrik/person-display"; mkfifo "$rd/yantrik/person-display"
+    nudge_run; failrc=$?
+    is "the display record a FIFO: the update finishes" "0" "$failrc"
+    t "and the log has the next-login line" "applies at the next login" "$out"
+    is "and wlr-randr is not called" "" "$(cat "$calls")"
+    rm "$rd/yantrik/person-display"; printf 'wayland-1\n' > "$rd/yantrik/person-display"
+    cp "$op/share/labwc/rc.xml" "$oh/.config/labwc/rc.xml"
+    : > "$calls"; "$fake" 30 & fpid=$!; sleep 0.3
+    out="$(as_old_updater YANTRIK_RUNTIME_DIR="$rd" PATH="$wb:$PATH")"
+    is "keys already this build's: wlr-randr is not called" "" "$(cat "$calls")"
+    kill "$fpid" 2>/dev/null; wait "$fpid" 2>/dev/null
+    printf '#!/bin/sh\nexit 1\n' > "$wb/wlr-randr"
+    nudge_run; local failrc=$?
+    is "a wlr-randr that exits 1 leaves the update's result as it was" "0" "$failrc"
+    t "and says so" "applies at the next login" "$out"
+    rm "$wb/wlr-randr"
+    nudge_run; failrc=$?
+    is "no wlr-randr at all leaves the result as it was" "0" "$failrc"
+    t "and says so" "no wlr-randr" "$out"
+    cp "$cs/labwc/rc.xml" "$op/share/labwc/rc.xml"
   fi
 
   # Where this build's own apply and rollback do it: after the build answered, never with

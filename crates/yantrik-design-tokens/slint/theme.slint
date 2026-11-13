@@ -543,7 +543,7 @@ export global Theme {
     //
     // The legacy names point into it rather than holding numbers of their own, so they can no
     // longer drift from it. An app icon tile is not on the scale on purpose: it is a squircle
-    // drawn into its pre-rendered art (AppTile, design/icons/), because a 32px dock tile and a
+    // drawn into its pre-rendered art (AppTile, design/icons/), because a small dock tile and a
     // 48px desktop tile have to be the same SHAPE, and one length cannot give both.
     //
     // Standard radius scale
@@ -605,15 +605,17 @@ export global Theme {
     /// The grounded dock (design/minds-surfaces-spec §3) is this tall, flush with the bottom edge,
     /// and config/labwc/rc.xml reserves exactly this much (`<margin bottom>`). Change one, change
     /// both: the compositor keeps maximised windows above it by that number alone.
-    out property <length> taskbar-height: 48px;
+    out property <length> taskbar-height: 64px;
     out property <length> orb-desktop-size: 80px;
 
     // ─── The grounded dock (spec §3) ──────────────────────────────
-    // Sizes. 48px = 4px padding + a 40px button + 4px padding.
-    out property <length> dock-button: 40px;
-    out property <length> dock-pad: 4px;
+    // Sizes. 64px = 6px padding + a 52px button + 6px padding. It was 48 with 32px tiles: next
+    // to a window's title bar the dock's tiles were the smallest things on the screen, and the
+    // one row a person aims at all day should be the easiest to hit (sharper pass, 12 Nov 2026).
+    out property <length> dock-button: 52px;
+    out property <length> dock-pad: 6px;
     out property <length> dock-gap: 4px;
-    out property <length> dock-icon: 32px;       // the tile inside a 40px button, drawn from the 32px art pixel for pixel (AppTile).
+    out property <length> dock-icon: 48px;       // the tile inside a 52px button, drawn from the 48px art pixel for pixel (AppTile).
                                                  // Spec §3 says "24px icons": a 24px tile left a 13px glyph, which read as a blob.
     out property <length> dock-pager-w: 32px;
     out property <length> dock-max-w: 880px;     // min(this, viewport - dock-side-margin)

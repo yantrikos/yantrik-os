@@ -6,6 +6,9 @@
 use super::*;
 use slint::Model;
 
+// Theme.taskbar-height (crates/yantrik-design-tokens/slint/theme.slint): the dock's height. A change of the dock is this line.
+const DOCK_H: u32 = 64;
+
 fn save(pixels: &slint::SharedPixelBuffer<slint::Rgb8Pixel>, path: &str, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
     let mut encoder = png::Encoder::new(BufWriter::new(File::create(path)?), width, height);
     encoder.set_color(png::ColorType::Rgb);
@@ -31,9 +34,9 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         }
         pixels
     };
-    // The mind button sits at the dock's right end; the dock is the bottom 48px, centred.
+    // The mind button sits at the dock's right end; the dock is the bottom DOCK_H px, centred.
     let bar_changed = |a: &slint::SharedPixelBuffer<slint::Rgb8Pixel>, b: &slint::SharedPixelBuffer<slint::Rgb8Pixel>| {
-        (height as usize - 48..height as usize)
+        (height as usize - DOCK_H as usize..height as usize)
             .flat_map(|y| (width as usize / 2 - 100..width as usize / 2 + 100).map(move |x| y * width as usize + x))
             .filter(|&i| a.as_slice()[i] != b.as_slice()[i])
             .count()
