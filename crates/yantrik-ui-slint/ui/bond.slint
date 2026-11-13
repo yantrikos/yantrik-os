@@ -45,6 +45,9 @@ export component BondScreen inherits Rectangle {
     // The person's one act on the bond: forget what it learned from their answers. Called from the
     // button below, after its confirm, and from nowhere else (bond_receipts.rs, a source test).
     callback forget-bond-history();
+    // Set when a press on "Forget it" changed nothing (the store could not be written). Empty
+    // otherwise. The forget itself is done when the press returns; nothing is left pending.
+    in property <string> forget-error: "";
     // True while the button is asking "are you sure". Not kept: leaving the screen drops it.
     property <bool> confirming-forget: false;
 
@@ -151,6 +154,13 @@ export component BondScreen inherits Rectangle {
                     text: "What the companion learned from your answers (the cards you allowed or refused, what you marked useful or not, what you undid) is kept for up to 180 days.";
                     color: Theme.text-secondary;
                     font-size: Theme.fs-caption;
+                    wrap: word-wrap;
+                }
+
+                if root.forget-error != "" : Text {
+                    text: root.forget-error;
+                    color: Theme.destructive;
+                    font-size: Theme.font-body;
                     wrap: word-wrap;
                 }
 

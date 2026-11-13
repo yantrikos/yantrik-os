@@ -379,6 +379,9 @@ pub struct CompanionBridge {
     private: AtomicBool,
     /// The memory store's path, for reads that must not wait on the worker (`recent_memories`).
     memory_db: String,
+    /// `bond.enabled` from the config: the door writes receipts on the caller's thread, so it
+    /// needs the worker's own gate (`CompanionService::record_bond_receipt`).
+    bond_enabled: bool,
     /// The credential vault's own thread (`vault_lane`): vault calls never queue behind a turn.
     vault_lane: crate::vault_lane::VaultLane,
 }
@@ -735,6 +738,7 @@ impl CompanionBridge {
         let decisions = yantrik_companion::decisions::Decisions::default();
         let decisions_w = decisions.clone();
         let memory_db = config.yantrikdb.db_path.clone();
+        let bond_enabled = config.bond.enabled;
         let vault_lane = crate::vault_lane::VaultLane::start(&memory_db);
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
@@ -755,6 +759,7 @@ impl CompanionBridge {
             incognito_setting: AtomicBool::new(false),
             private: AtomicBool::new(private),
             memory_db,
+            bond_enabled,
             vault_lane,
         }
     }
@@ -820,7 +825,19 @@ impl CompanionBridge {
         let _ = self.cmd_tx.send(CompanionCommand::NoteConversationTurn);
     }
 
-    /// Hand the companion a receipt, or the person's forgetting. The only way the bond moves.
+    /// The memory store's path: the bond door opens its own connection to it.
+    pub(crate) fn memory_db_path(&self) -> &str {
+        &self.memory_db
+    }
+
+    /// Whether a receipt may be written now: the bond is on and the companion is not incognito
+    /// (the Settings switch, or Private mode). The same gate the worker applies.
+    pub(crate) fn bond_recording(&self) -> bool {
+        self.bond_enabled && !(self.incognito_setting.load(Ordering::SeqCst) || self.private.load(Ordering::SeqCst))
+    }
+
+    /// Ask the worker to re-read the bond (`BondCommand::Refresh`). Receipts and Forget never come
+    /// this way: they are written at the press (`bond_receipts::Door`).
     pub fn bond_command(&self, command: crate::bond_receipts::BondCommand) {
         let _ = self.cmd_tx.send(CompanionCommand::Bond(command));
     }
@@ -3018,7 +3035,12 @@ fn build_snapshot(companion: &CompanionService) -> StateSnapshot {
 
 /// The bond as the store has it right now.
 fn bond_snapshot(companion: &CompanionService) -> BondSnapshot {
-    let bond = BondTracker::get_state(&companion.db.conn());
+    bond_snapshot_of(&companion.db.conn())
+}
+
+/// The same, from any connection to the store: the bond door reads back what it just wrote.
+pub(crate) fn bond_snapshot_of(conn: &rusqlite::Connection) -> BondSnapshot {
+    let bond = BondTracker::get_state(conn);
     BondSnapshot {
         bond_score: bond.bond_score,
         bond_level: bond.bond_level.name().to_string(),
@@ -3496,6 +3518,7 @@ impl CompanionBridge {
             incognito_setting: AtomicBool::new(false),
             private: AtomicBool::new(false),
             memory_db: memory_db.to_string(),
+            bond_enabled: true,
             vault_lane: crate::vault_lane::VaultLane::start(memory_db),
         }
     }

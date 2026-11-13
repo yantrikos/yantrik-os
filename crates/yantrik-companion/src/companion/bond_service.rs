@@ -29,6 +29,13 @@ impl CompanionService {
         dropped
     }
 
+    /// Re-read the level and score from the store. The shell's door (`bond_receipts`) writes the
+    /// person's receipts and Forget itself, on its own connection, so the worker only has to look.
+    pub fn refresh_bond(&mut self) {
+        let state = BondTracker::get_state(&self.db.conn());
+        self.take_bond(&state);
+    }
+
     fn take_bond(&mut self, state: &BondState) {
         self.bond_level = state.bond_level;
         self.bond_score = state.bond_score;

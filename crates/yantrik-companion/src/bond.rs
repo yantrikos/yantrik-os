@@ -159,7 +159,7 @@ impl BondTracker {
     }
 
     /// [`Self::record_receipt`] with the clock given, so a test can set it.
-    pub(crate) fn record_receipt_at(conn: &Connection, receipt: &Receipt, now: f64) -> bool {
+    pub fn record_receipt_at(conn: &Connection, receipt: &Receipt, now: f64) -> bool {
         let stamp = now;
         Self::drop_old_receipts(conn, now);
         let source_id = if receipt.source_id.is_empty() {
