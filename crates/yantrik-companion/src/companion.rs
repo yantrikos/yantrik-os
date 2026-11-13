@@ -894,6 +894,8 @@ impl CompanionService {
         // Load user interests and location from memory (before db moves)
         let user_interests = load_user_interests(&db.conn());
         let user_location = load_user_location(&db.conn());
+        // The one place besides the weather app's saved ones that a lookup with nobody there may name.
+        yantrik_companion_core::weather_places::remember_user_location(&user_location);
 
         // Seed curiosity sources from user interests and location
         yantrik_brain::curiosity::seed_default_sources(
@@ -5151,7 +5153,7 @@ fn load_user_interests(conn: &rusqlite::Connection) -> Vec<String> {
     interests
 }
 
-/// Load user location from memory or config.
+/// The person's own `user_preferences` location, or empty.
 fn load_user_location(conn: &rusqlite::Connection) -> String {
     // Try preferences table
     if let Ok(location) = conn.query_row(
@@ -5164,17 +5166,7 @@ fn load_user_location(conn: &rusqlite::Connection) -> String {
         }
     }
 
-    // Try memories
-    if let Ok(location) = conn.query_row(
-        "SELECT content FROM memories WHERE content LIKE '%lives in%' OR content LIKE '%located in%' OR content LIKE '%location%' ORDER BY created_at DESC LIMIT 1",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
-        if !location.is_empty() {
-            return location;
-        }
-    }
-
+    // Only what the person set: never memory text, which an unattended `remember` can write.
     String::new()
 }
 

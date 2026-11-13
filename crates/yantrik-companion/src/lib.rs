@@ -99,7 +99,6 @@ pub mod nudge_templates;
 pub mod active_context;
 pub mod ck5_integration;
 pub mod hallucination_firewall;
-pub mod stewardship;
 pub mod structured_output;
 
 // Top-level convenience re-exports (matching previous API)

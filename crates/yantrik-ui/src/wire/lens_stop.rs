@@ -285,11 +285,11 @@ mod tests {
         let mind = AgentId::new("mind", AgentId::MAIN);
 
         let mut queue = Queue::default();
-        queue.hold("After that, tell me PINEAPPLE.", &mind, "Mind", 7, || 3);
+        queue.hold("After that, tell me PINEAPPLE.", &mind, "Mind", 7, true, || 3);
         assert!(queue.cancel_for(&hermes).is_none(), "queued behind another mind: kept");
         assert_eq!(queue.due(|_| false, 7).map(|q| q.text), Some("After that, tell me PINEAPPLE.".to_string()), "still due");
 
-        queue.hold("After that, tell me PINEAPPLE.", &mind, "Mind", 7, || 3);
+        queue.hold("After that, tell me PINEAPPLE.", &mind, "Mind", 7, true, || 3);
         let taken = queue.cancel_for(&mind).expect("held for the mind being stopped");
         assert_eq!(taken.text, "After that, tell me PINEAPPLE.");
         assert_eq!(queue.due(|_| false, 7), None, "never sent when the turn ends");

@@ -688,6 +688,15 @@ export component FirstRunScreen inherits Rectangle {
                                 horizontal-alignment: center;
                                 wrap: word-wrap;
                             }
+                            // The installer carried the model choice, so no model step is drawn here:
+                            // this is where the first boot says what the choice also sets up.
+                            if root.installer-chose && root.default-mind-words != "" : Text {
+                                text: root.default-mind-words;
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-title-2;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
                             HorizontalLayout {
                                 spacing: 12px;
                                 alignment: center;
@@ -736,6 +745,15 @@ export component FirstRunScreen inherits Rectangle {
                     Text {
                         text: "Choose one. You can add others later.";
                         color: Theme.text-secondary;
+                        font-size: Theme.fs-title-2;
+                        wrap: word-wrap;
+                    }
+                    // What choosing a model also downloads, drawn before the pick that starts it (and
+                    // after it, as the install's own words): the download starts only once the first
+                    // run has had this sentence on a screen (`default_mind::sentence_shown`).
+                    if root.default-mind-words != "" : Text {
+                        text: root.default-mind-words;
+                        color: Theme.text-primary;
                         font-size: Theme.fs-title-2;
                         wrap: word-wrap;
                     }
@@ -941,12 +959,6 @@ export component FirstRunScreen inherits Rectangle {
                         text: root.connect-words;
                         color: root.connect-status == "connected" ? Theme.color-success
                             : root.connect-status == "attention" || root.connect-status == "pick-failed" ? Theme.color-warning : Theme.text-secondary;
-                        font-size: Theme.fs-title-2;
-                        wrap: word-wrap;
-                    }
-                    if root.connect-status == "connected" && root.default-mind-words != "" : Text {
-                        text: root.default-mind-words;
-                        color: Theme.text-secondary;
                         font-size: Theme.fs-title-2;
                         wrap: word-wrap;
                     }
