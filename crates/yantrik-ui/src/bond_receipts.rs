@@ -608,7 +608,7 @@ mod door_tests {
             let conn = Connection::open(&t.path).unwrap();
             conn.execute(
                 "INSERT INTO bond_events (event_id, event_type, delta, context, created_at)
-                 VALUES ('receipt:old:x', 'receipt', 0.1, '{}', 1.0)",
+                 VALUES ('receipt:old:x', 'receipt', 0.1, '{\"source_id\":\"x\"}', 1.0)",
                 [],
             )
             .unwrap();
