@@ -556,7 +556,7 @@ fn voice_runtime_loop(
                         let enriched_message = build_voice_message(&text, &os_context, &conv_context);
 
                         // ── Send to LLM (streaming) ──
-                        let token_rx = bridge.send_message(enriched_message);
+                        let token_rx = bridge.send_person_message(enriched_message);
                         let mut response_text = String::new();
                         let mut sentences_spoken = 0usize;
                         let mut tts_buffer = String::new();

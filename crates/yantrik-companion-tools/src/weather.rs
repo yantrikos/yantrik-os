@@ -9,7 +9,9 @@
 //! nothing is sent. `YANTRIK_NO_GEOLOCATE=1` refuses it outright.
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
+use yantrik_companion_core::background_research;
 use yantrik_ipc_contracts::location_consent;
+use yantrik_companion_core::weather_places;
 
 /// The shell's action that asks the person, and the app it belongs to.
 const APP: &str = "shell";
@@ -41,6 +43,30 @@ fn resolve(location: &str, forbidden: bool, on: bool, ask: impl FnOnce() -> Resu
         Ok(()) => Place::Say(format!("No place named, and location lookups are still off. {}", location_consent::ASK_WEATHER)),
         Err(why) => Place::Say(format!("No place named. {} {why} Nothing was sent; name a city to get the weather there.", location_consent::ASK_WEATHER)),
     }
+}
+
+/// With nobody there, the place goes to wttr.in in the clear, so it must be one the person has: a place
+/// they saved in the weather app, or where they live (`weather_places`), not text the model chose,
+/// however plain it reads. A person's own turn may type anything. `None` lets the call go on.
+fn unplace(location: &str, person: bool, theirs: impl Fn(&str) -> bool) -> Option<String> {
+    let location = location.trim();
+    (!person && !location.is_empty() && !theirs(location)).then(|| {
+        "Refused: with nobody asking, the weather is looked up only for a place the person saved or lives in, and that was not one, so nothing was sent."
+            .to_string()
+    })
+}
+
+/// The places the weather app has saved, as it says them in its `describe`: asked only of a running app,
+/// because starting it would have it fetch a forecast with nobody there. Empty when it is not running.
+fn saved_places(place: &str) -> bool {
+    let saved: Vec<String> = crate::app_ui::describe("weather")
+        .ok()
+        .and_then(|view| view.get("state")?.get("saved_locations")?.as_array().cloned())
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get("name")?.as_str().map(str::to_string))
+        .collect();
+    weather_places::is_theirs(place, &saved)
 }
 
 /// The person's yes, on the shell's own card.
@@ -88,6 +114,9 @@ impl Tool for GetWeatherTool {
 
     fn execute(&self, _ctx: &ToolContext, args: &serde_json::Value) -> String {
         let location = args.get("location").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(refusal) = unplace(location, background_research::person_started(), saved_places) {
+            return refusal;
+        }
         // The switch's first yes in this run is logged with the line `describe shell` shows.
         let on = location_consent::allowed_noting(|line| tracing::warn!("{line}"));
         let location = match resolve(location.trim(), location_consent::env_forbids(), on, ask_the_person) {
@@ -158,6 +187,21 @@ mod tests {
 
     fn never_asked() -> Result<(), String> {
         panic!("the person must not be asked")
+    }
+
+    /// Round 5, low 6, and the review after it: an unattended turn sent any short text to wttr.in as the
+    /// place ("rust news", a contact's name). Only a place the person has goes, with nobody there.
+    #[test]
+    fn with_nobody_there_only_a_place_the_person_has_is_sent() {
+        let theirs = |p: &str| p == "Oslo" || p == "59.9139,10.7522";
+        for text in ["rust news", "Priya Nair", "Rome", "a/b?x=1", "48.8566,2.3522"] {
+            let said = unplace(text, false, theirs).unwrap_or_else(|| panic!("{text:?} was let through"));
+            assert!(said.starts_with("Refused:"), "{said}");
+            assert_eq!(unplace(text, true, theirs), None, "{text:?}: a person types what they like");
+        }
+        for text in ["Oslo", "59.9139,10.7522", "", "  "] {
+            assert_eq!(unplace(text, false, theirs), None, "{text:?}");
+        }
     }
 
     #[test]
