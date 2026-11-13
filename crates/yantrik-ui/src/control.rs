@@ -688,6 +688,8 @@ pub fn publish(
                     ui.get_bar_mem_text()
                 )
             };
+            // `windows` is the open apps; what is ON the desktop is `desktop.items`.
+            let summary = crate::bench::describe::with_pointer(summary);
 
             // Launches that died before they became a window. `open_app` defers, so it answers
             // "accepted" long before anything is on screen -- and when the app then exits, the
