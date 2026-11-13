@@ -216,66 +216,32 @@ impl Tool for AnalyzeDiskTool {
 
         let mut report = Vec::new();
 
-        // 1. Subdirectory sizes (top 10, sorted by size)
-        if let Ok(o) = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&format!("du -sh {}/* 2>/dev/null | sort -rh | head -10", expanded))
-            .output()
-        {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout);
-                if !text.trim().is_empty() {
-                    report.push(format!("Largest items in {}:", path));
-                    for line in text.lines() {
-                        report.push(format!("  {}", line));
-                    }
-                }
+        // Read in this process (disk_scan.rs): no shell ever sees the path.
+        let dir = std::path::Path::new(&expanded);
+
+        // 1. Largest items (top 10)
+        let largest = super::disk_scan::largest_items(dir);
+        if !largest.is_empty() {
+            report.push(format!("Largest items in {}:", path));
+            for (bytes, name) in largest {
+                report.push(format!("  {}	{}", super::format_size(bytes), name));
             }
         }
 
         // 2. Old files (>30 days, summarized)
-        if let Ok(o) = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&format!(
-                "find {} -maxdepth 2 -type f -mtime +30 -printf '%s\\n' 2>/dev/null | awk '{{s+=$1; c++}} END {{printf \"%d files, %.0f\\n\", c, s}}'",
-                expanded
-            ))
-            .output()
-        {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if !text.is_empty() && !text.starts_with("0 files") {
-                    let parts: Vec<&str> = text.splitn(2, ", ").collect();
-                    if parts.len() == 2 {
-                        let count = parts[0];
-                        let bytes: u64 = parts[1].trim().parse().unwrap_or(0);
-                        let size_str = super::format_size(bytes);
-                        report.push(format!("\nOlder than 30 days: {} (~{}).", count, size_str));
-                    }
-                }
-            }
+        let (count, bytes) = super::disk_scan::old_files(dir, std::time::SystemTime::now());
+        if count > 0 {
+            report.push(format!("
+Older than 30 days: {} files (~{}).", count, super::format_size(bytes)));
         }
 
         // 3. File type breakdown (top 8 extensions by count)
-        if let Ok(o) = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&format!(
-                "find {} -maxdepth 2 -type f -name '*.*' 2>/dev/null | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -8",
-                expanded
-            ))
-            .output()
-        {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout);
-                if !text.trim().is_empty() {
-                    report.push("\nFile types:".to_string());
-                    for line in text.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            report.push(format!("  {}", trimmed));
-                        }
-                    }
-                }
+        let types = super::disk_scan::extension_counts(dir);
+        if !types.is_empty() {
+            report.push("
+File types:".to_string());
+            for (n, ext) in types {
+                report.push(format!("  {n} {ext}"));
             }
         }
 

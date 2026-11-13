@@ -45,10 +45,11 @@ pub trait Accounts: Send + Sync {
     fn effort_for(&self, _harness: &str, _model: &str) -> Option<yantrik_ml::model_caps::Effort> {
         None
     }
-    /// The model the person picked for this harness, `<account>/<model>`: what [`crate::PICKED`]
-    /// means for it. `None` when nothing it may use is there to pick.
-    fn picked_model(&self, _harness: &str) -> Option<String> {
-        None
+    /// The model [`crate::PICKED`] means for this harness, `<account>/<model>`. The refusal says,
+    /// in a sentence the person can act on, why there is none: nothing picked or usable, or a pick
+    /// that has gone with no default to use instead.
+    fn picked_model(&self, _harness: &str) -> Result<String, Refusal> {
+        Err(no_pick())
     }
     /// The private lane, `<account>/<model>`: the model on this machine or network that a call
     /// carrying private context goes to when the person keeps it on this computer for the account
@@ -211,7 +212,7 @@ impl Gateway {
             "id": crate::PICKED,
             "object": "model",
             "owned_by": "yantrik",
-            "yantrik": { "name": "The model picked in the ask bar", "picked": self.accounts.picked_model(&grant.harness) },
+            "yantrik": { "name": "The model picked in the ask bar", "picked": self.accounts.picked_model(&grant.harness).ok() },
         })];
         let listed: Vec<Value> = self
             .accounts
@@ -244,6 +245,7 @@ impl Gateway {
         let started = Instant::now();
         let mut call = Call {
             at: now(),
+            rid: crate::log::new_rid(),
             harness: grant.harness.clone(),
             account: String::new(),
             model: String::new(),
@@ -391,7 +393,7 @@ pub struct Routed {
 pub fn route_call(accounts: &dyn Accounts, grant: &Grant, asked: &str, parsed: impl FnOnce(&route::Route)) -> Result<Routed, Refusal> {
     let mut asked = asked.to_string();
     if asked == crate::PICKED {
-        asked = accounts.picked_model(&grant.harness).ok_or_else(no_pick)?;
+        asked = accounts.picked_model(&grant.harness)?;
     }
     let r = route::parse(&asked).ok_or_else(|| {
         Refusal::new(404, "model_not_found", format!("`{asked}` is not a model here: name one as <account>/<model>, from /v1/models."))
@@ -408,7 +410,7 @@ pub fn route_call(accounts: &dyn Accounts, grant: &Grant, asked: &str, parsed: i
 /// The refusal for [`crate::PICKED`] when nothing is picked and nothing usable is there to pick.
 pub const NO_PICK: &str = "No model is picked for this mind yet: pick one in the ask bar, or add an account under Settings → AI & Intelligence.";
 
-fn no_pick() -> Refusal {
+pub fn no_pick() -> Refusal {
     Refusal::new(404, "model_not_found", NO_PICK)
 }
 

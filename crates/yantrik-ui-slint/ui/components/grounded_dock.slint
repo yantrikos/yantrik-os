@@ -31,6 +31,7 @@
 // Idle: the three Timers below run only while a pointer rests on a button or the list is waiting
 // to close, and each stops itself. At rest nothing ticks and nothing animates.
 
+import { YShadow } from "y_shadow.slint";
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icon.slint";
 import { AppTile } from "app_tile.slint";
@@ -331,6 +332,18 @@ export component GroundedDock inherits Rectangle {
         interval: 200ms;
         running: root.list-shown && !root.list-held && root.over-id == "" && !root.over-list && !root.over-row;
         triggered => { root.close-list(); }
+    }
+
+    // The dock's shadow (a picture, so a VM draws it too: y_shadow.slint). It is a sibling under
+    // the bar and outside its clip: the bar below is clipped, which is how its bottom corners are
+    // square, and anything inside the clip is cut off with them. The shadow is drawn for the whole
+    // rounded plate, the screen's edge takes the part below, and what is left is the lift along
+    // the top and round the two corners.
+    YShadow {
+        x: bar.x;
+        y: bar.y;
+        width: bar.width;
+        height: bar.height + Theme.r-xl;
     }
 
     // ── The bar ──

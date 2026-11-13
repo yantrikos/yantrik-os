@@ -32,6 +32,8 @@ use std::path::PathBuf;
 use yantrik_companion::CompanionConfig;
 
 mod accounts;
+// Which model is answering a mind, said once for the panel, the bubble, the Lens and describe (#1114).
+mod answering;
 // The AI accounts the person added and their models (#673): Settings, the picker, the gateway.
 mod ai_accounts;
 // The local model gateway on 127.0.0.1:7460, which forwards a mind's calls to those accounts.
@@ -106,7 +108,14 @@ mod control_files_mind;
 /// Whether a mind may paste the Files clipboard into the folder on screen (#443).
 mod control_files_paste;
 /// Agents' commands on the shell's surface: agent_run / agent_job / agent_input / agent_kill.
+mod control_agent_late;
 mod control_agent_terminal;
+mod control_workshop;
+mod workshop;
+mod workshop_export;
+mod workshop_move;
+mod workshop_out;
+mod workshop_play;
 /// A recipe on the shell's surface: answer_recipe / pause_recipe / resume_recipe / cancel_recipe.
 mod control_recipes;
 /// Agents on the shell's surface: new_agent / send_to_agent / stop_agent / read_agent / show_agent.
@@ -144,6 +153,7 @@ mod i18n;
 mod mime_dispatch;
 mod lens;
 /// The Lens's conversation put back from the saved session when it opens empty (#246).
+mod answered_turns;
 mod lens_history;
 mod lock;
 mod lock_wallpaper;
@@ -323,6 +333,7 @@ fn main() {
     // only one that has one — so the manager and the hook come first. Nothing in `init` or in
     // `wire_all` depends on the services being down.
     let service_manager = start_services();
+    wire::browser_pipe::note_service_manager(service_manager.clone());
 
     // Anything in this process that needs an on-demand service can now start it directly.
     //

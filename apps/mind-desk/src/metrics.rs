@@ -37,7 +37,7 @@ pub const MARGIN_TOP: u32 = HEADER_HEIGHT + STRIP_HEIGHT + FOOTER_HEIGHT;
 /// The window's height: the margin and the hairline over the apps' first row.
 pub const BAR_HEIGHT: u32 = MARGIN_TOP + OVERLAP;
 
-/// The title the compositor's window rule matches (`ui/app.slint` sets it), and the app id beside
-/// it (`MindDesk::model` sets it): a window that wants the bar's place has to set both.
+/// The title the compositor's window rule matches (`ui/app.slint` sets it). The app id beside it
+/// is the framework's (`boot::window_app_id`), and a window that wants the bar's place has to set
+/// both.
 pub const TITLE: &str = "Yantrik Mind Desk";
-pub const APP_ID: &str = "yantrik-mind-desk";

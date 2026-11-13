@@ -11,6 +11,21 @@ The biggest visual improvement is subtraction: **give the person their screen ba
 
 ---
 
+## Amendment, 12 Nov 2026 (shell pass 1, #1195)
+
+Four rows below are overridden. Where the text further down disagrees with this section, this section is the spec. The reason for each is in the PR.
+
+| Row | Was | Is now | Why |
+|---|---|---|---|
+| 3A, the top bar | Opaque `#0B121C` with a 1px hairline, everywhere | The same, except on the bare desktop (no app window in front), where the bar has no fill and no hairline and its words sit on the photograph over a scrim: `#04070C` at 72% across the bar's 36px, fading to nothing by 120px (light: `#F4F6F9` at 85%) | An opaque bar was a lid on the photograph the desktop is made of. 72% is what the bar's quieter text needs for 4.5:1 over a white sky |
+| 2, the greeting | 36/500 | 44/500 | At 36 it weighed the same as the ask field under it; it is the one large thing on the desktop |
+| 3B, the ask field | 560 × 56px beside a Continue card of the same size | 560 × 56px alone; "Continue …" is a 36px line under it that hugs its words | Two equal boxes have no first thing |
+| 2, the Level 2 shadow | `#000000` at 28%, blur 20px, offset `(0, 6)`, as a drop shadow (light: `#14253B` at 12%) | A picture, drawn under the surface (`YShadow`): a wide layer at 62%, blur 18px, offset `(0, 14)` and a contact layer at 34%, blur 4px, offset `(0, 3)`, combined; black in dark, `#14253B` at 42% of that strength in light. `scripts/render-shadow.py` holds the numbers | The software renderer every VM runs draws no drop shadow at all, and at 28% the shadow was invisible over a night photograph even where it was drawn |
+
+Not yet moved to the picture: the Mind panel's peek, toasts, dialogs and whisper cards.
+
+---
+
 ## 1. Design language
 
 ### The feeling: night architecture
