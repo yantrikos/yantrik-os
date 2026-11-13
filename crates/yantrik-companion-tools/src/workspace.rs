@@ -468,16 +468,16 @@ mod tests {
         assert!(answer.contains("not applied"), "{answer}");
     }
 
-    /// `browsing` is exactly one `open_app chromium` request.
+    /// `browsing` is exactly one `open_app browser` request: the shell's own name for its browser.
     #[test]
-    fn browsing_is_one_open_app_chromium_request() {
+    fn browsing_is_one_open_app_browser_request() {
         let mut asked: Vec<String> = Vec::new();
         let answer = apply_with("browsing", &[], |app| {
             asked.push(format!("open_app {app}"));
             Ok(())
         });
-        assert_eq!(asked, ["open_app chromium"]);
-        assert!(answer.contains("Launched: chromium"), "{answer}");
+        assert_eq!(asked, ["open_app browser"]);
+        assert!(answer.contains("Launched: browser"), "{answer}");
     }
 
     #[test]
