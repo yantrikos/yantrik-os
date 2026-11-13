@@ -10,6 +10,8 @@ use std::process::Command;
 use yantrik_browser_ports::{self as ports};
 use yantrik_ipc_contracts::home_paths::workshops;
 
+pub use ports::quiet_args;
+
 /// `binary args` as a command that runs in the browser view (the workshops base hidden), or the
 /// reason it must not run: nothing is started unwrapped on a machine that holds workshops.
 pub fn walled(home: &Path, binary: &str, args: &[String]) -> Result<Command, String> {
@@ -26,10 +28,6 @@ pub fn headless(home: &Path, binary: &str, profile: &Path, port: u16) -> Result<
         "--ozone-platform=headless",
         "--no-first-run",
         "--no-default-browser-check",
-        // Chromium's own calls home (Google's component updater, field trials, safe-browsing
-        // pings) are not the person's search and are never made.
-        "--disable-background-networking",
-        "--disable-component-update",
         "--disable-gpu",
         // Anti-detection: no navigator.webdriver, a real user agent and viewport, WebGL on.
         "--disable-blink-features=AutomationControlled",
@@ -42,6 +40,7 @@ pub fn headless(home: &Path, binary: &str, profile: &Path, port: u16) -> Result<
     ]
     .map(String::from)
     .to_vec();
+    args.extend(quiet_args());
     args.extend(ports::debugging_flags(port));
     args.push(format!("--user-data-dir={}", profile.display()));
     args.push("about:blank".to_string());
@@ -52,6 +51,16 @@ pub fn headless(home: &Path, binary: &str, profile: &Path, port: u16) -> Result<
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    /// The headless launch carries every quiet switch and exactly one `--disable-features=`.
+    #[test]
+    fn the_headless_start_carries_every_quiet_switch_and_feature() {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        if let Ok(c) = headless(&home, "/usr/bin/chromium", Path::new("/tmp/p"), 9223) {
+            let a = argv(&c);
+            ports::carries_quiet(&a).unwrap();
+        }
+    }
 
     fn argv(c: &Command) -> Vec<String> {
         c.get_args().map(OsStr::to_string_lossy).map(|s| s.into_owned()).collect()
