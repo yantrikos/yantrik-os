@@ -129,34 +129,29 @@ fn parse_glob_pattern(pattern: &str) -> (String, String, bool) {
     (String::new(), pattern.to_string(), false)
 }
 
-/// Match a filename against a simple glob pattern.
+/// Match a filename against a glob pattern: `*` stands for any run of characters, anywhere
+/// (`*.rs`, `Cargo.*`, `*report*.md`); everything else must match as written.
 fn matches_pattern(pattern: &str, name: &str) -> bool {
-    if pattern == "*" {
-        return true;
+    let (p, n) = (pattern.as_bytes(), name.as_bytes());
+    let (mut pi, mut ni) = (0, 0);
+    // Where the last `*` was, and how much of `name` it has swallowed so far.
+    let mut star: Option<(usize, usize)> = None;
+    while ni < n.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            star = Some((pi, ni));
+            pi += 1;
+        } else if pi < p.len() && p[pi] == n[ni] {
+            pi += 1;
+            ni += 1;
+        } else if let Some((sp, sn)) = star {
+            pi = sp + 1;
+            ni = sn + 1;
+            star = Some((sp, sn + 1));
+        } else {
+            return false;
+        }
     }
-
-    // Handle *.ext
-    if let Some(ext) = pattern.strip_prefix("*.") {
-        return name.ends_with(&format!(".{}", ext));
-    }
-
-    // Handle prefix.*
-    if let Some(prefix) = pattern.strip_suffix(".*") {
-        return name.starts_with(&format!("{}.", prefix));
-    }
-
-    // Handle prefix*
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return name.starts_with(prefix);
-    }
-
-    // Handle *suffix
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return name.ends_with(suffix);
-    }
-
-    // Exact match
-    pattern == name
+    p[pi..].iter().all(|&c| c == b'*')
 }
 
 fn collect_matching_files(
@@ -204,6 +199,27 @@ fn collect_matching_files(
                 .unwrap_or(std::time::UNIX_EPOCH);
             results.push((path.to_string_lossy().to_string(), mtime));
         }
+    }
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::matches_pattern;
+
+    #[test]
+    fn a_star_stands_for_any_run_anywhere_in_the_pattern() {
+        assert!(matches_pattern("*", "anything.md"));
+        assert!(matches_pattern("*.md", "gate8-alpha-report.md"));
+        assert!(matches_pattern("Cargo.*", "Cargo.toml"));
+        assert!(matches_pattern("*alpha*.md", "gate8-alpha-report.md"));
+        assert!(matches_pattern("*alpha*", "gate8-alpha-report.md"));
+        assert!(matches_pattern("a*b*c", "aXXbYYc"));
+        assert!(matches_pattern("exact.txt", "exact.txt"));
+        assert!(!matches_pattern("*alpha*.md", "gate8-alpha-report.txt"));
+        assert!(!matches_pattern("*alpha*.md", "gate8-beta-report.md"));
+        assert!(!matches_pattern("*.md", "notes.md.bak"));
+        assert!(!matches_pattern("exact.txt", "exact.txt2"));
+        assert!(!matches_pattern("*Alpha*", "alpha.md"), "case matters, as it always did");
     }
 }
 

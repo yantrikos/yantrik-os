@@ -46,6 +46,16 @@ pub struct World {
 
 pub type Shared = Arc<Mutex<World>>;
 
+/// `*` stands for any run of characters; the rest matches as written.
+fn wildcard(pattern: &str, name: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == name,
+        Some((head, rest)) => {
+            name.strip_prefix(head).is_some_and(|tail| (0..=tail.len()).any(|i| tail.is_char_boundary(i) && wildcard(rest, &tail[i..])))
+        }
+    }
+}
+
 struct FakeGlob(Shared);
 struct FakeApps(Shared);
 struct FakeWeb(Shared);
@@ -58,9 +68,14 @@ impl Tool for FakeGlob {
     fn execute(&self, _: &ToolContext, args: &Value) -> String {
         let mut w = self.0.lock().unwrap();
         w.calls.push(("glob".into(), args.clone()));
-        let ext = args["pattern"].as_str().unwrap_or("").rsplit('.').next().unwrap_or("").to_string();
+        let pattern = args["pattern"].as_str().unwrap_or("").trim_start_matches("**/").to_string();
         let root = args["path"].as_str().unwrap_or("~").to_string();
-        let hits: Vec<&String> = w.files.iter().filter(|f| f.ends_with(&format!(".{ext}")) && f.starts_with(&root)).collect();
+        // The real tool's wildcard: `*` stands for any run of characters, matched on the file name.
+        let hits: Vec<&String> = w
+            .files
+            .iter()
+            .filter(|f| f.starts_with(&root) && wildcard(&pattern, f.rsplit('/').next().unwrap_or("")))
+            .collect();
         if hits.is_empty() {
             return format!("No files matching '{}' in {root}", args["pattern"].as_str().unwrap_or(""));
         }

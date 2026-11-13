@@ -721,6 +721,9 @@ impl CompanionService {
         // World model tables (commitments, preferences, routines)
         crate::world_model::WorldModel::ensure_tables(&db.conn());
 
+        // What was prepared in advance (#1184): without this table every preparation is lost.
+        crate::anticipation::AnticipationEngine::ensure_table(&db.conn());
+
         // Trust model tables (3-axis trust + event log)
         crate::trust_model::TrustModel::ensure_table(&db.conn());
 
@@ -1149,6 +1152,8 @@ impl CompanionService {
                     | "reminder" | "pattern_surfacing" | "conflict_alerting"
                     | "MemoryWeaver"
                     | "predictive_workflow" | "routine" | "cognitive_load" | "smart_updates"
+                    // Local and gated by the person's own yes, whatever skills are on.
+                    | "commitment_prep"
                 );
                 is_core || snapshot.enabled_instincts.contains(name)
             });

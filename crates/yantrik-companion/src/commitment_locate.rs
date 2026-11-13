@@ -7,7 +7,8 @@
 //! than one candidate none is chosen: the answer is how many there were. The newest file is never
 //! taken for want of anything better.
 //!
-//! Only the person's own document folders are searched, not their whole home.
+//! Only the person's own document folders are searched, not their whole home. A listing the tool
+//! cut short is asked again by name, so a file among hundreds is still found.
 
 use std::path::{Path, PathBuf};
 
@@ -117,29 +118,72 @@ fn listed(said: &str) -> (Vec<&str>, bool) {
     (paths, said.lines().any(|l| l.starts_with("... and ")))
 }
 
-/// Find `file` among the files in `roots`, with the one `glob` the tools offer.
-pub fn locate(hands: &mut Hands<'_>, file: &NamedFile, kind: FileKind, roots: &[String]) -> Located {
-    if distinguishing(file).is_empty() {
-        return Located::TooGeneral;
-    }
+/// The glob patterns to ask for one extension.
+type Patterns<'a> = &'a dyn Fn(&str) -> Vec<String>;
+
+/// What one pass over the folders found: the files that could be `file`, and whether any listing
+/// was cut short. `Err` when the time ran out.
+fn collect(
+    hands: &mut Hands<'_>,
+    file: &NamedFile,
+    kind: FileKind,
+    roots: &[String],
+    patterns: Patterns<'_>,
+) -> Result<(Vec<String>, bool), Located> {
     let mut candidates: Vec<String> = Vec::new();
     let mut cut = false;
     for ext in kind.extensions() {
         for root in roots {
-            if hands.out_of_time() {
-                return Located::Later(Failed::Later("I ran out of time and will pick this up again".into()).words().to_string());
-            }
-            let said = hands.call("glob", json!({ "pattern": format!("**/*.{ext}"), "path": root }));
-            let (paths, truncated) = listed(&said);
-            cut |= truncated;
-            for path in paths.into_iter().filter(|p| could_be(file, kind, p)) {
-                if !candidates.iter().any(|c| c == path) {
-                    candidates.push(path.to_string());
+            for pattern in patterns(ext) {
+                if hands.out_of_time() {
+                    return Err(Located::Later(Failed::Later("I ran out of time and will pick this up again".into()).words().to_string()));
+                }
+                let said = hands.call("glob", json!({ "pattern": pattern, "path": root }));
+                let (paths, truncated) = listed(&said);
+                cut |= truncated;
+                for path in paths.into_iter().filter(|p| could_be(file, kind, p)) {
+                    if !candidates.iter().any(|c| c == path) {
+                        candidates.push(path.to_string());
+                    }
                 }
             }
         }
     }
-    // A listing that was cut short may be missing the file that tells the candidates apart: one
+    Ok((candidates, cut))
+}
+
+/// The spellings of `word` a file name is likely to use: `report`, `Report`, `REPORT`.
+fn spellings(word: &str) -> Vec<String> {
+    let mut title = word.to_string();
+    if let Some(first) = title.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    let mut all = vec![word.to_string(), title, word.to_uppercase()];
+    all.dedup();
+    all
+}
+
+/// Find `file` among the files in `roots`, with the one `glob` the tools offer. `glob` lists only
+/// the newest fifty, so when a listing is cut the folders are asked again for names that carry the
+/// label's most telling word, which a few files do even when hundreds share the extension.
+pub fn locate(hands: &mut Hands<'_>, file: &NamedFile, kind: FileKind, roots: &[String]) -> Located {
+    let words = distinguishing(file);
+    let Some(telling) = words.iter().max_by_key(|w| w.len()).cloned() else {
+        return Located::TooGeneral;
+    };
+    let broad = |ext: &str| vec![format!("**/*.{ext}")];
+    let (mut candidates, mut cut) = match collect(hands, file, kind, roots, &broad) {
+        Ok(found) => found,
+        Err(later) => return later,
+    };
+    if cut {
+        let by_name = |ext: &str| spellings(&telling).into_iter().map(|w| format!("**/*{w}*.{ext}")).collect::<Vec<_>>();
+        (candidates, cut) = match collect(hands, file, kind, roots, &by_name) {
+            Ok(found) => found,
+            Err(later) => return later,
+        };
+    }
+    // A listing that is still cut may be missing the file that tells the candidates apart: one
     // visible candidate among a cut list is not "the one", so none is chosen.
     match candidates.len() {
         0 if cut => Located::TooMany,
