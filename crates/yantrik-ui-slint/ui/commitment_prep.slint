@@ -1,0 +1,146 @@
+// Getting promised things ready: the person's own yes, no and turn-on (#1184).
+//
+// The answer is the person's alone, so it has its own buttons and its own callback, `PrepState.answer`.
+// It is never a row's expand toggle: a click that only folds a row cannot answer. Every button is
+// `pointer-only` (no Tab and Enter, no accessibility default action), so only a deliberate click
+// presses it. Rust (wire/commitment_prep.rs) is the only code that listens, and says the answer back in
+// a toast.
+//
+// Two places use this: the question and the way back on the morning brief card
+// (components/morning_brief.slint), and the switch in Settings > Companion (PrepSwitch below), which
+// is always there when the brief has gone.
+
+import { Theme } from "theme.slint";
+import { YButton } from "components/y_button.slint";
+
+// One card raised in the shell for an item: the question, or what was done with Turn off.
+export struct PrepCardData {
+    item: string,
+    title: string,
+    text: string,
+    yes-label: string,
+    yes-id: string,
+    no-label: string,
+    no-id: string,
+}
+
+export global PrepState {
+    // The cards to show, one per item. They go when the item is answered or has expired.
+    in-out property <[PrepCardData]> cards;
+    // Whether getting promised things ready is on; the shell keeps it current.
+    in-out property <bool> on: true;
+    // The question that waits, when one does: its sentence and the ids of its two buttons.
+    in-out property <string> question;
+    in-out property <string> yes-id;
+    in-out property <string> no-id;
+    // The ids of the turn-off and turn-on buttons, from the companion, so they cannot drift.
+    in-out property <string> off-id;
+    in-out property <string> on-id;
+    callback answer(string);
+}
+
+// The buttons of one answer. `no-id` empty means a single button (turn back on).
+export component PrepChoices inherits HorizontalLayout {
+    in property <string> yes-label: "Yes";
+    in property <string> yes-id;
+    in property <string> no-label: "No";
+    in property <string> no-id;
+    spacing: Theme.sp-2;
+    alignment: start;
+
+    YButton {
+        label: root.yes-label;
+        pointer-only: true;
+        clicked => { PrepState.answer(root.yes-id); }
+    }
+    if root.no-id != "": YButton {
+        label: root.no-label;
+        variant: 1;
+        pointer-only: true;
+        clicked => { PrepState.answer(root.no-id); }
+    }
+}
+
+// Settings > Companion: the switch, and the question when one waits.
+export component PrepSwitch inherits VerticalLayout {
+    spacing: Theme.sp-2;
+
+    Rectangle { height: 1px; background: Theme.border-subtle; }
+    HorizontalLayout {
+        spacing: Theme.sp-3;
+        Text {
+            text: "Get promised things ready";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-body;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        Text {
+            text: PrepState.on ? "On" : "Off";
+            color: PrepState.on ? Theme.amber : Theme.text-dim;
+            font-size: Theme.fs-body;
+            vertical-alignment: center;
+        }
+        YButton {
+            label: PrepState.on ? "Turn off" : "Turn on";
+            variant: 1;
+            pointer-only: true;
+            clicked => { PrepState.answer(PrepState.on ? PrepState.off-id : PrepState.on-id); }
+        }
+    }
+    Text {
+        text: "Opens the files a promise names in Mind View and drafts the email. Nothing is ever sent.";
+        color: Theme.text-dim;
+        font-size: Theme.fs-caption;
+        wrap: word-wrap;
+    }
+    if PrepState.question != "": VerticalLayout {
+        spacing: Theme.sp-2;
+        Text {
+            text: PrepState.question;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        PrepChoices { yes-id: PrepState.yes-id; no-id: PrepState.no-id; }
+    }
+}
+
+// A card on the desktop, where the person is: it stays until its item is answered or expires. Its
+// buttons are `PrepChoices`, so they are pointer-only and press `PrepState.answer`, as the brief's do.
+export component PrepAsk inherits Rectangle {
+    in property <PrepCardData> card;
+
+    width: 300px;
+    height: body.preferred-height + 2 * Theme.sp-3;
+    border-radius: 16px;
+    background: Theme.bg-deep.transparentize(10%);
+    border-width: 1px;
+    border-color: Theme.border-default;
+
+    body := VerticalLayout {
+        x: Theme.sp-3;
+        width: parent.width - 2 * Theme.sp-3;
+        y: Theme.sp-3;
+        spacing: Theme.sp-2;
+        Text {
+            text: root.card.title;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.card.text;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            wrap: word-wrap;
+        }
+        PrepChoices {
+            yes-label: root.card.yes-label;
+            yes-id: root.card.yes-id;
+            no-label: root.card.no-label;
+            no-id: root.card.no-id;
+        }
+    }
+}

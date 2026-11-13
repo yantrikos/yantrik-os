@@ -1315,7 +1315,7 @@ impl CompanionService {
 
     /// The highest tool permission this turn may use: the configured one, or the turn's own
     /// ceiling where that is lower.
-    fn max_permission_now(&self) -> PermissionLevel {
+    pub(crate) fn max_permission_now(&self) -> PermissionLevel {
         let configured = parse_permission(&self.config.tools.max_permission);
         match self.turn_ceiling {
             Some(ceiling) if ceiling < configured => ceiling,

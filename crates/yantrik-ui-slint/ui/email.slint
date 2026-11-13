@@ -9,6 +9,7 @@ import { YEmptyState } from "components/y_empty_state.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
+import { PreparedEntry, PreparedBar } from "email_prepared.slint";
 
 // ── Data Structures ──
 
@@ -201,6 +202,9 @@ export component EmailClient inherits Rectangle {
     in property <[EmailAttachmentData]> email-attachments: [];
     in property <int> email-triage-view: 0;  // 0=all, 1=unread, 2=flagged
     in property <string> email-draft-status: "";  // "Draft saved" / "Draft restored" / ""
+    in property <string> prepared-label: "";  // "Draft Yantrik prepared for Maya", or "" when none
+    in property <bool> composing-prepared: false;  // the composer shows that draft
+    in property <string> prepared-file: "";  // the file it carries, or ""
     in property <string> email-ai-intent: "";  // "action-needed", "fyi", "meeting", "newsletter"
 
     // Callbacks — email operations
@@ -222,6 +226,9 @@ export component EmailClient inherits Rectangle {
     callback search-emails(string);
     callback sync-emails();
     callback cancel-compose();
+    callback open-prepared();
+    callback discard-prepared();
+    callback remove-attachment();
     callback add-account();              // open setup for an additional account
     callback cancel-setup();             // leave the setup form without saving
     callback toggle-thread-message(int); // collapse/expand a thread message
@@ -884,6 +891,7 @@ export component EmailClient inherits Rectangle {
                         clicked => { root.compose-new(); }
                     }
 
+                    PreparedEntry { label: root.prepared-label; opened => { root.open-prepared(); } }
                     Rectangle { height: Theme.sp-3; }
 
                     // Folder list with icons, active indicator, and badges
@@ -1420,30 +1428,14 @@ export component EmailClient inherits Rectangle {
                             }
 
                             // Draft autosave indicator
-                            if root.email-draft-status != "" : Text {
-                                text: root.email-draft-status;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-caption;
-                                vertical-alignment: center;
-                            }
+                            if root.email-draft-status != "" : Text { text: root.email-draft-status; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
                         }
 
                         HorizontalLayout {
                             spacing: Theme.sp-2;
 
-                            YButton {
-                                label: "Save Draft";
-                                variant: 1;
-                                size: 0;
-                                clicked => { root.save-draft(); }
-                            }
-
-                            YButton {
-                                label: "Cancel";
-                                variant: 1;
-                                size: 0;
-                                clicked => { root.cancel-compose(); }
-                            }
+                            YButton { label: "Save Draft"; variant: 1; size: 0; clicked => { root.save-draft(); } }
+                            YButton { label: "Cancel"; variant: 1; size: 0; clicked => { root.cancel-compose(); } }
 
                             YButton {
                                 label: root.is-sending ? "Sending…" : "Send"; disabled: root.is-sending; loading: root.is-sending;
@@ -1457,6 +1449,7 @@ export component EmailClient inherits Rectangle {
                     }
 
                     Rectangle { height: 1px; background: Theme.border-subtle; }
+                    if root.composing-prepared : PreparedBar { file: root.prepared-file; discard => { root.discard-prepared(); } remove-attachment => { root.remove-attachment(); } }
 
                     // To field
                     Rectangle {

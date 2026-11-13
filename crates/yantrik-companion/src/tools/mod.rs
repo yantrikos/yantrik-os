@@ -12,6 +12,7 @@ pub mod email;
 pub mod mcp;
 pub mod memory;
 pub mod open_loops;
+pub mod commitment_prep_tools;
 pub mod recipe;
 pub mod scheduler;
 pub mod spawn_agents;
@@ -76,6 +77,7 @@ pub fn build_registry(config: &CompanionConfig) -> ToolRegistry {
     recipe::register(&mut reg);
     spawn_agents::register(&mut reg);
     open_loops::register(&mut reg);
+    commitment_prep_tools::register(&mut reg);
 
     // Network tools — web_fetch gets LLM for AI extraction
     {

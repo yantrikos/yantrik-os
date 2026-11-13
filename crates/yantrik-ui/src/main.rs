@@ -52,6 +52,7 @@ mod approval_bounds;
 #[allow(dead_code)]
 mod apps;
 mod bridge;
+mod commitment_brief;
 /// Who is actually on the socket, as far as the kernel and `/proc` can say. See issue #43.
 mod caller_identity;
 mod companion_rpc;

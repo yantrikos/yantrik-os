@@ -110,6 +110,9 @@ export component EmailApp inherits AppWindow {
     in property <[EmailAttachmentData]> email-attachments <=> client.email-attachments;
     in property <int> email-triage-view <=> client.email-triage-view;
     in property <string> email-draft-status <=> client.email-draft-status;
+    in property <string> prepared-label <=> client.prepared-label;
+    in property <bool> composing-prepared <=> client.composing-prepared;
+    in property <string> prepared-file <=> client.prepared-file;
     in property <string> email-ai-intent <=> client.email-ai-intent;
 
     // ── Callbacks (forwarded via alias — no parens allowed) ──
@@ -131,6 +134,9 @@ export component EmailApp inherits AppWindow {
     callback search-emails <=> client.search-emails;
     callback sync-emails <=> client.sync-emails;
     callback cancel-compose <=> client.cancel-compose;
+    callback open-prepared <=> client.open-prepared;
+    callback discard-prepared <=> client.discard-prepared;
+    callback remove-attachment <=> client.remove-attachment;
     callback add-account <=> client.add-account;
     callback toggle-thread-message <=> client.toggle-thread-message;
     callback open-original <=> client.open-original;

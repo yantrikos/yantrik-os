@@ -63,6 +63,9 @@ impl App for Email {
         }
         let mut model = Model::new(backend::for_app(&boot.paths), boot.mind.clone(), files, kept);
         model.for_mind = boot.for_mind;
+        model.service = boot.service;
+        model.compose_only = boot.service;
+        model.composer.mind = state::load_mind_draft(&model.files.mind_draft);
         model.composer.kept_unsure = sending.is_some() || files::is_unsure(&model.files.draft);
         // Said once the first look lands, unless the person has chosen about the draft first.
         model.composer.announce_unsent = from_lanes.as_ref().map(|_| match sending {
@@ -85,7 +88,11 @@ impl App for Email {
         // One look at the mail service, which starts it if it is not running. Not for the
         // fixture, which has no service behind it. Intents need the account, so an agent's start
         // has it; the person's recovery below does not belong to it.
-        if !m.looked {
+        //
+        // An agent's start never looks on its own (`Model::compose_only`): `compose` and
+        // `forget_prepared` need no account, so no IMAP or SMTP session is opened for them. The first
+        // intent that needs the mailbox looks at once, and the person's arrival does too.
+        if !m.looked && !m.service {
             fx.then(Command::Look(command::Look::Start));
         }
     }
