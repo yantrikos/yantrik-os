@@ -32,7 +32,9 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Compiling the test binaries one job at a time (below) takes ~30 minutes, and a whole run
+    # measured 56.6 of the old 60: too close to turn a slow runner into a new kind of kill.
+    timeout-minutes: 75
 
     steps:
       - uses: actions/checkout@v4
