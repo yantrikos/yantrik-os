@@ -315,6 +315,8 @@ fn companion_rs_is_scanned_past_its_placeholder_tests() {
 fn a_spawn_by_alias_or_exec_is_found_in_the_syntax() {
     for code in [
         "type Cmd = std::process::Command;",
+        "pub type Planned = (&'static str, Command, Vec<String>);",
+        "type Made = Result<Option<std::process::Command>, String>;",
         "use std::process::{Command as C, Stdio};",
         "use std::process::Command as C;",
         "use tokio::process::*;",
@@ -330,6 +332,7 @@ fn a_spawn_by_alias_or_exec_is_found_in_the_syntax() {
     }
     for code in [
         "use std::process::{Command, Stdio};",
+        "pub fn plan() -> Result<Option<(&'static str, Command, Vec<String>)>, String> { Ok(None) }",
         "use libc::{c_int, getpwuid};",
         "fn f() { Command::new(\"ls\"); libc::getuid(); }",
     ] {
