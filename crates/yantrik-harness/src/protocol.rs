@@ -218,6 +218,14 @@ pub struct Attach {
     /// its token, and the desktop never queues a turn for it.
     #[serde(default = "yes")]
     pub takes_turns: bool,
+    /// Asks for a second token, for the harness's own background work (`hermes:gateway`): the
+    /// reply carries it as `gateway_token`. A harness whose tools bridge is started by the
+    /// harness's runtime, not by the harness itself, runs under the mind account's door
+    /// (#411) with no way to hand that bridge a conversation's token; this is the token it
+    /// uses instead. It is held while the attach lives, with the harness's reach, takes no
+    /// turns, and is never the person's chat: the Lens's + does not clear its taint.
+    #[serde(default)]
+    pub gateway: bool,
 }
 
 fn yes() -> bool {
@@ -439,6 +447,7 @@ mod tests {
             resume: Vec::new(),
             shared: false,
             takes_turns: true,
+            gateway: false,
         })
         .unwrap();
         let keys: Vec<&str> = json.as_object().unwrap().keys().map(|k| k.as_str()).collect();
@@ -517,6 +526,7 @@ mod tests {
             resume: vec![resume.clone()],
             shared: false,
             takes_turns: true,
+            gateway: false,
         })] {
             assert!(!printed.contains(token) && !printed.contains(&credential), "{printed}");
             assert!(printed.contains("<redacted>"), "it says one is there: {printed}");

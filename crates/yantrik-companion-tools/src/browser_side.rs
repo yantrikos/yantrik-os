@@ -121,7 +121,7 @@ mod tests {
     }
 
     fn takes(profile: &Path, pid: u32) {
-        symlink(format!("host-{pid}"), profile.join("SingletonLock")).unwrap();
+        symlink(format!("{}-{pid}", yantrik_browser_ports::this_host().unwrap_or_else(|| "h".into())), profile.join("SingletonLock")).unwrap();
     }
 
     #[test]

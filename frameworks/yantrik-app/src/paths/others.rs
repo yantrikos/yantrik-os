@@ -108,6 +108,7 @@ pub const ENTRIES: &[Entry] = &[
     other(Data, "taint-scopes.json", "shell"),
     other(Data, "mind-audit.jsonl", "shell"),
     other(Data, "last-brief", "shell"),
+    other(Data, "workshops", "the Minds' workshops (root-made, the person's session cannot see inside)"),
     other(Data, "mind-view-browser", "shell (a browser profile) (S)"),
     other(Data, "trash-v2", "shell fileops, Studio"),
     other(Data, "accounts", "shell (vendor CLI sign-ins) (S)"),

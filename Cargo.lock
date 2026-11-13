@@ -11126,6 +11126,7 @@ dependencies = [
  "tracing",
  "vt100",
  "yantrik-harness",
+ "yantrik-ipc-contracts",
  "yantrik-ipc-transport",
 ]
 
@@ -11294,6 +11295,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tracing",
  "tungstenite",
  "ureq 2.12.1",
@@ -12015,6 +12017,7 @@ dependencies = [
  "yantrik-app",
  "yantrik-app-build",
  "yantrik-design-tokens",
+ "yantrik-ipc-contracts",
  "yantrik-mind",
  "yantrik-testing",
  "yantrik-ui-kit",

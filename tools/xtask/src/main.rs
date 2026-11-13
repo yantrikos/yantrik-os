@@ -1,6 +1,6 @@
 //! `cargo run -q -p xtask -- check-architecture [--write | --since <old baseline>]`: the layers,
 //! the build paths, the test-only features and the file sizes of docs/architecture.md, held by a baseline that may only
-//! shrink. `--since` also fails on any entry the baseline has that the given older copy of it does
+//! shrink; and rule `mind-spawn` (mind_spawn.rs), which has no baseline. `--since` also fails on any entry the baseline has that the given older copy of it does
 //! not, so a line added to the baseline by hand is caught (CI passes the pull request's base).
 //!
 //! `cargo run -q -p xtask -- check-agent-files`: every action an agent can reach that names a file
@@ -9,6 +9,7 @@
 
 mod agent_files;
 mod layers;
+mod mind_spawn;
 mod ratchet;
 mod rules;
 mod workspace;
@@ -68,6 +69,13 @@ fn check(write: bool, since: Option<&Path>) -> Result<bool, String> {
     let (sized, soft) = rules::sizes(&line_counts(&root)?);
     findings.extend(sized);
 
+    // No baseline, no `--write`: a program a Mind can steer starts through a door or the rule fails.
+    let spawns = mind_spawn::check(&root)?;
+    if !spawns.is_empty() {
+        println!("\nmind-spawn (docs/architecture.md, SECURITY.md; no baseline entry is allowed):");
+        spawns.iter().for_each(|f| println!("  {f}"));
+    }
+
     let existing = read(BASELINE);
     let baseline = ratchet::parse(existing.as_deref().unwrap_or(""))?;
     // A baseline path that is no longer a file in the tree: the one condition under which a
@@ -82,6 +90,9 @@ fn check(write: bool, since: Option<&Path>) -> Result<bool, String> {
                 .new
                 .iter()
                 .for_each(|f| eprintln!("  {} {}", f.rule, f.subject));
+            return Ok(false);
+        }
+        if !spawns.is_empty() {
             return Ok(false);
         }
         std::fs::write(root.join(BASELINE), ratchet::render(&findings))
@@ -107,7 +118,7 @@ fn check(write: bool, since: Option<&Path>) -> Result<bool, String> {
             .iter()
             .for_each(|(rule, subject)| println!("  {rule} {subject}"));
     }
-    Ok(unplaced.is_empty() && verdict.passes() && added.is_empty())
+    Ok(unplaced.is_empty() && verdict.passes() && added.is_empty() && spawns.is_empty())
 }
 
 fn line_counts(root: &Path) -> Result<Vec<(String, usize)>, String> {

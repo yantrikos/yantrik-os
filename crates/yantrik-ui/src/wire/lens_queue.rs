@@ -58,6 +58,10 @@ pub struct Composer {
     pub mind: String,
     /// It has a turn open.
     pub working: bool,
+    /// The person's Stop dropped its turn, and its harness has not closed it yet (#1058).
+    pub stopping: bool,
+    /// The turn the host is waiting on, the one a Stop is for (`lens_stop`).
+    pub turn_id: Option<u64>,
     /// The newest question its run waits on.
     pub asking: Option<Asking>,
 }
@@ -74,6 +78,8 @@ impl Composer {
                 agent: Some(agent.clone()),
                 mind: a.meta.mind.clone(),
                 working: a.open_turn().is_some(),
+                stopping: false,
+                turn_id: None,
                 asking: a.waiting_questions().last().map(|q| Asking {
                     agent: a.meta.id.0.clone(),
                     request: q.request.clone(),
@@ -88,7 +94,20 @@ impl Composer {
         let Some(host) = crate::wire::harness::host() else { return Composer::default() };
         let active = host.active_id();
         let mind = host.list().into_iter().find(|e| e.id == active).map(|e| e.name).unwrap_or_else(|| active.clone());
-        Composer::of(&crate::agents::feed::main_agent(&active), &mind)
+        let agent = crate::agents::feed::main_agent(&active);
+        Composer { stopping: host.stopping(&agent), turn_id: host.live_turn(&agent), ..Composer::of(&agent, &mind) }
+    }
+
+    /// What the Stop control shows: "" when no turn is running, "running" for the button, and
+    /// "stopping" from the press until the harness closes the turn.
+    pub fn turn_word(&self) -> &'static str {
+        if self.stopping {
+            "stopping"
+        } else if self.working {
+            "running"
+        } else {
+            ""
+        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -115,6 +134,12 @@ impl Composer {
         if text.trim_start().starts_with('/') {
             return Enter::Send;
         }
+        // A bare "stop" while a turn is in flight is the Stop control, said in words (#1058). Not
+        // while the mind asks a question: then it is the answer to it ("Cancel the subscription?
+        // cancel / keep"), and the Stop button is there for stopping.
+        if (self.working || self.stopping) && self.asking.is_none() && is_bare_stop(text) {
+            return Enter::Stop;
+        }
         match (self.mode(), &self.asking) {
             (Mode::Answer, Some(asking)) => Enter::Answer(asking.clone()),
             (Mode::Queue, _) => Enter::Queue,
@@ -128,6 +153,15 @@ pub enum Enter {
     Send,
     Queue,
     Answer(Asking),
+    /// The person's Stop, typed: consumed here, never sent or queued as a turn.
+    Stop,
+}
+
+/// Whether `text` is nothing but a stop: "stop", "stop.", "stop!" or "cancel", in any case. Words
+/// after it ("stop the music") make it an ordinary message.
+pub fn is_bare_stop(text: &str) -> bool {
+    let word = text.trim().trim_end_matches(['.', '!']).trim_end().to_lowercase();
+    matches!(word.as_str(), "stop" | "cancel")
 }
 
 /// Why a command closes the questions the run waits on, when it ends the run: `/stop`, or a new
@@ -190,6 +224,16 @@ impl Queue {
     /// Take it back before it is sent.
     pub fn cancel(&mut self) -> Option<Queued> {
         self.held.take()
+    }
+
+    /// Take back the message held for `agent` and no other: a Stop of one mind leaves a message
+    /// queued behind another alone.
+    pub fn cancel_for(&mut self, agent: &AgentId) -> Option<Queued> {
+        if self.held.as_ref().is_some_and(|h| &h.agent == agent) {
+            self.held.take()
+        } else {
+            None
+        }
     }
 
     /// The message to send now that its mind is no longer `working`, taken out so it is sent once.
@@ -263,7 +307,19 @@ pub fn hold(ui: &App, text: &str, composer: &Composer) {
 
 /// The × on the queued bubble: it is taken back and never sent.
 pub fn cancel(ui: &App) {
-    let Some(held) = QUEUE.with(|q| q.borrow_mut().cancel()) else { return };
+    let held = QUEUE.with(|q| q.borrow_mut().cancel());
+    withdraw(ui, held);
+}
+
+/// The Stop of `agent`: the message queued for it is taken back and never sent. Whether there was
+/// one. The words are not put back in the composer; the bubble is withdrawn.
+pub fn take_back(ui: &App, agent: &AgentId) -> bool {
+    let held = QUEUE.with(|q| q.borrow_mut().cancel_for(agent));
+    withdraw(ui, held)
+}
+
+fn withdraw(ui: &App, held: Option<Queued>) -> bool {
+    let Some(held) = held else { return false };
     if held.transcript == crate::streaming::transcript() {
         with_model(ui, |model| {
             if held.row + 1 == model.row_count() {
@@ -274,6 +330,7 @@ pub fn cancel(ui: &App) {
         });
     }
     publish(ui, false);
+    true
 }
 
 /// The queued message, if its mind has finished: its bubble becomes the person's ordinary one,
@@ -305,6 +362,8 @@ mod tests {
             agent: Some(AgentId::new("hermes", AgentId::MAIN)),
             mind: "Hermes Agent".into(),
             working,
+            stopping: false,
+            turn_id: None,
             asking: asking.then(|| Asking {
                 agent: "hermes:main".into(),
                 request: "c1".into(),
@@ -384,5 +443,62 @@ mod tests {
         queue.hold("and Austin?", &agent, "Hermes Agent", 7, || 5);
         assert_eq!(queue.due(|_| false, 8), None, "its conversation is gone");
         assert!(queue.held().is_none());
+    }
+
+    #[test]
+    fn a_bare_stop_while_a_turn_runs_is_the_stop_control_and_is_consumed() {
+        for word in ["stop", "Stop.", " STOP! ", "cancel", "Cancel.", "stop!!"] {
+            for composer in [hermes(true, false), Composer { stopping: true, ..hermes(false, false) }] {
+                assert_eq!(composer.enter(word), Enter::Stop, "{word:?} in {:?}", composer.mode());
+            }
+        }
+    }
+
+    /// Changed with #1072's review: a bare "stop" or "cancel" used to stop the turn even while the
+    /// mind asked a question. It is the person's answer now ("Cancel the subscription? cancel /
+    /// keep"); the Stop button covers stopping.
+    #[test]
+    fn a_bare_stop_or_cancel_while_a_question_is_open_is_the_answer() {
+        for word in ["stop", "cancel", "Cancel."] {
+            assert!(matches!(hermes(true, true).enter(word), Enter::Answer(_)), "{word:?}");
+            assert!(matches!(Composer { stopping: true, ..hermes(true, true) }.enter(word), Enter::Answer(_)), "{word:?}");
+        }
+    }
+
+    #[test]
+    fn other_words_mid_turn_are_held_as_before() {
+        for word in ["stop the music", "please stop", "don't stop", "stopwatch", "cancel my 3pm", ""] {
+            assert_eq!(hermes(true, false).enter(word), Enter::Queue, "{word:?}");
+        }
+        assert!(matches!(hermes(true, true).enter("stop the music"), Enter::Answer(_)));
+    }
+
+    #[test]
+    fn stop_with_no_turn_in_flight_is_a_normal_message() {
+        assert_eq!(hermes(false, false).enter("stop"), Enter::Send);
+        assert_eq!(hermes(false, false).enter("cancel."), Enter::Send);
+    }
+
+    #[test]
+    fn the_stop_control_shows_running_then_stopping_and_nothing_when_idle() {
+        assert_eq!(hermes(false, false).turn_word(), "");
+        assert_eq!(hermes(true, false).turn_word(), "running");
+        assert_eq!(Composer { stopping: true, ..hermes(true, false) }.turn_word(), "stopping", "pressed, not yet closed");
+        assert_eq!(Composer { stopping: true, ..hermes(false, false) }.turn_word(), "stopping");
+    }
+
+    /// The consume rule, read from the source: the Stop arm of `submit` hands the word to the
+    /// stop and to nothing else, so it is never sent as a turn and never queued to be.
+    #[test]
+    fn a_typed_stop_is_never_delivered_as_a_turn_or_queued() {
+        let chat = include_str!("chat.rs");
+        let submit = chat.split_once("fn submit(").expect("submit").1;
+        let submit = &submit[..submit.find("
+}
+").unwrap()];
+        let arm = submit.split_once("Enter::Stop =>").expect("submit handles Enter::Stop").1;
+        let arm = arm.lines().next().unwrap();
+        assert!(arm.contains("lens_stop::press("), "{arm}");
+        assert!(!arm.contains("dispatch(") && !arm.contains("hold(") && !arm.contains("send"), "{arm}");
     }
 }

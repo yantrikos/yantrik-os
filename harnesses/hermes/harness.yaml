@@ -9,14 +9,17 @@ docs: README.md
 # plugin inside that gateway rather than a process of ours. So the row never offers to start
 # it: there is nothing here to start, and `systemctl --user enable yantrik-hermes` would fail
 # with a sentence about a unit that was never meant to exist.
+#
+# Hermes runs as the mind account, not as you (#411): its files, keys and sessions are in
+# /var/lib/yantrik-mind/harness/hermes, which your account does not open and neither does anything
+# running as you, and its gateway is the system service hermes-gateway. So what this row can see
+# of it is the command that asks it (`hermes`, a few words of it) and the mark Install leaves.
 
 requires:
   - binary: hermes
-    why: Hermes itself, which brings its own model, keys and memory
-  - file: ~/.hermes/plugins/yantrik/plugin.yaml
-    why: the desktop plugin, copied into your Hermes install and enabled there
+    why: the hermes command, which asks Hermes (run by its own account) for what you do by hand
   - file: ~/.local/state/yantrik/harnesses/hermes/installed
-    why: written by Install once it can answer, remember in YantrikDB and reach the desktop
+    why: written by Install once Hermes, under its own account, can answer, remember in YantrikDB and reach the desktop
 
 install:
   # Hermes itself when it is not here — by Hermes's own installer, into ~/.hermes, no root —
@@ -24,18 +27,22 @@ install:
   # copied the plugin failed on every fresh machine with "hermes: not found". `{dir}` is
   # wherever this manifest was read from, so it works from the image and from a checkout.
   command: sh {dir}/../lib/install/hermes.sh {dir}
-  # Then YantrikDB as its memory from the image, the desktop platform allowlisted to the owner
-  # and held to the desktop's tools, and the three proofs (#677).
-  doing: installing Hermes from github.com/NousResearch/hermes-agent, its desktop plugin and YantrikDB memory
+  # Under the mind account: the script hands over to `sudo yantrik-update harness install hermes`,
+  # which sets Hermes up as that account, moves the Hermes you already have (keeping your copy), and
+  # starts its gateway service. Then YantrikDB as its memory from the image, the desktop platform
+  # allowlisted to the owner and held to the desktop's tools, and the three proofs (#677).
+  doing: installing Hermes from github.com/NousResearch/hermes-agent under its own account, its desktop plugin and YantrikDB memory
 
 configure:
   # Hermes's own model picker, in a terminal: every provider Hermes knows (NVIDIA NIM,
   # OpenRouter, Anthropic, a local endpoint...) and its sign-in flows, none of which the desktop
   # has to copy. Opened by itself when Install finishes, and from the row after that. The
   # gateway is restarted afterwards so the running Hermes answers with what was chosen.
-  command: hermes model && systemctl --user restart hermes-gateway
+  # `hermes` here asks Hermes, run as its own account; the gateway is restarted the same way.
+  command: hermes model && sudo -n /opt/yantrik/bin/yantrik-update harness restart hermes
   label: Choose model
   title: Choose Hermes's model
 
-# Hermes keeps its model, endpoint, keys and memory in ~/.hermes, as it always has, so there is
-# no file of ours for the person to write and nothing to check for.
+# Hermes keeps its model, endpoint, keys and memory in its own ~/.hermes, as it always has (now the
+# mind account's home for it), so there is no file of ours for the person to write and nothing to
+# check for.

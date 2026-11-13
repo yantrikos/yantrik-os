@@ -23,9 +23,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use yantrik_ipc_contracts::home_paths::workshops;
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
-use crate::coder_sandbox::{self, SandboxMode};
+use crate::coder_deps::install_deps;
+use crate::coder_sandbox;
+use crate::spawn::SandboxMode;
 
 const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
 const OUTPUT_DIR: &str = "/home/yantrik/.config/yantrik/scripts/output";
@@ -201,7 +204,7 @@ const PIP_NAME_MAP: &[(&str, &str)] = &[
     ("yfinance", "yfinance"),
 ];
 
-fn detect_python_deps(content: &str) -> Vec<String> {
+pub(crate) fn detect_python_deps(content: &str) -> Vec<String> {
     let mut packages = HashSet::new();
     for line in content.lines() {
         let trimmed = line.trim();
@@ -238,7 +241,7 @@ fn detect_python_deps(content: &str) -> Vec<String> {
     sorted
 }
 
-fn detect_node_deps(content: &str) -> Vec<String> {
+pub(crate) fn detect_node_deps(content: &str) -> Vec<String> {
     let mut packages = HashSet::new();
     let builtin = ["fs", "path", "os", "http", "https", "url", "util", "crypto",
                    "stream", "events", "child_process", "cluster", "net", "dns",
@@ -281,39 +284,6 @@ fn detect_node_deps(content: &str) -> Vec<String> {
     let mut sorted: Vec<_> = packages.into_iter().collect();
     sorted.sort();
     sorted
-}
-
-/// Install dependencies before execution. Returns error message if installation fails.
-fn install_deps(language: &str, deps: &[String]) -> Option<String> {
-    if deps.is_empty() { return None; }
-    // pip, npm and gem reach their public registries, outside the sandbox: that is a fetch from the
-    // open web, and it waits for a turn the person started or for research to be on.
-    if let Err(refused) = coder_sandbox::allow_install() {
-        return Some(refused);
-    }
-
-    let (cmd, args_prefix): (&str, &[&str]) = match language {
-        "python" => ("pip3", &["install", "-q", "--break-system-packages"]),
-        "node" | "javascript" | "typescript" => ("npm", &["install", "--no-save", "--silent"]),
-        "ruby" => ("gem", &["install", "--no-document"]),
-        _ => return None,
-    };
-
-    tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
-
-    let mut command = std::process::Command::new(cmd);
-    command.args(args_prefix);
-    command.args(deps);
-    command.current_dir(scripts_dir());
-
-    match command.output() {
-        Ok(output) if output.status.success() => None,
-        Ok(output) => {
-            let err = String::from_utf8_lossy(&output.stderr);
-            Some(format!("Dependency install failed ({cmd}): {}", err.chars().take(500).collect::<String>()))
-        }
-        Err(e) => Some(format!("Could not run {cmd}: {e}")),
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -448,6 +418,26 @@ struct ExecutionResult {
     sandboxed: bool,
 }
 
+/// Check if bubblewrap is available on this system.
+fn has_bwrap() -> bool {
+    let result = std::process::Command::new("/usr/bin/bwrap")
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_remove("LD_PRELOAD") // bwrap is a native binary, doesn't need LD_PRELOAD
+        .status();
+    match &result {
+        Ok(s) => {
+            tracing::debug!(success = s.success(), "bwrap availability check");
+            s.success()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "bwrap not available");
+            false
+        }
+    }
+}
+
 /// A script's private stand-in HOME for one unsandboxed run, removed with everything in it when
 /// the run is over (the guard is dropped as `execute_script` returns, after the child is reaped).
 struct RunHome(PathBuf);
@@ -494,7 +484,7 @@ fn execute_script(
 
     // Decide whether to use bwrap. A sandbox that was asked for and is not there is a refusal, not a
     // quiet run without one.
-    let use_bwrap = match coder_sandbox::plan(sandbox, coder_sandbox::has_bwrap()) {
+    let use_bwrap = match coder_sandbox::plan(sandbox, has_bwrap()) {
         Ok(use_bwrap) => use_bwrap,
         Err(why) => {
             return ExecutionResult {
@@ -512,15 +502,8 @@ fn execute_script(
 
     // Build command: either bwrap-wrapped or direct
     let mut cmd = if use_bwrap {
-        let bwrap_args = coder_sandbox::build_bwrap_args(sandbox, &scripts, &out_dir);
-        let mut c = std::process::Command::new("/usr/bin/bwrap");
-        c.env_remove("LD_PRELOAD"); // bwrap is native, LD_PRELOAD can interfere
-        c.args(&bwrap_args);
-
-        // Inside bwrap: ulimit wrapper for resource limits, then interpreter
-        // Use sh -c to set ulimits before running the script
-        c.arg("sh");
-        c.arg("-c");
+        // Inside bwrap: ulimit wrapper for resource limits, then interpreter, as one `sh -c`
+        // that spawn::sandboxed_script starts (the only place a Mind's script gets a shell).
 
         // Build the inner command with resource limits
         let mut inner = String::new();
@@ -546,20 +529,34 @@ fn execute_script(
             inner.push_str(args);
         }
 
-        c.arg(inner);
-        c
+        crate::spawn::sandboxed_script(sandbox, &scripts, &out_dir, &inner)
     } else {
-        let mut c = std::process::Command::new(interpreter);
+        let mut words: Vec<String> = Vec::new();
         if language == "typescript" {
-            c.arg("ts-node");
+            words.push("ts-node".into());
         }
-        c.arg(filepath);
+        words.push(filepath.to_string_lossy().into_owned());
         if !args.is_empty() {
-            c.args(shell_words::split(args).unwrap_or_else(|_|
+            words.extend(shell_words::split(args).unwrap_or_else(|_|
                 args.split_whitespace().map(String::from).collect()
             ));
         }
-        c
+        // Unsandboxed, so in the outside view: the workshops root does not exist for it.
+        match crate::spawn::mind_command(&crate::spawn::home(), interpreter, &words) {
+            Ok(c) => c,
+            Err(e) => {
+                return ExecutionResult {
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: e,
+                    duration_secs: 0.0,
+                    timed_out: false,
+                    generated_files: vec![],
+                    error_analysis: None,
+                    sandboxed: false,
+                };
+            }
+        }
     };
 
     // Working directory (only for non-bwrap — bwrap runs from /)
@@ -571,8 +568,7 @@ fn execute_script(
     }
 
     // Environment: inherit + custom + output dir hint
-    cmd.env("YANTRIK_OUTPUT_DIR", out_dir.to_str().unwrap_or("/tmp"));
-    cmd.env("YANTRIK_SCRIPTS_DIR", scripts.to_str().unwrap_or("/tmp"));
+    crate::coder_deps::script_env(&mut cmd, &out_dir, &scripts, language);
     // A stand-in HOME, so a script's dotfiles and caches never land in the real one. Inside bwrap
     // /tmp is the sandbox's own tmpfs, so it serves. Outside, /tmp is the shared one — where
     // another account could have made ~/.config or ~/.bashrc-alikes first for the script to pick
@@ -836,9 +832,10 @@ impl Tool for CodeExecuteTool {
             "node" | "javascript" => detect_node_deps(code),
             _ => vec![],
         };
-        if let Some(err) = install_deps(language, &deps) {
-            return err;
-        }
+        let skipped = match install_deps(language, &deps) {
+            Ok(note) => note,
+            Err(err) => return err,
+        };
 
         let _ = std::fs::create_dir_all(scripts_dir());
         let _ = std::fs::create_dir_all(output_dir());
@@ -871,7 +868,7 @@ impl Tool for CodeExecuteTool {
         // Clean up temp file
         let _ = std::fs::remove_file(&tmp_path);
 
-        format_result(&result, &format!("inline_{language}"))
+        format!("{skipped}{}", format_result(&result, &format!("inline_{language}")))
     }
 }
 
@@ -1054,6 +1051,12 @@ impl Tool for ScriptRunTool {
             .map(SandboxMode::from_str)
             .unwrap_or(SandboxMode::Strict);
 
+        // A program keeps the directory it starts in: not a Mind's workshop.
+        if let Some(dir) = working_dir {
+            if let Err(e) = workshops::refuse(dir) {
+                return e;
+            }
+        }
         if name.is_empty() {
             return "Error: name is required".to_string();
         }
@@ -1071,12 +1074,11 @@ impl Tool for ScriptRunTool {
             return format!("Error: script file {} not found on disk", entry.filename);
         }
 
-        // Auto-install dependencies (runs OUTSIDE sandbox — needs network + write to site-packages)
-        if !entry.dependencies.is_empty() {
-            if let Some(err) = install_deps(&entry.language, &entry.dependencies) {
-                return err;
-            }
-        }
+        // Auto-install dependencies, in the outside view and with no install hooks (coder_deps.rs).
+        let skipped = match install_deps(&entry.language, &entry.dependencies) {
+            Ok(note) => note,
+            Err(err) => return err,
+        };
 
         // Execute in sandbox
         let result = execute_script(&filepath, &entry.language, script_args, &env_vars, timeout, working_dir, sandbox);
@@ -1100,7 +1102,7 @@ impl Tool for ScriptRunTool {
         }
         save_registry(&registry);
 
-        format_result(&result, &entry.name)
+        format!("{skipped}{}", format_result(&result, &entry.name))
     }
 }
 

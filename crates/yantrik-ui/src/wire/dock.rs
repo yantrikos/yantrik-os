@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use slint::ComponentHandle;
 
+use super::browser_launch::find_browser;
 use crate::app_context::AppContext;
 use crate::apps::DesktopEntry;
 use crate::App;
@@ -548,10 +549,7 @@ pub fn availability(app: &str, installed: &[DesktopEntry]) -> Availability {
     match launch {
         Launch::Browser => match find_browser() {
             Some(_) => Availability::Ready,
-            None => Availability::Missing(format!(
-                "a web browser (looked for {})",
-                BROWSERS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
-            )),
+            None => Availability::Missing(format!("a web browser (looked for {})", super::browser_launch::browser_names())),
         },
         // Both halves are checked: a Blender without the addon is a window a mind can only
         // photograph, and an addon without Blender has nothing to run inside. The refusal
@@ -658,48 +656,6 @@ pub fn launchable_app_ids(installed: &[DesktopEntry]) -> Vec<String> {
         }
     }
     ids
-}
-
-/// The web browsers the Browser pin will open, in order of preference, with what each needs.
-///
-/// Chromium first: it is what this OS installs, and the browser tools drive it. The flags keep
-/// what the old hardcoded launch had — native Wayland, no first-run wizard, no default-browser
-/// nag. The rest open as they are.
-///
-/// The profile is the browser's own. The visible browser used to run from
-/// `--user-data-dir=/tmp/chromium-visible`, because a headless instance might hold the default
-/// profile's lock; the browser tools now keep every profile under ~/.local/share/yantrik/browsers,
-/// so that reason is gone, and a /tmp profile forgot every login and bookmark at each reboot.
-const BROWSERS: &[(&str, &[&str])] = &[
-    ("chromium", CHROMIUM_FLAGS),
-    ("chromium-browser", CHROMIUM_FLAGS),
-    ("google-chrome-stable", CHROMIUM_FLAGS),
-    ("google-chrome", CHROMIUM_FLAGS),
-    ("firefox", &[]),
-    ("firefox-esr", &[]),
-    ("epiphany-browser", &[]),
-    ("epiphany", &[]),
-];
-
-/// How the desktop starts a Chromium-family browser.
-///
-/// The debugging port, its allowed origin and the profile are not here: they differ for the
-/// person's Browser and for a mind's, and `browser_launch` adds each (#1085). The port is what
-/// makes the browser one of this desktop's apps rather than a window a mind can only look at:
-/// `yos web` drives the page over the DevTools protocol. Loopback only, and only the origin `yos`
-/// itself presents. What it grants is what it sounds like (a process running as this user can
-/// drive this browser), which such a process could already do by reading the profile on disk.
-const CHROMIUM_FLAGS: &[&str] = &[
-    "--ozone-platform=wayland",
-    "--no-first-run",
-    "--no-default-browser-check",
-    // No "--disable-gpu": it also switches off SwiftShader, the software renderer, and cost
-    // every machine WebGL (#133).
-];
-
-/// The first browser from `BROWSERS` this machine has.
-pub fn find_browser() -> Option<(&'static str, &'static [&'static str])> {
-    BROWSERS.iter().copied().find(|(name, _)| find_program(name).is_some())
 }
 
 /// The Blender addon's entry point, where a release stages it.
@@ -849,7 +805,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     // An app that cannot host its own surface has its adapter started beside it,
                     // and stopped with it.
                     let adapter = surface.as_deref().zip(adapter.as_deref());
-                    spawn_launch(&id, &bin, &args, None, adapter);
+                    spawn_launch(&id, &bin, &args, None, adapter, false);
                 });
                 return;
             }
@@ -892,19 +848,14 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 }
             }
             // A browser is a window like any other, so it goes through the one launcher: the
-            // registry learns it is open, the reaper notices if it dies at once, and it gets the
-            // session's display environment. The old arm set WAYLAND_DISPLAY and XDG_RUNTIME_DIR
-            // by hand, for uid 1000 only.
+            // registry, the reaper and the session's display environment are all its.
             Launch::Browser => match find_browser() {
                 Some((bin, args)) => super::already_open::focus_or_start("browser", Some(bin), move || {
                     let _ = super::browser_launch::preflight(yantrik_browser_ports::Side::Person);
                     let args = super::browser_launch::person_args(bin, args);
-                    spawn_app_with_args("browser", bin, &args.iter().map(String::as_str).collect::<Vec<_>>())
+                    spawn_persons_browser(bin, &args.iter().map(String::as_str).collect::<Vec<_>>())
                 }),
-                None => tracing::error!(
-                    "Cannot open the browser: none is installed (looked for {})",
-                    BROWSERS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
-                ),
+                None => tracing::error!("Cannot open the browser: none is installed (looked for {})", super::browser_launch::browser_names()),
             },
             // Blender, above all: it has no single-instance guard of its own, so this check is
             // the only thing between a second launch and a second Blender.
@@ -1000,13 +951,7 @@ pub fn launch_entry_with_file(entry: &DesktopEntry, installed: &[DesktopEntry], 
         .find(|d| entry.surface.as_deref() == Some(d.id.as_str()))
         .map(|d| d.id);
     let adapter = surface.as_ref().and(entry.adapter.clone());
-    spawn_launch(
-        &super::app_grid::icon_id_for(&entry.app_id),
-        bin,
-        &args,
-        None,
-        surface.as_deref().zip(adapter.as_deref()),
-    );
+    spawn_launch(&super::app_grid::icon_id_for(&entry.app_id), bin, &args, None, surface.as_deref().zip(adapter.as_deref()), false);
 }
 
 /// The same launcher, started in a particular directory.
@@ -1069,7 +1014,14 @@ fn x_display() -> Option<String> {
 }
 
 pub fn spawn_app_in(app_id: &str, bin: &str, args: &[&str], dir: Option<&std::path::Path>) {
-    spawn_launch(app_id, bin, args, dir, None)
+    spawn_launch(app_id, bin, args, dir, None, false)
+}
+
+/// The person's Browser, and nothing else: the one launch that is given a DevTools pipe (#1151,
+/// N3). A `.desktop` entry or a catalogue launch whose arguments carry the pipe switch is started
+/// like any other app, with no pipe.
+fn spawn_persons_browser(bin: &str, args: &[&str]) {
+    spawn_launch("browser", bin, args, None, None, true)
 }
 
 /// What the reaper makes of an app whose `child.wait()` has returned.
@@ -1149,6 +1101,7 @@ fn spawn_launch(
     args: &[&str],
     dir: Option<&std::path::Path>,
     adapter: Option<(&str, &str)>,
+    persons_browser: bool,
 ) {
     let route = crate::mind_view::route_now(app_id);
     if !route.spawn {
@@ -1158,7 +1111,7 @@ fn spawn_launch(
         return;
     }
     let Some(who) = route.mind_view else {
-        return launch(app_id, bin, args, dir, adapter, None, route.raise_on_handover);
+        return launch(app_id, bin, args, dir, adapter, None, route.raise_on_handover, persons_browser);
     };
     let (app_id, bin) = (app_id.to_string(), bin.to_string());
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -1189,7 +1142,7 @@ fn spawn_launch(
                     }
                 }
                 tracing::info!(app = %app_id, mind = %who, display = %seat.wayland, "Opening in Mind View");
-                launch(&app_id, &bin, &args, dir.as_deref(), adapter, Some(&seat), false);
+                launch(&app_id, &bin, &args, dir.as_deref(), adapter, Some(&seat), false, false);
             }
             // Already logged, and published in `describe shell`. The app does NOT open on the
             // person's desktop: a mind's app never goes there. The refusal is recorded where
@@ -1212,16 +1165,13 @@ fn launch_command(
     args: &[&str],
     dir: Option<&std::path::Path>,
     seat: Option<&crate::mind_view::Seat>,
-) -> std::process::Command {
-    let mut command = std::process::Command::new(path);
+) -> Result<std::process::Command, String> {
+    let (program, argv) = super::browser_launch::start_line(path, args, seat.is_some())?;
+    let mut command = std::process::Command::new(program);
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    if seat.is_some() {
-        command.args(super::browser_launch::mind_view_args(path, args));
-    } else {
-        command.args(args);
-    }
+    command.args(argv);
     for (key, value) in session_env() {
         command.env(key, value);
     }
@@ -1232,7 +1182,7 @@ fn launch_command(
     if let Some(seat) = seat {
         seat.display().apply(&mut command);
     }
-    command
+    Ok(command)
 }
 
 /// Start one app, on the person's desktop or on `seat`.
@@ -1244,9 +1194,14 @@ pub(super) fn launch(
     adapter: Option<(&str, &str)>,
     seat: Option<&crate::mind_view::Seat>,
     raise_on_handover: bool,
+    persons_browser: bool,
 ) {
     let path = resolve_app_binary(bin);
-    let mut command = launch_command(&path, args, dir, seat);
+    let mut command = match launch_command(&path, args, dir, seat) {
+        Ok(command) => command,
+        Err(why) => return crate::running::mark_launch_failed(app_id, bin, &why, 0),
+    };
+    let pipe = super::browser_pipe::attach_for(&mut command, args, persons_browser); // #1137
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
         // inherits the environment, and an app that inherits that variable opens fullscreen too.
@@ -1259,6 +1214,7 @@ pub(super) fn launch(
         Ok(mut child) => {
             let pid = child.id();
             tracing::info!(app = app_id, bin, pid, path = %path.display(), "App launched");
+            pipe.map(|pipe| pipe.offer(pid));
             // The shell now knows this window is open without asking the compositor. Recorded
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.
@@ -1864,12 +1820,12 @@ mod tests {
     #[test]
     fn a_minds_launch_command_never_carries_the_persons_display() {
         let seat = crate::mind_view::Seat { wayland: "wayland-1".into(), x11: None };
-        let command = launch_command(std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat));
+        let command = launch_command(std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat)).unwrap();
         assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared for a mind");
         assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
         assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
         assert_eq!(env_of(&command, "GDK_BACKEND"), Some(Some("wayland".to_string())));
-        let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None);
+        let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None).unwrap();
         assert_ne!(env_of(&person, "DISPLAY"), Some(None), "the person's own launch is untouched");
         assert_eq!(env_of(&person, "WAYLAND_DISPLAY"), None);
     }
@@ -1885,7 +1841,7 @@ mod tests {
         assert!(gate < first_launch, "the no-spawn gate must come before any launch");
         // And no launch for a mind goes without a seat.
         assert!(!f.contains("None, true)") && !f.contains("None, false)"), "{f}");
-        assert!(f.contains("Some(&seat), false)"));
+        assert!(f.contains("Some(&seat), false, false)"), "a mind's launch: its seat, no raise on hand-over, no pipe");
     }
 
     #[test]
@@ -2093,18 +2049,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The browser row is the Browser pin, whichever browser answers it.
+    /// The browser row is the Browser pin, whichever browser answers it (`browser_launch::BROWSERS`).
     #[test]
     fn browser_is_one_route_with_several_programs() {
         assert_eq!(route("browser"), Some(Launch::Browser));
-        assert!(BROWSERS.iter().any(|(name, _)| *name == "chromium"));
-        assert!(BROWSERS.iter().any(|(name, _)| name.starts_with("firefox")));
-        // Only the Chromium family gets Chromium's flags; Firefox would refuse to start on them.
-        for (name, flags) in BROWSERS {
-            let chromium = name.contains("chrom");
-            assert_eq!(!flags.is_empty(), chromium, "{name}");
-            assert!(!flags.iter().any(|f| f.contains("/tmp")), "{name}: a /tmp profile forgets everything");
-        }
+    }
+
+    /// N3 (#1151): the DevTools pipe goes only with the launch the Browser arm makes. The one
+    /// call that says so is in that arm, and every other launch passes `false`.
+    #[test]
+    fn the_pipe_is_attached_only_from_the_browser_arm() {
+        let src = include_str!("dock.rs");
+        let code = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert_eq!(code.matches("spawn_persons_browser(").count(), 2, "its definition and the Browser arm");
+        // The last such arm: the first is `availability`, which only looks.
+        let arm = &code[code.rfind("Launch::Browser => match find_browser()").unwrap()..];
+        assert!(arm[..arm.find("Launch::Blender").unwrap()].contains("spawn_persons_browser(bin,"));
+        let calls: Vec<&str> = code
+            .lines()
+            .filter(|l| l.contains("spawn_launch(") && !l.contains("fn spawn_launch("))
+            .map(|l| l.trim_end().trim_end_matches(';'))
+            .collect();
+        let with_pipe: Vec<&&str> = calls.iter().filter(|l| l.ends_with("true)")).collect();
+        assert_eq!(with_pipe.len(), 1, "{calls:?}");
+        assert!(with_pipe[0].contains("\"browser\""), "{with_pipe:?}");
+        assert!(calls.iter().filter(|l| !l.ends_with("true)")).all(|l| l.ends_with("false)")), "every other launch passes false: {calls:?}");
+        assert_eq!(code.matches("attach_for(").count(), 1);
     }
 
     /// No name is claimed by two routes: the first would always win, silently.

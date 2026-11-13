@@ -157,6 +157,10 @@ pub struct PeerCred {
     pub pid: i32,
     pub uid: u32,
     pub gid: u32,
+    /// Whether this peer was the Mind at accept (#1176): the mind account, in the Mind's own unit,
+    /// decided once by [`crate::peer_unit`] and kept with the connection. Never decided again from
+    /// `/proc`: by then the pid may be another process's. `false` wherever it was not decided.
+    pub the_mind: bool,
 }
 
 /// Trait for service method dispatch. Implement this in each service.
@@ -332,10 +336,7 @@ impl RpcServer {
             // short-lived process — `yos` runs one JSON-RPC call and exits — so by the time a
             // handler wants to know who called, the pid may already be gone or, worse, reused.
             // Asking here narrows that window to the connection's own lifetime.
-            let peer = stream
-                .peer_cred()
-                .ok()
-                .map(|c| PeerCred { pid: c.pid().unwrap_or(0), uid: c.uid(), gid: c.gid() });
+            let peer = crate::peer_unit::accepted(&stream, crate::mind_door::is_mind);
             let handler = handler.clone();
             tokio::spawn(async move {
                 let (reader, writer) = stream.into_split();
@@ -530,10 +531,7 @@ async fn serve_door(listener: tokio::net::UnixListener, handler: Arc<dyn Service
                 continue;
             }
         };
-        let peer = stream
-            .peer_cred()
-            .ok()
-            .map(|c| PeerCred { pid: c.pid().unwrap_or(0), uid: c.uid(), gid: c.gid() });
+        let peer = crate::peer_unit::accepted(&stream, is_mind);
         match peer {
             Some(p) if is_mind(p.uid) => {
                 let handler = handler.clone();

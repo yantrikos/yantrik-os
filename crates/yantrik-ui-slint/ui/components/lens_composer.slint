@@ -1,0 +1,16 @@
+// The Lens's composer: the chat composer with the Stop control wired to the Lens's turn
+// (wire/lens_stop.rs). Its own file so the Lens and the Agents state do not carry the plumbing.
+
+import { ChatComposer } from "chat_composer.slint";
+
+export global LensStop {
+    // "" no turn running, "running" shows Stop, "stopping" from the press until the mind closes
+    // the turn.
+    in-out property <string> turn: "";
+    callback pressed();
+}
+
+export component LensComposer inherits ChatComposer {
+    turn: LensStop.turn;
+    stop => { LensStop.pressed(); }
+}

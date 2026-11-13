@@ -19,15 +19,18 @@ pub mod bluetooth;
 pub mod browser;
 pub mod browser_lifecycle;
 pub mod browser_side;
+mod browser_spawn;
 pub mod calculator;
 pub mod canvas;
 pub mod claude;
 pub mod clipboard;
 pub mod coder;
 mod coder_sandbox;
+mod coder_deps;
 pub mod desktop;
 pub mod discovery;
 pub mod disk;
+mod disk_scan;
 pub mod display;
 pub mod docker;
 pub mod edit;
@@ -36,6 +39,7 @@ pub mod files;
 pub mod firewall;
 pub mod foreign_ui;
 pub mod git;
+pub mod git_guard;
 pub mod github;
 pub mod glob;
 pub mod grep;
@@ -55,6 +59,8 @@ pub mod process;
 pub mod provider_keys;
 pub mod project;
 pub mod service;
+pub mod golden;
+pub mod spawn;
 pub mod ssh;
 pub mod system;
 pub mod terminal;
@@ -82,8 +88,15 @@ pub(crate) fn write_scratch(name: &str, contents: &[u8]) -> Result<String, Strin
     yantrik_ml::private_dir::write_scratch(name, contents).map_err(|e| format!("Failed to write {name}: {e}"))
 }
 
-/// Register all pure tools into the given registry.
+/// Register all pure tools into the given registry: the built-in ones, then those the person's
+/// plugin files define (`plugin.rs`, which start through `spawn::mind_command`).
 pub fn register_all(reg: &mut ToolRegistry) {
+    register_builtin(reg);
+    plugin::load_plugins(reg);
+}
+
+/// The tools this crate defines itself, which `tools.golden` lists one by one (golden_tests.rs).
+pub(crate) fn register_builtin(reg: &mut ToolRegistry) {
     antivirus::register(reg);
     app_ui::register(reg);
     archive::register(reg);
@@ -117,7 +130,6 @@ pub fn register_all(reg: &mut ToolRegistry) {
     // network requires config params — registered by companion
     networking::register(reg);
     package::register(reg);
-    plugin::load_plugins(reg);
     process::register(reg);
     project::register(reg);
     service::register(reg);
@@ -137,3 +149,5 @@ pub fn register_all(reg: &mut ToolRegistry) {
 
 #[cfg(test)]
 mod capture_rule_tests;
+#[cfg(test)]
+mod golden_tests;

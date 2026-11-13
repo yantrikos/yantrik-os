@@ -21,6 +21,8 @@ pub mod lens_work;
 pub mod lens_steps;
 pub mod lens_timeline;
 pub mod lens_queue;
+pub mod lens_stop;
+pub mod lens_composer;
 pub mod step_words;
 pub mod agents_workroom;
 mod run_heading;
@@ -51,9 +53,13 @@ pub mod dock;
 /// A launch by name for an app already open on the desktop raises its window instead.
 pub(crate) mod already_open;
 pub(crate) mod browser_launch;
+pub(crate) mod browser_peer;
+pub(crate) mod browser_holder;
+pub(crate) mod browser_pipe;
 /// The grounded dock's buttons and window list, published from the window list.
 pub mod dock_bar;
 pub mod harness;
+mod first_party_claim;
 pub mod i18n;
 mod lens;
 mod navigate;
@@ -170,6 +176,8 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     // Owns the notification centre, the toasts and the poll of the one store. `toast` is the
     // drawing half and has no `wire` of its own any more.
     notifications::wire(ui, ctx);
+    // The one-time copy of the old workshops folder, and the notice that says where they went.
+    crate::workshop_move::at_start();
     for_you::wire(ui);
     initiative::wire(ui);
     research::wire(ui);

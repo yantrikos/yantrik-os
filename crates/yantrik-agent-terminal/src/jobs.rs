@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::job::{self, Job};
+use crate::sealed::Sealed;
 use crate::AgentId;
 
 /// How long `run` and `job` wait when the caller does not say: the design's two minutes.
@@ -393,6 +394,18 @@ impl Jobs {
     /// Start `command` for `agent` without waiting. `cwd`, when given, is taken relative to the
     /// agent's directory and must exist.
     pub fn start(&self, agent: &AgentId, command: &str, cwd: Option<PathBuf>) -> Result<JobId, String> {
+        self.start_in(agent, command, cwd, None)
+    }
+
+    /// As [`Jobs::start`], inside `sealed`'s sandbox when given. The caller has already settled
+    /// that `cwd` is inside the workshop; the sandbox refuses a `cwd` that is not.
+    pub fn start_in(
+        &self,
+        agent: &AgentId,
+        command: &str,
+        cwd: Option<PathBuf>,
+        sealed: Option<&Sealed>,
+    ) -> Result<JobId, String> {
         let limits = &self.inner.shared.limits;
         if command.trim().is_empty() {
             return Err("`command` is empty: one command line, as it would be typed.".to_string());
@@ -455,7 +468,7 @@ impl Jobs {
         let seq = self.inner.next_seq.fetch_add(1, Ordering::Relaxed);
         let id = JobId::random();
         let env = self.inner.env.vars(&cwd);
-        let job = job::spawn(id.clone(), agent.clone(), command, cwd, seq, &env, self.inner.shared.clone())?;
+        let job = job::spawn(id.clone(), agent.clone(), command, cwd, seq, &env, sealed, self.inner.shared.clone())?;
         tracing::info!(agent = %agent, job = %id, pid = job.pid, "agent command started");
         jobs.insert(id.clone(), job);
         Ok(id)
