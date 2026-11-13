@@ -714,3 +714,90 @@ fn f3_a_crash_between_parks_save_and_the_shelf_removal_keeps_the_newer_slot() {
     assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("v3 saved"))), "the newer slot is kept");
     assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("v3 saved"));
 }
+
+#[test]
+fn f5_got_it_while_the_disk_is_still_full_after_a_failed_open_then_discard_does_not_offer_the_older_version() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    v2_left_on_24s_shelf(&paths, &app);
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).ok(); // the slot still cannot be written
+    quiet(&app);
+    unblock_the_slot_write(&paths);
+    app.run(Command::OpenPrepared);
+    quiet(&app);
+    super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v3"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    nothing_of_24_comes_back(&paths, &app);
+}
+
+/// Rewrites a draft file as an earlier build wrote it: without a `generation`.
+fn strip_generation(file: &std::path::Path) {
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    assert!(v.as_object_mut().unwrap().remove("generation").is_some(), "the file had a generation to strip");
+    std::fs::write(file, serde_json::to_string(&v).unwrap()).unwrap();
+}
+
+#[test]
+fn old_file_without_generation_loads_as_zero_and_the_first_edit_writes_one() {
+    let paths = Paths::temporary(Email::ID);
+    {
+        let app = started(&paths);
+        compose_with(&app, "maya@example.com", "", "24");
+        app.run(Command::OpenPreparedFor("24".into()));
+        quiet(&app);
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "old build text"));
+        app.ui(|ui| ui.invoke_cancel_compose());
+        quiet(&app);
+    }
+    strip_generation(&slot_file(&paths));
+    let app = started(&paths);
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d))
+        if d.generation == 0 && d.touched && d.commitment.as_deref() == Some("24") && d.text.body.contains("old build text"))));
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(&app);
+    super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "edited after the old file"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(slot_file(&paths)).unwrap()).unwrap();
+    assert_eq!(on_disk["generation"], json!(1));
+}
+
+#[test]
+fn old_slot_and_old_shelf_for_one_promise_are_both_kept_and_both_reachable() {
+    let paths = Paths::temporary(Email::ID);
+    let shelf = paths.data_dir().join("mind_draft.24.json");
+    {
+        let app = started(&paths);
+        v2_left_on_24s_shelf(&paths, &app);
+        unblock_the_slot_write(&paths);
+    }
+    strip_generation(&slot_file(&paths));
+    strip_generation(&shelf);
+    let app = started(&paths);
+    assert!(shelf.exists(), "the shelf was not removed");
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("v1"))), "the slot keeps its own text");
+    assert!(shelf_text(&paths, "24").is_some_and(|t| t.contains("v2")), "the shelf keeps its own text");
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("v2"))), "the other version is now in the entry");
+}
+
+#[test]
+fn keep_for_person_keeps_the_generation_of_a_draft_that_carries_a_file() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "gen");
+    a_touched_and_b_in_the_slot(&paths, &app, &a);
+    let before: serde_json::Value = serde_json::from_str(&shelf_text(&paths, "24").unwrap()).unwrap();
+    let generation = before["generation"].as_u64().unwrap();
+    assert!(generation >= 1, "the edit was counted");
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).unwrap();
+    quiet(&app);
+    let after: serde_json::Value = serde_json::from_str(&shelf_text(&paths, "24").unwrap()).unwrap();
+    assert_eq!(after["commitment"], json!(null));
+    assert_eq!(after["generation"], json!(generation));
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}

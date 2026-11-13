@@ -138,7 +138,7 @@ pub fn park(m: &mut Model) {
     if slot.text != text {
         slot.text = text;
         slot.touched = true;
-        slot.generation += 1;
+        slot.generation = slot.generation.saturating_add(1);
     }
     // Cancel on a slot with nothing left in it discards it: there is nothing to keep.
     if slot.is_empty() {
@@ -408,7 +408,15 @@ pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>)
             match save_mind_draft(&m.files.mind_draft, slot) {
                 Ok(()) if left_for_slot => drop_left_on_shelf(m, Some(commitment)),
                 Ok(()) => {}
-                Err(e) => tracing::warn!(error = %e, "the prepared draft could not be kept"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "the prepared draft could not be kept");
+                    // The slot file still holds the promise, and so does the copy the failed open left:
+                    // keep the id until a save succeeds, so that save (`park`) or a discard still
+                    // removes that older copy instead of leaving it to come back.
+                    if left_for_slot {
+                        slot.commitment = Some(commitment.to_string());
+                    }
+                }
             }
         }
     }
