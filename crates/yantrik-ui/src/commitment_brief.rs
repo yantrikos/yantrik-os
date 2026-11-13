@@ -149,7 +149,12 @@ mod tests {
         let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui");
         let prep = std::fs::read_to_string(ui.join("commitment_prep.slint")).unwrap();
         let card = prep.split_once("export component PrepAsk").expect("the card").1;
-        assert!(card.contains("PrepChoices {") && !card.contains("YButton {") && !card.contains("TouchArea"), "its buttons are PrepChoices, nothing clickable of its own");
+        // The answers are PrepChoices'. The card's own buttons only open a file or the draft for the
+        // person; each is pointer-only, and none of them presses the answer.
+        let card_only = card.split("choices := PrepChoices").next().unwrap_or(card);
+        assert!(card.contains("PrepChoices {") && !card.contains("TouchArea"), "its answers are PrepChoices, nothing clickable of its own");
+        assert_eq!(card_only.matches("YButton {").count(), card_only.matches("pointer-only: true;").count(), "every button the card draws is pointer-only");
+        assert!(!card_only.contains("PrepState.answer"), "only PrepChoices presses the answer");
         let stack = std::fs::read_to_string(ui.join("components/whisper_card.slint")).unwrap();
         assert!(card.contains("PrepAsk { card: prep; }"), "the scrolling column draws the card");
         assert!(stack.contains("PrepCards { }"), "the stack draws the column of cards");
