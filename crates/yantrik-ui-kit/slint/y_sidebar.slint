@@ -1,11 +1,9 @@
 // YSidebar — navigation rail with sections, items, counts.
 //
-// Items carry a stroke icon (`icon-path`) and the active one is marked by a 3px accent bar and
-// the accent tint — a shape, not just a colour change. Section titles use the same small
+// Each item is a YNavRow, the one row every sidebar draws. Section titles use the same small
 // letter-spaced label the shell's rails use, so an app's sidebar reads as part of the OS.
 import { Theme } from "theme.slint";
-import { AppIdentity } from "app_color.slint";
-import { Icon } from "icon.slint";
+import { YNavRow } from "y_nav_row.slint";
 
 export struct YSidebarItem {
     id: string,
@@ -35,7 +33,7 @@ export component YSidebar inherits Rectangle {
         x: parent.width - 1px;
         width: 1px;
         height: 100%;
-        background: Theme.separator;
+        background: Theme.seam;
     }
 
     Flickable {
@@ -48,7 +46,7 @@ export component YSidebar inherits Rectangle {
             spacing: Theme.sp-2;
 
             for section[si] in root.sections : VerticalLayout {
-                spacing: 1px;
+                spacing: 2px;
 
                 if section.title != "" : Rectangle {
                     height: 26px;
@@ -63,77 +61,12 @@ export component YSidebar inherits Rectangle {
                     }
                 }
 
-                for item[ii] in section.items : Rectangle {
-                    property <bool> is-active: item.id == root.active-id;
-                    property <bool> hovered: item-ta.has-hover;
-
-                    height: 30px;
-                    border-radius: Theme.r-md;
-                    background: is-active ? Theme.tint-accent
-                              : hovered ? Theme.hover-fill
-                              : transparent;
-                    clip: true;
-
-                    animate background { duration: Theme.dur-fast; }
-
-                    if is-active : Rectangle {
-                        x: 0;
-                        width: 3px;
-                        height: 16px;
-                        y: (parent.height - 16px) / 2;
-                        border-radius: 1.5px;
-                        background: AppIdentity.accent;
-                    }
-
-                    item-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.item-clicked(item.id); }
-                    }
-
-                    HorizontalLayout {
-                        padding-left: Theme.sp-3;
-                        padding-right: Theme.sp-2;
-                        spacing: 9px;
-
-                        if item.icon-path != "" : Icon {
-                            commands: item.icon-path;
-                            size: 15px;
-                            tint: is-active ? AppIdentity.accent : Theme.text-secondary;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        if item.icon-path == "" && item.icon != "" : Text {
-                            text: item.icon;
-                            color: is-active ? AppIdentity.accent : Theme.text-secondary;
-                            font-size: Theme.fs-body;
-                            vertical-alignment: center;
-                            width: 16px;
-                        }
-
-                        Text {
-                            text: item.label;
-                            color: is-active ? Theme.text-primary : Theme.text-secondary;
-                            font-size: Theme.font-label;
-                            font-weight: is-active ? 500 : Theme.fw-body;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                            overflow: elide;
-                        }
-
-                        if item.badge-count > 0 : Text {
-                            text: item.badge-count < 100 ? item.badge-count : "99+";
-                            color: is-active ? AppIdentity.accent : Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            font-weight: 500;
-                            vertical-alignment: center;
-                        }
-
-                        if item.badge != "" && item.badge-count <= 0 : Text {
-                            text: item.badge;
-                            color: Theme.text-dim;
-                            font-size: Theme.fs-micro;
-                            vertical-alignment: center;
-                        }
-                    }
+                for item[ii] in section.items : YNavRow {
+                    icon: item.icon-path;
+                    label: item.label;
+                    active: item.id == root.active-id;
+                    badge: item.badge-count > 99 ? "99+" : item.badge-count > 0 ? item.badge-count : item.badge;
+                    clicked => { root.item-clicked(item.id); }
                 }
             }
         }

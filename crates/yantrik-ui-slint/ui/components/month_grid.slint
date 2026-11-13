@@ -65,11 +65,13 @@ export component MonthGrid inherits VerticalLayout {
             height: root.compact ? 24px : 32px;
 
             // Compact: the header sits over the column's centre, where the numeral is. Roomy:
-            // the same box the date numeral gets (x:6, width:22), so the header is on the
-            // column's own axis and not ~38px to its right.
+            // on the date numeral's axis (its box is x:6, width:22, so the centre is 17px in) and
+            // not ~38px to its right. The header's own box is 40px about that centre: a Text clips
+            // at its width, and "Mon" and "Wed" are wider than 22px in the interface face, which
+            // drew them as "Mor" and "Wec".
             Text {
-                x: root.compact ? 0px : 6px;
-                width: root.compact ? parent.width : 22px;
+                x: root.compact ? 0px : -3px;
+                width: root.compact ? parent.width : 40px;
                 height: 100%;
                 text: header;
                 color: Theme.text-dim;
