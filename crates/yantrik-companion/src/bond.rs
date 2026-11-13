@@ -28,7 +28,7 @@ pub use yantrik_companion_core::bond::{
 };
 
 /// The `bond_events.event_type` a receipt is stored under.
-pub(crate) const RECEIPT_EVENT: &str = "receipt";
+pub const RECEIPT_EVENT: &str = "receipt";
 
 /// The earliest date the clock can truly show: 2026-11-01 00:00 UTC. This code did not exist
 /// before it, so a clock reading earlier (a dead RTC at 1970 or 2000, before time sync) is
