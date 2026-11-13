@@ -9,7 +9,7 @@
 //! Models: https://huggingface.co/rhasspy/piper-voices
 //!
 //! ```rust,ignore
-//! let tts = PiperTTS::new("/opt/yantrik/models/tts/piper", "/opt/yantrik/models/tts/en_US-lessac-medium.onnx")?;
+//! let tts = PiperTTS::new("/opt/yantrik/models/tts/piper", "/opt/yantrik/models/tts/en_US-ljspeech-medium.onnx")?;
 //! tts.speak("Hello world!", None)?;
 //! ```
 

@@ -634,7 +634,7 @@ bond:
 voice:
   enabled: true
   whisper_model: "openai/whisper-tiny"
-  piper_voice: "en_US-lessac-medium"
+  piper_voice: "en_US-ljspeech-medium"
   silence_threshold: 0.01
   silence_duration_ms: 800
 

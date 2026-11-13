@@ -978,7 +978,7 @@ pub struct VoiceConfig {
     /// Local path to Piper voice config (.onnx.json).
     #[serde(default)]
     pub piper_config_path: Option<String>,
-    /// Piper voice name for HuggingFace Hub download (e.g. "en_US-lessac-medium").
+    /// Piper voice name for HuggingFace Hub download (e.g. "en_US-ljspeech-medium").
     #[serde(default = "default_piper_voice")]
     pub piper_voice: String,
     /// VAD silence threshold (RMS energy).
@@ -993,7 +993,7 @@ fn default_whisper_model() -> String {
     "openai/whisper-tiny".to_string()
 }
 fn default_piper_voice() -> String {
-    "en_US-lessac-medium".to_string()
+    "en_US-ljspeech-medium".to_string()
 }
 fn default_silence_threshold() -> f32 {
     0.01
