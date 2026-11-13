@@ -1706,6 +1706,9 @@ nudge_compositor() { # <owner> <uid>
     else warn "wlr-randr could not re-apply scale $scale to $name"; fi
   done <<<"$list"
   [ "$n" = 0 ] || info "the compositor re-applied $n output(s) at their own scale, so the new margin is in force"
+  return 0
+}
+
 # ── The Alt+Tab renderer, without a new login (#1211) ──
 #
 # labwc starts yantrik-switcher once and starts another only when it exits (packaging/labwc). An
