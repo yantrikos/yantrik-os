@@ -1,8 +1,9 @@
 // Small controls the conversation panel is built from: a text pill and a square icon button.
 //
-// Both are pointer controls with an accessible label and no keyboard focus of their own, which is
-// how every other button in the panel works. Neither is used for an approval's answer: those keep
-// their own buttons in `ApprovalCard`, where "no autofocus, no Enter" is the whole mechanism.
+// Both take Tab, show a ring in the accent colour while focused, and press on Enter or Space
+// (#1165: the panel's rings were invisible, and Send could not be reached from the keyboard).
+// Neither is used for an approval's answer: those keep their own buttons in `ApprovalCard`, where
+// "no autofocus, no Enter" is the whole mechanism.
 
 import { Theme } from "theme.slint";
 import { Icon } from "icon.slint";
@@ -12,6 +13,8 @@ export component ChatPill inherits Rectangle {
     in property <string> label;
     in property <bool> primary: false;
     in property <bool> enabled: true;
+    /// Whether the keyboard focus is on this button (the ring shows, Enter and Space press).
+    out property <bool> focused: pill-key.has-focus;
     callback clicked();
 
     height: 32px;
@@ -20,13 +23,23 @@ export component ChatPill inherits Rectangle {
     background: !root.enabled ? transparent
         : ta.has-hover ? Theme.hover-fill-strong
         : root.primary ? Theme.chat-raised : transparent;
-    border-width: 1px;
-    border-color: root.primary && root.enabled ? Theme.chat-text-2 : Theme.chat-border;
+    border-width: pill-key.has-focus ? Theme.focus-ring-width : 1px;
+    border-color: pill-key.has-focus ? Theme.accent : root.primary && root.enabled ? Theme.chat-text-2 : Theme.chat-border;
     opacity: root.enabled ? 1.0 : 0.5;
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { if (root.enabled) { root.clicked(); } }
 
+    pill-key := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                if (!event.repeat) { root.clicked(); }
+                return accept;
+            }
+            reject
+        }
+    }
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
@@ -48,17 +61,30 @@ export component ChatIconButton inherits Rectangle {
     in property <string> label;
     in property <string> commands;
     in property <bool> enabled: true;
+    out property <bool> focused: icon-key.has-focus;
     callback clicked();
 
     width: 32px;
     height: 32px;
     border-radius: Theme.r-md;
     background: ta.has-hover && root.enabled ? Theme.hover-fill : transparent;
+    border-width: icon-key.has-focus ? Theme.focus-ring-width : 0;
+    border-color: Theme.accent;
     opacity: root.enabled ? 1.0 : 0.4;
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { if (root.enabled) { root.clicked(); } }
 
+    icon-key := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                if (!event.repeat) { root.clicked(); }
+                return accept;
+            }
+            reject
+        }
+    }
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;

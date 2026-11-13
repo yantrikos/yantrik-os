@@ -91,6 +91,7 @@ pub mod version;
 pub mod ai_assist;
 pub mod ai_onboarding;
 pub mod onboarding;
+pub mod onboarding_free_account;
 pub mod onboarding_proofs;
 pub mod onboarding_nearby;
 pub mod ai_provider;
@@ -117,7 +118,10 @@ pub mod universal_actions;
 pub mod command_palette;
 pub mod installer;
 pub mod installer_boot;
+pub mod installer_boot_entry;
+pub mod installer_carry;
 pub mod installer_disk;
+pub mod installer_existing;
 pub mod installer_partition;
 pub mod installer_probe;
 pub mod installer_locale;
@@ -199,6 +203,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     ai_provider::wire(ui, ctx);
     decision_model::wire(ui, ctx);
     free_ai::wire(ui, ctx);
+    onboarding_free_account::wire(ui, ctx);
     // After `free_ai`, whose choices say which free tiers are switched on.
     ai_accounts_card::wire(ui, ctx);
     // The model gateway reads that catalogue at each call; it listens from here on.

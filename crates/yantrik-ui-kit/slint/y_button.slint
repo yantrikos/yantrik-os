@@ -57,6 +57,8 @@ export component YButton inherits Rectangle {
     // layout child component's own absolute position with its offset counted twice.
     out property <length> anchor-x: ta.absolute-position.x + root.width / 2;
     callback clicked();
+    // Keyboard focus is on the button, for an owner that draws its own ring around it.
+    out property <bool> focused: keyboard.has-focus;
     // Put keyboard focus on the button, for an owner that decides where focus starts.
     public function focus-button() { keyboard.focus(); }
     forward-focus: keyboard;

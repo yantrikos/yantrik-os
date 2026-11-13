@@ -14,7 +14,7 @@
 //!   with none chosen, and the person picks one by keyboard; a pick that did not take offers Try
 //!   again; "Show every provider" opens the full list; Advanced needs only the address, and
 //!   Enter on it lists its models.
-//! - What your minds share: the sentence names the provider and is pre-checked; Space unchecks
+//! - What your minds share: the sentence names the provider and starts unchecked (opt in); Space checks
 //!   it and the screen says what that means; choosing "For your other Minds, use your private model instead"
 //!   shows the sentence unchecked.
 //! - Getting ready and Your minds: the companion's three rows, every one a check that runs, in
@@ -296,14 +296,13 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 
     // 3. What your minds share.
     ui.set_step(3);
-    ui.set_show_shared(true);
     render(w, width, height, &still("3-share"))?;
-    assert!(ui.get_share(), "pre-checked");
+    assert!(!ui.get_share(), "sharing is opt in: unchecked until the person ticks it");
     space();
-    assert!(!ui.get_share(), "Space on the focused sentence unchecks it");
-    render(w, width, height, &still("3-share-off"))?;
+    assert!(ui.get_share(), "Space on the focused sentence checks it");
+    render(w, width, height, &still("3-share-on"))?;
     space();
-    assert!(ui.get_share());
+    assert!(!ui.get_share());
     // For your other Minds, use your private model instead: the sharing sentence shows unchecked.
     tab();
     tab();
@@ -314,7 +313,6 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     key(w, slint::platform::Key::Escape.into());
     assert_eq!(ui.get_step(), 2, "Escape on step 3 goes Back");
     ui.set_private_lane(false);
-    ui.set_share(true);
 
     // 4. Getting your minds ready: every row a check that runs, and Hermes's own install said.
     ui.set_step(4);

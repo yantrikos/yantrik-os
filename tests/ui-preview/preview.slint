@@ -705,6 +705,9 @@ export component InstallerProbe inherits Window {
     in-out property <bool> tried;
     in-out property <string> installed-with;
     in-out property <int> reboots;
+    in property <string> existing-install;
+    in property <bool> existing-startable;
+    in-out property <int> started-installed;
 
     pure callback derive-username(string) -> string;
     pure callback hostname-for(string) -> string;
@@ -754,6 +757,9 @@ export component InstallerProbe inherits Window {
             root.installed-with = u + "|" + f + "|" + h + "|" + k + "|" + t + "|" + d;
         }
         reboot => { root.reboots += 1; }
+        existing-install: root.existing-install;
+        existing-startable: root.existing-startable;
+        start-installed => { root.started-installed += 1; }
         derive-username(n) => { return root.derive-username(n); }
         hostname-for(u) => { return root.hostname-for(u); }
         check-full-name(n) => { return root.check-full-name(n); }
@@ -1128,7 +1134,6 @@ export component FirstRunProbe inherits Window {
     in property <bool> chosen-key-help;
     in-out property <bool> share <=> screen.share;
     in-out property <bool> private-lane <=> screen.private-lane;
-    in-out property <bool> show-shared <=> screen.show-shared;
     in property <[string]> shared-items;
     in property <string> private-lane-words;
     in property <[FirstRunMind]> minds;
@@ -1359,3 +1364,4 @@ export component MindDeskProbe inherits Window {
         }
     }
 }
+export { ChatPartsProbe } from "chat_parts_probe.slint";

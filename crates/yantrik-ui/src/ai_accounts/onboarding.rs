@@ -5,7 +5,7 @@
 //!
 //! 1. "Who should do the thinking?": the provider is saved as now (`wire::ai_onboarding`), then
 //!    [`choose_model`] makes the model the one pick for every mind.
-//! 2. "What your minds share": [`share_line`] is the pre-checked line; [`agree_to_share`] records
+//! 2. "What your minds share": [`share_line`] is the line, unchecked until the person opts in; [`agree_to_share`] records
 //!    the box. "Keep personal things on this computer instead": [`private_lane_choices`] lists
 //!    the local models and [`keep_personal_things_on`] makes one the private lane.
 //! 3. "Getting your minds ready": [`wire_mind`] is each harness's model step (no question).
@@ -24,13 +24,13 @@ pub fn choose_model(model: &str) -> Result<(), String> {
     crate::picker::pick_for_every_mind(model)
 }
 
-/// The sharing line, pre-checked, in the person's words: "Your minds will send what they remember
+/// The sharing line (the box starts unchecked), in the person's words: "Your minds will send what they remember
 /// about you, and where you are, to <provider> when they ask it something."
 pub fn share_line(provider: &str) -> String {
     format!("Your minds will send what they remember about you, and where you are, to {provider} when they ask it something.")
 }
 
-/// The box under [`share_line`]: checked, every account with no choice of its own is Share;
+/// The box under [`share_line`] (ticked by the person only): checked, every account with no choice of its own is Share;
 /// unchecked, Off (a call carrying personal things is then answered by the private lane, or
 /// refused with the fix named).
 pub fn agree_to_share(checked: bool) -> Result<(), String> {

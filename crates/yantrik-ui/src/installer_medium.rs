@@ -5,7 +5,9 @@
 //! nothing to remove, and trying to is how a person ends up opening a Mac. It now says what is
 //! true for the medium in use. The Installing screen promised "The computer restarts by itself
 //! when it is done", and the Installed screen waits for Restart now whenever it has something to
-//! say; it now promises nothing it may not do.
+//! say; it now promises nothing it may not do. "The disc comes out as the computer restarts" was
+//! false on Proxmox and QEMU, where the ISO stays attached and the next boot is the installer
+//! again (#1165): the screen says to remove it, and waits.
 
 /// The medium the live system runs from (/run/live/medium).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,11 +38,19 @@ pub fn finish_hint(medium: Medium) -> &'static str {
     match medium {
         Medium::Internal => "The installer stays on its own partition. There is nothing to remove.",
         Medium::Removable => {
-            "Remove the USB drive once the screen goes dark, so the computer starts Yantrik OS and not the installer."
+            "Remove the USB drive now, then restart, so the computer starts Yantrik OS and not the installer."
         }
-        Medium::Disc => "The disc comes out as the computer restarts.",
-        Medium::Unknown => "If the installer is on a USB drive or a disc, take it out once the screen goes dark.",
+        Medium::Disc => {
+            "Remove the installer disc (or ISO) now, then restart. A virtual machine does not eject it by itself."
+        }
+        Medium::Unknown => "If the installer is on a USB drive, a disc or an ISO, remove it now, then restart.",
     }
+}
+
+/// Whether the person has something to take out before the restart. Then the Installed screen
+/// waits for Restart now: a countdown would restart the machine into the installer again.
+pub fn must_remove(medium: Medium) -> bool {
+    medium != Medium::Internal
 }
 
 /// The Installing screen's line: true whether or not the Installed screen restarts by itself.
@@ -67,6 +77,17 @@ mod tests {
         assert!(line.contains("nothing to remove"), "{line}");
         assert!(!line.contains("remove the"), "{line}");
         assert!(!line.contains("media"), "{line}");
+    }
+
+    #[test]
+    fn the_restart_waits_unless_the_installer_is_on_the_disk_itself() {
+        assert!(!must_remove(Medium::Internal));
+        for m in [Medium::Removable, Medium::Disc, Medium::Unknown] {
+            assert!(must_remove(m), "{m:?}");
+        }
+        let disc = finish_hint(Medium::Disc);
+        assert!(disc.starts_with("Remove the installer disc (or ISO) now, then restart"), "{disc}");
+        assert!(!disc.contains("comes out"), "the disc does not come out on a VM");
     }
 
     #[test]

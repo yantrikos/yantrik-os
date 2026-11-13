@@ -81,6 +81,8 @@ mod control_theme;
 mod control_bench;
 mod boot_unlock;
 mod installer_medium;
+#[cfg(test)]
+mod keyboard_focus_tests;
 mod installer_rules;
 /// What the first-run screens say about a Wi-Fi chip still waiting for its driver (Mac BCM4331).
 mod wifi_note;
