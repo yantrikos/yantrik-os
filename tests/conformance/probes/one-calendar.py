@@ -39,8 +39,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lib  # noqa: E402
 
 ONE_JOB = ("There is one calendar: an appointment the mind makes is one the Calendar app shows, "
-           "an appointment made in the app is one the mind's own tools can read, and either can "
-           "remove it.")
+           "an appointment made in the app is one the mind's own tools can read, and an "
+           "appointment removed behind the open window leaves it. The mind's own tools can "
+           "neither delete nor edit one: under the shipped ceiling both are refused, and "
+           "changing any event is the Calendar's to do, with a person asked (#342).")
 
 APP = "calendar"
 APP_BIN = "/opt/yantrik/bin/yantrik-calendar"
@@ -292,54 +294,55 @@ def run():
                                       "error": today_answer["error"],
                                       "titles_on_disk": sorted(stored())})
 
-            # ── 5. A delete by the mind is a delete everywhere ───────────────
-            removed = tool("calendar_delete_event", event_id=mind_id or "")
-            lib.wait_for(lambda: MIND_TITLE not in stored(), timeout=20)
+            # ── 5. The mind's tools can neither delete nor edit an event (#342) ──
+            #
+            # They used to: `calendar_delete_event` and `calendar_update_event` took any event in
+            # the store unasked — the person's own, a Google-synced one, another caller's — and a
+            # delete cannot be undone. Both are `dangerous` now, above the ceiling the companion
+            # ships with, so the registry refuses them before they reach the store. The event the
+            # app made is the one tried, because it is the person's, not the mind's.
+            app_id = str((app_record or {}).get("id") or "")
+            refused_delete = tool("calendar_delete_event", event_id=app_id)
+            refused_edit = tool("calendar_update_event", event_id=app_id, summary="taken")
+            still = stored().get(APP_TITLE)
             probe.check(
-                "an event the mind deletes is gone from the store",
-                MIND_TITLE not in stored(),
-                contract=2, evidence={"answer": removed["text"], "error": removed["error"],
+                "the mind's delete and edit of an event it did not make are refused, and the "
+                "event stays as it was",
+                "Permission denied" in (refused_delete["text"] or "")
+                and "Permission denied" in (refused_edit["text"] or "")
+                and still is not None and still.get("title") == APP_TITLE,
+                contract=4, evidence={"delete_answer": refused_delete["text"],
+                                      "delete_error": refused_delete["error"],
+                                      "edit_answer": refused_edit["text"],
+                                      "edit_error": refused_edit["error"],
                                       "titles_on_disk": sorted(stored())})
 
+            # ── 6. An event removed behind the open window leaves it ─────────
+            #
+            # This was the mind's delete. The mind cannot delete any more, so the file goes the
+            # way any other writer's removal would arrive: from the store, with the window sitting
+            # on this month and nothing navigating it. The store is restored on the way out.
+            mind_record = stored().get(MIND_TITLE)
+            if mind_record:
+                (STORE / mind_record["_file"]).unlink(missing_ok=True)
             vanished = lib.wait_until(
                 lambda: not app_shows(MIND_TITLE), timeout=FRESHNESS_BOUND_S,
-                what="the open window to stop showing an event the mind deleted behind it")
+                what="the open window to stop showing an event removed behind it")
             titles_after, view_after = app_sees()
             probe.check(
-                "and the open Calendar stops showing it inside %ds, without being navigated"
-                % FRESHNESS_BOUND_S,
+                "an open Calendar stops showing an event removed behind it inside %ds, without "
+                "being navigated" % FRESHNESS_BOUND_S,
                 bool(vanished) and not any(MIND_TITLE in str(t) for t in titles_after),
                 contract=2, evidence=vanished.evidence(
+                    removed_file=(mind_record or {}).get("_file"),
                     events_on_selected_day=titles_after,
                     days_with_events=view_after.get("days_with_events"),
                     notice=view_after.get("notice")))
 
-            # ── 6. A delete that cannot happen is said, not fabricated ───────
-            #
-            # The old tool answered "Event ... deleted locally. Will sync to Google when
-            # connection is restored." for an id that was never on this machine.
-            phantom = tool("calendar_delete_event", event_id="conformance-no-such-event")
-            probe.check(
-                "deleting something that is not there is refused in the calendar's own words",
-                phantom["error"] is None
-                and "NOT deleted" in phantom["text"]
-                and "conformance-no-such-event" in phantom["text"],
-                contract=4, evidence={"answer": phantom["text"], "error": phantom["error"]})
-
             # ── Put the machine back ─────────────────────────────────────────
             #
-            # Through the mind's tool rather than by deleting the file, because that is one more
-            # crossing: the app made this one.
-            if app_record:
-                cleanup = tool("calendar_delete_event", event_id=str(app_record.get("id")))
-                lib.wait_for(lambda: APP_TITLE not in stored(), timeout=20)
-                probe.note("cleanup_delete", cleanup["text"] or cleanup["error"])
-            while_open_record = stored().get(WHILE_OPEN_TITLE)
-            if while_open_record:
-                cleanup = tool("calendar_delete_event",
-                               event_id=str(while_open_record.get("id")))
-                lib.wait_for(lambda: WHILE_OPEN_TITLE not in stored(), timeout=20)
-                probe.note("cleanup_delete_while_open", cleanup["text"] or cleanup["error"])
+            # `lib.preserved` restores the store as it was found when this block ends: the events
+            # this probe made go with it, and nothing here needs a delete the mind may not make.
 
             # Only what this probe started. A Calendar window the person already had open is
             # theirs, and `open_app` focuses one rather than starting a second.
