@@ -319,6 +319,8 @@ struct App {
 }
 
 fn main() {
+    // Gate 9, build B only (test/520-gate9b, never merged): a renderer whose bytes differ from build A's.
+    eprintln!("yantrik-switcher: gate 9 build B");
     let window = MinimalSoftwareWindow::new(RepaintBufferType::SwappedBuffers);
     slint::platform::set_platform(Box::new(Headless(window.clone()))).expect("one platform");
     let view = SwitcherView::new().expect("the switcher view");
