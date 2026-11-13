@@ -21,6 +21,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -62,6 +63,8 @@ pub fn socket_path() -> PathBuf {
 pub struct Handoff {
     mine: OwnedFd,
     theirs: OwnedFd,
+    /// The inode of the browser's end, to find which process holds it once the browser runs.
+    inode: u64,
 }
 
 fn socketpair() -> std::io::Result<(OwnedFd, OwnedFd)> {
@@ -88,6 +91,7 @@ pub fn attach(command: &mut Command) -> std::io::Result<Handoff> {
     // SAFETY: `high` is a new fd and ours.
     let theirs = unsafe { OwnedFd::from_raw_fd(high) };
     let raw = theirs.as_raw_fd();
+    let inode = std::fs::File::from(theirs.try_clone()?).metadata()?.ino();
     // SAFETY: only async-signal-safe calls (dup2) between fork and exec.
     unsafe {
         command.pre_exec(move || {
@@ -97,7 +101,7 @@ pub fn attach(command: &mut Command) -> std::io::Result<Handoff> {
             Ok(())
         });
     }
-    Ok(Handoff { mine, theirs })
+    Ok(Handoff { mine, theirs, inode })
 }
 
 /// The launcher's one call: if this launch is the person's Browser (`persons_browser`, said by the
@@ -117,23 +121,78 @@ pub fn wants(args: &[&str], persons_browser: bool) -> bool {
     persons_browser && args.contains(&PIPE_FLAG)
 }
 
+/// The Browser the shell itself started with a pipe, while it runs (0: none).
+static OWN_BROWSER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn own_browser() -> Option<u32> {
+    match OWN_BROWSER.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        pid => alive(pid).then_some(pid),
+    }
+}
+
+/// Forget `holder` as the shell's own Browser, but only once it has exited.
+fn clear_once_gone(holder: u32, every: Duration) {
+    while alive(holder) {
+        std::thread::sleep(every);
+    }
+    let _ = OWN_BROWSER.compare_exchange(holder, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn alive(pid: u32) -> bool {
     // SAFETY: signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Raise the "not drivable" notice for `app_id`, but only for a clean hand-over exit: the launch
+/// has exited (`pid` is gone), nothing has recorded why (a `Failed` record is the real reason and
+/// is never overwritten), the shell has no Browser of its own, and the person's account runs
+/// another one that is theirs (the Minds' browsers are not).
+fn note_not_drivable(app_id: &str, proc: &Path, pid: u32, uid: u32, profiles: &yantrik_browser_ports::Profiles) {
+    if !alive(pid)
+        && crate::running::last_launch_failure(app_id).is_none()
+        && own_browser().is_none()
+        && super::browser_holder::another_browser_is_open(proc, None, uid, profiles)
+    {
+        tracing::warn!(pid, "The Browser joined one Yantrik did not start; it cannot be driven");
+        crate::running::mark_launch_failed(app_id, app_id, super::browser_holder::NOT_DRIVABLE, 0);
+    } else {
+        tracing::warn!(pid, "No process under the Browser's launch holds its DevTools pipe");
+    }
 }
 
 impl Handoff {
     /// The browser is running as `pid`: close the browser's end here and offer ours to the
     /// service, on a thread that lives as long as the browser. A browser that is gone by then (a
     /// second copy that handed over to the first) is not offered.
+    ///
+    /// `pid` is the process the shell spawned. In the wall that is the outer bwrap, which holds no
+    /// stream: the service is told the process that does (`browser_holder`), and the shell keeps
+    /// following `pid` for the app's life.
     pub fn offer(self, pid: u32) {
-        let Handoff { mine, theirs } = self;
+        let Handoff { mine, theirs, inode } = self;
         drop(theirs);
         let spawned = std::thread::Builder::new().name("browser-pipe".into()).spawn(move || {
             std::thread::sleep(SETTLE);
+            let proc = Path::new("/proc");
+            let Some(holder) = super::browser_holder::holder_of(proc, pid, inode) else {
+                // This launch did not become a Browser with the pipe: it handed over to one that
+                // was already open (or died, which the reaper reports). If the shell has none of
+                // its own and the person's account runs another, the dock joined an instance
+                // nothing can drive (one `xdg-open` started, outside the wall): say so.
+                // SAFETY: getuid has no failure mode.
+                let uid = unsafe { libc::getuid() };
+                note_not_drivable("browser", proc, pid, uid, &yantrik_browser_ports::Profiles::current());
+                return;
+            };
+            OWN_BROWSER.store(holder, std::sync::atomic::Ordering::SeqCst);
             // Read afresh for every offer: a restarted service has a new pid, and the service
             // manager records the current one on every start it performs.
-            keep_offered(&socket_path(), &mine, pid, || ServiceIdentity::installed(service_pid()));
+            keep_offered(&socket_path(), &mine, holder, || ServiceIdentity::installed(service_pid()));
+            // `keep_offered` can return with the Browser still running (a final refusal): the slot
+            // is cleared only once the holder is gone, and a later process that reuses its pid
+            // must not pass for it.
+            clear_once_gone(holder, RETRY);
         });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "Could not start the thread that hands the Browser's pipe over");
@@ -247,6 +306,76 @@ mod tests {
     use super::super::browser_peer::tests::{this_process_is_not_the_service, this_process_is_the_service};
     use std::os::unix::net::UnixListener;
 
+    /// `OWN_BROWSER` is one slot for the whole process: the tests that set or read it take turns.
+    static OWN_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn fake_proc(name: &str, cmdline: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("yb-notice-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("900").join("fd")).unwrap();
+        std::fs::write(dir.join("900").join("cmdline"), cmdline.replace(' ', "\0")).unwrap();
+        dir
+    }
+
+    /// The Browser's slot is cleared when the holder is gone, and not before: a `keep_offered`
+    /// that gave up (a final refusal) leaves the Browser running, and it is still the shell's own.
+    #[test]
+    fn the_own_browser_slot_is_cleared_only_once_the_holder_has_exited() {
+        let _slot = OWN_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        OWN_BROWSER.store(pid, std::sync::atomic::Ordering::SeqCst);
+        let waiter = std::thread::spawn(move || clear_once_gone(pid, Duration::from_millis(20)));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(own_browser(), Some(pid), "the holder is running: it is still the shell's own");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        waiter.join().unwrap();
+        assert_eq!(own_browser(), None);
+        assert_eq!(OWN_BROWSER.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    fn a_gone_pid() -> u32 {
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    fn profiles() -> yantrik_browser_ports::Profiles {
+        yantrik_browser_ports::Profiles { mind_view: "/p/mind-view".into(), identities: "/p/identities".into() }
+    }
+
+    /// The notice is for a clean hand-over exit only: a `Failed` record is the real reason, and
+    /// stays; the person's own other browser is what raises it.
+    #[test]
+    fn a_failed_launch_record_is_not_overwritten_by_the_notice() {
+        let _slot = OWN_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let me = unsafe { libc::getuid() };
+        let proc = fake_proc("failed", "/usr/bin/chromium --no-first-run");
+        let pid = a_gone_pid();
+        crate::running::mark_launch_failed("notice-test-failed", "chromium", "exit status: 1", 300);
+        note_not_drivable("notice-test-failed", &proc, pid, me, &profiles());
+        let kept = crate::running::last_launch_failure("notice-test-failed").unwrap();
+        assert_eq!((kept.status.as_str(), kept.lived_ms), ("exit status: 1", 300));
+        // With nothing recorded, the same situation raises it.
+        note_not_drivable("notice-test-clean", &proc, pid, me, &profiles());
+        let said = crate::running::last_launch_failure("notice-test-clean").unwrap();
+        assert_eq!(said.status, super::super::browser_holder::NOT_DRIVABLE);
+    }
+
+    #[test]
+    fn the_notice_is_not_raised_for_a_minds_browser_or_a_launch_still_running() {
+        let _slot = OWN_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let me = unsafe { libc::getuid() };
+        let minds = fake_proc("minds", "/usr/bin/chromium --headless=new --remote-debugging-port=9300");
+        note_not_drivable("notice-test-minds", &minds, a_gone_pid(), me, &profiles());
+        assert!(crate::running::last_launch_failure("notice-test-minds").is_none());
+        let other = fake_proc("running", "/usr/bin/chromium --no-first-run");
+        note_not_drivable("notice-test-running", &other, std::process::id(), me, &profiles());
+        assert!(crate::running::last_launch_failure("notice-test-running").is_none(), "the launch has not exited");
+    }
+
     /// N3: the pipe goes with the Browser arm's own launch; a catalogue entry, a `.desktop` file
     /// or a Mind View launch whose arguments carry the flag is not the person's Browser.
     #[test]
@@ -263,7 +392,7 @@ mod tests {
         command.args(["-c", "read line <&3; printf '{\"got\":\"%s\"}\\0' \"$line\" >&4"]);
         let handoff = attach(&mut command).unwrap();
         let mut child = command.spawn().unwrap();
-        let Handoff { mine, theirs } = handoff;
+        let Handoff { mine, theirs, .. } = handoff;
         drop(theirs);
         let mut stream = UnixStream::from(mine);
         stream.write_all(b"ping\n").unwrap();

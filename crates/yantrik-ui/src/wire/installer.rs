@@ -892,6 +892,18 @@ fi
         &format!("d /run/user/{uid} 0700 {username} {username} -\n"),
     );
 
+    // The Minds' workshops root (#1124): root's parent from the tmpfiles file, and this account's
+    // own folder in it (0700). The shell never makes either, so the wizard does.
+    let _ = sudo_write(
+        &format!("{mount_dir}/etc/tmpfiles.d/yantrik-workshops.conf"),
+        "d /var/lib/yantrik 0755 root root -\nd /var/lib/yantrik/workshops 0755 root root -\n",
+    );
+    let _ = chroot_cmd(mount_dir, &["install", "-d", "-o", "root", "-g", "root", "-m", "0755", "/var/lib/yantrik", "/var/lib/yantrik/workshops"]);
+    let _ = chroot_cmd(
+        mount_dir,
+        &["install", "-d", "-o", username, "-g", username, "-m", "0700", &format!("/var/lib/yantrik/workshops/{uid}")],
+    );
+
     // Root stays locked on an installed machine. The live image once shipped `root:root` with SSH
     // root login allowed, and copying the live system carried both onto every install; the image
     // no longer does, and this holds for any image that still might.

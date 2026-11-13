@@ -492,30 +492,9 @@ fn ensure_headless_browser() -> Result<(), String> {
     let profile = profile_dir("default");
     let _ = std::fs::create_dir_all(&profile);
 
-    let result = std::process::Command::new(&binary)
-        .args([
-            "--headless=new",
-            "--ozone-platform=headless",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-gpu",
-            // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
-            "--disable-blink-features=AutomationControlled",
-            // Anti-detection: real Chrome user-agent (not "HeadlessChrome")
-            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-            // Anti-detection: realistic viewport size
-            "--window-size=1920,1080",
-            // Anti-detection: enable plugins/WebGL to look like real browser
-            "--enable-webgl",
-            "--enable-features=NetworkService,NetworkServiceInProcess",
-            // Anti-detection: disable automation-related infobars
-            "--disable-infobars",
-            "--excludeSwitches=enable-automation",
-            // Anti-detection: use real browser profile dir for persistent cookies/state
-        ])
-        .args(ports::debugging_flags(CDP_PORT))
-        .arg(format!("--user-data-dir={}", profile.display()))
-        .arg("about:blank")
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let mut command = super::browser_spawn::headless(&home, &binary, &profile, CDP_PORT)?;
+    let result = command
         // Headless draws nothing, and it is not handed the person's display to draw on either.
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
@@ -685,9 +664,12 @@ fn launch_browser(args: &serde_json::Value) -> String {
             Err(why) => return format!("Not opened: {why}"),
         }
     };
-    let mut command = std::process::Command::new(&binary);
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let mut command = match super::browser_spawn::walled(&home, &binary, &chrome_args) {
+        Ok(command) => command,
+        Err(why) => return format!("Not opened: {why}"),
+    };
     command
-        .args(&chrome_args)
         .env("XDG_RUNTIME_DIR", "/run/user/1000")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
