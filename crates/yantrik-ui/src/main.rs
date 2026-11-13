@@ -431,6 +431,9 @@ fn main() {
 
     // Clean shutdown
     tracing::info!("Yantrik OS shutting down");
+    // Receipts the store was too busy to take are still queued in memory: give them a moment,
+    // and log what is lost, before the process ends.
+    bond_receipts::flush(std::time::Duration::from_secs(2));
     service_manager.stop_all();
     // Agents' commands belong to the shell and go with it: every process group, not one pid.
     control_agent_terminal::shutdown();
