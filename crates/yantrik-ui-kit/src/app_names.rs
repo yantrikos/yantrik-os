@@ -1,6 +1,7 @@
 //! What each app this OS ships is called, and the id its icon is keyed by: one list, read by
-//! the shell (yantrik-ui) and by Alt+Tab (yantrik-switcher), which knows a window of ours only by
-//! its title because our apps set no Wayland app_id (#877).
+//! the shell (yantrik-ui) and by Alt+Tab (yantrik-switcher). A window of ours declares
+//! `yantrik-<program>` (#877), which [`icon_id_for`] maps to the icon id; a window that declares
+//! nothing is known only by its title.
 
 /// What each app this OS ships is CALLED. One list, because there were four.
 ///

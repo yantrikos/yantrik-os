@@ -219,16 +219,20 @@ fn a_file_is_read_no_further_than_its_size_and_never_a_fifo() {
 }
 
 fn call(at: i64, status: u16, outcome: &str) -> Call {
-    Call { at, harness: "pi".into(), account: "openai".into(), model: "o4-mini".into(), effort: None, status, outcome: outcome.into(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+    Call { at, rid: 0, harness: "pi".into(), account: "openai".into(), model: "o4-mini".into(), effort: None, status, outcome: outcome.into(), prompt_tokens: 0, completion_tokens: 0, ms: 1, lane_for: None, dropped: Vec::new() }
+}
+
+fn answer(called_at: Option<i64>) -> Option<crate::answering::Answer> {
+    Some(crate::answering::Answer { account_id: "openai".into(), account: "OpenAI".into(), model: "o4-mini".into(), lane: false, called_at })
 }
 
 #[test]
 fn connected_is_said_only_after_a_real_call_or_a_probe() {
-    let base = Input { now: 1_000, on_gateway: true, model: "openai/o4-mini".into(), ..Input::default() };
+    let base = Input { now: 1_000, on_gateway: true, answer: answer(None), ..Input::default() };
     let s = judge(&base);
-    assert_eq!((s.state, s.words.as_str()), ("checking", "checking · o4-mini"), "configured is not connected");
-    let s = judge(&Input { last_call: Some(call(990, 200, "")), ..base.clone() });
-    assert_eq!((s.state, s.words.as_str(), s.fix), ("connected", "connected · o4-mini", Fix::None));
+    assert_eq!((s.state, s.words.as_str()), ("checking", "will send to OpenAI · o4-mini"), "configured is not connected, and says only where it will go");
+    let s = judge(&Input { last_call: Some(call(990, 200, "")), answer: answer(Some(990)), ..base.clone() });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("connected", "answering · OpenAI · o4-mini", Fix::None));
     let s = judge(&Input { probe: Some(Probe { at: 950, outcome: Outcome::Ok }), ..base.clone() });
     assert_eq!(s.state, "connected");
     let stale = judge(&Input { probe: Some(Probe { at: 100, outcome: Outcome::Ok }), ..base.clone() });
@@ -253,12 +257,25 @@ fn connected_is_said_only_after_a_real_call_or_a_probe() {
     assert_eq!((s.state, s.fix), ("checking", Fix::None));
     let s = judge(&Input { last_call: Some(call(990, 404, "account_not_found")), ..base.clone() });
     assert_eq!(s.words, "not set up · that account is gone");
-    let s = judge(&Input { model: String::new(), ..base.clone() });
+    let s = judge(&Input { answer: None, ..base.clone() });
     assert_eq!((s.state, s.fix), ("not-set-up", Fix::AddKey));
     // A call for another model says nothing about this one.
     let mut other = call(990, 200, "");
     other.model = "gpt-4o".into();
     assert_eq!(judge(&Input { last_call: Some(other), ..base.clone() }).state, "checking");
+}
+
+#[test]
+fn a_pick_that_has_gone_says_so_and_the_one_press_is_pick_again() {
+    let base = Input { now: 1_000, on_gateway: true, answer: answer(None), ..Input::default() };
+    let sentence = "Your pick, qwen3.5:27b, isn't offered by any of your accounts any more. Hermes is using your default, OpenAI · o4-mini.";
+    let s = judge(&Input { fallback: Some(sentence.into()), ..base.clone() });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("pick-gone", sentence, Fix::PickAgain));
+    assert_eq!(Fix::PickAgain.label(), "Pick again");
+    // No default to use: the gateway refuses, and the panel says that instead of "checking".
+    let refusal = yantrik_gateway::Refusal::new(404, "pick_gone", "Your pick, qwen3.5:27b, isn't offered by any of your accounts any more. You have no default pick, so Hermes waits until you pick again.");
+    let s = judge(&Input { answer: None, refusal: Some(refusal.clone()), ..base });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("pick-gone", refusal.message.as_str(), Fix::PickAgain));
 }
 
 #[test]
@@ -317,7 +334,7 @@ fn switching_mind_never_relabels_what_an_earlier_mind_said() {
 
 #[test]
 fn a_withdrawal_outranks_an_older_success() {
-    let base = Input { now: 1_000, on_gateway: true, model: "free-groq/gpt-oss-20b".into(), ..Input::default() };
+    let base = Input { now: 1_000, on_gateway: true, answer: Some(crate::answering::Answer { account_id: "free-groq".into(), account: "Groq".into(), model: "gpt-oss-20b".into(), lane: false, called_at: None }), ..Input::default() };
     let fresh_call = Some(Call { account: "free-groq".into(), model: "gpt-oss-20b".into(), ..call(990, 200, "") });
     let ok_probe = Some(Probe { at: 990, outcome: Outcome::Ok });
     let connected = judge(&Input { last_call: fresh_call.clone(), probe: ok_probe.clone(), ..base.clone() });

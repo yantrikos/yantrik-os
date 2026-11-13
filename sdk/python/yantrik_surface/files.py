@@ -70,10 +70,12 @@ def _refusal(asked, answer):
                                   "not a path it may use"))
 
 
-def may_read_file(asked, stat=None):
+def may_read_file(asked, stat=None, as_agent=None):
     """Refuse (`Refusal`) an agent's read of anything but a file in the person's home, outside its
-    protected places. The person is not asked. `stat` stands in for the shell in a test."""
-    if not agent_is_calling():
+    protected places. The person is not asked. `stat` stands in for the shell in a test.
+    `as_agent` carries the answer of `agent_is_calling` from the dispatch's thread, for a caller
+    that asks on another thread, where no dispatch is in hand and the person would be assumed."""
+    if not (agent_is_calling() if as_agent is None else as_agent):
         return
     asked = asked.strip() if isinstance(asked, str) else ""
     answer = (stat or shell_stat)(asked)

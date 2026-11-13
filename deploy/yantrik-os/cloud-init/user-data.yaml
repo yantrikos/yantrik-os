@@ -208,7 +208,10 @@ write_files:
       # /var/lib/yantrik, and that directory used to be created further down by the
       # payload step — so under `set -e` the touch failed, the script exited before
       # installing anything, and the machine never rebooted onto the new kernel.
-      install -d -o yantrik -g yantrik /opt/yantrik /var/lib/yantrik /var/log/yantrik
+      # /var/lib/yantrik is root's, never the person's: the Minds' workshops root is below it, and
+      # a folder the person owns there could be swapped for a link under the updater (#1124).
+      install -d -o yantrik -g yantrik /opt/yantrik /var/log/yantrik
+      install -d -o root -g root -m 0755 /var/lib/yantrik
 
       # ── The kernel ────────────────────────────────────────────────────────────────────
       # Remove the cloud kernel rather than merely installing a real one beside it. With

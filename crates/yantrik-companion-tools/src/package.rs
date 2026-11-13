@@ -68,7 +68,7 @@ impl Tool for PackageSearchTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|apt-cache|pacman
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 if text.trim().is_empty() {
@@ -134,7 +134,7 @@ impl Tool for PackageInstallTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|apt-get|pacman
             Ok(o) if o.status.success() => {
                 format!("Installed '{package}' successfully")
             }
@@ -200,7 +200,7 @@ impl Tool for PackageRemoveTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|apt-get|pacman
             Ok(o) if o.status.success() => {
                 format!("Removed '{package}'")
             }
@@ -256,7 +256,7 @@ impl Tool for PackageInfoTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|apt-cache|pacman
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 if text.trim().is_empty() {
@@ -307,7 +307,7 @@ impl Tool for PackageListTool {
             _ => return "Error: no supported package manager found".to_string(),
         };
 
-        match std::process::Command::new(cmd).args(&cmd_args).output() {
+        match std::process::Command::new(cmd).args(&cmd_args).output() {  // fixed-program: apk|dpkg|pacman
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 let lines: Vec<&str> = if filter.is_empty() {

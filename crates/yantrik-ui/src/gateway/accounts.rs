@@ -92,8 +92,13 @@ impl yantrik_gateway::Accounts for ShellAccounts {
         crate::private_mode::is_on()
     }
 
-    fn picked_model(&self, harness: &str) -> Option<String> {
-        crate::wire::harness_provider::starting_model(harness).ok()
+    fn picked_model(&self, harness: &str) -> Result<String, Refusal> {
+        use crate::wire::harness_provider::{starting_model, Unpicked};
+        match starting_model(harness) {
+            Ok(start) => Ok(start.model().to_string()),
+            Err(gone @ Unpicked::Gone { .. }) => Err(Refusal::new(404, "pick_gone", gone.words(harness))),
+            Err(Unpicked::Nothing(_)) => Err(yantrik_gateway::server::no_pick()),
+        }
     }
 
     fn private_lane(&self) -> Option<String> {

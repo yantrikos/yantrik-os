@@ -34,27 +34,90 @@ fn home() -> PathBuf {
 }
 
 /// The model a harness on Yantrik models answers with (what `"model": "picked"` resolves to at
-/// each call): the one the person picked in the one picker, else the first it may use, on an
-/// account not set to Off for private context (every mind carries it: YantrikDB memory).
-pub(crate) fn starting_model(harness: &str) -> Result<String, String> {
+/// each call).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Start {
+    /// The one the person picked, or, when they never picked, the first it may use on an account
+    /// not set to Off for private context (every mind carries it: YantrikDB memory).
+    Picked(String),
+    /// The pick is offered by no account any more, so the default pick answers instead. Said, never
+    /// silent ([`crate::answering::gone_words`]).
+    Fallback { asked: String, using: String },
+}
+
+impl Start {
+    /// The model that answers, `<account>/<model>`.
+    pub(crate) fn model(&self) -> &str {
+        match self {
+            Start::Picked(m) | Start::Fallback { using: m, .. } => m,
+        }
+    }
+}
+
+/// Why no model can be started with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Unpicked {
+    /// Nothing to pick from, or nothing it may use: the sentence says what to do.
+    Nothing(String),
+    /// The pick is offered by no account any more, and there is no default pick to use instead.
+    Gone { asked: String },
+}
+
+impl Unpicked {
+    /// The sentence for the person, who is told which mind it is about.
+    pub(crate) fn words(&self, harness: &str) -> String {
+        match self {
+            Unpicked::Nothing(why) => why.clone(),
+            Unpicked::Gone { asked } => crate::answering::gone_words(&crate::answering::mind_name(harness), asked, None),
+        }
+    }
+}
+
+/// What `"model": "picked"` means for `harness` now. A pick no account offers falls to the default
+/// pick (the one every mind follows) and never to "the first model that works"; with no default
+/// either it stops ([`Unpicked::Gone`]).
+pub(crate) fn starting_model(harness: &str) -> Result<Start, Unpicked> {
     let catalogue = crate::ai_accounts::catalogue();
     if catalogue.models().next().is_none() {
-        return Err("There are no models yet: add an account under AI & Intelligence (or switch on a free one), then press Use Yantrik models again.".into());
+        return Err(Unpicked::Nothing(
+            "There are no models yet: add an account under AI & Intelligence (or switch on a free one), then press Use Yantrik models again.".into(),
+        ));
     }
-    if let Some(picked) = crate::picker::remembered_model(harness).filter(|m| catalogue.find(m).is_some()) {
-        return Ok(picked);
+    let first_usable = || {
+        let accounts = crate::ai_accounts::accounts();
+        let allowed = crate::ai_accounts::consent::load(&crate::ai_accounts::consent::path());
+        catalogue
+            .models()
+            .find(|m| accounts.iter().any(|a| a.id == m.account && crate::gateway::sharing(a, &allowed) != crate::ai_accounts::consent::Sharing::Off))
+            .map(|m| m.id.clone())
+    };
+    choose(harness, crate::picker::remembered_model(harness), crate::picker::default_model(), |m| catalogue.find(m).is_some(), first_usable)
+}
+
+/// [`starting_model`] over what it reads: the mind's pick, the default pick, which models some
+/// account offers, and (for a mind that never picked) the first model it may use.
+fn choose(
+    harness: &str,
+    asked: Option<String>,
+    default: Option<String>,
+    offered: impl Fn(&str) -> bool,
+    first_usable: impl FnOnce() -> Option<String>,
+) -> Result<Start, Unpicked> {
+    let Some(asked) = asked else {
+        // Nothing was picked, so nothing is being swapped: the first model it may use answers.
+        return first_usable().map(Start::Picked).ok_or_else(|| {
+            Unpicked::Nothing(format!(
+                "{harness} remembers things about you, and no account may hear them yet. Set up a private lane, or allow sharing in AI & Intelligence → AI accounts, then try again."
+            ))
+        });
+    };
+    if offered(&asked) {
+        return Ok(Start::Picked(asked));
     }
-    let accounts = crate::ai_accounts::accounts();
-    let allowed = crate::ai_accounts::consent::load(&crate::ai_accounts::consent::path());
-    let usable = catalogue
-        .models()
-        .find(|m| accounts.iter().any(|a| a.id == m.account && crate::gateway::sharing(a, &allowed) != crate::ai_accounts::consent::Sharing::Off))
-        .map(|m| m.id.clone());
-    usable.ok_or_else(|| {
-        format!(
-            "{harness} remembers things about you, and no account may hear them yet. Set up a private lane, or allow sharing in AI & Intelligence → AI accounts, then try again."
-        )
-    })
+    match default.filter(|d| offered(d)) {
+        Some(using) => Ok(Start::Fallback { asked, using }),
+        None => Err(Unpicked::Gone { asked }),
+    }
 }
 
 /// What install-time wiring offers a harness: a token minted now, `picked` resolved at each call
@@ -63,7 +126,7 @@ pub(crate) fn starting_model(harness: &str) -> Result<String, String> {
 fn install_offer(harness: &str) -> Result<provider_handoff::Offer, String> {
     Ok(provider_handoff::Offer {
         token: provider_handoff::Token(yantrik_gateway::tokens::mint()?),
-        model: starting_model(harness).unwrap_or_else(|_| yantrik_gateway::PICKED.to_string()),
+        model: starting_model(harness).map(|s| s.model().to_string()).unwrap_or_else(|_| yantrik_gateway::PICKED.to_string()),
         models: crate::ai_accounts::catalogue().models().cloned().collect(),
     })
 }
@@ -190,7 +253,7 @@ pub(crate) fn undo_wired(harness: &str) {
 fn plan_gateway(harness: &str) -> Result<Plan, String> {
     let adapter = provider_handoff::adapter_for(harness)
         .ok_or_else(|| format!("{harness} cannot be pointed at Yantrik models from here yet — it keeps its own settings"))?;
-    let model = starting_model(harness)?;
+    let model = starting_model(harness).map_err(|u| u.words(harness))?.model().to_string();
     let offer = provider_handoff::Offer {
         token: provider_handoff::Token(yantrik_gateway::tokens::mint()?),
         model,
@@ -391,5 +454,38 @@ mod tests {
             "The Mind did not take it (HTTP 422): it may not take Yantrik models this way yet. Settings → Minds → Use Yantrik models tries again."
         );
         assert_eq!(slint::Model::row_count(&t.actions), 0, "nothing to undo");
+    }
+
+    use super::{choose, Start, Unpicked};
+
+    fn offered(m: &str) -> bool {
+        matches!(m, "aig/qwen3.8:27b" | "ollama-cloud/deepseek-v4.1-flash")
+    }
+    fn some(m: &str) -> Option<String> {
+        Some(m.to_string())
+    }
+
+    #[test]
+    fn a_pick_that_is_offered_answers_and_a_dead_one_falls_to_the_default_not_to_the_first_usable() {
+        let first = || some("ollama-cloud/deepseek-v4.1-flash");
+        assert_eq!(choose("hermes", some("aig/qwen3.8:27b"), some("ollama-cloud/deepseek-v4.1-flash"), offered, first), Ok(Start::Picked("aig/qwen3.8:27b".into())));
+        let dead = choose("hermes", some("included-model/qwen3.5:27b"), some("aig/qwen3.8:27b"), offered, first).unwrap();
+        assert_eq!(dead, Start::Fallback { asked: "included-model/qwen3.5:27b".into(), using: "aig/qwen3.8:27b".into() });
+        assert_eq!(dead.model(), "aig/qwen3.8:27b", "the default answers, though another model is listed first");
+    }
+
+    #[test]
+    fn a_dead_pick_with_no_usable_default_stops_instead_of_choosing() {
+        let first = || -> Option<String> { panic!("the first usable model is never chosen for a pick that has gone") };
+        let gone = Err(Unpicked::Gone { asked: "included-model/qwen3.5:27b".into() });
+        assert_eq!(choose("hermes", some("included-model/qwen3.5:27b"), None, offered, first), gone);
+        assert_eq!(choose("hermes", some("included-model/qwen3.5:27b"), some("also/gone"), offered, first), gone);
+    }
+
+    #[test]
+    fn a_mind_that_never_picked_gets_the_first_model_it_may_use_or_is_told_why_not() {
+        assert_eq!(choose("hermes", None, None, offered, || some("aig/qwen3.8:27b")), Ok(Start::Picked("aig/qwen3.8:27b".into())));
+        let Err(Unpicked::Nothing(why)) = choose("hermes", None, None, offered, || None) else { panic!("a sentence was expected") };
+        assert!(why.starts_with("hermes remembers things about you"), "{why}");
     }
 }

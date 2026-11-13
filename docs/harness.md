@@ -18,12 +18,13 @@ one of the candidates.
 Eight methods on the `harness` socket, all spoken by the harness:
 
 ```text
-harness.attach   {id, name, detail?, tools?, memory?, conversations?}  → {session, as, features?, initiative?}
+harness.attach   {id, name, detail?, tools?, memory?, conversations?, gateway?}  → {session, as, features?, initiative?, gateway_token?}
 harness.poll     {session, feedback_ack?}  → {turn_id, text, context, conversation, agent_token, origin?, options?} | {}
                                           … either may also carry cancelled: [turn_id], ended: [conversation],
                                             answers: [{turn_id, request_id, answer}], initiative,
                                             notice_feedback: [{seq, notice_id, kind, seen_at, opened_at, at}]
 harness.notice   {session, notice}                     → {stored, notice_id, …}  (only when attach said notice_inbox_v1)
+harness.detail   {session, detail}                     → {}      (change the line under the name; no re-attach)
 harness.chunk    {session, turn_id, delta}             → {}
 harness.event    {session, turn_id, event}             → {}      (optional — see below)
 harness.complete {session, turn_id}                    → {}
@@ -148,6 +149,18 @@ script that only acts never needs to attach.
 The desktop's **Agents** view (`design/agents-workspace-2026-09-23.md`) shows one pane per
 agent, and an agent is **one conversation with one mind**: `<harness>:<conversation>`, like
 `pi:c-7f3a91`.
+
+**The gateway token (`gateway: true`).** A harness whose tools bridge is started by the harness's own
+runtime, not by the harness (Hermes starts its MCP servers itself, handing them nothing but an
+environment), has no way to give that bridge a conversation's `agent_token`, and a mind running as
+the mind account (#411) is refused without one. Saying `gateway: true` makes the desktop mint a
+second agent for the attach, `<id>:gateway`, and answer its token as `gateway_token`: live for
+exactly as long as the attach, held to the harness's reach, taking no turns, never a row in the
+Agents view, never stoppable, and never the person's chat, so the Lens's + does not clear its taint.
+Its approval cards say "<mind> (background)". The harness hands it to its bridge without an
+environment (a pipe, or a socket the bridge asks on: `harnesses/hermes/bridge_token.py`, read by
+`yos-mcp` into memory; a bridge handed it by pipe is then non-dumpable, one that asks a socket is not). Never for a shared attach, and a
+`resume` cannot claim the name.
 
 **Conversations.** A harness that can hold more than one conversation at a time — a process per
 conversation, a history per conversation — says `conversations: true` when it attaches. The
@@ -697,6 +710,12 @@ yos act shell use_harness id=hermes        # once it appears in the picker
 
 Hermes keeps its model, endpoint, keys and memory in `~/.hermes`, as it always has. The plugin
 reads none of it except the model name, which it passes as the `detail` the picker shows.
+
+On a machine with the mind account (`yantrik-mind`), Hermes's gateway runs as that account, as the
+system service `hermes-gateway`, with its `~/.hermes` in `/var/lib/yantrik-mind/harness/hermes` and
+the desktop at the mind door only (#411; `harnesses/hermes/README.md` has the details and what stops
+working). A new harness follows `config/systemd/hermes-gateway.service` and
+`deploy/yantrik-os/harness-isolation.sh`.
 
 **Give the desktop platform the desktop's tools, not Hermes's own.** Hermes arrives with a
 `terminal`, `file`, `code_execution`, `browser` and `web` toolset of its own. On this desktop

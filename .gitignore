@@ -67,6 +67,9 @@ lib.long-type-*.txt
 # are reproducible from the scripts above, so they belong in the tree next to them.
 !crates/yantrik-ui-slint/ui/wallpapers/*.png
 !crates/yantrik-ui-slint/ui/wallpapers/previews/*.png
+# ...and the kit's own pictures (the shadow every floating surface wears): 4 KB, rendered by
+# scripts/render-shadow.py, and without it the shell does not compile.
+!crates/yantrik-ui-kit/slint/images/*.png
 # ...and the titlebar buttons, for the same reason: generated, tiny, and the window has no
 # close button without them.
 !config/labwc/*.png
