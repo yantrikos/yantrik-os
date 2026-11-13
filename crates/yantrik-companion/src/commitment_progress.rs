@@ -1,9 +1,9 @@
 //! What a preparation has done so far, kept on the [`PreparedItem`] (#1184): one record per file
 //! the promise names, the draft, and what is still to be tried.
 //!
-//! Only what the person would want is kept: the chosen paths, whether each file was opened and
-//! where, the draft, and words. No tool output, no file listings. A retry reads this back, so
-//! what was already done (a file opened, the draft made) is not done twice.
+//! Only what the person would want is kept: the chosen paths, the draft, and words. No tool output,
+//! no file listings. A retry reads this back, so what was already done (a file found, the draft
+//! made) is not done twice. Nothing is opened for the person: they open what was found themselves.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,12 +18,7 @@ pub struct FileRecord {
     pub role: String,
     /// The one file chosen for it, once there is one.
     pub path: Option<String>,
-    /// Opened in Mind View, or not (and `why`). `None` while not yet tried.
-    pub opened: Option<bool>,
-    /// Where the window landed, as the shell said.
-    #[serde(rename = "in")]
-    pub place: Option<String>,
-    /// In the person's words: why no file was chosen, or why it was not opened.
+    /// In the person's words: why no file was chosen.
     pub why: Option<String>,
     /// Nothing more will be tried for this file.
     pub settled: bool,
@@ -32,7 +27,7 @@ pub struct FileRecord {
 impl FileRecord {
     pub fn new(file: &NamedFile) -> Self {
         let role = if file.role == Role::Attach { "attach" } else { "file" };
-        Self { label: file.label.clone(), role: role.into(), path: None, opened: None, place: None, why: None, settled: false }
+        Self { label: file.label.clone(), role: role.into(), path: None, why: None, settled: false }
     }
 
     pub fn is_attachment(&self) -> bool {
@@ -91,11 +86,10 @@ impl Progress {
 
     /// The `data` an item keeps.
     pub fn to_data(&self, commitment_id: i64, promisee: &str, deadline: f64, state: &str, next_try: Option<f64>) -> Value {
-        let opened: Vec<Value> = self
+        let located: Vec<Value> = self
             .files
             .iter()
-            .filter(|f| f.opened == Some(true))
-            .map(|f| json!({ "label": f.label, "path": f.path, "in": f.place }))
+            .filter_map(|f| f.path.as_ref().map(|p| json!({ "label": f.label, "path": p, "role": f.role })))
             .collect();
         let attachment = self.attachment().and_then(|a| a.path.as_ref().map(|p| json!({ "label": a.label, "path": p })));
         json!({
@@ -104,7 +98,7 @@ impl Progress {
             "deadline": deadline,
             "state": state,
             "next_try": next_try,
-            "opened": opened,
+            "files": located,
             "attachment": attachment,
             "draft": self.draft.as_ref().map(|d| json!({
                 "app": "email", "state": "draft", "to": d.to, "subject": d.subject, "attached": d.attached,
@@ -126,12 +120,11 @@ mod tests {
         let files = [NamedFile { role: Role::Attach, label: "Q4 deck".into() }];
         let mut p = Progress::start(&files);
         p.files[0].path = Some("/h/Documents/Q4-deck.ydeck".into());
-        p.files[0].opened = Some(true);
-        p.files[0].place = Some("Mind View".into());
         let data = p.to_data(7, "Maya", 100.0, "retry", Some(5.0));
         let back = Progress::from_data(&data).unwrap();
         assert_eq!(back.files[0].path.as_deref(), Some("/h/Documents/Q4-deck.ydeck"));
-        assert_eq!(data["opened"][0]["in"], "Mind View");
+        assert_eq!(data["files"][0]["path"], "/h/Documents/Q4-deck.ydeck");
+        assert!(data.get("opened").is_none(), "nothing is opened for the person");
         assert_eq!(data["sent"], false);
         assert!(data.get("steps").is_none(), "no tool output is kept");
     }

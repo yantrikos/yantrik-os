@@ -34,13 +34,9 @@ fn said_on_monday_prepared_when_the_window_opens_and_nothing_is_sent() {
     let outcomes = rig.cycle(window());
     let item = the_item(&outcomes);
 
-    // Both files opened in Mind View: the shell's launch, read for where it landed, and then the
-    // file, in the app for its kind; then the draft.
-    assert_eq!(
-        rig.app_calls(),
-        [("shell", "open_app"), ("presentation", "open"), ("shell", "open_app"), ("spreadsheet", "open"), ("email", "compose")]
-            .map(|(a, b)| (a.to_string(), b.to_string())),
-    );
+    // Nothing is opened for the person (the shell refuses a Mind a window of a framework app):
+    // the files are found, and the one app call is the draft.
+    assert_eq!(rig.app_calls(), [("email".to_string(), "compose".to_string())]);
     let compose = rig.calls().into_iter().find(|(_, a)| a["action"] == "compose").unwrap().1;
     assert_eq!(compose["args"]["attach"], DECK, "the draft carries the deck");
     assert_eq!(compose["args"]["body"], "Hi Maya,\n\nHere is the Q4 deck.\n");
@@ -57,18 +53,19 @@ fn said_on_monday_prepared_when_the_window_opens_and_nothing_is_sent() {
     assert_eq!(item.data["attachment"]["path"], DECK);
     assert_eq!(item.data["draft"]["attached"], DECK);
     assert_eq!(item.data["draft"]["can_be_sent"], false, "Email cannot send attachments yet");
-    assert_eq!(item.data["opened"][0]["in"], "Mind View", "where it landed is what the shell said");
-    assert_eq!(item.data["opened"][1]["path"], SHEET);
+    assert_eq!(item.data["files"][0]["path"], DECK);
+    assert_eq!(item.data["files"][1]["path"], SHEET);
+    assert!(item.data.get("opened").is_none());
     assert_eq!(item.data["missing"], json!([]));
     assert!(item.data.get("steps").is_none() && !item.data.to_string().contains("file(s) found"));
     // It does not claim a send card or a draft id.
     assert!(item.data.get("draft_id").is_none() && item.data.get("card").is_none());
     assert!(item.description.contains("Email can't send attachments yet, so it can't be sent from there"), "{}", item.description);
-    assert!(item.description.ends_with("Nothing sent."), "{}", item.description);
-    assert!(item.description.starts_with("For your promise to Maya on Thursday: 2 files opened in Mind View"), "{}", item.description);
+    assert!(item.description.ends_with("Nothing sent or opened for you."), "{}", item.description);
+    assert!(item.description.starts_with("For your promise to Maya on Thursday: 2 files found"), "{}", item.description);
 
     // Every step is in the audit.
-    assert_eq!(rig.audit_lines("app_action"), 5);
+    assert_eq!(rig.audit_lines("app_action"), 1);
     assert!(rig.audit_lines("glob") >= 2);
 
     // The brief shows it, once, and the person's use of it is recorded.
@@ -102,7 +99,7 @@ fn a_file_that_cannot_be_found_is_said_in_the_persons_words() {
     let item = the_item(&outcomes);
     assert_eq!(item.data["missing"], json!(["couldn't find the budget spreadsheet"]));
     assert!(item.description.contains("couldn't find the budget spreadsheet"), "{}", item.description);
-    assert_eq!(item.data["opened"].as_array().unwrap().len(), 1, "only what exists was opened");
+    assert_eq!(item.data["files"].as_array().unwrap().len(), 1, "only what exists was found");
     assert_eq!(item.data["draft"]["attached"], DECK, "the deck was found, so the draft is real");
     assert_eq!(item.data["state"], "retry", "it may be saved later, while the window is open");
 

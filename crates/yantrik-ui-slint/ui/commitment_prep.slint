@@ -22,6 +22,13 @@ export struct PrepCardData {
     yes-id: string,
     no-label: string,
     no-id: string,
+    // The person's own ways in to what was found: "Open <file name>" for up to two files (empty
+    // label: no such file), "and 3 more" as text, and "Open the draft" when a draft waits in Email.
+    // The paths and the commitment id stay in Rust; a press names the card and the file's place.
+    file1-label: string,
+    file2-label: string,
+    more-files: string,
+    draft-label: string,
 }
 
 export global PrepState {
@@ -37,6 +44,11 @@ export global PrepState {
     in-out property <string> off-id;
     in-out property <string> on-id;
     callback answer(string);
+    // The person's own opening of a found file (card item, 0 or 1) and of the draft Email holds
+    // for a promise (card item). Handled in Rust (wire/commitment_prep.rs) as a person's own open,
+    // never the Mind's. Pressed only by the buttons below, which are pointer-only.
+    callback open-file(string, int);
+    callback open-draft(string);
 }
 
 // The buttons of one answer. `no-id` empty means a single button (turn back on).
@@ -89,7 +101,7 @@ export component PrepSwitch inherits VerticalLayout {
         }
     }
     Text {
-        text: "Opens the files a promise names in Mind View and drafts the email. Nothing is ever sent.";
+        text: "Finds the files a promise names and drafts the email with them attached. Nothing is ever sent or opened for you.";
         color: Theme.text-dim;
         font-size: Theme.fs-caption;
         wrap: word-wrap;
@@ -115,6 +127,8 @@ export component PrepSwitch inherits VerticalLayout {
 // button row `sp-3` past the card's bottom edge.)
 export component PrepAsk inherits Rectangle {
     in property <PrepCardData> card;
+    // Where the last button row ends inside the card, for the preview check that no button hangs out.
+    out property <length> buttons-bottom: choices.y + choices.height;
 
     width: 300px;
     height: body.preferred-height;
@@ -140,7 +154,31 @@ export component PrepAsk inherits Rectangle {
             font-size: Theme.fs-caption;
             wrap: word-wrap;
         }
-        PrepChoices {
+        // The person's own openings, each on its own row above Got it / Stop, pointer-only.
+        if root.card.file1-label != "": YButton {
+            label: root.card.file1-label;
+            variant: 1;
+            pointer-only: true;
+            clicked => { PrepState.open-file(root.card.item, 0); }
+        }
+        if root.card.file2-label != "": YButton {
+            label: root.card.file2-label;
+            variant: 1;
+            pointer-only: true;
+            clicked => { PrepState.open-file(root.card.item, 1); }
+        }
+        if root.card.more-files != "": Text {
+            text: root.card.more-files;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+        }
+        if root.card.draft-label != "": YButton {
+            label: root.card.draft-label;
+            variant: 1;
+            pointer-only: true;
+            clicked => { PrepState.open-draft(root.card.item); }
+        }
+        choices := PrepChoices {
             yes-label: root.card.yes-label;
             yes-id: root.card.yes-id;
             no-label: root.card.no-label;

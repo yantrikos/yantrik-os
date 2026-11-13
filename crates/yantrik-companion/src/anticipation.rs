@@ -80,7 +80,7 @@ pub enum PreparedKind {
     DraftReply,
     /// Commitment status summary.
     CommitmentSummary,
-    /// A promised thing carried out: files opened in Mind View, the email drafted. Never sent.
+    /// A promised thing carried out: the files found and the email drafted with them attached. Never sent, and nothing opened for the person.
     CommitmentPrep,
     /// Offline content bundle.
     OfflineBundle,

@@ -83,7 +83,8 @@ fn the_first_promise_asks_once_and_only_records_what_would_be_prepared() {
     assert_eq!(item.data["state"], "proposed");
     assert!(item.description.ends_with("Shall I get these ready for promises like this?"), "{}", item.description);
     assert!(!commitment_store::asked(&rig.db.conn()), "stored is not shown: nobody has been asked yet");
-    assert!(item.description.contains("Nothing would be sent."));
+    assert!(item.description.contains("Nothing would be sent or opened."));
+    assert!(!item.description.to_lowercase().contains("mind view"), "{}", item.description);
     assert!(rig.calls().is_empty(), "nothing was searched, opened or drafted: {:?}", rig.calls());
     // Not asked again, and still nothing done, on the next cycles.
     assert!(matches!(rig.cycle(window() + HOUR).as_slice(), [Outcome::AlreadyPrepared]));
@@ -188,7 +189,7 @@ fn a_bare_noun_names_no_file_and_the_newest_is_never_taken() {
     let (rig, outcomes) = said_with(&["/home/p/Documents/journal.md", "/home/p/Documents/contract-old.md"], "I'm forwarding you the contract on Friday.");
     let item = the_item(&outcomes);
     assert_eq!(item.data["attachment"], serde_json::Value::Null);
-    assert_eq!(item.data["opened"], json!([]));
+    assert_eq!(item.data["files"], json!([]));
     assert!(item.data["missing"][0].as_str().unwrap().contains("couldn't tell which file you mean by the contract"), "{}", item.data["missing"]);
     assert!(rig.app_calls().is_empty(), "nothing was opened or drafted");
 }
@@ -289,33 +290,27 @@ fn a_cut_kind_listing_that_turns_up_two_candidates_by_name_chooses_none() {
     assert!(rig.app_calls().iter().all(|(_, a)| a != "open" && a != "compose"), "nothing opened or attached: {:?}", rig.app_calls());
 }
 
-// ── MEDIUM-5: where a window landed ─────────────────────────────────
+// ── MEDIUM-5: nothing is opened for the person ─────────────────────
 
+/// The shell refuses a Mind a window of any framework app (#978 step 1), so a prepared item makes
+/// no open call at all, whatever the shell would have said: the person opens what was found from
+/// the card. The real prepare path runs against a recording shell.
 #[test]
-fn a_launch_that_lands_on_the_desktop_does_not_get_the_file() {
-    let rig = Rig::new(&[DECK, SHEET]);
-    rig.world.lock().unwrap().lands_in = "the person's desktop".into();
-    rig.say(SAID, MONDAY);
-    let outcomes = rig.cycle(window());
-    let item = the_item(&outcomes);
-    assert_eq!(item.data["opened"], json!([]));
-    assert!(item.data["missing"][0].as_str().unwrap().contains("apps open on your desktop with your current setting"), "{}", item.data["missing"]);
-    assert!(rig.app_calls().iter().all(|(_, action)| action != "open"), "no file was opened: {:?}", rig.app_calls());
-    assert_eq!(item.data["draft"]["state"], "draft", "the draft does not need Mind View");
-}
-
-#[test]
-fn an_app_already_open_on_the_desktop_is_left_alone() {
-    let rig = Rig::new(&[DECK, SHEET]);
-    rig.world.lock().unwrap().refused.push((
-        "shell.open_app".into(),
-        "shell.open_app \u{2192} {\"launching\":\"presentation\",\"note\":\"already open on the person's desktop: not launched again\"}".into(),
-        false,
-    ));
-    rig.say(SAID, MONDAY);
-    let outcomes = rig.cycle(window());
-    assert!(the_item(&outcomes).data["missing"][0].as_str().unwrap().contains("already open on your desktop"));
-    assert!(rig.app_calls().iter().all(|(_, a)| a != "open"));
+fn a_prepared_item_makes_no_open_call_of_any_kind() {
+    for lands_in in ["Mind View", "the person's desktop"] {
+        let rig = Rig::new(&[DECK, SHEET]);
+        rig.world.lock().unwrap().lands_in = lands_in.into();
+        rig.say(SAID, MONDAY);
+        let outcomes = rig.cycle(window());
+        let item = the_item(&outcomes);
+        let calls = rig.app_calls();
+        assert_eq!(calls, [("email".to_string(), "compose".to_string())], "only the draft is made: {calls:?}");
+        assert!(calls.iter().all(|(app, action)| app != "shell" && action != "open" && action != "open_app"), "{calls:?}");
+        assert_eq!(item.data["files"].as_array().unwrap().len(), 2, "both files are located for the card");
+        assert_eq!(item.data["draft"]["state"], "draft");
+        assert_eq!(item.data["missing"], json!([]), "a missing open is not a shortfall: {}", item.data["missing"]);
+        assert!(!item.description.to_lowercase().contains("mind view"), "{}", item.description);
+    }
 }
 
 // ── MEDIUM-6: transient and final failures ──────────────────────────
@@ -342,13 +337,13 @@ fn a_slow_email_is_retried_with_backoff_and_never_shows_the_tool_sentence() {
     assert!(matches!(rig.cycle(window() + 60.0).as_slice(), [Outcome::Nothing("waiting to try again")]));
     assert_eq!(rig.calls().len(), calls_then);
 
-    // After the pause: the draft is made, and the files already opened are not opened again.
+    // After the pause: the draft is made, and nothing is opened.
     let later = rig.cycle(window() + 10.0 * 60.0);
     let item = the_item(&later);
     assert_eq!(item.data["state"], "prepared");
     assert_eq!(item.data["draft"]["attached"], DECK);
-    let opens = rig.app_calls().iter().filter(|(_, a)| a == "open").count();
-    assert_eq!(opens, 2, "each file was opened once");
+    let opens = rig.app_calls().iter().filter(|(_, a)| a == "open" || a == "open_app").count();
+    assert_eq!(opens, 0, "nothing is opened for the person");
     assert_eq!(rig.items(), 1);
 }
 

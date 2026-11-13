@@ -107,6 +107,7 @@ pub mod location;
 pub mod pins;
 mod morning_brief;
 mod commitment_prep;
+mod commitment_prep_open;
 mod window_switcher;
 /// The taskbar's corner button, Super+D and `show_desktop`: every window away, then back (#241).
 pub mod show_desktop;

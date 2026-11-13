@@ -113,7 +113,7 @@ pub fn brief_actions(conn: &rusqlite::Connection, now: f64) -> Vec<BriefAction> 
         return vec![BriefAction {
             icon: "\u{2726}",
             label: "Get promised things ready: off".into(),
-            content: "Yantrik turned this off, not you. Files would be opened in Mind View and emails drafted; nothing is ever sent.".into(),
+            content: "Yantrik turned this off, not you. Files a promise names would be found and the email drafted with them attached; nothing is ever sent or opened for you.".into(),
             action_id: TURN_ON.into(),
         }];
     }

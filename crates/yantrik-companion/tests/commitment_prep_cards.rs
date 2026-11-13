@@ -4,6 +4,7 @@
 mod common;
 
 use common::*;
+use yantrik_companion::anticipation::AnticipationEngine;
 use yantrik_companion::commitment_cards::cards;
 use yantrik_companion::commitment_consent::{self, SEEN, TURN_OFF};
 use yantrik_companion::commitment_hook::reply_to_press;
@@ -55,7 +56,8 @@ fn a_prepared_item_raises_a_card_that_says_what_was_done_with_turn_off() {
     assert_eq!(shown.len(), 1, "{shown:?}");
     let card = &shown[0];
     assert_eq!((card.yes_label, card.no_label, card.no_id.as_str()), ("Got it", "Stop getting things ready", TURN_OFF));
-    assert!(card.text.contains("opened in Mind View") && card.text.contains("Nothing sent"), "{}", card.text);
+    assert!(card.text.contains("2 files found") && card.text.contains("draft is in Email") && card.text.contains("Nothing sent"), "{}", card.text);
+    assert!(!card.text.to_lowercase().contains("mind view"), "no promise of Mind View: {}", card.text);
     assert_eq!(cards(&rig.db.conn(), at + 5.0), shown, "one card per item, not per tick");
     assert!(commitment_consent::person_answer(&rig.db.conn(), TURN_OFF).is_some());
     assert!(cards(&rig.db.conn(), at + 10.0).is_empty(), "turned off: the card goes");
@@ -143,7 +145,7 @@ fn at_most_three_prepared_cards_show_newest_first() {
 }
 
 fn commitment_prep_item(rig: &Rig, id: &str, created: f64) -> String {
-    store_item(rig, id, created, serde_json::json!({ "state": "prepared", "opened": ["/home/p/Documents/a.csv"] }));
+    store_item(rig, id, created, serde_json::json!({ "state": "prepared", "files": [{ "label": "a", "path": "/home/p/Documents/a.csv" }] }));
     id.to_string()
 }
 
@@ -223,4 +225,15 @@ fn every_prepared_card_says_its_own_draft_is_in_email() {
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), 2, "each draft carries its own promise's id: {ids:?}");
+}
+
+#[test]
+fn a_prepared_card_carries_the_located_files_and_the_commitment_whose_draft_waits() {
+    let (rig, _) = prepared_rig_for_cards();
+    let shown = cards(&rig.db.conn(), window() + 60.0);
+    let card = &shown[0];
+    let paths: Vec<&str> = card.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, [DECK, SHEET], "the files the promise named, as located");
+    let id = AnticipationEngine::get_relevant_at(&rig.db.conn(), window() + 60.0)[0].data["commitment_id"].to_string();
+    assert_eq!(card.draft_for.as_deref(), Some(id.as_str()), "the draft is opened by its commitment");
 }

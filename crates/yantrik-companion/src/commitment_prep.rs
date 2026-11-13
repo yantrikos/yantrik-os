@@ -1,10 +1,12 @@
 //! Carrying out a promised thing: the executor behind the `commitment_prep` instinct (#1184).
 //!
 //! The person said once, "I'm sending Maya the Q4 deck on Thursday. The numbers are in the budget
-//! spreadsheet." When the commitment's prep window opens this finds the files they named, opens
-//! them **in Mind View**, and drafts the email in Email with the deck attached. It **never sends**:
-//! the only tools it calls are `glob` and `app_action`, there is no send step, and Email publishes
-//! no action that sends. Email cannot send attachments yet either, and the item says so.
+//! spreadsheet." When the commitment's prep window opens this finds the files they named and drafts
+//! the email in Email with the deck attached. It **never sends** and **opens nothing**: the shell
+//! refuses a Mind a window of any framework app (#978 step 1), so the person opens what was found
+//! themselves, from the card (`commitment_cards`). The only tools called are `glob` and
+//! `app_action` (Email's `compose`); there is no send step, and Email publishes no action that
+//! sends. Email cannot send attachments yet either, and the item says so.
 //!
 //! It is earned, not assumed: until the person says yes, the item only records what would be
 //! prepared. The question is put on their brief card, and the yes is theirs alone
@@ -16,7 +18,7 @@
 //! (`glob`, and local app actions), so it works with research off. Email's `compose` starts Email
 //! without looking at the mail (no IMAP or SMTP session is opened for a draft).
 //!
-//! A step that fails for now (an app starting, Mind View briefly down, a file not saved yet) is
+//! A step that fails for now (Email starting, a file not saved yet) is
 //! tried again with a growing pause while the window is open; one that fails for good is said and
 //! left. What the item keeps is in `commitment_progress`: chosen paths and words, never tool output.
 
@@ -27,9 +29,9 @@ use yantrik_companion_core::tools::{ToolContext, ToolRegistry};
 
 use crate::anticipation::{AnticipationEngine, PreparationTrigger, PreparedItem, PreparedKind};
 use crate::commitment_files::{named_files, NamedFile, Role};
-use crate::commitment_hands::{app_name, Failed, Hands};
+use crate::commitment_hands::Hands;
 use crate::commitment_locate::{locate, search_roots, Located};
-use crate::commitment_progress::{DraftRecord, FileRecord, Progress};
+use crate::commitment_progress::{DraftRecord, Progress};
 use crate::commitment_store as store;
 use crate::world_model::{Commitment, CommitmentStatus};
 
@@ -47,9 +49,6 @@ const MAX_ATTEMPTS: u32 = 6;
 
 /// How long a prepared item stays useful past the deadline it was prepared for.
 const KEEP_AFTER_DEADLINE_SECS: f64 = 86_400.0;
-
-/// What the shell says `where` is for a window in Mind View.
-const MIND_VIEW: &str = "Mind View";
 
 /// What the executor reads that is not in the database: where to look, and how long it may take.
 #[derive(Debug, Clone)]
@@ -126,7 +125,7 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
 
     let mut hands = Hands::new(registry, ctx, settings.budget);
     progress.attempts += 1;
-    find_and_open(&mut hands, &mut progress, &settings.roots);
+    find_files(&mut hands, &mut progress, &settings.roots);
     let window_closed = now >= commitment.deadline;
     let had_draft = progress.draft.is_some();
     draft_email(&mut hands, &mut progress, &commitment, window_closed);
@@ -165,11 +164,11 @@ pub(crate) fn item_id(commitment_id: i64) -> String {
 /// that expires unseen has asked nobody.
 fn propose(ctx: &ToolContext<'_>, c: &Commitment, files: &[NamedFile], now: f64) -> Option<PreparedItem> {
     let labels: Vec<&str> = files.iter().map(|f| f.label.as_str()).collect();
-    let mut line = format!("{}: not prepared yet. I would open the {} in Mind View", for_promise(c), labels.join(" and the "));
+    let mut line = format!("{}: not prepared yet. I would find the {}", for_promise(c), labels.join(" and the "));
     if let Some(sent) = files.iter().find(|f| f.role == Role::Attach) {
         line.push_str(&format!(" and draft the email with the {} attached", sent.label));
     }
-    line.push_str(". Nothing would be sent. ");
+    line.push_str(". Nothing would be sent or opened. ");
     line.push_str(store::QUESTION);
     let item = PreparedItem {
         id: item_id(c.id),
@@ -190,8 +189,8 @@ fn propose(ctx: &ToolContext<'_>, c: &Commitment, files: &[NamedFile], now: f64)
     AnticipationEngine::store(&ctx.db.conn(), &item).then_some(item)
 }
 
-/// Find each file named, and open it in Mind View.
-fn find_and_open(hands: &mut Hands<'_>, progress: &mut Progress, roots: &[String]) {
+/// Find each file named. Nothing is opened: the person opens what was found from the card.
+fn find_files(hands: &mut Hands<'_>, progress: &mut Progress, roots: &[String]) {
     for rec in progress.files.iter_mut().filter(|r| !r.settled) {
         let Some(kind) = rec.kind() else {
             rec.settled = true;
@@ -203,63 +202,15 @@ fn find_and_open(hands: &mut Hands<'_>, progress: &mut Progress, roots: &[String
                 Located::Found(path) => {
                     rec.path = Some(path);
                     rec.why = None;
+                    rec.settled = true;
                 }
-                Located::Later(words) => {
-                    rec.why = Some(words);
-                    continue;
-                }
+                Located::Later(words) => rec.why = Some(words),
                 // A file not saved yet may be there later; a label that fits many files will not
                 // fit fewer.
                 other => {
                     rec.why = other.words(&rec.label);
                     rec.settled = other != Located::Missing;
-                    continue;
                 }
-            }
-        }
-        open_in_mind_view(hands, rec, kind.app(), kind.openable_extension());
-    }
-}
-
-/// Where the shell says a launch landed, and if that is not Mind View, why the file is left alone.
-fn landing(answer: &Value) -> Result<String, String> {
-    match answer["where"].as_str() {
-        Some(MIND_VIEW) => Ok(MIND_VIEW.to_string()),
-        Some(_) => Err("apps open on your desktop with your current setting, so I didn't open the file".into()),
-        None if answer["note"].as_str().is_some_and(|n| n.contains("already open on the person's desktop")) => {
-            Err("it is already open on your desktop, so I left it alone".into())
-        }
-        None => Err("I couldn't tell where it opened, so I didn't open the file".into()),
-    }
-}
-
-/// Open the chosen file in Mind View: the app first, read where it landed, and only if that is
-/// Mind View, the file in it. Never on the person's desktop.
-fn open_in_mind_view(hands: &mut Hands<'_>, rec: &mut FileRecord, app: &str, openable: &str) {
-    let Some(path) = rec.path.clone() else { return };
-    let readable = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(openable));
-    if !readable {
-        rec.opened = Some(false);
-        rec.settled = true;
-        rec.why = Some(format!("{} can't open that kind of file, so it is attached, not opened", app_name(app)));
-        return;
-    }
-    let outcome = hands
-        .act("shell", "open_app", json!({ "name": app }))
-        .and_then(|answer| landing(&answer).map_err(Failed::Final))
-        .and_then(|place| hands.act(app, "open", json!({ "path": path })).map(|_| place));
-    match outcome {
-        Ok(place) => {
-            rec.opened = Some(true);
-            rec.place = Some(place);
-            rec.why = None;
-            rec.settled = true;
-        }
-        Err(failed) => {
-            rec.why = Some(failed.words().to_string());
-            if !failed.is_later() {
-                rec.opened = Some(false);
-                rec.settled = true;
             }
         }
     }
@@ -324,15 +275,15 @@ fn files_word(n: usize) -> String {
 /// One line for the brief to read from: what was done, and what was not, and that the draft cannot
 /// be sent from Email while Email cannot send attachments.
 pub(crate) fn describe(c: &Commitment, progress: &Progress, more_to_try: bool) -> String {
-    let opened = progress.files.iter().filter(|f| f.opened == Some(true)).count();
+    let found = progress.files.iter().filter(|f| f.path.is_some()).count();
     let mut line = format!("{}: ", for_promise(c));
-    line.push_str(&if opened == 0 { "no files opened".to_string() } else { format!("{} opened in Mind View", files_word(opened)) });
+    line.push_str(&if found == 0 { "no files found".to_string() } else { format!("{} found", files_word(found)) });
     match &progress.draft {
         Some(d) => line.push_str(&format!(
-            ". The draft is in Email with the {} attached, but Email can't send attachments yet, so it can't be sent from there. Nothing sent.",
+            ". The draft is in Email with the {} attached, but Email can't send attachments yet, so it can't be sent from there. Nothing sent or opened for you.",
             d.subject
         )),
-        None => line.push_str(". No draft made. Nothing sent."),
+        None => line.push_str(". No draft made. Nothing sent or opened."),
     }
     let missing = progress.missing();
     if !missing.is_empty() {

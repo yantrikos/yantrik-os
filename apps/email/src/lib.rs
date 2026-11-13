@@ -128,10 +128,43 @@ impl App for Email {
     /// flight already left its text there when Send was pressed. Nothing is sent.
     fn event(event: Event<()>, _: &Model) -> Option<Command> {
         match event {
+            // The person's launch from the shell's card for a prepared promise: a launch naming
+            // `<PREPARED_LAUNCH_DIR>/<commitment id>` (no such file; the name is the promise). It is
+            // a file launch and not an intent so that nothing is added to the actions a Mind is
+            // shown (the person's own buttons are no intent). Any other launch opens the app as it does.
+            Event::Launch(launch) => launch.files.iter().find_map(|f| prepared_for(f)).map(Command::OpenPreparedFor),
             Event::ExitRequested(ExitReason::Logout) => Some(Command::Ending(command::Ending::Logout)),
             Event::ExitRequested(ExitReason::Person) => Some(Command::Ending(command::Ending::Quit)),
             Event::CloseRequested(window) => Some(Command::Ending(command::Ending::Window(window))),
             _ => None,
         }
+    }
+}
+
+/// The directory a launch for a prepared draft names, and the shell's card builds the same path
+/// (`yantrik-ui`, `wire/commitment_prep_open.rs`): the file name in it is the commitment's id.
+pub const PREPARED_LAUNCH_DIR: &str = "/yantrik-prepared-draft";
+
+/// The commitment a launch's file names, when it names one.
+fn prepared_for(file: &std::path::Path) -> Option<String> {
+    if file.parent()? != std::path::Path::new(PREPARED_LAUNCH_DIR) {
+        return None;
+    }
+    let id = file.file_name()?.to_str()?;
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit())).then(|| id.to_string())
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[test]
+    fn a_launch_for_a_prepared_draft_names_its_commitment_and_nothing_else_does() {
+        let at = |p: &str| prepared_for(std::path::Path::new(p));
+        assert_eq!(at("/yantrik-prepared-draft/7").as_deref(), Some("7"));
+        assert_eq!(at("/yantrik-prepared-draft/7x"), None);
+        assert_eq!(at("/yantrik-prepared-draft/../etc/7"), None);
+        assert_eq!(at("/home/p/Documents/7"), None);
+        assert_eq!(at("/yantrik-prepared-draft"), None);
     }
 }

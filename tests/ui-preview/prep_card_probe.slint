@@ -10,6 +10,7 @@ export component PrepCardProbe inherits Window {
     background: #204060;
     in property <PrepCardData> data;
     out property <length> card-height: one.height;
+    out property <length> buttons-bottom: one.buttons-bottom;
     one := PrepAsk { x: 20px; y: 20px; card: root.data; }
-    PrepCards { x: 20px; y: 300px; width: 300px; height: 200px; }
+    PrepCards { x: 20px; y: 400px; width: 300px; height: 200px; }
 }

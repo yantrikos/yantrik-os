@@ -25,7 +25,7 @@ pub enum FileKind {
 pub enum Role {
     /// The thing being sent: the draft carries it.
     Attach,
-    /// Something the commitment points at: opened for the person, not sent.
+    /// Something the commitment points at: found for the person, who opens it. Not sent.
     Reference,
 }
 

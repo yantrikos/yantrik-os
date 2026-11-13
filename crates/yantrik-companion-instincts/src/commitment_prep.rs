@@ -1,5 +1,5 @@
 //! Commitment prep — when the prep window opens on something the person promised, and the promise
-//! names files, ask for it to be prepared: files opened in Mind View, the email drafted, nothing sent.
+//! names files, ask for it to be prepared: the files found, the email drafted with them attached, nothing sent or opened.
 //!
 //! The instinct only decides *whether*. It reads the `commitment_approaching` triggers the open-loops
 //! monitor's scan produces (a commitment inside its prep window, with its promisee, deadline and the

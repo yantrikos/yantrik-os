@@ -13,6 +13,8 @@ use std::time::Duration;
 use crossbeam_channel::Receiver;
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use yantrik_companion::commitment_cards::Card;
+
+use super::commitment_prep_open as open;
 use yantrik_companion::commitment_consent::{Status, TURN_OFF, TURN_ON};
 use yantrik_companion::commitment_reply::{self, Shown};
 
@@ -31,6 +33,9 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let g = ui.global::<PrepState>();
     g.set_off_id(TURN_OFF.into());
     g.set_on_id(TURN_ON.into());
+    // The cards last shown, with their paths and commitment ids, which never go into Slint.
+    let shown: Rc<RefCell<Vec<Card>>> = Rc::new(RefCell::new(Vec::new()));
+    wire_opens(ui, shown.clone());
     let queue = pending.clone();
     let asker = bridge.clone();
     ui.global::<PrepState>().on_answer(move |action_id| {
@@ -50,7 +55,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         let mut waiting = pending.borrow_mut();
         waiting.retain(|(rx, pressed)| match rx.try_recv() {
             Ok(reply) => {
-                show(&ui, &reply.1, &reply.2);
+                show(&ui, &reply.1, &reply.2, &shown);
                 if let Some(pressed) = pressed {
                     pressed_reply(&ui, &commitment_reply::shown(pressed, &reply));
                 }
@@ -65,7 +70,8 @@ pub fn wire(ui: &App, ctx: &AppContext) {
 
 /// What Settings → Companion and the cards show. The cards are set only when they changed, so an
 /// item has one card however often it is asked, and a card is not redrawn under the pointer.
-fn show(ui: &App, status: &Status, cards: &[Card]) {
+fn show(ui: &App, status: &Status, cards: &[Card], shown: &RefCell<Vec<Card>>) {
+    *shown.borrow_mut() = cards.to_vec();
     let g = ui.global::<PrepState>();
     let now: Vec<PrepCardData> = cards.iter().map(card_data).collect();
     let drawn: Vec<PrepCardData> = g.get_cards().iter().collect();
@@ -90,8 +96,36 @@ fn pressed_reply(ui: &App, shown: &Shown) {
     ui.set_morning_brief_sections(ModelRc::new(VecModel::from(rows)));
 }
 
+/// The person's own openings. Both callbacks are pressed only by pointer-only buttons, and both
+/// open as the person: the file through the launcher a click in Files uses, the draft by a launch
+/// of Email naming the promise, which Email turns into its person-only `OpenPreparedFor`. Neither is the Mind's `open_app`.
+fn wire_opens(ui: &App, shown: Rc<RefCell<Vec<Card>>>) {
+    let g = ui.global::<PrepState>();
+    let (cards, weak) = (shown.clone(), ui.as_weak());
+    g.on_open_file(move |item, index| {
+        let Some(ui) = weak.upgrade() else { return };
+        let ok = open::open_file(&cards.borrow(), item.as_str(), index.max(0) as usize, |path, name| open::person_open(path, name, &ui));
+        if !ok {
+            super::toast::local(&ui.as_weak(), "Yantrik", "That file isn't on this card any more.", "", 1);
+        }
+    });
+    let weak = ui.as_weak();
+    g.on_open_draft(move |item| {
+        let Some(ui) = weak.upgrade() else { return };
+        let opened = open::draft_for(&shown.borrow(), item.as_str()).is_some_and(|c| open::open_draft(&c));
+        if !opened {
+            super::toast::local(&ui.as_weak(), "Yantrik", "That draft isn't on this card any more.", "", 1);
+        }
+    });
+}
+
 fn card_data(c: &Card) -> PrepCardData {
+    let o = open::openings(c);
     PrepCardData {
+        file1_label: o.file1.into(),
+        file2_label: o.file2.into(),
+        more_files: o.more.into(),
+        draft_label: o.draft.into(),
         item: c.item.clone().into(),
         title: c.title.clone().into(),
         text: c.text.clone().into(),
