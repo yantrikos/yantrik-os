@@ -52,13 +52,14 @@ fn model_body(offer: &Offer) -> String {
 }
 
 /// `yantrik-update harness model hermes apply|revert`, with the settings (apply) on stdin, never in
-/// an argument list. `Ok` when the account's tool changed the file; otherwise its own sentence, which
-/// never holds the settings.
-pub(crate) fn post_model(op: &str, body: Option<&str>) -> Result<(), String> {
+/// an argument list. `Ok` when the account's tool changed the file, with what it asked to be told to
+/// the person (its `NOTE: ` lines: where it kept a copy of their own model settings); otherwise its
+/// own sentence, which never holds the settings.
+pub(crate) fn post_model(op: &str, body: Option<&str>) -> Result<Option<String>, String> {
     let mut child = Command::new("sudo")
         .args(["-n", UPDATER, "harness", "model", "hermes", op])
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not ask the updater to change Hermes's model: {e}"))?;
@@ -69,7 +70,9 @@ pub(crate) fn post_model(op: &str, body: Option<&str>) -> Result<(), String> {
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if out.status.success() {
         tracing::info!(op, "changed the model of the moved Hermes");
-        return Ok(());
+        let out = String::from_utf8_lossy(&out.stdout);
+        let notes: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("NOTE: ")).collect();
+        return Ok((!notes.is_empty()).then(|| notes.join(" ")));
     }
     let said = String::from_utf8_lossy(&out.stderr);
     let line = said.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
