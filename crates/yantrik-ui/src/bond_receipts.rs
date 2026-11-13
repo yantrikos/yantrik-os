@@ -70,10 +70,20 @@ pub(crate) fn door_writes() -> u64 {
 /// memory for a shell restart to drop, except one refusal that timed out and is retried once (see
 /// [`Door::receipt_retrying`]). The worker is only told to look again, and does that when it gets
 /// to it. The door never creates tables and never prunes: the worker does both, at its start.
+#[derive(Clone)]
 pub(crate) struct Door {
     bridge: Arc<CompanionBridge>,
-    conn: Mutex<Option<Connection>>,
-    ui: Mutex<Option<slint::Weak<crate::App>>>,
+    conn: Arc<Mutex<Option<Connection>>>,
+    ui: Arc<Mutex<Option<slint::Weak<crate::App>>>>,
+    /// Bumped (inside the lock) by every Forget that succeeded. A retried receipt that was pressed
+    /// before a Forget that has since happened is not written.
+    forgets: Arc<AtomicU64>,
+}
+
+/// A failed store call, and whether it was the store being busy or locked (worth one retry).
+struct StoreError {
+    why: String,
+    busy: bool,
 }
 
 /// Open the store for the door. Only reads: the tables are the worker's to create, so if they
@@ -123,7 +133,12 @@ pub(crate) fn forget_message(done: &Result<usize, String>) -> String {
 
 impl Door {
     pub(crate) fn new(bridge: Arc<CompanionBridge>) -> Self {
-        Self { bridge, conn: Mutex::new(None), ui: Mutex::new(None) }
+        Self {
+            bridge,
+            conn: Arc::new(Mutex::new(None)),
+            ui: Arc::new(Mutex::new(None)),
+            forgets: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// Where Forget's failure is said (the Bond screen), and the bond is shown from.
@@ -138,14 +153,26 @@ impl Door {
     /// Run `f` on the store's connection, in turn with every other press. An error from the
     /// store (busy, locked, not open) is returned as it is.
     fn with_store<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, String> {
+        self.with_store_err(f).map_err(|e| e.why)
+    }
+
+    /// [`Self::with_store`], saying whether a failure was the store being busy or locked.
+    fn with_store_err<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, StoreError> {
+        let not_busy = |why: String| StoreError { why, busy: false };
         let mut slot = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
-            *slot = Some(open(Path::new(self.bridge.memory_db_path()))?);
+            *slot = Some(open(Path::new(self.bridge.memory_db_path())).map_err(not_busy)?);
         }
         let Some(conn) = slot.as_ref() else {
-            return Err("the bond store is not open".to_string());
+            return Err(not_busy("the bond store is not open".to_string()));
         };
-        let out = f(conn).map_err(|e| e.to_string())?;
+        let out = f(conn).map_err(|e| StoreError {
+            busy: matches!(
+                e.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+            ),
+            why: e.to_string(),
+        })?;
         show(&self.bridge, self.ui(), conn);
         Ok(out)
     }
@@ -170,40 +197,70 @@ impl Door {
             return (Ok(false), None);
         }
         let kind = receipt.kind.as_str();
-        let stamp = Mutex::new(None);
-        let first = self.with_store(|conn| {
-            let at = PressStamp::now();
-            *stamp.lock().unwrap_or_else(|e| e.into_inner()) = Some(at);
-            BondTracker::try_record_receipt(conn, receipt, at)
-        });
+        // Stamped, and the Forget count read, at the press, before anything can wait on the store.
+        let at = PressStamp::now();
+        let seen = self.forgets.load(Ordering::SeqCst);
+        let first = self.with_store_err(|conn| BondTracker::try_record_receipt(conn, receipt, at));
+        let busy = match &first {
+            Ok(_) => false,
+            Err(e) => e.busy,
+        };
+        let first = first.map_err(|e| e.why);
         let Err(why) = &first else {
             return (first, None);
         };
-        tracing::warn!(%why, kind, "bond: a receipt could not be written; trying once more");
-        let at = stamp.into_inner().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(PressStamp::now);
-        let (bridge, ui, receipt) = (self.bridge.clone(), self.ui(), receipt.clone());
-        let retry = std::thread::spawn(move || {
-            let written = open(Path::new(bridge.memory_db_path()))
-                .and_then(|conn| {
-                    let out = BondTracker::try_record_receipt(&conn, &receipt, at).map_err(|e| e.to_string())?;
-                    show(&bridge, ui, &conn);
-                    Ok(out)
-                });
-            match written {
-                Ok(_) => true,
-                Err(why) => {
-                    tracing::warn!(%why, kind, "bond: a receipt was lost: the retry failed too");
-                    false
-                }
+        tracing::warn!(%why, kind, "bond: a receipt could not be written");
+        if !busy {
+            return (first, None); // a missing table or the like: a retry cannot help
+        }
+        tracing::warn!(kind, "bond: the store was busy; trying the receipt once more");
+        let (door, receipt) = (self.clone(), receipt.clone());
+        let spawned = std::thread::Builder::new()
+            .name("bond-receipt-retry".into())
+            .spawn(move || door.retry(&receipt, at, seen));
+        match spawned {
+            Ok(handle) => (first, Some(handle)),
+            Err(err) => {
+                tracing::warn!(%err, kind, "bond: a receipt was lost: the retry thread could not start");
+                (first, None)
             }
+        }
+    }
+
+    /// The one retry of a refusal that timed out. It runs under the Door's lock (through
+    /// `with_store_err`), so it is serialized with every later press, and it does not write if a
+    /// Forget has succeeded since the press (`seen` is the count the press read).
+    fn retry(&self, receipt: &Receipt, at: PressStamp, seen: u64) -> bool {
+        let kind = receipt.kind.as_str();
+        let mut skipped = false;
+        let done = self.with_store_err(|conn| {
+            if self.forgets.load(Ordering::SeqCst) != seen {
+                skipped = true;
+                return Ok(false);
+            }
+            BondTracker::try_record_receipt(conn, receipt, at)
         });
-        (first, Some(retry))
+        if skipped {
+            tracing::info!("bond: a receipt pressed before Forget was not written");
+            return false;
+        }
+        match done {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(why = %e.why, kind, "bond: a receipt was lost: the retry failed too");
+                false
+            }
+        }
     }
 
     /// The person's Forget. Done when this returns: the count is logged, and a failure is said on
     /// the Bond screen, never left looking as if it had worked.
     pub(crate) fn forget(&self) -> Result<usize, String> {
-        let done = self.with_store(BondTracker::try_forget_receipts);
+        let done = self.with_store(|conn| {
+            let count = BondTracker::try_forget_receipts(conn)?;
+            self.forgets.fetch_add(1, Ordering::SeqCst); // inside the lock: no retry slips between
+            Ok(count)
+        });
         match &done {
             Ok(count) => tracing::info!(count, "bond: forgot {count} receipts"),
             Err(why) => tracing::warn!(%why, "bond: Forget did not happen"),
@@ -449,7 +506,7 @@ mod door_tests {
         let mut stmt = conn
             .prepare("SELECT json_extract(context, '$.source_id'), created_at FROM bond_events WHERE event_type = ?1 ORDER BY rowid")
             .unwrap();
-        stmt.query_map([RECEIPT_EVENT], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().flatten().collect()
+        stmt.query_map([RECEIPT_EVENT], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect()
     }
 
     #[test]
@@ -598,6 +655,63 @@ mod door_tests {
         assert!(!retry.unwrap().join().unwrap(), "the retry failed (and warned)");
         holder.execute_batch("ROLLBACK").unwrap();
         assert!(stored(&t.path).is_empty());
+    }
+
+    /// Release the store's write lock after `ms`, from another thread.
+    fn release_after(holder: Connection, ms: u64) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(ms));
+            holder.execute_batch("ROLLBACK").unwrap();
+        })
+    }
+
+    #[test]
+    fn a_retried_refusal_is_not_written_after_a_forget_pressed_later() {
+        let t = busy();
+        let holder = lock_store(&t.path);
+        let (first, retry) = t.door.receipt_retrying(&refusal("deny"));
+        assert!(first.is_err());
+        let retry = retry.expect("retried");
+        let release = release_after(holder, 300);
+        std::thread::sleep(Duration::from_millis(100));
+        let done = t.door.forget(); // waits behind the retry, or runs before it
+        release.join().unwrap();
+        assert!(done.is_ok(), "{done:?}");
+        retry.join().unwrap();
+        assert!(stored(&t.path).is_empty(), "the Forget was pressed after the refusal: nothing survives it");
+    }
+
+    #[test]
+    fn a_retry_pressed_before_a_forget_that_has_happened_writes_nothing() {
+        // The same, deterministically: the Forget lands between the press and the retry.
+        let t = busy();
+        t.door.receipt(&refusal("seed")).unwrap();
+        let at = PressStamp::now();
+        let seen = t.door.forgets.load(Ordering::SeqCst);
+        assert_eq!(t.door.forget(), Ok(1));
+        assert!(!t.door.retry(&refusal("deny"), at, seen), "skipped");
+        assert!(stored(&t.path).is_empty());
+        // One pressed after the Forget is written.
+        let seen = t.door.forgets.load(Ordering::SeqCst);
+        assert!(t.door.retry(&refusal("later"), PressStamp::now(), seen));
+        assert_eq!(stored(&t.path).len(), 1);
+    }
+
+    #[test]
+    fn a_retried_deny_is_written_before_a_later_allow() {
+        let t = busy();
+        let holder = lock_store(&t.path);
+        let (first, retry) = t.door.receipt_retrying(&refusal("deny"));
+        assert!(first.is_err());
+        let retry = retry.expect("retried");
+        let release = release_after(holder, 300);
+        let mut allow = refusal("allow");
+        allow.kind = ReceiptKind::CardAllowed;
+        assert_eq!(t.door.receipt(&allow), Ok(true));
+        release.join().unwrap();
+        assert!(retry.join().unwrap());
+        let ids: Vec<String> = stored(&t.path).into_iter().map(|r| r.0).collect();
+        assert_eq!(ids, ["deny", "allow"], "rowid order is press order");
     }
 
     #[test]
