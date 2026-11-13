@@ -148,13 +148,12 @@ mod tests {
     }
 
     #[test]
-    fn the_open_goes_to_the_launcher_a_persons_click_uses_with_the_located_path() {
+    fn a_press_hands_the_located_path_and_its_name_to_the_opener_and_a_third_file_to_none() {
         let cards = [card(&["/h/Documents/budget.csv"], Some("7"))];
         let mut seen = None;
         assert!(open_file(&cards, "commitment-prep-7", 0, |p, name| seen = Some((p.to_path_buf(), name.to_string()))));
         assert_eq!(seen, Some((PathBuf::from("/h/Documents/budget.csv"), "budget.csv".to_string())));
-        // The one MIME rule Files uses picks the app; this module has no rule of its own.
-        let _same_rule: crate::mime_dispatch::FileAction = crate::mime_dispatch::classify("budget.csv");
+        // Only the hand-over is proved here; that `person_open` runs `classify` then `launch` is VM 520's.
         assert!(!open_file(&cards, "commitment-prep-7", 5, |_, _| panic!("opened a file the card does not show")));
     }
 

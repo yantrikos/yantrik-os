@@ -77,11 +77,42 @@ mod tests {
         assert!(src.contains("Prepared by Yantrik. Attached: \" + root.file + \". Email can't send attachments yet; remove it to send.\""), "the bar's sentence");
     }
 
+    /// Every `YButton { ... }` block in `src`, braces matched, so each can be checked on its own.
+    fn button_blocks(src: &str) -> Vec<&str> {
+        let mut blocks = Vec::new();
+        let mut rest = src;
+        while let Some(at) = rest.find("YButton {") {
+            let body = &rest[at..];
+            let mut depth = 0usize;
+            let mut end = body.len();
+            for (i, ch) in body.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            blocks.push(&body[..end]);
+            rest = &body[end..];
+        }
+        blocks
+    }
+
     /// Every button of the answer is a real press: pointer-only, and calling `PrepState.answer`.
     #[test]
     fn the_buttons_are_pointer_only_presses_of_their_own() {
         let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yantrik-ui-slint/ui/commitment_prep.slint")).unwrap();
-        assert_eq!(src.matches("YButton {").count(), src.matches("pointer-only: true;").count());
+        let blocks = button_blocks(&src);
+        assert!(!blocks.is_empty(), "the file draws buttons");
+        for b in blocks {
+            assert!(b.contains("pointer-only: true;"), "a button lost pointer-only:\n{b}");
+        }
         assert!(!src.contains("section-action"));
     }
 
@@ -153,7 +184,11 @@ mod tests {
         // person; each is pointer-only, and none of them presses the answer.
         let card_only = card.split("choices := PrepChoices").next().unwrap_or(card);
         assert!(card.contains("PrepChoices {") && !card.contains("TouchArea"), "its answers are PrepChoices, nothing clickable of its own");
-        assert_eq!(card_only.matches("YButton {").count(), card_only.matches("pointer-only: true;").count(), "every button the card draws is pointer-only");
+        let blocks = button_blocks(card_only);
+        assert!(!blocks.is_empty(), "the card draws buttons");
+        for b in blocks {
+            assert!(b.contains("pointer-only: true;"), "a button of the card lost pointer-only:\n{b}");
+        }
         assert!(!card_only.contains("PrepState.answer"), "only PrepChoices presses the answer");
         let stack = std::fs::read_to_string(ui.join("components/whisper_card.slint")).unwrap();
         assert!(card.contains("PrepAsk { card: prep; }"), "the scrolling column draws the card");

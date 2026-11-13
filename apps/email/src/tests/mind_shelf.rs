@@ -95,3 +95,128 @@ fn an_id_that_could_name_a_path_is_not_shelved() {
     assert_eq!(crate::state::shelf_path(slot, ""), None);
     assert_eq!(crate::state::shelf_path(slot, "24").unwrap(), std::path::Path::new("/d/mind_draft.24.json"));
 }
+
+fn slot_file(paths: &Paths) -> std::path::PathBuf {
+    paths.data_dir().join(files::MIND_DRAFT)
+}
+
+fn shelf_text(paths: &Paths, id: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(paths.data_dir().join(format!("mind_draft.{id}.json"))).ok()?;
+    Some(raw)
+}
+
+/// Two promises prepared, the person edits A's draft and then opens B's: A's edit waits, touched,
+/// on A's shelf, and B holds the slot.
+fn a_touched_and_b_in_the_slot(paths: &Paths, app: &yantrik_testing::TestApp<Email>, file: &std::path::Path) {
+    compose(app, "maya@example.com", file, "24");
+    compose(app, "ravi@example.com", file, "25");
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(app);
+    super::compose::type_into_composer(app, &super::compose::draft("maya@example.com", "my own careful wording"));
+    app.run(Command::OpenPreparedFor("25".into()));
+    quiet(app);
+    assert!(shelf_text(paths, "24").unwrap().contains("my own careful wording"), "the edit is on A's shelf");
+    assert_eq!(shown_to(app), "ravi@example.com");
+}
+
+#[test]
+fn m1_a_compose_for_a_promise_whose_shelf_the_person_edited_is_refused_and_changes_nothing() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "m1");
+    a_touched_and_b_in_the_slot(&paths, &app, &a);
+    let before = (shelf_text(&paths, "24"), std::fs::read_to_string(slot_file(&paths)).unwrap());
+    let args = json!({ "to": "other@example.com", "subject": "x", "body": "A Mind's words", "attach": a.to_string_lossy(), "commitment": "24" });
+    let refused = act(&app, "compose", args).unwrap_err();
+    assert!(refused.to_string().starts_with("You have an unsent message of your own"), "{refused}");
+    assert_eq!((shelf_text(&paths, "24"), std::fs::read_to_string(slot_file(&paths)).unwrap()), before, "nothing was written or removed");
+    // The edit is still reachable through A's own entry.
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(&app);
+    assert_eq!(app.model(|m| m.composer.text.body.clone()), "my own careful wording");
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+/// The slot's file is made a folder, so the write that would replace it fails the way a full or
+/// read-only disk does (a plain read-only folder does not stop root).
+fn break_the_slot_write(paths: &Paths) {
+    let slot = slot_file(paths);
+    std::fs::remove_file(&slot).unwrap();
+    std::fs::create_dir(&slot).unwrap();
+}
+
+#[test]
+fn l1_a_compose_whose_write_fails_leaves_the_shelf_it_would_replace() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "l1c");
+    compose(&app, "maya@example.com", &a, "24");
+    compose(&app, "ravi@example.com", &a, "25");
+    let shelf = shelf_text(&paths, "24").expect("24 waits");
+    break_the_slot_write(&paths);
+    let args = json!({ "to": "maya2@example.com", "subject": "x", "body": "new", "attach": a.to_string_lossy(), "commitment": "24" });
+    let refused = act(&app, "compose", args).unwrap_err();
+    assert!(refused.to_string().contains("could not be kept"), "the person is told: {refused}");
+    assert_eq!(shelf_text(&paths, "24"), Some(shelf), "the older draft was not removed before the write");
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn l1_opening_a_draft_whose_slot_write_fails_loses_neither_draft_and_says_so() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "l1o");
+    compose(&app, "maya@example.com", &a, "24");
+    compose(&app, "ravi@example.com", &a, "25");
+    break_the_slot_write(&paths);
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(&app);
+    assert!(super::notice(&app).contains("could not be opened"), "{}", super::notice(&app));
+    assert!(shelf_text(&paths, "24").unwrap().contains("maya@example.com"), "the draft being opened is still on its shelf");
+    assert!(shelf_text(&paths, "25").unwrap().contains("ravi@example.com"), "the draft that was in the slot is on its shelf");
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn l2_a_touched_draft_stays_reachable_after_its_promise_is_forgotten() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "l2");
+    a_touched_and_b_in_the_slot(&paths, &app, &a);
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).unwrap();
+    assert!(shelf_text(&paths, "24").is_none(), "the shelf is cleared: its text moved");
+    // The person's own route: Compose opens their kept draft.
+    app.ui(|ui| ui.invoke_compose_new());
+    quiet(&app);
+    assert_eq!(app.model(|m| m.composer.text.body.clone()), "my own careful wording");
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn l2_with_their_own_draft_in_the_way_the_touched_one_waits_for_the_prepared_entry() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "l2b");
+    a_touched_and_b_in_the_slot(&paths, &app, &a);
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    // The person has a draft of their own already.
+    app.ui(|ui| ui.invoke_compose_new());
+    super::compose::type_into_composer(&app, &super::compose::draft("bob@example.com", "my own draft"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).unwrap();
+    assert!(shelf_text(&paths, "24").is_some(), "their draft is not overwritten; the shelf stays");
+    // The slot's draft goes; the touched shelf comes into the entry.
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    assert!(app.ui(|ui| ui.get_prepared_label().to_string()).contains("maya@example.com"));
+    app.ui(|ui| ui.invoke_open_prepared());
+    quiet(&app);
+    assert_eq!(app.model(|m| m.composer.text.body.clone()), "my own careful wording");
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}

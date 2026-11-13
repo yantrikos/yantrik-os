@@ -61,26 +61,51 @@ pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach:
         vec![checked_attachment(&attach, home().as_deref()).map_err(|e| Refused::new("cannot_attach", e))?]
     };
     let commitment = Some(commitment.trim().to_string()).filter(|c| !c.is_empty());
-    shelve_other(m, commitment.as_deref())?;
+    // A draft the person touched, waiting on its shelf, is theirs: nothing replaces it, and nothing
+    // is changed when this is refused.
+    let waiting = commitment.as_deref().and_then(|c| shelf_path(&m.files.mind_draft, c));
+    if waiting.as_deref().is_some_and(shelf_is_theirs) {
+        return Err(Refused::new("person_is_writing", PERSON_WRITING));
+    }
+    shelve_held(m, commitment.as_deref())?;
     let slot = MindDraft { text: Draft { to, subject, body, ..Draft::default() }, attachments, touched: false, commitment };
-    save_mind_draft(&m.files.mind_draft, &slot).map_err(|e| Refused::new("not_kept", format!("The draft could not be kept: {e}")))?;
+    save_mind_draft(&m.files.mind_draft, &slot).map_err(|e| Refused::new("not_kept", format!("The draft could not be kept, and the earlier one was left as it was: {e}")))?;
+    // Only now, with the new draft written, does the one it replaces go.
+    if let Some(old) = waiting {
+        remove_shelf(&old);
+    }
     m.composer.mind = Ok(Some(slot));
     show(m, fx);
     Ok(())
 }
 
-/// Each promise keeps its own draft. The slot holds one at a time, so when a draft for another
-/// promise comes, the one in the slot goes to its own file beside it and waits there, to be opened
-/// by `open_prepared_for` or cleared by `forget_prepared`. A draft for the same promise replaces
-/// the earlier one, and takes the place of any waiting for it.
-fn shelve_other(m: &mut Model, incoming: Option<&str>) -> Result<(), Refused> {
-    let slot_file = m.files.mind_draft.clone();
-    if let Some(waiting) = incoming.and_then(|c| shelf_path(&slot_file, c)) {
-        let _ = std::fs::remove_file(waiting);
+/// A shelf the person must not lose: one they touched, or one that cannot be read to tell.
+fn shelf_is_theirs(shelf: &std::path::Path) -> bool {
+    match load_mind_draft(shelf) {
+        Ok(None) => false,
+        Ok(Some(d)) => d.touched,
+        Err(_) => true,
     }
+}
+
+fn remove_shelf(shelf: &std::path::Path) {
+    if let Err(e) = clear_mind_draft(shelf) {
+        tracing::warn!(error = %e, "a replaced prepared draft's file could not be removed");
+    }
+}
+
+/// Each promise keeps its own draft. The slot holds one at a time, so when a draft for another
+/// promise comes, the one in the slot is written to its own file beside it and waits there, to be
+/// opened by `open_prepared_for` or cleared by `forget_prepared`. This only writes: nothing is
+/// removed here, so a failure leaves every draft where it was. It never writes over a shelf the
+/// person touched.
+fn shelve_held(m: &mut Model, incoming: Option<&str>) -> Result<(), Refused> {
     let Ok(Some(held)) = &m.composer.mind else { return Ok(()) };
     let Some(held_for) = held.commitment.as_deref().filter(|c| Some(*c) != incoming) else { return Ok(()) };
-    let Some(shelf) = shelf_path(&slot_file, held_for) else { return Ok(()) };
+    let Some(shelf) = shelf_path(&m.files.mind_draft, held_for) else { return Ok(()) };
+    if shelf_is_theirs(&shelf) {
+        return Err(Refused::new("person_is_writing", PERSON_WRITING));
+    }
     save_mind_draft(&shelf, held).map_err(|e| Refused::new("not_kept", format!("The draft Yantrik prepared earlier could not be kept, so a new one was not started: {e}")))
 }
 
@@ -158,13 +183,19 @@ pub fn open_prepared_for(m: &mut Model, commitment: &str, fx: &mut Effects<Email
         return say(m, fx, "You have a message open. Cancel keeps it as a draft; then open the prepared one.");
     }
     park(m);
-    if let Err(refused) = shelve_other(m, Some(commitment)) {
+    // A draft of the person's with no promise has no shelf to go to: it stays where it is.
+    if matches!(&m.composer.mind, Ok(Some(h)) if h.commitment.is_none() && h.touched) {
+        return say(m, fx, "You have changed the draft in the prepared slot, so it was not moved. Discard it first, then open the other.");
+    }
+    if let Err(refused) = shelve_held(m, Some(commitment)) {
         return say(m, fx, refused.sentence);
     }
+    // The shelf goes only once the slot holds what was on it. If the write fails, the draft that was
+    // in the slot is on its shelf and the one being opened is still on its own.
     if let Err(e) = save_mind_draft(&m.files.mind_draft, &waiting) {
-        return say(m, fx, &format!("The draft could not be opened: {e}"));
+        return say(m, fx, &format!("The draft could not be opened, and nothing was lost: {e}"));
     }
-    let _ = std::fs::remove_file(&shelf);
+    remove_shelf(&shelf);
     m.composer.mind = Ok(Some(waiting));
     show(m, fx);
 }
@@ -184,6 +215,51 @@ pub fn discard_prepared(m: &mut Model, fx: &mut Effects<Email>) {
     }
     m.composer.status.clear();
     fx.changed(part::STATUS);
+    promote_waiting(m);
+}
+
+/// A draft the person touched, waiting on a shelf, whose slot is free comes into the slot, where the
+/// entry "Draft Yantrik prepared" opens it. Without this a touched shelf whose card is gone would be
+/// on disk with no way in.
+fn promote_waiting(m: &mut Model) {
+    if !matches!(m.composer.mind, Ok(None)) {
+        return;
+    }
+    let slot_file = m.files.mind_draft.clone();
+    let Some(dir) = slot_file.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut shelves: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let id = name.strip_prefix("mind_draft.").and_then(|n| n.strip_suffix(".json")).unwrap_or_default();
+            shelf_path(&slot_file, id).is_some_and(|s| s == *p)
+        })
+        .collect();
+    shelves.sort();
+    for shelf in shelves {
+        let Ok(Some(d)) = load_mind_draft(&shelf) else { continue };
+        if !d.touched || save_mind_draft(&slot_file, &d).is_err() {
+            continue;
+        }
+        remove_shelf(&shelf);
+        m.composer.mind = Ok(Some(d));
+        return;
+    }
+}
+
+/// A touched draft whose promise is gone becomes the person's own draft when they have none (the
+/// one place Compose reopens), and goes into the slot otherwise. Never writes over their draft.
+fn keep_for_person(m: &mut Model, shelf: &std::path::Path, d: MindDraft, fx: &mut Effects<Email>) {
+    let c = &m.composer;
+    let free = matches!(c.kept, Ok(None)) && !c.open && !c.writing && !c.saving && c.queued.is_none() && c.unsent_at_start.is_none() && c.sending.is_none();
+    if free && crate::state::save_draft(&m.files.draft, &d.text).is_ok() {
+        m.composer.kept = Ok(Some(d.text));
+        m.composer.kept_unsure = false;
+        remove_shelf(shelf);
+        say(m, fx, "A draft you changed, prepared for a promise that is closed, is kept as your own draft; Compose reopens it.");
+    }
 }
 
 /// The person's **Remove attachment**: the file goes from the draft, and what is in the composer is
@@ -218,14 +294,17 @@ const SLOT_OPEN: &str = "The person has the prepared draft open, so it was left 
 /// The window is not closed under them, edited or not.
 pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>) -> Result<(), Refused> {
     let commitment = commitment.trim();
+    // Its shelf: an untouched draft goes; one the person touched is theirs, and is kept for them.
+    if let Some(shelf) = shelf_path(&m.files.mind_draft, commitment) {
+        match load_mind_draft(&shelf) {
+            Ok(Some(d)) if !d.touched => remove_shelf(&shelf),
+            Ok(Some(d)) => keep_for_person(m, &shelf, d, fx),
+            _ => {}
+        }
+    }
     let ours = matches!(&m.composer.mind, Ok(Some(slot)) if !slot.touched && slot.commitment.as_deref() == Some(commitment) && !commitment.is_empty());
     if !ours {
-        // Not in the slot: it may be waiting on its shelf, where nobody can have it open.
-        if let Some(shelf) = shelf_path(&m.files.mind_draft, commitment) {
-            if matches!(load_mind_draft(&shelf), Ok(Some(d)) if !d.touched) {
-                let _ = std::fs::remove_file(shelf);
-            }
-        }
+        promote_waiting(m);
         return Ok(());
     }
     // Open in front of the person: an Email started for an agent has no window and nobody typing, and

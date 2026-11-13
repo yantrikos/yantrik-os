@@ -127,9 +127,7 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
     progress.attempts += 1;
     find_files(&mut hands, &mut progress, &settings.roots);
     let window_closed = now >= commitment.deadline;
-    let had_draft = progress.draft.is_some();
     draft_email(&mut hands, &mut progress, &commitment, window_closed);
-    let made_draft_now = !had_draft && progress.draft.is_some();
 
     let more = !progress.is_settled() && !window_closed && progress.attempts < MAX_ATTEMPTS;
     let (state, next_try) = if more {

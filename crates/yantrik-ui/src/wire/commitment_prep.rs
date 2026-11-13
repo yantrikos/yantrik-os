@@ -104,7 +104,8 @@ fn wire_opens(ui: &App, shown: Rc<RefCell<Vec<Card>>>) {
     let (cards, weak) = (shown.clone(), ui.as_weak());
     g.on_open_file(move |item, index| {
         let Some(ui) = weak.upgrade() else { return };
-        let ok = open::open_file(&cards.borrow(), item.as_str(), index.max(0) as usize, |path, name| open::person_open(path, name, &ui));
+        // A bad index is refused like an unknown card, not turned into place 0.
+        let ok = usize::try_from(index).ok().is_some_and(|i| open::open_file(&cards.borrow(), item.as_str(), i, |path, name| open::person_open(path, name, &ui)));
         if !ok {
             super::toast::local(&ui.as_weak(), "Yantrik", "That file isn't on this card any more.", "", 1);
         }
