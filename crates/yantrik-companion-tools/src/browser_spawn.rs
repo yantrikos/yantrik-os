@@ -10,50 +10,7 @@ use std::process::Command;
 use yantrik_browser_ports::{self as ports};
 use yantrik_ipc_contracts::home_paths::workshops;
 
-/// The Optimization Guide and the other features that call Google on an idle profile, by the names
-/// Chromium 153 (and the Debian trixie package) knows them. `--disable-background-networking` does
-/// not stop them: the hints, model and page-annotation services fetch from
-/// `optimizationguide-pa.googleapis.com` on their own (#1175, gate 9 bar 3). A name a build does not
-/// know is ignored, so the list may name more than one version's.
-pub const DISABLED_FEATURES: &[&str] = &[
-    "OptimizationHints",
-    "OptimizationHintsFetching",
-    "OptimizationGuideModelDownloading",
-    "OptimizationTargetPrediction",
-    "OptimizationGuideOnDeviceModel",
-    "OptimizationGuidePushNotifications",
-    "PageContentAnnotations",
-    "PageVisibilityPageContentAnnotations",
-    "AutofillServerCommunication",
-    "SegmentationPlatform",
-    "CertificateTransparencyComponentUpdater",
-    "Translate",
-    "MediaRouter",
-];
-
-/// Switches that stop Chromium's own calls home, for EVERY Chromium the companion starts (the
-/// headed one in `browser.rs` and the headless one here): the one list, so no start can differ.
-pub const QUIET_SWITCHES: &[&str] = &[
-    // Google's component updater, field trials, safe-browsing pings are not the person's search.
-    "--disable-background-networking",
-    "--disable-component-update",
-    "--disable-sync",
-    "--no-pings",
-    "--disable-domain-reliability",
-    "--disable-default-apps",
-    "--disable-breakpad",
-    "--metrics-recording-only",
-    "--disable-client-side-phishing-detection",
-    "--safebrowsing-disable-auto-update",
-    "--disable-component-extensions-with-background-pages",
-];
-
-/// [`QUIET_SWITCHES`] and `--disable-features=` with [`DISABLED_FEATURES`].
-pub fn quiet_args() -> Vec<String> {
-    let mut args: Vec<String> = QUIET_SWITCHES.iter().map(|s| s.to_string()).collect();
-    args.push(format!("--disable-features={}", DISABLED_FEATURES.join(",")));
-    args
-}
+pub use ports::quiet_args;
 
 /// `binary args` as a command that runs in the browser view (the workshops base hidden), or the
 /// reason it must not run: nothing is started unwrapped on a machine that holds workshops.
@@ -95,27 +52,13 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
 
-    /// Every switch and every feature name is pinned, and the headless launch carries them all.
+    /// The headless launch carries every quiet switch and exactly one `--disable-features=`.
     #[test]
     fn the_headless_start_carries_every_quiet_switch_and_feature() {
-        let want: Vec<&str> = vec![
-            "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-pings",
-            "--disable-domain-reliability", "--disable-default-apps", "--disable-breakpad", "--metrics-recording-only",
-            "--disable-client-side-phishing-detection", "--safebrowsing-disable-auto-update",
-            "--disable-component-extensions-with-background-pages",
-        ];
-        assert_eq!(QUIET_SWITCHES, want.as_slice());
-        let features = quiet_args().into_iter().find_map(|a| a.strip_prefix("--disable-features=").map(str::to_string)).unwrap();
-        for f in ["OptimizationHints", "OptimizationHintsFetching", "OptimizationGuideModelDownloading", "OptimizationTargetPrediction",
-            "OptimizationGuideOnDeviceModel", "PageContentAnnotations"] {
-            assert!(features.split(',').any(|x| x == f), "{f} in {features}");
-        }
         let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         if let Ok(c) = headless(&home, "/usr/bin/chromium", Path::new("/tmp/p"), 9223) {
             let a = argv(&c);
-            for arg in quiet_args() {
-                assert!(a.contains(&arg), "{arg} in {a:?}");
-            }
+            ports::carries_quiet(&a).unwrap();
         }
     }
 

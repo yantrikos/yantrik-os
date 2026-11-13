@@ -204,10 +204,34 @@ const PIP_NAME_MAP: &[(&str, &str)] = &[
     ("yfinance", "yfinance"),
 ];
 
+/// The statements on one line of Python: cut at a `#` outside quotes (a comment's `; import x` is no
+/// import) and at each `;` outside quotes (a string's `; import x` is no import either). One line
+/// at a time, so a string that spans lines is not followed; that case existed before and is no worse.
+fn statements(line: &str) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in line.chars() {
+        if let Some(q) = quote {
+            out.last_mut().unwrap().push(c);
+            if escaped { escaped = false; } else if c == '\\' { escaped = true; } else if c == q { quote = None; }
+            continue;
+        }
+        match c {
+            '#' => break,
+            ';' => out.push(String::new()),
+            '\'' | '"' => { quote = Some(c); out.last_mut().unwrap().push(c); }
+            _ => out.last_mut().unwrap().push(c),
+        }
+    }
+    out
+}
+
 pub(crate) fn detect_python_deps(content: &str) -> Vec<String> {
     let mut packages = HashSet::new();
     // A line may hold several statements: `import x; print(x.y)` imports x (gate 9, bar 5 note).
-    for trimmed in content.lines().filter(|l| !l.trim_start().starts_with('#')).flat_map(|l| l.split(';')).map(str::trim) {
+    for statement in content.lines().flat_map(statements) {
+        let trimmed = statement.trim();
         let module = if let Some(rest) = trimmed.strip_prefix("import ") {
             // Handle "import x, y, z" and "import x as y"
             rest.split(',')

@@ -170,6 +170,11 @@ mod tests {
         assert_eq!(crate::coder::detect_python_deps("import requests; print(requests.__version__)\n"), ["requests"]);
         assert_eq!(crate::coder::detect_python_deps("x = 1; import yaml; import os\n"), ["pyyaml"]);
         assert!(crate::coder::detect_python_deps("print('a;b')\n# import zzz; y\n").is_empty());
+        // The review's two cases: a trailing comment and a string are not statements.
+        assert!(crate::coder::detect_python_deps("x = 1  # note; import foo\n").is_empty());
+        assert!(crate::coder::detect_python_deps("s = \"a; import foo \"\n").is_empty());
+        assert!(crate::coder::detect_python_deps("s = 'it\\'s; import foo'\n").is_empty());
+        assert_eq!(crate::coder::detect_python_deps("s = '#'; import yaml  # import foo\n"), ["pyyaml"]);
     }
 
     #[test]

@@ -3,7 +3,5 @@
   "BackgroundModeEnabled": false,
   "MetricsReportingEnabled": false,
   "UrlKeyedAnonymizedDataCollectionEnabled": false,
-  "SyncDisabled": true,
-  "TranslateEnabled": false,
-  "ComponentUpdatesEnabled": false
+  "SyncDisabled": true
 }
