@@ -46,6 +46,9 @@ pub struct MindFact {
 pub enum GatewayFact {
     /// It forwards them to this account's address and model.
     Sends {
+        /// The account as the person reads it ("Ollama Cloud", "Custom"): the one name every face
+        /// uses for it. Empty when no account is known by that id; the address names it then.
+        account: String,
         /// The account's address, as it is set up.
         base_url: String,
         /// The account's provider type ("custom", "litellm", "ollama"): names a proxy as one.
@@ -217,6 +220,8 @@ pub struct RunsOn {
     /// What the companion's endpoint was set up as (`CompanionFact::provider_kind`), or the
     /// gateway account's provider type; empty for every other attached mind.
     pub provider_kind: String,
+    /// The gateway account's display name (`GatewayFact::Sends::account`); empty for every other row.
+    pub account: String,
     /// What the gateway does with its calls, for a mind on it (`SetIn::Gateway`).
     pub via_gateway: Option<Via>,
     /// The mind's own line as it attached ("Hermes 0.21.5 · picked"), for Details only.
@@ -308,7 +313,8 @@ impl RunsOn {
                 }
             }
             Some(Via::Sends { lane }) => {
-                let said = format!("{} \u{b7} {}", self.seen(model), model.unwrap_or("a model not known"));
+                let whom = if self.account.is_empty() { self.seen(model) } else { self.account.clone() };
+                let said = format!("{whom} \u{b7} {}", model.unwrap_or("a model not known"));
                 let lane = if *lane { ", your private lane" } else { "" };
                 return to(format!("{said}{lane}, through this desktop's gateway"));
             }
@@ -390,13 +396,15 @@ fn one(m: &MindFact, companion: Option<&CompanionFact>) -> RunsOn {
         fallback: None,
         base_url: String::new(),
         provider_kind: String::new(),
+        account: String::new(),
         via_gateway: None,
         said: m.detail.clone().filter(|d| !d.trim().is_empty()),
     };
     // On the gateway, the gateway's answer is the fact, whatever the mind says (it says "picked").
     if let Some(g) = &m.gateway {
         return match g {
-            GatewayFact::Sends { base_url, provider_kind, model, lane } => RunsOn {
+            GatewayFact::Sends { account, base_url, provider_kind, model, lane } => RunsOn {
+                account: account.trim().to_string(),
                 base_url: base_url.trim().to_string(),
                 provider_kind: provider_kind.clone(),
                 via_gateway: Some(Via::Sends { lane: *lane }),

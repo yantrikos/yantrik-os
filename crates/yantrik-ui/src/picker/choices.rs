@@ -73,7 +73,10 @@ pub fn load(path: &Path) -> Choices {
 
 pub fn save(path: &Path, choices: &Choices) -> Result<(), String> {
     let text = serde_json::to_string_pretty(choices).map_err(|e| e.to_string())?;
-    crate::private_file::write(path, format!("{text}\n").as_bytes(), crate::private_file::Publish::Replace, || Ok(()))
+    let saved = crate::private_file::write(path, format!("{text}\n").as_bytes(), crate::private_file::Publish::Replace, || Ok(()));
+    // The pick decides which model every mind's detail line names (#1162): list them afresh.
+    yantrik_harness::host::detail::refresh_model_lines();
+    saved
 }
 
 #[cfg(test)]
