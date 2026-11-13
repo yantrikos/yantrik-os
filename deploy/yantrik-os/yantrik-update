@@ -911,6 +911,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_mind_egress || true
     # Keys an earlier update left behind (#854); the running shell is this build.
     refresh_session_chrome || true
+    end_stale_switcher
     return 0
   fi
 
@@ -1194,7 +1195,7 @@ EOF
   # of its own, and this one stands in only when that file cannot run.
   if [ -x "$BIN_DIR/yantrik-update" ]; then
     # This apply refreshes the keys itself, after the new build answered (refresh_session_chrome).
-    YANTRIK_PREFIX="$PREFIX" YANTRIK_APPLY_REFRESHES_KEYS=1 "$BIN_DIR/yantrik-update" reconcile || true
+    YANTRIK_PREFIX="$PREFIX" YANTRIK_APPLY_REFRESHES_KEYS=1 YANTRIK_APPLY_ENDS_SWITCHER=1 "$BIN_DIR/yantrik-update" reconcile || true
   else
     reconcile_packages || true
     reconcile_pinned_debs || true
@@ -1209,6 +1210,7 @@ EOF
     # Only after the new build answered: restart_and_verify does not return from a rollback. Not
     # with --no-restart either, where new keys could name actions the running shell does not have.
     refresh_session_chrome || true
+    end_stale_switcher
   else
     info "not restarting (--no-restart); the new build, and any new keys, take effect on next session start"
   fi
@@ -1636,10 +1638,19 @@ restore_backup() {
 
 # The labwc processes of the account with uid $1. A mind's own labwc runs as its own account
 # (#411), so this never reaches it. The selftest names a stand-in.
-session_labwc_pids() { # <uid>
+labwc_name() {
   local name=labwc
   selftest_standins && [ -n "${YANTRIK_LABWC_NAME:-}" ] && name="$YANTRIK_LABWC_NAME"
-  pgrep -u "$1" -x "$name" 2>/dev/null || true
+  printf '%s' "$name"
+}
+session_labwc_pids() { # <uid>
+  pgrep -u "$1" -x "$(labwc_name)" 2>/dev/null || true
+}
+
+# Whether $1 can be the account of a desktop: not empty, not root, a plain account name. What
+# stops a root run from searching root's processes and signalling as root.
+plain_owner() { # <name>
+  case "$1" in ''|root|[!a-z_]*|*[!a-z0-9_-]*) return 1 ;; esac
 }
 
 # Ask each labwc in $2.. (pids of the account named $1) to re-read its config. As that account
@@ -1695,6 +1706,51 @@ nudge_compositor() { # <owner> <uid>
     else warn "wlr-randr could not re-apply scale $scale to $name"; fi
   done <<<"$list"
   [ "$n" = 0 ] || info "the compositor re-applied $n output(s) at their own scale, so the new margin is in force"
+# ── The Alt+Tab renderer, without a new login (#1211) ──
+#
+# labwc starts yantrik-switcher once and starts another only when it exits (packaging/labwc). An
+# update replaced the file and left the old process drawing Alt+Tab until the next login. So after
+# an update, a renderer whose image is not the installed file is ended with SIGTERM; labwc starts
+# the new one. Found by pid, never by name: a process of the account whose /proc/<pid>/exe is (or
+# was, "... (deleted)") $BIN_DIR/yantrik-switcher and whose parent is, by its own /proc/<ppid>/exe,
+# one of that account's labwc. The image's sha256 is compared with the file's, which is "the binary
+# changed" however many updates came since, and leaves it alone when they match.
+#
+# A machine is updated by its OLD updater, which runs only this build's `reconcile` (not its
+# apply), so reconcile calls it unless this build's own apply does and says so with its own marker
+# (YANTRIK_APPLY_ENDS_SWITCHER=1; the keys' marker is set by every updater since #854, so it cannot
+# tell). The up-to-date branch of apply and rollback call it too. Accepted: an old updater that rolls back after reconcile leaves a
+# renderer newer than the file until the next login. Accepted too: only the desktop's owner
+# (desktop_owner) is handled; another account's desktop keeps its old renderer until its next login.
+end_stale_switcher() { # [owner]
+  local bin="$BIN_DIR/yantrik-switcher" owner="${1:-$(desktop_owner)}" uid pid exe ppid pexe have want n=0 as=()
+  [ -x "$bin" ] || return 0
+  want="$(sha256sum < "$bin" 2>/dev/null | cut -d' ' -f1)"
+  [ -n "$want" ] || { info "Alt+Tab renderer: could not read $bin; left running"; return 0; }
+  plain_owner "$owner" || { info "Alt+Tab renderer: cannot tell whose desktop this is; the new one draws after the next login"; return 0; }
+  uid="$(id -u "$owner" 2>/dev/null)" || return 0
+  [ "$(id -u)" = 0 ] && as=(runuser -u "$owner" --)
+  local labwcs; labwcs=" $(session_labwc_pids "$uid" | tr '\n' ' ')"
+  for pid in $(pgrep -u "$uid" 2>/dev/null); do
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+    [ "${exe% (deleted)}" = "$bin" ] || continue
+    ppid="$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null)"
+    case "$labwcs" in *" $ppid "*) ;; *) continue ;; esac
+    pexe="$(readlink "/proc/$ppid/exe" 2>/dev/null)"; pexe="${pexe% (deleted)}"
+    [ "${pexe##*/}" = "$(labwc_name)" ] || continue
+    n=$((n + 1))
+    have="$(sha256sum < "/proc/$pid/exe" 2>/dev/null | cut -d' ' -f1)"
+    if [ -z "$have" ]; then
+      info "Alt+Tab renderer (pid $pid): could not read its image; left running"
+    elif [ "$have" = "$want" ]; then
+      info "Alt+Tab renderer (pid $pid) already runs the installed binary; left running"
+    elif "${as[@]}" kill -TERM "$pid" 2>/dev/null; then
+      info "ended the Alt+Tab renderer (pid $pid, labwc's child): it ran an older yantrik-switcher; labwc starts the new one"
+    else
+      warn "could not end the Alt+Tab renderer (pid $pid); the new one draws after the next login"
+    fi
+  done
+  [ "$n" != 0 ] || info "Alt+Tab renderer: none was running for $owner"
   return 0
 }
 
@@ -1702,9 +1758,8 @@ refresh_session_chrome() {
   [ -d "$SHARE_DIR/labwc" ] || return 0
   local owner uid home pids
   owner="$(desktop_owner)"
-  case "$owner" in ''|root|[!a-z_]*|*[!a-z0-9_-]*)
-    info "compositor keys: cannot tell whose desktop this is; the session puts them in place at the next login"; return 0 ;;
-  esac
+  plain_owner "$owner" || {
+    info "compositor keys: cannot tell whose desktop this is; the session puts them in place at the next login"; return 0; }
   uid="$(id -u "$owner" 2>/dev/null)" || { warn "compositor keys: no account $owner"; return 1; }
   pids="$(session_labwc_pids "$uid")"
   if [ -z "$pids" ]; then
@@ -1765,6 +1820,7 @@ cmd_rollback() {
   restart_and_verify "$backup"
   # The restored build's keys into the person's home (#854); a note that no update moves Hermes unasked.
   refresh_session_chrome || true
+  end_stale_switcher
   hi_note_rollback || true
 }
 
@@ -4867,6 +4923,9 @@ cmd_reconcile() {
   if [ "${YANTRIK_APPLY_REFRESHES_KEYS:-}" != 1 ]; then
     refresh_session_chrome || true
   fi
+  # The Alt+Tab renderer (#1211): the same, but with a marker only this build's apply sets, since
+  # an apply from before it sets the keys' one and would otherwise leave the old renderer running.
+  [ "${YANTRIK_APPLY_ENDS_SWITCHER:-}" = 1 ] || end_stale_switcher
   audit_unowned /etc/polkit-1/rules.d '*.rules' polkit
   audit_unowned /etc/sysctl.d '*.conf' sysctl
   audit_unowned /etc/containers/registries.conf.d '*.conf' containers
@@ -5701,6 +5760,47 @@ STUB
   t "which the output says" "re-read its config" "$out"
   is "a uid with no labwc has none" "" "$(session_labwc_pids 2147483646)"
 
+  # The Alt+Tab renderer (#1211): a renamed `sleep` is the installed yantrik-switcher, a renamed
+  # `bash` the stand-in labwc that started it. Replaced by a different file, it is ended (SIGTERM,
+  # status 143); replaced by the same bytes, left running; and a process that is the same name
+  # elsewhere, or that labwc did not start, is never signalled.
+  if [ "$(id -u)" != 0 ]; then
+    local sb="$root/swbin" sw_labwc="$root/ylabwc-selftest-sh" sw_pid sw_out sw_rc
+    mkdir -p "$sb" "$root/swother"
+    cp "$(command -v bash)" "$sw_labwc"; cp "$(command -v sleep)" "$sb/yantrik-switcher"
+    cp "$(command -v sleep)" "$root/swother/yantrik-switcher"
+    sw_stand() { # <labwc stand-in's name> <switcher path>: a switcher whose parent has that name; sets sw_pid
+      rm -f "$root/sw.pid"; mkdir -p "$root/swparent"; cp "$sw_labwc" "$root/swparent/$1"
+      "$root/swparent/$1" -c '"$1" 30 & echo $!; wait' _ "$2" > "$root/sw.pid" 2>/dev/null &
+      local i; for i in $(seq 50); do [ -s "$root/sw.pid" ] && break; sleep 0.1; done
+      sw_pid="$(cat "$root/sw.pid")"
+    }
+    sw_end() { YANTRIK_SELFTEST=1 YANTRIK_LABWC_NAME=ylabwc-selftest BIN_DIR="$sb" end_stale_switcher "$(id -un)" 2>&1; }
+    sw_alive() { kill -0 "$sw_pid" 2>/dev/null && echo alive || echo ended; }
+    sw_stand ylabwc-selftest "$sb/yantrik-switcher"
+    cp "$sb/yantrik-switcher" "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_out="$(sw_end)"
+    is "a re-apply of the same bytes (new inode, same sha) leaves the renderer running" "alive" "$(sw_alive)"
+    t "and says so" "left running" "$sw_out"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_out="$(sw_end)"; sleep 0.3
+    is "an apply that changes the switcher ends the old renderer" "ended" "$(sw_alive)"
+    t "and the log names the pid" "ended the Alt+Tab renderer (pid $sw_pid" "$sw_out"
+    cp "$(command -v sleep)" "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    t "with nothing running, it says none was" "none was running" "$(sw_end)"
+    sw_stand ylabwc-selftest "$root/swother/yantrik-switcher"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_end >/dev/null
+    is "a process with that name that is another file is never touched" "alive" "$(sw_alive)"
+    kill "$sw_pid" 2>/dev/null
+    cp "$(command -v sleep)" "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_stand not-a-labwc "$sb/yantrik-switcher"
+    cp /bin/true "$sb/new" && mv -f "$sb/new" "$sb/yantrik-switcher"
+    sw_end >/dev/null
+    is "the binary, but not labwc's child, is never touched" "alive" "$(sw_alive)"
+    kill "$sw_pid" 2>/dev/null; wait 2>/dev/null
+  fi
+
   # The first update of a machine already in the field (VM 520, 18 Oct): its OLD updater runs the
   # apply, and the only code of this build it runs is `reconcile`. So `reconcile` itself must bring
   # the keys. Driven here as that old updater does, the real `reconcile` in a process of its own,
@@ -5840,6 +5940,17 @@ EOF
     is "no wlr-randr at all leaves the result as it was" "0" "$failrc"
     t "and says so" "no wlr-randr" "$out"
     cp "$cs/labwc/rc.xml" "$op/share/labwc/rc.xml"
+    # The renderer, through the same old apply (it sets the keys' marker, not the renderer's).
+    cp "$(command -v sleep)" "$op/bin/yantrik-switcher"
+    sw_stand ylabwc-selftest "$op/bin/yantrik-switcher"
+    cp /bin/true "$op/bin/new" && mv -f "$op/bin/new" "$op/bin/yantrik-switcher"
+    as_old_updater YANTRIK_APPLY_REFRESHES_KEYS=1 YANTRIK_APPLY_ENDS_SWITCHER=1 >/dev/null
+    is "an apply of this build leaves the renderer to itself" "alive" "$(sw_alive)"
+    out="$(as_old_updater YANTRIK_APPLY_REFRESHES_KEYS=1)"
+    for _ in 1 2 3 4 5 6 7 8; do [ "$(sw_alive)" = ended ] && break; sleep 0.25; done
+    is "an older apply's reconcile ends the old renderer" "ended" "$(sw_alive)"
+    t "and names it" "ended the Alt+Tab renderer (pid $sw_pid" "$out"
+    wait 2>/dev/null
   fi
 
   # Where this build's own apply and rollback do it: after the build answered, never with
@@ -5848,10 +5959,21 @@ EOF
   is "apply refreshes the keys right after the restart it verified" 'refresh_session_chrome || true' \
     "$(printf '%s\n' "$applyfn" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F 'refresh_session_chrome' | sed 's/^ *//')"
   is "an up-to-date apply checks them too" "2" "$(printf '%s\n' "$applyfn" | grep -c 'refresh_session_chrome || true')"
-  t "apply's reconcile is told the keys are apply's" 'YANTRIK_APPLY_REFRESHES_KEYS=1 "$BIN_DIR/yantrik-update" reconcile' \
+  t "apply's reconcile is told the keys are apply's" 'YANTRIK_APPLY_REFRESHES_KEYS=1 ' \
     "$(printf '%s\n' "$applyfn" | grep -F 'YANTRIK_APPLY_REFRESHES_KEYS=1')"
   t "rollback puts the older keys back after the restart" 'refresh_session_chrome || true' \
     "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH" | grep -A3 -F 'restart_and_verify "$backup"' | grep -F refresh_session_chrome)"
+
+  is "apply ends the old renderer right after the keys, when it is up to date" "2" \
+    "$(printf '%s\n' "$applyfn" | grep -A1 -F 'refresh_session_chrome || true' | grep -c '^ *end_stale_switcher$')"
+  t "and after the restart it verified" 'end_stale_switcher' \
+    "$(printf '%s\n' "$applyfn" | grep -A4 -F 'restart_and_verify "$backup"' | grep -F end_stale_switcher)"
+  t "rollback ends it after the restart" 'end_stale_switcher' \
+    "$(sed -n '/^cmd_rollback()/,/^}/p' "$SELF_PATH" | grep -A4 -F 'restart_and_verify "$backup"' | grep -F end_stale_switcher)"
+  t "apply's reconcile is told the renderer is apply's" 'YANTRIK_APPLY_ENDS_SWITCHER=1 "$BIN_DIR/yantrik-update" reconcile' \
+    "$(printf '%s\n' "$applyfn" | grep -F 'YANTRIK_APPLY_ENDS_SWITCHER=1')"
+  t "reconcile ends it unless that marker is set" '"${YANTRIK_APPLY_ENDS_SWITCHER:-}" = 1 ] || end_stale_switcher' \
+    "$(sed -n '/^cmd_reconcile()/,/^}/p' "$SELF_PATH" | grep -F end_stale_switcher)"
 
   # 9. Subordinate ids for rootless podman (#401). Where a new range starts, and whether an
   #    account already has one, decide whether two accounts end up sharing ids; both are pure
