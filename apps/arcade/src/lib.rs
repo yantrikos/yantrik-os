@@ -41,6 +41,7 @@ use yantrik_app::Refused;
 
 mod answers;
 mod browser;
+mod browser_view;
 pub mod cli;
 mod command;
 pub mod compile;

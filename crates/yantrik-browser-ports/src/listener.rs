@@ -235,7 +235,7 @@ pub(crate) mod tests {
         pub fn takes(&self, profile: &Path, pid: u32) {
             let lock = profile.join("SingletonLock");
             let _ = fs::remove_file(&lock);
-            symlink(format!("host-{pid}"), lock).unwrap();
+            symlink(format!("{}-{pid}", crate::this_host().unwrap_or("h".into())), lock).unwrap();
         }
         /// `pid` holds a `LOCK` file under `profile` open.
         pub fn holds_lock(&self, pid: u32, profile: &Path) {

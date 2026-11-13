@@ -383,6 +383,11 @@ printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin %s --skip-log
 touch "$UHOME/.hushlogin" && chown "$UID_NUM:$GID_NUM" "$UHOME/.hushlogin"
 printf 'd /run/user/%s 0700 %s %s -\n' "$UID_NUM" "$USERNAME" "$USERNAME" \
     > "$M/etc/tmpfiles.d/yantrik-xdg.conf"
+# The Minds' workshops root (#1124): root's parent from the image's tmpfiles file, and this
+# account's own folder in it (0700). The shell never makes it, so the wizard does.
+printf 'd /var/lib/yantrik 0755 root root -\nd /var/lib/yantrik/workshops 0755 root root -\n' > "$M/etc/tmpfiles.d/yantrik-workshops.conf"
+install -d -o root -g root -m 0755 "$M/var/lib/yantrik" "$M/var/lib/yantrik/workshops"
+install -d -o "$UID_NUM" -g "$GID_NUM" -m 0700 "$M/var/lib/yantrik/workshops/$UID_NUM"
 
 # ── 13. Update Yantrik config ──
 sed -i "s/^user_name:.*/user_name: \"$USERNAME\"/" "$M/opt/yantrik/config.yaml"

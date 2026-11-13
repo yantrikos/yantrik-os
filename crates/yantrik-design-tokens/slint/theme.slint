@@ -152,7 +152,9 @@ export global TextScale {
 //   * bg-deep #0b121c, the ground: app content, full-screen places.
 //   * bg-surface #111b28, level 1, structural: sidebars, title bars, grouped settings.
 //   * bg-card #172333, level 2, floating: the dock, the ask field, the Mind panel, the Lens, menus.
-//     A floating surface takes `border-floating` and the `shadow-float` drop shadow.
+//     A floating surface takes `border-floating` and a shadow drawn as a picture under it
+//     (YShadow, y_shadow.slint: a VM draws no `drop-shadow`). The `shadow-float` tokens are the
+//     older drop shadow; the Mind panel's peek is the one surface still asking for it.
 //   * bg-elevated #1c293b, level 3, interruptive: approval cards and critical confirmations.
 //
 // The glass tokens are opaque now. A translucent card over a photograph read muddier, not
@@ -218,6 +220,20 @@ export global Theme {
     out property <length> shadow-float-dy: 6px;
     out property <length> shadow-interrupt-blur: 32px;
     out property <length> shadow-interrupt-dy: 10px;
+    // The photograph under the bar and under the dock, darkened towards the screen's edge so the
+    // bar's words and the dock's plate have a ground without a lid over the picture. The colour
+    // behind the bar's words; the top scrim holds it across the bar and then fades to nothing.
+    // 72% in dark: what `text-secondary` needs for 4.5:1 over a white sky (at 60% it was 1.9:1
+    // over a pale one; review of #1195). Light mode's wallpaper wears a pale veil, so its scrim
+    // is pale too.
+    out property <color> wallpaper-scrim:   ThemeMode.dark ? #04070cb8 : #f4f6f9d9;
+    out property <length> wallpaper-scrim-top: 120px;
+    out property <length> wallpaper-scrim-bottom: 160px;
+    // The ink and the strength of YShadow, the shadow drawn as a picture (y_shadow.slint): black
+    // in dark, the ground's own navy and under half as strong in light, where a black shadow on
+    // pale paper reads as dirt.
+    out property <color> shadow-ink:        ThemeMode.dark ? #000000 : #14253b;
+    out property <float> shadow-strength:   ThemeMode.dark ? 1.0 : 0.42;
     // A modal's scrim: no blur, the ground's own darkness.
     out property <color> scrim:             ThemeMode.dark ? #03070d8f : #14253b47;
     // A label drawn straight on the wallpaper, with no card behind it: white in either theme,
@@ -399,8 +415,10 @@ export global Theme {
     // "say one thing, large, and nothing else near it" — and a desktop whose largest text is
     // the same size as a section header has no focal point at all.
     out property <length> fs-hero: 44px * TextScale.factor;
-    // The desktop's greeting (36/500) and reading-oriented UI: chat, memory statements (15).
-    out property <length> fs-greeting: 36px * TextScale.factor;
+    // The desktop's greeting (44/500) and reading-oriented UI: chat, memory statements (15).
+    // It was 36, a size the ask field under it matched in weight; at 44 the greeting is the one
+    // large thing on the desktop and the field reads as what you do next.
+    out property <length> fs-greeting: 44px * TextScale.factor;
     out property <length> fs-reading: 15px * TextScale.factor;
     out property <int>    fw-hero: 600;
     out property <length> fs-hero-sub: 17px * TextScale.factor;

@@ -337,9 +337,9 @@ pub fn name(w: &Window) -> String {
 }
 
 /// One of our apps, from its window's title: exactly its name ("Notes"), or its name with what it
-/// has open ("Notes: Handover", "plan.md - Editor"). Our windows set no app_id (#877), so the
-/// title is all there is; the shell's own window list matches exactly (it must not count a note
-/// as a second Notes), but for an icon the app is what matters.
+/// has open ("Notes: Handover", "plan.md - Editor"). A window of ours that declares no app_id
+/// (an older app build) has only its title; the shell's own window list matches exactly (it must not
+/// count a note as a second Notes), but for an icon the app is what matters.
 pub fn our_app(title: &str) -> Option<&'static str> {
     yantrik_ui_kit::app_names::app_id_for_title(title).or_else(|| {
         yantrik_ui_kit::app_names::APP_NAMES
@@ -445,14 +445,18 @@ pub fn jump(windows: &[Window], selected: usize, typed: &str) -> Option<usize> {
 pub fn whereabouts(w: &Window) -> String {
     let mut parts = Vec::new();
     // The app, when the title does not already say it: "Notes · this desktop" for a note.
-    let app = clean(&w.app_id, 40);
-    let app = if app.is_empty() {
-        our_app(&clean(&w.title, 120))
-            .and_then(|id| yantrik_ui_kit::app_names::APP_NAMES.iter().find(|(a, _)| *a == id))
-            .map(|(_, n)| n.to_string())
-            .unwrap_or_default()
+    // One of ours is said by its name, never by the id it declares: its windows declare their
+    // program now (`yantrik-calendar`, #877), and that id under the name read "yantrik-calendar ·
+    // this desktop" for a window already called Calendar (VM 542, 12 Nov 2026). Anyone else's
+    // app is said by the id it gave, as before.
+    let named = |id: &str| yantrik_ui_kit::app_names::APP_NAMES.iter().find(|(a, _)| *a == id).map(|(_, n)| n.to_string());
+    let declared = clean(&w.app_id, 40);
+    let app = if declared.is_empty() {
+        our_app(&clean(&w.title, 120)).and_then(named).unwrap_or_default()
+    } else if declared.starts_with("yantrik-") {
+        named(&yantrik_ui_kit::app_names::icon_id_for(&declared.to_lowercase())).unwrap_or(declared)
     } else {
-        app
+        declared
     };
     if !app.is_empty() && !name(w).to_lowercase().contains(&app.to_lowercase()) {
         parts.push(app);
@@ -582,6 +586,24 @@ mod tests {
         assert_eq!(whereabouts(&w), "this desktop · used 2 min ago", "the title already says Editor");
         let w = win(1, "Notes", 2 * 60_000);
         assert_eq!(whereabouts(&w), "this desktop · used 2 min ago");
+    }
+
+    /// Our windows declare their program now. The caption says the app's name where the title
+    /// does not, and never the id.
+    #[test]
+    fn one_of_ours_is_said_by_its_name_and_never_by_the_id_it_declares() {
+        let mut w = win(1, "Calendar", 2 * 60_000);
+        w.app_id = "yantrik-calendar".into();
+        assert_eq!(whereabouts(&w), "this desktop · used 2 min ago", "the title already says Calendar");
+        let mut w = win(2, "Handover", 2 * 60_000);
+        w.app_id = "yantrik-notes".into();
+        assert_eq!(whereabouts(&w), "Notes · this desktop · used 2 min ago");
+        let mut w = win(3, "CPU", 2 * 60_000);
+        w.app_id = "yantrik-system-monitor".into();
+        assert_eq!(whereabouts(&w), "System Monitor · this desktop · used 2 min ago");
+        let mut w = win(4, "report.pdf", 2 * 60_000);
+        w.app_id = "evince".into();
+        assert_eq!(whereabouts(&w), "evince · this desktop · used 2 min ago", "anyone else's app is said as it said itself");
     }
 
     #[test]

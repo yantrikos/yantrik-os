@@ -287,6 +287,14 @@ pub fn actions(surface: ControlSurface, ui: &App) -> ControlSurface {
                 // Who the notification below names: the verified asker, never `requester`, which
                 // is only what the request called itself (security review of #614).
                 let asker = verified.who();
+                // A workshop grant's card names the Mind that asked, from what the shell verified
+                // of the caller and not from anything the request says (#1124, L4).
+                let explained = crate::control_workshop::name_the_mind(
+                    &app,
+                    &action,
+                    &explained,
+                    if agent.is_empty() { &asker } else { &agent },
+                );
 
                 // And one line beside the arguments saying what their handles are, from the same
                 // `describe` the grade came from (#54) — empty for a call that names nothing by
@@ -817,9 +825,8 @@ type Detail = (String, String, Naming, String);
 /// What the target app itself says one of its actions is graded, what it is for, what the app
 /// says its own ids name, and what it says about one call of it with `args` (#137).
 ///
-/// The purpose, the naming and the explanation are empty for the shell's own surface: the local
-/// registry shortcut below publishes a grade and nothing else, and reaching the description would
-/// mean a new function in `yantrik-app-runtime`, which this change does not own. Nothing published
+/// The naming is empty for the shell's own surface; its purpose and its per-call sentence come
+/// from the registry on the UI thread (`published_description`, `published_explanation`). Nothing published
 /// by the shell matches the "cannot be undone" wording today — `files_delete` says "Move a file or
 /// folder to recoverable Trash" — and the caller ORs this with what the request declared, so a
 /// shell action that acquired such a sentence would still be asked about as long as the bridge
@@ -889,7 +896,14 @@ fn published_detail_full_in(
             .map(|grade| {
                 let purpose =
                     yantrik_app_runtime::control::published_description(action).unwrap_or_default();
-                ((grade.to_string(), purpose, Naming::new(), String::new()), None)
+                // An action that explains its calls (`workshop_create`) says so here too: the
+                // sentence was left empty for the shell's own surface, so its card named no
+                // folder, no Mind, and offered a session rule (#1124, N7).
+                let explained = match yantrik_app_runtime::control::published_explanation(action, args) {
+                    Some(Ok(sentence)) => explained_or_unsaid(sanitised_explanation(&sentence)),
+                    _ => String::new(),
+                };
+                ((grade.to_string(), purpose, Naming::new(), explained), None)
             })
             .ok_or_else(|| {
                 format!(
@@ -3943,7 +3957,7 @@ mod grant_spends_tests {
         // The kernel's account of the call being dispatched: the peer is this test process, a
         // direct caller — this binary is `yantrik_ui-…`, not one of the desktop's forwarders —
         // so the tokens are checked against this pid, which is the harness they were issued to.
-        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0 }));
+        let _who = CallerScope::enter(Some(Caller { pid: me as i32, uid: super::own_uid(), gid: 0, the_mind: false }));
 
         // A request asked for agent A, which the person allowed.
         let args = serde_json::json!({"text": "shopping"});
@@ -4049,11 +4063,7 @@ mod grant_spends_tests {
 
         // The kernel's account of this call: the peer is this test process, and it carries the
         // stolen token beside `args` the way every agent call does.
-        let _who = CallerScope::enter(Some(Caller {
-            pid: std::process::id() as i32,
-            uid: super::own_uid(),
-            gid: 0,
-        }));
+        let _who = CallerScope::enter(Some(Caller { pid: std::process::id() as i32, uid: super::own_uid(), gid: 0, the_mind: false }));
         let _token = AgentTokenScope::enter(Some("t-victim-182".into()));
 
         // It writes the harness pid among the arguments. Nothing about this socket peer is a
@@ -4084,11 +4094,7 @@ mod grant_spends_tests {
         let table = Arc::new(TokenTable::new());
         table.issue("t-fwd-182", crate::agents::AgentId::new("pi", "c-fwd-182"), Some(999_998));
         install_resolver(table);
-        let _who = CallerScope::enter(Some(Caller {
-            pid: std::process::id() as i32,
-            uid: super::own_uid(),
-            gid: 0,
-        }));
+        let _who = CallerScope::enter(Some(Caller { pid: std::process::id() as i32, uid: super::own_uid(), gid: 0, the_mind: false }));
         let _token = AgentTokenScope::enter(Some("t-fwd-182".into()));
         let args = serde_json::json!({ "caller_pid": 999_998 });
 

@@ -729,6 +729,7 @@ cmd_migrate_ownership() {
   local rc=0
   install_sudo_rule && remove_blanket_sudo || rc=$?
   reconcile_minds
+  reconcile_workshops
   reconcile_devtools_guard
   reconcile_mind_egress
   return "$rc"
@@ -898,6 +899,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_podman_socket || true
     reconcile_sudo_rule || true
     reconcile_minds || true
+    reconcile_workshops || true
     reconcile_mind_egress_units || true
     reconcile_mind_units || true
     reconcile_private_dirs || true
@@ -3280,6 +3282,74 @@ reconcile_mind_socket() { # <owner>
   systemctl try-restart yantrik-mind.service >/dev/null 2>&1 || true
 }
 
+# The Minds' workshops root (#1124): /var/lib/yantrik/workshops, root's and 0755, with a folder
+# <uid>/ (0700, the person's) for every login account in it. A Mind's workshop is
+# /var/lib/yantrik/workshops/<uid>/<mind>/<name>. The root used to be under the person's home, where
+# an unsealed job could rename an ancestor and take the mount that hid it along (round 5 of the
+# review); out here nothing the person owns is above it. The shell never makes either folder: it
+# refuses to grant a workshop when its <uid>/ is missing or is not the person's. Written by this
+# updater's own code, like the mind door, and again by the first-run wizard for the account it adds.
+WORKSHOPS_BASE=/var/lib/yantrik/workshops
+WORKSHOPS_TMPFILES=/etc/tmpfiles.d/yantrik-workshops.conf
+
+workshops_tmpfiles_text() {
+  printf '%s\n' \
+    "# Yantrik OS (#1124): where a Mind's workshops live, /var/lib/yantrik/workshops/<uid>/<mind>/<name>." \
+    "# Root's, 0755, so a person cannot rename it or anything above it. <uid>/ (0700, the person's) is made" \
+    "# by yantrik-update and by the first-run wizard, never by the shell." \
+    "d /var/lib/yantrik 0755 root root -" \
+    "d /var/lib/yantrik/workshops 0755 root root -"
+}
+
+# "<uid> <gid>" for every login account: a uid in the people's range (1000-59999), a real shell,
+# and not the mind account. The selftest hands it a passwd file of its own.
+workshops_login_accounts() { # [passwd file]
+  local src="${1:-}"
+  if [ -n "$src" ]; then cat "$src"; else getent passwd; fi \
+    | awk -F: '$3 >= 1000 && $3 < 60000 && $4 ~ /^[0-9]+$/ && $1 != "yantrik-mind" && $7 !~ /(nologin|false)$/ && $7 != "" { print $3, $4 }'
+}
+
+# <path> as a folder of exactly <uid>:<gid> and <mode> (as stat prints it, "700"). A missing one is
+# made, with mkdir and never -p, then given its owner: its parent is already root's, so the name
+# cannot be swapped between the two. One that is there is only looked at, never chowned or chmodded
+# through its name: a person, or a Mind's job, may have put it there, as a link or as a folder
+# holding things.
+workshops_folder() { # path uid gid mode
+  local p="$1" uid="$2" gid="$3" mode="$4"
+  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+    mkdir -m "$mode" "$p" && chown -h "$uid:$gid" "$p"
+    return
+  fi
+  [ ! -L "$p" ] && [ -d "$p" ] && [ "$(stat -c '%u:%g:%a' "$p")" = "$uid:$gid:$mode" ]
+}
+
+reconcile_workshops() {
+  [ "$(id -u)" = 0 ] || return 0
+  tree_is_roots || return 0
+  local want uid gid dir
+  want="$(workshops_tmpfiles_text)"
+  if [ -L "$WORKSHOPS_TMPFILES" ] || [ "$(cat "$WORKSHOPS_TMPFILES" 2>/dev/null)" != "$want" ]; then
+    rm -f "$WORKSHOPS_TMPFILES" && printf '%s\n' "$want" > "$WORKSHOPS_TMPFILES" && chmod 0644 "$WORKSHOPS_TMPFILES" \
+      || { warn "could not write $WORKSHOPS_TMPFILES; the Minds' workshops root is not set up"; return 0; }
+  fi
+  # /var/lib/yantrik was the person's on machines that cloud-init made. Its parent is root's, so
+  # the name cannot be swapped: it is taken for root first, and everything in it is looked at
+  # after, when the person can no longer change it.
+  if [ -d /var/lib/yantrik ] && [ ! -L /var/lib/yantrik ]; then
+    chown -h root:root /var/lib/yantrik && chmod 0755 /var/lib/yantrik \
+      || { warn "could not take /var/lib/yantrik for root; the Minds' workshops root is not set up"; return 0; }
+  fi
+  workshops_folder /var/lib/yantrik 0 0 755 && workshops_folder "$WORKSHOPS_BASE" 0 0 755 \
+    || { warn "/var/lib/yantrik or $WORKSHOPS_BASE is a link, or not root's 0755 folder; the Minds' workshops root is not set up"; return 0; }
+  while read -r uid gid; do
+    [ -n "$uid" ] || continue
+    dir="$WORKSHOPS_BASE/$uid"
+    workshops_folder "$dir" "$uid" "$gid" 700 || warn "$dir is not a folder of $uid:$gid, mode 0700 (a link, or someone else's); left alone"
+  done <<EOF
+$(workshops_login_accounts)
+EOF
+}
+
 # The browsers' DevTools ports. Neither browser has one any more: the person's Browser (#1137) and
 # Mind View's (#1200) run with --remote-debugging-pipe, held by the browser service, because a port
 # is reachable by every process of the machine and a job that speaks raw DevTools to it goes round
@@ -4650,6 +4720,7 @@ cmd_migrate_minds() {
   migrate_if_needed
   elevate "$@"
   reconcile_minds
+  reconcile_workshops
   reconcile_devtools_guard
   reconcile_mind_egress_units
   reconcile_mind_units
@@ -4728,6 +4799,7 @@ cmd_reconcile() {
   reconcile_serial_console
   reconcile_sudo_rule
   reconcile_minds
+  reconcile_workshops
   reconcile_devtools_guard
   reconcile_mind_egress_units
   reconcile_mind_units
@@ -6006,6 +6078,20 @@ loopback 127.0.0.1 11434")"
       "$(grep -E '^(TemporaryFileSystem|RuntimeDirectory|PrivateMounts|ProtectHome=tmpfs)' "$mind_unit")"
   fi
 
+  # The Minds' workshops root (#1124): a folder for every login account, and for no one else.
+  local wk="$root/workshops"
+  mkdir -p "$wk"
+  is "workshops: login accounts are the people's uids with a real shell, not the mind account" "1000 1000
+1001 100
+1003 100
+1004 1004" "$(workshops_login_accounts "$mk/passwd")"
+  is "workshops: the tmpfiles file makes root's base" "yes" \
+    "$(workshops_tmpfiles_text | grep -qx 'd /var/lib/yantrik/workshops 0755 root root -' && echo yes || echo no)"
+  local shipped; shipped="$(dirname "$0")/../../config/tmpfiles.d/yantrik-workshops.conf"
+  if [ -f "$shipped" ]; then
+    is "workshops: the shipped file and the updater's text are the same" "$(workshops_tmpfiles_text)" "$(cat "$shipped")"
+  fi
+
   # The direct-set ranges are written twice, in the proxy (direct.rs, DIRECT_RANGES) and in the
   # root check above (PY_MIND_DIRECT): the two must be the same list.
   local direct_rs; direct_rs="$(dirname "$0")/../../crates/yantrik-egress/src/direct.rs"
@@ -7210,6 +7296,24 @@ c.sendall((json.dumps({"ok": True, "seeded": req["rules"]}) + "\n").encode())' "
     info "no yantrik-update-selftest-bridge.sh beside the updater: the bridge checks did not run"
   fi
   declare -F selftest_args >/dev/null && selftest_args  # the arguments of each subcommand: yantrik-update-args
+
+  # The Minds' workshops folders (#1124): made when missing; an existing one is looked at, never
+  # chowned or chmodded through its name; a link is never followed.
+  local wf="$root/workshops-folders" wme wgid; wme="$(id -u)"; wgid="$(id -g)"
+  mkdir -p "$wf/scratch"
+  workshops_folder "$wf/new" "$wme" "$wgid" 700
+  is "workshops folder: a missing one is made, with its owner and mode" "$wme:$wgid:700" "$(stat -c '%u:%g:%a' "$wf/new")"
+  is "workshops folder: one that is right is accepted" "ok" "$(workshops_folder "$wf/new" "$wme" "$wgid" 700 && echo ok)"
+  chmod 0755 "$wf/new"
+  is "workshops folder: a wrong mode is refused, and not changed" "refused 755" \
+    "$(workshops_folder "$wf/new" "$wme" "$wgid" 700 || echo "refused $(stat -c %a "$wf/new")")"
+  ln -s "$wf/scratch" "$wf/link"
+  chmod 0700 "$wf/scratch"
+  is "workshops folder: a link is refused, and what it names is not changed" "refused 700" \
+    "$(workshops_folder "$wf/link" "$wme" "$wgid" 755 || echo "refused $(stat -c %a "$wf/scratch")")"
+  mkdir -p "$wf/plain/hermes"
+  is "workshops folder: a folder of someone else's is refused" "refused" \
+    "$(workshops_folder "$wf/plain" "$((wme + 1))" "$wgid" 755 || echo refused)"
 
   if [ "$fails" = 0 ]; then
     printf '%sall selftest checks passed%s\n' "$c_grn" "$c_off"

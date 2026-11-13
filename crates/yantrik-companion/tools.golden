@@ -1,0 +1,63 @@
+# The tools `build_registry` adds beyond `register_all`, as `name grade spawn-class`
+# (src/tools/golden_tests.rs holds it; the classes are in yantrik-companion-tools/src/golden.rs).
+# A tool that is added, missing or regraded fails the test: read its spawn, then change its line.
+#
+# create_automation, run_automation, spawn_agents and run_recipe start no program themselves: the
+# tools they call later go through the registry, run_background included (it is `mind_command`:
+# the task manager builds its shell with spawn::mind_command). telegram_send runs curl by a literal.
+brain_status standard none
+calendar_create_event standard none
+calendar_delete_event standard none
+calendar_list_events safe none
+calendar_today safe none
+calendar_update_event standard none
+cancel_schedule standard none
+cancel_task standard none
+check_background_task safe none
+check_bond safe none
+complete_task standard none
+create_automation standard none
+create_inside_joke standard none
+create_recipe standard none
+create_schedule standard none
+deduplicate_results safe none
+delete_automation standard none
+download_file standard none
+extract_search_results safe none
+find_recipe safe none
+forget_topic standard none
+form_opinion standard none
+github_profile safe none
+github_repos safe none
+github_stars safe none
+http_fetch safe none
+introspect safe none
+life_search standard none
+list_automations safe none
+list_background_tasks safe none
+list_recipes safe none
+list_schedules safe none
+list_tasks safe none
+queue_task standard none
+rank_results safe none
+recall safe none
+recall_preferences safe none
+relate_entities standard none
+remember standard none
+resolve_loop standard none
+run_automation standard none
+run_background sensitive mind_command
+run_recipe standard none
+save_user_fact standard none
+search_sources standard none
+set_reminder standard none
+show_open_loops safe none
+snooze_loop standard none
+spawn_agents standard none
+stop_background_task sensitive none
+telegram_send standard fixed
+toggle_automation standard none
+update_schedule standard none
+update_task standard none
+web_fetch safe none
+whatsapp_send standard none

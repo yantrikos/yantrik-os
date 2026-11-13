@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use super::browser_peer::ServiceIdentity;
 use super::browser_pipe::{send, Refusal, Role};
 
-const RETRY: Duration = Duration::from_millis(500);
+pub(super) const RETRY: Duration = Duration::from_millis(500);
 /// How often a lease is checked for a browser that has gone.
 const LEASE_LOOK: Duration = Duration::from_secs(2);
 
@@ -73,13 +73,17 @@ impl Leader {
 
 /// Offer `mine` to the service until the browser exits; each time the service lets go, again.
 /// `identity` is asked for before each offer, so the pid it expects is the service's current one.
+/// `leader` is the process the shell spawned, watched and stopped; `holder` is the process that
+/// holds the stream (the same one unless the browser runs in the wall).
 ///
 /// Mind View's browser is stopped when the service has not taken it within `bound` of the browser
 /// starting or of the service letting go, or at a final refusal: a Mind View browser nobody holds
 /// is unfenced, and every later launch would hand over to it and exit, so the service would never
 /// hold Mind View again (#1200). The person's Browser is never stopped: it is theirs.
-pub(super) fn keep_offered(path: &Path, mine: &OwnedFd, leader: &Leader, role: Role, bound: Duration, identity: impl Fn() -> std::io::Result<ServiceIdentity>) {
-    let pid = leader.pid;
+pub(super) fn keep_offered(path: &Path, mine: &OwnedFd, leader: &Leader, holder: u32, role: Role, bound: Duration, identity: impl Fn() -> std::io::Result<ServiceIdentity>) {
+    // The pid the service is told is the process that holds the stream (`holder`): the browser
+    // itself, which in the wall is below the pid the shell spawned (`leader`).
+    let pid = holder;
     let mut unheld_since = Instant::now();
     let mut said = false;
     while leader.alive() {
@@ -166,7 +170,7 @@ mod tests {
         let (mine, theirs) = socketpair().unwrap();
         let mut browser = Command::new("sleep").arg("30").spawn().unwrap();
         let pid = browser.id();
-        let shell = std::thread::spawn(move || keep_offered(&path, &mine, &Leader::of(pid), Role::MindView, Duration::from_secs(30), || Ok(this_process_is_the_service("lease"))));
+        let shell = std::thread::spawn(move || keep_offered(&path, &mine, &Leader::of(pid), pid, Role::MindView, Duration::from_secs(30), || Ok(this_process_is_the_service("lease"))));
         // The first service takes the stream and goes away; the second takes it again and stays.
         let (first, _) = listener.accept().unwrap();
         let (_, one) = receive(&first);
@@ -205,7 +209,7 @@ mod tests {
             }
         };
         let offered = path.clone();
-        let shell = std::thread::spawn(move || keep_offered(&offered, &mine, &Leader::of(pid), Role::Person, Duration::from_secs(30), identity));
+        let shell = std::thread::spawn(move || keep_offered(&offered, &mine, &Leader::of(pid), pid, Role::Person, Duration::from_secs(30), identity));
         let (first, _) = listener.accept().unwrap();
         let _ = receive(&first);
         (&first).write_all(b"ok
@@ -297,10 +301,10 @@ c.recv(1)
         let (path, listener) = temp_socket("final-mind");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let offers = answering(listener, "refused: that is not Mind View's browser\n", stop.clone());
-        let (mut child, Handoff { mine, theirs }) = a_browser(Role::MindView);
+        let (mut child, Handoff { mine, theirs, .. }) = a_browser(Role::MindView);
         drop(theirs);
         assert_eq!(unsafe { libc::getpgid(child.id() as i32) }, child.id() as i32, "it leads a group of its own");
-        keep_offered(&path, &mine, &Leader::of(child.id()), Role::MindView, Duration::from_secs(30), || Ok(this_process_is_the_service("final-mind")));
+        keep_offered(&path, &mine, &Leader::of(child.id()), child.id(), Role::MindView, Duration::from_secs(30), || Ok(this_process_is_the_service("final-mind")));
         assert!(was_killed(&mut child), "the browser nobody holds is stopped");
         assert_eq!(offers.load(std::sync::atomic::Ordering::SeqCst), 1);
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -313,9 +317,9 @@ c.recv(1)
         let (path, listener) = temp_socket("retry-mind");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let offers = answering(listener, "retry: that browser does not run on Mind View's profile (yet)\n", stop.clone());
-        let (mut child, Handoff { mine, theirs }) = a_browser(Role::MindView);
+        let (mut child, Handoff { mine, theirs, .. }) = a_browser(Role::MindView);
         drop(theirs);
-        keep_offered(&path, &mine, &Leader::of(child.id()), Role::MindView, Duration::from_millis(1200), || Ok(this_process_is_the_service("retry-mind")));
+        keep_offered(&path, &mine, &Leader::of(child.id()), child.id(), Role::MindView, Duration::from_millis(1200), || Ok(this_process_is_the_service("retry-mind")));
         assert!(was_killed(&mut child), "stopped once the bound ran out");
         assert!(offers.load(std::sync::atomic::Ordering::SeqCst) >= 2, "offered again before that");
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -327,9 +331,9 @@ c.recv(1)
         let (path, listener) = temp_socket("final-person");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let _offers = answering(listener, "refused: nope\n", stop.clone());
-        let (mut child, Handoff { mine, theirs }) = a_browser(Role::Person);
+        let (mut child, Handoff { mine, theirs, .. }) = a_browser(Role::Person);
         drop(theirs);
-        keep_offered(&path, &mine, &Leader::of(child.id()), Role::Person, Duration::from_millis(50), || Ok(this_process_is_the_service("final-person")));
+        keep_offered(&path, &mine, &Leader::of(child.id()), child.id(), Role::Person, Duration::from_millis(50), || Ok(this_process_is_the_service("final-person")));
         assert!(child.try_wait().unwrap().is_none(), "still running");
         child.kill().unwrap();
         child.wait().unwrap();

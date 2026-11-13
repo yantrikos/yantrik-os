@@ -604,9 +604,12 @@ fn launch_browser(args: &serde_json::Value) -> String {
             Err(why) => return format!("Not opened: {why}"),
         }
     };
-    let mut command = std::process::Command::new(&binary);
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let mut command = match super::browser_spawn::walled(&home, &binary, &chrome_args) {
+        Ok(command) => command,
+        Err(why) => return format!("Not opened: {why}"),
+    };
     command
-        .args(&chrome_args)
         .env("XDG_RUNTIME_DIR", "/run/user/1000")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

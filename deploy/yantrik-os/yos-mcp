@@ -706,7 +706,12 @@ AGENT_TOOLS = [
                        "command_status waits for it again, command_input types into it, "
                        "command_kill stops it; if it finishes later you are told at the start of "
                        "your next turn. It runs as the person, so it is graded sensitive: in `ask` "
-                       "mode the person sees a card with the command and allows it first.",
+                       "mode the person sees a card with the command and allows it first. "
+                       "It shares the host's network and loopback: it reaches the egress ports 7450 "
+                       "and 7451, the gateway on 7460 (with a token), the local model on 11434 "
+                       "and anything the person runs. A job runs as the person's account and can change the "
+                       "person's own files, startup files included; what those run later is in no "
+                       "view (until jobs run as their own account, #1137 step 3).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -719,6 +724,107 @@ AGENT_TOOLS = [
                 "wait_seconds": _WAIT_SECONDS,
             },
             "required": ["command"],
+        },
+    },
+    {
+        "name": "run_sealed_command",
+        "agent_action": "agent_run_sealed",
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+        "description": "Run one shell command line (bash) in your workshop, sealed: no network, none "
+                       "of the person's files but the workshop (HOME is the workshop), no desktop "
+                       "or session bus, a scrubbed environment, a temporary /tmp, and caps on CPU, "
+                       "memory and time. It needs no card, even after this conversation has read "
+                       "private state, because it cannot carry anything out. The workshop is a "
+                       "folder the person granted you with workshop_request; the desktop checks "
+                       "that grant itself and runs nothing otherwise. Answers like run_command. "
+                       "Use it for builds and tests. There is NO network mode: a command that needs "
+                       "the network (npm install, git clone, a download) cannot run in the workshop. "
+                       "No other program you drive can see the workshop either: agent_run, a "
+                       "terminal tab you open, scripts and Claude Code run where the workshops "
+                       "folder is empty, and run_command and the file tools refuse it. Those "
+                       "programs also run with no session: they cannot call yos (the person's "
+                       "runtime folder, the bus and the Yantrik sockets are not in their view), "
+                       "so use your own tool calls for the desktop. They share the host's network and "
+                       "loopback: they reach the egress ports 7450 and 7451, the gateway on 7460 "
+                       "(with a token), the local model on 11434 "
+                       "and anything the person runs. A job runs as the person's "
+                       "account and can change the person's own files, startup files included; what those run "
+                       "later is in no view (until jobs run as their own account, #1137 step 3). A video or song shown with "
+                       "workshop_show plays without sound for now. So a "
+                       "file you made there leaves it only through workshop_show "
+                       "(a video, song or picture, in the OS's player) or workshop_save (a copy the "
+                       "person allows on a card). Tell the person what needs the network and let "
+                       "them decide; do not route around it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "One command line, as it would be typed."},
+                "workshop": {"type": "string", "description": "Your workshop folder, as granted."},
+                "cwd": {"type": "string",
+                        "description": "Where to run it, inside the workshop. Left out: the workshop."},
+                "wait_seconds": _WAIT_SECONDS,
+            },
+            "required": ["command", "workshop"],
+        },
+    },
+    {
+        "name": "workshop_request",
+        "agent_action": "workshop_create",
+        "pass": ["name"],
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+        "description": "Ask the person for a workshop: a private folder of your own where "
+                       "run_sealed_command may build. The desktop makes it under "
+                       "/var/lib/yantrik/workshops/<uid>/<you>/<name> and answers with the path "
+                       "to use as `workshop`. They decide on a card EVERY time, in every mode "
+                       "(full bypass included), and no session allowance covers it. A name is one "
+                       "plain word: no slash, no leading dot, no invisible character. Deleting or "
+                       "replacing the folder ends the grant. Graded sensitive.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "A plain name, e.g. sitcom"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "workshop_show",
+        "agent_action": "workshop_present",
+        "pass": ["workshop", "path"],
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+        "description": "Show a video, song or picture from your workshop in the OS's own player, "
+                       "which says it is from your workshop. No card: a player only decodes it. "
+                       "Only a regular file whose first bytes are a media format is shown; a link, "
+                       "a pipe, a folder or any other file is refused. It plays WITHOUT SOUND for "
+                       "now: the player is given no audio socket (it could reach the microphone), "
+                       "until a safer audio path exists.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workshop": {"type": "string", "description": "Your workshop folder, as granted."},
+                "path": {"type": "string", "description": "The file, inside the workshop."},
+            },
+            "required": ["workshop", "path"],
+        },
+    },
+    {
+        "name": "workshop_save",
+        "agent_action": "workshop_export",
+        "pass": ["workshop", "path", "to"],
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+        "description": "Copy a file or folder out of your workshop into the person's own folders, as "
+                       "plain files by content (only kinds that are read: documents, pictures, sound, video, "
+                       "text, data and source; no scripts or tool settings, no repository, no links, "
+                       "no attributes). `to` is `videos` "
+                       "or a folder in the home. The person allows EVERY copy on a card, in every "
+                       "mode. This is the only way what you made leaves the workshop, besides "
+                       "workshop_show.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workshop": {"type": "string", "description": "Your workshop folder, as granted."},
+                "path": {"type": "string", "description": "The file or folder, inside the workshop."},
+                "to": {"type": "string", "description": "`videos`, or ~/<an existing folder>"},
+            },
+            "required": ["workshop", "path", "to"],
         },
     },
     {
@@ -898,7 +1004,7 @@ OS_ACT_WITH_AGENT = (" As one of the person's agents, `terminal`'s `run` runs yo
                      "person's Terminal, and answers with its exit code.")
 
 # The shell's two actions that wait for a command, as `os_act` names them.
-AGENT_WAITING = {"agent_run", "agent_job"}
+AGENT_WAITING = {"agent_run", "agent_run_sealed", "agent_job"}
 
 
 def offered():
@@ -970,15 +1076,19 @@ def agent_args(name, args):
         # among them included, which never leaves this process as an argument.
         return {k: args[k] for k in passed if args.get(k) not in (None, "")}
     out = {}
-    if name == "run_command":
+    if name in ("run_command", "run_sealed_command"):
         out["command"] = args.get("command")
+        if name == "run_sealed_command":
+            # The folder as the Mind names it. Whether it is sealed is the shell's call, made from
+            # its own grant record (`agent_run_sealed`), not anything said here.
+            out["workshop"] = args.get("workshop")
         if args.get("cwd") not in (None, ""):
             out["cwd"] = args.get("cwd")
     else:
         out["job"] = args.get("job")
     if name == "command_input":
         out["text"] = args.get("text")
-    if name in ("run_command", "command_status") and args.get("wait_seconds") is not None:
+    if name in ("run_command", "run_sealed_command", "command_status") and args.get("wait_seconds") is not None:
         out["wait"] = args.get("wait_seconds")
     return out
 
@@ -2236,6 +2346,18 @@ def unrecoverable(purpose):
 OPEN_ENDED = "What it runs can do anything you can."
 
 
+# The sentence of an action the person allows on a card every time, in every mode (`gate::ALWAYS_ASKS`,
+# #1124 H1): a workshop grant. The selftest holds this copy to the shell's.
+ALWAYS_ASKS = "The person allows each one on a card, in every mode."
+ALWAYS_NOTE = ("The person allows this on a card every time, in every mode and whatever was allowed "
+               "for the session before: not a fault, and not something to route around.")
+
+
+def always_asks(purpose):
+    """Does the action's published purpose declare that the person allows each call on a card?"""
+    return ALWAYS_ASKS.lower() in (purpose or "").lower()
+
+
 def open_ended(purpose):
     """Does the app's own sentence declare that this action runs whatever it is given — so it
     can do anything the person can? `gate::open_ended`: the one sentence, case aside."""
@@ -2717,6 +2839,10 @@ def guard_act(args):
     runs_anything = open_ended(purpose)
     cap = CEILING if CEILING_SET else None
     private = carries_private(app, action, runs_anything, args, purpose)
+    # Declared by the action itself: asked in every mode, as a tainted sink is, with or without a taint.
+    forced = always_asks(purpose)
+    if forced and not private:
+        private = ALWAYS_NOTE
 
     # One call, one table — the harness's own cap included, so there is nothing here that the
     # vectors do not cover. See `decide`; `CEILING` is only a cap when somebody set it.
@@ -2773,7 +2899,7 @@ def guard_act(args):
 
     asked_anyway = join(asked_anyway, private)
     # The card says it too: the person is deciding whether what this session read goes on.
-    card_purpose = join(private_card_line(app, action, args, purpose), purpose) if private else purpose
+    card_purpose = join(private_card_line(app, action, args, purpose), purpose) if private and not forced else purpose
     allowed, message, grant = ask_the_person(
         app, action, level, card_purpose, bound, requester_name(state), must_ask=bool(private))
     if allowed and private and is_go(app, action):
@@ -3249,7 +3375,7 @@ def prefix(note, text):
 
 
 # The agent's own terminal actions, whose answer is a command's result, not a change to a surface.
-AGENT_COMMANDS = {"agent_run", "agent_job", "agent_input"}
+AGENT_COMMANDS = {"agent_run", "agent_run_sealed", "agent_job", "agent_input"}
 
 _UNASKED = re.compile(
     r"Nobody was asked about this\. The desktop is in `([^`]+)` mode"

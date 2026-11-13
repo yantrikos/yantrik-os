@@ -192,28 +192,15 @@ impl Headless {
             remove_profile(profile);
             return Err(sentence);
         }
-        let mut command = Command::new(binary);
-        command
-            // The DevTools pipe: a stream only this app holds, and no port.
-            .arg(yantrik_browser_ports::PIPE_FLAG)
-            // Software rendering: WSL here has no GPU path for headless Chromium.
-            .args([
-                "--headless=new",
-                "--use-gl=angle",
-                "--use-angle=swiftshader",
-                "--enable-unsafe-swiftshader",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-crash-reporter",
-                "--mute-audio",
-                "--hide-scrollbars",
-                "--window-size=1280,720",
-            ])
-            .arg(format!("--user-data-dir={}", profile.display()))
-            .arg(url)
-            .env("TMPDIR", &tmp)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+        let mut command = match crate::browser_view::walled(binary, &crate::browser_view::headless_args(profile, url)) {
+            Ok(command) => command,
+            Err(why) => {
+                remove_profile(&tmp);
+                remove_profile(profile);
+                return Err(why);
+            }
+        };
+        command.env("TMPDIR", &tmp).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         let (mine, theirs) = match yantrik_browser_ports::stream::attach(&mut command) {
             Ok(ends) => ends,
             Err(e) => {

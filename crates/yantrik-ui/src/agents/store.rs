@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use super::model::*;
 use crate::trail::ToolCall;
 
+mod closing;
 mod erase;
 pub use erase::ErasurePlan;
 
@@ -289,7 +290,7 @@ impl Store {
             return;
         };
         append(&mut turn.items, cap(delta), false);
-        if matches!(agent.state, State::Idle | State::Done | State::Failed) {
+        if matches!(agent.state, State::Idle | State::Done | State::Failed | State::Stopping | State::Stopped | State::StoppedWaiting) {
             set_state(agent, State::Thinking, now);
         }
         self.mark(i);
@@ -304,31 +305,6 @@ impl Store {
         if let Err(line) = apply(agent, event, provenance, now) {
             refuse(agent, line);
         }
-        self.mark(i);
-    }
-
-    /// The turn ended — completed (`ok`) or failed.
-    pub fn close_turn(&mut self, id: &AgentId, ok: bool) {
-        let Some(i) = self.index(id) else { return };
-        let now = self.now();
-        let agent = &mut self.agents[i];
-        if agent.open_turn().is_none() {
-            return;
-        }
-        settle_turn(agent, ok, now, None);
-        agent.status.clear();
-        let next = if agent.state == State::HarnessGone {
-            State::HarnessGone
-        } else if agent.cards().any(Card::running) {
-            // A command the shell owns outlives the turn that asked for it.
-            State::RunningTool
-        } else if ok {
-            State::Done
-        } else {
-            State::Failed
-        };
-        set_state(agent, next, now);
-        compact(agent);
         self.mark(i);
     }
 

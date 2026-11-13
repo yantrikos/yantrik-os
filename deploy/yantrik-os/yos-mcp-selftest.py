@@ -242,6 +242,22 @@ SHELL_ACTIONS = """  act: open_app(name)  [standard, settles later]
   act: agent_kill(job)  [standard, settles later]
        Stop one of your commands.
          job: string - the job id agent_run answered with
+  act: workshop_create(name)  [sensitive, settles on return]
+       Ask the person for a workshop. The person allows each one on a card, in every mode.
+         name: string - a plain name
+  act: agent_run_sealed(command, workshop, cwd?, wait?)  [standard, settles later]
+       Run one command line in your workshop, sealed.
+         command: string - one command line
+         workshop: string - your workshop folder
+  act: workshop_present(workshop, path)  [standard, settles on return]
+       Show a media file from your workshop in the OS's player.
+         workshop: string - your workshop folder
+         path: string - the file
+  act: workshop_export(workshop, path, to)  [sensitive, settles later]
+       Copy a file out of your workshop. The person allows each one on a card, in every mode.
+         workshop: string - your workshop folder
+         path: string - the file or folder
+         to: string - videos, or a folder in the home
   act: new_agent(mind, task)  [sensitive, settles on return]
        Start another agent and give it a task.
          mind: string - which mind
@@ -3631,6 +3647,64 @@ with tempfile.TemporaryDirectory() as d:
     check("carries_private itself asks for a visited address that carries a query, and not for a bare one",
           module.carries_private("browser", "go", False, {"args": {"url": TAHOE + "?d=1"}})
           and not module.carries_private("browser", "go", False, {"args": {"url": TAHOE}}), None)
+
+    # 25g. The sealed workshop (#1120). The tainted conversation above has read private state. A
+    # command is outward and asks; the sealed form is a different action the shell checks against its
+    # own grant record, and it asks nothing. What a caller CLAIMS changes neither: an `agent_run`
+    # that names a workshop is still `agent_run`, and the command tools send the shell no claim.
+    sealed_args = {"command": "npm run build", "workshop": "/home/x/Documents/w"}
+    check("tainted: agent_run asks", bool(module.carries_private("shell", "agent_run", True, {"args": sealed_args})), None)
+    check("tainted: agent_run asks even when it claims a workshop and says nothing of running anything",
+          bool(module.carries_private("shell", "agent_run", False, {"args": sealed_args})), None)
+    check("tainted: the sealed form is not outward, so it is not asked about",
+          module.carries_private("shell", "agent_run_sealed", False, {"args": sealed_args}) == "", None)
+    check("the sealed action is in no list of outward actions",
+          ("shell", "agent_run_sealed") not in module.COMMANDS and ("shell", "agent_run_sealed") not in module.HANDOFFS, None)
+    check("run_command cannot claim a workshop: the argument is not sent",
+          "workshop" not in module.agent_args("run_command", dict(sealed_args)), module.agent_args("run_command", dict(sealed_args)))
+    check("run_sealed_command sends the shell the name of the folder and the shell alone decides",
+          module.agent_args("run_sealed_command", dict(sealed_args)) == sealed_args,
+          module.agent_args("run_sealed_command", dict(sealed_args)))
+    check("the sealed tool and its grant are offered, and waiting on a sealed command is a long wait",
+          "run_sealed_command" in module.AGENT_BY_NAME and module.AGENT_BY_NAME["workshop_request"]["agent_action"] == "workshop_create"
+          and "agent_run_sealed" in module.AGENT_WAITING, None)
+
+    # 25h. A workshop grant is the person's to allow, in every mode (#1124, H1). The action's own
+    # sentence declares it; the bridge asks, tells the shell (`tainted`), and a shell that would
+    # answer `not_needed` is a refusal, never a go-ahead. A session rule changes nothing.
+    for mode in ("ask", "auto", "bypass", "bypass_all"):
+        module, state = case(tmp, "workshop-card-%s" % mode, mode=mode, machine_ceiling="dangerous",
+                             ceiling=None, not_needed=True, rules=[{"app": "shell", "action": "workshop_create"}])
+        text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
+        s = read(state)
+        check("workshop_request raises a card in %s even with a session rule, and runs only on the grant" % mode,
+              len(s.get("requests", [])) == 1 and s["requests"][0].get("tainted") is True
+              and s["requests"][0]["action"] == "workshop_create"
+              and all(a.get("grant") for a in s.get("acted", []) if a["action"] == "workshop_create"),
+              (text, s.get("requests"), s.get("acted")))
+    module, state = case(tmp, "workshop-card-granted", mode="bypass_all", machine_ceiling="dangerous", ceiling=None)
+    text, is_error = act(module, "shell", "workshop_create", {"name": "x"})
+    s = read(state)
+    check("and once the person allows it, it runs with their grant",
+          len(s.get("requests", [])) == 1 and [a["action"] for a in s.get("acted", [])] == ["workshop_create"], (text, s))
+    rust = (HERE.parent.parent / "crates/yantrik-ipc-contracts/src/control_surface.rs").read_text(encoding="utf-8")
+    sentence = re.search(r'pub const ALWAYS_ASKS: &str = "(.*?)";', rust)
+    check("the bridge's always-asked sentence is the gate's, word for word",
+          sentence is not None and sentence.group(1) == module.ALWAYS_ASKS and module.always_asks("x. " + module.ALWAYS_ASKS.upper())
+          and not module.always_asks("The person allows it."), sentence.group(1) if sentence else "no ALWAYS_ASKS")
+
+    # 25i. The tool text for the sealed command says what it cannot do.
+    check("the tool text says there is no network mode",
+          "NO network mode" in module.AGENT_BY_NAME["run_sealed_command"]["description"], None)
+    check("the tool text names what a job reaches on loopback",
+          all(w in module.AGENT_BY_NAME["run_sealed_command"]["description"] for w in ("7450", "7460", "11434")), None)
+    check("the tool text names that a job can change the person's startup files",
+          all(w in " ".join(module.AGENT_BY_NAME["run_sealed_command"]["description"].split())
+              for w in ("runs as the person's account", "startup files included", "#1137 step 3")), None)
+
+    check("run_command, the tool that runs agent_run, says the same: loopback and startup files",
+          all(w in " ".join(module.AGENT_BY_NAME["run_command"]["description"].split())
+              for w in ("7450", "7460", "11434", "runs as the person's account", "startup files included", "#1137 step 3")), None)
 
     # 26. What os_apps offers a mind to describe answers describe. The first live catalog run's
     # Red team read `harness` off the services line, called os_describe on it and spent a failed

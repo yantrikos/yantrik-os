@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// An active MCP server connection.
@@ -37,9 +37,11 @@ impl McpConnection {
         env: &HashMap<String, String>,
         cwd: Option<&str>,
     ) -> Result<Self, String> {
-        let mut cmd = Command::new(command);
-        cmd.args(args)
-            .stdin(Stdio::piped())
+        // A server's program comes from the config, but it starts like any program that can
+        // reach a Mind's files: through the outside view, with the workshops root hidden.
+        let mut cmd = yantrik_companion_tools::spawn::mind_command(&yantrik_companion_tools::spawn::home(), command, args)
+            .map_err(|e| format!("MCP server '{command}' was not started: {e}"))?;
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .envs(env);
@@ -48,7 +50,7 @@ impl McpConnection {
             cmd.current_dir(dir);
         }
 
-        let child = cmd.spawn().map_err(|e| {
+        let child = yantrik_companion_tools::spawn::spawn_long_lived(cmd).map_err(|e| {
             format!("Failed to spawn MCP server '{command}': {e}")
         })?;
 

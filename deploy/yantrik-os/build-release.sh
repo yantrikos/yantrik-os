@@ -354,6 +354,9 @@ install -m 0755 "$SCRIPT_DIR/yantrik-mind-log" "$ROOT/share/root-helpers/yantrik
 # into /etc/systemd/system by `yantrik-update`; enabled by `yantrik-update migrate-minds`.
 mkdir -p "$ROOT/share/systemd"
 cp "$PROJECT_ROOT/config/systemd/"*.service "$ROOT/share/systemd/"
+# The root of the Minds' workshops (#1124): root's, made at every boot, installed by `yantrik-update`.
+mkdir -p "$ROOT/share/tmpfiles.d"
+cp "$PROJECT_ROOT/config/tmpfiles.d/yantrik-workshops.conf" "$ROOT/share/tmpfiles.d/"
 # The boot menu's theme, with its fonts, made by the same script as the image's
 # /usr/share/yantrik/grub-theme (#835). A machine installed from an image older than that (VM 541,
 # 12 Oct) has no theme anywhere; `yantrik-update` copies this one into /boot/grub/themes/yantrik

@@ -1166,16 +1166,13 @@ fn launch_command(
     args: &[&str],
     dir: Option<&std::path::Path>,
     seat: Option<&crate::mind_view::Seat>,
-) -> std::process::Command {
-    let mut command = std::process::Command::new(path);
+) -> Result<std::process::Command, String> {
+    let (program, argv) = super::browser_launch::start_line(app_id, path, args, seat.is_some())?;
+    let mut command = std::process::Command::new(program);
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    if seat.is_some() {
-        command.args(super::browser_launch::mind_view_args(app_id, path, args));
-    } else {
-        command.args(args);
-    }
+    command.args(argv);
     for (key, value) in session_env() {
         command.env(key, value);
     }
@@ -1186,7 +1183,7 @@ fn launch_command(
     if let Some(seat) = seat {
         seat.display().apply(&mut command);
     }
-    command
+    Ok(command)
 }
 
 /// Start one app, on the person's desktop or on `seat`.
@@ -1201,7 +1198,10 @@ pub(super) fn launch(
     persons_browser: bool,
 ) {
     let path = resolve_app_binary(bin);
-    let mut command = launch_command(app_id, &path, args, dir, seat);
+    let mut command = match launch_command(app_id, &path, args, dir, seat) {
+        Ok(command) => command,
+        Err(why) => return crate::running::mark_launch_failed(app_id, bin, &why, 0),
+    };
     let role = super::browser_launch::pipe_role(app_id, &path, seat.is_some(), persons_browser);
     let pipe = super::browser_pipe::attach_for(&mut command, args, role); // #1137, #1200
     match command
@@ -1822,12 +1822,12 @@ mod tests {
     #[test]
     fn a_minds_launch_command_never_carries_the_persons_display() {
         let seat = crate::mind_view::Seat { wayland: "wayland-1".into(), x11: None };
-        let command = launch_command("blender", std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat));
+        let command = launch_command("blender", std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat)).unwrap();
         assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared for a mind");
         assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
         assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
         assert_eq!(env_of(&command, "GDK_BACKEND"), Some(Some("wayland".to_string())));
-        let person = launch_command("blender", std::path::Path::new("/usr/bin/blender"), &[], None, None);
+        let person = launch_command("blender", std::path::Path::new("/usr/bin/blender"), &[], None, None).unwrap();
         assert_ne!(env_of(&person, "DISPLAY"), Some(None), "the person's own launch is untouched");
         assert_eq!(env_of(&person, "WAYLAND_DISPLAY"), None);
     }

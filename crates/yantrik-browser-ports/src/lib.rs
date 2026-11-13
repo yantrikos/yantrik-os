@@ -130,6 +130,11 @@ impl Profiles {
         Profiles { mind_view: mind_view_profile(), identities: identities_root() }
     }
 
+    /// Whether `dir` (a `--user-data-dir`) is a mind's profile: Mind View's, or an identity's.
+    pub fn is_a_minds(&self, dir: &Path) -> bool {
+        dir == self.mind_view || dir.starts_with(&self.identities)
+    }
+
     /// Every directory that is a mind's profile now.
     fn dirs(&self) -> Vec<(PathBuf, Place)> {
         let mut out = vec![(self.mind_view.clone(), Place::MindView)];
@@ -140,11 +145,37 @@ impl Profiles {
     }
 }
 
+/// This machine's host name, the one Chromium writes into `SingletonLock` (`gethostname()` is
+/// the kernel's `/proc/sys/kernel/hostname`). None when it cannot be read.
+pub fn this_host() -> Option<String> {
+    Some(std::fs::read_to_string("/proc/sys/kernel/hostname").ok()?.trim().to_string()).filter(|h| !h.is_empty())
+}
+
 /// The pid a profile's `SingletonLock` names. Chromium writes it (a link to `host-pid`) when it
-/// takes the profile; nothing in a command line does.
+/// takes the profile; nothing in a command line does. A lock written on another host (a profile
+/// on a shared home) names a pid of that host and is not read.
+///
+/// Residual: a stale lock of this host whose pid was reused by another process still names that
+/// process, and a link made by the person's own account can name any pid: either only makes a
+/// browser read as a Mind's (a missed "not drivable" notice), and grants no reach.
 pub fn lock_pid(profile: &Path) -> Option<u32> {
     let link = std::fs::read_link(profile.join("SingletonLock")).ok()?;
-    link.to_str()?.rsplit('-').next()?.parse().ok()
+    let (host, pid) = link.to_str()?.rsplit_once('-')?;
+    if this_host().is_some_and(|mine| mine != host) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// The words of a `/proc/<pid>/cmdline`. About 0.85 s after it starts Chromium folds its whole
+/// argument vector into argv[0] as one space-joined string, so the first element is split on
+/// whitespace and the others are kept whole (the 520 gate on #1151; `handover.py` `_flags_of`
+/// does the same). Residual: in a retitled argv[0] a file name containing ` --flag` reads as
+/// that flag.
+pub fn cmdline_words(raw: &[u8]) -> Vec<&[u8]> {
+    let mut elements = raw.split(|b| *b == 0);
+    let first = elements.next().unwrap_or_default();
+    first.split(|b| b.is_ascii_whitespace()).chain(elements).filter(|w| !w.is_empty()).collect()
 }
 
 /// Whether process `pid` owns `profile`: its `SingletonLock` names it, or it holds one of the
@@ -217,11 +248,31 @@ mod tests {
         assert_eq!(lock_pid(&dir), None);
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink("my-host-4242", dir.join("SingletonLock")).unwrap();
+            std::os::unix::fs::symlink(format!("{}-4242", this_host().unwrap_or("h".into())), dir.join("SingletonLock")).unwrap();
             assert_eq!(lock_pid(&dir), Some(4242));
             assert_eq!(owns(Path::new("/nonexistent"), 4242, &dir), Ok(true));
             assert!(owns(Path::new("/nonexistent"), 4243, &dir).is_err(), "the files of a process nobody can see");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_from_another_host_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("yb-lock-host-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = format!("not-{}", this_host().unwrap_or_default());
+        std::os::unix::fs::symlink(format!("{other}-4242"), dir.join("SingletonLock")).unwrap();
+        assert_eq!(lock_pid(&dir), if this_host().is_some() { None } else { Some(4242) });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_retitled_command_line_reads_as_words() {
+        let words = |raw: &[u8]| cmdline_words(raw).iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect::<Vec<_>>();
+        assert_eq!(words(b"/usr/bin/chromium\0--a\0b c\0"), ["/usr/bin/chromium", "--a", "b c"], "later elements stay whole");
+        assert_eq!(words(b"/usr/bin/chromium --a  https://x/y\0"), ["/usr/bin/chromium", "--a", "https://x/y"]);
+        assert!(words(b"").is_empty());
     }
 }
