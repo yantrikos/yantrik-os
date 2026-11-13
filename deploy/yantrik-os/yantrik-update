@@ -703,7 +703,7 @@ cmd_migrate_ownership() {
   say "Making $PREFIX root's; $owner keeps logs/ and data/"
   chown root:root "$PREFIX" && chmod 0755 "$PREFIX"
   for d in "$BIN_DIR" "$SHARE_DIR" "$UPDATES_DIR" "$BACKUP_DIR" "$PREFIX/models" "$PREFIX/skills" \
-           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory"; do
+           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory" "$UPDATE_STATE_DIR"; do
     [ -e "$d" ] || continue
     chown -R root:root "$d"
     chmod -R go-w "$d"
@@ -2579,6 +2579,7 @@ chromium_policy_record() {  # root adds sha256 $1 to the marker; refuses unless 
   if [ "$(id -u)" = 0 ]; then
     sh -c "$script" sh "$d" "$1" "$m" "$ROOT_UID"
   else
+    sudo -n true >/dev/null 2>&1 || { warn "not recording the Chromium policy in $d: sudo -n is not available here, so it cannot be written as root"; return 1; }
     sudo -n sh -c "$script" sh "$d" "$1" "$m" "$ROOT_UID" 2>/dev/null
   fi || { warn "not recording the Chromium policy in $d: it is not a folder of root's alone, or its marker is not a plain file"; return 1; }
 }
@@ -5441,7 +5442,19 @@ cmd_selftest() {
   (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
    UPDATE_STATE_DIR="$cr/img/opt/yantrik/update-state" CHROMIUM_ROOT="$cr/img" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
    sudo() { return 1; }; reconcile_chromium_policy >/dev/null 2>&1)
+  local iout; iout="$( (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+   UPDATE_STATE_DIR="$cr/img/opt/yantrik/update-state" CHROMIUM_ROOT="$cr/img" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+   sudo() { return 1; }; reconcile_chromium_policy) 2>&1 )"
   is "a file deleted from a fresh image before the first update stays deleted" "no" "$([ -e "$ipol" ] && echo yes || echo no)"
+  t "a file deleted from a fresh image is said to be removed by its owner" "removed by its owner" "$iout"
+  is "migrate-ownership hands the update-state dir (with the policy marker) back to root" "yes" \
+    "$(declare -f cmd_migrate_ownership | grep -qF '"$UPDATE_STATE_DIR"' && echo yes || echo no)"
+  # With sudo -n unavailable the warning says so and does not blame the folder.
+  rm -rf "$cp/update-state"; mkdir -m 0755 "$cp/update-state"
+  local sout; sout="$( (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(( $(id -u) + 1 ))"
+    id() { echo 1000; }; sudo() { return 1; }; chromium_policy_record abc123) 2>&1 )"
+  t "no sudo -n: the warning says so" "sudo -n is not available" "$sout"
+  rm -rf "$cp/update-state"
   # The marker is written only through a root-owned plain folder and file (LOW 1).
   rm -f "$mk"; rm -rf "$cp/update-state"; mkdir -m 0755 "$cp/update-state"
   : > "$cp/other"; ln -s "$cp/other" "$mk"
