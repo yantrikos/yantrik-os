@@ -226,7 +226,9 @@ export component SwitcherView inherits Window {
         Text {
             x: 1036px * root.sx;
             y: dot.y - 10px * root.scale;
-            width: 180px * root.scale;
+            // Room for a 28-character label (main.rs `clean(.., 28)`) at 14px SemiBold in Inter, so
+            // the one "…" is clean's; it was 180px, which held 28 characters of Barlow.
+            width: 206px * root.scale;
             height: 20px * root.scale;
             vertical-alignment: center;
             text: dot.label;
