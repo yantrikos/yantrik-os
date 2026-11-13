@@ -147,11 +147,25 @@ pub fn park(m: &mut Model) {
 
 /// The draft went: its slot is emptied.
 pub fn discard(m: &mut Model) {
+    let discarded = match std::mem::replace(&mut m.composer.mind, Ok(None)) {
+        Ok(Some(d)) => Some(d),
+        other => {
+            m.composer.mind = other;
+            None
+        }
+    };
     m.composer.mind = Ok(None);
     m.composer.in_slot = false;
     m.composer.attachments.clear();
     if let Err(e) = clear_mind_draft(&m.files.mind_draft) {
         tracing::warn!(error = %e, "the prepared draft's file could not be removed");
+    }
+    // Its own shelf, when it holds the very draft discarded, is a duplicate that would come back.
+    if let Some(d) = discarded {
+        let shelf = d.commitment.as_deref().and_then(|c| shelf_path(&m.files.mind_draft, c));
+        if let Some(shelf) = shelf.filter(|s| matches!(load_mind_draft(s), Ok(Some(on_shelf)) if on_shelf == d)) {
+            remove_shelf(&shelf);
+        }
     }
     // The slot is free: a touched draft waiting on a shelf comes into the entry.
     promote_waiting(m);
@@ -185,6 +199,8 @@ pub fn open_prepared_for(m: &mut Model, commitment: &str, fx: &mut Effects<Email
     if m.composer.open && !m.composer.in_slot && !m.composer.text.is_empty() {
         return say(m, fx, "You have a message open. Cancel keeps it as a draft; then open the prepared one.");
     }
+    // Text typed in the window that park has yet to carry to the slot file.
+    let unsaved = m.composer.in_slot && edited_since_shown(m);
     park(m);
     // A draft of the person's with no promise has no shelf to go to: it stays where it is.
     if matches!(&m.composer.mind, Ok(Some(h)) if h.commitment.is_none() && h.touched) {
@@ -197,10 +213,19 @@ pub fn open_prepared_for(m: &mut Model, commitment: &str, fx: &mut Effects<Email
     // The shelf goes only once the slot holds what was on it. If the write fails, the draft that was
     // in the slot is on its shelf and the one being opened is still on its own.
     if let Err(e) = save_mind_draft(&m.files.mind_draft, &waiting) {
-        // The old slot is whole and still holds the held draft: its shelf copy from this call goes,
-        // or a discard or send of the slot would promote it back.
-        if let Some(copy) = shelved {
-            remove_shelf(&copy);
+        // The shelf copy goes only when the slot file on disk holds the same draft: then a discard
+        // or send of the slot cannot promote a duplicate. If park's own write failed too, the slot
+        // file is older (or unreadable) and the shelf holds the only copy of the newest text.
+        if let (Some(copy), Ok(Some(held))) = (shelved, &m.composer.mind) {
+            // A slot file that cannot be read to compare is trusted only when nothing was typed since
+            // it was last written; newly typed text may exist nowhere else.
+            let same = match load_mind_draft(&m.files.mind_draft) {
+                Ok(on_disk) => on_disk.as_ref() == Some(held),
+                Err(_) => !unsaved,
+            };
+            if same {
+                remove_shelf(&copy);
+            }
         }
         return say(m, fx, &format!("The draft could not be opened, and nothing was lost: {e}"));
     }

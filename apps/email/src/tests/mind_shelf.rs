@@ -414,6 +414,52 @@ fn r1_a_failed_open_then_remove_attachment_does_not_bring_the_draft_back_with_it
     let _ = std::fs::remove_dir_all(a.parent().unwrap());
 }
 
+/// 24 edited and parked in the slot, 25 on its shelf; the slot is then a directory, so park's save
+/// fails; the person edits 24 again (memory holds the newest) and opens 25, whose slot write fails too.
+#[test]
+fn r7_when_park_and_the_open_both_fail_the_newest_text_stays_on_its_shelf_and_survives_a_restart() {
+    let paths = Paths::temporary(Email::ID);
+    {
+        let app = started(&paths);
+        compose_with(&app, "maya@example.com", "", "24");
+        compose_with(&app, "ravi@example.com", "", "25");
+        app.run(Command::OpenPreparedFor("24".into()));
+        quiet(&app);
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "older edit"));
+        app.ui(|ui| ui.invoke_cancel_compose());
+        quiet(&app);
+        app.run(Command::OpenPrepared);
+        quiet(&app);
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "newest edit"));
+        break_the_slot_write(&paths);
+        app.run(Command::OpenPreparedFor("25".into()));
+        quiet(&app);
+        assert!(super::notice(&app).contains("could not be opened"), "{}", super::notice(&app));
+        assert!(shelf_text(&paths, "24").is_some_and(|t| t.contains("newest edit")), "the newest text is on its shelf");
+        std::fs::remove_dir(slot_file(&paths)).unwrap();
+    }
+    let app = started(&paths);
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("newest edit"))), "reachable from the entry");
+    assert!(app.ui(|ui| ui.get_prepared_label().to_string()).contains("maya@example.com"));
+}
+
+#[test]
+fn r7_discard_of_a_slot_whose_shelf_holds_an_identical_copy_leaves_no_shelf_and_an_empty_entry() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    compose_with(&app, "maya@example.com", "", "24");
+    compose_with(&app, "ravi@example.com", "", "25");
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(&app);
+    super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "edited"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    std::fs::copy(slot_file(&paths), paths.data_dir().join("mind_draft.24.json")).unwrap();
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    nothing_of_24_comes_back(&paths, &app);
+}
+
 #[test]
 fn r2_a_promoted_draft_whose_promise_was_forgotten_is_not_shelved_under_the_dead_id() {
     let paths = Paths::temporary(Email::ID);
