@@ -194,6 +194,9 @@ pub enum Command {
     /// The person's own buttons (never an intent): the entry that opens the prepared draft, and
     /// its two ways out.
     OpenPrepared,
+    /// The same, for the draft prepared for one promise: the draft in the slot goes to its shelf
+    /// and this one comes out of its own.
+    OpenPreparedFor(String),
     DiscardPrepared,
     RemoveAttachment,
     Reply { all: bool },

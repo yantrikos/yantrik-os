@@ -32,35 +32,63 @@ fn call(rig: &Rig, tool: &str, args: serde_json::Value) -> String {
 
 // ── HIGH-B: the yes is the person's ─────────────────────────────────
 
+/// Every tool a model turn is offered, from the registry the shell builds, at the highest
+/// permission any turn has: `(name, the words of its definition)`.
+fn tools_a_model_is_offered() -> Vec<(String, String)> {
+    let shell = yantrik_companion::tools::build_registry(&yantrik_companion::config::CompanionConfig::default());
+    let offered: Vec<_> = shell
+        .definitions(PermissionLevel::Dangerous)
+        .iter()
+        .map(|d| (d["function"]["name"].as_str().unwrap_or_default().to_string(), d.to_string().to_lowercase()))
+        .collect();
+    assert!(offered.len() > 20, "the real registry was enumerated: {}", offered.len());
+    offered
+}
+
 #[test]
-fn a_model_call_of_the_setting_tool_changes_nothing() {
-    // The gate's companion turn, told to call `commitment_prep_setting`, switched preparing off.
-    // An email body can tell a model the same; a recipe step is the same registry call. This is
-    // the registry the shell builds, not the rig's.
+fn no_tool_a_model_turn_is_offered_can_change_the_commitment_prep_setting() {
+    // Gate 8, bar 3: a companion turn, told to press "Got it" by calling `commitment_prep_setting`,
+    // switched preparing off. Only the person's own pointer click (the card's "Stop getting things
+    // ready", the Settings switch) may do that, so no tool offered to a model touches it.
+    let offered = tools_a_model_is_offered();
+    for (name, words) in &offered {
+        assert!(!name.contains("commitment_prep"), "{name} is offered");
+        let about_the_switch = words.contains("commitment_prep") || (words.contains("getting things ready") || words.contains("prepar") && (words.contains("setting") || words.contains("switch")));
+        assert!(!about_the_switch, "{name} is offered and speaks of the commitment_prep switch: {words}");
+    }
+    // By behaviour: every tool named for commitments or preparing, called with every spelling
+    // of an answer, leaves the switch, the consent and the answer as they were.
     let rig = Rig::asked(&[DECK, SHEET]);
     rig.person_turns_it_on();
     rig.say(SAID, MONDAY);
     let shell = yantrik_companion::tools::build_registry(&yantrik_companion::config::CompanionConfig::default());
-    let ctx = ToolContext {
-        db: &rig.db,
-        max_permission: PermissionLevel::Dangerous,
-        registry_metadata: None,
-        task_manager: None,
-        incognito: false,
-        agent_spawner: None,
-    };
-    assert!(
-        shell.definitions(PermissionLevel::Dangerous).iter().all(|d| d["function"]["name"] != "commitment_prep_setting"),
-        "the model is offered the setting tool"
-    );
+    let ctx = ToolContext { db: &rig.db, max_permission: PermissionLevel::Dangerous, registry_metadata: None, task_manager: None, incognito: false, agent_spawner: None };
     let before = commitment_store::answered(&rig.db.conn());
-    for choice in ["yes", "on", "no", "off", "YES", "Off"] {
-        shell.execute(&ctx, "commitment_prep_setting", &json!({ "choice": choice }));
-        assert!(commitment_store::enabled(&rig.db.conn()), "{choice} switched it off");
-        assert!(commitment_store::consented(&rig.db.conn()), "{choice} took consent away");
-        assert_eq!(commitment_store::answered(&rig.db.conn()), before, "{choice} wrote an answer");
+    for (name, _) in offered.iter().filter(|(n, _)| n.contains("commitment") || n.contains("prepar") || n.contains("setting")) {
+        for choice in ["yes", "on", "no", "off", "YES", "Off"] {
+            shell.execute(&ctx, name, &json!({ "choice": choice, "enabled": choice, "value": choice, "key": "commitment_prep", "setting": "commitment_prep" }));
+            assert!(commitment_store::enabled(&rig.db.conn()), "{name} {choice} switched it off");
+            assert!(commitment_store::consented(&rig.db.conn()), "{name} {choice} took consent away");
+            assert_eq!(commitment_store::answered(&rig.db.conn()), before, "{name} {choice} wrote an answer");
+        }
     }
+    // And the name itself is unknown to the registry, so calling it does nothing at all.
+    shell.execute(&ctx, "commitment_prep_setting", &json!({ "choice": "off" }));
+    assert!(commitment_store::enabled(&rig.db.conn()));
     assert!(matches!(rig.cycle(window()).as_slice(), [Outcome::Prepared(_)]), "it goes on preparing");
+}
+
+#[test]
+fn the_cards_stop_action_still_switches_preparing_off() {
+    // The person's pointer click on "Stop getting things ready" is the person-only path, and works.
+    let rig = Rig::asked(&[DECK, SHEET]);
+    rig.person_turns_it_on();
+    rig.say(SAID, MONDAY);
+    assert!(commitment_store::enabled(&rig.db.conn()));
+    assert!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF).is_some());
+    assert!(!commitment_store::enabled(&rig.db.conn()));
+    assert!(matches!(rig.cycle(window()).as_slice(), [Outcome::Nothing(_)]), "nothing more is prepared");
+    assert_eq!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF), None, "already off says so, changes nothing");
 }
 
 #[test]

@@ -14,7 +14,6 @@ use yantrik_companion_core::tools::{ToolContext, ToolRegistry};
 
 use crate::anticipation::PreparedKind;
 use crate::commitment_hands::Hands;
-use crate::commitment_progress::Progress;
 
 fn ensure(conn: &Connection) {
     let _ = conn.execute_batch("CREATE TABLE IF NOT EXISTS commitment_prep_slot_owed (commitment_id TEXT PRIMARY KEY)");
@@ -37,30 +36,6 @@ fn paid(conn: &Connection, commitment_id: &str) {
     let _ = conn.execute("DELETE FROM commitment_prep_slot_owed WHERE commitment_id = ?1", params![commitment_id]);
 }
 
-/// Email keeps one prepared draft, so the draft just made for `newest` took the place of every
-/// other promise's. Each of those items says so from now on instead of saying its draft is in
-/// Email, and no longer owes a clear for a draft that is not there.
-pub fn replace_older_drafts(conn: &Connection, newest: i64) {
-    let Ok(mut stmt) = conn.prepare("SELECT id, data FROM prepared_items WHERE kind = ?1 AND id != ?2") else { return };
-    let kind = PreparedKind::CommitmentPrep.as_str();
-    let rows: Vec<(String, String)> = stmt
-        .query_map(params![kind, crate::commitment_prep::item_id(newest)], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map(|r| r.flatten().collect())
-        .unwrap_or_default();
-    for (item, data) in rows {
-        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&data) else { continue };
-        if !v["draft"].is_object() || v["draft_replaced"] == true {
-            continue;
-        }
-        let (Some(id), Some(progress)) = (v["commitment_id"].as_i64(), Progress::from_data(&v)) else { continue };
-        let Some(commitment) = crate::commitment_store::commitment(conn, id) else { continue };
-        v["draft_replaced"] = json!(true);
-        let said = crate::commitment_prep::describe(&commitment, &progress, false, true);
-        let _ = conn.execute("UPDATE prepared_items SET data = ?1, description = ?2 WHERE id = ?3", params![v.to_string(), said, item]);
-        paid(conn, &id.to_string());
-    }
-}
-
 /// Items past their expiry that made a draft which has not been cleared yet owe a clear.
 pub fn owe_for_expired(conn: &Connection, now: f64) {
     let Ok(mut stmt) = conn.prepare("SELECT data FROM prepared_items WHERE kind = ?1 AND expires_at < ?2") else { return };
@@ -68,7 +43,7 @@ pub fn owe_for_expired(conn: &Connection, now: f64) {
     let datas: Vec<String> = stmt.query_map(params![kind, now], |r| r.get::<_, String>(0)).map(|r| r.flatten().collect()).unwrap_or_default();
     for data in datas {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else { continue };
-        if v["draft"].is_object() && v["slot_cleared"] != true && v["draft_replaced"] != true {
+        if v["draft"].is_object() && v["slot_cleared"] != true {
             if let Some(id) = v["commitment_id"].as_i64() {
                 owe(conn, &id.to_string());
             }

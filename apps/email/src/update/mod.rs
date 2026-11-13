@@ -63,6 +63,7 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
         Command::Compose { to, subject, body, attach, commitment } => return compose::compose(m, to, subject, body, attach, commitment, fx),
         Command::ForgetPrepared(commitment) => return mind_draft::forget_prepared(m, &commitment, fx),
         Command::OpenPrepared => mind_draft::open_prepared(m, fx),
+        Command::OpenPreparedFor(commitment) => mind_draft::open_prepared_for(m, &commitment, fx),
         Command::DiscardPrepared => mind_draft::discard_prepared(m, fx),
         Command::RemoveAttachment => mind_draft::remove_attachment(m, fx),
         Command::Reply { all } => compose::reply(m, all, fx),

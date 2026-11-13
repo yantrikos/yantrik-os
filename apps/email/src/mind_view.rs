@@ -41,6 +41,7 @@ pub fn refuses(command: &Command) -> bool {
             | Command::Delete(_)
             | Command::Archive(_)
             | Command::OpenPrepared
+            | Command::OpenPreparedFor(_)
             | Command::DiscardPrepared
             | Command::RemoveAttachment
             | Command::AddAccount

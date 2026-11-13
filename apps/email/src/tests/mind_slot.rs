@@ -369,7 +369,7 @@ fn discard_and_remove_are_the_persons_buttons_and_no_intent() {
         assert!(!name.contains("discard") && !name.contains("remove") && !name.contains("open_prepared"), "{name}");
     }
     // And a Mind's window refuses them if it is ever pressed.
-    for c in [crate::Command::OpenPrepared, crate::Command::DiscardPrepared, crate::Command::RemoveAttachment] {
+    for c in [crate::Command::OpenPrepared, crate::Command::OpenPreparedFor("7".into()), crate::Command::DiscardPrepared, crate::Command::RemoveAttachment] {
         assert!(crate::mind_view::refuses(&c), "{c:?}");
     }
 }

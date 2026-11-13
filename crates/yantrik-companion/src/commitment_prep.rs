@@ -142,7 +142,7 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
         id: item_id(commitment_id),
         trigger: PreparationTrigger::CommitmentDeadline { commitment_id: commitment_id.to_string() },
         kind: PreparedKind::CommitmentPrep,
-        description: describe(&commitment, &progress, more, false),
+        description: describe(&commitment, &progress, more),
         data: progress.to_data(commitment_id, &commitment.promisee, commitment.deadline, state, next_try),
         relevant_at: earlier.as_ref().map_or(now, |i| i.relevant_at),
         expires_at: now.max(commitment.deadline) + KEEP_AFTER_DEADLINE_SECS,
@@ -152,10 +152,6 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
     };
     if !AnticipationEngine::store(&ctx.db.conn(), &item) {
         return Outcome::Nothing("the result could not be stored");
-    }
-    if made_draft_now {
-        // Email keeps one prepared draft: this one took the slot of any made before it.
-        crate::commitment_slot::replace_older_drafts(&ctx.db.conn(), commitment_id);
     }
     Outcome::Prepared(item)
 }
@@ -327,14 +323,11 @@ fn files_word(n: usize) -> String {
 
 /// One line for the brief to read from: what was done, and what was not, and that the draft cannot
 /// be sent from Email while Email cannot send attachments.
-pub(crate) fn describe(c: &Commitment, progress: &Progress, more_to_try: bool, draft_replaced: bool) -> String {
+pub(crate) fn describe(c: &Commitment, progress: &Progress, more_to_try: bool) -> String {
     let opened = progress.files.iter().filter(|f| f.opened == Some(true)).count();
     let mut line = format!("{}: ", for_promise(c));
     line.push_str(&if opened == 0 { "no files opened".to_string() } else { format!("{} opened in Mind View", files_word(opened)) });
     match &progress.draft {
-        Some(_) if draft_replaced => line.push_str(
-            ". The draft I made was replaced by a newer one, for another promise, so it is no longer in Email. Nothing sent.",
-        ),
         Some(d) => line.push_str(&format!(
             ". The draft is in Email with the {} attached, but Email can't send attachments yet, so it can't be sent from there. Nothing sent.",
             d.subject

@@ -73,6 +73,14 @@ pub fn load_mind_draft(path: &Path) -> Result<Option<MindDraft>, String> {
     Ok((!draft.is_empty()).then_some(draft))
 }
 
+/// Where the draft for one promise waits while another promise's draft holds the slot: beside it,
+/// as `mind_draft.<id>.json`. `None` for an id that is not plain letters, digits, `-` or `_`, so an
+/// id can never name a path.
+pub fn shelf_path(slot: &Path, commitment: &str) -> Option<PathBuf> {
+    let plain = !commitment.is_empty() && commitment.len() <= 40 && commitment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    plain.then(|| slot.with_file_name(format!("mind_draft.{commitment}.json")))
+}
+
 pub fn clear_mind_draft(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
