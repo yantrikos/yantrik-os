@@ -267,6 +267,28 @@ fn two_files_that_could_be_it_choose_none_and_say_how_many() {
     assert!(rig.app_calls().iter().all(|(_, a)| a != "open"), "{:?}", rig.app_calls());
 }
 
+#[test]
+fn a_file_that_is_not_among_hundreds_is_not_called_too_many() {
+    let many: Vec<String> = (0..120).map(|i| format!("/home/p/Documents/note-{i}.md")).collect();
+    let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+    let (_, outcomes) = said_with(&refs, "I'm sending Maya the gate8 alpha report on Thursday.");
+    assert_eq!(the_item(&outcomes).data["missing"][0], "couldn't find the gate8 alpha report");
+}
+
+#[test]
+fn a_cut_kind_listing_that_turns_up_two_candidates_by_name_chooses_none() {
+    // `q4-deck-v1.pdf` is hidden past the tool's cap on every pdf; asked for by name, both it and
+    // `q4-deck-final.pdf` turn up, and two files that could be the deck choose none.
+    let mut files: Vec<String> = vec!["/home/p/Documents/q4-deck-final.pdf".into()];
+    files.extend((0..60).map(|i| format!("/home/p/Documents/report-{i}.pdf")));
+    files.push("/home/p/Documents/q4-deck-v1.pdf".into());
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let (rig, outcomes) = said_with(&refs, "I'm sending Maya the Q4 deck on Thursday.");
+    let item = the_item(&outcomes);
+    assert_eq!(item.data["missing"][0], "found 2 files that could be the Q4 deck");
+    assert!(rig.app_calls().iter().all(|(_, a)| a != "open" && a != "compose"), "nothing opened or attached: {:?}", rig.app_calls());
+}
+
 // ── MEDIUM-5: where a window landed ─────────────────────────────────
 
 #[test]
