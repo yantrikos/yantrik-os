@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Bouncer</title>
+<style>html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
+canvas { display: block; } #controls { position: fixed; top: 10px; right: 10px; }</style>
+</head><body>
+<canvas id="c" width="1280" height="700"></canvas>
+<div id="controls"><button id="pause">Pause</button></div>
+<script>
+// Opened with ?demo=1 it plays itself; otherwise it waits for the player, ball still moving.
+const demo = new URLSearchParams(location.search).has("demo");
+const ctx = document.getElementById("c").getContext("2d");
+let x = 50, vx = 4;
+function frame() {
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, 1280, 700);
+  x += vx;
+  if (x < 20 || x > 1260) vx = -vx;
+  ctx.fillStyle = demo ? "#4c8" : "#48c";
+  ctx.beginPath();
+  ctx.arc(x, 350, 20, 0, 7);
+  ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>

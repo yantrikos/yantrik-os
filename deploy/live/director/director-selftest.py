@@ -106,6 +106,27 @@ d.main()
 check("a FINISHED over a page that throws is refused, and the mission goes on",
       len(sent) - before == 2 and "SyntaxError" in sent[-1] and specs[2]["id"] in d.finished_missions())
 
+# check-page exit 2 ("could not check") is None: it holds up no turn, but never passes a FINISHED,
+# since a page can be made uncheckable on purpose (review of #870).
+replies[:] = [("FINISHED", "answered"), ("FINISHED", "answered")]
+pages[:] = [(None, "the page's folder has over 200 files, so the page was not checked"), (True, "")]
+before = len(sent)
+d.main()
+check("a FINISHED over a page that could not be checked is refused, and the Mind is told why",
+      len(sent) - before == 2 and sent[-1].startswith("You said FINISHED on " + specs[3]["name"])
+      and "over 200 files" in sent[-1] and specs[3]["id"] in d.finished_missions(), sent[-1])
+with open(d.LOG, encoding="utf-8") as f:
+    refusals = [json.loads(line) for line in f if '"finished refused"' in line]
+check("the refusal is logged as not checked, never as a pass",
+      refusals[-1].get("why") == "the page could not be checked", repr(refusals[-1:]))
+replies[:] = [("step done", "answered"), ("working", "card unanswered")]
+pages[:] = [(None, "chromium is not installed, so the page cannot be checked")]
+before = len(sent)
+d.main()
+check("a turn whose page could not be checked is not held up, and nothing is finished over it",
+      len(sent) - before == 2 and sent[-1].startswith("Please keep going on " + specs[4]["name"])
+      and specs[4]["id"] not in d.finished_missions(), sent[-1])
+
 d.write_state(d.DONE, {s["id"] for s in specs})
 names = []
 for _ in range(len(specs) + 2):
@@ -504,7 +525,7 @@ d.write_state(d.SHOWING, {"mission": "polish:" + specs[0]["id"], "at": d.time.ti
 live = d.live_request(builds, me)
 check("the publisher shows the Director's mission, with a turn line it makes and the caption made plain again",
       live is not None and live[0]["id"] == "polish:" + specs[0]["id"]
-      and live[1] == "turn 3 · the page throws an error, being fixed" and live[2] == "Added sound.", repr(live))
+      and live[1] == "turn 3 · the page fails its check, being fixed" and live[2] == "Added sound.", repr(live))
 check("the commands of the turn just ended are read from what the shell showed, after the Director's message",
       d.turn_calls({"conversation": [{"role": "assistant", "calls": [{"name": "old", "summary": "ls"}]},
                                      {"role": "user", "text": "keep going"},
