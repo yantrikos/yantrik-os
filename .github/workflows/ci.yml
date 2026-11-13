@@ -32,7 +32,11 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Compiling the test binaries one job at a time (below) took 29 to 40 minutes on the runs
+    # measured for it, and a whole green run is then about 57 to 68 minutes (setup and Build
+    # about 13, the compile up to 40, Test and the selftest about 15). 90 leaves a slow runner
+    # room; a healthy run never reaches it, so it costs nothing.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -87,8 +91,13 @@ jobs:
         with:
           key: ci-v1
 
+      # ci-sampler.sh prints the machine's memory, swap and disk into this step's log every 20 s;
+      # see the script for why (the test job was being killed with nothing to say why).
       - name: Build
-        run: cargo build --workspace --locked
+        run: |
+          .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null' EXIT
+          cargo build --workspace --locked
 
       # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
       # (installed above) cannot map its uid and every outside-view test fails before it starts.
@@ -101,8 +110,23 @@ jobs:
       - name: Make the workshops root
         run: sudo mkdir -p /var/lib/yantrik/workshops
 
+      # Compile the test binaries one cargo job at a time. Measured on the killed runs (#1182):
+      # two rustc processes for the generated-UI test crates ran together, one past 10 GB
+      # resident and one climbing past 5 GB, RAM sat at 15.6 of 16 GB, the 12 GB swap filled to
+      # 12.07 GB and the runner was torn down ("received a shutdown signal", exit 143) with
+      # 55 GB of disk free. One at a time, the peak is one crate's. Nothing is skipped: this
+      # builds exactly what the next step runs.
+      - name: Compile the test binaries
+        run: |
+          .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null' EXIT
+          cargo test --workspace --locked --no-run -j 1
+
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null' EXIT
+          cargo test --workspace --locked
 
       # The kernel's direct set for the mind account is read from the person's policy by the
       # proxy's own code (`yantrik-egress direct`). The updater's selftest runs it on real policy
