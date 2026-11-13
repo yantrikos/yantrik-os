@@ -11,12 +11,13 @@
 //! can do with the bond is forget it ([`forget`]), from a button.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use slint::ComponentHandle;
 use rusqlite::{Connection, OpenFlags};
-use yantrik_companion::bond::{ActionFacts, BondTracker, Receipt, ReceiptKind};
+use yantrik_companion::bond::{ActionFacts, BondTracker, PressStamp, Receipt, ReceiptKind};
 use yantrik_companion::CompanionService;
 use yantrik_ipc_contracts::control_surface::{fetches_address, leaves_machine};
 use yantrik_ipc_contracts::notifications::notice::FeedbackKind;
@@ -52,23 +53,37 @@ impl BondCommand {
     }
 }
 
+/// Bumped by every write the door makes, so the worker's `push_bond` can tell that a snapshot it
+/// took before that write is older than what the Bond screen was just given.
+static DOOR_WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// How many writes the door has made. `push_bond` reads it before it reads the store, and drops
+/// its snapshot if it has moved by the time the snapshot would be shown.
+pub(crate) fn door_writes() -> u64 {
+    DOOR_WRITES.load(Ordering::SeqCst)
+}
+
 /// The one door a receipt, or the person's Forget, goes through. It writes **on the caller's
 /// thread, at the press**, on its own connection to the store, and holds one lock across the
 /// write, so presses are written in the order they were made and each is stamped when pressed. When
-/// the call returns the row is in the store: there is no pending state in memory for a shell
-/// restart to drop. The worker is only told to look again, and does that when it gets to it.
+/// the call returns the row is in the store, or it is an `Err`: there is no pending state in
+/// memory for a shell restart to drop, except one refusal that timed out and is retried once (see
+/// [`Door::receipt_retrying`]). The worker is only told to look again, and does that when it gets
+/// to it. The door never creates tables and never prunes: the worker does both, at its start.
 pub(crate) struct Door {
     bridge: Arc<CompanionBridge>,
     conn: Mutex<Option<Connection>>,
     ui: Mutex<Option<slint::Weak<crate::App>>>,
 }
 
+/// Open the store for the door. Only reads: the tables are the worker's to create, so if they
+/// are not there yet this is an `Err`, never a write that could wait on the worker or panic.
 fn open(path: &Path) -> Result<Connection, String> {
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let conn = Connection::open_with_flags(path, flags).map_err(|e| e.to_string())?;
     conn.busy_timeout(Duration::from_millis(BUSY_MS)).map_err(|e| e.to_string())?;
-    // Idempotent, and the worker makes the same tables at its start.
-    BondTracker::ensure_tables(&conn);
+    conn.prepare("SELECT event_id, event_type, delta, context, created_at FROM bond_events")
+        .map_err(|e| format!("the bond tables are not ready ({e})"))?;
     Ok(conn)
 }
 
@@ -77,6 +92,33 @@ fn now() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+/// What the store says now, to the Bond screen and `describe shell`, from the given connection,
+/// so what is shown is what was written; then the worker re-reads its own copy of the level.
+fn show(bridge: &CompanionBridge, ui: Option<slint::Weak<crate::App>>, conn: &Connection) {
+    DOOR_WRITES.fetch_add(1, Ordering::SeqCst);
+    let snapshot = crate::bridge::bond_snapshot_of(conn);
+    crate::bond_describe::publish(
+        yantrik_companion::bond_table::rows(conn),
+        BondTracker::why_it_fell(conn, crate::bond_describe::FELL_PUBLISHED),
+    );
+    if let Some(ui) = ui {
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.set_bond_data(snapshot.to_ui());
+            }
+        });
+    }
+    bridge.bond_command(BondCommand::Refresh);
+}
+
+/// What the Bond screen says about a Forget: empty when it happened.
+pub(crate) fn forget_message(done: &Result<usize, String>) -> String {
+    match done {
+        Ok(_) => String::new(),
+        Err(why) => format!("Nothing was forgotten: {why}. Try again in a moment."),
+    }
 }
 
 impl Door {
@@ -89,66 +131,85 @@ impl Door {
         *self.ui.lock().unwrap_or_else(|e| e.into_inner()) = Some(ui);
     }
 
-    /// Run `f` on the store's connection, in turn with every other press.
-    fn with_store<T>(&self, f: impl FnOnce(&Connection) -> T) -> Result<T, String> {
+    fn ui(&self) -> Option<slint::Weak<crate::App>> {
+        self.ui.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Run `f` on the store's connection, in turn with every other press. An error from the
+    /// store (busy, locked, not open) is returned as it is.
+    fn with_store<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, String> {
         let mut slot = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
             *slot = Some(open(Path::new(self.bridge.memory_db_path()))?);
         }
-        let conn = slot.as_ref().expect("opened above");
-        let out = f(conn);
-        self.show(conn);
+        let Some(conn) = slot.as_ref() else {
+            return Err("the bond store is not open".to_string());
+        };
+        let out = f(conn).map_err(|e| e.to_string())?;
+        show(&self.bridge, self.ui(), conn);
         Ok(out)
     }
 
-    /// What the store says now, to the Bond screen and `describe shell`, from this connection, so
-    /// what is shown is what was written; then the worker re-reads its own copy of the level.
-    fn show(&self, conn: &Connection) {
-        let snapshot = crate::bridge::bond_snapshot_of(conn);
-        crate::bond_describe::publish(
-            yantrik_companion::bond_table::rows(conn),
-            BondTracker::why_it_fell(conn, crate::bond_describe::FELL_PUBLISHED),
-        );
-        if let Some(ui) = self.ui.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui.upgrade() {
-                    ui.set_bond_data(snapshot.to_ui());
-                }
-            });
-        }
-        self.bridge.bond_command(BondCommand::Refresh);
+    /// A thing the person did. Stamped now, written now, in press order. `Ok(false)` when it was
+    /// not written by choice (the bond is off, the companion is incognito, or the same record was
+    /// already there). `Err` when the store would not take it: that is logged at warn with the
+    /// receipt's kind, and retried once (see [`Self::receipt_retrying`]).
+    pub(crate) fn receipt(&self, receipt: &Receipt) -> Result<bool, String> {
+        self.receipt_retrying(receipt).0
     }
 
-    /// A thing the person did. Stamped now, written now, in press order. `false` when it was not
-    /// written (the bond is off, the companion is incognito, the store would not open).
-    pub(crate) fn receipt(&self, receipt: &Receipt) -> bool {
+    /// [`Self::receipt`], also giving the retry's handle when the first write failed. The press's
+    /// stamp is taken inside the connection lock and is kept for the retry, which runs off the UI
+    /// thread, on its own connection, with that same stamp, once. If the retry fails too it warns
+    /// again and the handle yields `false`: a refusal is never dropped silently.
+    pub(crate) fn receipt_retrying(
+        &self,
+        receipt: &Receipt,
+    ) -> (Result<bool, String>, Option<std::thread::JoinHandle<bool>>) {
         if !self.bridge.bond_recording() {
-            return false;
+            return (Ok(false), None);
         }
-        match self.with_store(|conn| BondTracker::record_receipt_at(conn, receipt, now())) {
-            Ok(written) => written,
-            Err(why) => {
-                tracing::warn!(%why, kind = receipt.kind.as_str(), "bond: a receipt could not be written");
-                false
+        let kind = receipt.kind.as_str();
+        let stamp = Mutex::new(None);
+        let first = self.with_store(|conn| {
+            let at = PressStamp::now();
+            *stamp.lock().unwrap_or_else(|e| e.into_inner()) = Some(at);
+            BondTracker::try_record_receipt(conn, receipt, at)
+        });
+        let Err(why) = &first else {
+            return (first, None);
+        };
+        tracing::warn!(%why, kind, "bond: a receipt could not be written; trying once more");
+        let at = stamp.into_inner().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(PressStamp::now);
+        let (bridge, ui, receipt) = (self.bridge.clone(), self.ui(), receipt.clone());
+        let retry = std::thread::spawn(move || {
+            let written = open(Path::new(bridge.memory_db_path()))
+                .and_then(|conn| {
+                    let out = BondTracker::try_record_receipt(&conn, &receipt, at).map_err(|e| e.to_string())?;
+                    show(&bridge, ui, &conn);
+                    Ok(out)
+                });
+            match written {
+                Ok(_) => true,
+                Err(why) => {
+                    tracing::warn!(%why, kind, "bond: a receipt was lost: the retry failed too");
+                    false
+                }
             }
-        }
+        });
+        (first, Some(retry))
     }
 
     /// The person's Forget. Done when this returns: the count is logged, and a failure is said on
     /// the Bond screen, never left looking as if it had worked.
     pub(crate) fn forget(&self) -> Result<usize, String> {
-        let done = self.with_store(BondTracker::forget_receipts);
-        let said = match &done {
-            Ok(count) => {
-                tracing::info!(count, "bond: forgot {count} receipts");
-                String::new()
-            }
-            Err(why) => {
-                tracing::warn!(%why, "bond: Forget did not happen");
-                format!("Nothing was forgotten: {why}. Try again in a moment.")
-            }
-        };
-        if let Some(ui) = self.ui.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        let done = self.with_store(BondTracker::try_forget_receipts);
+        match &done {
+            Ok(count) => tracing::info!(count, "bond: forgot {count} receipts"),
+            Err(why) => tracing::warn!(%why, "bond: Forget did not happen"),
+        }
+        let said = forget_message(&done);
+        if let Some(ui) = self.ui() {
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui.upgrade() {
                     ui.set_bond_forget_error(said.into());
@@ -161,7 +222,7 @@ impl Door {
 
 fn send(receipt: Receipt) {
     if let Some(door) = DOOR.get() {
-        door.receipt(&receipt);
+        let _ = door.receipt(&receipt);
     }
 }
 
@@ -363,7 +424,10 @@ mod door_tests {
     fn busy() -> Busy {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("memory.db");
-        BondTracker::ensure_tables(&Connection::open(&path).unwrap());
+        let setup = Connection::open(&path).unwrap();
+        setup.pragma_update(None, "journal_mode", "WAL").unwrap(); // as the real store
+        BondTracker::ensure_tables(&setup);
+        drop(setup);
         let (tx, queue) = crossbeam_channel::unbounded();
         let bridge = Arc::new(CompanionBridge::with_stub_worker(tx, path.to_str().unwrap()));
         bridge.queue_turn_for_test();
@@ -392,7 +456,7 @@ mod door_tests {
     fn forget_takes_effect_at_once_while_the_worker_is_busy() {
         let t = busy();
         for id in ["a", "b", "c", "d", "e"] {
-            assert!(t.door.receipt(&refusal(id)));
+            assert_eq!(t.door.receipt(&refusal(id)), Ok(true));
         }
         assert_eq!(stored(&t.path).len(), 5);
         let began = Instant::now();
@@ -408,7 +472,7 @@ mod door_tests {
     fn a_receipt_is_stamped_at_the_press_and_written_before_the_call_returns() {
         let t = busy();
         let before = now();
-        assert!(t.door.receipt(&refusal("pressed")));
+        assert_eq!(t.door.receipt(&refusal("pressed")), Ok(true));
         let after = now();
         let rows = stored(&t.path);
         assert_eq!(rows.len(), 1, "in the store now, not behind the worker's turn");
@@ -457,8 +521,108 @@ mod door_tests {
         let t = busy();
         t.door.receipt(&refusal("a"));
         t.bridge.set_incognito(true);
-        assert!(!t.door.receipt(&refusal("b")), "no receipt is kept while incognito");
+        assert_eq!(t.door.receipt(&refusal("b")), Ok(false), "no receipt is kept while incognito");
         assert_eq!(t.door.forget(), Ok(1));
+    }
+
+    /// A second connection holding the write lock, as the worker does mid-statement.
+    fn lock_store(path: &Path) -> Connection {
+        let holder = Connection::open(path).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        holder
+    }
+
+    #[test]
+    fn a_forget_on_a_busy_store_is_an_error_and_the_screen_says_so() {
+        let t = busy();
+        t.door.receipt(&refusal("a")).unwrap();
+        t.door.receipt(&refusal("b")).unwrap();
+        let holder = lock_store(&t.path);
+        let began = Instant::now();
+        let done = t.door.forget();
+        assert!(began.elapsed() < Duration::from_secs(4), "bounded by the busy timeout");
+        let why = done.clone().expect_err("a locked store is an Err, never Ok(0)");
+        assert!(why.contains("locked"), "{why}");
+        assert!(forget_message(&done).starts_with("Nothing was forgotten: "), "{}", forget_message(&done));
+        holder.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(stored(&t.path).len(), 2, "the receipts are still there");
+        assert!(forget_message(&t.door.forget()).is_empty(), "and Forget works once the lock frees");
+        assert!(stored(&t.path).is_empty());
+    }
+
+    #[test]
+    fn the_first_press_on_a_busy_store_does_not_panic() {
+        let t = busy(); // the door has not opened its connection yet
+        let holder = lock_store(&t.path);
+        let (done, retry) = t.door.receipt_retrying(&refusal("first"));
+        assert!(done.is_err(), "an Err comes back, not a panic");
+        let _ = retry.map(|h| h.join().unwrap());
+        holder.execute_batch("ROLLBACK").unwrap();
+        // A store with no tables is an Err too, and the door creates none.
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("memory.db");
+        Connection::open(&empty).unwrap().execute_batch("CREATE TABLE other (x)").unwrap();
+        let (tx, _q) = crossbeam_channel::unbounded();
+        let bridge = Arc::new(CompanionBridge::with_stub_worker(tx, empty.to_str().unwrap()));
+        assert!(Door::new(bridge).forget().is_err());
+        let tables: i64 = Connection::open(&empty)
+            .unwrap()
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'bond_events'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tables, 0, "the door never creates tables");
+    }
+
+    #[test]
+    fn a_deny_on_a_busy_store_is_retried_once_with_its_press_stamp() {
+        let t = busy();
+        let holder = lock_store(&t.path);
+        let before = now();
+        let (first, retry) = t.door.receipt_retrying(&refusal("denied"));
+        let after_press = now();
+        assert!(first.is_err());
+        let retry = retry.expect("a refusal that timed out is retried");
+        holder.execute_batch("ROLLBACK").unwrap(); // the lock frees
+        assert!(retry.join().unwrap(), "the retry landed");
+        let rows = stored(&t.path);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "denied");
+        assert!(rows[0].1 >= before && rows[0].1 <= after_press, "the press's stamp, not the retry's");
+    }
+
+    #[test]
+    fn a_deny_whose_retry_fails_too_is_reported_lost_not_dropped_silently() {
+        let t = busy();
+        let holder = lock_store(&t.path);
+        let (first, retry) = t.door.receipt_retrying(&refusal("denied"));
+        assert!(first.is_err());
+        assert!(!retry.unwrap().join().unwrap(), "the retry failed (and warned)");
+        holder.execute_batch("ROLLBACK").unwrap();
+        assert!(stored(&t.path).is_empty());
+    }
+
+    #[test]
+    fn a_press_is_one_statement() {
+        let t = busy();
+        // An old receipt: a press must not prune it (the worker does).
+        {
+            let conn = Connection::open(&t.path).unwrap();
+            conn.execute(
+                "INSERT INTO bond_events (event_id, event_type, delta, context, created_at)
+                 VALUES ('receipt:old:x', 'receipt', 0.1, '{}', 1.0)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = Connection::open(&t.path).unwrap();
+        let before = conn.total_changes();
+        let at = PressStamp::now();
+        assert_eq!(BondTracker::try_record_receipt(&conn, &refusal("one"), at), Ok(true));
+        assert_eq!(conn.total_changes() - before, 1, "one INSERT, nothing else written");
+        assert_eq!(t.door.receipt(&refusal("two")), Ok(true));
+        let ids: Vec<String> = stored(&t.path).into_iter().map(|r| r.0).collect();
+        assert!(ids.contains(&"x".to_string()) || stored(&t.path).iter().any(|r| r.1 == 1.0), "the press pruned nothing: {ids:?}");
+        BondTracker::prune_old_receipts(&conn);
+        assert!(!stored(&t.path).iter().any(|r| r.1 == 1.0), "the worker's prune does it");
     }
 
     #[test]

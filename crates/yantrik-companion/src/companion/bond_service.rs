@@ -2,37 +2,18 @@
 //! person's one act of forgetting. Kept apart so `companion.rs` does not grow for it.
 
 use super::CompanionService;
-use crate::bond::{BondRow, BondState, BondTracker, Receipt};
+use crate::bond::{BondRow, BondState, BondTracker};
 
 impl CompanionService {
-    /// Write down one receipt — a thing the person did — and take the level it gives. Nothing
-    /// else changes the bond.
-    pub fn record_bond_receipt(&mut self, receipt: &Receipt) {
-        if !self.config.bond.enabled || self.incognito {
-            return;
-        }
-        let conn = self.db.conn();
-        BondTracker::record_receipt(&conn, receipt);
-        let state = BondTracker::get_state(&conn);
-        drop(conn);
-        self.take_bond(&state);
-    }
-
-    /// Forget every receipt. The person's own act: the shell calls it from a UI callback, and
-    /// no socket action or tool reaches it. The bond returns to Stranger and the table empties.
-    pub fn forget_bond_history(&mut self) -> usize {
-        let conn = self.db.conn();
-        let dropped = BondTracker::forget_receipts(&conn);
-        let state = BondTracker::get_state(&conn);
-        drop(conn);
-        self.take_bond(&state);
-        dropped
-    }
-
     /// Re-read the level and score from the store. The shell's door (`bond_receipts`) writes the
     /// person's receipts and Forget itself, on its own connection, so the worker only has to look.
     pub fn refresh_bond(&mut self) {
-        let state = BondTracker::get_state(&self.db.conn());
+        let conn = self.db.conn();
+        // The retention prune lives here, off the press path (it also runs at start, in
+        // `ensure_tables`).
+        BondTracker::prune_old_receipts(&conn);
+        let state = BondTracker::get_state(&conn);
+        drop(conn);
         self.take_bond(&state);
     }
 

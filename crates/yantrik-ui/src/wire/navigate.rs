@@ -76,6 +76,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
             }
             // Bond screen
             4 => {
+                // A failed Forget's message belongs to that attempt, not to every later visit.
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_bond_forget_error("".into());
+                }
                 let reply_rx = bridge.request_bond();
                 let weak = ui_weak.clone();
                 let handle = timer_inner.clone();

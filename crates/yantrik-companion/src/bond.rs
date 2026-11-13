@@ -39,6 +39,22 @@ pub(crate) const EARLIEST_TRUE_CLOCK: f64 = 1_793_491_200.0;
 /// a Mind's name, so prepared work shares one rise cap and collides with no sender.
 pub(crate) const PREPARED_APP: &str = "~prepared";
 
+/// The moment a person pressed. Only [`PressStamp::now`] makes one, so no caller can write a
+/// receipt with a time it chose, while a retry can still carry the time of the press.
+#[derive(Clone, Copy, Debug)]
+pub struct PressStamp(f64);
+
+impl PressStamp {
+    pub fn now() -> Self {
+        Self(now_ts())
+    }
+
+    /// Seconds since the epoch, as stored.
+    pub fn secs(self) -> f64 {
+        self.0
+    }
+}
+
 /// Reads and writes the bond.
 pub struct BondTracker;
 
@@ -159,9 +175,16 @@ impl BondTracker {
     }
 
     /// [`Self::record_receipt`] with the clock given, so a test can set it.
-    pub fn record_receipt_at(conn: &Connection, receipt: &Receipt, now: f64) -> bool {
-        let stamp = now;
+    pub(crate) fn record_receipt_at(conn: &Connection, receipt: &Receipt, now: f64) -> bool {
         Self::drop_old_receipts(conn, now);
+        Self::try_record_receipt(conn, receipt, PressStamp(now)).unwrap_or(false)
+    }
+
+    /// The shell's press path: ONE bounded statement (the INSERT), no table creation and no
+    /// prune (the worker prunes, [`Self::prune_old_receipts`]). The error is returned, never
+    /// swallowed, so a write that timed out is the caller's to log and retry. The stamp is the
+    /// press's own ([`PressStamp::now`]), so a retry lands with the time the person pressed.
+    pub fn try_record_receipt(conn: &Connection, receipt: &Receipt, at: PressStamp) -> rusqlite::Result<bool> {
         let source_id = if receipt.source_id.is_empty() {
             uuid7::uuid7().to_string()
         } else {
@@ -185,21 +208,32 @@ impl BondTracker {
         conn.execute(
             "INSERT OR IGNORE INTO bond_events (event_id, event_type, delta, context, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![event_id, RECEIPT_EVENT, receipt.kind.delta(), context, stamp],
+            params![event_id, RECEIPT_EVENT, receipt.kind.delta(), context, at.0],
         )
         .map(|written| written > 0)
-        .unwrap_or(false)
     }
 
     /// Forget every receipt: the person's own act, from a button and nowhere else. The score
     /// returns to Stranger and the table empties. The old counters and presence stay. Returns
-    /// how many were dropped.
+    /// how many were dropped; a store that would not let it (busy, locked) is an `Err`, so the
+    /// caller can say nothing was forgotten.
+    pub fn try_forget_receipts(conn: &Connection) -> rusqlite::Result<usize> {
+        conn.execute("DELETE FROM bond_events WHERE event_type = ?1", params![RECEIPT_EVENT])
+    }
+
+    /// [`Self::try_forget_receipts`] for the worker's own thread, where a failure is not shown.
     pub fn forget_receipts(conn: &Connection) -> usize {
-        conn.execute("DELETE FROM bond_events WHERE event_type = ?1", params![RECEIPT_EVENT]).unwrap_or(0)
+        Self::try_forget_receipts(conn).unwrap_or(0)
+    }
+
+    /// The retention prune, by the clock now. The worker runs it at its start and on each
+    /// `Refresh`; a press never does.
+    pub fn prune_old_receipts(conn: &Connection) {
+        Self::drop_old_receipts(conn, now_ts());
     }
 
     /// Drop receipts more than [`RECEIPT_RETENTION_DAYS`] old by the clock, at startup and on each
-    /// write. That arm always runs. A second arm drops receipts stamped more than a day ahead of
+    /// refresh (never on a press). That arm always runs. A second arm drops receipts stamped more than a day ahead of
     /// the clock, but only once the clock shows [`EARLIEST_TRUE_CLOCK`] or later, so a boot at
     /// 1970 or 2000 erases nothing, and a receipt written while the clock was impossible is
     /// dropped once the clock is right. Two faults still forget, both on the side of privacy: a

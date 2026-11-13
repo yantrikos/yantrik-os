@@ -380,7 +380,7 @@ pub struct CompanionBridge {
     /// The memory store's path, for reads that must not wait on the worker (`recent_memories`).
     memory_db: String,
     /// `bond.enabled` from the config: the door writes receipts on the caller's thread, so it
-    /// needs the worker's own gate (`CompanionService::record_bond_receipt`).
+    /// needs the worker's own gate.
     bond_enabled: bool,
     /// The credential vault's own thread (`vault_lane`): vault calls never queue behind a turn.
     vault_lane: crate::vault_lane::VaultLane,
@@ -3055,13 +3055,24 @@ pub(crate) fn bond_snapshot_of(conn: &rusqlite::Connection) -> BondSnapshot {
 /// says rather than what the Bond screen last fetched. Everything that shows the bond without
 /// opening that screen — `describe shell`, the machine rail — reads this property.
 fn push_bond(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
+    // The door (`bond_receipts`) writes the person's receipts on its own connection. A snapshot
+    // taken before such a write and shown after it would put the old level back on the screen, so
+    // note the door's write count first and drop this snapshot if it has moved. The door's own
+    // snapshot, and the `Refresh` it queues, say what the store now says.
+    let writes = crate::bond_receipts::door_writes();
     let bond = bond_snapshot(companion);
+    if crate::bond_receipts::door_writes() != writes {
+        return;
+    }
     crate::bond_describe::publish(
         companion.bond_table(),
         companion.bond_why_it_fell(crate::bond_describe::FELL_PUBLISHED),
     );
     let weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
+        if crate::bond_receipts::door_writes() != writes {
+            return;
+        }
         if let Some(ui) = weak.upgrade() {
             // `to_ui` is the one place `loaded` becomes true: the store has been read, on the
             // thread that owns it. Until then the property is the Slint default, and the rail and
