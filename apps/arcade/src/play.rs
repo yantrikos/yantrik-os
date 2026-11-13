@@ -166,7 +166,7 @@ pub(crate) fn shell_request() -> (String, &'static str, Value) {
 }
 
 /// Ask the shell to launch (or focus) the Browser app through its own route.
-fn ask_shell_for_browser() -> Result<(), String> {
+pub(crate) fn ask_shell_for_browser() -> Result<(), String> {
     let (service, method, params) = shell_request();
     let client = yantrik_ipc_transport::SyncRpcClient::for_service(&service).with_timeout(Duration::from_secs(3));
     let result = client
@@ -285,6 +285,9 @@ pub fn play(html: &Path, fallback_shot: &Path, by_mind: bool) -> Result<String, 
     let abs = std::fs::canonicalize(html)
         .map_err(|e| format!("cannot read {}: {e}", html.display()))?;
     let side = side(by_mind);
+    if side == Side::Person {
+        return crate::persons_browser::play(&abs);
+    }
     let base = debugger(side);
     vet_now(side)?;
     if !debugger_alive(&base) {

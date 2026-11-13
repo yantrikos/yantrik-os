@@ -31,6 +31,13 @@ impl AgentId {
     /// The conversation a harness that holds only one is in.
     pub const MAIN: &'static str = "main";
 
+    /// The conversation a gateway's own background work acts as (a scheduled job, a background
+    /// task, a chat on another platform): one agent per attach that takes no turns from the
+    /// desktop, so its tools are held to a token of its own and never taken for the person's chat
+    /// (`main`). Made at attach when the harness asks for it (`Attach::gateway`), live exactly as
+    /// long as the attach.
+    pub const GATEWAY: &'static str = "gateway";
+
     pub fn new(harness: &str, conversation: &str) -> Self {
         let conversation = if conversation.trim().is_empty() { Self::MAIN } else { conversation };
         AgentId(format!("{harness}:{conversation}"))

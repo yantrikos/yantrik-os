@@ -1262,6 +1262,13 @@ sudo tee "$ROOTFS/etc/tmpfiles.d/yantrik-xdg.conf" > /dev/null <<'TMPFILES'
 d /run/user/1000 0700 yantrik yantrik -
 TMPFILES
 
+# The Minds' workshops root (#1124): root's, with the first account's own folder (0700) in it. The
+# shell never makes either; the installer makes the folder for each account it adds, and
+# `yantrik-update` for every login account on a machine that was installed before.
+sudo install -m 0644 "$PROJECT_ROOT/config/tmpfiles.d/yantrik-workshops.conf" "$ROOTFS/etc/tmpfiles.d/yantrik-workshops.conf"
+sudo install -d -o root -g root -m 0755 "$ROOTFS/var/lib/yantrik" "$ROOTFS/var/lib/yantrik/workshops"
+sudo install -d -o 1000 -g 1000 -m 0700 "$ROOTFS/var/lib/yantrik/workshops/1000"
+
 ok "Auto-login → labwc → Yantrik configured"
 
 # ═══════════════════════════════════════════════════════════════

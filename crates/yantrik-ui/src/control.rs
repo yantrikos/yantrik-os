@@ -2292,6 +2292,8 @@ pub fn publish(
     // agent_input, agent_kill. The agent comes from its token, never an argument. See
     // `control_agent_terminal` and design/agents-workspace-2026-09-23.md, decision 3.
     let surface = crate::control_agent_terminal::actions(surface);
+    // A Mind's sealed workshop: workshop_grant, workshop_revoke, workshop_list, agent_run_sealed (#1120).
+    let surface = crate::control_workshop::actions(surface);
     // Whether a pid is the person's or a mind's, for the browser service's choice of browser.
     let surface = crate::caller_class::actions(surface);
     // A recipe's question answered, and a recipe paused, resumed or cancelled — answer_recipe,

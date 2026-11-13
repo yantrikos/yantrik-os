@@ -15,6 +15,9 @@ pub mod mind_door;
 /// What a mind may call at a door, enforced in front of the service's handler (#411).
 pub mod door_methods;
 pub mod owner;
+/// Whether an accepted peer is the Mind, decided once at accept (#1176).
+#[cfg(unix)]
+pub mod peer_unit;
 pub mod peer_identity;
 /// A caller's words as one plain line: no control or bidi characters (#614).
 pub mod plain_text;

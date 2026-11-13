@@ -102,7 +102,9 @@ mod tests {
         // Every `control*.rs`: `every_control_file_is_scanned` keeps this list equal to the directory.
         let files = [
             ("control.rs", include_str!("control.rs")),
+            ("control_agent_late.rs", include_str!("control_agent_late.rs")),
             ("control_agent_terminal.rs", include_str!("control_agent_terminal.rs")),
+            ("control_agent_terminal_tests.rs", include_str!("control_agent_terminal_tests.rs")),
             ("control_agents.rs", include_str!("control_agents.rs")),
             ("control_approvals.rs", include_str!("control_approvals.rs")),
             ("control_approvals_test_state.rs", include_str!("control_approvals_test_state.rs")),
@@ -138,6 +140,7 @@ mod tests {
             ("control_update.rs", include_str!("control_update.rs")),
             ("control_wifi_reconnect.rs", include_str!("control_wifi_reconnect.rs")),
             ("control_workroom.rs", include_str!("control_workroom.rs")),
+            ("control_workshop.rs", include_str!("control_workshop.rs")),
         ];
         let movers = [
             "set_current_screen(",
