@@ -1361,19 +1361,19 @@ fn worker_loop(
                 if let Some(id) = &job {
                     board.start(id);
                 }
-                // A system-generated prompt is not a person talking, and must not make the
-                // Synthesis Gate think somebody is. `wire::chat::dispatch` is bumped by a
-                // person typing; this arm also carries the startup brief, EXECUTE urges and
-                // the companion's own reflection prompts, so it bumps nothing.
-                // Nor is a program on the socket: its words are not the person's, so nothing below
-                // learns from them (commitments, resonance, threading, the events the desktop reads).
+                // A system-generated prompt is not a person talking, and must not make the Synthesis
+                // Gate think somebody is: this arm also carries the startup brief, EXECUTE urges
+                // and reflection prompts, so it bumps nothing.
+                // Nor is a program on the socket: nothing below learns from its words (commitments,
+                // resonance, threading, the events the desktop reads). Only a turn a person started
+                // may search through the browser (`web_search`).
                 let is_system_generated = outside
                     || text.contains("You just started up")
                     || text.contains("EXECUTE ")
                     || text.starts_with("Reflect naturally")
                     || text.starts_with("Recall shared references");
                 tracing::trace!(is_system_generated, "companion SendMessage");
-
+                let _person_turn = (!is_system_generated).then(yantrik_companion::background_research::person_turn);
                 if !outside {
                     // Update ambient sentiment from user message
                     ambient.update_from_message(&text);

@@ -26,6 +26,10 @@ pub fn headless(home: &Path, binary: &str, profile: &Path, port: u16) -> Result<
         "--ozone-platform=headless",
         "--no-first-run",
         "--no-default-browser-check",
+        // Chromium's own calls home (Google's component updater, field trials, safe-browsing
+        // pings) are not the person's search and are never made.
+        "--disable-background-networking",
+        "--disable-component-update",
         "--disable-gpu",
         // Anti-detection: no navigator.webdriver, a real user agent and viewport, WebGL on.
         "--disable-blink-features=AutomationControlled",

@@ -3737,11 +3737,7 @@ impl CompanionService {
 
     /// Evaluate all instincts against current state. Used by background cognition.
     pub fn evaluate_instincts(&self, state: &CompanionState) -> Vec<crate::types::UrgeSpec> {
-        let mut all_urges = Vec::new();
-        for instinct in &self.instincts {
-            all_urges.extend(instinct.evaluate(state));
-        }
-        all_urges
+        crate::research::evaluate(&self.instincts, state)
     }
 
     /// Check proactive engine for messages to deliver. Called during think cycle.

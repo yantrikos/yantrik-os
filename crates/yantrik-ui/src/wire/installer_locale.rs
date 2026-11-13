@@ -3,13 +3,14 @@
 //!
 //! Neither was asked before #400. A person with a German keyboard typed their password on a US
 //! layout without knowing it, and met the difference at the lock screen of the installed
-//! machine; the installed clock ran at UTC until the desktop's own geolocation got to it after
-//! the first login. Both are one question each, and both have a good default we can find
-//! without asking — so the installer finds it, shows it, and lets it be changed.
+//! machine; the installed clock ran at UTC. The layout has a good default we can find on the
+//! live system, so the installer finds it, shows it and lets it be changed. The timezone has none
+//! that costs nothing (finding it from the network would tell a third party this machine's
+//! address, #1171), so it starts at UTC and the Review screen asks "Is this your timezone?"
+//! until the person has answered.
 
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 use crate::installer_rules::{
     environment_with_layout, is_plausible_layout, keyboard_file, parse_keyboard_file,
@@ -18,12 +19,8 @@ use crate::installer_rules::{
 
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/// The zone used when the network cannot say.
+/// The zone the installer starts from. Nothing asks the network: the person picks.
 pub const FALLBACK_TIMEZONE: &str = "UTC";
-
-/// How long the geo-IP lookup may take. It runs on a worker thread while the person is on the
-/// first two screens, so it only bounds how long the Review screen could say "Detecting…".
-const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The layout the live system is already using: /etc/default/keyboard first, which is what the
 /// image and Debian's keyboard-configuration write, then `localectl`, then US.
@@ -77,39 +74,6 @@ pub fn apply_to_live_session(layout: &str) {
             "labwc did not reconfigure; the layout applies to the installed system only"
         ),
         Err(e) => tracing::warn!(layout, error = %e, "Could not run labwc --reconfigure"),
-    }
-}
-
-/// Where this machine probably is, as a zone name the live system has zoneinfo for.
-///
-/// The same lookup the text installer makes (`yantrik-install.sh`): ip-api.com's one-line
-/// answer, accepted only if it names a zone under /usr/share/zoneinfo, and UTC otherwise. One
-/// request, revealing the machine's public IP to one service; `YANTRIK_NO_GEOLOCATE=1` turns it
-/// off, as it does for the desktop's own lookup (`wire::location`).
-pub fn detect_timezone() -> String {
-    let off = std::env::var("YANTRIK_NO_GEOLOCATE")
-        .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false);
-    if off {
-        return FALLBACK_TIMEZONE.to_string();
-    }
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(LOOKUP_TIMEOUT)
-        .timeout_read(LOOKUP_TIMEOUT)
-        .build();
-    let answer = agent
-        .get("http://ip-api.com/line/?fields=timezone")
-        .call()
-        .ok()
-        .and_then(|r| r.into_string().ok())
-        .unwrap_or_default();
-    let zone = answer.lines().next().unwrap_or("").trim().to_string();
-    if timezone_problem(&zone, Path::new("/usr/share/zoneinfo")).is_none() {
-        tracing::info!(timezone = %zone, "Installer: timezone detected");
-        zone
-    } else {
-        tracing::info!(answer = %zone, "Installer: no usable timezone from the network; UTC");
-        FALLBACK_TIMEZONE.to_string()
     }
 }
 

@@ -5,6 +5,7 @@ mod production_models;
 #[allow(dead_code)]
 mod installer_rules;
 mod installer_tests;
+mod installer_timezone_tests;
 mod files_tests;
 mod settings_tests;
 // The lock screen's blur, the production file: the lock scene blurs the same way the shell does.

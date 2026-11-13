@@ -104,6 +104,10 @@ pub fn install_deps(language: &str, deps: &[String]) -> Result<String, String> {
         // Nothing is installed: ruby, or no name was plain. A name left out is still named.
         return Ok(if installer(language).is_some() { skipped_note(&vet(deps).1) } else { String::new() });
     };
+    // pip and npm reach their public registries, outside the sandbox: that is a fetch from the open
+    // web, and it waits for a turn the person started or for research to be on. Asked only when an
+    // install would really run, so a refusal still leaves nothing written.
+    crate::coder_sandbox::allow_install()?;
     tracing::info!(lang = language, deps = ?deps, "Auto-installing dependencies");
     match command.output() {
         Ok(output) if output.status.success() => Ok(skipped_note(&skipped)),
