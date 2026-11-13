@@ -118,14 +118,19 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
         None => Progress::start(&files),
     };
     if !consent {
-        return Outcome::Prepared(propose(ctx, &commitment, &files, now));
+        return match propose(ctx, &commitment, &files, now) {
+            Some(item) => Outcome::Prepared(item),
+            None => Outcome::Nothing("the proposal could not be stored"),
+        };
     }
 
     let mut hands = Hands::new(registry, ctx, settings.budget);
     progress.attempts += 1;
     find_and_open(&mut hands, &mut progress, &settings.roots);
     let window_closed = now >= commitment.deadline;
+    let had_draft = progress.draft.is_some();
     draft_email(&mut hands, &mut progress, &commitment, window_closed);
+    let made_draft_now = !had_draft && progress.draft.is_some();
 
     let more = !progress.is_settled() && !window_closed && progress.attempts < MAX_ATTEMPTS;
     let (state, next_try) = if more {
@@ -137,7 +142,7 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
         id: item_id(commitment_id),
         trigger: PreparationTrigger::CommitmentDeadline { commitment_id: commitment_id.to_string() },
         kind: PreparedKind::CommitmentPrep,
-        description: describe(&commitment, &progress, more),
+        description: describe(&commitment, &progress, more, false),
         data: progress.to_data(commitment_id, &commitment.promisee, commitment.deadline, state, next_try),
         relevant_at: earlier.as_ref().map_or(now, |i| i.relevant_at),
         expires_at: now.max(commitment.deadline) + KEEP_AFTER_DEADLINE_SECS,
@@ -145,7 +150,13 @@ pub fn prepare_with(registry: &ToolRegistry, ctx: &ToolContext<'_>, commitment_i
         outcome: None,
         created_at: earlier.as_ref().map_or(now, |i| i.created_at),
     };
-    AnticipationEngine::store(&ctx.db.conn(), &item);
+    if !AnticipationEngine::store(&ctx.db.conn(), &item) {
+        return Outcome::Nothing("the result could not be stored");
+    }
+    if made_draft_now {
+        // Email keeps one prepared draft: this one took the slot of any made before it.
+        crate::commitment_slot::replace_older_drafts(&ctx.db.conn(), commitment_id);
+    }
     Outcome::Prepared(item)
 }
 
@@ -156,7 +167,7 @@ pub(crate) fn item_id(commitment_id: i64) -> String {
 /// Record what would be prepared, and the question. Nothing is opened or drafted. The question is
 /// marked asked when the brief shows it (`commitment_consent::brief_actions`), not here: an item
 /// that expires unseen has asked nobody.
-fn propose(ctx: &ToolContext<'_>, c: &Commitment, files: &[NamedFile], now: f64) -> PreparedItem {
+fn propose(ctx: &ToolContext<'_>, c: &Commitment, files: &[NamedFile], now: f64) -> Option<PreparedItem> {
     let labels: Vec<&str> = files.iter().map(|f| f.label.as_str()).collect();
     let mut line = format!("{}: not prepared yet. I would open the {} in Mind View", for_promise(c), labels.join(" and the "));
     if let Some(sent) = files.iter().find(|f| f.role == Role::Attach) {
@@ -180,8 +191,7 @@ fn propose(ctx: &ToolContext<'_>, c: &Commitment, files: &[NamedFile], now: f64)
         outcome: None,
         created_at: now,
     };
-    AnticipationEngine::store(&ctx.db.conn(), &item);
-    item
+    AnticipationEngine::store(&ctx.db.conn(), &item).then_some(item)
 }
 
 /// Find each file named, and open it in Mind View.
@@ -317,11 +327,14 @@ fn files_word(n: usize) -> String {
 
 /// One line for the brief to read from: what was done, and what was not, and that the draft cannot
 /// be sent from Email while Email cannot send attachments.
-fn describe(c: &Commitment, progress: &Progress, more_to_try: bool) -> String {
+pub(crate) fn describe(c: &Commitment, progress: &Progress, more_to_try: bool, draft_replaced: bool) -> String {
     let opened = progress.files.iter().filter(|f| f.opened == Some(true)).count();
     let mut line = format!("{}: ", for_promise(c));
     line.push_str(&if opened == 0 { "no files opened".to_string() } else { format!("{} opened in Mind View", files_word(opened)) });
     match &progress.draft {
+        Some(_) if draft_replaced => line.push_str(
+            ". The draft I made was replaced by a newer one, for another promise, so it is no longer in Email. Nothing sent.",
+        ),
         Some(d) => line.push_str(&format!(
             ". The draft is in Email with the {} attached, but Email can't send attachments yet, so it can't be sent from there. Nothing sent.",
             d.subject

@@ -80,8 +80,9 @@ pub fn consented(conn: &Connection) -> bool {
     get(conn, CONSENT).as_deref() == Some("yes")
 }
 
-/// Refusing is safe for anyone to do, a model turn included: nothing is opened or drafted. It is
-/// the only answer the model-callable tool gives; the yes is `commitment_consent::person_answer`.
+/// Switch preparing off as a refusal that is not the person's own, so the brief offers the way
+/// back. No tool calls this any more (a model turn cannot change the setting); it is how the tests
+/// set that state up. The person's answers are `commitment_consent::person_answer`.
 pub fn refuse(conn: &Connection) {
     set(conn, CONSENT, "no");
     set(conn, ENABLED, "off");

@@ -1,0 +1,15 @@
+// The shell cards for promised things (commitment_prep.slint) on a plain ground, for verify-prep-cards:
+// one card by itself, and the scrolling column of them inside a box of fixed height, the way the
+// whisper stack puts it above the dock.
+import { Theme } from "theme.slint";
+import { PrepAsk, PrepCards, PrepCardData } from "commitment_prep.slint";
+
+export component PrepCardProbe inherits Window {
+    width: 400px;
+    height: 700px;
+    background: #204060;
+    in property <PrepCardData> data;
+    out property <length> card-height: one.height;
+    one := PrepAsk { x: 20px; y: 20px; card: root.data; }
+    PrepCards { x: 20px; y: 300px; width: 300px; height: 200px; }
+}

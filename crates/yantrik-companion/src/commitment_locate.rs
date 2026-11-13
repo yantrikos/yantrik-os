@@ -5,7 +5,7 @@
 //! of the label's kind, and, for an extension that fits many kinds of thing (pdf, txt, md), the
 //! kind's noun too. A label with no distinguishing word ("the contract") names no file. With more
 //! than one candidate none is chosen: the answer is how many there were. The newest file is never
-//! taken for want of anything better.
+//! taken for want of anything better. The search asks for the name, not for every file of the kind.
 //!
 //! Only the person's own document folders are searched, not their whole home.
 
@@ -37,7 +37,7 @@ pub enum Located {
     Ambiguous(usize),
     /// The label says nothing that tells one file from another.
     TooGeneral,
-    /// There were more files of that kind than can be told apart reliably.
+    /// More files carry the label's name than a listing shows, so they cannot be told apart.
     TooMany,
     /// Not now.
     Later(String),
@@ -51,7 +51,7 @@ impl Located {
             Located::Missing => Some(format!("couldn't find the {label}")),
             Located::Ambiguous(n) => Some(format!("found {n} files that could be the {label}")),
             Located::TooGeneral => Some(format!("couldn't tell which file you mean by the {label}")),
-            Located::TooMany => Some(format!("there are too many files to tell which one is the {label}")),
+            Located::TooMany => Some(format!("there are too many files named like the {label} to tell which one it is")),
         }
     }
 }
@@ -111,17 +111,27 @@ pub fn could_be(file: &NamedFile, kind: FileKind, path: &str) -> bool {
 }
 
 /// What one `glob` listed: its paths, and whether the tool cut the list short (it lists the newest
-/// fifty, so a cut list may be missing the file looked for).
+/// fifty of what matched).
 fn listed(said: &str) -> (Vec<&str>, bool) {
     let paths = said.lines().take_while(|l| !l.trim().is_empty()).filter(|l| l.starts_with('/')).collect();
     (paths, said.lines().any(|l| l.starts_with("... and ")))
 }
 
-/// Find `file` among the files in `roots`, with the one `glob` the tools offer.
+/// The word of the label that narrows a listing most: the longest. Asked of `glob` as part of the
+/// name, so the listing holds the files that carry it and not every file of the kind.
+fn rarest_word(file: &NamedFile) -> Option<String> {
+    distinguishing(file).into_iter().max_by_key(|w| w.chars().count())
+}
+
+/// Find `file` among the files in `roots` by its name: one `glob` per extension and folder, asking
+/// only for names that carry the label's longest distinguishing word, so a folder with hundreds of
+/// files of a kind is not read through its newest fifty. What bounds the search is the number of
+/// calls (extensions of the kind times folders) and the time budget the preparation shares; a
+/// listing cut short even by name (more than fifty files carry the word) is `TooMany`.
 pub fn locate(hands: &mut Hands<'_>, file: &NamedFile, kind: FileKind, roots: &[String]) -> Located {
-    if distinguishing(file).is_empty() {
+    let Some(word) = rarest_word(file) else {
         return Located::TooGeneral;
-    }
+    };
     let mut candidates: Vec<String> = Vec::new();
     let mut cut = false;
     for ext in kind.extensions() {
@@ -129,7 +139,7 @@ pub fn locate(hands: &mut Hands<'_>, file: &NamedFile, kind: FileKind, roots: &[
             if hands.out_of_time() {
                 return Located::Later(Failed::Later("I ran out of time and will pick this up again".into()).words().to_string());
             }
-            let said = hands.call("glob", json!({ "pattern": format!("**/*.{ext}"), "path": root }));
+            let said = hands.call("glob", json!({ "pattern": format!("**/*{word}*.{ext}"), "path": root, "ignore_case": true }));
             let (paths, truncated) = listed(&said);
             cut |= truncated;
             for path in paths.into_iter().filter(|p| could_be(file, kind, p)) {
@@ -139,8 +149,8 @@ pub fn locate(hands: &mut Hands<'_>, file: &NamedFile, kind: FileKind, roots: &[
             }
         }
     }
-    // A listing that was cut short may be missing the file that tells the candidates apart: one
-    // visible candidate among a cut list is not "the one", so none is chosen.
+    // Two or more files that could be it: none is chosen, the answer is how many. A cut listing
+    // may hide the file that tells them apart, so even one candidate in it is not "the one".
     match candidates.len() {
         0 if cut => Located::TooMany,
         0 => Located::Missing,

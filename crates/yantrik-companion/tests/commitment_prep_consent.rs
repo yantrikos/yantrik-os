@@ -33,14 +33,43 @@ fn call(rig: &Rig, tool: &str, args: serde_json::Value) -> String {
 // ── HIGH-B: the yes is the person's ─────────────────────────────────
 
 #[test]
-fn a_tool_call_of_yes_or_on_leaves_consent_off() {
+fn a_model_call_of_the_setting_tool_changes_nothing() {
+    // The gate's companion turn, told to call `commitment_prep_setting`, switched preparing off.
+    // An email body can tell a model the same; a recipe step is the same registry call. This is
+    // the registry the shell builds, not the rig's.
+    let rig = Rig::asked(&[DECK, SHEET]);
+    rig.person_turns_it_on();
+    rig.say(SAID, MONDAY);
+    let shell = yantrik_companion::tools::build_registry(&yantrik_companion::config::CompanionConfig::default());
+    let ctx = ToolContext {
+        db: &rig.db,
+        max_permission: PermissionLevel::Dangerous,
+        registry_metadata: None,
+        task_manager: None,
+        incognito: false,
+        agent_spawner: None,
+    };
+    assert!(
+        shell.definitions(PermissionLevel::Dangerous).iter().all(|d| d["function"]["name"] != "commitment_prep_setting"),
+        "the model is offered the setting tool"
+    );
+    let before = commitment_store::answered(&rig.db.conn());
+    for choice in ["yes", "on", "no", "off", "YES", "Off"] {
+        shell.execute(&ctx, "commitment_prep_setting", &json!({ "choice": choice }));
+        assert!(commitment_store::enabled(&rig.db.conn()), "{choice} switched it off");
+        assert!(commitment_store::consented(&rig.db.conn()), "{choice} took consent away");
+        assert_eq!(commitment_store::answered(&rig.db.conn()), before, "{choice} wrote an answer");
+    }
+    assert!(matches!(rig.cycle(window()).as_slice(), [Outcome::Prepared(_)]), "it goes on preparing");
+}
+
+#[test]
+fn a_model_that_has_not_been_told_yes_cannot_make_it_consent() {
     let rig = rig_with_tools(&[DECK, SHEET]);
     rig.say(SAID, MONDAY);
     assert!(matches!(rig.cycle(window()).as_slice(), [Outcome::Prepared(_)]));
-    // An email body told a model to do this; a recipe step is the same registry call at Standard.
-    for choice in ["yes", "on", "YES"] {
-        let said = call(&rig, "commitment_prep_setting", json!({ "choice": choice }));
-        assert!(said.starts_with("Error"), "{said}");
+    for choice in ["yes", "on"] {
+        call(&rig, "commitment_prep_setting", json!({ "choice": choice }));
     }
     assert!(!commitment_store::consented(&rig.db.conn()));
     assert!(commitment_store::answered(&rig.db.conn()).is_none());
@@ -56,15 +85,10 @@ fn no_tool_names_the_person_only_answer() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools");
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
         let src = std::fs::read_to_string(entry.path()).unwrap();
-        for needle in ["commitment_consent", "person_answer", "record_answer"] {
-            assert!(!src.contains(needle) || entry.file_name() == "commitment_prep_tools.rs" && !src.contains("person_answer(") && !src.contains("record_answer("), "{} names {needle}", entry.path().display());
+        for needle in ["commitment_consent", "person_answer", "record_answer", "commitment_store::refuse", "store::refuse"] {
+            assert!(!src.contains(needle) || entry.file_name() == "commitment_prep_tools.rs" && !src.contains("person_answer(") && !src.contains("record_answer(") && !src.contains("::refuse("), "{} names {needle}", entry.path().display());
         }
     }
-    // Refusing is the one thing the tool does: it is safe for a model to say no.
-    let rig = rig_with_tools(&[DECK]);
-    rig.person_turns_it_on();
-    assert!(call(&rig, "commitment_prep_setting", json!({ "choice": "off" })).starts_with("Okay"));
-    assert!(!commitment_store::enabled(&rig.db.conn()));
 }
 
 #[test]
@@ -114,17 +138,14 @@ fn off_then_on_by_the_person_prepares_again() {
     let rig = rig_with_tools(&[DECK, SHEET]);
     rig.person_turns_it_on();
     rig.say(SAID, MONDAY);
-    // The person says "turn that off".
-    call(&rig, "commitment_prep_setting", json!({ "choice": "off" }));
+    // The person says "turn that off", and uses the switch in Settings.
+    assert!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF).is_some());
     assert!(matches!(rig.cycle(window()).as_slice(), [Outcome::Nothing(_)]));
-    // Saying "turn it back on" to the model does nothing, and says so.
-    assert!(call(&rig, "commitment_prep_setting", json!({ "choice": "on" })).starts_with("Error"));
+    // Saying "turn it back on" to the model does nothing.
+    call(&rig, "commitment_prep_setting", json!({ "choice": "on" }));
     assert!(matches!(rig.cycle(window() + 60.0).as_slice(), [Outcome::Nothing(_)]));
-    // The brief offers the way back; pressing it is the person-only act, and is consent.
-    let shown = commitment_consent::brief_actions(&rig.db.conn(), window());
-    assert_eq!(shown.len(), 1);
-    assert_eq!(shown[0].action_id, commitment_consent::TURN_ON);
-    assert_eq!(commitment_consent::person_answer(&rig.db.conn(), &shown[0].action_id).as_deref(), Some("Getting promised things ready is on."));
+    // The switch in Settings turns it back on: the person-only act, and is consent.
+    assert_eq!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_ON).as_deref(), Some("Preparing is on."));
     let outcomes = rig.cycle(window() + 120.0);
     assert_eq!(the_item(&outcomes).data["state"], "prepared", "it really prepares again");
     assert!(rig.app_calls().contains(&("email".into(), "compose".into())));
@@ -241,16 +262,41 @@ fn after_the_persons_own_no_the_brief_shows_no_turn_back_on_row_but_a_models_ref
     assert_eq!(shown[0].action_id, commitment_consent::TURN_ON);
 }
 
-/// MEDIUM-3: Settings can turn it off and on, and the tool's sentences point there.
+/// MEDIUM-3: Settings can turn it off and on.
 #[test]
-fn the_settings_switch_turns_it_off_and_on_and_the_tool_points_at_settings() {
+fn the_settings_switch_turns_it_off_and_on() {
     let rig = rig_with_tools(&[DECK]);
     rig.person_turns_it_on();
     assert!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF).is_some());
     assert!(!commitment_store::enabled(&rig.db.conn()));
     assert!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF).is_none(), "off twice is nothing");
-    for said in [call(&rig, "commitment_prep_setting", json!({ "choice": "on" })), call(&rig, "commitment_prep_setting", json!({ "choice": "off" }))] {
-        assert!(said.contains("Settings \u{2192} Companion"), "{said}");
-        assert!(!said.contains("brief"), "{said}");
+}
+
+/// 520's toast cut every sentence past about 37 characters: "...and never send anything." and
+/// "...ready is still on." were not readable. Every answer the person's press gives fits.
+#[test]
+fn every_answer_to_a_press_is_short_enough_to_read_whole_in_the_toast() {
+    let rig = Rig::asked(&[DECK, SHEET]);
+    rig.say(SAID, MONDAY);
+    rig.cycle(window());
+    let at = window() + 60.0;
+    let mut said = Vec::new();
+    // Yes, then Got it on the card that comes of it, then off and on from Settings.
+    said.extend(rig.person_answers(commitment_consent::YES, at));
+    rig.cycle(window() + 120.0);
+    let seen = yantrik_companion::commitment_cards::prepared(&rig.db.conn(), window() + 180.0);
+    for item in seen.iter().take(1) {
+        said.extend(commitment_consent::person_answer_at(&rig.db.conn(), &format!("{}{}", commitment_consent::SEEN, item.id), window() + 180.0));
+    }
+    said.extend(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF));
+    said.extend(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_ON));
+    // And the No.
+    let rig = Rig::asked(&[DECK, SHEET]);
+    rig.say(SAID, MONDAY);
+    rig.cycle(window());
+    said.extend(rig.person_answers(commitment_consent::NO, at));
+    assert!(said.len() >= 4, "{said:?}");
+    for line in &said {
+        assert!(line.chars().count() <= commitment_consent::TOAST_CHARS, "cut in the toast: {line:?}");
     }
 }

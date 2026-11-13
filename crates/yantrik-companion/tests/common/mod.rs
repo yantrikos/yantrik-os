@@ -58,9 +58,20 @@ impl Tool for FakeGlob {
     fn execute(&self, _: &ToolContext, args: &Value) -> String {
         let mut w = self.0.lock().unwrap();
         w.calls.push(("glob".into(), args.clone()));
-        let ext = args["pattern"].as_str().unwrap_or("").rsplit('.').next().unwrap_or("").to_string();
+        let pattern = args["pattern"].as_str().unwrap_or("").trim_start_matches("**/").to_lowercase();
         let root = args["path"].as_str().unwrap_or("~").to_string();
-        let hits: Vec<&String> = w.files.iter().filter(|f| f.ends_with(&format!(".{ext}")) && f.starts_with(&root)).collect();
+        // The real tool's rule: `*` is any run of characters; case is folded only when asked.
+        let fold = |s: &str| if args["ignore_case"].as_bool() == Some(true) { s.to_lowercase() } else { s.to_string() };
+        let matches = |name: &str| {
+            let (name, parts) = (fold(name), pattern.split('*').collect::<Vec<_>>());
+            let (first, last) = (parts[0], parts[parts.len() - 1]);
+            let mut rest = match name.strip_prefix(first) { Some(r) => r, None => return false };
+            for mid in &parts[1..parts.len() - 1] {
+                match rest.find(mid) { Some(at) => rest = &rest[at + mid.len()..], None => return false }
+            }
+            parts.len() == 1 && name == first || parts.len() > 1 && rest.ends_with(last)
+        };
+        let hits: Vec<&String> = w.files.iter().filter(|f| f.starts_with(&root) && matches(f.rsplit('/').next().unwrap_or(""))).collect();
         if hits.is_empty() {
             return format!("No files matching '{}' in {root}", args["pattern"].as_str().unwrap_or(""));
         }

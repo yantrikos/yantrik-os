@@ -151,7 +151,8 @@ mod tests {
         let card = prep.split_once("export component PrepAsk").expect("the card").1;
         assert!(card.contains("PrepChoices {") && !card.contains("YButton {") && !card.contains("TouchArea"), "its buttons are PrepChoices, nothing clickable of its own");
         let stack = std::fs::read_to_string(ui.join("components/whisper_card.slint")).unwrap();
-        assert!(stack.contains("PrepAsk { card: prep; }"), "the stack draws the card");
+        assert!(card.contains("PrepAsk { card: prep; }"), "the scrolling column draws the card");
+        assert!(stack.contains("PrepCards { }"), "the stack draws the column of cards");
         assert!(!stack.contains("PrepState.answer"), "the stack never presses the answer");
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for name in ["wire/notifications.rs", "wire/for_you.rs", "wire/callbacks.rs", "cards.rs", "notice_inbox.rs"] {

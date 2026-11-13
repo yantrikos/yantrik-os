@@ -181,12 +181,13 @@ impl AnticipationEngine {
         .expect("failed to create prepared_items table");
     }
 
-    /// Store a prepared item.
-    pub fn store(conn: &Connection, item: &PreparedItem) {
+    /// Store a prepared item. `false`, with the reason logged, when it was not stored: the caller
+    /// must not report an item that is not there.
+    pub fn store(conn: &Connection, item: &PreparedItem) -> bool {
         let trigger_data = serde_json::to_string(&item.trigger).unwrap_or_default();
         let data = serde_json::to_string(&item.data).unwrap_or_default();
 
-        let _ = conn.execute(
+        let stored = conn.execute(
             "INSERT OR REPLACE INTO prepared_items
              (id, trigger_type, trigger_data, kind, description, data, relevant_at, expires_at, surfaced, outcome, created_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
@@ -199,6 +200,13 @@ impl AnticipationEngine {
                 item.created_at,
             ],
         );
+        match stored {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(id = %item.id, error = %e, "Prepared item was not stored");
+                false
+            }
+        }
     }
 
     /// Get items that are currently relevant (relevant_at <= now < expires_at, not surfaced).

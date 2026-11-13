@@ -200,3 +200,23 @@ fn each_press_that_answers_nothing_says_its_own_true_sentence() {
     let stale = (None, commitment_consent::Status { on: true, question: q.clone() }, Vec::new());
     assert_eq!(shown(&format!("{}x", commitment_consent::YES), &stale).brief_question, q);
 }
+
+#[test]
+fn email_holds_one_draft_so_only_the_newest_card_says_its_draft_is_there() {
+    // 520: three promises each made a draft; Email kept the last, and the older cards went on
+    // saying "The draft is in Email".
+    let q3 = "/home/p/Documents/Q3-deck.ydeck";
+    let rig = Rig::new(&[DECK, q3]);
+    rig.say("I'm sending Maya the Q4 deck on Thursday.", MONDAY);
+    rig.say("I'm sending Ravi the Q3 deck on Thursday.", MONDAY);
+    let outcomes = rig.cycle(window());
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    let shown = cards(&rig.db.conn(), window() + 60.0);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    let in_email = shown.iter().filter(|c| c.text.contains("The draft is in Email")).count();
+    let replaced = shown.iter().filter(|c| c.text.contains("replaced by a newer one") && !c.text.contains("is in Email")).count();
+    assert_eq!((in_email, replaced), (1, 1), "{shown:?}");
+    // The one that says it is in Email is the item prepared last.
+    let newest = shown.iter().find(|c| c.text.contains("The draft is in Email")).unwrap();
+    assert!(newest.text.contains("Q3 deck") || newest.text.contains("Ravi"), "{}", newest.text);
+}

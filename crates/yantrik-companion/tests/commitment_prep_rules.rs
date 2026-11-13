@@ -225,25 +225,46 @@ fn only_the_persons_document_folders_are_searched() {
 }
 
 #[test]
-fn too_many_files_to_list_is_said_and_not_guessed() {
-    let many: Vec<String> = (0..60).map(|i| format!("/home/p/Documents/report-{i}.pdf")).collect();
+fn more_files_named_like_it_than_a_listing_shows_is_said_and_not_guessed() {
+    let many: Vec<String> = (0..60).map(|i| format!("/home/p/Documents/acme-report-{i}.pdf")).collect();
     let refs: Vec<&str> = many.iter().map(String::as_str).collect();
     let (_, outcomes) = said_with(&refs, "I'm sending Maya the Acme report on Thursday.");
-    assert!(the_item(&outcomes).data["missing"][0].as_str().unwrap().contains("too many files"), "{:?}", the_item(&outcomes).data["missing"]);
+    assert!(the_item(&outcomes).data["missing"][0].as_str().unwrap().contains("too many files named like"), "{:?}", the_item(&outcomes).data["missing"]);
 }
 
 #[test]
 fn a_cut_listing_with_one_visible_candidate_chooses_none() {
-    // `q4-deck-v1.pdf` is hidden past the tool's cap; `q4-deck-final.pdf` is listed. One candidate
-    // seen is not "the one" when the list was cut.
-    let mut files: Vec<String> = vec!["/home/p/Documents/q4-deck-final.pdf".into()];
-    files.extend((0..60).map(|i| format!("/home/p/Documents/report-{i}.pdf")));
-    files.push("/home/p/Documents/q4-deck-v1.pdf".into());
+    // Sixty files carry "q4" and "deck" in their names; the tool lists fifty. Whichever one is
+    // visible is not "the one" when the list was cut.
+    let files: Vec<String> = (0..60).map(|i| format!("/home/p/Documents/q4-deck-v{i}.pdf")).collect();
     let refs: Vec<&str> = files.iter().map(String::as_str).collect();
     let (rig, outcomes) = said_with(&refs, "I'm sending Maya the Q4 deck on Thursday.");
     let item = the_item(&outcomes);
-    assert!(item.data["missing"][0].as_str().unwrap().contains("too many files"), "{:?}", item.data["missing"]);
+    assert!(item.data["missing"][0].as_str().unwrap().contains("too many files named like"), "{:?}", item.data["missing"]);
     assert!(rig.app_calls().iter().all(|(_, a)| a != "open" && a != "compose"), "nothing opened or attached: {:?}", rig.app_calls());
+}
+
+#[test]
+fn the_named_file_is_found_among_hundreds_of_others_of_its_kind() {
+    // 520's Documents: 300 .md files, one of them the alpha report. The listing of every .md is
+    // cut at fifty, but the search asks for the name, so it is not.
+    let mut files: Vec<String> = (0..300).map(|i| format!("/home/p/Documents/note-{i}.md")).collect();
+    files.push("/home/p/Documents/gate8-alpha-report.md".into());
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let (_, outcomes) = said_with(&refs, "I'm sending Maya the gate8 alpha report on Friday.");
+    let item = the_item(&outcomes);
+    assert_eq!(item.data["missing"], json!([]), "{:?}", item.data);
+}
+
+#[test]
+fn two_files_that_could_be_it_choose_none_and_say_how_many() {
+    let mut files: Vec<String> = (0..300).map(|i| format!("/home/p/Documents/note-{i}.md")).collect();
+    files.push("/home/p/Documents/gate8-alpha-report.md".into());
+    files.push("/home/p/Desktop/gate8-alpha-report-copy.md".into());
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let (rig, outcomes) = said_with(&refs, "I'm sending Maya the gate8 alpha report on Friday.");
+    assert_eq!(the_item(&outcomes).data["missing"][0], "found 2 files that could be the gate8 alpha report");
+    assert!(rig.app_calls().iter().all(|(_, a)| a != "open"), "{:?}", rig.app_calls());
 }
 
 // ── MEDIUM-5: where a window landed ─────────────────────────────────

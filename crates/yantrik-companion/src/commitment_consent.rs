@@ -24,6 +24,9 @@ pub const TURN_OFF: &str = "commitment_prep:off";
 pub const SEEN: &str = "commitment_prep:seen:";
 
 /// Where the person turns it back on, in the words of every sentence that points at it.
+/// How many characters of a toast are read; a sentence the person must read whole fits in this.
+pub const TOAST_CHARS: usize = 36;
+
 pub const WHERE: &str = "Settings \u{2192} Companion";
 
 /// The question outstanding: what the buttons answer.
@@ -136,21 +139,21 @@ pub fn person_answer_at(conn: &rusqlite::Connection, action_id: &str, now: f64) 
             return None;
         }
         AnticipationEngine::mark_surfaced(conn, item);
-        return Some("Put away. Getting promised things ready is still on.".into());
+        return Some("Put away. Preparing stays on.".into());
     }
     if action_id == TURN_ON {
         if store::enabled(conn) {
             return None;
         }
         store::record_answer(conn, true, "person", "on");
-        return Some("Getting promised things ready is on.".into());
+        return Some("Preparing is on.".into());
     }
     if action_id == TURN_OFF {
         if !store::enabled(conn) {
             return None;
         }
         store::record_answer(conn, false, "person", "off");
-        return Some(format!("Okay. I won't get promised things ready. {WHERE} turns it back on."));
+        return Some("Okay. Preparing is off.".into());
     }
     let (yes, item) = match (action_id.strip_prefix(YES), action_id.strip_prefix(NO)) {
         (Some(item), _) => (true, item),
@@ -163,8 +166,8 @@ pub fn person_answer_at(conn: &rusqlite::Connection, action_id: &str, now: f64) 
     }
     store::record_answer(conn, yes, "person", item);
     Some(if yes {
-        "Got it. I'll get promised things ready, and never send anything.".to_string()
+        "Okay. Nothing will be sent.".to_string()
     } else {
-        format!("Okay. I won't get promised things ready. {WHERE} turns it back on.")
+        "Okay. Preparing is off.".to_string()
     })
 }

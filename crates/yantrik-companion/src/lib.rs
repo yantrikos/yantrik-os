@@ -33,6 +33,7 @@ pub mod context;
 pub mod cron_mini;
 pub mod event_driven;
 pub mod evolution;
+pub mod instinct_gate;
 pub mod instincts;
 pub mod learning;
 pub mod memory_evolution;

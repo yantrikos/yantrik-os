@@ -108,6 +108,12 @@ pub fn classify(app: &str, said: &str) -> Failed {
     if has(&["could not be read, so it was not replaced", "could not be kept"]) {
         return Failed::Final(format!("{name} couldn't keep the draft, so I didn't make it"));
     }
+    // The shell's own refusal of a window for a Mind (#978, step 1: no framework app is viewable
+    // yet), word for word `yantrik_ipc_contracts::mind_view::refused_for_minds`. It is a policy, not
+    // a fault in Mind View, and it says nothing about whether Mind View is running.
+    if has(&["cannot open in your view"]) {
+        return Failed::Final("apps can't be opened in Mind View from here yet, so I didn't open the file".into());
+    }
     if lower.starts_with("refused") {
         return Failed::Final(format!("I'm not allowed to do that in {name} while you're away"));
     }
@@ -150,6 +156,14 @@ mod tests {
         let f = classify("email", "Your own saved draft could not be read, so a draft from Yantrik was not started: bad json");
         assert_eq!(f, Failed::Final("Email couldn't read the draft you saved, so I left it alone and didn't make mine".into()));
         assert!(!f.words().contains("while you're away"));
+    }
+
+    #[test]
+    fn the_shells_refusal_of_a_window_for_a_mind_is_said_as_what_it_is() {
+        // What `shell.open_app presentation` answered on VM 520; it was said as "Mind View couldn't do that".
+        let f = classify("shell", "Presentation cannot open in your view; use its actions and os_describe presentation instead.");
+        assert_eq!(f, Failed::Final("apps can't be opened in Mind View from here yet, so I didn't open the file".into()));
+        assert!(!f.is_later());
     }
 
     #[test]

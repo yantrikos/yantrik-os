@@ -674,6 +674,8 @@ export component DesktopScreen inherits Rectangle {
         // Beside the mind panel rather than under it.
         x: root.width - root.right-inset - 316px;
         y: Theme.status-bar-height + 8px;
+        // Down to the dock and no further: the cards that do not fit scroll inside it.
+        height: parent.height - self.y - Theme.taskbar-height - Theme.sp-2;
         cards: root.whisper-cards;
         card-dismissed(id) => { root.whisper-card-dismissed(id); }
         card-action(id) => { root.whisper-card-action(id); }

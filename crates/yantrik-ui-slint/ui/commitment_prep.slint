@@ -108,21 +108,25 @@ export component PrepSwitch inherits VerticalLayout {
 
 // A card on the desktop, where the person is: it stays until its item is answered or expires. Its
 // buttons are `PrepChoices`, so they are pointer-only and press `PrepState.answer`, as the brief's do.
+//
+// The card is as tall as its content: the layout inside it has the card's padding itself and fills
+// the card, so the card's height is the layout's own preferred height, padding and button row
+// included. (It used to be placed at `y: sp-3` while being as tall as the card, which pushed the
+// button row `sp-3` past the card's bottom edge.)
 export component PrepAsk inherits Rectangle {
     in property <PrepCardData> card;
 
     width: 300px;
-    height: body.preferred-height + 2 * Theme.sp-3;
+    height: body.preferred-height;
     border-radius: 16px;
     background: Theme.bg-deep.transparentize(10%);
     border-width: 1px;
     border-color: Theme.border-default;
 
     body := VerticalLayout {
-        x: Theme.sp-3;
-        width: parent.width - 2 * Theme.sp-3;
-        y: Theme.sp-3;
+        padding: Theme.sp-3;
         spacing: Theme.sp-2;
+        alignment: start;
         Text {
             text: root.card.title;
             color: Theme.text-primary;
@@ -142,5 +146,19 @@ export component PrepAsk inherits Rectangle {
             no-label: root.card.no-label;
             no-id: root.card.no-id;
         }
+    }
+}
+
+// The cards for prepared things, one under another. When they are taller than the room they are
+// given (the stack stops above the dock) they scroll, so no button is ever drawn under the dock.
+export component PrepCards inherits Flickable {
+    min-height: 0px;
+    preferred-height: stack.preferred-height;
+    viewport-height: stack.preferred-height;
+    viewport-width: self.width;
+
+    stack := VerticalLayout {
+        spacing: 8px;
+        for prep in PrepState.cards : PrepAsk { card: prep; }
     }
 }

@@ -1,51 +1,15 @@
-//! The person's say over `commitment_prep` (#1184): refusing it, and forgetting a promise, which
-//! takes what was prepared from it along. These tools can only say no: the yes, and turning it back
-//! on, are person-only (`commitment_consent`, answered by a click the shell wires), because a tool
-//! can be called by a model that has just read an email, or by a recipe step.
+//! Forgetting a promise, which takes what was prepared from it along (#1184).
+//!
+//! There is deliberately no tool for the `commitment_prep` setting, not even one that can only
+//! say no: a tool can be called by a model that has just read an email, or by a recipe step, and
+//! the setting is the person's. Both its answers are person-only (`commitment_consent`, answered by
+//! a click the shell wires). A test (`commitment_prep_consent.rs`) holds the registry to that.
 
 use super::{PermissionLevel, Tool, ToolContext, ToolRegistry};
 use crate::commitment_store as store;
 
 pub fn register(reg: &mut ToolRegistry) {
-    reg.register(Box::new(CommitmentPrepSettingTool));
     reg.register(Box::new(ForgetCommitmentTool));
-}
-
-pub struct CommitmentPrepSettingTool;
-
-impl Tool for CommitmentPrepSettingTool {
-    fn name(&self) -> &'static str { "commitment_prep_setting" }
-    fn permission(&self) -> PermissionLevel { PermissionLevel::Standard }
-    fn category(&self) -> &'static str { "life_management" }
-
-    fn definition(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "commitment_prep_setting",
-                "description": "Stop getting promised things ready (opening the files the user named in Mind View and drafting the email), when the user says no or asks for it off. It cannot turn it on: only the user can, with the switch in Settings \u{2192} Companion.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "choice": { "type": "string", "description": "no or off" }
-                    },
-                    "required": ["choice"]
-                }
-            }
-        })
-    }
-
-    fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let conn = &ctx.db.conn();
-        match args.get("choice").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase().as_str() {
-            "no" | "off" => {
-                store::refuse(conn);
-                "Okay. I won't get promised things ready. Only you can turn it back on, in Settings \u{2192} Companion.".to_string()
-            }
-            "yes" | "on" => "Error: only the user can turn this on, in Settings \u{2192} Companion. I can only stop it.".to_string(),
-            _ => "Error: choice must be no or off".to_string(),
-        }
-    }
 }
 
 pub struct ForgetCommitmentTool;
