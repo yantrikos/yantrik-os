@@ -894,6 +894,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_polkit || true
     reconcile_helpers || true
     reconcile_sysctl || true
+    reconcile_chromium_policy || true
     reconcile_serial_console || true
     reconcile_registries || true
     reconcile_podman_socket || true
@@ -2538,6 +2539,28 @@ reconcile_polkit() {
       warn "could not install $dest (no sudo here); the power menu may ask for an administrator"
     fi
   done
+}
+
+# Chromium's no-phone-home policy (#1175), into /etc/chromium/policies/managed through the one
+# install step the image builds use. Only where Chromium is (or its config folder is): the
+# package list installs it before this runs. Both files are taken only when they are what the build
+# shipped and root's; the script runs as root. Nothing else in that folder is touched, a person's
+# own policies included, and nothing is removed.
+reconcile_chromium_policy() {
+  local dir="$PREFIX/share/chromium" script json dest=/etc/chromium/policies/managed/yantrik-no-phone-home.json
+  script="$dir/stage-chromium-policy.sh"; json="$dir/yantrik-no-phone-home.json"
+  [ -d "$dir" ] || return 0
+  [ -d /etc/chromium ] || command -v chromium >/dev/null 2>&1 || { info "no Chromium on this machine; its policy not installed"; return 0; }
+  if ! root_file_ok chromium/stage-chromium-policy.sh "$script" || ! root_file_ok chromium/yantrik-no-phone-home.json "$json"; then
+    warn "refusing $dir: not root's alone, or not what this build ships"
+    return 0
+  fi
+  if cmp -s "$json" "$dest" 2>/dev/null && [ "$(stat -c %a:%u "$dest" 2>/dev/null)" = 644:0 ]; then return 0; fi
+  if sudo -n sh "$script" / "$json" 2>/dev/null; then
+    info "Chromium policy in place: $dest"
+  else
+    warn "could not install $dest (no sudo here); Chromium keeps its default calls home"
+  fi
 }
 
 # The root helpers the bundle ships (share/root-helpers), installed root-owned into /usr/lib/yantrik
@@ -4798,6 +4821,7 @@ cmd_reconcile() {
   reconcile_polkit
   reconcile_helpers
   reconcile_sysctl
+  reconcile_chromium_policy
   reconcile_serial_console
   reconcile_sudo_rule
   reconcile_minds
@@ -5314,6 +5338,30 @@ cmd_selftest() {
   t "nor a link to a list" "[exit 1]" "$(trusted)"
   rm -f "$tp/share/packages.list"
   t "a build without one says so" "ships no" "$(trusted)"
+
+  # The Chromium policy (#1175): reconcile hands the shipped json to the one install step, as the
+  # build's own root-owned, hash-listed files, and refuses a changed one. sudo is a stand-in that
+  # runs the step against a scratch root.
+  local cp="$root/chromium" cr="$root/chromium-root"
+  mkdir -p "$cp/bin" "$cp/share/chromium" "$cr/stub" "$cr/etc/chromium/policies/managed"
+  cp "$here/stage-chromium-policy.sh" "$cp/share/chromium/stage-chromium-policy.sh"
+  cp "$here/chromium-managed-policy.json" "$cp/share/chromium/yantrik-no-phone-home.json"
+  printf '#!/bin/sh\n' > "$cr/stub/chromium"; chmod +x "$cr/stub/chromium"
+  printf '{"HomepageLocation":"x"}\n' > "$cr/etc/chromium/policies/managed/mine.json"
+  (cd "$cp/share" && sha256sum chromium/*) > "$cp/bin/yantrik-root-files.sha256"
+  chmod 0755 "$cp" "$cp/bin" "$cp/share" "$cp/share/chromium"; chmod 0644 "$cp/share/chromium/"*
+  chromium_try() { (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+                    ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+                    sudo() { [ "$1" = -n ] && shift; [ "$1" = sh ] && [ "$3" = / ] && sh "$2" "$cr" "$4"; }
+                    reconcile_chromium_policy 2>&1); }
+  chromium_try >/dev/null
+  is "reconcile puts the Chromium policy in place, and leaves a person's own alone" "yes|yes" \
+    "$(cmp -s "$cp/share/chromium/yantrik-no-phone-home.json" "$cr/etc/chromium/policies/managed/yantrik-no-phone-home.json" && echo yes || echo no)|$(grep -q HomepageLocation "$cr/etc/chromium/policies/managed/mine.json" && echo yes || echo no)"
+  rm -f "$cr/etc/chromium/policies/managed/yantrik-no-phone-home.json"
+  printf '{"X":1}\n' > "$cp/share/chromium/yantrik-no-phone-home.json"
+  chromium_try >/dev/null
+  is "a policy file that is not what the build shipped is not installed" "no" \
+    "$([ -e "$cr/etc/chromium/policies/managed/yantrik-no-phone-home.json" ] && echo yes || echo no)"
 
   # The install itself, with a stand-in apt and dpkg. Never as root: the stand-ins are refused to
   # root, so as root this would run the real apt.

@@ -470,8 +470,8 @@ ok "Installed boot menu's plain entry quiet"
 # ── Chromium's own calls home are off by policy (#1175, gate 9 bar 3) ──
 # The companion's Chromium also takes --disable-features on its command line; this file covers
 # every other start (Debian's chromium reads /etc/chromium/policies/managed/).
-sudo install -d -m 0755 "$ROOTFS/etc/chromium/policies/managed"
-sudo install -m 0644 "$SCRIPT_DIR/chromium-managed-policy.json" "$ROOTFS/etc/chromium/policies/managed/yantrik-no-phone-home.json"
+sudo sh "$SCRIPT_DIR/stage-chromium-policy.sh" "$ROOTFS" "$SCRIPT_DIR/chromium-managed-policy.json" \
+    || fail "stage-chromium-policy.sh failed — Chromium would call home on its own"
 ok "Installed Chromium's no-phone-home policy"
 
 # ── The installed boot menu's terminal is its ground, not black ──
