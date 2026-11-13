@@ -234,7 +234,7 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
 
     // ── The look: one label treatment, a tile that is a picture, and what selection is ──
     let (rx, ry) = tile_of(2, 1);
-    let accent_ish = |p: &Pixels| count(p, ((rx - 30.) as u32, (ry - 30.) as u32, 60, 60), (0x8f, 0xb4, 0xe3), 40);
+    let accent_ish = |p: &Pixels| count(p, ((rx - 30.) as u32, (ry - 30.) as u32, 60, 60), (0x74, 0xaa, 0xf5), 40);
     assert!(accent_ish(&still) > 40, "the selected picture's tile is outlined in the accent");
     // A name sits on a flat dark plate, not straight on the photograph: in the plate's left padding,
     // clear of the letters, a pixel is darker than the wallpaper in the gap just outside it.
@@ -264,7 +264,7 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
     let going = draw(window);
     // The cell's own left edge, a 2px line well clear of the moving tile's border.
     let (tx, ty) = tile_of(4, 1);
-    let edge = count(&going, ((tx - CELL_W / 2.) as u32, (ty - 30.) as u32, 3, 100), (0x8f, 0xb4, 0xe3), 30);
+    let edge = count(&going, ((tx - CELL_W / 2.) as u32, (ty - 30.) as u32, 3, 100), (0x74, 0xaa, 0xf5), 30);
     assert!(edge > 100, "the target cell is outlined while the icon moves: {edge} accent pixels on its left edge");
     save(&going, &side("bench-drag.png"))?;
     release(window, rx + 210., ry + 2., PointerEventButton::Left);
@@ -283,7 +283,7 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
     move_to(window, 500., top + 300.);
     move_to(window, 300., top + 200.);
     let banded = draw(window);
-    assert!(count(&banded, (300, (top + 200.) as u32, 340, 180), (0x8f, 0xb4, 0xe3), 20) > 100, "the band is drawn while the button is down");
+    assert!(count(&banded, (300, (top + 200.) as u32, 340, 180), (0x74, 0xaa, 0xf5), 20) > 100, "the band is drawn while the button is down");
     release(window, 300., top + 200., PointerEventButton::Left);
     let said = take(&log);
     assert_eq!(said[0], "bare:false");
@@ -367,7 +367,7 @@ pub fn run(window: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn s
     state.set_items(ModelRc::new(VecModel::from(fixtures())));
     state.set_show_icons(false);
     let bare = draw(window);
-    assert!(count(&bare, (0, top as u32, 400, 300), (0x8f, 0xb4, 0xe3), 10) < 20, "no outline when the icons are hidden");
+    assert!(count(&bare, (0, top as u32, 400, 300), (0x74, 0xaa, 0xf5), 10) < 20, "no outline when the icons are hidden");
     state.set_show_icons(true);
 
     // ── At rest it costs nothing ──

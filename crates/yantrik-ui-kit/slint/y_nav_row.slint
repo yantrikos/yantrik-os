@@ -1,0 +1,106 @@
+// YNavRow — one place in a sidebar: Home, Appearance, a folder of notes.
+//
+//   YNavRow { icon: Icons.files; label: "Home"; active: true; clicked => { … } }
+//
+// The row every sidebar draws, so the place a person is in is marked the same way in Files, in
+// Settings and in any app's own rail. It was drawn three times with three looks: Files a tinted
+// lozenge with no bar, Settings a full-width band with a bar, the kit's YSidebar a tinted pill
+// with a bar (sharper pass, 12 Nov 2026).
+//
+// The place in force is a neutral plate (Theme.control-fill) with a 3px rule in the app's own
+// colour at its leading edge, the icon in that colour and the label a weight heavier: a shape
+// and a weight, not a colour alone. The plate is neutral because a tint of the accent over a
+// navy ground is one more navy; the rule and the icon carry the colour.
+//
+// A Tab stop; Enter or Space chooses it. The row fills the width it is given: its owner gives
+// the sidebar its padding.
+import { Theme } from "theme.slint";
+import { AppIdentity } from "app_color.slint";
+import { Icon } from "icon.slint";
+
+export component YNavRow inherits Rectangle {
+    // A path from the Icons global. Empty draws no icon and the label starts at the edge.
+    in property <string> icon: "";
+    in property <string> label: "";
+    in property <bool> active: false;
+    // A count at the trailing edge (unread, items). Empty draws nothing.
+    in property <string> badge: "";
+    callback clicked();
+
+    public function focus-row() { keys.focus(); }
+    forward-focus: keys;
+
+    height: Theme.h-regular;
+    border-radius: Theme.r-md;
+    background: root.active ? Theme.control-fill
+              : touch.has-hover ? Theme.hover-fill
+              : transparent;
+    border-width: keys.has-focus && !keys.pointer-focus ? Theme.focus-ring-width : 0px;
+    border-color: Theme.focus-ring;
+    animate background { duration: Theme.dur-fast; }
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    if root.active : Rectangle {
+        x: 0px;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 16px;
+        border-radius: 1.5px;
+        background: AppIdentity.accent;
+    }
+
+    // The keyboard half under the pointer half, which hands it focus when pressed. A press does
+    // not earn a ring; only Tab does.
+    keys := FocusScope {
+        property <bool> pointer-focus: false;
+        changed has-focus => { if (!self.has-focus) { self.pointer-focus = false; } }
+        key-pressed(e) => {
+            if ((e.text == Key.Return || e.text == " ") && !e.repeat) { root.clicked(); return accept; }
+            reject
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            keys.pointer-focus = true;
+            keys.focus();
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.sp-3;
+        padding-right: Theme.sp-2;
+        spacing: Theme.sp-2h;
+
+        if root.icon != "" : Icon {
+            commands: root.icon;
+            size: 16px;
+            thickness: 1.7px;
+            tint: root.active ? AppIdentity.accent : Theme.text-secondary;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.label;
+            color: root.active ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.fs-label;
+            font-weight: root.active ? 600 : Theme.fw-body;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        if root.badge != "" : Text {
+            text: root.badge;
+            color: root.active ? Theme.text-primary : Theme.text-dim;
+            font-size: Theme.fs-micro;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
