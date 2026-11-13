@@ -193,6 +193,9 @@ mod cheat_sheet;
 // Every key the screens advertise is bound in rc.xml, and every binding names a real action (tests only).
 #[cfg(test)]
 mod rc_keys;
+// The one lock every test that sets HOME holds (tests only).
+#[cfg(test)]
+mod test_home;
 mod notifications;
 // The For you inbox: which mind notices show, which toast, and what their one button may open.
 mod notice_inbox;

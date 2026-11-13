@@ -34,6 +34,9 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 static SESSION: LazyLock<Mutex<Session>> = LazyLock::new(Default::default);
 /// Which values are kept, with their tails, as last read from the vault.
 static KEPT: LazyLock<Mutex<BTreeMap<String, String>>> = LazyLock::new(Default::default);
+/// Whether the vault has been read into `KEPT` at all: an empty `KEPT` that was never read says
+/// nothing about which keys are kept.
+static KEPT_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CHOICES: LazyLock<Mutex<Choices>> = LazyLock::new(|| Mutex::new(choices::load(&choices::path())));
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -44,6 +47,72 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// accounts list needs to know which free tiers are usable. No key.
 pub(crate) fn kept_and_off() -> (std::collections::BTreeSet<String>, std::collections::BTreeSet<String>) {
     (lock(&KEPT).keys().cloned().collect(), lock(&CHOICES).off.clone())
+}
+
+/// Removals made so far, numbered, and which value each removed: a read of the vault that began
+/// before a removal may still hold the removed value.
+static REMOVALS: Mutex<(u64, Vec<(u64, String)>)> = Mutex::new((0, Vec::new()));
+
+/// Taken just before the vault is read, and handed to [`note_kept`] with what the read found.
+pub(crate) fn read_began() -> u64 {
+    lock(&REMOVALS).0
+}
+
+/// What the vault says is kept, as just read (`began` is [`read_began`] from before the read). The
+/// one writer of `KEPT` from a read: the card's own read and the accounts listing both end here.
+/// A value removed after the read began is not written back as kept.
+pub(crate) fn note_kept(mut tails: BTreeMap<String, String>, began: u64) {
+    for (_, id) in lock(&REMOVALS).1.iter().filter(|(n, _)| *n > began) {
+        tails.remove(id);
+    }
+    *lock(&KEPT) = tails;
+    KEPT_READ.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether `KEPT` was ever read from the vault since the shell started. Until it was, "not kept"
+/// means "not known yet", not "removed".
+pub(crate) fn kept_known() -> bool {
+    KEPT_READ.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The vault values just removed are no longer kept: said at once, before the vault is read again.
+pub(crate) fn forget_kept(ids: &[&str]) {
+    let mut removals = lock(&REMOVALS);
+    let mut kept = lock(&KEPT);
+    for id in ids {
+        removals.0 += 1;
+        let n = removals.0;
+        removals.1.push((n, id.to_string()));
+        kept.remove(*id);
+    }
+    // Only reads that began recently can be older than a removal.
+    let excess = removals.1.len().saturating_sub(256);
+    removals.1.drain(..excess);
+}
+
+/// Change what was chosen and keep it (no key in it). The one place `CHOICES` is written.
+pub(crate) fn change_choices(change: impl FnOnce(&mut Choices)) {
+    let mut c = lock(&CHOICES);
+    change(&mut c);
+    if let Err(e) = choices::save(&choices::path(), &c) {
+        tracing::warn!(error = %e, "the free AI card's choices were not saved");
+    }
+}
+
+/// A tier switched Off becomes On, and an On one Off.
+pub(crate) fn toggle_tier(id: &str) {
+    change_choices(|c| { if !c.off.remove(id) { c.off.insert(id.to_string()); } });
+}
+
+#[cfg(test)]
+pub(crate) fn forget_read_for_test() {
+    KEPT_READ.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn set_state_for_test(kept: &[&str], off: &[&str]) {
+    note_kept(kept.iter().map(|k| (k.to_string(), "…abcd".to_string())).collect(), read_began());
+    lock(&CHOICES).off = off.iter().map(|o| o.to_string()).collect();
 }
 
 #[derive(Clone)]
@@ -72,7 +141,10 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let x = w.clone();
     g.on_unskip(move |id| x.choose(|c| { c.skipped.remove(id.as_str()); }));
     let x = w.clone();
-    g.on_toggle(move |id| x.choose(|c| { if !c.off.remove(id.as_str()) { c.off.insert(id.to_string()); } }));
+    g.on_toggle(move |id| {
+        toggle_tier(&id);
+        x.sharing_changed();
+    });
     let x = w.clone();
     g.on_remove(move |id| { lock(&SESSION).confirm_remove = Some(id.to_string()); x.render(); });
     let x = w.clone();
@@ -119,8 +191,9 @@ impl Wiring {
     fn refresh(&self) {
         let x = self.clone();
         let _ = std::thread::Builder::new().name("free-ai-refresh".into()).spawn(move || {
+            let began = read_began();
             if let Ok(Reply::Tails(tails)) = x.bridge.provider_keys(Op::Tails, WORKER_TIMEOUT) {
-                *lock(&KEPT) = tails;
+                note_kept(tails, began);
             }
             let y = x.clone();
             let _ = slint::invoke_from_event_loop(move || y.render());
@@ -128,13 +201,14 @@ impl Wiring {
     }
 
     fn choose(&self, change: impl FnOnce(&mut Choices)) {
-        {
-            let mut c = lock(&CHOICES);
-            change(&mut c);
-            if let Err(e) = choices::save(&choices::path(), &c) {
-                tracing::warn!(error = %e, "the free AI card's choices were not saved");
-            }
-        }
+        change_choices(change);
+        self.render();
+    }
+
+    /// A tier switched, a key kept or removed: the account list, the catalogue, the picker and the
+    /// runs-on line are refreshed now (`ai_accounts::shared`), and the card is drawn again.
+    fn sharing_changed(&self) {
+        crate::ai_accounts::shared::sharing_changed(self.bridge.clone());
         self.render();
     }
 
@@ -223,6 +297,8 @@ impl Wiring {
                 lock(&CHOICES).stage.remove(&provider);
                 let _ = choices::save(&choices::path(), &lock(&CHOICES));
                 tracing::info!(provider = %provider, "a free AI key was checked with its provider and kept in the vault");
+                // Offered at once, not at the next restart.
+                crate::ai_accounts::shared::sharing_changed(x.bridge.clone());
             }
         });
         if spawned.is_err() {
@@ -236,6 +312,7 @@ impl Wiring {
         let x = self.clone();
         let _ = std::thread::Builder::new().name("free-ai-remove".into()).spawn(move || {
             let ids: Vec<&str> = yantrik_ml::provider::pool::signup::signup(&id).map(|s| s.values.iter().map(|v| v.id).collect()).unwrap_or_default();
+            let all_ids = ids.clone();
             let mut failed = None;
             for value_id in ids {
                 match x.bridge.provider_keys(Op::Remove { id: value_id.to_string() }, WORKER_TIMEOUT) {
@@ -245,12 +322,17 @@ impl Wiring {
                 }
             }
             match failed {
-                None => tracing::info!(provider = %id, "a free AI key was removed from the vault"),
+                None => {
+                    tracing::info!(provider = %id, "a free AI key was removed from the vault");
+                    forget_kept(&all_ids);
+                }
                 Some(why) => {
                     tracing::warn!(provider = %id, "a free AI key could not be removed");
                     lock(&SESSION).rejected.insert(id.clone(), why.to_string());
                 }
             }
+            // Some values may be gone even when one failed: the vault is read, not assumed.
+            crate::ai_accounts::shared::sharing_changed(x.bridge.clone());
             x.refresh();
         });
         self.render();

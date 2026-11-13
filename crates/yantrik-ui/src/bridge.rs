@@ -126,6 +126,9 @@ pub enum CompanionCommand {
         api_key: Option<String>,
         model: String,
     },
+    /// Put the companion on no provider: its next turn reaches nobody and no key is held.
+    /// Used when the provider it ran on is removed and there is no other.
+    StopLLM,
     /// Request bond state for the bond screen.
     GetBondState {
         reply_tx: Sender<BondSnapshot>,
@@ -982,6 +985,12 @@ impl CompanionBridge {
         });
     }
 
+    /// Stop the companion's LLM: no provider, no key. Its next turn says so instead of reaching one.
+    pub fn stop_llm(&self) {
+        self.online.store(false, Ordering::Relaxed);
+        let _ = self.cmd_tx.send(CompanionCommand::StopLLM);
+    }
+
     /// Rename the user at runtime (updates config + companion).
     pub fn rename_user(&self, name: String) {
         let _ = self.cmd_tx.send(CompanionCommand::RenameUser { name });
@@ -1774,6 +1783,7 @@ fn worker_loop(
                 execute_suppression_logged = false;
                 tracing::info!("LLM reloaded successfully");
             }
+            Ok(CompanionCommand::StopLLM) => crate::provider_handoff::companion::stop(&mut companion, &online),
             Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
                 if companion.is_incognito() {
                     tracing::debug!("Incognito: skipping RecordSystemEvent");
