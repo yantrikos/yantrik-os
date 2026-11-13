@@ -5408,7 +5408,7 @@ cmd_selftest() {
   local pol="$cr/etc/chromium/policies/managed/yantrik-no-phone-home.json" mk="$cp/update-state/chromium-policy"
   chromium_try() { (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
                     UPDATE_STATE_DIR="$cp/update-state" CHROMIUM_ROOT="$cr" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
-                    sudo() { [ "$1" = -n ] && shift
+                    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0
                              if [ "$1" = sh ] && [ "$2" = -c ]; then shift; sh "$@"; elif [ "$1" = sh ] && [ "$3" = "$cr" ]; then sh "$2" "$3" "$4"; else return 1; fi; }
                     reconcile_chromium_policy 2>&1); }
   chromium_try >/dev/null
@@ -5459,15 +5459,15 @@ cmd_selftest() {
   rm -f "$mk"; rm -rf "$cp/update-state"; mkdir -m 0755 "$cp/update-state"
   : > "$cp/other"; ln -s "$cp/other" "$mk"
   local rc=0; (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(id -u)"
-    sudo() { [ "$1" = -n ] && shift; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
   is "a symlinked marker is refused and not written through" "1|0" "$rc|$(wc -c < "$cp/other" | tr -d ' ')"
   rm -f "$mk"; chmod 0777 "$cp/update-state"; rc=0
   (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(id -u)"
-    sudo() { [ "$1" = -n ] && shift; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
   is "a state dir others can write is refused" "1|no" "$rc|$([ -e "$mk" ] && echo yes || echo no)"
   rc=0
   (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(( $(id -u) + 1 ))"
-    sudo() { [ "$1" = -n ] && shift; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
   chmod 0755 "$cp/update-state"
   is "a state dir not owned by root is refused" "1" "$rc"
   rm -rf "$cp/update-state"
