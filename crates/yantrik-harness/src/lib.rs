@@ -53,6 +53,7 @@ pub mod redact;
 pub mod run_store;
 
 pub use event::{AgentId, Event};
+pub use host::stop::Heard;
 pub use host::{random_hex, AgentEntry, AgentState, Entry, EventCounts, Host, LateAnswer, Resumed, TurnEnd};
 
 use std::sync::mpsc::Receiver;

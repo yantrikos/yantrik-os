@@ -187,6 +187,29 @@ class SocketTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_a_gateway_running_as_the_mind_account_finds_the_desktop_only_at_the_mind_door(self):
+        # #411: the unit names the door (YANTRIK_MIND_RUN); the person's runtime directory is not
+        # the account's to open, and a /tmp directory of someone else's must never be tried.
+        door = os.path.join(self.dir.name, "door")
+        runtime = os.path.join(self.dir.name, "person")
+        os.makedirs(door)
+        os.makedirs(os.path.join(runtime, "yantrik"))
+        Path(os.path.join(runtime, "yantrik", "harness.sock")).touch()
+        saved = {k: os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "YANTRIK_HARNESS_SOCKET", "YANTRIK_MIND_RUN")}
+        try:
+            os.environ.pop("YANTRIK_HARNESS_SOCKET", None)
+            os.environ["XDG_RUNTIME_DIR"] = runtime
+            os.environ["YANTRIK_MIND_RUN"] = door
+            self.assertIsNone(desktop.socket_path(), "no socket at the door is no desktop, not the person's own")
+            Path(os.path.join(door, "harness.sock")).touch()
+            self.assertEqual(desktop.socket_path(), os.path.join(door, "harness.sock"))
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
 
 if __name__ == "__main__":
     unittest.main()

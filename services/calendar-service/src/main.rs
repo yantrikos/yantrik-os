@@ -1651,7 +1651,7 @@ mod tests {
 
         // A real process that is not a Yantrik binary — this test runner itself.
         let pid = std::process::id();
-        let peer = PeerCred { pid: pid as i32, uid: 0, gid: 0 };
+        let peer = PeerCred { pid: pid as i32, uid: 0, gid: 0, the_mind: false };
         let err = handler
             .handle_from(method::CREATE_EVENT, serde_json::json!({ "title": "x" }), Some(peer))
             .unwrap_err();
@@ -1687,7 +1687,7 @@ mod tests {
         let methods = mind_door::mind_methods("calendar.sock").expect("calendar opens a door");
         assert_eq!(methods, mind_door::MindMethods::SurfaceOnly);
         let door = door_methods::hold_to(methods, Arc::new(handler));
-        let peer = Some(PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 });
+        let peer = Some(PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0, the_mind: false });
 
         let described = door.handle_from("app.describe", serde_json::json!({}), peer).expect("describe");
         assert_eq!(described["app"], "calendar");

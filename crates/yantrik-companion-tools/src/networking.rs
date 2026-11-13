@@ -348,7 +348,7 @@ impl Tool for NetworkPingTool {
         }
 
         match std::process::Command::new("ping")
-            .args(["-c", &count.to_string(), "-W", "5", host])
+            .args(["-c", &count.to_string(), "-W", "5", host]) // fixed-program: ping
             .output()
         {
             Ok(output) => {
@@ -440,7 +440,7 @@ impl Tool for NetworkTracerouteTool {
             vec!["-m", &hops_str, host]
         };
 
-        match std::process::Command::new(cmd)
+        match std::process::Command::new(cmd)  // fixed-program: traceroute|tracepath
             .args(&cmd_args)
             .output()
         {

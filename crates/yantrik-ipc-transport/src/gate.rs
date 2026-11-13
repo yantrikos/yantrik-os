@@ -109,7 +109,9 @@ pub fn unrecoverable(purpose: &str) -> bool {
 
 // ── What runs whatever it is given ──────────────────────────────────
 
-pub use yantrik_ipc_contracts::control_surface::{fetches_address, leaves_machine, LEAVES_MACHINE, OPEN_ENDED};
+pub use yantrik_ipc_contracts::control_surface::{
+    always_asks, fetches_address, leaves_machine, ALWAYS_ASKS, LEAVES_MACHINE, OPEN_ENDED,
+};
 
 /// Does the app's own description declare that the action runs whatever it is given — a command
 /// line, a script, keystrokes into a shell — so it can do anything the person can?
@@ -709,6 +711,13 @@ pub fn decide(
     }
     let mode = &authority.mode;
 
+    // An action that declares it is the person's to allow every time ([`ALWAYS_ASKS`]) runs only
+    // with a grant: no mode, not full bypass, no session rule and no standing rule stands in. After
+    // the ceiling (above); `safe` is exempt, as for the other sentences.
+    if level > 0 && always_asks(purpose) {
+        return Err(grant_refusal(app_id, action, graded, mode, Why::Always, None));
+    }
+
     // The app's own sentence, and the one input here that is not a grade. `safe` is excluded:
     // a read destroys nothing, so wording that happens to match cannot turn a look into a
     // question. The shell's `Modes::decide` and the bridge's `decide` draw the same line.
@@ -770,6 +779,8 @@ enum Why {
     Grade,
     CannotBeUndone,
     OpenEnded,
+    /// The action declared [`ALWAYS_ASKS`].
+    Always,
 }
 
 /// The whole rule for one call, for a caller that holds the grade where it holds the call.
@@ -871,6 +882,12 @@ fn grant_refusal(
         (true, Why::CannotBeUndone) => format!(
             "GRANT: {app}.{action} is graded `{graded}` and {final_word}, and this machine is in \
              plan mode, which raises no card for that — so it was not run. {PLAN}"
+        ),
+        (true, Why::Always) => format!(
+            "GRANT: {app}.{action} is the person's to allow on a card, and this machine is in plan mode, which raises none — so it was not run. {PLAN}"
+        ),
+        (false, Why::Always) => format!(
+            "GRANT: {app}.{action} is the person's to allow on a card every time, in every mode and whatever was allowed for the session before — so it was not run. {HOW}"
         ),
         (true, Why::OpenEnded) => format!(
             "GRANT: {app}.{action} is graded `{graded}` and {open_word}, and this machine is in \
@@ -1179,6 +1196,39 @@ mod tests {
     /// session rule covers the rest. In ask, auto and plain bypass an open-ended action above
     /// `safe` asks — even a `standard` one on the socket floor — and the refusal says a session
     /// rule would answer it; with the rule, it runs.
+    /// #1124 H1: an action that declares `ALWAYS_ASKS` runs only with a grant, in every mode and
+    /// whatever session or standing rule is in force: the grant a Mind makes for itself is the
+    /// person's, each time.
+    #[test]
+    fn an_always_asked_action_needs_a_grant_in_every_mode_and_no_rule_answers_it() {
+        let said = yantrik_ipc_contracts::control_surface::Action::new("workshop_create", "Ask for a workshop.")
+            .risk("sensitive")
+            .always_asks()
+            .description;
+        assert!(always_asks(&said));
+        for (mode, _) in MODES {
+            for rules in [false, true] {
+                let pair = vec![("app-shell".to_string(), "workshop_create".to_string())];
+                let authority = |granted| Authority {
+                    ceiling: "dangerous".into(),
+                    mode: Mode {
+                        name: mode.into(),
+                        session_rules: if rules { pair.clone() } else { Vec::new() },
+                        standing_rules: if rules { pair.clone() } else { Vec::new() },
+                    },
+                    granted,
+                    asks_above: None,
+                };
+                let asked = decide(&authority(false), "app-shell", "workshop_create", "sensitive", &said);
+                assert!(asked.as_ref().unwrap_err().starts_with("GRANT:"), "{mode} rules={rules}: {asked:?}");
+                assert!(decide(&authority(true), "app-shell", "workshop_create", "sensitive", &said).is_ok(), "{mode}: a grant answers it");
+            }
+        }
+        // A read that happens to say so is still a read.
+        let open = Authority { ceiling: "dangerous".into(), mode: Mode::named("bypass_all"), granted: false, asks_above: None };
+        assert!(decide(&open, "x", "y", "safe", &said).is_ok());
+    }
+
     #[test]
     fn an_open_ended_action_asks_once_and_a_session_rule_covers_it() {
         for mode in ["ask", "auto", "bypass"] {

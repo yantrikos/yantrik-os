@@ -37,6 +37,8 @@ pub mod launch;
 pub mod model;
 pub mod progress;
 pub mod reaches;
+pub mod state;
+pub mod stopped;
 pub mod store;
 
 use std::path::PathBuf;
@@ -152,6 +154,10 @@ impl Agents {
         if let Some((n, started)) = ended {
             crate::answered_turns::stamp(id, n, started);
         }
+    }
+
+    pub fn close_turn_stopped(&self, id: &AgentId) {
+        self.lock().close_turn_stopped(id)
     }
 
     pub fn set_state(&self, id: &AgentId, state: State) {

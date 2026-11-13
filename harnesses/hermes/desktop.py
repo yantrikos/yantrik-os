@@ -45,6 +45,13 @@ def socket_path() -> Optional[str]:
         # never silently fall through to another.
         return explicit if Path(explicit).exists() else None
 
+    # Running as the mind account (#411), the gateway reaches the desktop only at the mind door,
+    # which its unit names: look there and nowhere else, as the harness library does.
+    door = os.environ.get("YANTRIK_MIND_RUN", "").strip()
+    if door:
+        sock = Path(door) / "harness.sock"
+        return str(sock) if sock.exists() else None
+
     candidates: List[Path] = []
     runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip()
     if runtime:

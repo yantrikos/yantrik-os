@@ -50,14 +50,14 @@ pub fn memory_words(count: Option<i64>) -> String {
     }
 }
 
-/// The minds row: "6 can answer · 4 remember". One line in the panel's width. "Remember" is each
-/// mind's own memory (`MindsSeen::keep_memory`): a harness's memory is its own unless it says
-/// otherwise, and nothing here claims it shares yours.
+/// The minds row: "6 can answer · 4 with their own memory". One line in the panel's width. It is
+/// each mind's own memory (`MindsSeen::keep_memory`, a harness's own `capabilities.memory`): a
+/// grant of yours is a separate thing, and nothing here claims one.
 pub fn minds_words(count: usize, keep_memory: usize) -> String {
     let answer = if count == 1 { "1 can answer".to_string() } else { format!("{count} can answer") };
     let keep = match keep_memory {
-        0 => "none remember".to_string(),
-        n => format!("{n} remember"),
+        0 => "none with their own memory".to_string(),
+        n => format!("{n} with their own memory"),
     };
     format!("{answer} \u{b7} {keep}")
 }
@@ -81,6 +81,13 @@ pub fn thousands(n: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1176: the minds row says "their own memory", not a grant of the person's.
+    #[test]
+    fn the_minds_row_says_own_memory_and_not_a_grant() {
+        assert_eq!(minds_words(6, 4), "6 can answer \u{b7} 4 with their own memory");
+        assert_eq!(minds_words(1, 0), "1 can answer \u{b7} none with their own memory");
+    }
 
     #[test]
     fn recent_actions_are_sentences_not_ids() {
@@ -109,9 +116,9 @@ mod tests {
         assert_eq!(memory_words(Some(1_768)), "Remembers 1,768 things");
         assert_eq!(memory_words(Some(1)), "Remembers 1 thing");
         assert_eq!(memory_words(None), "Not counted yet", "never a zero that was not read");
-        assert_eq!(minds_words(6, 4), "6 can answer \u{b7} 4 remember");
-        assert_eq!(minds_words(1, 1), "1 can answer \u{b7} 1 remember");
-        assert_eq!(minds_words(2, 0), "2 can answer \u{b7} none remember");
+        assert_eq!(minds_words(6, 4), "6 can answer \u{b7} 4 with their own memory");
+        assert_eq!(minds_words(1, 1), "1 can answer \u{b7} 1 with their own memory");
+        assert_eq!(minds_words(2, 0), "2 can answer \u{b7} none with their own memory");
         for said in [memory_words(Some(5)), minds_words(3, 2)] {
             assert!(!said.contains("YantrikDB") && !said.contains("minds"), "{said}");
         }

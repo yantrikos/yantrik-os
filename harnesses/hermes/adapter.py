@@ -44,7 +44,7 @@ from gateway.platforms.base import (
 )
 from gateway.session import build_session_key
 
-from . import desktop, gateway_model
+from . import bridge_token, desktop, gateway_model
 from .steering import PLATFORM_HINT
 from .question import Card as _Card  # noqa: F401  (named in a type comment)
 from .output import CONFIRMED_BY_ASKING, OutputMixin  # noqa: F401
@@ -128,6 +128,12 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
         self._tasks: list[asyncio.Task] = []
         self._owner = os.environ.get("USER") or getpass.getuser() or OWNER_ID
         self._said_no_desktop = False
+        # Under the mind account (#411) the desktop refuses the tools bridge's acts unless they carry
+        # an agent token: the attach answers one for the gateway's own work, and this hands it to the
+        # bridge when the bridge asks (bridge_token.py says why not by environment).
+        self._tokens: Optional[bridge_token.TokenService] = (
+            bridge_token.TokenService() if os.environ.get("YANTRIK_MIND_RUN", "").strip() else None
+        )
         self._detail_said = ""
         self._detail_task: Optional["asyncio.Task[None]"] = None
         # A run that asked the person a question goes on in the turn that answered it. The gateway
@@ -166,6 +172,11 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
             task.cancel()
         if stale:
             await asyncio.gather(*stale, return_exceptions=True)
+        if self._tokens is not None:
+            try:
+                self._tokens.start()
+            except OSError as exc:
+                logger.warning("[yantrik] the desktop's tools cannot be given a token (%s): they will be refused", exc.__class__.__name__)
         self._tasks = [
             asyncio.create_task(self._run(), name="yantrik-poll"),
             asyncio.create_task(self._heartbeat(), name="yantrik-heartbeat"),
@@ -188,6 +199,8 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
             except desktop.HarnessError:
                 pass
         self._session = None
+        if self._tokens is not None:
+            self._tokens.stop()
         self._mark_disconnected()
 
     async def _call(self, method: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
@@ -213,12 +226,16 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
                     "detail": self._detail_said,
                     "tools": True,
                     "memory": True,
+                    # The gateway's own agent (`hermes:gateway`) and its token, for the tools bridge.
+                    "gateway": self._tokens is not None,
                 },
             )
         except desktop.HarnessError as exc:
             logger.warning("[yantrik] could not attach to %s: %s", address, exc)
             return False
         self._session = (result or {}).get("session")
+        if self._tokens is not None:
+            self._tokens.set_token((result or {}).get("gateway_token"))
         self._said_no_desktop = False
         logger.info("[yantrik] attached to the desktop at %s as `%s`", address, HARNESS_ID)
         # The attach line was read before the gateway could answer, perhaps (after a restart both
@@ -239,6 +256,8 @@ class YantrikAdapter(QuestionsMixin, OutputMixin, BasePlatformAdapter):
                     # failed on its side; attach again and carry on.
                     logger.warning("[yantrik] lost the desktop (%s); attaching again", exc)
                     self._session = None
+                    if self._tokens is not None:
+                        self._tokens.set_token(None)
                     for turn in self._ledger.open_turns():
                         self._ledger.close(turn.turn_id)
                     await asyncio.sleep(RETRY_SECONDS)

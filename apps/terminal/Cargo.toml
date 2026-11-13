@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 yantrik-app = { workspace = true }
+yantrik-ipc-contracts = { workspace = true }
 yantrik-design-tokens = { workspace = true }
 yantrik-ui-kit = { workspace = true }
 slint = { workspace = true }
