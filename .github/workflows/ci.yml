@@ -32,9 +32,11 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04
-    # Compiling the test binaries one job at a time (below) takes ~30 minutes, and a whole run
-    # measured 56.6 of the old 60: too close to turn a slow runner into a new kind of kill.
-    timeout-minutes: 75
+    # Compiling the test binaries one job at a time (below) took 29 to 40 minutes on the runs
+    # measured for it, and a whole green run is then about 57 to 68 minutes (setup and Build
+    # about 13, the compile up to 40, Test and the selftest about 15). 90 leaves a slow runner
+    # room; a healthy run never reaches it, so it costs nothing.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -94,6 +96,7 @@ jobs:
       - name: Build
         run: |
           .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null' EXIT
           cargo build --workspace --locked
 
       # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
@@ -116,11 +119,13 @@ jobs:
       - name: Compile the test binaries
         run: |
           .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null' EXIT
           cargo test --workspace --locked --no-run -j 1
 
       - name: Test
         run: |
           .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null' EXIT
           cargo test --workspace --locked
 
       # The kernel's direct set for the mind account is read from the person's policy by the

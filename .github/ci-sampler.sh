@@ -8,7 +8,8 @@
 # Costs one sleeping process and a few hundred bytes a minute.
 while true; do
   mem=$(free -m | awk '/^Mem:/{printf "mem used %s/%s MB avail %s", $3, $2, $7} /^Swap:/{printf " | swap used %s/%s MB", $3, $2}')
-  disk=$(df -h / /mnt | awk 'NR>1{printf " | %s %s used (%s free)", $6, $5, $4}')
+  # `/` only: the swap file is on it, and /mnt is not a mount of its own on this image.
+  disk=$(df -h / | awk 'NR>1{printf " | %s %s used (%s free)", $6, $5, $4}')
   top=$(ps -eo rss,comm --sort=-rss | awk 'NR>1 && NR<=4{printf " %s:%dMB", $2, $1/1024}')
   echo "[sample $(date -u +%T)] $mem$disk | top:$top"
   sleep 20
