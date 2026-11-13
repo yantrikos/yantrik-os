@@ -65,6 +65,12 @@ impl MindDisplay {
     }
 }
 
+/// Debian's chromium wrapper turns these two variables into switches: a port named there would be
+/// a listener this launch never asked for (the shell's `attach_for` clears them the same way).
+fn without_wrapper_flags(command: &mut std::process::Command) {
+    command.env_remove("CHROMIUM_FLAGS").env_remove("CHROMIUM_USER_FLAGS");
+}
+
 /// The shell's answer to "where does a mind's window go": a display, or why there is none.
 pub type DisplayForMind = fn() -> Result<MindDisplay, String>;
 
@@ -609,6 +615,7 @@ fn launch_browser(args: &serde_json::Value) -> String {
         Ok(command) => command,
         Err(why) => return format!("Not opened: {why}"),
     };
+    without_wrapper_flags(&mut command);
     command
         .env("XDG_RUNTIME_DIR", "/run/user/1000")
         .stdin(std::process::Stdio::null())
@@ -2685,6 +2692,17 @@ mod mind_display_tests {
         let f = &src[src.find("struct OpenUrlTool").unwrap_or(0)..];
         assert!(!f.contains("Command::new(\"xdg-open\")"), "open_url must go through the Mind View launcher");
         assert!(f.contains("open_url_for_mind"));
+    }
+
+    /// #1206 review, LOW: a non-default identity's browser does not get the wrapper's flag variables.
+    #[test]
+    fn the_wrappers_flag_variables_are_cleared_from_a_companion_browser() {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "printf '%s|%s' \"${CHROMIUM_FLAGS-unset}\" \"${CHROMIUM_USER_FLAGS-unset}\""]);
+        command.env("CHROMIUM_FLAGS", "--remote-debugging-port=9333").env("CHROMIUM_USER_FLAGS", "--remote-debugging-port=9334");
+        without_wrapper_flags(&mut command);
+        let out = command.output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "unset|unset");
     }
 
     /// The bug (#1085): `get_tabs` fetched `/json` on the person's port whoever held it, `browser_tabs` listed the

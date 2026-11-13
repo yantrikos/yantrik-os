@@ -36,14 +36,15 @@ on the program. A sealed job sees only its workshop and has no network. Unsealed
 browsers and Mind View apps see no workshop. Bytes leave only by `workshop_present` and the carded
 export. A program a Mind chooses starts only through three doors (the outside view, the browser
 view, or the shell's `open_app`), and `xtask check-architecture` fails the build on any other
-spawn in the companion's tools. An unsealed job runs as your account, so it can change your files, including what your
+spawn in the companion's tools. **The DevTools route (#1137, #1200) is closed.** No browser has a DevTools port any more: the person's
+Browser and Mind View's run on a pipe held by the browser service, and Arcade's verifier on a pipe
+only Arcade holds, so a job on the loopback has no DevTools endpoint to drive. The companion's own
+headless browser is gone with the port. These browsers still start in a view with no workshops.
+
+An unsealed job runs as your account, so it can change your files, including what your
 session runs at login, and under a session rule it needs no card to do so. Giving jobs an account
 of their own (#1137, step 3) comes after launch. Until then, these are known and open:
 
-- **The DevTools route (#1137, #1200).** No browser has a DevTools port any more: the person's
-  Browser and Mind View's run on a pipe held by the browser service, and Arcade's verifier on a pipe
-  only Arcade holds, so a job on the loopback has no DevTools endpoint to drive. The companion's own
-  headless browser is gone with the port. These browsers still start in a view with no workshops.
 - **Browsers you start yourself can start unwrapped (fixed after launch).** `xdg-open` from Lens
   and For You, the onboarding and free-AI browser (`open_apart`) and a `.desktop` launch from Lens
   or chat can start a Chromium with no view when no Browser is running. A Mind cannot trigger

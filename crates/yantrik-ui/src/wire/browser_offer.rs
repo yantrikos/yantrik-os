@@ -128,11 +128,41 @@ pub(super) fn keep_offered(path: &Path, mine: &OwnedFd, leader: &Leader, holder:
     }
 }
 
+/// The holder of a launch's stream, looked for again for Mind View. `find` is one look
+/// (`browser_holder::holder_of`); it runs once at once, and for Mind View's browser again every
+/// `every` while the leader runs, up to `bound`: a browser that is alive but not found yet (a slow
+/// bwrap or Chromium) must not run with no service holding it. If none is found and the leader
+/// still runs, its whole group is stopped (`stop_unheld`). A leader that has exited (a clean
+/// hand-over to a browser already open) is left alone and nothing is signalled. The person's
+/// Browser is looked for once and never stopped.
+pub(super) fn find_holder(leader: &Leader, role: Role, every: Duration, bound: Duration, mut find: impl FnMut() -> Option<u32>) -> Option<u32> {
+    if let Some(holder) = find() {
+        return Some(holder);
+    }
+    if role != Role::MindView {
+        return None;
+    }
+    let start = Instant::now();
+    while leader.alive() && start.elapsed() < bound {
+        std::thread::sleep(every);
+        if let Some(holder) = find() {
+            return Some(holder);
+        }
+    }
+    if leader.alive() {
+        if let Some(holder) = find() {
+            return Some(holder);
+        }
+        stop_unheld(leader, "no process under the launch holds the DevTools pipe");
+    }
+    None
+}
+
 /// Stops a Mind View browser the service does not hold: it is this shell's own child (held by its
 /// pidfd, so never another process that reused the number) and leads a group of its own
 /// (`attach_for`), so its helpers go with it. The next `browser` call opens one
 /// the service takes.
-fn stop_unheld(leader: &Leader, why: &str) {
+pub(super) fn stop_unheld(leader: &Leader, why: &str) {
     tracing::warn!(pid = leader.pid, %why, "Mind View's browser was not taken by the browser service; stopping it, since nothing holds or fences it");
     leader.kill();
 }
@@ -376,5 +406,63 @@ c.recv(1)
         let leader = Leader::of(running.id());
         assert!(leader.kill());
         assert!(was_killed(&mut running));
+    }
+
+    /// #1206 review, MEDIUM: a Mind View launch whose child never holds the stream and stays alive
+    /// is killed with its group.
+    #[test]
+    fn a_mind_view_launch_nobody_holds_is_stopped_with_its_group() {
+        let (mut child, Handoff { theirs, .. }) = a_browser(Role::MindView);
+        drop(theirs);
+        let mut looks = 0;
+        let found = find_holder(&Leader::of(child.id()), Role::MindView, Duration::from_millis(20), Duration::from_millis(200), || { looks += 1; None });
+        assert_eq!(found, None);
+        assert!(looks > 1, "looked again");
+        assert!(was_killed(&mut child), "stopped");
+    }
+
+    /// A launch that exited at once (a hand-over to a browser already open) is left alone.
+    #[test]
+    fn a_mind_view_launch_that_exited_is_left_alone() {
+        let mut child = Command::new("true").spawn().unwrap();
+        let leader = Leader::of(child.id());
+        let end = Instant::now() + Duration::from_secs(5);
+        while leader.alive() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!leader.alive());
+        let mut looks = 0;
+        let found = find_holder(&leader, Role::MindView, Duration::from_millis(20), Duration::from_secs(5), || { looks += 1; None });
+        assert_eq!(found, None);
+        assert_eq!(looks, 1, "no second look for a leader that has gone");
+        assert!(!leader.kill(), "nothing is signalled for it");
+        child.wait().unwrap();
+    }
+
+    /// A holder that appears on the second look is returned and the browser is not stopped.
+    #[test]
+    fn a_holder_found_on_the_second_look_is_offered_and_not_stopped() {
+        let (mut child, Handoff { theirs, .. }) = a_browser(Role::MindView);
+        drop(theirs);
+        let mut looks = 0;
+        let found = find_holder(&Leader::of(child.id()), Role::MindView, Duration::from_millis(20), Duration::from_secs(5), || { looks += 1; (looks == 2).then_some(4242) });
+        assert_eq!(found, Some(4242));
+        assert!(child.try_wait().unwrap().is_none(), "still running");
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    /// The person's Browser with no holder is looked for once and not stopped.
+    #[test]
+    fn the_persons_browser_with_no_holder_is_not_stopped() {
+        let (mut child, Handoff { theirs, .. }) = a_browser(Role::Person);
+        drop(theirs);
+        let mut looks = 0;
+        let found = find_holder(&Leader::of(child.id()), Role::Person, Duration::from_millis(20), Duration::from_millis(200), || { looks += 1; None });
+        assert_eq!(found, None);
+        assert_eq!(looks, 1);
+        assert!(child.try_wait().unwrap().is_none(), "still running");
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }

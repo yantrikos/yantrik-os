@@ -191,7 +191,8 @@ impl Handoff {
         let spawned = std::thread::Builder::new().name("browser-pipe".into()).spawn(move || {
             std::thread::sleep(SETTLE);
             let proc = Path::new("/proc");
-            let Some(holder) = super::browser_holder::holder_of(proc, pid, inode) else {
+            let Some(holder) = super::browser_offer::find_holder(&leader, role, RETRY, SAY_AFTER, || super::browser_holder::holder_of(proc, pid, inode)) else {
+                // (Mind View's browser was looked for until `SAY_AFTER`, and stopped if alive.)
                 // This launch did not become a Browser with the pipe: it handed over to one that
                 // was already open (or died, which the reaper reports). If the shell has none of
                 // its own and the person's account runs another, the dock joined an instance
