@@ -184,7 +184,9 @@ fn l1_opening_a_draft_whose_slot_write_fails_loses_neither_draft_and_says_so() {
     quiet(&app);
     assert!(super::notice(&app).contains("could not be opened"), "{}", super::notice(&app));
     assert!(shelf_text(&paths, "24").unwrap().contains("maya@example.com"), "the draft being opened is still on its shelf");
-    assert!(shelf_text(&paths, "25").unwrap().contains("ravi@example.com"), "the draft that was in the slot is on its shelf");
+    // The write failed, so the slot still holds the draft that was in it; no second copy is left on a shelf.
+    assert!(shelf_text(&paths, "25").is_none(), "no second copy of the slot's draft is left");
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.to.contains("ravi@example.com"))), "the draft that was in the slot is still there");
     let _ = std::fs::remove_dir_all(a.parent().unwrap());
 }
 
@@ -339,5 +341,96 @@ fn leftover_1_a_touched_slot_draft_whose_promise_is_forgotten_stays_in_the_slot(
     quiet(&app);
     assert!(!paths.data_dir().join("mind_draft.24.json").exists(), "it was not shelved under a dead id");
     assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("edited again"), "it stayed in the slot");
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+/// 24 is edited and parked in the slot with 25 on its shelf; the slot write is broken and 25 opened,
+/// which fails. Returns the slot file's text, to put back.
+fn failed_open_with_a_touched_slot(paths: &Paths, app: &yantrik_testing::TestApp<Email>, attach: &str) -> String {
+    compose_with(app, "maya@example.com", attach, "24");
+    compose_with(app, "ravi@example.com", attach, "25");
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(app);
+    super::compose::type_into_composer(app, &super::compose::draft("maya@example.com", "edited in the slot"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(app);
+    let held = std::fs::read_to_string(slot_file(paths)).unwrap();
+    break_the_slot_write(paths);
+    app.run(Command::OpenPreparedFor("25".into()));
+    quiet(app);
+    assert!(super::notice(app).contains("could not be opened"), "{}", super::notice(app));
+    std::fs::remove_dir(slot_file(paths)).unwrap();
+    std::fs::write(slot_file(paths), &held).unwrap();
+    held
+}
+
+fn nothing_of_24_comes_back(paths: &Paths, app: &yantrik_testing::TestApp<Email>) {
+    assert!(!paths.data_dir().join("mind_draft.24.json").exists(), "no copy of the discarded draft is left on a shelf");
+    assert!(app.model(|m| matches!(m.composer.mind, Ok(None))), "the entry is empty");
+    assert!(app.ui(|ui| ui.get_prepared_label().to_string()).is_empty(), "the entry offers nothing");
+}
+
+#[test]
+fn r1_a_failed_open_then_discard_prepared_does_not_bring_the_discarded_draft_back() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "r1d");
+    failed_open_with_a_touched_slot(&paths, &app, &a.to_string_lossy());
+    assert!(shelf_text(&paths, "24").is_none(), "the failed open left no copy of the held draft");
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    nothing_of_24_comes_back(&paths, &app);
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn r1_a_failed_open_then_a_send_does_not_offer_the_sent_message_again() {
+    let paths = Paths::temporary(Email::ID);
+    let (app, _) = start_at(paths.clone(), &with_inbox().answering("email.send_message", json!({})), FakeMind::new());
+    quiet(&app);
+    let held = failed_open_with_a_touched_slot(&paths, &app, "");
+    assert!(held.contains("edited in the slot"));
+    app.run(Command::OpenPrepared);
+    quiet(&app);
+    let body = app.model(|m| m.composer.text.body.clone());
+    app.ui(|ui| ui.invoke_send_email("maya@example.com".into(), "".into(), "".into(), "Plans".into(), body.into()));
+    quiet(&app);
+    nothing_of_24_comes_back(&paths, &app);
+}
+
+#[test]
+fn r1_a_failed_open_then_remove_attachment_does_not_bring_the_draft_back_with_its_file() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "r1r");
+    failed_open_with_a_touched_slot(&paths, &app, &a.to_string_lossy());
+    app.run(Command::OpenPrepared);
+    quiet(&app);
+    app.run(Command::RemoveAttachment);
+    quiet(&app);
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    nothing_of_24_comes_back(&paths, &app);
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn r2_a_promoted_draft_whose_promise_was_forgotten_is_not_shelved_under_the_dead_id() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let a = home_file("alpha.ydeck", "r2");
+    a_touched_and_b_in_the_slot(&paths, &app, &a);
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    compose(&app, "cara@example.com", &a, "26");
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).unwrap();
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    assert!(app.ui(|ui| ui.get_prepared_label().to_string()).contains("maya@example.com"), "A is in the entry");
+    app.run(Command::OpenPreparedFor("25".into()));
+    quiet(&app);
+    assert!(!paths.data_dir().join("mind_draft.24.json").exists(), "A was not shelved under the dead id");
+    assert!(super::notice(&app).contains("was not moved"), "{}", super::notice(&app));
+    assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("my own careful wording"), "A stayed in the slot");
     let _ = std::fs::remove_dir_all(a.parent().unwrap());
 }

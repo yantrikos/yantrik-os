@@ -99,14 +99,15 @@ fn remove_shelf(shelf: &std::path::Path) {
 /// opened by `open_prepared_for` or cleared by `forget_prepared`. This only writes: nothing is
 /// removed here, so a failure leaves every draft where it was. It never writes over a shelf the
 /// person touched.
-fn shelve_held(m: &mut Model, incoming: Option<&str>) -> Result<(), Refused> {
-    let Ok(Some(held)) = &m.composer.mind else { return Ok(()) };
-    let Some(held_for) = held.commitment.as_deref().filter(|c| Some(*c) != incoming) else { return Ok(()) };
-    let Some(shelf) = shelf_path(&m.files.mind_draft, held_for) else { return Ok(()) };
+fn shelve_held(m: &mut Model, incoming: Option<&str>) -> Result<Option<std::path::PathBuf>, Refused> {
+    let Ok(Some(held)) = &m.composer.mind else { return Ok(None) };
+    let Some(held_for) = held.commitment.as_deref().filter(|c| Some(*c) != incoming) else { return Ok(None) };
+    let Some(shelf) = shelf_path(&m.files.mind_draft, held_for) else { return Ok(None) };
     if shelf_is_theirs(&shelf) {
         return Err(Refused::new("person_is_writing", PERSON_WRITING));
     }
-    save_mind_draft(&shelf, held).map_err(|e| Refused::new("not_kept", format!("The draft Yantrik prepared earlier could not be kept, so a new one was not started: {e}")))
+    save_mind_draft(&shelf, held).map_err(|e| Refused::new("not_kept", format!("The draft Yantrik prepared earlier could not be kept, so a new one was not started: {e}")))?;
+    Ok(Some(shelf))
 }
 
 /// Open the composer on the slot.
@@ -189,12 +190,18 @@ pub fn open_prepared_for(m: &mut Model, commitment: &str, fx: &mut Effects<Email
     if matches!(&m.composer.mind, Ok(Some(h)) if h.commitment.is_none() && h.touched) {
         return say(m, fx, "You have changed the draft in the prepared slot, so it was not moved. Discard it first, then open the other.");
     }
-    if let Err(refused) = shelve_held(m, Some(commitment)) {
-        return say(m, fx, refused.sentence);
-    }
+    let shelved = match shelve_held(m, Some(commitment)) {
+        Ok(s) => s,
+        Err(refused) => return say(m, fx, refused.sentence),
+    };
     // The shelf goes only once the slot holds what was on it. If the write fails, the draft that was
     // in the slot is on its shelf and the one being opened is still on its own.
     if let Err(e) = save_mind_draft(&m.files.mind_draft, &waiting) {
+        // The old slot is whole and still holds the held draft: its shelf copy from this call goes,
+        // or a discard or send of the slot would promote it back.
+        if let Some(copy) = shelved {
+            remove_shelf(&copy);
+        }
         return say(m, fx, &format!("The draft could not be opened, and nothing was lost: {e}"));
     }
     remove_shelf(&shelf);
@@ -256,6 +263,11 @@ pub fn promote_waiting(m: &mut Model) {
 /// would then be sent without it. It stays on its shelf for the "Draft Yantrik prepared" entry.
 fn keep_for_person(m: &mut Model, shelf: &std::path::Path, d: MindDraft, fx: &mut Effects<Email>) {
     if !d.attachments.is_empty() {
+        // Its promise is closed: the shelf keeps the draft and its file but no id, so once promoted
+        // to the slot it is kept there instead of being shelved where no card opens it.
+        if d.commitment.is_some() {
+            let _ = save_mind_draft(shelf, &MindDraft { commitment: None, ..d });
+        }
         return;
     }
     let c = &m.composer;
