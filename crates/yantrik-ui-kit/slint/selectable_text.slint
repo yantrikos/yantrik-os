@@ -1,0 +1,17 @@
+// Wrapped, read-only text the person can select with the mouse and copy with Ctrl+C.
+//
+// A Slint `Text` cannot be selected; a read-only `TextInput` can, and it wraps and colours like a
+// `Text`. Every place the chat shows words (the Lens, an agent's pane, Mind View, the kit's
+// bubble) uses this one element for them, so selection works the same everywhere. Copying is the
+// person's own Ctrl+C: nothing here reads the clipboard or writes it unasked.
+
+import { Theme } from "theme.slint";
+
+export component SelectableText inherits TextInput {
+    read-only: true;
+    single-line: false;
+    wrap: word-wrap;
+    selection-background-color: Theme.accent.with-alpha(0.35);
+    selection-foreground-color: Theme.text-primary;
+    accessible-role: text;
+}

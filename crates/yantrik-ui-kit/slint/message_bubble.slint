@@ -4,6 +4,8 @@
 
 import { Theme } from "theme.slint";
 import { ToolCallData, ToolCallCard } from "tool_call.slint";
+import { SelectableText } from "selectable_text.slint";
+import { CodeBlock } from "code_block.slint";
 
 // A single rendered block in a message (parsed from markdown).
 export struct ContentBlock {
@@ -80,7 +82,7 @@ export component MessageBubble inherits Rectangle {
                 }
 
                 // Plain text fallback (streaming or no parsed blocks)
-                if !has-blocks : Text {
+                if !has-blocks : SelectableText {
                     text: data.content;
                     color: Theme.text-primary;
                     font-size: Theme.font-body;
@@ -109,7 +111,7 @@ export component MessageBubble inherits Rectangle {
                         // A direct child of the layout, as in the Agents pane: a wrapping text
                         // inside a nested layout is measured at its unwrapped width, and every
                         // line past the first is cut off.
-                        if !is-tool && !is-code : Text {
+                        if !is-tool && !is-code : SelectableText {
                             text: block.text;
                             color: block.block-type == "heading" ? Theme.amber-light : Theme.text-primary;
                             font-size: block.block-type == "heading" ? Theme.font-title : Theme.font-body;
@@ -118,22 +120,8 @@ export component MessageBubble inherits Rectangle {
                         }
 
                         // Sized from its own text, for the same reason.
-                        if is-code : Rectangle {
-                            background: Theme.bg-card;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            height: code.preferred-height + 16px;
-
-                            code := Text {
-                                x: 10px;
-                                y: 8px;
-                                width: parent.width - 20px;
-                                text: block.text;
-                                color: Theme.cyan-light;
-                                font-size: Theme.font-small;
-                                wrap: word-wrap;
-                            }
+                        if is-code : CodeBlock {
+                            text: block.text;
                         }
                     }
                 }
@@ -167,7 +155,7 @@ export component MessageBubble inherits Rectangle {
                 padding-left: 14px;
                 padding-right: 14px;
 
-                Text {
+                SelectableText {
                     text: data.content;
                     color: Theme.text-primary;
                     font-size: Theme.font-body;
