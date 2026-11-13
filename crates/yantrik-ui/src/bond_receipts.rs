@@ -78,6 +78,39 @@ pub(crate) struct Door {
     /// Bumped (inside the lock) by every Forget that succeeded. A retried receipt that was pressed
     /// before a Forget that has since happened is not written.
     forgets: Arc<AtomicU64>,
+    /// The one ordered retry path: receipts not yet in the store, FIFO, one worker thread.
+    retries: Arc<Retries>,
+    /// How long the worker keeps trying one receipt on a busy store before it is lost.
+    retry_budget: Duration,
+}
+
+/// The retry queue's state. `pending` counts receipts queued or being written.
+#[derive(Default)]
+struct RetryState {
+    pending: usize,
+    tx: Option<crossbeam_channel::Sender<RetryItem>>,
+}
+
+#[derive(Default)]
+struct Retries {
+    state: Mutex<RetryState>,
+    idle: std::sync::Condvar,
+}
+
+struct RetryItem {
+    receipt: Receipt,
+    at: PressStamp,
+    seen: u64,
+    done: crossbeam_channel::Sender<bool>,
+}
+
+/// Waits for one queued receipt's outcome: `true` when it was written.
+pub(crate) struct RetryHandle(crossbeam_channel::Receiver<bool>);
+
+impl RetryHandle {
+    pub(crate) fn join(self) -> Result<bool, crossbeam_channel::RecvError> {
+        self.0.recv()
+    }
 }
 
 /// A failed store call, and whether it was the store being busy or locked (worth one retry).
@@ -138,6 +171,8 @@ impl Door {
             conn: Arc::new(Mutex::new(None)),
             ui: Arc::new(Mutex::new(None)),
             forgets: Arc::new(AtomicU64::new(0)),
+            retries: Arc::new(Retries::default()),
+            retry_budget: Duration::from_secs(5),
         }
     }
 
@@ -179,20 +214,20 @@ impl Door {
 
     /// A thing the person did. Stamped now, written now, in press order. `Ok(false)` when it was
     /// not written by choice (the bond is off, the companion is incognito, or the same record was
-    /// already there). `Err` when the store would not take it: that is logged at warn with the
-    /// receipt's kind, and retried once (see [`Self::receipt_retrying`]).
+    /// already there). `Err` when it is not in the store yet: the store would not take it, or an
+    /// earlier receipt is still being retried and this one waits behind it. Both are logged at warn
+    /// and handed to the one retry worker (see [`Self::receipt_retrying`]).
     pub(crate) fn receipt(&self, receipt: &Receipt) -> Result<bool, String> {
         self.receipt_retrying(receipt).0
     }
 
-    /// [`Self::receipt`], also giving the retry's handle when the first write failed. The press's
-    /// stamp is taken inside the connection lock and is kept for the retry, which runs off the UI
-    /// thread, on its own connection, with that same stamp, once. If the retry fails too it warns
-    /// again and the handle yields `false`: a refusal is never dropped silently.
-    pub(crate) fn receipt_retrying(
-        &self,
-        receipt: &Receipt,
-    ) -> (Result<bool, String>, Option<std::thread::JoinHandle<bool>>) {
+    /// [`Self::receipt`], also giving a handle on the retry when the receipt was not written at
+    /// the press. Press order is kept by ONE ordered path: while any receipt is pending, a new press
+    /// does not write directly but is appended to the same FIFO queue, so it lands after the earlier
+    /// one. The queue's one worker thread writes each in order, under the Door's lock, with the
+    /// press's own stamp and the Forget count read at the press. The decision (pending or not) and
+    /// the direct write are made under one lock, so no press can slip between.
+    pub(crate) fn receipt_retrying(&self, receipt: &Receipt) -> (Result<bool, String>, Option<RetryHandle>) {
         if !self.bridge.bond_recording() {
             return (Ok(false), None);
         }
@@ -200,11 +235,15 @@ impl Door {
         // Stamped, and the Forget count read, at the press, before anything can wait on the store.
         let at = PressStamp::now();
         let seen = self.forgets.load(Ordering::SeqCst);
+        let mut state = self.retries.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.pending > 0 {
+            let why = "an earlier receipt is still being retried; this one is written after it".to_string();
+            tracing::warn!(kind, "bond: {why}");
+            let handle = self.enqueue(&mut state, receipt, at, seen);
+            return (Err(why), handle);
+        }
         let first = self.with_store_err(|conn| BondTracker::try_record_receipt(conn, receipt, at));
-        let busy = match &first {
-            Ok(_) => false,
-            Err(e) => e.busy,
-        };
+        let busy = matches!(&first, Err(e) if e.busy);
         let first = first.map_err(|e| e.why);
         let Err(why) = &first else {
             return (first, None);
@@ -213,42 +252,82 @@ impl Door {
         if !busy {
             return (first, None); // a missing table or the like: a retry cannot help
         }
-        tracing::warn!(kind, "bond: the store was busy; trying the receipt once more");
-        let (door, receipt) = (self.clone(), receipt.clone());
-        let spawned = std::thread::Builder::new()
-            .name("bond-receipt-retry".into())
-            .spawn(move || door.retry(&receipt, at, seen));
-        match spawned {
-            Ok(handle) => (first, Some(handle)),
-            Err(err) => {
-                tracing::warn!(%err, kind, "bond: a receipt was lost: the retry thread could not start");
-                (first, None)
+        tracing::warn!(kind, "bond: the store was busy; the receipt is queued to be tried again");
+        let handle = self.enqueue(&mut state, receipt, at, seen);
+        (first, handle)
+    }
+
+    /// Append to the retry queue (the state lock is held), starting the one worker if need be.
+    fn enqueue(&self, state: &mut RetryState, receipt: &Receipt, at: PressStamp, seen: u64) -> Option<RetryHandle> {
+        let kind = receipt.kind.as_str();
+        if state.tx.is_none() {
+            let (tx, rx) = crossbeam_channel::unbounded::<RetryItem>();
+            let door = self.clone();
+            let spawned = std::thread::Builder::new().name("bond-receipt-retry".into()).spawn(move || {
+                for item in rx {
+                    let landed = door.retry(&item.receipt, item.at, item.seen);
+                    let _ = item.done.send(landed);
+                    let mut state = door.retries.state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.pending -= 1;
+                    door.retries.idle.notify_all();
+                }
+            });
+            if let Err(err) = spawned {
+                tracing::warn!(%err, kind, "bond: a receipt was lost: the retry worker could not start");
+                return None;
             }
+            state.tx = Some(tx);
+        }
+        let (done, handle) = crossbeam_channel::bounded(1);
+        let item = RetryItem { receipt: receipt.clone(), at, seen, done };
+        state.pending += 1;
+        if state.tx.as_ref().is_some_and(|tx| tx.send(item).is_ok()) {
+            Some(RetryHandle(handle))
+        } else {
+            state.pending -= 1;
+            tracing::warn!(kind, "bond: a receipt was lost: the retry worker is gone");
+            None
         }
     }
 
-    /// The one retry of a refusal that timed out. It runs under the Door's lock (through
-    /// `with_store_err`), so it is serialized with every later press, and it does not write if a
-    /// Forget has succeeded since the press (`seen` is the count the press read).
+    /// Wait until the retry queue is empty (every pending receipt written, skipped or lost).
+    #[cfg(test)]
+    fn drain(&self) {
+        let mut state = self.retries.state.lock().unwrap_or_else(|e| e.into_inner());
+        while state.pending > 0 {
+            state = self.retries.idle.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// One queued receipt, run by the worker. It runs under the Door's lock (through
+    /// `with_store_err`), so it is serialized with every later press. It does not write if a Forget
+    /// has succeeded since the press (`seen` is the count the press read). It keeps trying only on a
+    /// busy or locked store, for up to `retry_budget` (about 5 s), then logs the receipt lost.
     fn retry(&self, receipt: &Receipt, at: PressStamp, seen: u64) -> bool {
         let kind = receipt.kind.as_str();
-        let mut skipped = false;
-        let done = self.with_store_err(|conn| {
-            if self.forgets.load(Ordering::SeqCst) != seen {
-                skipped = true;
-                return Ok(false);
+        let began = std::time::Instant::now();
+        loop {
+            let mut skipped = false;
+            let done = self.with_store_err(|conn| {
+                if self.forgets.load(Ordering::SeqCst) != seen {
+                    skipped = true;
+                    return Ok(false);
+                }
+                BondTracker::try_record_receipt(conn, receipt, at)
+            });
+            if skipped {
+                tracing::info!("bond: a receipt pressed before Forget was not written");
+                return false;
             }
-            BondTracker::try_record_receipt(conn, receipt, at)
-        });
-        if skipped {
-            tracing::info!("bond: a receipt pressed before Forget was not written");
-            return false;
-        }
-        match done {
-            Ok(_) => true,
-            Err(e) => {
-                tracing::warn!(why = %e.why, kind, "bond: a receipt was lost: the retry failed too");
-                false
+            match done {
+                Ok(_) => return true,
+                Err(e) if e.busy && began.elapsed() < self.retry_budget => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => {
+                    tracing::warn!(why = %e.why, kind, "bond: a receipt was lost: the retry failed");
+                    return false;
+                }
             }
         }
     }
@@ -704,12 +783,16 @@ mod door_tests {
         let (first, retry) = t.door.receipt_retrying(&refusal("deny"));
         assert!(first.is_err());
         let retry = retry.expect("retried");
-        let release = release_after(holder, 300);
+        // The Deny is pending, so the Allow is queued behind it, not written directly.
         let mut allow = refusal("allow");
         allow.kind = ReceiptKind::CardAllowed;
-        assert_eq!(t.door.receipt(&allow), Ok(true));
-        release.join().unwrap();
+        let (second, behind) = t.door.receipt_retrying(&allow);
+        assert!(second.is_err(), "not in the store yet: it waits behind the Deny");
+        let behind = behind.expect("queued");
+        holder.execute_batch("ROLLBACK").unwrap(); // the lock frees; the worker writes in order
+        t.door.drain();
         assert!(retry.join().unwrap());
+        assert!(behind.join().unwrap());
         let ids: Vec<String> = stored(&t.path).into_iter().map(|r| r.0).collect();
         assert_eq!(ids, ["deny", "allow"], "rowid order is press order");
     }
