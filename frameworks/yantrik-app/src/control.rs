@@ -429,6 +429,14 @@ pub fn published_description(action: &str) -> Option<String> {
     })
 }
 
+/// The sentence THIS app's own action gives about one call (`Registry::explain`), for the same
+/// reason as [`published_description`]: the shell asking itself cannot ask over its socket.
+/// `None` where this thread has no registry, `Some(Err)` for an action that explains nothing
+/// (#1124, N7: the shell's card was built with the sentence left empty).
+pub fn published_explanation(action: &str, args: &serde_json::Value) -> Option<Result<String, String>> {
+    REGISTRY.with(|cell| cell.borrow().as_ref().map(|reg| reg.explain(action, args)))
+}
+
 /// Re-declare the grade THIS app publishes for one of its own actions, while it is running.
 ///
 /// See `yantrik_surface::Registry::regrade` for why an app needs this (Studio's `generate`, whose
@@ -1040,6 +1048,24 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    /// #1124 N7: the shell's own card reads an action's per-call sentence from the registry on the
+    /// UI thread, as it reads the description; an action that explains nothing says so.
+    #[test]
+    fn the_registry_on_this_thread_gives_the_sentence_for_one_call() {
+        let mut reg = Registry::new("t-explain");
+        reg.add(
+            Action::new("say", "Says what it does").risk("safe").explain(|a| format!("says {a}")),
+            Box::new(|_| Ok(serde_json::json!("ok"))),
+        );
+        reg.add(Action::new("quiet", "Says nothing").risk("safe"), Box::new(|_| Ok(serde_json::json!("ok"))));
+        REGISTRY.with(|cell| *cell.borrow_mut() = Some(Rc::new(reg)));
+        let args = serde_json::json!({ "x": 1 });
+        assert_eq!(published_explanation("say", &args), Some(Ok("says {\"x\":1}".to_string())));
+        assert!(matches!(published_explanation("quiet", &args), Some(Err(_))));
+        REGISTRY.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(published_explanation("say", &args), None);
+    }
 
     /// A ceiling that binds nothing, for the tests that are about everything *except* the
     /// boundary.
@@ -1878,6 +1904,7 @@ mod tests {
             pid: 4242,
             uid: me,
             gid: me,
+            the_mind: false,
         }));
         assert!(!agent_is_calling(), "the person's own account, no token");
         {

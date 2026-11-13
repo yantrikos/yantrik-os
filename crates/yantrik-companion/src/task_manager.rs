@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 
 use rusqlite::Connection;
 
@@ -34,6 +34,15 @@ pub struct TaskManager {
     live: HashMap<String, Child>,
     /// Simple counter for task ID generation.
     next_id: u64,
+}
+
+/// The Mind's shell line as a command (#1124): it starts through the Mind door, in the outside
+/// view, with the workshops root and the person's `/run/user` hidden. On a machine that holds
+/// workshops and has no `bwrap` it is refused, and nothing has run. Every caller of
+/// [`TaskManager::spawn`] (`run_background`, an automation's step, a sub-agent) comes here.
+fn shell_command(home: &std::path::Path, command: &str) -> Result<std::process::Command, String> {
+    let words = ["-c".to_string(), command.to_string()];
+    yantrik_companion_tools::spawn::mind_command(home, "/bin/sh", &words).map_err(|e| format!("The command was not run: {e}"))
 }
 
 impl TaskManager {
@@ -87,6 +96,9 @@ impl TaskManager {
             ));
         }
 
+        // Refused before anything is created or counted: a refused line leaves no trace.
+        let mut shell = shell_command(&yantrik_companion_tools::spawn::home(), command)?;
+
         let task_id = format!("t{:04x}", self.next_id);
         self.next_id += 1;
 
@@ -99,12 +111,8 @@ impl TaskManager {
             .try_clone()
             .map_err(|e| format!("Failed to clone file handle: {e}"))?;
 
-        let child = Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .stdout(Stdio::from(log_file))
-            .stderr(Stdio::from(stderr_file))
-            .spawn()
+        shell.stdout(Stdio::from(log_file)).stderr(Stdio::from(stderr_file));
+        let child = yantrik_companion_tools::spawn::spawn_long_lived(shell)
             .map_err(|e| format!("Failed to spawn process: {e}"))?;
 
         let pid = child.id();
@@ -407,6 +415,51 @@ fn format_duration(secs: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::shell_command;
+    use std::path::Path;
+    use yantrik_ipc_contracts::home_paths::workshops::{base, find_bwrap, root, roots_under_home_for_tests};
+
+    /// A home whose workshops root holds one workshop, as on a machine that has granted one.
+    fn home_holding_a_workshop() -> std::path::PathBuf {
+        roots_under_home_for_tests();
+        let home = std::env::temp_dir().join(format!("yantrik-task-manager-{}", std::process::id()));
+        std::fs::create_dir_all(root(&home).join("w")).unwrap();
+        home
+    }
+
+    fn argv(c: &std::process::Command) -> Vec<String> {
+        c.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+    }
+
+    /// `run_background` no longer starts a bare `sh`: with bwrap the program is bwrap with the
+    /// workshops base masked by a tmpfs; without it, a machine that holds workshops refuses.
+    #[test]
+    fn a_background_shell_line_runs_in_the_outside_view_or_not_at_all() {
+        let home = home_holding_a_workshop();
+        match shell_command(&home, "ls /var/lib/yantrik/workshops") {
+            Ok(c) => {
+                assert!(find_bwrap().is_some());
+                assert!(c.get_program().to_string_lossy().ends_with("bwrap"), "{:?}", c.get_program());
+                let args = argv(&c);
+                assert!(args.windows(2).any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == base(&home)), "{args:?}");
+                assert_eq!(args[args.len() - 3..], ["/bin/sh", "-c", "ls /var/lib/yantrik/workshops"]);
+            }
+            Err(e) => {
+                assert!(find_bwrap().is_none());
+                assert!(e.contains("The command was not run") && e.contains("nothing was run"), "{e}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The one place the task manager starts a program is that door: no `Command::new` of its own.
+    #[test]
+    fn the_task_manager_builds_no_command_of_its_own() {
+        let src = include_str!("task_manager.rs");
+        let code = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert!(!code.contains("Command::new") && code.contains("spawn::mind_command"));
+    }
+
     use super::TaskManager;
     use std::io::Write;
 

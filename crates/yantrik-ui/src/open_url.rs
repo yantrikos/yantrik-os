@@ -25,6 +25,12 @@ const ARRIVAL: Duration = Duration::from_secs(12);
 const POLL: Duration = Duration::from_millis(300);
 
 /// Open an ordinary link in the person's browser (`xdg-open`), and bring it to the front.
+///
+/// Not walled (#1124, gate 5): `xdg-open` starts the default browser outside the wall, in the
+/// shell's own mount namespace, with no DevTools pipe, so it sees the workshops and `yos web`
+/// cannot drive it. Routing it through the Browser's launcher needs the dock to take a URL and to
+/// hand it to an instance already open, which this PR does not change; a dock launch that joins
+/// such a browser says so (`browser_holder::NOT_DRIVABLE`). Follow-up issue: see the PR comment.
 pub fn open(url: &str) -> Result<(), String> {
     let url = web_address(url)?;
     let before = foreign_windows();
@@ -44,7 +50,7 @@ pub fn open(url: &str) -> Result<(), String> {
 /// session cannot drive it. It comes to the front like any page.
 pub fn open_apart(url: &str) -> Result<(), String> {
     let url = web_address(url)?;
-    let (browser, _) = crate::wire::dock::find_browser().ok_or("there is no browser on this machine")?;
+    let (browser, _) = crate::wire::browser_launch::find_browser().ok_or("there is no browser on this machine")?;
     let profile = yantrik_ml::private_dir::state_dir("provider-pages")
         .map_err(|e| format!("no private profile for the browser: {e}"))?;
     let program = crate::wire::dock::find_program(browser).ok_or("there is no browser on this machine")?;

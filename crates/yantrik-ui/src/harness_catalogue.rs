@@ -1049,7 +1049,7 @@ setup:
         let manifests = read_manifests(&[repo]);
         let hermes = manifests["hermes"].configure.as_ref().expect("Hermes needs a model chosen");
         assert!(hermes.command.starts_with("hermes model"), "{}", hermes.command);
-        assert!(hermes.command.contains("restart hermes-gateway"), "the running gateway must pick it up");
+        assert!(hermes.command.contains("harness restart hermes"), "the running gateway must pick it up");
         assert!(manifests["openclaw"].configure.as_ref().unwrap().command.contains("openclaw onboard"));
     }
 
