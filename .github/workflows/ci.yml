@@ -96,7 +96,7 @@ jobs:
       - name: Build
         run: |
           .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null' EXIT
+          trap 'kill $! 2>/dev/null || true' EXIT
           cargo build --workspace --locked
 
       # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
@@ -119,13 +119,13 @@ jobs:
       - name: Compile the test binaries
         run: |
           .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null' EXIT
+          trap 'kill $! 2>/dev/null || true' EXIT
           cargo test --workspace --locked --no-run -j 1
 
       - name: Test
         run: |
           .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null' EXIT
+          trap 'kill $! 2>/dev/null || true' EXIT
           cargo test --workspace --locked
 
       # The kernel's direct set for the mind account is read from the person's policy by the
