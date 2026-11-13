@@ -68,7 +68,7 @@ pub fn compose(m: &mut Model, to: String, subject: String, body: String, attach:
         return Err(Refused::new("person_is_writing", PERSON_WRITING));
     }
     shelve_held(m, commitment.as_deref())?;
-    let slot = MindDraft { text: Draft { to, subject, body, ..Draft::default() }, attachments, touched: false, commitment };
+    let slot = MindDraft { text: Draft { to, subject, body, ..Draft::default() }, attachments, touched: false, commitment, generation: 0 };
     save_mind_draft(&m.files.mind_draft, &slot).map_err(|e| Refused::new("not_kept", format!("The draft could not be kept, and the earlier one was left as it was: {e}")))?;
     // Only now, with the new draft written, does the one it replaces go.
     if let Some(old) = waiting {
@@ -138,6 +138,7 @@ pub fn park(m: &mut Model) {
     if slot.text != text {
         slot.text = text;
         slot.touched = true;
+        slot.generation += 1;
     }
     // Cancel on a slot with nothing left in it discards it: there is nothing to keep.
     if slot.is_empty() {
@@ -165,22 +166,32 @@ fn drop_left_on_shelf(m: &mut Model, held_for: Option<&str>) {
     }
 }
 
-/// At start: a slot that holds promise C while a touched shelf for C exists means the last slot
-/// write after a failed open never happened, so the shelf is the newer copy. It is written to the
-/// slot first, atomically, and only then removed; if that write fails both stay.
+/// At start: a slot that holds promise C while a touched shelf for C exists. The higher `generation`
+/// is the newer copy: a newer shelf is written to the slot first, atomically, and only then removed
+/// (if that write fails both stay, and the session shows the shelf's text as a failed open would);
+/// an older or identical shelf is removed; two different copies of one generation are both kept.
 pub fn adopt_newer_shelf(m: &mut Model) {
     let Ok(Some(slot)) = &m.composer.mind else { return };
     let Some(shelf) = slot.commitment.as_deref().and_then(|c| shelf_path(&m.files.mind_draft, c)) else { return };
-    let Ok(Some(newer)) = load_mind_draft(&shelf) else { return };
-    if !newer.touched || newer.commitment != slot.commitment {
+    let Ok(Some(other)) = load_mind_draft(&shelf) else { return };
+    if !other.touched || other.commitment != slot.commitment {
         return;
     }
-    match save_mind_draft(&m.files.mind_draft, &newer) {
-        Ok(()) => {
-            remove_shelf(&shelf);
-            m.composer.mind = Ok(Some(newer));
-        }
-        Err(e) => tracing::warn!(error = %e, "a newer prepared draft on its shelf could not be moved into the slot"),
+    match other.generation.cmp(&slot.generation) {
+        std::cmp::Ordering::Less => remove_shelf(&shelf),
+        std::cmp::Ordering::Equal if other == *slot => remove_shelf(&shelf),
+        std::cmp::Ordering::Equal => tracing::warn!("two versions of a prepared draft, neither known to be newer: both kept"),
+        std::cmp::Ordering::Greater => match save_mind_draft(&m.files.mind_draft, &other) {
+            Ok(()) => {
+                remove_shelf(&shelf);
+                m.composer.mind = Ok(Some(other));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "a newer prepared draft on its shelf could not be moved into the slot");
+                m.composer.mind = Ok(Some(other.clone()));
+                m.composer.left_on_shelf = Some((shelf, other));
+            }
+        },
     }
 }
 
@@ -230,7 +241,7 @@ pub fn open_prepared_for(m: &mut Model, commitment: &str, fx: &mut Effects<Email
     let waiting = match load_mind_draft(&shelf) {
         Ok(Some(d)) => d,
         Ok(None) => return say(m, fx, "There is no draft prepared by Yantrik to open."),
-        Err(e) => return say(m, fx, &format!("That prepared draft could not be read: {e}")),
+        Err(e) => return say(m, fx, format!("That prepared draft could not be read: {e}")),
     };
     if m.composer.open && !m.composer.in_slot && !m.composer.text.is_empty() {
         return say(m, fx, "You have a message open. Cancel keeps it as a draft; then open the prepared one.");
@@ -264,7 +275,7 @@ pub fn open_prepared_for(m: &mut Model, commitment: &str, fx: &mut Effects<Email
                 m.composer.left_on_shelf = Some((copy, held));
             }
         }
-        return say(m, fx, &format!("The draft could not be opened, and nothing was lost: {e}"));
+        return say(m, fx, format!("The draft could not be opened, and nothing was lost: {e}"));
     }
     remove_shelf(&shelf);
     m.composer.mind = Ok(Some(waiting));
@@ -376,8 +387,13 @@ const SLOT_OPEN: &str = "The person has the prepared draft open, so it was left 
 /// The window is not closed under them, edited or not.
 pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>) -> Result<(), Refused> {
     let commitment = commitment.trim();
+    let shelf_of = shelf_path(&m.files.mind_draft, commitment);
+    // The copy a failed open left, while the slot holds the later version of the same draft: the
+    // slot's own handling below decides for both.
+    let left_for_slot = matches!((&m.composer.left_on_shelf, &m.composer.mind), (Some((s, _)), Ok(Some(slot)))
+        if slot.commitment.as_deref() == Some(commitment) && shelf_of.as_deref() == Some(s.as_path()));
     // Its shelf: an untouched draft goes; one the person touched is theirs, and is kept for them.
-    if let Some(shelf) = shelf_path(&m.files.mind_draft, commitment) {
+    if let Some(shelf) = shelf_of.filter(|_| !left_for_slot) {
         match load_mind_draft(&shelf) {
             Ok(Some(d)) if !d.touched => remove_shelf(&shelf),
             Ok(Some(d)) => keep_for_person(m, &shelf, d, fx),
@@ -389,8 +405,10 @@ pub fn forget_prepared(m: &mut Model, commitment: &str, fx: &mut Effects<Email>)
     if let Ok(Some(slot)) = &mut m.composer.mind {
         if slot.touched && slot.commitment.as_deref() == Some(commitment) {
             slot.commitment = None;
-            if let Err(e) = save_mind_draft(&m.files.mind_draft, slot) {
-                tracing::warn!(error = %e, "the prepared draft could not be kept");
+            match save_mind_draft(&m.files.mind_draft, slot) {
+                Ok(()) if left_for_slot => drop_left_on_shelf(m, Some(commitment)),
+                Ok(()) => {}
+                Err(e) => tracing::warn!(error = %e, "the prepared draft could not be kept"),
             }
         }
     }

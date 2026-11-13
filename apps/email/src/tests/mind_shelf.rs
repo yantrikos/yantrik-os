@@ -601,3 +601,116 @@ fn f2_a_restart_with_the_slot_on_24_and_a_touched_shelf_for_24_takes_the_shelf_a
     assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("v2"), "and on disk");
     assert!(!paths.data_dir().join("mind_draft.24.json").exists(), "the shelf was removed after the slot was written");
 }
+
+fn v2_left_on_24s_shelf(paths: &Paths, app: &yantrik_testing::TestApp<Email>) {
+    compose_with(app, "maya@example.com", "", "24");
+    compose_with(app, "ravi@example.com", "", "25");
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(app);
+    super::compose::type_into_composer(app, &super::compose::draft("maya@example.com", "v1"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(app);
+    app.run(Command::OpenPrepared);
+    quiet(app);
+    super::compose::type_into_composer(app, &super::compose::draft("maya@example.com", "v2"));
+    block_the_slot_write(paths);
+    app.run(Command::OpenPreparedFor("25".into()));
+    quiet(app);
+    assert!(shelf_text(paths, "24").is_some_and(|t| t.contains("v2")));
+}
+
+#[test]
+fn f3_a_restart_whose_adopt_fails_then_an_edit_is_not_overwritten_by_the_stale_shelf() {
+    let paths = Paths::temporary(Email::ID);
+    {
+        let app = started(&paths);
+        v2_left_on_24s_shelf(&paths, &app);
+    } // the slot write is still blocked: the end-of-app park fails too
+    {
+        let app = started(&paths); // adopt_newer_shelf's write fails here
+        unblock_the_slot_write(&paths); // the disk recovers
+        app.run(Command::OpenPreparedFor("24".into()));
+        quiet(&app);
+        assert_eq!(app.model(|m| m.composer.text.body.clone()), "v2", "card 24 shows the newest text, not the older slot file");
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v9 typed after restart"));
+        app.ui(|ui| ui.invoke_cancel_compose());
+        quiet(&app);
+        assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("v9 typed after restart"), "park saved the newest text");
+    }
+    let app = started(&paths);
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("v9 typed after restart"))), "the newest text survives the next start");
+}
+
+#[test]
+fn f4_got_it_after_a_failed_open_then_discard_does_not_offer_the_older_version() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    v2_left_on_24s_shelf(&paths, &app);
+    unblock_the_slot_write(&paths);
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).ok();
+    quiet(&app);
+    app.run(Command::OpenPrepared);
+    quiet(&app);
+    super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v3"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    nothing_of_24_comes_back(&paths, &app);
+}
+
+#[test]
+fn f4_with_a_file_got_it_after_a_failed_open_then_discard_does_not_offer_the_older_version() {
+    let paths = Paths::temporary(Email::ID);
+    let app = started(&paths);
+    let deck = home_file("f4.ydeck", "f4");
+    compose(&app, "maya@example.com", &deck, "24");
+    compose_with(&app, "ravi@example.com", "", "25");
+    app.run(Command::OpenPreparedFor("24".into()));
+    quiet(&app);
+    super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v1"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.run(Command::OpenPrepared);
+    quiet(&app);
+    super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v2"));
+    block_the_slot_write(&paths);
+    app.run(Command::OpenPreparedFor("25".into()));
+    quiet(&app);
+    unblock_the_slot_write(&paths);
+    act(&app, "forget_prepared", json!({ "commitment": "24" })).ok();
+    quiet(&app);
+    app.run(Command::OpenPrepared);
+    quiet(&app);
+    super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v3"));
+    app.ui(|ui| ui.invoke_cancel_compose());
+    quiet(&app);
+    app.ui(|ui| ui.invoke_discard_prepared());
+    quiet(&app);
+    for id in ["24", "null"] {
+        assert!(shelf_text(&paths, id).is_none_or(|t| !t.contains("v2")), "the older version is not left on a shelf");
+    }
+    assert!(app.model(|m| !matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("v2"))), "the entry does not offer the older version");
+}
+
+#[test]
+fn f3_a_crash_between_parks_save_and_the_shelf_removal_keeps_the_newer_slot() {
+    let paths = Paths::temporary(Email::ID);
+    let shelf = paths.data_dir().join("mind_draft.24.json");
+    {
+        let app = started(&paths);
+        v2_left_on_24s_shelf(&paths, &app);
+        let stale = std::fs::read(&shelf).unwrap();
+        unblock_the_slot_write(&paths);
+        app.run(Command::OpenPrepared);
+        quiet(&app);
+        super::compose::type_into_composer(&app, &super::compose::draft("maya@example.com", "v3 saved"));
+        app.ui(|ui| ui.invoke_cancel_compose());
+        quiet(&app);
+        assert!(!shelf.exists());
+        std::fs::write(&shelf, stale).unwrap(); // the removal never happened: the process died first
+    }
+    let app = started(&paths);
+    assert!(app.model(|m| matches!(&m.composer.mind, Ok(Some(d)) if d.text.body.contains("v3 saved"))), "the newer slot is kept");
+    assert!(std::fs::read_to_string(slot_file(&paths)).unwrap().contains("v3 saved"));
+}

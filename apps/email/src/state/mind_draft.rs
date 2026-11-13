@@ -24,6 +24,9 @@ pub struct MindDraft {
     /// its item expiring, clears the draft (`forget_prepared`). Absent for any other Mind's draft.
     #[serde(default)]
     pub commitment: Option<String>,
+    /// How many times `park` has written this draft: a copy with a higher number is the newer one.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 impl MindDraft {
