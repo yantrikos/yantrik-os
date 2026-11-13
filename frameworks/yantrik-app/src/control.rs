@@ -664,6 +664,7 @@ impl ControlRpc {
                 let mut answer = on_ui_thread(who, move |reg| reg.describe_in(private)).map_err(unanswered)?;
                 let to = ReplyTo { pid: who.map(|c| c.pid), surface: &self.app_id };
                 recheck_private(private, to, &mut answer, || on_ui_thread(who, |reg| reg.published(true)).ok());
+                crate::where_shown::stamp(&mut answer);
                 Ok(answer)
             }
 
@@ -719,6 +720,7 @@ impl ControlRpc {
                 let private = privacy::is_private();
                 let to = ReplyTo { pid: who.map(|c| c.pid), surface: &self.app_id };
                 let hold = Hold::for_caller(private, to);
+                let says_where = crate::where_shown::stamps(&action);
                 on_ui_thread(who, move |reg| {
                     let _agent = AgentTokenScope::enter(agent_token);
                     // So a handler can tell the act a person just allowed from any other: see
@@ -743,6 +745,11 @@ impl ControlRpc {
                 .map_err(|why| refusal(recheck_refusal(private, to, why)))
                 .map(|mut reply| {
                     recheck_private(private, to, &mut reply, || on_ui_thread(who, |reg| reg.published(true)).ok());
+                    // Where the window is, said by the framework after the handler has run, so a
+                    // Mind is not left to read "Done" as "visible" (#1129).
+                    if says_where {
+                        crate::where_shown::stamp(&mut reply);
+                    }
                     reply
                 })
             }
@@ -872,6 +879,11 @@ impl App {
             let id = self.registry.app_id().to_string();
             self.registry
                 .add(crate::present::action(), Box::new(move |args| crate::present::handle(&id, args)));
+            // And the way for a Mind to put the window on the person's screen (#1129).
+            self.registry.add(
+                crate::present::to_person_action(),
+                Box::new(crate::present::to_person),
+            );
         }
         let app_id = self.registry.app_id().to_string();
         let action_count = self.registry.action_count();

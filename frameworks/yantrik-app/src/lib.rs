@@ -44,6 +44,7 @@ pub mod shown;
 pub mod theme;
 pub mod timers;
 pub mod watch;
+pub mod where_shown;
 pub mod window;
 
 pub use app::{App, Boot, Changed, Event, ExitReason, Startup, WindowId};
