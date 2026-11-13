@@ -18,6 +18,7 @@ pub mod sanitize;
 pub mod ssh_hosts;
 pub mod weather_places;
 pub mod taint;
+pub mod text;
 pub mod tools;
 pub mod types;
 pub mod urge_defaults;

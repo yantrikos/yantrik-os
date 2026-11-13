@@ -6,6 +6,7 @@
 //! - Resolving action IDs into concrete actions for main.rs to execute
 
 use slint::SharedString;
+use yantrik_companion::capitalize;
 
 use super::LensResult;
 use super::apps::DesktopEntry;
@@ -1574,15 +1575,6 @@ fn extract_path_from_query(s: &str) -> String {
         }
     }
     String::new()
-}
-
-/// Capitalize first letter of a string.
-pub fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-    }
 }
 
 #[cfg(test)]

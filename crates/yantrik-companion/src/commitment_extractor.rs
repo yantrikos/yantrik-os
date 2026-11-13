@@ -10,6 +10,7 @@
 
 use std::sync::OnceLock;
 use regex::Regex;
+use yantrik_companion_core::text::capitalize;
 use crate::world_model::{
     Commitment, CommitmentSource, CommitmentStatus,
 };
@@ -350,22 +351,14 @@ fn extract_promisee(sentence: &str) -> Option<String> {
     {
         return None;
     }
-    Some(capitalize(name))
+    Some(capitalize(&lower))
 }
 
 fn extract_sender(sentence: &str) -> Option<String> {
     re_sender()
         .captures(sentence)
         .and_then(|caps| caps.get(1))
-        .map(|m| capitalize(m.as_str()))
-}
-
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
-    }
+        .map(|m| capitalize(&m.as_str().to_lowercase()))
 }
 
 fn split_sentences(text: &str) -> Vec<String> {

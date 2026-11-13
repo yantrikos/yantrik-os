@@ -170,7 +170,6 @@ pub fn get_templates(instinct: &str) -> &'static [ProactiveTemplate] {
         "error_companion" => ERROR_COMPANION_TEMPLATES,
         "reminder" | "scheduler" => SCHEDULER_TEMPLATES,
         "pattern_surfacing" | "activity_reflector" => PATTERN_TEMPLATES,
-        "bond_milestone" | "bondmilestone" => BOND_MILESTONE_TEMPLATES,
         "predictive_workflow" => PREDICTIVE_WORKFLOW_TEMPLATES,
         "routine" => ROUTINE_TEMPLATES,
         "cognitive_load" => COGNITIVE_LOAD_TEMPLATES,
@@ -398,8 +397,6 @@ static PATTERN_TEMPLATES: &[ProactiveTemplate] = &[
     },
 ];
 
-// ── Bond Milestone ──────────────────────────────────────────────────────────
-
 // ── Predictive Workflow ──────────────────────────────────────────────────────
 
 static PREDICTIVE_WORKFLOW_TEMPLATES: &[ProactiveTemplate] = &[
@@ -489,17 +486,6 @@ static SMART_UPDATES_TEMPLATES: &[ProactiveTemplate] = &[
         bond_suffixes: &[
             (BondLevel::Friend, "Nothing to worry about."),
         ],
-    },
-];
-
-// ── Bond Milestone ──────────────────────────────────────────────────────────
-
-static BOND_MILESTONE_TEMPLATES: &[ProactiveTemplate] = &[
-    ProactiveTemplate {
-        instinct: "bond_milestone",
-        min_bond: BondLevel::Acquaintance,
-        text: "{milestone_message}",
-        bond_suffixes: &[],
     },
 ];
 

@@ -220,27 +220,36 @@ The config's `max_permission` setting caps what tools the companion can use with
 
 ## Bond System
 
-The relationship between you and the companion evolves over time through 5 levels:
+The bond is made of what you *did*, and nothing you said. It is a sum of **receipts**, each one a press of yours on something the companion put in front of you:
 
-| Level | Name | Description |
-|-------|------|-------------|
-| 1 | **Stranger** | New relationship. Formal, helpful, cautious. Minimal proactivity. |
-| 2 | **Acquaintance** | Getting to know you. Starts remembering preferences. Light proactivity. |
-| 3 | **Companion** | Trusted helper. References past conversations. Moderate proactivity. |
-| 4 | **Confidant** | Deep trust. Offers unsolicited advice. Challenges assumptions. High proactivity. |
-| 5 | **Partner** | Deep partnership. Anticipates needs. Full proactive suite. Humor and personality shine. |
+| Receipt | Moves the bond |
+|---------|----------------|
+| You **Allow** an approval card | up |
+| You mark a For-you item **Useful** | up |
+| You open or use an item the companion prepared | up (blocked on #1186: nothing records it until that executor lands; follow-up #1191) |
+| You **refuse** an approval card | down |
+| You mark a For-you item **Not useful** | down |
+| You **undo** something the machine did on its own: a wired model, or a Mind's archive or trash (nothing in the audit of unasked actions can be undone yet, so none of those) | down |
 
-Bond level increases through:
-- Quality conversations (not just quantity)
-- Following up on commitments
-- Useful proactive interventions that are acted on
-- Time spent together
+Falls are larger than rises: trust comes slowly and goes fast. Pressing "not now" or "never" on a For-you item, dismissing a prepared item, a card that expired or was withdrawn by Private mode, and undoing something you did yourself are not receipts. No single (app, action) pair adds more than four Allows' worth (0.4, below the first level at 0.5), and all cards together add no more than 0.4, so cards raised over and over, under one name or several, cannot buy a level on their own; a Mind that posts many For-you items is held to 0.4 as well; a For-you item counts under the Mind that sent it. A refusal is never capped. Undoing something a Mind trashed counts only when the undo actually put something back.
 
-Bond level affects:
-- How many instincts are active
-- Proactive intervention threshold (lower = more proactive at higher bond)
-- Personality expression (more humor, more personal at higher bond)
-- How much the companion challenges you (only at Confidant+)
+What does **not** move it, by design: how many messages you send, how long they are, what words they use ("I trust you" changes nothing), streaks, and time. Being away does not wear it down. The one way time touches it is that receipts more than 180 days old are forgotten, at startup and whenever a new one is written, and so is any receipt stamped more than a day ahead of the clock (written under a bad clock, its age cannot be known). The retention check does not trust an impossible clock: if the clock shows a date before 2026-11-01 (a dead battery at 1970 or 2000, before time sync), only the 180-day rule runs and nothing is dropped for being ahead. A receipt written while the clock is impossible is not kept once the clock is right. A clock set back by more than a day, to a date still after 2026-11-01, forgets every receipt written after the date it shows; a clock far ahead forgets older ones. All of these err on the side of privacy. You can also forget all of them yourself: **Forget the bond history**, a button on the Interaction history screen with a one-step confirm ("This empties what the companion learned from your answers. It can't be undone."), empties the receipts and puts the bond back to Stranger. It is a button's callback only: no Mind and no control-surface action can reach it.
+
+| Level | Name | Score |
+|-------|------|-------|
+| 1 | **Stranger** | 0 - 0.5 |
+| 2 | **Acquaintance** | 0.5 - 1.5 |
+| 3 | **Friend** | 1.5 - 2.5 |
+| 4 | **Confidant** | 2.5 - 3.5 |
+| 5 | **Partner-in-Crime** | 3.5 and up |
+
+The level shapes **tone only**: how formal the companion is, which wording a proactive line may use, and the minimum level a few instincts wait for before they speak. It gates no action, it is never announced when it changes, and `describe shell` reports the level but not the score.
+
+### What you are asked, and what you can stop being asked
+
+Autonomy is earned per app and action, not per level. The companion keeps a table of what each app was asked and what you answered ("Notes · create: answered 4, allowed 4 · still asks"). When you have allowed the same action four times in a row (a refusal starts the count again) it may **offer** to stop asking for the session. An offer is only text: nothing is applied until you press "Allow for this session" on the card, and that lasts until the shell restarts. The offer is never wider than that button: it is not made for anything graded dangerous, anything the app says cannot be undone, anything that sends something off this machine or fetches an address it is handed, and not when the current mode already runs the action (or refuses it). It never touches the machine's `tool_permission` ceiling or `max_permission`.
+
+A Mind reading `describe shell` sees the counts and whether each row still asks. The offers, the receipt ids and the sentences that say why trust fell are for your own desktop only.
 
 ## Model-Adaptive Intelligence
 

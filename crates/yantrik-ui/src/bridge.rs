@@ -110,14 +110,17 @@ pub enum CompanionCommand {
         /// `send_message`, a program on the socket) is unattended without anyone listing it.
         person: bool,
     },
-    /// Count a conversation turn — one that began with the person's words and was answered.
+    /// Note a conversation turn — one that began with the person's words and was answered.
     ///
-    /// Whichever mind answered. The `SendMessage` arm scores nothing: it also carries the
+    /// Whichever mind answered. The `SendMessage` arm notes nothing: it also carries the
     /// startup brief, EXECUTE urges and the companion's own reflection prompts, and a prompt
     /// the machine sent itself is not a conversation. `wire::chat::dispatch` sends this when a
     /// turn it started ends answered, and this is how it reaches the bond store, which lives on
     /// this thread.
-    ScoreConversationTurn { text: String },
+    NoteConversationTurn,
+    /// One thing the person did to the bond: a receipt, or forgetting them (`bond_receipts`).
+    /// The only way the bond moves; written on this thread, where the store lives.
+    Bond(crate::bond_receipts::BondCommand),
     /// Reload the LLM backend from a new provider config.
     /// Used when user adds/edits a provider in settings.
     ReloadLLM {
@@ -829,9 +832,14 @@ impl CompanionBridge {
         token_rx
     }
 
-    /// Count an answered turn that began with the person's words toward the bond.
-    pub fn score_conversation_turn(&self, text: String) {
-        let _ = self.cmd_tx.send(CompanionCommand::ScoreConversationTurn { text });
+    /// Note an answered turn that began with the person's words. Presence, not trust.
+    pub fn note_conversation_turn(&self) {
+        let _ = self.cmd_tx.send(CompanionCommand::NoteConversationTurn);
+    }
+
+    /// Hand the companion a receipt, or the person's forgetting. The only way the bond moves.
+    pub fn bond_command(&self, command: crate::bond_receipts::BondCommand) {
+        let _ = self.cmd_tx.send(CompanionCommand::Bond(command));
     }
 
     /// Request bond data.
@@ -1105,7 +1113,8 @@ fn paused_while_private(cmd: &CompanionCommand, recipe_signals: &mut std::collec
         | CompanionCommand::RecordSystemEvent { .. }
         | CompanionCommand::RecordSnapshot { .. }
         | CompanionCommand::RecordIssue { .. }
-        | CompanionCommand::ScoreConversationTurn { .. } => true,
+        | CompanionCommand::NoteConversationTurn
+        | CompanionCommand::Bond(_) => true,
         CompanionCommand::StartRecipe { reply_tx, .. } => {
             if let Some(tx) = reply_tx {
                 let _ = tx.send(Err(SAID.to_string()));
@@ -1759,8 +1768,12 @@ fn worker_loop(
             Ok(CompanionCommand::SetJudge { config }) => {
                 companion.set_judge_config(config);
             }
-            Ok(CompanionCommand::ScoreConversationTurn { text }) => {
-                companion.score_conversation_turn(&text);
+            Ok(CompanionCommand::NoteConversationTurn) => {
+                companion.note_conversation_turn();
+                push_bond(&companion, &ui_weak);
+            }
+            Ok(CompanionCommand::Bond(command)) => {
+                command.apply(&mut companion);
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
                 push_bond(&companion, &ui_weak);
             }
@@ -2166,14 +2179,6 @@ fn worker_loop(
                 // V22: Evaluate instincts + check proactive engine for messages
                 // Resonance Model: tick phase dynamics each think cycle
                 companion.resonance.tick_phase(companion.bond_level(), 60.0);
-
-                // V25: Refresh trust state + apply daily interaction + daily decay
-                companion.refresh_trust_state();
-                yantrik_companion::trust_model::TrustModel::apply_event(
-                    &companion.db.conn(),
-                    &yantrik_companion::trust_model::TrustEvent::DailyInteraction,
-                );
-                yantrik_companion::trust_model::TrustModel::apply_daily_decay(&companion.db.conn());
 
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);
@@ -3050,6 +3055,10 @@ fn bond_snapshot(companion: &CompanionService) -> BondSnapshot {
 /// opening that screen — `describe shell`, the machine rail — reads this property.
 fn push_bond(companion: &CompanionService, ui_weak: &slint::Weak<App>) {
     let bond = bond_snapshot(companion);
+    crate::bond_describe::publish(
+        companion.bond_table(),
+        companion.bond_why_it_fell(crate::bond_describe::FELL_PUBLISHED),
+    );
     let weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
@@ -3121,7 +3130,6 @@ pub fn instinct_color(name: &str) -> slint::Color {
         "reminder" => slint::Color::from_rgb_u8(0x8B, 0xE8, 0x6B),             // soft green
         "pattern_surfacing" => slint::Color::from_rgb_u8(0xC4, 0x8B, 0xE8),    // lavender
         "conflict_alerting" => slint::Color::from_rgb_u8(0xE8, 0xA0, 0x6B),    // orange
-        "bond_milestone" => slint::Color::from_rgb_u8(0xE8, 0xD4, 0x6B),       // gold
         "self_awareness" => slint::Color::from_rgb_u8(0x6B, 0xE8, 0xC4),       // teal
         "humor" => slint::Color::from_rgb_u8(0xE8, 0x6B, 0xC4),                // pink
         _ => slint::Color::from_rgb_u8(0xD4, 0xA0, 0x3C),                      // default amber
@@ -3425,9 +3433,9 @@ mod bond_property_tests {
             builtin_turn.contains("push_bond("),
             "a turn the built-in answered moves the store; the property has to follow"
         );
-        let harness_turn = arm(&src, "ScoreConversationTurn");
+        let harness_turn = arm(&src, "NoteConversationTurn");
         assert!(
-            harness_turn.contains("score_conversation_turn(&text)") && harness_turn.contains("push_bond("),
+            harness_turn.contains("note_conversation_turn()") && harness_turn.contains("push_bond("),
             "a turn a harness answered is scored on this thread and the property follows. Arm as written:\n{harness_turn}"
         );
     }

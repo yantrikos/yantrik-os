@@ -219,6 +219,8 @@ export component App inherits Window {
     /// Never offered for `dangerous` or for an action the app says cannot be undone.
     callback approval-allow-session(string);
     callback approval-deny(string);
+    /// "Forget the bond history": the Interaction history screen's button, and nothing else (bond_receipts.rs).
+    callback forget-bond-history();
 
     // ── Agents glue: the Lens's "open in Agents" (crates/yantrik-ui/src/wire/agents.rs) ──
     in property <bool> lens-can-open-in-agents: false;
@@ -1933,10 +1935,8 @@ export component App inherits Window {
                 }
                 width: 100%; height: 100%;
                 data: root.bond-data;
-                back-pressed => {
-                    root.current-screen = 1;
-                    root.navigate(1);
-                }
+                back-pressed => { root.current-screen = 1; root.navigate(1); }
+                forget-bond-history => { root.forget-bond-history(); }
             }
         }
 

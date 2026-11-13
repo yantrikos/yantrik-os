@@ -144,7 +144,6 @@ mod tests {
             formality: 0.5,
             opinions_count: 0,
             shared_references_count: 0,
-            bond_level_changed: false,
             current_hour: 10,
             current_day_of_week: 1,
             idle_seconds: 0.0,

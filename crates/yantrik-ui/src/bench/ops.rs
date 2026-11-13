@@ -264,12 +264,19 @@ pub fn archive_selection(ui: &App, b: &mut Bench) {
         return;
     }
     match archive_names(b, &names) {
-        Ok(done) => offer_undo(ui, b, done),
+        Ok(done) => offer_undo(ui, b, done, false),
         Err(why) => say(ui, "Not archived", &why),
     }
 }
 
-pub(super) fn offer_undo(ui: &App, b: &mut Bench, done: Vec<Archived>) {
+/// Marks the toast of an archive a Mind made, so that the person's Undo on it is a bond receipt
+/// (`bond_receipts::undone`). An archive the person made themselves is theirs: undoing it says
+/// nothing about the machine.
+const MIND_MADE: &str = "mind:";
+
+/// The toast that says where an archive went and offers Undo. `by_mind` is whether a Mind, and
+/// not the person, made the archive.
+pub(super) fn offer_undo(ui: &App, b: &mut Bench, done: Vec<Archived>, by_mind: bool) {
     if done.is_empty() {
         return;
     }
@@ -280,7 +287,8 @@ pub(super) fn offer_undo(ui: &App, b: &mut Bench, done: Vec<Archived>) {
         ),
         many => (format!("Archived {} items", many.len()), format!("Moved to {}", crate::filebrowser::collapse_home(&archive_root(b).join(today())))),
     };
-    let id = format!("{UNDO_TOAST}:{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    let made = if by_mind { MIND_MADE } else { "" };
+    let id = format!("{UNDO_TOAST}:{made}{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
     b.archived.push((id.clone(), done));
     // Only the last few batches can be undone from a toast.
     if b.archived.len() > 8 {
@@ -301,6 +309,11 @@ pub(super) fn offer_undo(ui: &App, b: &mut Bench, done: Vec<Archived>) {
         },
         1,
     );
+}
+
+/// Whether an archive undo is a receipt: something went back, and a Mind archived it.
+fn undo_counts(back: usize, toast_id: &str) -> bool {
+    back > 0 && toast_id.contains(&format!(":{MIND_MADE}"))
 }
 
 /// Undo on the toast: put the batch back, never over something that has taken its name since.
@@ -324,8 +337,23 @@ pub fn undo_archive(ui: &App, toast_id: &str) {
         b.model.rescan();
         view::publish(ui, b);
     });
+    if undo_counts(back, toast_id) {
+        crate::bond_receipts::undone("desktop", "archive");
+    }
     match why {
         None => say(ui, &format!("Put back {back} on the desktop"), ""),
         Some(why) => say(ui, &format!("Put back {back} of {}", batch.len()), &why),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_mind_archive_that_came_back_is_a_receipt() {
+        assert!(undo_counts(2, &format!("t:{MIND_MADE}7")));
+        assert!(!undo_counts(0, &format!("t:{MIND_MADE}7")), "nothing came back");
+        assert!(!undo_counts(2, "t:7"), "the person's own archive is theirs");
     }
 }

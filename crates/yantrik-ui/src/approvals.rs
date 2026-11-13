@@ -787,7 +787,8 @@ pub fn open_ended(purpose: &str) -> bool {
 /// routine `sensitive` surface a long job trips over forty times — is exactly what the session
 /// rule is for.
 pub fn may_offer_session_rule(grade: &str, purpose: &str) -> bool {
-    grade != "dangerous" && !unrecoverable(purpose) && !yantrik_ipc_transport::gate::always_asks(purpose)
+    crate::approvals_bond::session_rule_allowed(grade, unrecoverable(purpose))
+        && !yantrik_ipc_transport::gate::always_asks(purpose)
 }
 
 /// The warning line, or empty.
@@ -1034,7 +1035,7 @@ impl Store {
             ));
         }
 
-        let id = format!("appr-{}", self.next);
+        let id = format!("appr-{}-{}", crate::approvals_bond::boot(), self.next);
         self.next += 1;
         self.records.push(Record {
             id: id.clone(),
@@ -1357,11 +1358,11 @@ fn store() -> &'static Mutex<Store> {
 /// A poisoned lock means a previous holder panicked mid-update. The records are plain data with
 /// no invariant that a panic could have half-broken, so the contents are still readable and
 /// refusing every approval forever is the worse outcome.
-fn locked() -> std::sync::MutexGuard<'static, Store> {
+pub(crate) fn locked() -> std::sync::MutexGuard<'static, Store> {
     store().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn hhmm() -> String {
+pub(crate) fn hhmm() -> String {
     crate::app_context::current_time_hhmm()
 }
 
@@ -1414,17 +1415,26 @@ pub fn status(id: &str) -> Option<Status> {
 
 /// **UI only.** See the module doc: the single caller is the Allow button's callback.
 pub(crate) fn grant(id: &str) -> Result<(), String> {
-    locked().grant(id, Instant::now(), &hhmm())
+    let card = card(id);
+    locked().grant(id, Instant::now(), &hhmm())?;
+    crate::bond_receipts::card_answered(card.as_ref(), true);
+    Ok(())
 }
 
 /// **UI only.** See the module doc: the single caller is the "Allow for this session" callback.
 pub(crate) fn grant_for_session(id: &str) -> Result<(), String> {
-    locked().grant_for_session(id, Instant::now(), &hhmm())
+    let card = card(id);
+    locked().grant_for_session(id, Instant::now(), &hhmm())?;
+    crate::bond_receipts::card_answered(card.as_ref(), true);
+    Ok(())
 }
 
-/// **UI only.** See the module doc: the single caller is the Deny button's callback.
+/// **UI only.** See the module doc: the callers are the Deny button's callback (and the phone code's "no").
 pub(crate) fn deny(id: &str) -> Result<(), String> {
-    locked().deny(id, Instant::now(), &hhmm())
+    let card = card(id);
+    locked().deny(id, Instant::now(), &hhmm())?;
+    crate::bond_receipts::card_answered(card.as_ref(), false);
+    Ok(())
 }
 
 /// One card by id, as the UI sees it. Used by the session-rule callback, which needs the

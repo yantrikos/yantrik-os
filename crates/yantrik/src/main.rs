@@ -721,7 +721,7 @@ fn cmd_chat(config_path: Option<PathBuf>) {
         println!("\n");
         // Typed by the person and answered: counted here, where the turn ends. The handlers
         // themselves no longer score — they also run for prompts the companion sends itself.
-        companion.score_conversation_turn(text);
+        companion.note_conversation_turn();
     }
 }
 
@@ -752,7 +752,7 @@ fn cmd_ask(config_path: Option<PathBuf>, message: &str, json_output: bool) {
     eprint!("{full_response}");
     eprintln!("\n");
     // The message on the command line is the person's, and it was answered.
-    companion.score_conversation_turn(message);
+    companion.note_conversation_turn();
 
     if json_output {
         // Structured output for programmatic use
@@ -967,7 +967,7 @@ fn cmd_voice(config_path: Option<PathBuf>) {
                             });
                         println!("\n");
                         // Spoken by the person and answered: counted here, where the turn ends.
-                        companion.score_conversation_turn(&text);
+                        companion.note_conversation_turn();
 
                         // TTS with bond-adaptive voice (speaks through system speakers)
                         let bond_level = companion.bond_level();

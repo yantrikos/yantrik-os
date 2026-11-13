@@ -86,7 +86,7 @@ pub fn archive(ui: &crate::App, said: &str) -> Result<Value, String> {
         crate::control_files_mind::may_touch(&label(b), std::slice::from_ref(&name))?;
         let done = ops::archive_names(b, std::slice::from_ref(&name))?;
         let moved_to = done.first().map(|a| crate::filebrowser::collapse_home(&a.to)).unwrap_or_default();
-        ops::offer_undo(ui, b, done);
+        ops::offer_undo(ui, b, done, true);
         super::view::publish(ui, b);
         Ok(json!({
             "archived": display_name(&name),
