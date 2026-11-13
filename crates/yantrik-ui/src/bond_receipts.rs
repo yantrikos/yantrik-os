@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use slint::ComponentHandle;
 use rusqlite::{Connection, OpenFlags};
 use yantrik_companion::bond::{ActionFacts, BondTracker, Receipt, ReceiptKind};
 use yantrik_companion::CompanionService;
