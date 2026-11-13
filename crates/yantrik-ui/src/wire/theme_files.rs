@@ -44,16 +44,19 @@ pub(crate) fn mix(from: &str, to: &str, t: f32) -> String {
 pub(crate) fn frame_colours(t: &Theme) -> Vec<(&'static str, String)> {
     let p = &t.palette;
     let edge = mix(&p.bg_surface, &p.text_primary, 0.14);
-    let quiet_edge = mix(&p.bg_deep, &p.text_primary, 0.08);
+    // A window's frame is a dark keyline, the ground taken most of the way to black: the
+    // window draws its own light hairline just inside it (Theme.window-edge), and the pair is
+    // one crisp edge. A light frame beside that light hairline was a 2px soft one.
+    let keyline = mix(&p.bg_deep, "#000000", 0.6);
     vec![
         ("window.active.title.bg.color", p.bg_surface.clone()),
         ("window.active.label.text.color", p.text_primary.clone()),
-        ("window.active.border.color", edge.clone()),
+        ("window.active.border.color", keyline.clone()),
         ("window.active.button.unpressed.image.color", p.text_primary.clone()),
         ("window.active.button.hover.bg.color", p.bg_card.clone()),
         ("window.inactive.title.bg.color", p.bg_deep.clone()),
         ("window.inactive.label.text.color", p.text_dim.clone()),
-        ("window.inactive.border.color", quiet_edge),
+        ("window.inactive.border.color", keyline),
         ("window.inactive.button.unpressed.image.color", p.text_dim.clone()),
         ("window.inactive.button.hover.bg.color", p.bg_surface.clone()),
         ("menu.items.bg.color", p.bg_surface.clone()),

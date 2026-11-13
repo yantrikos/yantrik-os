@@ -142,7 +142,8 @@ export component YListItem inherits Rectangle {
 
         if root.metadata != "" : Text {
             text: root.metadata;
-            color: Theme.text-dim;
+            // On the selected fill the dim ink is under 4.5:1 in light mode; the secondary is not.
+            color: root.selected ? Theme.text-secondary : Theme.text-dim;
             font-size: Theme.fs-micro;
             vertical-alignment: center;
         }

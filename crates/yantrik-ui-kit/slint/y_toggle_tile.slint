@@ -124,7 +124,9 @@ export component YToggleTile inherits Rectangle {
 
         HorizontalLayout {
             padding-left: Theme.sp-3;
-            padding-right: Theme.sp-3;
+            // A split tile's body ends at the divider, which is its margin: the full padding as
+            // well left a half-width tile 60px for its words, and "Connected" was cut short.
+            padding-right: root.split ? Theme.sp-1 : Theme.sp-3;
             spacing: Theme.sp-3;
 
             if root.icon != "" : Icon {

@@ -222,7 +222,8 @@ fn the_reserved_families_are_where_the_roles_are() {
     assert_eq!(in_a_reserved_family("#f2b73e"), Some("amber (needs you)"), "the retired amber preset");
     assert_eq!(in_a_reserved_family("#38d8cd"), Some("teal (a mind)"), "the minds' teal");
     assert_eq!(in_a_reserved_family("#69c8bc"), Some("teal (a mind)"), "the dock's mind teal");
-    assert_eq!(in_a_reserved_family("#8fb4e3"), None, "the soft blue");
+    assert_eq!(in_a_reserved_family("#8fb4e3"), None, "the soft blue as it was until 12 Nov 2026");
+    assert_eq!(in_a_reserved_family("#74aaf5"), None, "the soft blue: the same hue with more chroma");
     assert_eq!(in_a_reserved_family("#b98aef"), None, "violet");
     assert_eq!(in_a_reserved_family("#f27aa0"), None, "pink");
     assert_eq!(hue("#808080"), None, "a grey has no hue");
@@ -446,8 +447,11 @@ fn the_approval_card_has_its_own_ground() {
     assert_eq!(token(theme, "chat-card").trim(), "ThemeMode.dark ? Theme.chat-bar : Theme.chat-raised");
     assert_eq!(hexes(token(theme, "chat-raised"))[1], "#ffffff", "white in light");
     let button = read("crates/yantrik-ui-kit/slint/y_button.slint");
-    assert!(button.contains(": root.variant != 0 ? (root.pressed ? Theme.hover-fill-strong : root.hovered ? Theme.hover-fill : transparent)"),
-        "the outline kind is transparent at rest, in both modes");
+    // The ordinary button is a plate of the ground's own white (dark) or a near-white card (light),
+    // so it reads on the approval card as on any other ground; bare only as a toolbar's icon.
+    assert!(button.contains(": root.variant != 0 ? (root.pressed ? Theme.control-fill-pressed : root.hovered ? Theme.control-fill-hover : root.icon-only ? transparent : Theme.control-fill)"),
+        "the ordinary kind is a plate at rest, and bare as an icon-only button");
+    assert_eq!(hexes(token(theme, "control-fill")), ["#ffffff1c", "#ffffffd9"], "11% white in dark, a near-white card in light");
 }
 
 /// A day's events were told by colour (accent, amber, purple for one, two, three) and amber is
