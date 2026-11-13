@@ -42,10 +42,12 @@ mod envelope;
 mod folders;
 mod google;
 mod imap_text;
+mod import;
 mod oauth;
 mod secrets;
 mod setup;
 mod store;
+mod summary;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -287,6 +289,21 @@ impl EmailHandler {
     }
 }
 
+/// The methods that change anything answer the desktop's own programs only (#161). One list, so the
+/// gate and the test that pins every entry of it cannot drift apart.
+const DESKTOP_ONLY: [&str; 10] = [
+    method::SAVE_ACCOUNT,
+    method::REMOVE_ACCOUNT,
+    method::IMPORT_ACCOUNT,
+    method::OAUTH_BEGIN,
+    method::OAUTH_CANCEL,
+    method::SEND_MESSAGE,
+    method::MARK_READ,
+    method::MARK_STARRED,
+    method::MOVE_MESSAGE,
+    method::DELETE_MESSAGE,
+];
+
 impl ServiceHandler for EmailHandler {
     fn service_id(&self) -> &str {
         "email"
@@ -302,18 +319,7 @@ impl ServiceHandler for EmailHandler {
         params: serde_json::Value,
         peer: Option<yantrik_service_sdk::PeerCred>,
     ) -> Result<serde_json::Value, ServiceError> {
-        if matches!(
-            method,
-            method::SAVE_ACCOUNT
-                | method::REMOVE_ACCOUNT
-                | method::OAUTH_BEGIN
-                | method::OAUTH_CANCEL
-                | method::SEND_MESSAGE
-                | method::MARK_READ
-                | method::MARK_STARRED
-                | method::MOVE_MESSAGE
-                | method::DELETE_MESSAGE
-        ) {
+        if DESKTOP_ONLY.contains(&method) {
             yantrik_service_sdk::desktop_programs_only(peer, method)?;
         }
         // Only the shell knows when its vault opens, and a caller that could say so falsely would
@@ -457,6 +463,10 @@ impl ServiceHandler for EmailHandler {
                 Ok(serde_json::json!({ "removed": removed }))
             }
 
+            // An account kept somewhere else, with its secret (#1022). The address decides: one
+            // that is already here is left as it is. Handled in `import.rs`.
+            method::IMPORT_ACCOUNT => import::handle(&self.store, &params),
+
             // The shell opened the vault. What this service moved aside for it, and the mail it
             // paused, go on: the migration asks again, and the next call finds the secrets.
             method::VAULT_OPENED => {
@@ -499,9 +509,9 @@ impl ServiceHandler for EmailHandler {
             "email.mark_read" => {
                 let account = self.get_account(account_id)?;
                 let folder = folder_or_inbox(&params);
-                let message_id = require_str(&params, "message_id")?;
+                let uids = summary::uids_to_mark(&params)?;
                 let read = params["read"].as_bool().unwrap_or(true);
-                imap_mark_read(&account, folder, message_id, read)?;
+                imap_mark_read(&account, folder, &uids, read)?;
                 Ok(serde_json::json!(null))
             }
             "email.mark_starred" => {
@@ -782,6 +792,13 @@ fn imap_list_messages(
         let is_read = flags.iter().any(|f| matches!(f, imap::types::Flag::Seen));
         let is_starred = flags.iter().any(|f| matches!(f, imap::types::Flag::Flagged));
 
+        let sender = envelope.from.as_ref().and_then(|addrs| addrs.first());
+        let from_address = summary::address(
+            sender.and_then(|a| a.mailbox.as_deref()),
+            sender.and_then(|a| a.host.as_deref()),
+        );
+        let message_id = summary::message_id(envelope.message_id.as_deref());
+
         result.push(EmailSummary {
             id: uid.to_string(),
             from,
@@ -794,6 +811,8 @@ fn imap_list_messages(
             has_attachments: false,
             folder: folder.to_string(),
             thread_id: None,
+            from_address,
+            message_id,
         });
     }
 
@@ -866,6 +885,13 @@ fn imap_get_message(
         .map(|h| h.get_value().split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
 
+    let message_id_header = parsed
+        .headers
+        .iter()
+        .find(|h| h.get_key_ref().eq_ignore_ascii_case("Message-ID"))
+        .map(|h| h.get_value().trim().to_string())
+        .unwrap_or_default();
+
     let subject = parsed
         .headers
         .iter()
@@ -905,6 +931,7 @@ fn imap_get_message(
         thread_messages: Vec::new(),
         is_read,
         is_starred,
+        message_id: message_id_header,
     })
 }
 
@@ -1101,14 +1128,9 @@ fn flag_change(folder: &str, set: bool, flag: &str) -> (String, String) {
 fn imap_mark_read(
     account: &Account,
     folder: &str,
-    message_id: &str,
+    uids: &[u32],
     read: bool,
 ) -> Result<(), ServiceError> {
-    let uid: u32 = message_id.parse().map_err(|_| ServiceError {
-        code: -32602,
-        message: "Invalid message ID".to_string(),
-    })?;
-
     let mut session = imap_connect(account)?;
     // The message's own folder, for get_message's reason: the app marks a message read right
     // after opening it, and flagging INBOX's UID would touch a stranger's mail (#275).
@@ -1120,7 +1142,7 @@ fn imap_mark_read(
     let flag = "+FLAGS (\\Seen)";
     let unflag = "-FLAGS (\\Seen)";
     session
-        .uid_store(uid.to_string(), if read { flag } else { unflag })
+        .uid_store(summary::uid_set(uids), if read { flag } else { unflag })
         .map_err(|e| ServiceError {
             code: -32000,
             message: format!("IMAP STORE failed: {e}"),
@@ -1300,6 +1322,13 @@ fn imap_search(
         let is_read = flags.iter().any(|f| matches!(f, imap::types::Flag::Seen));
         let is_starred = flags.iter().any(|f| matches!(f, imap::types::Flag::Flagged));
 
+        let sender = envelope.from.as_ref().and_then(|addrs| addrs.first());
+        let from_address = summary::address(
+            sender.and_then(|a| a.mailbox.as_deref()),
+            sender.and_then(|a| a.host.as_deref()),
+        );
+        let message_id = summary::message_id(envelope.message_id.as_deref());
+
         result.push(EmailSummary {
             id: uid.to_string(),
             from,
@@ -1314,6 +1343,8 @@ fn imap_search(
             // reads this back when a result is opened, starred or deleted.
             folder: folder.to_string(),
             thread_id: None,
+            from_address,
+            message_id,
         });
     }
 
@@ -1335,6 +1366,27 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, -32001, "{}", err.message);
         assert!(err.message.starts_with("email.send_message answers the desktop's own programs"), "{}", err.message);
+    }
+
+    /// Every method that changes anything refuses a caller that is not one of the desktop's own
+    /// programs, and the list the gate reads is every one of them, `email.import_account` included:
+    /// without the gate a same-user script could plant an account pointing at its own server.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_gated_method_refuses_a_program_that_is_not_the_desktops() {
+        use yantrik_ipc_contracts::email::method;
+        use yantrik_service_sdk::ServiceHandler as _;
+        for gated in [
+            method::SAVE_ACCOUNT, method::REMOVE_ACCOUNT, method::IMPORT_ACCOUNT, method::OAUTH_BEGIN,
+            method::OAUTH_CANCEL, method::SEND_MESSAGE, method::MARK_READ, method::MARK_STARRED,
+            method::MOVE_MESSAGE, method::DELETE_MESSAGE,
+        ] {
+            assert!(super::DESKTOP_ONLY.contains(&gated), "{gated} is not in the gate's list");
+            let peer = yantrik_service_sdk::PeerCred { pid: std::process::id() as i32, uid: 0, gid: 0 };
+            let err = super::EmailHandler::new().handle_from(gated, serde_json::json!({}), Some(peer)).unwrap_err();
+            assert_eq!(err.code, -32001, "{gated}: {}", err.message);
+        }
+        assert_eq!(super::DESKTOP_ONLY.len(), 10, "a method joined or left the gate without this test");
     }
 
     /// Hostile text in any parameter of any mail method is refused before an account is looked up

@@ -6,7 +6,7 @@
 //! things at once — a synced event appears in the Calendar app like any other, and syncing the
 //! same week twice edits the same file instead of storing a second copy of everything.
 //!
-//! With no OAuth2 account configured this is a quiet no-op, as it was before. The calendar works
+//! With no Google account connected this is a quiet no-op, as it was before. The calendar works
 //! without Google and always did; that is not the part that was broken.
 //!
 //! ## What this does not do
@@ -23,7 +23,7 @@
 
 use crate::calendar::backend::CalendarBackend;
 use crate::calendar::stamps;
-use crate::config::EmailAccountConfig;
+use crate::calendar::GoogleAccess;
 use chrono::{Local, NaiveDate, TimeZone};
 use yantrik_ipc_contracts::calendar::UpsertRemoteEventParams;
 
@@ -84,64 +84,19 @@ fn now_secs() -> f64 {
         .as_secs_f64()
 }
 
-/// A fresh access token for the account the calendar is configured to use, or why there is none.
-///
-/// Calendar reuses the email account's tokens — same Google Cloud project — which is why an
-/// account has to exist at all for any of this to happen. `preferred` is `calendar.account` from
-/// the config, matched on name or address; it was read and then thrown away before, so a machine
-/// with two Google accounts synced whichever happened to be first.
-pub fn token_for(
-    accounts: &[EmailAccountConfig],
-    preferred: Option<&str>,
-) -> Result<String, String> {
-    let mut account = pick(accounts, preferred)
-        .ok_or("no OAuth2 email account is configured, so there is no Google calendar to sync")?;
-
-    let config_path = std::env::var("YANTRIK_CONFIG").ok().or_else(|| {
-        let path = "/opt/yantrik/config.yaml";
-        if std::path::Path::new(path).exists() {
-            Some(path.to_string())
-        } else {
-            None
-        }
-    });
-
-    super::get_access_token(&mut account, config_path.as_deref())
-}
-
-/// The OAuth2 account to sync with: the one named in the config, else the first there is.
-fn pick(accounts: &[EmailAccountConfig], preferred: Option<&str>) -> Option<EmailAccountConfig> {
-    let oauth = |a: &&EmailAccountConfig| a.auth_method.as_deref() == Some("oauth2");
-    if let Some(name) = preferred {
-        let lower = name.to_lowercase();
-        if let Some(found) = accounts.iter().filter(oauth).find(|a| {
-            a.name.to_lowercase().contains(&lower) || a.email.to_lowercase().contains(&lower)
-        }) {
-            return Some(found.clone());
-        }
-    }
-    accounts.iter().find(oauth).cloned()
-}
-
-/// True when an account exists to sync with at all.
-pub fn configured(accounts: &[EmailAccountConfig]) -> bool {
-    accounts.iter().any(|a| a.auth_method.as_deref() == Some("oauth2"))
-}
-
 /// Pull `from..=to` from Google into the calendar service.
 ///
 /// `force` skips the freshness gate, for a search that has to see what is there now rather than
 /// what was there half an hour ago.
 pub fn pull(
-    accounts: &[EmailAccountConfig],
-    preferred: Option<&str>,
+    google: &dyn GoogleAccess,
     conn: &rusqlite::Connection,
     backend: &dyn CalendarBackend,
     from: NaiveDate,
     to: NaiveDate,
     force: bool,
 ) -> Sync {
-    if !configured(accounts) {
+    if !google.connected() {
         return Sync::default();
     }
 
@@ -151,7 +106,7 @@ pub fn pull(
         return Sync::default();
     }
 
-    let token = match token_for(accounts, preferred) {
+    let token = match google.token() {
         Ok(t) => t,
         Err(e) => return Sync { attempted: true, stored: 0, note: Some(e) },
     };

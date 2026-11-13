@@ -47,6 +47,12 @@ use crate::server::RpcServer;
 /// cold service touching disk, not to wait out a network.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The code of every failure this transport makes itself.
+const UNREACHABLE_CODE: i32 = -32000;
+/// The words after the address in the breaker's refusal; [`SyncRpcClient::is_breaker_refusal`]
+/// reads the same constant the refusal is written with.
+const UNREACHABLE_TAIL: &str = "is unreachable (retrying in up to ";
+
 /// How long an address stays marked unreachable after a failure.
 ///
 /// Long enough that a burst of calls from one interaction costs a single timeout rather than one
@@ -118,6 +124,34 @@ impl SyncRpcClient {
         breaker_reset(address);
     }
 
+    /// Forget the verdict held for *this client's own* address.
+    ///
+    /// The breaker is keyed by the address the client dials, which is not always
+    /// [`RpcServer::default_address`]: a mind's process dials the door (`mind_door`). Clearing by
+    /// the default address there clears a key nothing ever tripped (#1026 review). A caller that
+    /// holds a client clears through the client.
+    pub fn forget_breaker(&self) {
+        breaker_reset(&self.address);
+    }
+
+    /// Whether `error` is this transport's own refusal to dial an address that failed a moment
+    /// ago (the breaker). Nothing was sent: the refusal is made before the request is built, so
+    /// asking again cannot do anything twice. A relayed answer from a service never matches: it
+    /// has to be this transport's code and wording both.
+    pub fn is_breaker_refusal(error: &RpcError) -> bool {
+        error.code == UNREACHABLE_CODE && error.message.starts_with("Service at ") && error.message.contains(UNREACHABLE_TAIL)
+    }
+
+    /// Whether `error` is this transport's own read or write that ran out of its budget, as
+    /// opposed to an answer a service gave about its own timeout.
+    pub fn is_io_timeout(error: &RpcError) -> bool {
+        if error.code != UNREACHABLE_CODE || !(error.message.starts_with("Read error (") || error.message.starts_with("Write error (")) {
+            return false;
+        }
+        let m = error.message.to_lowercase();
+        m.contains("temporarily unavailable") || m.contains("timed out") || m.contains("os error 11") || m.contains("os error 110")
+    }
+
     /// Create a client targeting the given address, with the default UI-safe timeout.
     pub fn new(address: &str) -> Self {
         Self {
@@ -171,9 +205,9 @@ impl SyncRpcClient {
 
     fn unreachable(&self) -> RpcError {
         RpcError {
-            code: -32000,
+            code: UNREACHABLE_CODE,
             message: format!(
-                "Service at {} is unreachable (retrying in up to {}s)",
+                "Service at {} {UNREACHABLE_TAIL}{}s)",
                 self.address,
                 BREAKER_COOLDOWN.as_secs()
             ),
@@ -437,6 +471,39 @@ mod tests {
 
         breaker_reset(&addr);
         assert!(!breaker_is_open(&addr));
+    }
+
+    /// The breaker is keyed by the address the client dials. A client for a path that is not the
+    /// service's default (a mind's door) trips that path, and clearing through the client clears
+    /// that same path (#1026 review: clearing by the default address left it open).
+    #[test]
+    fn a_client_clears_the_address_it_tripped_and_the_refusal_is_recognised() {
+        let addr = format!("{}-door-{:?}", dead_address(), std::thread::current().id());
+        let c = SyncRpcClient::new(&addr);
+        let first = c.call("rpc.ping", serde_json::Value::Null).unwrap_err();
+        assert!(!SyncRpcClient::is_breaker_refusal(&first), "a connect failure is not the breaker's refusal");
+        let refused = c.call("rpc.ping", serde_json::Value::Null).unwrap_err();
+        assert!(SyncRpcClient::is_breaker_refusal(&refused), "{}", refused.message);
+
+        SyncRpcClient::clear_breaker(&crate::RpcServer::default_address("email"));
+        assert!(breaker_is_open(&addr), "the default address is not this client's key");
+        c.forget_breaker();
+        assert!(!breaker_is_open(&addr));
+    }
+
+    #[test]
+    fn only_this_transports_own_words_count_as_its_refusal_or_its_timeout() {
+        let err = |code: i32, message: &str| RpcError { code, message: message.to_string(), data: None };
+        let refusal = "Service at /x/email.sock is unreachable (retrying in up to 5s)";
+        assert!(SyncRpcClient::is_breaker_refusal(&err(-32000, refusal)));
+        assert!(!SyncRpcClient::is_breaker_refusal(&err(-32602, refusal)), "a relayed answer has another code");
+        assert!(!SyncRpcClient::is_breaker_refusal(&err(-32000, "the vault is unreachable (retrying in up to 5s)")));
+
+        let read = "Read error (/x/email.sock): Resource temporarily unavailable (os error 11)";
+        assert!(SyncRpcClient::is_io_timeout(&err(-32000, read)));
+        assert!(!SyncRpcClient::is_io_timeout(&err(-32001, read)));
+        assert!(!SyncRpcClient::is_io_timeout(&err(-32000, "connection to imap.example.com timed out: the server did not answer")));
+        assert!(!SyncRpcClient::is_io_timeout(&err(-32000, "Read error (/x): Connection reset by peer (os error 104)")));
     }
 
     /// A caller that insists on who is listening never writes its request to anyone else. The
