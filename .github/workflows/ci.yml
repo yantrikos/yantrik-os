@@ -105,6 +105,17 @@ jobs:
       - name: Make the workshops root
         run: sudo mkdir -p /var/lib/yantrik/workshops
 
+      # Compile the test binaries one cargo job at a time. Measured on the killed runs (#1182):
+      # two rustc processes for the generated-UI test crates ran together, one past 10 GB
+      # resident and one climbing past 5 GB, RAM sat at 15.6 of 16 GB, the 12 GB swap filled to
+      # 12.07 GB and the runner was torn down ("received a shutdown signal", exit 143) with
+      # 55 GB of disk free. One at a time, the peak is one crate's. Nothing is skipped: this
+      # builds exactly what the next step runs.
+      - name: Compile the test binaries
+        run: |
+          .github/ci-sampler.sh &
+          cargo test --workspace --locked --no-run -j 1
+
       - name: Test
         run: |
           .github/ci-sampler.sh &
