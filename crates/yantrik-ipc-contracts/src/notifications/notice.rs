@@ -760,11 +760,15 @@ pub struct Initiative {
     /// `None` is no quiet hours.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quiet_hours: Option<QuietHours>,
-    /// The person turned meeting briefs off (Settings → Minds → Initiative). Stored as the
-    /// off state so a settings file from before the switch existed reads as on, its default.
-    /// The OS prepares these itself; no mind is told this, and `wire` does not carry it.
-    pub meeting_briefs_off: bool,
+    /// The moments the person turned off (Settings → Minds → Initiative): things the OS prepares
+    /// itself, such as [`MOMENT_MEETING_BRIEF`]. Stored as the off list, sorted and without
+    /// repeats, so a settings file from before it existed reads as everything on. A key this
+    /// build does not know is kept. No mind is told this, and `wire` does not carry it.
+    pub moments_off: Vec<String>,
 }
+
+/// The key of the meeting brief in [`Initiative::moments_off`].
+pub const MOMENT_MEETING_BRIEF: &str = "meeting_brief";
 
 impl Initiative {
     /// What a harness is told on attach and on every poll: `{quiet, off, inbox_only}`, the
@@ -775,6 +779,21 @@ impl Initiative {
             "off": self.off.iter().map(Family::as_str).collect::<Vec<_>>(),
             "inbox_only": self.inbox_only.iter().map(Family::as_str).collect::<Vec<_>>(),
         })
+    }
+
+    /// Whether the moment `key` is on. Everything is on until the person turns it off.
+    pub fn moment_on(&self, key: &str) -> bool {
+        !self.moments_off.iter().any(|k| k == key)
+    }
+
+    /// Turn the moment `key` on or off, keeping the list sorted and without repeats.
+    pub fn set_moment(&mut self, key: &str, on: bool) {
+        self.moments_off.retain(|k| k != key);
+        if !on {
+            self.moments_off.push(key.to_string());
+        }
+        self.moments_off.sort();
+        self.moments_off.dedup();
     }
 
     pub fn setting(&self, family: &Family) -> FamilySetting {

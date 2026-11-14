@@ -713,14 +713,14 @@ fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"))
 }
 
-/// One change to the initiative settings: `quiet`, `meeting_briefs`, a `family` with its `setting`, or
+/// One change to the initiative settings: `quiet`, a `moment` with `on`, a `family` with its `setting`, or
 /// `quiet_hours` (`{start, end}`, or `null` for none).
 fn apply_initiative(settings: &mut notice::Initiative, params: &serde_json::Value) -> Result<(), String> {
     if let Some(quiet) = params["quiet"].as_bool() {
         settings.quiet = quiet;
     }
-    if let Some(on) = params["meeting_briefs"].as_bool() {
-        settings.meeting_briefs_off = !on;
+    if let (Some(key), Some(on)) = (params["moment"].as_str(), params["on"].as_bool()) {
+        settings.set_moment(key, on);
     }
     if let Some(word) = params["family"].as_str() {
         let family = notice::Family::parse(word).ok_or_else(|| format!("`{word}` is not a family"))?;
@@ -1083,18 +1083,28 @@ mod tests {
     }
 
     #[test]
-    fn meeting_briefs_are_on_until_the_person_turns_them_off() {
+    fn moments_are_on_until_the_person_turns_them_off() {
+        let key = notice::MOMENT_MEETING_BRIEF;
         let mut settings = notice::Initiative::default();
-        assert!(!settings.meeting_briefs_off, "on by default");
+        assert!(settings.moment_on(key), "on by default");
         let older: notice::Initiative = serde_json::from_value(serde_json::json!({ "quiet": true })).unwrap();
-        assert!(!older.meeting_briefs_off, "a settings file from before the switch reads as on");
-        apply_initiative(&mut settings, &serde_json::json!({ "meeting_briefs": false })).unwrap();
-        assert!(settings.meeting_briefs_off);
+        assert!(older.moment_on(key), "a settings file from before the field reads as everything on");
+        apply_initiative(&mut settings, &serde_json::json!({ "moment": key, "on": false })).unwrap();
+        assert!(!settings.moment_on(key));
         assert!(!settings.quiet, "only that switch moved");
         let back: notice::Initiative = serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
-        assert!(back.meeting_briefs_off, "it is kept with the other settings");
-        apply_initiative(&mut settings, &serde_json::json!({ "meeting_briefs": true })).unwrap();
-        assert!(!settings.meeting_briefs_off);
+        assert!(!back.moment_on(key), "it is kept with the other settings");
+        apply_initiative(&mut settings, &serde_json::json!({ "moment": key, "on": false })).unwrap();
+        assert_eq!(settings.moments_off, [key], "no repeats");
+        apply_initiative(&mut settings, &serde_json::json!({ "moment": key, "on": true })).unwrap();
+        assert!(settings.moment_on(key) && settings.moments_off.is_empty());
+        // A key from a later build is kept, and the list stays sorted.
+        let later: notice::Initiative = serde_json::from_value(serde_json::json!({ "moments_off": ["welcome_back", "ai_down"] })).unwrap();
+        let mut later = later;
+        apply_initiative(&mut later, &serde_json::json!({ "moment": key, "on": false })).unwrap();
+        assert_eq!(later.moments_off, ["ai_down", key, "welcome_back"]);
+        apply_initiative(&mut later, &serde_json::json!({ "moment": key, "on": true })).unwrap();
+        assert_eq!(later.moments_off, ["ai_down", "welcome_back"], "an unknown key is not dropped");
         assert_eq!(settings.wire(), notice::Initiative::default().wire(), "no mind is told about it");
     }
 
