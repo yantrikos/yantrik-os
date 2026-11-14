@@ -76,6 +76,23 @@ fn the_old_builds_lock_alone_keeps_this_build_out() {
 }
 
 #[test]
+fn a_second_profiles_legacy_lock_does_not_keep_the_default_profile_out() {
+    // Two profiles share one state dir; before #976 the legacy lock was named the same file for
+    // both, so a second profile's running Notes kept the default profile from starting beside it.
+    let root = std::env::temp_dir().join(format!("yantrik-notes-976d-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mine = Paths::under(&root, Notes::ID, yantrik_app::paths::DEFAULT_PROFILE);
+    let other = Paths::under(&root, Notes::ID, "work");
+    assert_eq!(mine.state_dir(), other.state_dir(), "the two profiles share one state dir");
+    std::fs::create_dir_all(other.state_dir()).unwrap();
+    // Held as the other profile's running copy holds it: its own legacy lock, flocked.
+    let held = yantrik_app::lock::hold(&other.state_dir().join(crate::claim::legacy_name(other.profile()))).unwrap();
+    assert_eq!(second_start(&mine), None, "the default profile starts beside another profile's lock");
+    drop(held);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn the_vault_lock_alone_keeps_a_second_profile_on_the_same_vault_out() {
     let paths = Paths::temporary(Notes::ID);
     std::fs::create_dir_all(paths.data_dir()).unwrap();
