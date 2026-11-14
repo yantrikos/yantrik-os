@@ -213,6 +213,42 @@ impl AnticipationEngine {
             .unwrap_or_default()
     }
 
+    /// One item by id, whatever its state.
+    pub fn get(conn: &Connection, id: &str) -> Option<PreparedItem> {
+        conn.query_row(
+            "SELECT id, trigger_type, trigger_data, kind, description, data,
+                    relevant_at, expires_at, surfaced, outcome, created_at
+             FROM prepared_items WHERE id = ?1",
+            params![id],
+            Self::row_to_item,
+        )
+        .ok()
+    }
+
+    /// Items of one kind that are in their window at `now` and have no outcome yet, surfaced or
+    /// not: what a surface that was just restarted has to draw again.
+    pub fn get_active(conn: &Connection, kind: &PreparedKind, now: f64) -> Vec<PreparedItem> {
+        let mut stmt = match conn.prepare(
+            "SELECT id, trigger_type, trigger_data, kind, description, data,
+                    relevant_at, expires_at, surfaced, outcome, created_at
+             FROM prepared_items
+             WHERE kind = ?1 AND relevant_at <= ?2 AND expires_at > ?2 AND outcome IS NULL
+             ORDER BY relevant_at ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![kind.as_str(), now], Self::row_to_item)
+            .ok()
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    /// Forget one item, as when the thing it was prepared for moved or was deleted.
+    pub fn remove(conn: &Connection, id: &str) {
+        let _ = conn.execute("DELETE FROM prepared_items WHERE id = ?1", params![id]);
+    }
+
     /// Mark an item as surfaced.
     pub fn mark_surfaced(conn: &Connection, id: &str) {
         let _ = conn.execute(

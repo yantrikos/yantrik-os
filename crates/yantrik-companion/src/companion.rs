@@ -721,6 +721,10 @@ impl CompanionService {
         // World model tables (commitments, preferences, routines)
         crate::world_model::WorldModel::ensure_tables(&db.conn());
 
+        // Prepared items (meeting briefs): kept across restarts so a brief is made and
+        // announced once, and a dismissal holds.
+        crate::anticipation::AnticipationEngine::ensure_table(&db.conn());
+
         // Trust model tables (3-axis trust + event log)
         crate::trust_model::TrustModel::ensure_table(&db.conn());
 

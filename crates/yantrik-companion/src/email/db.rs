@@ -267,6 +267,68 @@ pub fn search_emails(conn: &Connection, account_id: i64, query: &str, limit: usi
     }
 }
 
+/// The most addresses `emails_with_participants` will look up: a meeting with more people than
+/// this is a webinar, and the rest add rows, not meaning.
+pub const MAX_PARTICIPANTS: usize = 12;
+
+/// Messages exchanged with any of `addresses` since `since_ts`, newest first: ones they sent
+/// (`from_addr`) and ones sent to them (`to_addr`, which may hold several recipients).
+///
+/// Each address is its own statement with the address bound as a parameter, so no caller text
+/// ever becomes SQL; the answers are merged here. Case never matters in an address.
+pub fn emails_with_participants(conn: &Connection, addresses: &[String], since_ts: f64, limit: usize) -> Vec<CachedEmail> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, account_id, uid, folder, from_addr, COALESCE(from_name, ''), COALESCE(to_addr, ''),
+                COALESCE(subject, ''), date_ts, COALESCE(body_preview, ''), '', is_read, is_flagged,
+                COALESCE(message_id, ''), COALESCE(in_reply_to, ''), '', COALESCE(importance, 'normal')
+         FROM emails
+         WHERE date_ts >= ?1 AND (lower(from_addr) = ?2 OR instr(lower(COALESCE(to_addr, '')), ?2) > 0)
+         ORDER BY date_ts DESC LIMIT ?3",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("emails_with_participants prepare failed: {}", e);
+            return Vec::new();
+        }
+    };
+    let mut found: Vec<CachedEmail> = Vec::new();
+    for address in addresses.iter().take(MAX_PARTICIPANTS) {
+        let needle = address.trim().to_lowercase();
+        if needle.is_empty() {
+            continue;
+        }
+        let rows = stmt.query_map(rusqlite::params![since_ts, needle, limit as i64], |row| {
+            Ok(CachedEmail {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                uid: row.get::<_, i64>(2)? as u32,
+                folder: row.get(3)?,
+                from_addr: row.get(4)?,
+                from_name: row.get(5)?,
+                to_addr: row.get(6)?,
+                subject: row.get(7)?,
+                date_ts: row.get(8)?,
+                body_preview: row.get(9)?,
+                body_full: row.get(10)?,
+                is_read: row.get::<_, i32>(11)? != 0,
+                is_flagged: row.get::<_, i32>(12)? != 0,
+                message_id: row.get(13)?,
+                in_reply_to: row.get(14)?,
+                ai_summary: row.get(15)?,
+                importance: row.get(16)?,
+            })
+        });
+        match rows {
+            Ok(mapped) => found.extend(mapped.filter_map(|r| r.ok())),
+            Err(e) => tracing::error!("emails_with_participants query failed: {}", e),
+        }
+    }
+    found.sort_by(|a, b| b.date_ts.total_cmp(&a.date_ts).then(b.id.cmp(&a.id)));
+    found.dedup_by_key(|m| m.id);
+    found.truncate(limit);
+    found
+}
+
 /// Mark an email as read in the cache.
 pub fn mark_read(conn: &Connection, email_id: i64) {
     conn.execute(
