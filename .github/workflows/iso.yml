@@ -192,7 +192,14 @@ jobs:
           key: iso-release-v1
           cache-on-failure: true
 
-      # -j 2 (#1234): the scheduled run of 14 Nov lost its runner in this step at full parallelism.
+      # #1234: the scheduled run of 14 Nov lost its runner in this step at full parallelism. The
+      # generated UI crate (rustc ~14 GB, see Cargo.toml's profile note) is built first, alone.
+      - name: Build the generated UI crate alone (release)
+        run: |
+          .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null || true' EXIT
+          cargo build --release -p yantrik-ui-slint --locked -j 1
+
       - name: Build the workspace (release)
         run: |
           .github/ci-sampler.sh &
