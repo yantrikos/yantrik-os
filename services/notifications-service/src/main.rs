@@ -294,7 +294,7 @@ impl NotificationsHandler {
                 Ok(serde_json::json!({ "notice_feedback": feedback }))
             }
 
-            INITIATIVE => Ok(serde_json::to_value(self.store.initiative()).unwrap_or_default()),
+            INITIATIVE => Ok(moments::read_by(self.store.initiative(), is_desktop(peer))),
 
             NOTICE_UNBIND => {
                 self.desktop_only(method, peer)?;
@@ -720,7 +720,7 @@ fn apply_initiative(settings: &mut notice::Initiative, params: &serde_json::Valu
     if let Some(quiet) = params["quiet"].as_bool() {
         settings.quiet = quiet;
     }
-    moments::apply(settings, params);
+    moments::apply(settings, params)?;
     if let Some(word) = params["family"].as_str() {
         let family = notice::Family::parse(word).ok_or_else(|| format!("`{word}` is not a family"))?;
         let setting = params["setting"].as_str().unwrap_or_default();

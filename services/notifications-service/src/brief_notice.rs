@@ -15,7 +15,7 @@
 //!   takes that card's place there. The early heads-up is not a moment of its own.
 
 use chrono::{DateTime, Duration, Local, NaiveDateTime, SecondsFormat, TimeZone, Utc};
-use yantrik_ipc_contracts::notifications::notice::{Attention, Family, FamilySetting, Notice};
+use yantrik_ipc_contracts::notifications::notice::{Attention, Family, FamilySetting, Notice, OS_HARNESS};
 
 use crate::reminders::{minutes_phrase, notice_id as calendar_id, Kind};
 use crate::store::Store;
@@ -55,9 +55,11 @@ pub fn notice_id(event: &str, start: &NaiveDateTime) -> String {
     format!("cal-brief:{event}:{}", start.format("%Y%m%dT%H%M"))
 }
 
-/// The desktop's notice with this id, whether or not it was dismissed since.
+/// The desktop's notice with this id, whether or not it was dismissed since. Looked up in place:
+/// this runs for every due reminder every tick, and must not copy the store.
 fn held(store: &Store, id: &str) -> Option<Notice> {
-    store.since(0).changed.into_iter().find_map(|n| n.notice.filter(|x| x.notice_id == id && x.harness.id == yantrik_ipc_contracts::notifications::notice::OS_HARNESS))
+    let state = store.lock();
+    state.notifications.iter().find_map(|n| n.notice.as_ref().filter(|x| x.notice_id == id && x.harness.id == OS_HARNESS)).cloned()
 }
 
 /// Whether the brief's notice already holds this event's interrupt, so the event's own reminder
