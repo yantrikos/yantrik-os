@@ -25,7 +25,7 @@ fn card(title: &str, text: &str) -> PrepCardData {
 
 /// A card with every opening: two files (one with a long name, elided as the shell elides it), "and
 /// 3 more", and the draft.
-fn full_card(text: &str) -> PrepCardData {
+pub(crate) fn full_card(text: &str) -> PrepCardData {
     PrepCardData {
         file1_label: "Open Q4-deck\u{2026}final-v3.ydeck".into(),
         file2_label: "Open budget-2026.csv".into(),

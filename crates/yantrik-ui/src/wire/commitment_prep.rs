@@ -88,6 +88,7 @@ fn show(ui: &App, status: &Status, cards: &[Card], shown: &RefCell<Vec<Card>>) {
 /// The person's press: say what it did (or why it did nothing), and take the answered rows off the
 /// brief card, giving it the question that is outstanding now when the press answered nothing.
 fn pressed_reply(ui: &App, shown: &Shown) {
+    tracing::info!(toast = %shown.toast, "prep press answered");
     super::toast::local(&ui.as_weak(), "Yantrik", &shown.toast, "", 1);
     let mut rows: Vec<_> = ui.get_morning_brief_sections().iter().filter(|s| s.yes_id.is_empty()).collect();
     if let Some(q) = &shown.brief_question {
@@ -106,16 +107,17 @@ fn wire_opens(ui: &App, shown: Rc<RefCell<Vec<Card>>>) {
         let Some(ui) = weak.upgrade() else { return };
         // A bad index is refused like an unknown card, not turned into place 0.
         let ok = usize::try_from(index).ok().is_some_and(|i| open::open_file(&cards.borrow(), item.as_str(), i, |path, name| open::person_open(path, name, &ui)));
+        // The check is the safety property: a press opens only what Rust holds. It cannot be reached
+        // from the screen (`show` replaces Rust's cards and Slint's in one callback), so it says
+        // nothing to the person, only to the log.
         if !ok {
-            super::toast::local(&ui.as_weak(), "Yantrik", "That file isn't on this card any more.", "", 1);
+            tracing::warn!(item = %item, index, "prep card press for a card no longer held");
         }
     });
-    let weak = ui.as_weak();
     g.on_open_draft(move |item| {
-        let Some(ui) = weak.upgrade() else { return };
         let opened = open::draft_for(&shown.borrow(), item.as_str()).is_some_and(|c| open::open_draft(&c));
         if !opened {
-            super::toast::local(&ui.as_weak(), "Yantrik", "That draft isn't on this card any more.", "", 1);
+            tracing::warn!(item = %item, "prep card press for a card no longer held");
         }
     });
 }

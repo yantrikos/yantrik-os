@@ -166,4 +166,14 @@ mod tests {
         assert_eq!(draft_launch_arg("7/../../etc"), None);
         assert_eq!(draft_launch_arg(""), None);
     }
+
+    #[test]
+    fn a_press_on_a_card_no_longer_held_opens_nothing() {
+        // Rust holds no card, or a different one: neither the file nor the draft of the card the
+        // press names is opened. The check stays; its sentence to the person is gone (a log line).
+        for held in [Vec::new(), vec![Card { item: "commitment-prep-8".into(), ..card(&["/a/other.csv"], Some("8")) }]] {
+            assert!(!open_file(&held, "commitment-prep-7", 0, |_, _| panic!("opened a file of a card that is not held")));
+            assert_eq!(draft_for(&held, "commitment-prep-7"), None);
+        }
+    }
 }

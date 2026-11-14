@@ -30,6 +30,7 @@ run target/ui-validation/provider-panel.png 1280 800 verify-provider-panel
 run target/ui-validation/handoff-card.png 1280 800 verify-handoff-card
 run target/ui-validation/prep-cards.png 400 700 verify-prep-cards
 run target/ui-validation/email-compose.png 1280 800 verify-email-compose
+run target/ui-validation/toast.png 1920 1080 verify-toast
 run target/ui-validation/picker.png 760 560 verify-picker
 run target/ui-validation/first-run.png 1280 800 verify-first-run
 run target/ui-validation/accounts-page.png 1280 800 verify-accounts-page
