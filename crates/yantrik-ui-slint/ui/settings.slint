@@ -522,6 +522,8 @@ export component SettingsScreen inherits Rectangle {
     // purpose: that one is the picker and only holds minds that can actually take a turn.
     in property <[HarnessRowData]> harness-rows: [];
     in property <string> harness-error: "";
+    // A plain sentence that is not a failure (a copy of the person's config was kept, and where). Wraps.
+    in property <string> harness-notice: "";
     callback use-harness(string);
     callback install-harness(string);
     callback start-harness(string);
@@ -2891,6 +2893,21 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                                     font-size: Theme.fs-body;
                                     vertical-alignment: center;
                                 }
+                            }
+                        }
+
+                        if root.harness-notice != "" : Rectangle {
+                            background: Theme.bg-elevated;
+                            border-radius: Theme.r-md;
+                            height: notice-text.preferred-height + 2 * Theme.sp-3;
+                            notice-text := Text {
+                                x: Theme.sp-3;
+                                y: Theme.sp-3;
+                                width: parent.width - 2 * Theme.sp-3;
+                                text: root.harness-notice;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-body;
+                                wrap: word-wrap;
                             }
                         }
 
