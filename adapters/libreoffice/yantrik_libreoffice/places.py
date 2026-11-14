@@ -29,6 +29,9 @@ PROTECTED = (
     "pictures/screenshots", "videos/recordings",
     ".local/share/yantrik", ".local/state/yantrik",
     ".local/share/yantrik-mind", ".config/yantrik-mind", ".config/yantrik-mind.env",
+    ".mozilla", ".config/chromium", ".config/google-chrome", ".config/bravesoftware",
+    ".var/app/com.google.chrome", ".var/app/org.chromium.chromium", ".var/app/com.brave.browser",
+    "snap/chromium", "snap/firefox", ".thunderbird", ".config/evolution",
 )
 
 # The most of the person's sockets the launcher is asked to fail to reach; more are not looked for.
