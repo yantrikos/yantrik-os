@@ -3,6 +3,7 @@
 
 use chrono::{Duration, NaiveDateTime};
 use rusqlite::Connection;
+use yantrik_ipc_contracts::calendar::CalendarEvent;
 
 use super::files::FileRoots;
 use super::tests::{db, event, id_for, maya, now, now_ts, over, own, prepare, scratch, tick_with_mail, Calendar, Forbidden, Mailbox, Notebook, Nothing};
