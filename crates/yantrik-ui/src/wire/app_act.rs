@@ -20,6 +20,18 @@ const COLD_START: Duration = Duration::from_secs(5);
 /// How long the app has to answer: a message is read from the mail server first.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 
+/// The key of an app's `describe` state that says its first read has landed, for an app that
+/// answers a call before it (Notes reads its library after its socket is up, and refuses a call
+/// while it does). Email handles it inside the app; an app not listed is asked at once.
+fn ready_key(app: &str) -> Option<&'static str> {
+    (app == "notes").then_some("library_ready")
+}
+
+/// Whether `describe` (an app's answer) says its first read has landed, by `key`.
+fn is_ready(describe: &serde_json::Value, key: &str) -> bool {
+    describe["state"][key].as_bool().unwrap_or(false)
+}
+
 /// What a press says on its line: nothing when the app did it, else why it did not.
 pub fn said(reply: &Result<serde_json::Value, String>) -> String {
     match reply {
@@ -55,8 +67,17 @@ pub fn act(ui: &App, app: &str, action: &str, args: serde_json::Value, key: &str
         }
         let reply = if yantrik_app_runtime::service::is_up(&address) {
             SyncRpcClient::clear_breaker(&yantrik_ipc_transport::RpcServer::default_address(&address));
-            SyncRpcClient::for_service(&address)
-                .with_timeout(ANSWER_WITHIN)
+            let client = SyncRpcClient::for_service(&address).with_timeout(ANSWER_WITHIN);
+            // A cold app is up before it has read what the press names; ask once it has, within
+            // the same start-up allowance.
+            if let Some(key) = ready_key(&surface) {
+                while Instant::now() < deadline
+                    && !client.call("app.describe", serde_json::json!({})).is_ok_and(|d| is_ready(&d, key))
+                {
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+            }
+            client
                 .call("app.act", serde_json::json!({ "action": action, "args": args }))
                 .map_err(|e| e.message)
         } else {
@@ -70,6 +91,15 @@ pub fn act(ui: &App, app: &str, action: &str, args: serde_json::Value, key: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cold_notes_is_waited_for_until_its_library_has_loaded() {
+        assert_eq!(ready_key("notes"), Some("library_ready"));
+        assert_eq!(ready_key("email"), None, "Email waits inside the app");
+        assert!(!is_ready(&serde_json::json!({ "state": { "library_ready": false } }), "library_ready"));
+        assert!(!is_ready(&serde_json::json!({ "state": {} }), "library_ready"), "no word is not ready");
+        assert!(is_ready(&serde_json::json!({ "state": { "library_ready": true } }), "library_ready"));
+    }
 
     #[test]
     fn an_accepted_press_says_nothing_and_a_refused_one_says_why() {
