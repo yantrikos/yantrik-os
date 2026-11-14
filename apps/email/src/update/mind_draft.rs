@@ -14,8 +14,10 @@ use crate::model::{part, FileOp, Keep, Model};
 use crate::state::{checked_attachment, clear_mind_draft, load_mind_draft, save_mind_draft, shelf_path, Draft, MindDraft};
 use crate::Email;
 
-/// What the composer says while a draft carries a file the mail service cannot send.
-pub const ATTACHED_STATUS: &str = "A file is attached to this draft. Email cannot send attachments yet, so it will not be sent from here.";
+/// What the composer says while a draft carries a file the mail service cannot send. It shares the
+/// header row with Save Draft, Cancel and Send, so it is short: a long sentence there pushed those
+/// buttons off the right edge (VM 520). Send's own refusal says why, in full.
+pub const ATTACHED_STATUS: &str = "File attached, not sent here";
 
 /// What the composer says on a draft Yantrik prepared that carries no file.
 const PREPARED_STATUS: &str = "Draft prepared for you";
