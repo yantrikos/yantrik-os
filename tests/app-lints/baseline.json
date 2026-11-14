@@ -24,9 +24,7 @@
         "ai-request-active",
         "ai-request-progress",
         "ai-tokens-per-sec",
-        "ai-tokens-today",
-        "cpu-frequency",
-        "cpu-model"
+        "ai-tokens-today"
       ]
     }
   }
