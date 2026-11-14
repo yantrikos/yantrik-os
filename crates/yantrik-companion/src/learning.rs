@@ -161,6 +161,11 @@ pub fn extract_and_learn(
             None => continue,
         };
 
+        // The setting for getting promised things ready is the person's own: nothing is kept about it.
+        if crate::setting_words::about_the_setting(&memory_text) {
+            continue;
+        }
+
         // Reject system event text that the LLM shouldn't be memorizing
         if SYSTEM_EVENT_PREFIXES.iter().any(|p| memory_text.starts_with(p)) {
             tracing::debug!(memory_text, "Rejecting system event from learning");
@@ -577,5 +582,45 @@ pub fn detect_humor_reaction(conn: &rusqlite::Connection, user_text: &str) {
     if humor_indicators.iter().any(|h| lower.contains(h)) {
         BondTracker::record_humor(conn, true);
         tracing::debug!("Humor success detected");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yantrik_ml::LLMResponse;
+
+    /// A model that answers every extraction with the same JSON.
+    struct Extracts(&'static str);
+
+    impl LLMBackend for Extracts {
+        fn chat(&self, _: &[ChatMessage], _: &GenerationConfig, _: Option<&[serde_json::Value]>) -> anyhow::Result<LLMResponse> {
+            Ok(LLMResponse { text: self.0.into(), prompt_tokens: 0, completion_tokens: 1, tool_calls: vec![], api_tool_calls: vec![], stop_reason: "stop".into() })
+        }
+        fn chat_streaming(&self, m: &[ChatMessage], c: &GenerationConfig, t: Option<&[serde_json::Value]>, _: &mut dyn FnMut(&str)) -> anyhow::Result<LLMResponse> {
+            self.chat(m, c, t)
+        }
+        fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+            Ok(text.len())
+        }
+        fn backend_name(&self) -> &str {
+            "extracts"
+        }
+    }
+
+    fn memories(db: &YantrikDB) -> i64 {
+        db.conn().query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap_or(-1)
+    }
+
+    #[test]
+    fn a_memory_about_the_setting_is_not_learned_but_another_is() {
+        let db = YantrikDB::new(":memory:", 64).expect("in-memory database");
+        let llm = Extracts(r#"{"should_remember":true,"memories":[
+            {"text":"User prefers not to have things prepared for promises","domain":"preference","importance":0.8},
+            {"text":"User's sister Anita lives in Austin","domain":"family","importance":0.8}]}"#);
+        extract_and_learn(&db, &llm, "Turn off getting things ready, and my sister lives in Austin.", "Noted.", &MemoryEvolutionConfig::default());
+        assert_eq!(memories(&db), 1, "only the sister was kept");
+        let kept: String = db.conn().query_row("SELECT text FROM memories", [], |r| r.get(0)).unwrap_or_default();
+        assert!(kept.contains("Anita"), "{kept}");
     }
 }

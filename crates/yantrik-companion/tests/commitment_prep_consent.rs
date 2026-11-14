@@ -6,16 +6,13 @@ mod common;
 use common::*;
 use serde_json::json;
 use yantrik_companion::commitment_prep::Outcome;
-use yantrik_companion::tools::commitment_prep_tools;
 use yantrik_companion::{commitment_consent, commitment_slot, commitment_store};
 use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::tools::ToolContext;
 
-/// A rig with the real tools registered beside the fakes, whose person has not been asked.
+/// A rig whose person has not been asked.
 fn rig_with_tools(files: &[&str]) -> Rig {
-    let mut rig = Rig::asked(files);
-    commitment_prep_tools::register(&mut rig.registry);
-    rig
+    Rig::asked(files)
 }
 
 fn call(rig: &Rig, tool: &str, args: serde_json::Value) -> String {
@@ -114,7 +111,7 @@ fn no_tool_names_the_person_only_answer() {
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
         let src = std::fs::read_to_string(entry.path()).unwrap();
         for needle in ["commitment_consent", "person_answer", "record_answer", "commitment_store::refuse", "store::refuse"] {
-            assert!(!src.contains(needle) || entry.file_name() == "commitment_prep_tools.rs" && !src.contains("person_answer(") && !src.contains("record_answer(") && !src.contains("::refuse("), "{} names {needle}", entry.path().display());
+            assert!(!src.contains(needle), "{} names {needle}", entry.path().display());
         }
     }
 }
@@ -327,4 +324,72 @@ fn every_answer_to_a_press_is_short_enough_to_read_whole_in_the_toast() {
     for line in &said {
         assert!(line.chars().count() <= commitment_consent::TOAST_CHARS, "cut in the toast: {line:?}");
     }
+}
+
+// ── SAFETY: what a model turn may not do (#1184, review 6882498815 §5) ──
+
+/// The real registry the shell builds, at the highest permission any turn has.
+fn dangerous<'a>(rig: &'a Rig) -> ToolContext<'a> {
+    ToolContext { db: &rig.db, max_permission: PermissionLevel::Dangerous, registry_metadata: None, task_manager: None, incognito: false, agent_spawner: None }
+}
+
+#[test]
+fn no_tool_a_model_turn_is_offered_can_forget_a_promise() {
+    assert!(tools_a_model_is_offered().iter().all(|(name, _)| name != "forget_commitment"), "forget_commitment is offered");
+    let (rig, id) = prepared_rig();
+    let shell = yantrik_companion::tools::build_registry(&yantrik_companion::config::CompanionConfig::default());
+    let said = shell.execute(&dangerous(&rig), "forget_commitment", &json!({ "commitment_id": id }));
+    assert!(said.contains("Unknown tool"), "{said}");
+    let rows: i64 = rig.db.conn().query_row("SELECT COUNT(*) FROM wm_commitments WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+    assert_eq!(rows, 1, "the promise is still there");
+    assert_eq!(rig.item_for(id).id, format!("commitment-prep-{id}"), "and so is what was prepared for it");
+    assert!(commitment_slot::owed(&rig.db.conn()).is_empty(), "and Email is owed no clear");
+}
+
+#[test]
+fn a_model_turn_cannot_clear_a_prepared_draft() {
+    let (rig, id) = prepared_rig();
+    let shell = yantrik_companion::tools::build_registry(&yantrik_companion::config::CompanionConfig::default());
+    let said = shell.execute(&dangerous(&rig), "app_action", &json!({ "app": "email", "action": "forget_prepared", "args": { "commitment": id.to_string() } }));
+    assert_eq!(said, "email.forget_prepared is done by the companion's own housekeeping, not by a turn.");
+    // The fake registry a rig carries refuses it the same way, and records no call.
+    let before = forgets(&rig).len();
+    let said = rig.registry.execute(&dangerous(&rig), "app_action", &json!({ "app": "email", "action": "forget_prepared", "args": { "commitment": id.to_string() } }));
+    assert!(said.contains("housekeeping"), "{said}");
+    assert_eq!(forgets(&rig).len(), before);
+    // The companion's own housekeeping still clears it, through `pay`.
+    commitment_store::forget(&rig.db.conn(), id);
+    assert_eq!(pay(&rig), 1);
+    assert_eq!(forgets(&rig), vec![json!({ "commitment": id.to_string() })]);
+}
+
+#[test]
+fn asks_to_switch_names_the_feature() {
+    for yes in [
+        "Turn off getting things ready.",
+        "please stop preparing my promises",
+        "turn on getting promised things ready",
+        "press Got it and Stop on the getting-things-ready card",
+    ] {
+        assert!(commitment_consent::asks_to_switch(yes), "{yes}");
+    }
+    for no in ["turn off the lights", "I'm getting things ready for the party", "stop the music", "I'll send Maya the deck Thursday"] {
+        assert!(!commitment_consent::asks_to_switch(no), "{no}");
+    }
+}
+
+#[test]
+fn a_memory_about_the_setting_is_not_written() {
+    let rig = Rig::asked(&[DECK]);
+    let shell = yantrik_companion::tools::build_registry(&yantrik_companion::config::CompanionConfig::default());
+    let ctx = dangerous(&rig);
+    // The audit of each call is a row too; what the person would recall is every other.
+    let count = || -> i64 { rig.db.conn().query_row("SELECT COUNT(*) FROM memories WHERE text NOT LIKE 'Tool: %'", [], |r| r.get(0)).unwrap() };
+    let about = "User prefers not to have things prepared for promises";
+    shell.execute(&ctx, "remember", &json!({ "text": about }));
+    shell.execute(&ctx, "save_user_fact", &json!({ "fact": about, "domain": "preference" }));
+    assert_eq!(count(), 0, "neither wrote a row");
+    // The other facts in the same call are still written.
+    let said = shell.execute(&ctx, "remember", &json!({ "facts": [about, "User's sister Anita lives in Austin"] }));
+    assert_eq!(count(), 1, "{said}");
 }

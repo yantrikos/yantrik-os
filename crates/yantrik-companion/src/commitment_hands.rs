@@ -71,10 +71,25 @@ impl<'a> Hands<'a> {
     /// `app_action`: what the app answered, parsed, when it took the action; otherwise why not, in
     /// the person's words.
     pub fn act(&mut self, app: &str, action: &str, args: Value) -> Result<Value, Failed> {
+        self.act_through(app, action, args, false)
+    }
+
+    /// `act` through the door a model turn cannot use (`ToolRegistry::execute_housekeeping`): for
+    /// the companion's own upkeep, such as clearing the draft of a promise that closed.
+    pub fn act_unlisted(&mut self, app: &str, action: &str, args: Value) -> Result<Value, Failed> {
+        self.act_through(app, action, args, true)
+    }
+
+    fn act_through(&mut self, app: &str, action: &str, args: Value, unlisted: bool) -> Result<Value, Failed> {
         if self.out_of_time() {
             return Err(Failed::Later("I ran out of time and will pick this up again".into()));
         }
-        let said = self.call("app_action", json!({ "app": app, "action": action, "args": args }));
+        let call = json!({ "app": app, "action": action, "args": args });
+        let said = if unlisted {
+            self.registry.execute_housekeeping(self.ctx, "app_action", &call)
+        } else {
+            self.call("app_action", call)
+        };
         let prefix = format!("{app}.{action} \u{2192}");
         match said.strip_prefix(&prefix) {
             Some(answer) => Ok(serde_json::from_str(answer.trim()).unwrap_or(Value::Null)),

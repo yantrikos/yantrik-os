@@ -25,7 +25,6 @@ delete_automation standard none
 download_file standard none
 extract_search_results safe none
 find_recipe safe none
-forget_commitment standard none
 forget_topic standard none
 form_opinion standard none
 github_profile safe none

@@ -89,9 +89,15 @@ impl Tool for RememberTool {
 
         let mut saved = 0u32;
         let mut skipped = 0u32;
+        let mut refused = 0u32;
         let mut results = Vec::new();
 
         for fact in &all_facts {
+            if crate::setting_words::about_the_setting(fact) {
+                results.push(format!("{NOT_REMEMBERED}: {fact}"));
+                refused += 1;
+                continue;
+            }
             if crate::learning::is_duplicate(ctx.db, fact) {
                 skipped += 1;
                 continue;
@@ -108,6 +114,8 @@ impl Tool for RememberTool {
         if all_facts.len() == 1 {
             if saved == 1 {
                 format!("Remembered: {}", all_facts[0])
+            } else if results.last().is_some_and(|r| r.starts_with(NOT_REMEMBERED)) {
+                results.join("; ")
             } else if skipped == 1 {
                 format!("Already remembered something similar to: {}", all_facts[0])
             } else {
@@ -118,10 +126,16 @@ impl Tool for RememberTool {
             if skipped > 0 {
                 parts.push(format!("({skipped} duplicates skipped)"));
             }
+            if refused > 0 {
+                parts.push(format!("({refused} {NOT_REMEMBERED})"));
+            }
             parts.join(" ")
         }
     }
 }
+
+/// What a write about the commitment-prep setting is answered: that setting is the person's own.
+const NOT_REMEMBERED: &str = "not remembered: that setting is the person's";
 
 // ── Recall ──
 
@@ -525,6 +539,10 @@ impl Tool for SaveUserFactTool {
         let raw_domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("general");
         let domain = model_domain(crate::sanitize::validate_domain(raw_domain));
         let confidence = args.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.9);
+
+        if crate::setting_words::about_the_setting(fact) {
+            return NOT_REMEMBERED.to_string();
+        }
 
         // Write-time dedup — check if we already have this fact
         if crate::learning::is_duplicate(ctx.db, fact) {

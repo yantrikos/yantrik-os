@@ -91,6 +91,20 @@ impl Tool for FakeApps {
     fn definition(&self) -> Value { json!({ "type": "function", "function": { "name": "app_action" } }) }
     fn execute(&self, _: &ToolContext, args: &Value) -> String {
         let (app, action) = (args["app"].as_str().unwrap_or(""), args["action"].as_str().unwrap_or(""));
+        if (app, action) == ("email", "forget_prepared") {
+            return "email.forget_prepared is done by the companion's own housekeeping, not by a turn.".into();
+        }
+        self.answer(args)
+    }
+    fn housekeeping(&self, _: &ToolContext, args: &Value) -> Option<String> {
+        Some(self.answer(args))
+    }
+}
+
+impl FakeApps {
+    /// What the app says to a call that was let through.
+    fn answer(&self, args: &Value) -> String {
+        let (app, action) = (args["app"].as_str().unwrap_or(""), args["action"].as_str().unwrap_or(""));
         let mut w = self.0.lock().unwrap();
         w.calls.push(("app_action".into(), args.clone()));
         let key = format!("{app}.{action}");

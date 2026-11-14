@@ -29,6 +29,8 @@ pub const TOAST_CHARS: usize = 36;
 
 pub const WHERE: &str = "Settings \u{2192} Companion";
 
+pub use crate::setting_words::{about_the_setting, asks_to_switch, SWITCH_REPLY};
+
 /// The question outstanding: what the buttons answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {

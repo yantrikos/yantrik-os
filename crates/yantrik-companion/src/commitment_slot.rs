@@ -75,7 +75,7 @@ pub fn pay(registry: &ToolRegistry, ctx: &ToolContext<'_>, budget: std::time::Du
     let mut hands = Hands::new(registry, ctx, budget);
     let mut done = 0;
     for id in owed {
-        match hands.act("email", "forget_prepared", json!({ "commitment": id })) {
+        match hands.act_unlisted("email", "forget_prepared", json!({ "commitment": id })) {
             Err(failed) if failed.is_later() => continue,
             _ => {}
         }
