@@ -28,7 +28,7 @@ struct Doors {
 }
 
 fn lan(host: &str, ports: &[u16]) -> Rule {
-    Rule { host: host.into(), ports: ports.to_vec(), http: true, lan: true, why: "one of the Mind's endpoints".into(), seeded: true }
+    Rule { host: host.into(), ports: ports.to_vec(), http: true, lan: true, why: "one of the Mind's endpoints".into(), seeded: true, search_bound: false }
 }
 
 /// This machine's network, and on it: the ISP's global prefix 2a02:8070:abcd:1::/64, a public IPv4
@@ -177,7 +177,7 @@ async fn the_public_door_lets_the_internet_through() {
     assert_eq!((s.audited, s.refused), (4, 0));
     // In enforce, by a rule like any other.
     let mut p = Policy { mode: Mode::Enforce, rules: vec![] };
-    p.allow(Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "a public site".into(), seeded: false }).unwrap();
+    p.allow(Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "a public site".into(), seeded: false, search_bound: false }).unwrap();
     let d = start("internet-enforce", p).await;
     for code in both(d.public, "1.1.1.1:9").await {
         assert_ne!(code, 403);
@@ -245,7 +245,7 @@ async fn a_home_device_on_a_global_prefix_or_the_router_is_the_home_network() {
     }
     // In guarded, a rule without lan does not open it; one with lan does, on the endpoint door only.
     let mut p = Policy { mode: Mode::Guarded, rules: vec![] };
-    p.allow(Rule { host: "nas.home.example".into(), ports: vec![445], http: true, lan: false, why: "files".into(), seeded: false }).unwrap();
+    p.allow(Rule { host: "nas.home.example".into(), ports: vec![445], http: true, lan: false, why: "files".into(), seeded: false, search_bound: false }).unwrap();
     let d = start("home-guarded-rule", p).await;
     for door in [d.endpoint, d.public] {
         assert_eq!(both(door, "nas.home.example:445").await, [403, 403], "a rule without lan");
@@ -306,7 +306,7 @@ async fn with_no_network_ever_read_nothing_is_reached() {
     }
     for mode in Mode::ALL {
         // A rule for it, so enforce gets as far as the lookup too.
-        let rule = Rule { host: "1.1.1.1".into(), ports: vec![443], http: true, lan: false, why: "x".into(), seeded: false };
+        let rule = Rule { host: "1.1.1.1".into(), ports: vec![443], http: true, lan: false, why: "x".into(), seeded: false, search_bound: false };
         let d = start_on(&format!("nonet-{mode:?}"), Policy { mode, rules: vec![rule] }, none).await;
         for door in [d.endpoint, d.public] {
             assert_eq!(both(door, "1.1.1.1:443").await, [503, 503], "{mode:?}");
@@ -418,4 +418,97 @@ fn a_connection_from_an_address_the_read_did_not_know_is_judged_again() {
     STAGE.store(2, Ordering::SeqCst);
     let late = proxy::after_connect(&p, "1.1.1.1", 443, false, Place::Internet, &before, at("1.1.1.1:443"), new).unwrap_err();
     assert_eq!((late.code, late.outcome), (503, Outcome::Refused), "{late:?}");
+}
+
+/// A search rule that binds 1.1.1.1:9, on a proxy started with it.
+async fn bound_search(name: &str) -> Doors {
+    let mut p = Policy { mode: Mode::Enforce, rules: vec![] };
+    p.allow(Rule { host: "1.1.1.1".into(), ports: vec![9], http: true, lan: false, why: "search".into(), seeded: false, search_bound: true }).unwrap();
+    start(name, p).await
+}
+
+/// The person's yes for `query`, as the desktop sends it: over the control socket's handler.
+fn approve(d: &Doors, query: &str) -> serde_json::Value {
+    let sha: String = crate::search::digest(query).iter().map(|b| format!("{b:02x}")).collect();
+    crate::control::handle(&d.state, &serde_json::json!({"op": "approve_search", "host": "1.1.1.1", "port": 9, "sha256": sha}), false)
+}
+
+fn search(path: &str) -> String {
+    format!("GET http://1.1.1.1:9{path} HTTP/1.1\r\nHost: 1.1.1.1:9\r\n\r\n")
+}
+
+#[tokio::test]
+async fn an_approved_query_goes_out_once_and_nothing_else_does() {
+    let d = bound_search("search-once").await;
+    assert_eq!(status(d.public, &search("/search?q=rust+async")).await, 403, "Q1 before the person said yes");
+    let r = approve(&d, "rust async");
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(status(d.public, &search("/search?q=other")).await, 403, "Q2");
+    assert_ne!(status(d.public, &search("/search?q=rust+async&format=json")).await, 403, "Q1, once");
+    assert_eq!(status(d.public, &search("/search?q=rust+async")).await, 403, "a second Q1");
+    assert_eq!(crate::control::handle(&d.state, &serde_json::json!({"op": "status"}), false)["search_approvals"], 0, "spent");
+    // A page with no query carries none.
+    assert_ne!(status(d.public, &search("/static/style.css")).await, 403);
+}
+
+#[tokio::test]
+async fn nothing_but_one_approved_q_in_the_url_spends_an_approval() {
+    let d = bound_search("search-bypass").await;
+    assert_eq!(approve(&d, "rust async")["ok"], true);
+    // Each of these would send something beside or instead of the approved query, and is refused
+    // without spending the approval.
+    let post = "POST http://1.1.1.1:9/search HTTP/1.1\r\nHost: 1.1.1.1:9\r\nContent-Length: 12\r\n\r\nq=rust+async";
+    for (what, request) in [
+        ("a pair with no `=` first", search("/search?flag&q=other")),
+        ("a second q", search("/search?q=rust+async&q=other")),
+        ("the same q twice", search("/search?q=rust+async&q=rust+async")),
+        ("q spelled %71", search("/search?%71=other")),
+        ("text after a `;`", search("/search?q=rust+async;my+secret")),
+        ("text after a `#`", search("/search?q=rust+async#my+secret")),
+        ("text after an encoded `#`", search("/search?q=rust+async%23my+secret")),
+        ("a body", post.to_string()),
+        ("a tunnel", connect("1.1.1.1:9")),
+    ] {
+        assert_eq!(status(d.public, &request).await, 403, "{what}");
+    }
+    assert_ne!(status(d.public, &search("/search?q=rust%20async")).await, 403, "the approval is still there");
+}
+
+#[tokio::test]
+async fn a_query_the_card_allows_can_be_approved_and_matched_whole() {
+    // 300 characters, the most the Mind's card takes, in Devanagari: 900 bytes, 2,700 encoded.
+    let d = bound_search("search-long").await;
+    let query = "\u{0916}".repeat(300);
+    assert_eq!(approve(&d, &query)["ok"], true);
+    let encoded: String = query.bytes().map(|b| format!("%{b:02X}")).collect();
+    assert_ne!(status(d.public, &search(&format!("/search?q={encoded}"))).await, 403);
+}
+
+#[test]
+fn an_approval_is_only_for_a_host_a_bound_rule_names() {
+    let dir = std::env::temp_dir().join(format!("yantrik-egress-approve-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = Mutex::new(State::load(&dir));
+    state.lock().unwrap().policy.rules = vec![
+        Rule { host: "*.lan".into(), ports: vec![8888], http: true, lan: true, why: "search".into(), seeded: false, search_bound: true },
+        Rule { host: "open.example".into(), ports: vec![80], http: true, lan: false, why: "x".into(), seeded: false, search_bound: false },
+    ];
+    let sha = "ab".repeat(32);
+    let ask = |host: &str, port: u64, sha: &str, ttl: serde_json::Value| {
+        crate::control::handle(&state, &serde_json::json!({"op": "approve_search", "host": host, "port": port, "sha256": sha, "ttl": ttl}), false)
+    };
+    assert_eq!(ask("searxng.lan", 8888, &sha, serde_json::Value::Null)["ok"], true);
+    assert_eq!(ask("searxng.lan", 8888, &sha, serde_json::json!(86_400))["seconds"], 300, "cut to the most");
+    for (what, r) in [
+        ("an unbound host", ask("open.example", 80, &sha, serde_json::Value::Null)),
+        ("no rule", ask("elsewhere.example", 80, &sha, serde_json::Value::Null)),
+        ("another port", ask("searxng.lan", 443, &sha, serde_json::Value::Null)),
+        ("a wildcard", ask("*.lan", 8888, &sha, serde_json::Value::Null)),
+        ("not a hash", ask("searxng.lan", 8888, "rust async", serde_json::Value::Null)),
+        ("a ttl of nothing", ask("searxng.lan", 8888, &sha, serde_json::json!(0))),
+        ("a ttl that is words", ask("searxng.lan", 8888, &sha, serde_json::json!("soon"))),
+    ] {
+        assert_eq!(r["ok"], false, "{what}: {r}");
+    }
 }
