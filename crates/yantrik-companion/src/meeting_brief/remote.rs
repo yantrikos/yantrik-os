@@ -3,10 +3,12 @@
 //! The calendar and the notes service are programs reached over a socket, either may be slow or
 //! have to be started first, and a home folder may sit on a network mount. The worker that runs
 //! the think tick does everything else the companion does, one thing at a time, so it must never
-//! wait on any of them. A [`Fetcher`] owns a thread that makes those calls and the file walk, and
+//! wait on any of them. A [`Fetcher`] owns the threads that make those calls and the file walk, and
 //! leaves what it found in a [`Snapshot`]; the worker reads the snapshot (a lock held for a clone,
-//! never across a call) and asks for the next refresh with a send that cannot block. A brief
-//! therefore lags the data by about one tick, which is nothing against a ten minute window.
+//! never across a call) and asks for the next refresh with a send that cannot block. The folders
+//! are walked on a thread of their own, so a mount that hangs costs the files of a brief and
+//! never the calendar. A brief therefore lags the data by about one tick, which is nothing
+//! against a ten minute window.
 //!
 //! Only answers are kept. An error is never cached: the next tick asks again, so one failed
 //! search cannot hold a brief back for minutes.
@@ -14,7 +16,7 @@
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -154,54 +156,51 @@ impl FileSource for CachedFiles<'_> {
     }
 }
 
-/// What one refresh is asked to find besides the calendar.
+/// What one refresh is asked to find besides the calendar: notes searches.
 #[derive(Default)]
 struct Request {
     notes: Vec<String>,
-    files: Vec<Vec<String>>,
 }
 
-/// The services and folders the thread asks.
+/// The services the first thread asks. The folders have a thread of their own ([`walk`]): a
+/// mount that never answers costs the files section of a brief and nothing else.
 struct Backends {
     calendar: Arc<dyn CalendarBackend>,
     notes: Arc<dyn NoteSource + Send + Sync>,
-    files: Arc<dyn FileSource + Send + Sync>,
 }
 
-/// The thread that asks the calendar, the notes service and the folders, and the snapshot it fills.
+/// The threads that ask the calendar, the notes service and the folders, and the snapshot they fill.
 pub struct Fetcher {
+    /// The calendar and the notes searches.
     ask: SyncSender<Request>,
+    /// The file searches.
+    walk: SyncSender<Vec<Vec<String>>>,
     shared: Arc<Mutex<Snapshot>>,
-    /// Said once that the thread is gone, so a log is not filled every tick.
+    /// Said once that a thread is gone, so a log is not filled every tick.
     told: AtomicBool,
 }
 
-/// Answer one request into the snapshot. Nothing is held across a call.
+/// Answer one request into the snapshot. Nothing is held across a call, and the calendar's answer
+/// is kept before anything slower is asked: a notes search that takes a minute must not age the
+/// calendar past [`FRESH`] and stop every brief.
 fn refresh(shared: &Mutex<Snapshot>, backends: &Backends, request: Request) {
     let now = chrono::Local::now().naive_local();
     let params = EventsParams {
         start_date: now.format("%Y-%m-%dT%H:%M:%S").to_string(),
         end_date: (now + Span::hours(LOOK_AHEAD_HOURS)).format("%Y-%m-%dT%H:%M:%S").to_string(),
     };
-    let events = backends.calendar.list(&params);
-    let (reuse_notes, reuse_files) = {
+    match backends.calendar.list(&params) {
+        Ok(events) => shared.lock().unwrap_or_else(|e| e.into_inner()).events = Some((events, Instant::now())),
+        Err(why) => tracing::debug!(error = %why, "meeting brief: the calendar did not answer"),
+    }
+    let reuse_notes: Vec<String> = {
         let snap = shared.lock().unwrap_or_else(|e| e.into_inner());
-        let fresh = |at: &Instant| at.elapsed() < REUSE;
-        (
-            request.notes.iter().filter(|q| snap.notes.get(*q).is_some_and(|(_, at)| fresh(at))).cloned().collect::<Vec<_>>(),
-            request.files.iter().filter(|k| snap.files.get(&files_key(k)).is_some_and(|(_, at)| fresh(at))).cloned().collect::<Vec<_>>(),
-        )
+        request.notes.iter().filter(|q| snap.notes.get(*q).is_some_and(|(_, at)| at.elapsed() < REUSE)).cloned().collect()
     };
     let notes: Vec<(String, Result<Vec<NoteHit>, String>)> =
         request.notes.iter().filter(|q| !reuse_notes.contains(q)).map(|q| (q.clone(), backends.notes.search(q))).collect();
-    let files: Vec<(String, Result<Vec<Row>, String>)> =
-        request.files.iter().filter(|k| !reuse_files.contains(k)).map(|k| (files_key(k), backends.files.find(k))).collect();
 
     let mut snap = shared.lock().unwrap_or_else(|e| e.into_inner());
-    match events {
-        Ok(events) => snap.events = Some((events, Instant::now())),
-        Err(why) => tracing::debug!(error = %why, "meeting brief: the calendar did not answer"),
-    }
     for (query, answer) in notes {
         match answer {
             Ok(hits) => {
@@ -210,7 +209,19 @@ fn refresh(shared: &Mutex<Snapshot>, backends: &Backends, request: Request) {
             Err(why) => tracing::debug!(error = %why, "meeting brief: a notes search did not answer"),
         }
     }
-    for (key, answer) in files {
+    snap.notes.retain(|_, (_, at)| at.elapsed() < FRESH);
+}
+
+/// Answer the file searches asked for, on the thread that walks the folders.
+fn walk(shared: &Mutex<Snapshot>, files: &dyn FileSource, wanted: Vec<Vec<String>>) {
+    let reuse: Vec<Vec<String>> = {
+        let snap = shared.lock().unwrap_or_else(|e| e.into_inner());
+        wanted.iter().filter(|k| snap.files.get(&files_key(k)).is_some_and(|(_, at)| at.elapsed() < REUSE)).cloned().collect()
+    };
+    let found: Vec<(String, Result<Vec<Row>, String>)> =
+        wanted.iter().filter(|k| !reuse.contains(k)).map(|k| (files_key(k), files.find(k))).collect();
+    let mut snap = shared.lock().unwrap_or_else(|e| e.into_inner());
+    for (key, answer) in found {
         match answer {
             Ok(rows) => {
                 snap.files.insert(key, (rows, Instant::now()));
@@ -218,8 +229,23 @@ fn refresh(shared: &Mutex<Snapshot>, backends: &Backends, request: Request) {
             Err(why) => tracing::debug!(error = %why, "meeting brief: a file search did not answer"),
         }
     }
-    snap.notes.retain(|_, (_, at)| at.elapsed() < FRESH);
     snap.files.retain(|_, (_, at)| at.elapsed() < FRESH);
+}
+
+/// Run `work` on a thread of its own for each request, until the fetcher is dropped. A fault in
+/// one service's client ends that request, not the thread: the next tick asks again.
+fn serve<T: Send + 'static>(name: &str, requests: Receiver<T>, work: impl Fn(T) + Send + 'static) {
+    let spawned = std::thread::Builder::new().name(format!("yos-meeting-brief-{name}")).spawn(move || {
+        // Blocks until the worker asks: no timer, no polling.
+        for request in requests {
+            if catch_unwind(AssertUnwindSafe(|| work(request))).is_err() {
+                tracing::warn!("meeting brief: a service client failed while it was asked; the next refresh tries again");
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "meeting brief: could not start its {name} thread");
+    }
 }
 
 impl Fetcher {
@@ -229,23 +255,13 @@ impl Fetcher {
         files: Arc<dyn FileSource + Send + Sync>,
     ) -> Self {
         let (ask, requests) = sync_channel::<Request>(1);
+        let (to_walk, walks) = sync_channel::<Vec<Vec<String>>>(1);
         let shared = Arc::new(Mutex::new(Snapshot::default()));
-        let held = shared.clone();
-        let backends = Backends { calendar, notes, files };
-        let spawned = std::thread::Builder::new().name("yos-meeting-brief-fetch".into()).spawn(move || {
-            // Blocks until the worker asks: no timer, no polling.
-            for request in requests {
-                // A fault in one service's client ends that refresh, not the thread: the next
-                // tick asks again.
-                if catch_unwind(AssertUnwindSafe(|| refresh(&held, &backends, request))).is_err() {
-                    tracing::warn!("meeting brief: a service client failed while it was asked; the next refresh tries again");
-                }
-            }
-        });
-        if let Err(e) = spawned {
-            tracing::warn!(error = %e, "meeting brief: could not start its fetch thread");
-        }
-        Self { ask, shared, told: AtomicBool::new(false) }
+        let (asked, walked) = (shared.clone(), shared.clone());
+        let backends = Backends { calendar, notes };
+        serve("fetch", requests, move |request| refresh(&asked, &backends, request));
+        serve("walk", walks, move |wanted| walk(&walked, files.as_ref(), wanted));
+        Self { ask, walk: to_walk, shared, told: AtomicBool::new(false) }
     }
 
     /// What was found so far. Never waits on a service.
@@ -254,12 +270,13 @@ impl Fetcher {
     }
 
     /// Ask for a refresh: the calendar once, and these searches. Never waits; a request made
-    /// while one is still being answered is dropped, and the next tick asks again.
+    /// while one is still being answered is dropped, and the next tick asks again. The file
+    /// searches go to the thread that walks the folders, and wait there for the walk before them.
     pub fn request(&self, notes: Vec<String>, files: Vec<Vec<String>>) {
-        if let Err(TrySendError::Disconnected(_)) = self.ask.try_send(Request { notes, files }) {
-            if !self.told.swap(true, Ordering::Relaxed) {
-                tracing::warn!("meeting brief: its fetch thread is gone; no new briefs can be made until the shell restarts");
-            }
+        let gone = matches!(self.ask.try_send(Request { notes }), Err(TrySendError::Disconnected(_)))
+            || (!files.is_empty() && matches!(self.walk.try_send(files), Err(TrySendError::Disconnected(_))));
+        if gone && !self.told.swap(true, Ordering::Relaxed) {
+            tracing::warn!("meeting brief: a fetch thread is gone; no new briefs can be made until the shell restarts");
         }
     }
 }

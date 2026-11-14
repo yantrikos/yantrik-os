@@ -2,13 +2,15 @@
 //! thread, and the worker's tick reads what was found.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Duration as Span;
 use yantrik_ipc_contracts::calendar::{CalendarEvent, CreateEventParams, EventsParams, UpdateEventParams, UpsertRemoteEventParams};
 
-use super::files::FileRoots;
+use super::files::{FileRoots, FileSource};
+use super::model::Row;
 use super::local::tick_with;
 use super::notes::{NoteHit, NoteSource};
 use super::remote::Fetcher;
@@ -259,4 +261,47 @@ fn a_client_that_panics_ends_that_refresh_and_not_the_fetcher() {
     }
     assert!(calendar.calls.load(Ordering::SeqCst) >= 2, "the fetcher asked again after the fault");
     assert_eq!(cards, 1, "and the brief was made: the thread was still there");
+}
+
+/// A folder search that does not return until the test lets it, as a hung network mount does.
+struct HungFiles {
+    hold: Mutex<Receiver<()>>,
+    asked: AtomicUsize,
+}
+
+impl FileSource for HungFiles {
+    fn find(&self, _: &[String]) -> Result<Vec<Row>, String> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        let _ = self.hold.lock().map(|hold| hold.recv());
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn a_folder_that_never_answers_costs_the_files_of_a_brief_and_nothing_else() {
+    let conn = db();
+    let n = now();
+    maya_email_row(&conn, n);
+    // Two minutes out: inside the last call, so the brief is shown with what it has.
+    let calendar = Arc::new(Counting { events: orion(n, 2), calls: AtomicUsize::new(0) });
+    let (release, hold) = std::sync::mpsc::channel::<()>();
+    let files = Arc::new(HungFiles { hold: Mutex::new(hold), asked: AtomicUsize::new(0) });
+    let fetcher = Fetcher::spawn(calendar.clone(), Arc::new(SlowNotes(AtomicUsize::new(0))), files.clone());
+    let started = Instant::now();
+    let mut cards = 0;
+    while started.elapsed() < Duration::from_secs(20) && cards == 0 {
+        cards = tick_with(&conn, "Pat", &fetcher, n, true).cards.len();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(cards, 1, "the brief was made without its files");
+    assert!(files.asked.load(Ordering::SeqCst) >= 1, "the walk is hung, as the test means it to be");
+    // The calendar goes on being read while the walk is stuck, so no brief is stopped by it.
+    let calls = calendar.calls.load(Ordering::SeqCst);
+    while started.elapsed() < Duration::from_secs(20) && calendar.calls.load(Ordering::SeqCst) < calls + 2 {
+        tick_with(&conn, "Pat", &fetcher, n, true);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(calendar.calls.load(Ordering::SeqCst) >= calls + 2, "the calendar is still asked every tick");
+    assert!(fetcher.snapshot().events().is_some(), "and its answer is fresh");
+    drop(release);
 }
