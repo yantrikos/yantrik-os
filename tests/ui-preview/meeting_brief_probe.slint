@@ -18,3 +18,18 @@ export component MeetingBriefProbe inherits Window {
     one := MeetingBriefCard { x: 20px; y: 20px; width: 340px; data: root.data; }
     MeetingBriefStack { x: 20px; y: 640px; width: 340px; height: 240px; }
 }
+
+// The stack alone, in the box the desktop gives it (560px), for the check that its title and its
+// buttons are inside the box at any text scale, and that two cards are drawn only when both fit.
+export component MeetingBriefStackProbe inherits Window {
+    width: 420px;
+    height: 900px;
+    background: #204060;
+    default-font-family: Theme.font-ui;
+    in property <float> scale: 1.0;
+    changed scale => { TextScale.factor = root.scale; }
+    out property <length> title-y: stack.title-y;
+    out property <length> buttons-bottom: stack.buttons-bottom;
+    out property <bool> two: stack.two;
+    stack := MeetingBriefStack { x: 20px; y: 100px; width: 340px; height: 560px; }
+}

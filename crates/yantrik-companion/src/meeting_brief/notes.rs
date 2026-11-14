@@ -10,6 +10,8 @@ pub const MAX_QUERIES: usize = 8;
 /// One note found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteHit {
+    /// The note's id, its file name: what opens exactly this note.
+    pub id: String,
     pub title: String,
     /// As the service reports it; sorts the same way it reads.
     pub modified_at: String,
@@ -56,7 +58,7 @@ pub fn section(source: &dyn NoteSource, title: &str, people: &[Person]) -> Resul
             if hit.title.trim().is_empty() {
                 continue;
             }
-            match found.iter_mut().find(|(h, _)| h.title == hit.title) {
+            match found.iter_mut().find(|(h, _)| h.id == hit.id) {
                 Some((_, count)) => *count += 1,
                 None => found.push((hit, 1)),
             }
@@ -71,7 +73,7 @@ pub fn section(source: &dyn NoteSource, title: &str, people: &[Person]) -> Resul
         .take(MAX_NOTES)
         .map(|(hit, _)| Row {
             text: clamp(&hit.title, MAX_ROW_CHARS),
-            open: Some(Open::Note { title: hit.title }),
+            open: Some(Open::Note { id: hit.id }),
         })
         .collect())
 }

@@ -25,6 +25,11 @@ pub fn set_plain(plain: bool) {
     PLAIN.store(plain, Ordering::Release);
 }
 
+/// Whether the store's rows may be reached without the engine (see [`set_plain`]).
+pub fn is_plain() -> bool {
+    PLAIN.load(Ordering::Acquire)
+}
+
 /// How long a read waits on the writer's lock before giving up. WAL readers rarely wait at all.
 const BUSY_MS: u64 = 500;
 

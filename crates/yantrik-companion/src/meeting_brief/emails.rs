@@ -11,6 +11,11 @@ pub struct Mail {
     pub from_addr: String,
     pub subject: String,
     pub date_ts: f64,
+    /// Which message this is, exactly: the account's address, the folder and the id there. A
+    /// subject can be on many messages, and a message the person sent is not in the inbox.
+    pub account: String,
+    pub folder: String,
+    pub id: String,
 }
 
 /// Where messages come from: the companion's email cache, or a stand-in in a test.
@@ -41,7 +46,7 @@ pub fn section(source: &dyn EmailSource, people: &[Person], own: &Own, now: i64)
             };
             Row {
                 text: clamp(&format!("{who} \u{b7} {} \u{b7} {}", m.subject, age(now, m.date_ts as i64)), MAX_ROW_CHARS),
-                open: Some(Open::Message { subject: clamp(&m.subject, MAX_ROW_CHARS) }),
+                open: Some(Open::Message { account: m.account, folder: m.folder, id: m.id }),
             }
         })
         .collect())

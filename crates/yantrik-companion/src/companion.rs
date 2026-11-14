@@ -723,7 +723,10 @@ impl CompanionService {
 
         // Prepared items (meeting briefs): kept across restarts so a brief is made and
         // announced once, and a dismissal holds.
-        crate::anticipation::AnticipationEngine::ensure_table(&db.conn());
+        if let Err(e) = crate::anticipation::AnticipationEngine::ensure_table(&db.conn()) {
+            tracing::error!(error = %e, "could not create the prepared items table; meeting briefs are off");
+            crate::meeting_brief::unavailable();
+        }
 
         // Trust model tables (3-axis trust + event log)
         crate::trust_model::TrustModel::ensure_table(&db.conn());

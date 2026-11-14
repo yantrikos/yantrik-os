@@ -25,10 +25,13 @@ impl Own {
         }
     }
 
+    /// Whether this attendee is the person: one of their addresses, or their own name. The name
+    /// counts even beside an address, because with no email account set up the person's entry on
+    /// their own invitation has an address this machine has never heard of.
     fn is_me(&self, a: &Attendee) -> bool {
         let email = a.email.trim().to_lowercase();
-        if !email.is_empty() {
-            return self.addresses.contains(&email);
+        if !email.is_empty() && self.addresses.contains(&email) {
+            return true;
         }
         !self.name.is_empty() && a.name.trim().to_lowercase() == self.name
     }
@@ -63,10 +66,16 @@ pub struct Meeting {
 /// Local, naive stamp to unix seconds. An hour that does not exist (the clocks went forward) is
 /// read as the hour after it, the way the calendar shows it.
 pub fn to_unix(stamp: NaiveDateTime) -> Option<i64> {
-    match Local.from_local_datetime(&stamp) {
+    to_unix_in(&Local, stamp)
+}
+
+/// [`to_unix`] on the clock of `tz`, so the daylight saving rules are tested without depending on
+/// the machine's own zone. An hour that happens twice is read as its first.
+pub fn to_unix_in<Tz: TimeZone>(tz: &Tz, stamp: NaiveDateTime) -> Option<i64> {
+    match tz.from_local_datetime(&stamp) {
         chrono::LocalResult::Single(t) => Some(t.timestamp()),
         chrono::LocalResult::Ambiguous(first, _) => Some(first.timestamp()),
-        chrono::LocalResult::None => Local.from_local_datetime(&(stamp + chrono::Duration::hours(1))).earliest().map(|t| t.timestamp()),
+        chrono::LocalResult::None => tz.from_local_datetime(&(stamp + chrono::Duration::hours(1))).earliest().map(|t| t.timestamp()),
     }
 }
 
@@ -100,50 +109,64 @@ fn clock(stamp: &str) -> Option<String> {
     parse_stamp(stamp).map(|t| t.format("%H:%M").to_string())
 }
 
-/// The events of `events` that are due a brief at `now` (unix seconds): a timed event that is
-/// not cancelled, whose start is ahead by at most ten minutes, with someone else on it.
-pub fn select(events: &[CalendarEvent], now: i64, own: &Own) -> Vec<Meeting> {
-    let mut due = Vec::new();
-    for e in events {
-        if e.is_all_day || is_cancelled(&e.title) {
-            continue;
-        }
-        let (Some(start_at), Some(end_at)) = (parse_stamp(&e.start), parse_stamp(&e.end)) else { continue };
-        let (Some(start), Some(end)) = (to_unix(start_at), to_unix(end_at)) else { continue };
-        let ahead = start - now;
-        if ahead <= 0 || ahead > LEAD_SECS {
-            continue;
-        }
-        let people = others(&e.attendees, own);
-        if people.is_empty() {
-            continue;
-        }
-        let when = match (clock(&e.start), clock(&e.end)) {
-            (Some(a), Some(b)) => format!("{a}\u{2013}{b}"),
-            (Some(a), None) => a,
-            _ => String::new(),
-        };
-        due.push(Meeting {
-            event_id: e.id.clone(),
-            title: e.title.trim().to_string(),
-            start,
-            end: end.max(start + 60),
-            when,
-            place: e.location.as_deref().map(str::trim).filter(|l| !l.is_empty()).map(String::from),
-            description: e.description.clone(),
-            people,
-        });
+/// `e` as a meeting that can have a brief, whenever it is: timed, not cancelled, with someone
+/// else on it. `None` for anything else.
+pub fn meeting_of(e: &CalendarEvent, own: &Own) -> Option<Meeting> {
+    if e.is_all_day || is_cancelled(&e.title) {
+        return None;
     }
+    let (start_at, end_at) = (parse_stamp(&e.start)?, parse_stamp(&e.end)?);
+    let (start, end) = (to_unix(start_at)?, to_unix(end_at)?);
+    let people = others(&e.attendees, own);
+    if people.is_empty() {
+        return None;
+    }
+    let when = match (clock(&e.start), clock(&e.end)) {
+        (Some(a), Some(b)) => format!("{a}\u{2013}{b}"),
+        (Some(a), None) => a,
+        _ => String::new(),
+    };
+    Some(Meeting {
+        event_id: e.id.clone(),
+        title: e.title.trim().to_string(),
+        start,
+        end: end.max(start + 60),
+        when,
+        place: e.location.as_deref().map(str::trim).filter(|l| !l.is_empty()).map(String::from),
+        description: e.description.clone(),
+        people,
+    })
+}
+
+/// The events of `events` that are due a brief at `now` (unix seconds): a meeting whose start is
+/// ahead by at most ten minutes.
+pub fn select(events: &[CalendarEvent], now: i64, own: &Own) -> Vec<Meeting> {
+    select_within(events, now, own, LEAD_SECS)
+}
+
+/// The meetings that start ahead by at most `horizon` seconds, soonest first.
+pub fn select_within(events: &[CalendarEvent], now: i64, own: &Own, horizon: i64) -> Vec<Meeting> {
+    let mut due: Vec<Meeting> =
+        events.iter().filter_map(|e| meeting_of(e, own)).filter(|m| m.start > now && m.start - now <= horizon).collect();
     due.sort_by_key(|m| m.start);
     due
 }
 
-/// A stable fingerprint of what a brief depends on that the person can change: the title, the
-/// start and the people. FNV-1a, because it is stored and must not change between builds.
+/// A stable fingerprint of what a card says that the person can change: the title, the start and
+/// the end, the place, the description and the people. FNV-1a, because it is stored and must not
+/// change between builds.
 pub fn fingerprint(m: &Meeting) -> String {
     let mut people: Vec<String> = m.people.iter().map(|p| format!("{}<{}>", p.name.to_lowercase(), p.email)).collect();
     people.sort();
-    let text = format!("{}\u{1f}{}\u{1f}{}", m.title, m.start, people.join("\u{1e}"));
+    let text = format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        m.title,
+        m.start,
+        m.end,
+        m.place.as_deref().unwrap_or(""),
+        m.description,
+        people.join("\u{1e}")
+    );
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in text.bytes() {
         hash ^= u64::from(byte);

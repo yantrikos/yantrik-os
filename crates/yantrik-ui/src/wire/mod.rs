@@ -66,7 +66,10 @@ mod navigate;
 pub mod notifications;
 // The Lens's For you inbox of mind notices, their toasts and their one button.
 pub mod for_you;
+pub mod app_act;
 pub mod meeting_brief;
+pub mod meeting_brief_notice;
+pub mod meeting_brief_press;
 // Settings → Minds → Initiative.
 pub mod initiative;
 mod power;

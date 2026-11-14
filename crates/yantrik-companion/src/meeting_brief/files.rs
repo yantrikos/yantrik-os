@@ -5,7 +5,7 @@
 //! nothing hidden.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::model::{age, clamp, Open, Row, LOOKBACK_DAYS, MAX_FILES, MAX_ROW_CHARS};
 
@@ -13,6 +13,22 @@ use super::model::{age, clamp, Open, Row, LOOKBACK_DAYS, MAX_FILES, MAX_ROW_CHAR
 pub const MAX_DEPTH: usize = 3;
 /// How many entries, in all roots, are looked at before the walk stops.
 pub const MAX_ENTRIES: usize = 5_000;
+
+/// How long one walk may take. It runs on the fetcher's thread, never the worker's, but a folder
+/// that is a network or FUSE mount can stall each call, and the walk gives up between calls.
+pub const WALK_BUDGET: Duration = Duration::from_millis(400);
+
+/// Where file names are searched: the real folders, or a stand-in in a test.
+pub trait FileSource {
+    /// Up to two rows for files whose names carry any of `keywords`.
+    fn find(&self, keywords: &[String]) -> Result<Vec<Row>, String>;
+}
+
+impl FileSource for FileRoots {
+    fn find(&self, keywords: &[String]) -> Result<Vec<Row>, String> {
+        Ok(section(self, keywords, SystemTime::now()).0)
+    }
+}
 
 /// The folders searched.
 #[derive(Debug, Clone, Default)]
@@ -40,10 +56,15 @@ struct Found {
 
 /// Up to two rows, the newest first: "gate-report.pdf · Documents · 3 d".
 pub fn section(roots: &FileRoots, keywords: &[String], now: SystemTime) -> (Vec<Row>, Walked) {
+    section_by(roots, keywords, now, Instant::now() + WALK_BUDGET)
+}
+
+/// [`section`] that gives up at `deadline`, with what it has found by then.
+pub fn section_by(roots: &FileRoots, keywords: &[String], now: SystemTime, deadline: Instant) -> (Vec<Row>, Walked) {
     if keywords.is_empty() {
         return (Vec::new(), Walked::default());
     }
-    let (mut found, walked) = walk(roots, keywords, now);
+    let (mut found, walked) = walk(roots, keywords, now, deadline);
     found.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
     found.truncate(MAX_FILES);
     let now_secs = secs(now);
@@ -61,7 +82,23 @@ fn secs(t: SystemTime) -> i64 {
     t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-fn walk(roots: &FileRoots, keywords: &[String], now: SystemTime) -> (Vec<Found>, Walked) {
+/// Whether `dir` is on the same filesystem as `root`: a mount below a root (a share, a FUSE
+/// folder) is not walked.
+#[cfg(unix)]
+fn same_device(root: &Path, dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(root), std::fs::symlink_metadata(dir)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_device(_: &Path, _: &Path) -> bool {
+    true
+}
+
+fn walk(roots: &FileRoots, keywords: &[String], now: SystemTime, deadline: Instant) -> (Vec<Found>, Walked) {
     let oldest = now.checked_sub(Duration::from_secs(LOOKBACK_DAYS as u64 * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH);
     let mut found = Vec::new();
     let mut entries = 0usize;
@@ -70,9 +107,12 @@ fn walk(roots: &FileRoots, keywords: &[String], now: SystemTime) -> (Vec<Found>,
         // (directory, depth of its entries)
         let mut pending: Vec<(PathBuf, usize)> = vec![(root.clone(), 1)];
         while let Some((dir, depth)) = pending.pop() {
+            if Instant::now() >= deadline {
+                break 'roots;
+            }
             let Ok(read) = std::fs::read_dir(&dir) else { continue };
             for entry in read.flatten() {
-                if entries >= MAX_ENTRIES {
+                if entries >= MAX_ENTRIES || (entries % 64 == 0 && Instant::now() >= deadline) {
                     break 'roots;
                 }
                 entries += 1;
@@ -83,7 +123,7 @@ fn walk(roots: &FileRoots, keywords: &[String], now: SystemTime) -> (Vec<Found>,
                 // `file_type` does not follow a link: a link is neither descended nor listed.
                 let Ok(kind) = entry.file_type() else { continue };
                 if kind.is_dir() {
-                    if depth < MAX_DEPTH {
+                    if depth < MAX_DEPTH && same_device(root, &entry.path()) {
                         pending.push((entry.path(), depth + 1));
                     }
                 } else if kind.is_file() {

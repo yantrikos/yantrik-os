@@ -19,6 +19,8 @@ export struct BriefLineData {
     heading: string,
     text: string,
     row: int,
+    // What the Open button opens, for its label: "email", "note", "promise" or "file".
+    kind: string,
 }
 
 export struct MeetingBriefData {
@@ -43,13 +45,19 @@ export global MeetingBriefState {
 
 export component MeetingBriefCard inherits Rectangle {
     in property <MeetingBriefData> data;
+    // The most the card may be. Past it the rows scroll, and the title, the time and the buttons
+    // stay inside the card: they are what the person needs, and the rows are what can wait.
+    in property <length> max-height: 100000px;
+    // What the card would be with all its rows showing.
+    out property <length> natural-height: body.preferred-height;
     out property <length> card-height: root.height;
+    out property <length> title-y: title.y;
     out property <length> buttons-bottom: footer.y + footer.height;
     background: Theme.bg-card;
     border-radius: Theme.r-lg;
     border-width: 1px;
     border-color: Theme.border-subtle;
-    height: body.preferred-height;
+    height: min(body.preferred-height, root.max-height);
     clip: true;
     accessible-role: groupbox;
     accessible-label: "Brief for " + root.data.title;
@@ -58,7 +66,7 @@ export component MeetingBriefCard inherits Rectangle {
         padding: Theme.sp-3;
         spacing: Theme.sp-1;
 
-        Text {
+        title := Text {
             text: root.data.title;
             color: Theme.text-primary;
             font-size: Theme.fs-body;
@@ -84,6 +92,17 @@ export component MeetingBriefCard inherits Rectangle {
             overflow: elide;
         }
 
+        // The rows scroll when the card is not tall enough for them, so the header above and the
+        // buttons below are never pushed out of the card.
+        Flickable {
+            viewport-height: rows.preferred-height;
+            preferred-height: rows.preferred-height;
+            min-height: 40px;
+            vertical-stretch: 1;
+            interactive: true;
+            rows := VerticalLayout {
+                width: parent.width;
+                spacing: 0px;
         for line in root.data.lines : VerticalLayout {
             spacing: 0px;
             if line.heading != "" : Text {
@@ -109,9 +128,13 @@ export component MeetingBriefCard inherits Rectangle {
                     variant: 1;
                     size: 0;
                     pointer-only: true;
-                    tooltip: "Open: " + line.text;
+                    // Fixed words: the row's own text can be a subject or a person's name,
+                    // and an accessible description is read out to whatever asks.
+                    tooltip: "Open this " + line.kind;
                     clicked => { MeetingBriefState.open-row(root.data.id, line.row); }
                 }
+            }
+        }
             }
         }
 
@@ -142,15 +165,32 @@ export component MeetingBriefCard inherits Rectangle {
     }
 }
 
-// The cards, newest news first, as many as the room allows. The owner gives it a width and a
-// height; what does not fit is clipped, and shown when the one above it goes.
+// The cards, newest news first, at the foot of the box the owner gives it. Two are drawn only
+// when both fit whole; when they do not, one is drawn and the other waits for it to go. A single
+// card too tall for the box scrolls its rows. Nothing is clipped off its top.
 export component MeetingBriefStack inherits Rectangle {
     clip: true;
-    VerticalLayout {
-        spacing: Theme.sp-2;
-        alignment: end;
-        for card in MeetingBriefState.cards : MeetingBriefCard {
-            data: card;
-        }
+    property <length> gap: Theme.sp-2;
+    property <MeetingBriefData> none: { id: "", title: "", when: "", place: "", people: "", lines: [], note: "" };
+    // Where the title of the card on top is, and where its buttons end, inside this box.
+    out property <length> title-y: first.y + first.title-y;
+    out property <length> buttons-bottom: first.y + first.buttons-bottom;
+    // Whether two cards are drawn.
+    out property <bool> two: root.both;
+    property <bool> both: MeetingBriefState.cards.length > 1 && first.natural-height + second.natural-height + root.gap <= root.height;
+
+    first := MeetingBriefCard {
+        visible: MeetingBriefState.cards.length > 0;
+        data: MeetingBriefState.cards.length > 0 ? MeetingBriefState.cards[0] : root.none;
+        max-height: root.height;
+        width: parent.width;
+        y: root.both ? root.height - second.height - root.gap - self.height : root.height - self.height;
+    }
+    second := MeetingBriefCard {
+        visible: root.both;
+        data: MeetingBriefState.cards.length > 1 ? MeetingBriefState.cards[1] : root.none;
+        max-height: root.height - first.height - root.gap;
+        width: parent.width;
+        y: root.height - self.height;
     }
 }

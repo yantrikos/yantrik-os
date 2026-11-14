@@ -458,7 +458,7 @@ pub(crate) fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<ser
 /// The shell sends under `Yantrik`, which is the desktop's own surface: without that, "See what it
 /// did" on a lapsed bypass would be a control that does nothing. Nothing opens the desktop, so
 /// there is no name to launch.
-fn button_route(
+pub(crate) fn button_route(
     app: &str,
     installed: &[crate::apps::DesktopEntry],
 ) -> Option<(String, Option<String>)> {

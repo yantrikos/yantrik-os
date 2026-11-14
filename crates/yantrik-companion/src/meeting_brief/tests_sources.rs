@@ -72,7 +72,7 @@ fn the_section_takes_three_messages_from_the_last_thirty_days_and_names_the_send
     let rows = emails::section(&EmailCache { conn: &conn }, &[person("Maya Chen", "maya@work.test")], &own(), NOW).expect("rows");
     let text: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
     assert_eq!(text, ["Maya \u{b7} Slides for Friday \u{b7} 2 d", "You \u{b7} Re: Slides for Friday \u{b7} 3 d", "Maya \u{b7} Budget \u{b7} 10 d"]);
-    assert_eq!(rows[0].open, Some(Open::Message { subject: "Slides for Friday".into() }));
+    assert_eq!(rows[0].open, Some(Open::Message { account: ME.into(), folder: "INBOX".into(), id: "1".into() }));
 }
 
 #[test]
@@ -80,7 +80,15 @@ fn the_section_drops_what_the_source_returned_past_thirty_days() {
     struct Old;
     impl EmailSource for Old {
         fn exchanged(&self, _: &[String], _: i64, _: usize) -> Result<Vec<Mail>, String> {
-            Ok(vec![Mail { from_name: "Maya".into(), from_addr: "maya@work.test".into(), subject: "Ancient".into(), date_ts: (NOW - 31 * DAY) as f64 }])
+            Ok(vec![Mail {
+                from_name: "Maya".into(),
+                from_addr: "maya@work.test".into(),
+                subject: "Ancient".into(),
+                date_ts: (NOW - 31 * DAY) as f64,
+                account: ME.into(),
+                folder: "INBOX".into(),
+                id: "9".into(),
+            }])
         }
     }
     assert!(emails::section(&Old, &[person("Maya", "maya@work.test")], &own(), NOW).expect("rows").is_empty());
@@ -122,7 +130,7 @@ struct Notebook(Vec<(&'static str, &'static str)>);
 impl NoteSource for Notebook {
     fn search(&self, query: &str) -> Result<Vec<NoteHit>, String> {
         let q = query.to_lowercase();
-        Ok(self.0.iter().filter(|(t, _)| t.to_lowercase().contains(&q)).map(|(t, m)| NoteHit { title: (*t).into(), modified_at: (*m).into() }).collect())
+        Ok(self.0.iter().filter(|(t, _)| t.to_lowercase().contains(&q)).map(|(t, m)| NoteHit { id: format!("{t}.md"), title: (*t).into(), modified_at: (*m).into() }).collect())
     }
 }
 
@@ -137,7 +145,7 @@ fn notes_match_the_titles_words_and_an_attendees_name() {
     let rows = notes::section(&book, "Orion sync meeting", &[person("Maya Chen", "maya@work.test")]).expect("rows");
     let titles: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
     assert_eq!(titles, ["Call with Maya Chen", "Orion launch checklist"], "\"meeting\" and \"sync\" are not searched; \"Meeting notes\" is not found by them");
-    assert_eq!(rows[0].open, Some(Open::Note { title: "Call with Maya Chen".into() }));
+    assert_eq!(rows[0].open, Some(Open::Note { id: "Call with Maya Chen.md".into() }));
 }
 
 #[test]
@@ -190,18 +198,23 @@ fn commitment(promisor: &str, promisee: &str, action: &str, source: CommitmentSo
 fn promises_match_in_both_directions_without_regard_to_case_and_skip_done_ones() {
     let conn = db();
     WorldModel::insert_commitment(&conn, &commitment("Pat", "ravi rao", "send the Q4 numbers", CommitmentSource::Manual));
-    WorldModel::insert_commitment(&conn, &commitment("MAYA CHEN", "Pat", "share the deck", CommitmentSource::Email { message_id: "<1@x>".into(), subject: "The deck".into() }));
+    insert_mail(&conn, 1, "maya@work.test", ME, "The deck", 2.0);
+    WorldModel::insert_commitment(&conn, &commitment("MAYA CHEN", "Pat", "share the deck", CommitmentSource::Email { message_id: "<1@test>".into(), subject: "The deck".into() }));
     let mut done = commitment("Pat", "Ravi Rao", "old thing", CommitmentSource::Manual);
     done.status = CommitmentStatus::Completed;
     WorldModel::insert_commitment(&conn, &done);
     WorldModel::insert_commitment(&conn, &commitment("Pat", "Someone Else", "unrelated", CommitmentSource::Manual));
 
     let people = [person("Ravi Rao", "ravi@work.test"), person("Maya Chen", "maya@work.test")];
-    let rows = promises::section(&WorldModelPromises { conn: &conn }, &people).expect("rows");
+    let rows = promises::section(&WorldModelPromises { conn: &conn, me: vec!["pat".into(), "user".into()] }, &people).expect("rows");
     let text: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
     assert_eq!(text, ["You told Ravi: send the Q4 numbers", "Maya said: share the deck"]);
     assert_eq!(rows[0].open, None, "a promise made by hand has nothing to open");
-    assert_eq!(rows[1].open, Some(Open::Message { subject: "The deck".into() }));
+    assert_eq!(
+        rows[1].open,
+        Some(Open::Message { account: ME.into(), folder: "INBOX".into(), id: "1".into() }),
+        "the message the promise was found in, by where the cache holds it"
+    );
 }
 
 #[test]
@@ -352,5 +365,88 @@ fn gathering_one_meeting_in_a_crowded_home_folder_takes_under_200_ms() {
     let took = started.elapsed();
     assert!(took < Duration::from_millis(200), "gathering took {took:?}");
     assert!(gathered.complete);
+    let _ = std::fs::remove_dir_all(h);
+}
+
+// ── Whole addresses, exact messages, the person's own promises ──────────────────────────
+
+fn in_folder(conn: &rusqlite::Connection, uid: u32, folder: &str, from: &str, to: &str, subject: &str, days_ago: f64) {
+    let account = crate::email::db::ensure_account(conn, "Home", ME, "imap");
+    crate::email::db::upsert_email(conn, account, uid, folder, from, "", to, subject, NOW as f64 - days_ago * DAY as f64, "", true, &format!("<{uid}@{folder}>"), "");
+}
+
+#[test]
+fn an_address_matches_whole_and_never_as_part_of_another() {
+    let conn = db();
+    insert_mail(&conn, 1, "sal@x.test", ME, "From Sal", 1.0);
+    insert_mail(&conn, 2, "val@x.test.au", ME, "From Val", 1.0);
+    insert_mail(&conn, 3, "al@x.test.evil", ME, "From the lookalike", 1.0);
+    insert_mail(&conn, 4, ME, "Sal <sal@x.test>, bob@x.test", "To Sal", 1.0);
+    insert_mail(&conn, 5, "AL@X.TEST", ME, "From Al", 2.0);
+    insert_mail(&conn, 6, ME, "Bob <bob@x.test>; Al Ford <Al@x.test>", "To Al among others", 3.0);
+    let found = crate::email::db::emails_with_participants(&conn, &["al@x.test".to_string()], 0.0, 10);
+    let subjects: Vec<&str> = found.iter().map(|m| m.subject.as_str()).collect();
+    assert_eq!(subjects, ["From Al", "To Al among others"], "only Al, in any case and in any header form");
+}
+
+#[test]
+fn a_row_opens_the_exact_message_not_the_one_that_shares_its_subject() {
+    let conn = db();
+    // The decoy is in the inbox with the same subject; the message that was meant is one the
+    // person sent, which lives in Sent.
+    in_folder(&conn, 7, "INBOX", "maya@work.test", ME, "Q4 numbers", 1.0);
+    in_folder(&conn, 9, "Sent", ME, "maya@work.test", "Q4 numbers", 2.0);
+    let rows = emails::section(&EmailCache { conn: &conn }, &[person("Maya Chen", "maya@work.test")], &own(), NOW).expect("rows");
+    let opens: Vec<Option<Open>> = rows.iter().map(|r| r.open.clone()).collect();
+    assert_eq!(
+        opens,
+        [
+            Some(Open::Message { account: ME.into(), folder: "INBOX".into(), id: "7".into() }),
+            Some(Open::Message { account: ME.into(), folder: "Sent".into(), id: "9".into() }),
+        ],
+        "each row names its own folder and id"
+    );
+}
+
+#[test]
+fn two_notes_with_one_title_are_two_rows_each_opened_by_its_own_id() {
+    struct Twins;
+    impl NoteSource for Twins {
+        fn search(&self, _: &str) -> Result<Vec<NoteHit>, String> {
+            Ok(vec![
+                NoteHit { id: "note-a.md".into(), title: "Orion".into(), modified_at: "2026-10-01".into() },
+                NoteHit { id: "note-b.md".into(), title: "Orion".into(), modified_at: "2026-10-02".into() },
+            ])
+        }
+    }
+    let rows = notes::section(&Twins, "Orion", &[]).expect("rows");
+    let opens: Vec<Option<Open>> = rows.iter().map(|r| r.open.clone()).collect();
+    assert_eq!(opens, [Some(Open::Note { id: "note-b.md".into() }), Some(Open::Note { id: "note-a.md".into() })]);
+}
+
+#[test]
+fn a_promise_between_two_other_people_is_not_the_persons() {
+    let conn = db();
+    WorldModel::insert_commitment(&conn, &commitment("Maya Chen", "Ravi Rao", "review the budget", CommitmentSource::Manual));
+    WorldModel::insert_commitment(&conn, &commitment("user", "Ravi Rao", "send the Q4 numbers", CommitmentSource::Manual));
+    WorldModel::insert_commitment(&conn, &commitment("Maya Chen", "pat", "share the deck", CommitmentSource::Manual));
+    let people = [person("Ravi Rao", "ravi@work.test"), person("Maya Chen", "maya@work.test")];
+    let source = WorldModelPromises { conn: &conn, me: vec!["pat".into(), "user".into()] };
+    let rows = promises::section(&source, &people).expect("rows");
+    let text: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(text, ["You told Ravi: send the Q4 numbers", "Maya said: share the deck"], "Maya's promise to Ravi is neither line");
+}
+
+#[test]
+fn a_walk_past_its_deadline_stops_where_it_is() {
+    let h = home("deadline");
+    std::fs::create_dir_all(h.join("Documents")).expect("dir");
+    for i in 0..200 {
+        std::fs::write(h.join("Documents").join(format!("file-{i}.txt")), "x").expect("file");
+    }
+    let (_, walked) = files::section_by(&FileRoots::in_home(&h), &words(&["file"]), SystemTime::now(), std::time::Instant::now());
+    assert_eq!(walked.entries, 0, "a folder that stalls cannot keep the walk going");
+    let (_, all) = files::section_by(&FileRoots::in_home(&h), &words(&["file"]), SystemTime::now(), std::time::Instant::now() + Duration::from_secs(30));
+    assert_eq!(all.entries, 200);
     let _ = std::fs::remove_dir_all(h);
 }

@@ -16,7 +16,7 @@ use super::files::FileRoots;
 use super::notes::{NoteHit, NoteSource};
 use super::promises::{Promise, PromiseSource};
 use super::*;
-use crate::anticipation::{AnticipationEngine, PreparedKind};
+use crate::anticipation::{AnticipationEngine, PrepOutcome, PreparedKind};
 use crate::calendar::backend::CalendarBackend;
 
 pub(super) const ME: &str = "me@home.test";
@@ -27,7 +27,7 @@ pub(super) fn db() -> Connection {
     conn
 }
 
-fn prepare(conn: &Connection) {
+pub(super) fn prepare(conn: &Connection) {
     AnticipationEngine::ensure_table(conn);
     crate::email::db::init_tables(conn);
     crate::world_model::WorldModel::ensure_tables(conn);
@@ -67,18 +67,18 @@ pub(super) fn event(id: &str, title: &str, start: NaiveDateTime, people: Vec<Att
     }
 }
 
-fn maya() -> Attendee {
+pub(super) fn maya() -> Attendee {
     attendee("Maya Chen", "maya@work.test")
 }
 
-struct Calendar(Mutex<Vec<CalendarEvent>>);
+pub(super) struct Calendar(Mutex<Vec<CalendarEvent>>);
 
 impl Calendar {
-    fn of(events: Vec<CalendarEvent>) -> Self {
+    pub(super) fn of(events: Vec<CalendarEvent>) -> Self {
         Self(Mutex::new(events))
     }
 
-    fn set(&self, events: Vec<CalendarEvent>) {
+    pub(super) fn set(&self, events: Vec<CalendarEvent>) {
         *self.0.lock().expect("lock") = events;
     }
 }
@@ -105,7 +105,7 @@ impl CalendarBackend for Calendar {
 }
 
 /// One message from Maya, an hour old.
-struct Mailbox(Vec<Mail>);
+pub(super) struct Mailbox(pub(super) Vec<Mail>);
 
 impl EmailSource for Mailbox {
     fn exchanged(&self, _: &[String], _: i64, limit: usize) -> Result<Vec<Mail>, String> {
@@ -113,14 +113,14 @@ impl EmailSource for Mailbox {
     }
 }
 
-struct Notebook {
-    titles: Vec<&'static str>,
-    broken: Cell<bool>,
-    asked: Cell<usize>,
+pub(super) struct Notebook {
+    pub(super) titles: Vec<&'static str>,
+    pub(super) broken: Cell<bool>,
+    pub(super) asked: Cell<usize>,
 }
 
 impl Notebook {
-    fn with(titles: Vec<&'static str>) -> Self {
+    pub(super) fn with(titles: Vec<&'static str>) -> Self {
         Self { titles, broken: Cell::new(false), asked: Cell::new(0) }
     }
 }
@@ -132,11 +132,11 @@ impl NoteSource for Notebook {
             return Err("the notes service is down".into());
         }
         let q = query.to_lowercase();
-        Ok(self.titles.iter().filter(|t| t.to_lowercase().contains(&q)).map(|t| NoteHit { title: (*t).into(), modified_at: "2026-11-01T10:00:00".into() }).collect())
+        Ok(self.titles.iter().filter(|t| t.to_lowercase().contains(&q)).map(|t| NoteHit { id: format!("{t}.md"), title: (*t).into(), modified_at: "2026-11-01T10:00:00".into() }).collect())
     }
 }
 
-struct Nothing;
+pub(super) struct Nothing;
 
 impl PromiseSource for Nothing {
     fn made_by(&self, _: &str) -> Result<Vec<Promise>, String> {
@@ -189,9 +189,17 @@ impl CalendarBackend for Forbidden {
     }
 }
 
-fn slides_mail(now: NaiveDateTime) -> Mail {
+pub(super) fn slides_mail(now: NaiveDateTime) -> Mail {
     let at = (super::window::to_unix(now).expect("local time") - 3600) as f64;
-    Mail { from_name: "Maya Chen".into(), from_addr: "maya@work.test".into(), subject: "Slides for Friday".into(), date_ts: at }
+    Mail {
+        from_name: "Maya Chen".into(),
+        from_addr: "maya@work.test".into(),
+        subject: "Slides for Friday".into(),
+        date_ts: at,
+        account: ME.into(),
+        folder: "INBOX".into(),
+        id: "1".into(),
+    }
 }
 
 /// One cached message from Maya, so a brief for a meeting with her is never empty.
@@ -201,7 +209,7 @@ pub(super) fn maya_email_row(conn: &Connection, now: NaiveDateTime) {
     crate::email::db::upsert_email(conn, account, 1, "INBOX", "maya@work.test", "Maya", ME, "Slides for Friday", at, "", true, "<1@t>", "");
 }
 
-fn scratch(name: &str) -> PathBuf {
+pub(super) fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("meeting-brief-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
@@ -209,7 +217,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// One tick with a mailbox that always has Maya's message, so a due meeting is never empty.
-fn tick_with_mail(conn: &Connection, calendar: &Calendar, now: NaiveDateTime) -> Outcome {
+pub(super) fn tick_with_mail(conn: &Connection, calendar: &Calendar, now: NaiveDateTime) -> Outcome {
     let mail = Mailbox(vec![slides_mail(now)]);
     let notes = Notebook::with(vec![]);
     let roots = FileRoots::default();
@@ -217,7 +225,17 @@ fn tick_with_mail(conn: &Connection, calendar: &Calendar, now: NaiveDateTime) ->
     tick(conn, calendar, &sources, &own(), now, true)
 }
 
-fn id_for(e: &CalendarEvent) -> String {
+/// `now` as the table keeps it.
+pub(super) fn now_ts(now: NaiveDateTime) -> f64 {
+    super::window::to_unix(now).expect("local time") as f64
+}
+
+/// The outcome of an item that is over and holds nothing any more, or `None` when it is not so.
+pub(super) fn over(conn: &Connection, id: &str) -> Option<PrepOutcome> {
+    AnticipationEngine::get(conn, id).filter(|i| i.data == serde_json::json!({})).and_then(|i| i.outcome)
+}
+
+pub(super) fn id_for(e: &CalendarEvent) -> String {
     item_id(&e.id, super::window::to_unix(chrono::NaiveDateTime::parse_from_str(&e.start, "%Y-%m-%dT%H:%M:%S").expect("stamp")).expect("local"))
 }
 
@@ -307,7 +325,7 @@ fn a_dismissed_brief_stays_gone_after_a_restart() {
         let conn = Connection::open(&file).expect("open");
         prepare(&conn);
         let out = tick_with_mail(&conn, &cal, n);
-        dismiss(&conn, &out.cards[0].id);
+        press(&conn, &out.cards[0].id, Press::Dismissed, now_ts(n));
         out.cards[0].id.clone()
     };
     // A new process: a new connection to the same file.
@@ -348,7 +366,7 @@ fn moving_an_events_start_replaces_its_brief() {
     let moved = event("e1", "Q4 planning", n + Duration::minutes(9) + Duration::seconds(1), vec![maya()]);
     cal.set(vec![moved.clone()]);
     let out = tick_with_mail(&conn, &cal, n);
-    assert!(AnticipationEngine::get(&conn, &id_for(&first)).is_none(), "the old item is gone");
+    assert_eq!(over(&conn, &id_for(&first)), Some(PrepOutcome::Expired), "the old item is over, and holds nothing");
     assert_eq!(out.cards.len(), 1);
     assert_eq!(out.cards[0].id, id_for(&moved));
     assert_eq!(out.fresh, vec![id_for(&moved)], "the new one is shown");
@@ -357,7 +375,7 @@ fn moving_an_events_start_replaces_its_brief() {
     cal.set(vec![event("e1", "Q4 planning", n + Duration::hours(3), vec![maya()])]);
     let out = tick_with_mail(&conn, &cal, n);
     assert!(out.cards.is_empty());
-    assert!(AnticipationEngine::get(&conn, &id_for(&moved)).is_none());
+    assert_eq!(over(&conn, &id_for(&moved)), Some(PrepOutcome::Expired));
 }
 
 #[test]
@@ -448,7 +466,7 @@ fn with_the_switch_off_nothing_is_read_or_gathered() {
 /// any client compiles and runs (every test above is one). And no file of it names one.
 #[test]
 fn no_file_of_the_gatherer_names_a_model_or_a_network_client() {
-    let files: [(&str, &str); 12] = [
+    let files: [(&str, &str); 13] = [
         ("assemble.rs", include_str!("assemble.rs")),
         ("emails.rs", include_str!("emails.rs")),
         ("engine.rs", include_str!("engine.rs")),
@@ -458,6 +476,7 @@ fn no_file_of_the_gatherer_names_a_model_or_a_network_client() {
         ("model.rs", include_str!("model.rs")),
         ("mod.rs", include_str!("mod.rs")),
         ("notes.rs", include_str!("notes.rs")),
+        ("prefetch.rs", include_str!("prefetch.rs")),
         ("promises.rs", include_str!("promises.rs")),
         ("remote.rs", include_str!("remote.rs")),
         ("window.rs", include_str!("window.rs")),

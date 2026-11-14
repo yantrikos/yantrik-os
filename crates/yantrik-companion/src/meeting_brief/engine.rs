@@ -3,33 +3,48 @@
 //!
 //! The brief lives in the anticipation table, so all of this survives a shell restart: a brief
 //! already made is not made again, a dismissed one stays dismissed, and one on screen when the
-//! shell restarted comes back.
+//! shell restarted comes back. Every brief ends with exactly one outcome (opened, dismissed or
+//! ignored), and once it is over only that record is kept, never what the card said.
 
-use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{Duration, NaiveDateTime};
 use rusqlite::Connection;
 use yantrik_ipc_contracts::calendar::{CalendarEvent, EventsParams};
 
 use super::assemble::{gather, id_of, Sources};
-use super::model::{Brief, Card, LEAD_SECS};
-use super::window::{fingerprint, is_cancelled, select, to_unix, Own};
+use super::model::{Brief, Card, Outcomes, Press, LEAD_SECS};
+use super::window::{fingerprint, meeting_of, select, to_unix, Meeting, Own};
 use crate::anticipation::{AnticipationEngine, PrepOutcome, PreparationTrigger, PreparedItem, PreparedKind};
 use crate::calendar::backend::CalendarBackend;
 
-/// How far ahead the calendar is read. A stored brief whose event is not in this window any more
-/// was moved far off or deleted.
+/// How far ahead the calendar is read.
 const LOOK_AHEAD_HOURS: i64 = 24;
 /// Within this many seconds of the start, a brief with a section missing is shown as it is.
 const LAST_CALL_SECS: i64 = 180;
+/// How long the calendar may leave an event out before its brief is ended. A calendar that
+/// answers an empty list while its files are rewritten must not end, or re-toast, a brief.
+const GONE_AFTER_SECS: i64 = 90;
+/// How far back the outcomes `describe` counts reach.
+const OUTCOME_DAYS: f64 = 30.0;
+
+/// Set when the table could not be made: no brief is made or read, and the companion runs on.
+static UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Turn briefs off for this run, because the table they live in could not be created.
+pub fn unavailable() {
+    UNAVAILABLE.store(true, Ordering::Relaxed);
+}
 
 /// What a tick found.
 #[derive(Debug, Clone, Default)]
 pub struct Outcome {
     /// Every brief that is live now and says something, soonest first.
     pub cards: Vec<Card>,
-    /// The ids of the briefs made by this tick, not yet announced: the toast is for these, once.
+    /// The ids of the briefs made by this tick, not yet announced: the notice is for these, once.
     pub fresh: Vec<String>,
+    /// How the briefs of the last 30 days ended.
+    pub outcomes: Outcomes,
 }
 
 fn stamp(t: NaiveDateTime) -> String {
@@ -40,29 +55,55 @@ fn brief_of(item: &PreparedItem) -> Option<Brief> {
     serde_json::from_value(item.data.clone()).ok()
 }
 
+fn is_brief(item: &PreparedItem) -> bool {
+    item.id.starts_with("meeting:")
+}
+
+/// The live briefs in the table at `now`, with what they hold.
+fn live(conn: &Connection, now: i64) -> Vec<PreparedItem> {
+    AnticipationEngine::get_active(conn, &PreparedKind::MeetingBrief, now as f64).into_iter().filter(is_brief).collect()
+}
+
 /// The live, non-empty briefs in the table at `now`.
 pub fn cards(conn: &Connection, now: i64) -> Vec<Card> {
-    AnticipationEngine::get_active(conn, &PreparedKind::MeetingBrief, now as f64)
+    live(conn, now)
         .into_iter()
-        .filter(|item| item.id.starts_with("meeting:"))
         .filter_map(|item| brief_of(&item).map(|brief| Card { id: item.id, brief }))
         .filter(|c| !c.brief.is_empty())
         .collect()
 }
 
-/// Forget the briefs of events that moved, were deleted or were called off.
-fn forget_stale(conn: &Connection, events: &[CalendarEvent], now: i64) {
-    let mut current: HashMap<&str, HashSet<i64>> = HashMap::new();
-    for e in events.iter().filter(|e| !e.is_all_day && !is_cancelled(&e.title)) {
-        if let Some(start) = yantrik_ipc_contracts::calendar::parse_stamp(&e.start).and_then(to_unix) {
-            current.entry(e.id.as_str()).or_default().insert(start);
+fn save(conn: &Connection, item: &PreparedItem, brief: &Brief) {
+    let mut item = item.clone();
+    item.data = serde_json::to_value(brief).unwrap_or_default();
+    AnticipationEngine::store(conn, &item);
+}
+
+/// End the briefs of events that moved, were called off or are gone, from what the calendar says.
+///
+/// An event the calendar lists with another start, or as called off, is over at once. One it does
+/// not list at all is only maybe gone: it is marked, and ended once it has stayed out for
+/// [`GONE_AFTER_SECS`]; if it comes back first, the mark is cleared and nothing else happened.
+fn settle(conn: &Connection, events: &[CalendarEvent], own: &Own, now: i64) {
+    for item in live(conn, now) {
+        let (Some(mut brief), PreparationTrigger::CalendarEvent { event_id, .. }) = (brief_of(&item), item.trigger.clone()) else { continue };
+        let listed: Vec<&CalendarEvent> = events.iter().filter(|e| e.id == event_id).collect();
+        if listed.is_empty() {
+            match brief.missing_since {
+                None => {
+                    brief.missing_since = Some(now);
+                    save(conn, &item, &brief);
+                }
+                Some(since) if now - since >= GONE_AFTER_SECS => AnticipationEngine::retire(conn, &item.id, PrepOutcome::Expired, now as f64),
+                Some(_) => {}
+            }
+            continue;
         }
-    }
-    for item in AnticipationEngine::get_active(conn, &PreparedKind::MeetingBrief, now as f64) {
-        let PreparationTrigger::CalendarEvent { event_id, .. } = &item.trigger else { continue };
-        let still_there = brief_of(&item).is_some_and(|b| current.get(event_id.as_str()).is_some_and(|starts| starts.contains(&b.start)));
-        if !still_there {
-            AnticipationEngine::remove(conn, &item.id);
+        let still = listed.iter().filter_map(|e| meeting_of(e, own)).any(|m| m.start == brief.start);
+        if !still {
+            AnticipationEngine::retire(conn, &item.id, PrepOutcome::Expired, now as f64);
+        } else if brief.missing_since.take().is_some() {
+            save(conn, &item, &brief);
         }
     }
 }
@@ -73,55 +114,75 @@ fn forget_stale(conn: &Connection, events: &[CalendarEvent], now: i64) {
 /// source, not the table. A calendar that cannot be read changes nothing and the briefs already
 /// made are still returned.
 pub fn tick(conn: &Connection, calendar: &dyn CalendarBackend, sources: &Sources<'_>, own: &Own, now: NaiveDateTime, enabled: bool) -> Outcome {
-    if !enabled {
+    if !enabled || UNAVAILABLE.load(Ordering::Relaxed) {
         return Outcome::default();
     }
     let Some(now_unix) = to_unix(now) else { return Outcome::default() };
+    let now_ts = now_unix as f64;
     let params = EventsParams { start_date: stamp(now), end_date: stamp(now + Duration::hours(LOOK_AHEAD_HOURS)) };
     match calendar.list(&params) {
         Err(why) => tracing::debug!(error = %why, "meeting brief: the calendar did not answer"),
         Ok(events) => {
-            forget_stale(conn, &events, now_unix);
-            for meeting in select(&events, now_unix, own) {
+            settle(conn, &events, own, now_unix);
+            for meeting in due_and_live(conn, &events, own, now_unix) {
                 make(conn, &meeting, sources, own, now_unix);
             }
         }
     }
 
     // What this tick made and nobody has been told about: announced once, then marked.
-    let fresh: Vec<String> = AnticipationEngine::get_relevant(conn)
+    let fresh: Vec<String> = AnticipationEngine::get_relevant(conn, now_ts)
         .into_iter()
-        .filter(|i| i.kind == PreparedKind::MeetingBrief && i.id.starts_with("meeting:"))
+        .filter(|i| i.kind == PreparedKind::MeetingBrief && is_brief(i))
         .map(|i| i.id)
         .collect();
     for id in &fresh {
         AnticipationEngine::mark_surfaced(conn, id);
     }
-    AnticipationEngine::cleanup_expired(conn);
-    Outcome { cards: cards(conn, now_unix), fresh }
+    finish(conn, now_ts);
+    AnticipationEngine::cleanup_expired(conn, now_ts);
+    Outcome { cards: cards(conn, now_unix), fresh, outcomes: outcomes(conn, now_ts) }
 }
 
-/// Make one meeting's brief, unless it is already made and nothing it depends on changed.
-fn make(conn: &Connection, meeting: &super::window::Meeting, sources: &Sources<'_>, own: &Own, now: i64) {
+/// The meetings to look at: those due a brief, and those that already have one that is on, even
+/// after they have started, so a change to the end or the place reaches the card.
+fn due_and_live(conn: &Connection, events: &[CalendarEvent], own: &Own, now: i64) -> Vec<Meeting> {
+    let mut meetings = select(events, now, own);
+    for item in live(conn, now) {
+        if meetings.iter().any(|m| id_of(m) == item.id) {
+            continue;
+        }
+        if let Some(m) = events.iter().filter_map(|e| meeting_of(e, own)).find(|m| id_of(m) == item.id) {
+            meetings.push(m);
+        }
+    }
+    meetings
+}
+
+/// Make one meeting's brief, unless it is already made and nothing it says changed.
+fn make(conn: &Connection, meeting: &Meeting, sources: &Sources<'_>, own: &Own, now: i64) {
     let id = id_of(meeting);
     let existing = AnticipationEngine::get(conn, &id);
     if let Some(item) = &existing {
-        // Dismissed or expired: never again for this event and start. Unchanged: already made.
-        if item.outcome.is_some() || brief_of(item).is_some_and(|b| b.fingerprint == fingerprint(meeting)) {
+        // Over (dismissed, ignored, gone, ended): never again for this event and start.
+        let over = item.expires_at <= now as f64 || item.outcome.as_ref().is_some_and(|o| *o != PrepOutcome::Useful);
+        // Unchanged and final: already made.
+        let final_ = brief_of(item).is_some_and(|b| b.fingerprint == fingerprint(meeting) && b.complete);
+        if over || final_ {
             return;
         }
     }
     let gathered = gather(meeting, sources, own, now);
     // A source that did not answer is not "nothing to say", and a brief missing a section is not
-    // final while there is time: try again next tick. In the last minutes what there is is shown.
+    // final while there is time: try again next tick. In the last minutes what there is is shown,
+    // and filled in later if the source answers.
     if !gathered.complete && (gathered.brief.is_empty() || meeting.start - now > LAST_CALL_SECS) {
         return;
     }
     let was_announced = existing.as_ref().is_some_and(|i| i.surfaced && brief_of(i).is_some_and(|b| !b.is_empty()));
     // An empty brief is recorded as already surfaced: it is kept so the sources are not asked
     // again every minute, and it is never drawn or announced.
-    let surfaced = if gathered.brief.is_empty() { true } else { was_announced };
-    let brief = gathered.brief;
+    let surfaced = gathered.brief.is_empty() || was_announced;
     AnticipationEngine::store(
         conn,
         &PreparedItem {
@@ -129,19 +190,43 @@ fn make(conn: &Connection, meeting: &super::window::Meeting, sources: &Sources<'
             trigger: PreparationTrigger::CalendarEvent { event_id: meeting.event_id.clone(), title: meeting.title.clone() },
             kind: PreparedKind::MeetingBrief,
             description: format!("Brief for {}", meeting.title),
-            data: serde_json::to_value(&brief).unwrap_or_default(),
-            relevant_at: (meeting.start - LEAD_SECS).min(now) as f64,
+            data: serde_json::to_value(&gathered.brief).unwrap_or_default(),
+            relevant_at: existing.as_ref().map_or((meeting.start - LEAD_SECS).min(now) as f64, |i| i.relevant_at),
             expires_at: meeting.end as f64,
             surfaced,
-            outcome: None,
-            created_at: now as f64,
+            outcome: existing.as_ref().and_then(|i| i.outcome.clone()),
+            created_at: existing.as_ref().map_or(now as f64, |i| i.created_at),
         },
     );
 }
 
-/// The person dismissed the card: it never comes back for this event and start, and that is
-/// recorded in the table, so it holds across a restart.
-pub fn dismiss(conn: &Connection, id: &str) {
-    AnticipationEngine::record_outcome(conn, id, PrepOutcome::Dismissed);
-    AnticipationEngine::mark_surfaced(conn, id);
+/// End the briefs whose time is up: each gets its outcome, and what the card said is emptied.
+/// Shown and never pressed is "ignored"; one nobody saw ends as "expired" and is not counted.
+fn finish(conn: &Connection, now: f64) {
+    for item in AnticipationEngine::ended(conn, &PreparedKind::MeetingBrief, now).into_iter().filter(is_brief) {
+        let said = brief_of(&item).is_some_and(|b| !b.is_empty());
+        let outcome = if said && item.surfaced { PrepOutcome::Ignored } else { PrepOutcome::Expired };
+        AnticipationEngine::retire(conn, &item.id, outcome, now);
+    }
+}
+
+/// How the briefs of the last 30 days ended.
+fn outcomes(conn: &Connection, now: f64) -> Outcomes {
+    let counts = AnticipationEngine::outcome_counts(conn, &PreparedKind::MeetingBrief, now - OUTCOME_DAYS * 86_400.0);
+    let of = |o: PrepOutcome| counts.get(o.as_str()).copied().unwrap_or(0);
+    Outcomes { opened: of(PrepOutcome::Useful), dismissed: of(PrepOutcome::Dismissed), ignored: of(PrepOutcome::Ignored) }
+}
+
+/// The person pressed something on a card at `now` (unix seconds). Opened is the card's outcome
+/// unless it already has one, and the card stays. Dismissed ends the card for good, whatever the
+/// outcome is: it never comes back for this event and start, and that holds across a restart.
+pub fn press(conn: &Connection, id: &str, press: Press, now: f64) {
+    match press {
+        Press::Opened => {
+            if AnticipationEngine::get(conn, id).is_some_and(|i| i.outcome.is_none()) {
+                AnticipationEngine::record_outcome(conn, id, PrepOutcome::Useful);
+            }
+        }
+        Press::Dismissed => AnticipationEngine::retire(conn, id, PrepOutcome::Dismissed, now),
+    }
 }

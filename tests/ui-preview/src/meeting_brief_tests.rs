@@ -22,7 +22,21 @@ const STACK_H: usize = 240;
 const PAD: usize = 12;
 
 fn line(heading: &str, text: &str, row: i32) -> BriefLineData {
-    BriefLineData { heading: heading.into(), text: text.into(), row }
+    BriefLineData { heading: heading.into(), text: text.into(), row, kind: if row >= 0 { "email".into() } else { "".into() } }
+}
+
+/// A card with two rows, short enough that two of them fit in the stack's box.
+fn short_card(id: &str) -> MeetingBriefData {
+    let lines = vec![line("LAST EMAILS WITH THEM", "Maya \u{b7} Slides \u{b7} 2 d", 0), line("ABOUT", "Bring the numbers.", -1)];
+    MeetingBriefData {
+        id: id.into(),
+        title: "Design review".into(),
+        when: "10:00\u{2013}10:30, in 9 min".into(),
+        place: "".into(),
+        people: "With Maya Chen".into(),
+        lines: ModelRc::new(VecModel::from(lines)),
+        note: "".into(),
+    }
 }
 
 fn long_card(id: &str, title: &str) -> MeetingBriefData {
@@ -173,6 +187,38 @@ fn check_pointer_only(w: &MinimalSoftwareWindow, ui: &MeetingBriefProbe) {
     println!("PASS meeting brief: Tab, Backtab, Enter, Return and Space open nothing (x12); a click opens a row, opens the event, and dismisses");
 }
 
+/// The stack in its 560px box, with two full cards due at once: at either text scale the title of
+/// the card on top and its buttons are inside the box, one card is drawn when two do not fit, and
+/// two when they do. The rows scroll rather than push the header or Dismiss out.
+fn check_stack(w: &MinimalSoftwareWindow) {
+    const TOP: f32 = 100.0;
+    const BOX: f32 = 560.0;
+    let ui = MeetingBriefStackProbe::new().expect("the stack probe");
+    ui.show().expect("show");
+    w.set_size(slint::PhysicalSize::new(W as u32, H as u32));
+    let state = ui.global::<MeetingBriefState>();
+    for scale in [1.0_f32, 1.5] {
+        ui.set_scale(scale);
+        state.set_cards(ModelRc::new(VecModel::from(vec![long_card("meeting:e1:1", LONG_TITLE), long_card("meeting:e2:2", "Design review")])));
+        let p = render(w);
+        assert!(!ui.get_two(), "{scale}x: two full cards do not fit in {BOX}px, so one is drawn");
+        let (title, bottom) = (ui.get_title_y(), ui.get_buttons_bottom());
+        assert!(title >= 0.0, "{scale}x: the title is at {title}, above the box");
+        assert!(bottom <= BOX + 0.5, "{scale}x: Dismiss ends at {bottom}, below the {BOX}px box");
+        let px = |x: usize, y: usize| { let c = p.as_slice()[y * W + x]; (c.r, c.g, c.b) };
+        let drawn = |y0: usize, y1: usize| (y0..y1).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| px(x, y) != GROUND).count();
+        assert!(drawn(TOP as usize, TOP as usize + 40) > 0, "{scale}x: the card's top is drawn at the box's top");
+        assert_eq!(drawn(0, TOP as usize - 1), 0, "{scale}x: nothing above the box");
+        assert_eq!(drawn((TOP + BOX) as usize + 1, H), 0, "{scale}x: nothing below the box");
+        // Two short cards both fit, and both are drawn.
+        state.set_cards(ModelRc::new(VecModel::from(vec![short_card("meeting:e3:3"), short_card("meeting:e4:4")])));
+        let _ = render(w);
+        assert!(ui.get_two(), "{scale}x: two short cards fit and both are drawn");
+        assert!(ui.get_title_y() >= 0.0 && ui.get_buttons_bottom() <= BOX + 0.5);
+    }
+    println!("PASS meeting brief stack at 1.0 and 1.5: the title and Dismiss are inside the {BOX}px box; one full card when two do not fit, two short ones when they do");
+}
+
 pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::error::Error>> {
     let ui = MeetingBriefProbe::new()?;
     ui.show()?;
@@ -185,5 +231,6 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     check(w, &ui, 1.0, output)?;
     check(w, &ui, 1.5, &output.replace(".png", "-1_5x.png"))?;
     check_pointer_only(w, &ui);
+    check_stack(w);
     Ok(())
 }

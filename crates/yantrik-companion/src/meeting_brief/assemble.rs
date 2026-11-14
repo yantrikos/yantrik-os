@@ -1,9 +1,9 @@
 //! One meeting's five sections, gathered from the local sources under a time budget.
 
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use super::emails::{self, EmailSource};
-use super::files::{self, FileRoots};
+use super::files::FileSource;
 use super::keywords::title_keywords;
 use super::model::{clamp, item_id, Brief, Row, DESCRIPTION_LINES, MAX_ROW_CHARS};
 use super::notes::{self, NoteSource};
@@ -20,7 +20,7 @@ pub struct Sources<'a> {
     pub emails: &'a dyn EmailSource,
     pub notes: &'a dyn NoteSource,
     pub promises: &'a dyn PromiseSource,
-    pub files: &'a FileRoots,
+    pub files: &'a dyn FileSource,
 }
 
 /// A brief, and whether every source answered. An empty brief that is not complete is tried
@@ -64,7 +64,7 @@ pub fn gather(meeting: &Meeting, sources: &Sources<'_>, own: &Own, now: i64) -> 
     let mail = ask("email", &|| emails::section(sources.emails, &meeting.people, own, now));
     let promises = ask("promises", &|| promises::section(sources.promises, &meeting.people));
     let notes = ask("notes", &|| notes::section(sources.notes, &meeting.title, &meeting.people));
-    let files = ask("files", &|| Ok(files::section(sources.files, &title_keywords(&meeting.title), SystemTime::now()).0));
+    let files = ask("files", &|| sources.files.find(&title_keywords(&meeting.title)));
 
     Gathered {
         brief: Brief {
@@ -76,6 +76,8 @@ pub fn gather(meeting: &Meeting, sources: &Sources<'_>, own: &Own, now: i64) -> 
             place: meeting.place.clone(),
             people: meeting.people.iter().map(|p| p.name.clone()).collect(),
             fingerprint: fingerprint(meeting),
+            complete,
+            missing_since: None,
             emails: mail,
             notes,
             promises,

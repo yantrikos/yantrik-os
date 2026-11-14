@@ -6,40 +6,44 @@
 //! Every Open goes through `for_you::carry_out`, the opener the notice inbox already has, as the
 //! person: the shell opens the item when a pointer presses the row's button, and a mind is never
 //! asked (design/calendar-heads-up-2026-10-16.md, design/initiative-inbox-2026-10-16.md).
+//!
+//! The one interrupt is not drawn here: [`super::meeting_brief_notice`] tells the notifications
+//! service a brief is ready, and the service grants the toast like any calendar notice.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use slint::{ComponentHandle, ModelRc, VecModel};
-use yantrik_companion::meeting_brief::{Card, Open, Outcome, Row};
-use yantrik_ipc_contracts::notifications::notice::{ActionKind, NoticeAction};
+use yantrik_companion::meeting_brief::{Card, Open, Outcome, Outcomes, Press, Row};
+use yantrik_ipc_contracts::notifications::notice::{ActionKind, Initiative, NoticeAction, MOMENT_MEETING_BRIEF};
 
-use super::notifications::SILENT_SCREENS;
 use crate::app_context::AppContext;
-use crate::notice_inbox::{self, Opening, Screen};
-use crate::{App, BriefLineData, MeetingBriefData, MeetingBriefState, ToastData};
+use crate::notice_inbox::{self, Opening};
+use crate::{App, BriefLineData, MeetingBriefData, MeetingBriefState};
 
 /// How many cards are drawn at once. The rest wait their turn.
 const SHOWN: usize = 2;
 
-/// What the worker last published, and the briefs it has not yet announced.
+/// What the worker last published.
 #[derive(Default)]
 struct Published {
     cards: Vec<Card>,
-    /// Ids made by the last ticks that no toast has been raised for yet.
-    announce: Vec<String>,
+    outcomes: Outcomes,
 }
 
-static PUBLISHED: Mutex<Published> = Mutex::new(Published { cards: Vec::new(), announce: Vec::new() });
+static PUBLISHED: Mutex<Published> = Mutex::new(Published { cards: Vec::new(), outcomes: Outcomes { opened: 0, dismissed: 0, ignored: 0 } });
+
+/// Cards the person dismissed here, kept until the worker's answers stop holding them. The worker
+/// records a dismissal in its own time, behind whatever it is doing, so an answer made before it
+/// did would draw the card again.
+static DISMISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 thread_local! {
     /// What the stack last drew, so an unchanged second does not rebuild it.
     static DRAWN: RefCell<Vec<CardView>> = const { RefCell::new(Vec::new()) };
     /// A line under a card: what a button that could not open something says.
     static NOTES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    /// Briefs toasted by this shell.
-    static TOASTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 fn published() -> std::sync::MutexGuard<'static, Published> {
@@ -47,26 +51,40 @@ fn published() -> std::sync::MutexGuard<'static, Published> {
 }
 
 /// Whether the person has meeting briefs on. Read by the worker before it gathers anything.
+/// When the store has not said (just started, or its service is down) they are off: nothing is
+/// read until the person's choice is known.
 pub fn enabled() -> bool {
-    !crate::notice_desk::initiative().meeting_briefs_off
+    enabled_by(crate::notice_desk::initiative_known().as_ref())
 }
 
-/// The worker's answer for this tick: every live brief, and the ones just made.
+/// [`enabled`] for the settings as the store last gave them.
+fn enabled_by(settings: Option<&Initiative>) -> bool {
+    settings.is_some_and(|s| s.moment_on(MOMENT_MEETING_BRIEF))
+}
+
+/// The worker's answer for this tick: every live brief, and the ones just made. A brief just made
+/// is announced to the notifications service once, unless the person already dismissed it.
 pub fn publish(outcome: Outcome) {
-    let mut held = published();
-    for id in outcome.fresh {
-        if !held.announce.contains(&id) {
-            held.announce.push(id);
+    let mut dismissed = DISMISSED.lock().unwrap_or_else(|e| e.into_inner());
+    // An answer that no longer holds a dismissed card is the worker having caught up.
+    dismissed.retain(|id| outcome.cards.iter().any(|c| &c.id == id));
+    for id in &outcome.fresh {
+        if let Some(card) = outcome.cards.iter().find(|c| &c.id == id && !dismissed.contains(&c.id)) {
+            super::meeting_brief_notice::announce(card);
         }
     }
-    held.cards = outcome.cards;
+    let mut held = published();
+    held.cards = outcome.cards.into_iter().filter(|c| !dismissed.contains(&c.id)).collect();
+    held.outcomes = outcome.outcomes;
 }
 
-/// Take a card off the screen at once; the worker records the dismissal.
+/// Take a card off the screen at once, and keep it off until the worker has recorded the dismissal.
 fn forget(id: &str) {
-    let mut held = published();
-    held.cards.retain(|c| c.id != id);
-    held.announce.retain(|a| a != id);
+    let mut dismissed = DISMISSED.lock().unwrap_or_else(|e| e.into_inner());
+    if !dismissed.iter().any(|d| d == id) {
+        dismissed.push(id.to_string());
+    }
+    published().cards.retain(|c| c.id != id);
 }
 
 fn now_unix() -> i64 {
@@ -107,6 +125,8 @@ pub struct LineView {
     pub heading: String,
     pub text: String,
     pub row: i32,
+    /// What its Open button opens, for the button's fixed label.
+    pub kind: String,
 }
 
 /// One card as the stack draws it, as plain data so an unchanged second is seen to be unchanged.
@@ -126,22 +146,23 @@ pub fn card_view(card: &Card, now: i64, note: &str) -> CardView {
     let b = &card.brief;
     let mut lines: Vec<LineView> = Vec::new();
     let mut at = 0i32;
-    let mut section = |heading: &str, rows: &[Row]| {
+    let mut section = |heading: &str, kind: &str, rows: &[Row]| {
         for (i, r) in rows.iter().enumerate() {
             lines.push(LineView {
                 heading: if i == 0 { heading.to_string() } else { String::new() },
                 text: r.text.clone(),
                 row: if r.open.is_some() { at } else { -1 },
+                kind: kind.to_string(),
             });
             at += 1;
         }
     };
-    section("LAST EMAILS WITH THEM", &b.emails);
-    section("YOUR NOTES", &b.notes);
-    section("PROMISES", &b.promises);
-    section("FILES", &b.files);
+    section("LAST EMAILS WITH THEM", "email", &b.emails);
+    section("YOUR NOTES", "note", &b.notes);
+    section("PROMISES", "promise", &b.promises);
+    section("FILES", "file", &b.files);
     for (i, line) in b.description.iter().enumerate() {
-        lines.push(LineView { heading: if i == 0 { "ABOUT".to_string() } else { String::new() }, text: line.clone(), row: -1 });
+        lines.push(LineView { heading: if i == 0 { "ABOUT".to_string() } else { String::new() }, text: line.clone(), row: -1, kind: String::new() });
     }
     CardView {
         id: card.id.clone(),
@@ -158,7 +179,7 @@ fn slint_card(v: &CardView) -> MeetingBriefData {
     let lines: Vec<BriefLineData> = v
         .lines
         .iter()
-        .map(|l| BriefLineData { heading: l.heading.as_str().into(), text: l.text.as_str().into(), row: l.row })
+        .map(|l| BriefLineData { heading: l.heading.as_str().into(), text: l.text.as_str().into(), row: l.row, kind: l.kind.as_str().into() })
         .collect();
     MeetingBriefData {
         id: v.id.as_str().into(),
@@ -175,20 +196,22 @@ fn slint_card(v: &CardView) -> MeetingBriefData {
 fn opening(open: &Open, home: &std::path::Path) -> Result<Opening, String> {
     let action = |kind: ActionKind, reference: &str| NoticeAction { label: "Open".into(), kind, reference: reference.into() };
     match open {
-        Open::Message { subject } => Ok(Opening::Message(subject.clone())),
-        Open::Note { title } => notice_inbox::plan(&action(ActionKind::OpenNote, title), home),
+        Open::Message { account, folder, id } => Ok(Opening::Message { account: account.clone(), folder: folder.clone(), id: id.clone() }),
+        Open::Note { id } => notice_inbox::plan(&action(ActionKind::OpenNote, id), home),
         Open::File { path } => notice_inbox::plan(&action(ActionKind::OpenFile, path), home),
         Open::Event { id } => notice_inbox::plan(&action(ActionKind::OpenEvent, id), home),
     }
 }
 
-/// What `describe shell` says: whether the switch is on, and per card its title, its start and
-/// how many lines each section has. Never a subject, a note title, a file name or a promise: a
-/// mind can read describe, and what a brief holds is the person's.
-pub fn describe_value(cards: &[Card], enabled: bool, now: i64) -> serde_json::Value {
+/// What `describe shell` says: whether the switch is on, per card its title, its start and how
+/// many lines each section has, and how the briefs of the last 30 days ended, as three counts.
+/// Never a subject, a note title, a file name or a promise: a mind can read describe, and what a
+/// brief holds is the person's.
+pub fn describe_value(cards: &[Card], enabled: bool, now: i64, outcomes: Outcomes) -> serde_json::Value {
     let shown = live(cards, now, enabled);
     serde_json::json!({
         "enabled": enabled,
+        "outcomes": { "opened": outcomes.opened, "dismissed": outcomes.dismissed, "ignored": outcomes.ignored },
         "cards": shown.iter().map(|c| {
             let n = c.brief.counts();
             serde_json::json!({
@@ -201,7 +224,8 @@ pub fn describe_value(cards: &[Card], enabled: bool, now: i64) -> serde_json::Va
 }
 
 pub fn describe() -> serde_json::Value {
-    describe_value(&published().cards, enabled(), now_unix())
+    let held = published();
+    describe_value(&held.cards, enabled(), now_unix(), held.outcomes)
 }
 
 pub fn wire(ui: &App, ctx: &AppContext) {
@@ -211,23 +235,27 @@ pub fn wire(ui: &App, ctx: &AppContext) {
     let weak = ui.as_weak();
     state.on_dismiss(move |id| {
         forget(id.as_str());
-        // The table is the companion's: the worker records it, and it holds across a restart.
-        bridge.dismiss_meeting_brief(id.to_string());
+        // The table is the companion's: it records the press, and it holds across a restart.
+        bridge.meeting_brief_press(id.to_string(), Press::Dismissed);
         if let Some(ui) = weak.upgrade() {
             tick(&ui);
         }
     });
 
-    let weak = ui.as_weak();
+    let (weak, bridge) = (ui.as_weak(), ctx.bridge.clone());
     state.on_open_row(move |id, row| {
         let Some(ui) = weak.upgrade() else { return };
-        open_row(&ui, id.as_str(), row);
+        if open_row(&ui, id.as_str(), row) {
+            bridge.meeting_brief_press(id.to_string(), Press::Opened);
+        }
     });
 
-    let weak = ui.as_weak();
+    let (weak, bridge) = (ui.as_weak(), ctx.bridge.clone());
     state.on_open_event(move |id| {
         let Some(ui) = weak.upgrade() else { return };
-        open_event(&ui, id.as_str());
+        if open_event(&ui, id.as_str()) {
+            bridge.meeting_brief_press(id.to_string(), Press::Opened);
+        }
     });
 }
 
@@ -247,36 +275,37 @@ fn say(ui: &App, key: &str, text: &str) {
     tick(ui);
 }
 
-fn open_row(ui: &App, id: &str, row: i32) {
+/// Press a row's Open. Answers whether a press was made on a card that is there (it is the
+/// card's "opened" outcome); a locked screen, a card that has gone, or a row with nothing to open
+/// is not.
+fn open_row(ui: &App, id: &str, row: i32) -> bool {
     if crate::control::locked_screen(ui.get_current_screen()) {
-        return;
+        return false;
     }
-    let Some(card) = card_by_id(id) else { return };
-    let Some(open) = usize::try_from(row).ok().and_then(|i| rows(&card).get(i).and_then(|r| r.open.clone())) else { return };
+    let Some(card) = card_by_id(id) else { return false };
+    let Some(open) = usize::try_from(row).ok().and_then(|i| rows(&card).get(i).and_then(|r| r.open.clone())) else { return false };
     let key = format!("{id}#{row}");
     match opening(&open, &home()) {
         Ok(opening) => super::for_you::carry_out(ui, &key, opening, say),
         Err(why) => say(ui, &key, &format!("Not opened: {why}.")),
     }
+    true
 }
 
-fn open_event(ui: &App, id: &str) {
+fn open_event(ui: &App, id: &str) -> bool {
     if crate::control::locked_screen(ui.get_current_screen()) {
-        return;
+        return false;
     }
-    let Some(card) = card_by_id(id) else { return };
+    let Some(card) = card_by_id(id) else { return false };
     super::for_you::carry_out(ui, &format!("{id}#event"), Opening::Event(card.brief.event_id.clone()), say);
+    true
 }
 
-/// Once a second, after the notification poll: draw the cards, and toast a new one once. Reads
-/// what the worker published; gathers nothing.
+/// Once a second, after the notification poll: draw the cards. Reads what the worker published;
+/// gathers nothing, and raises nothing: the toast is the notifications service's to grant.
 pub fn tick(ui: &App) {
     let now = now_unix();
-    let on = enabled();
-    let (cards, due) = {
-        let held = published();
-        (live(&held.cards, now, on), held.announce.clone())
-    };
+    let cards = live(&published().cards, now, enabled());
 
     let drawn: Vec<CardView> = cards
         .iter()
@@ -291,62 +320,6 @@ pub fn tick(ui: &App) {
         DRAWN.with(|d| *d.borrow_mut() = drawn);
         ui.global::<MeetingBriefState>().set_cards(ModelRc::new(VecModel::from(model)));
     }
-
-    announce(ui, &cards, &due);
-}
-
-/// Toast each new brief once. One the screen does not allow (lock, do not disturb, focus) is held
-/// and toasted when it does, while its meeting has not ended; the card itself is on the desktop
-/// either way.
-fn announce(ui: &App, cards: &[Card], due: &[String]) {
-    if due.is_empty() {
-        return;
-    }
-    let screen = Screen {
-        silent: SILENT_SCREENS.contains(&ui.get_current_screen()),
-        do_not_disturb: ui.get_dnd_mode(),
-        focus: ui.get_focus_mode(),
-        fullscreen: false,
-        call: false,
-    };
-    let mut done: Vec<String> = Vec::new();
-    for id in due {
-        let live_card = cards.iter().find(|c| &c.id == id);
-        match live_card {
-            // Gone (ended, dismissed, or switched off): nothing to toast, and nothing to wait for.
-            None => done.push(id.clone()),
-            Some(_) if screen.holds() => {}
-            Some(card) => {
-                if TOASTED.with(|t| t.borrow_mut().insert(id.clone())) {
-                    toast(ui, card);
-                }
-                done.push(id.clone());
-            }
-        }
-    }
-    if !done.is_empty() {
-        published().announce.retain(|a| !done.contains(a));
-    }
-}
-
-fn toast(ui: &App, card: &Card) {
-    let b = &card.brief;
-    let at = b.when.split('\u{2013}').next().unwrap_or("").to_string();
-    super::toast::push(
-        ui,
-        ToastData {
-            id: card.id.as_str().into(),
-            app_name: "Meeting brief".into(),
-            summary: format!("Your brief for {} at {at} is ready.", b.title).into(),
-            body: "".into(),
-            urgency: 1,
-            icon_char: "B".into(),
-            actions: ModelRc::new(VecModel::from(Vec::new())),
-            thumbnail: Default::default(),
-            has_thumbnail: false,
-        },
-        1,
-    );
 }
 
 #[cfg(test)]
@@ -356,6 +329,10 @@ mod tests {
 
     fn row(text: &str, open: Option<Open>) -> Row {
         Row { text: text.into(), open }
+    }
+
+    fn message(id: &str) -> Open {
+        Open::Message { account: "me@home.test".into(), folder: "Sent".into(), id: id.into() }
     }
 
     fn card(start: i64, end: i64) -> Card {
@@ -370,8 +347,10 @@ mod tests {
                 place: Some("Room 4".into()),
                 people: vec!["Maya Chen".into(), "Ravi Rao".into()],
                 fingerprint: "f".into(),
-                emails: vec![row("Maya \u{b7} SECRET-SUBJECT \u{b7} 2 d", Some(Open::Message { subject: "SECRET-SUBJECT".into() }))],
-                notes: vec![row("SECRET-NOTE-TITLE", Some(Open::Note { title: "SECRET-NOTE-TITLE".into() }))],
+                complete: true,
+                missing_since: None,
+                emails: vec![row("Maya \u{b7} SECRET-SUBJECT \u{b7} 2 d", Some(message("m-1")))],
+                notes: vec![row("SECRET-NOTE-TITLE", Some(Open::Note { id: "note-1.md".into() }))],
                 promises: vec![row("You told Ravi: SECRET-PROMISE", None), row("Maya said: SECRET-PROMISE-2", None)],
                 files: vec![],
                 description: vec!["SECRET-DESCRIPTION".into()],
@@ -407,7 +386,7 @@ mod tests {
         let c = card(1_000, 5_000);
         let all = rows(&c);
         assert_eq!(all.len(), 4);
-        assert_eq!(all[1].open, Some(Open::Note { title: "SECRET-NOTE-TITLE".into() }));
+        assert_eq!(all[1].open, Some(Open::Note { id: "note-1.md".into() }));
     }
 
     #[test]
@@ -420,14 +399,15 @@ mod tests {
 
     #[test]
     fn describe_has_counts_and_never_contents() {
-        let value = describe_value(&[card(1_000, 5_000)], true, 900);
+        let value = describe_value(&[card(1_000, 5_000)], true, 900, Outcomes { opened: 2, dismissed: 1, ignored: 4 });
         let text = value.to_string();
         assert!(!text.contains("SECRET"), "describe leaked a brief's contents: {text}");
         assert_eq!(value["enabled"], true);
         assert_eq!(value["cards"][0]["title"], "Orion launch");
         assert_eq!(value["cards"][0]["counts"], serde_json::json!({ "emails": 1, "notes": 1, "promises": 2, "files": 0, "description": 1 }));
         assert!(value["cards"][0]["start"].as_str().is_some_and(|s| s.len() == 19));
-        assert_eq!(describe_value(&[card(1_000, 5_000)], false, 900)["cards"], serde_json::json!([]));
+        assert_eq!(value["outcomes"], serde_json::json!({ "opened": 2, "dismissed": 1, "ignored": 4 }), "three counts and nothing else");
+        assert_eq!(describe_value(&[card(1_000, 5_000)], false, 900, Outcomes::default())["cards"], serde_json::json!([]));
     }
 
     #[test]
@@ -439,19 +419,38 @@ mod tests {
         let home = std::fs::canonicalize(&home).unwrap();
         assert!(matches!(opening(&Open::File { path: file.to_string_lossy().into() }, &home), Ok(Opening::File(_))));
         assert!(opening(&Open::File { path: "/etc/passwd".into() }, &home).is_err(), "not a file in the home folder");
-        assert!(matches!(opening(&Open::Note { title: "t".into() }, &home), Ok(Opening::Note(_))));
+        assert!(matches!(opening(&Open::Note { id: "note-1.md".into() }, &home), Ok(Opening::Note(_))));
         assert!(matches!(opening(&Open::Event { id: "e".into() }, &home), Ok(Opening::Event(_))));
-        assert!(matches!(opening(&Open::Message { subject: "s".into() }, &home), Ok(Opening::Message(_))));
+        // The exact message, from the folder it is in: a subject names nothing here.
+        assert_eq!(
+            opening(&message("m-1"), &home),
+            Ok(Opening::Message { account: "me@home.test".into(), folder: "Sent".into(), id: "m-1".into() })
+        );
         let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
-    fn publish_announces_a_brief_once_and_a_dismissal_takes_it_away() {
-        let c = card(1_000, 5_000);
-        publish(Outcome { cards: vec![c.clone()], fresh: vec![c.id.clone()] });
-        publish(Outcome { cards: vec![c.clone()], fresh: vec![c.id.clone()] });
-        assert_eq!(published().announce.iter().filter(|a| **a == c.id).count(), 1);
+    fn a_dismissed_card_is_not_drawn_again_by_an_answer_made_before_the_worker_recorded_it() {
+        let c = card(2_000, 6_000);
+        let answer = |cards: Vec<Card>| Outcome { cards, fresh: Vec::new(), outcomes: Outcomes::default() };
+        publish(answer(vec![c.clone()]));
+        assert_eq!(published().cards.len(), 1);
         forget(&c.id);
-        assert!(published().cards.is_empty() && published().announce.is_empty());
+        assert!(published().cards.is_empty());
+        // The worker was busy with a turn and answers from before the dismissal: still not drawn.
+        publish(answer(vec![c.clone()]));
+        assert!(published().cards.is_empty(), "the card came back");
+        // Once it has caught up and its answer no longer holds the card, the note is dropped.
+        publish(answer(vec![]));
+        assert!(DISMISSED.lock().unwrap().iter().all(|d| *d != c.id));
+    }
+
+    #[test]
+    fn the_switch_is_off_until_the_store_has_said_it_is_on() {
+        assert!(!enabled_by(None), "unknown is off: nothing is read until the person's choice is known");
+        assert!(enabled_by(Some(&Initiative::default())));
+        let mut off = Initiative::default();
+        off.set_moment(MOMENT_MEETING_BRIEF, false);
+        assert!(!enabled_by(Some(&off)));
     }
 }

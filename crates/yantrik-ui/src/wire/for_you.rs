@@ -235,11 +235,13 @@ pub(crate) fn carry_out(ui: &App, key: &str, opening: Opening, say: Say) {
             });
             say(ui, key, &format!("Opened {host} in the browser."));
         }
+        // The app's answer comes back to the card's line, so a press that opened nothing says so.
         Opening::Note(reference) => {
-            forward_to_app(ui, "notes", "open_note", Some(serde_json::json!({ "title": reference })));
+            super::app_act::act(ui, "notes", "open_note", serde_json::json!({ "title": reference }), key, say);
         }
-        Opening::Message(subject) => {
-            forward_to_app(ui, "email", "open_message", Some(serde_json::json!({ "which": subject })));
+        Opening::Message { account, folder, id } => {
+            let args = serde_json::json!({ "account": account, "folder": folder, "message_id": id });
+            super::app_act::act(ui, "email", "open_message_id", args, key, say);
         }
         Opening::Event(reference) => open_event(ui, key, reference, say),
     }

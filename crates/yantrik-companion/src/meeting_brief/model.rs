@@ -18,14 +18,23 @@ pub const MAX_ROW_CHARS: usize = 140;
 /// has; nothing here opens anything.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Open {
-    /// Email, at the message whose subject this is.
-    Message { subject: String },
-    /// Notes, at the note with this title.
-    Note { title: String },
+    /// Email, at exactly this message: the account's address, the folder it is in and its id
+    /// there. Never found by its words, which can name another message.
+    Message { account: String, folder: String, id: String },
+    /// Notes, at the note with this id (its file name), never by title.
+    Note { id: String },
     /// A file, by absolute path; the shell checks it again at the press.
     File { path: String },
     /// Calendar, at the event with this id.
     Event { id: String },
+}
+
+/// What the person pressed on a card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    /// Any Open.
+    Opened,
+    Dismissed,
 }
 
 /// One line in a section, and what its button opens, when there is something to open.
@@ -50,12 +59,34 @@ pub struct Brief {
     pub people: Vec<String>,
     /// What the brief was made from, so a change to the title, the start or the people is seen.
     pub fingerprint: String,
+    /// Whether every source answered. A brief shown at the last call with a section missing is
+    /// not final: it is filled in when the source answers, without a second toast.
+    #[serde(default = "yes")]
+    pub complete: bool,
+    /// Since when the calendar has not listed the event, while it is only maybe gone: a calendar
+    /// that answers an empty list while its files are rewritten must not end a brief.
+    #[serde(default)]
+    pub missing_since: Option<i64>,
     pub emails: Vec<Row>,
     pub notes: Vec<Row>,
     pub promises: Vec<Row>,
     pub files: Vec<Row>,
     /// The first lines of the event's own description.
     pub description: Vec<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// How the briefs of the last 30 days ended: all `describe` says about them, as counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outcomes {
+    /// An Open was pressed.
+    pub opened: u32,
+    pub dismissed: u32,
+    /// Shown, and over with no press.
+    pub ignored: u32,
 }
 
 /// How many lines each section has. All the shell's `describe` says about a brief.
