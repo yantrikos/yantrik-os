@@ -16,6 +16,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use yantrik_companion::capitalize;
 use yantrik_companion::recipe::Leave;
 use yantrik_companion::recipe_view::{self, RecipeOp, RecipeView, StepView};
 
@@ -325,14 +326,6 @@ pub fn seats_of(v: &RecipeView, catalog: &Catalog, picks: &SeatPicks) -> Vec<Rec
 /// A seat's name as a person reads it: "seat_1" becomes "Seat 1", "chair" becomes "Chair".
 fn seat_label(name: &str) -> String {
     name.split('_').filter(|p| !p.is_empty()).map(capitalize).collect::<Vec<_>>().join(" ")
-}
-
-fn capitalize(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
 }
 
 /// The catalog's roles, as the choices every seat offers (#194).

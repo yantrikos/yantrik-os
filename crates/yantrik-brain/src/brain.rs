@@ -414,7 +414,6 @@ static INSTINCT_SIGNAL_DEFAULTS: &[(&str, SignalType)] = &[
     ("connection_weaver", SignalType::Opportunity),
     ("learning_moment", SignalType::Opportunity),
     ("habit_streak", SignalType::Opportunity),
-    ("bond_milestone", SignalType::Opportunity),
     ("gratitude", SignalType::Opportunity),
     ("skill_gap", SignalType::Opportunity),
     ("serendipity", SignalType::Opportunity),

@@ -13,6 +13,7 @@ pub mod judge_config;
 pub mod permission;
 pub mod sanitize;
 pub mod taint;
+pub mod text;
 pub mod tools;
 pub mod types;
 pub mod urge_defaults;

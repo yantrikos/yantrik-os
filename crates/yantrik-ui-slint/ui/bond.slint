@@ -18,7 +18,7 @@ export struct BondData {
     // False until the companion worker has pushed the store's bond once. Until it is true there
     // is nothing measured to show, and the screen says so rather than drawing zeros.
     loaded: bool,
-    // Read by `describe shell` (control.rs `describe_bond`), not drawn here.
+    // Not drawn here, and not read by `describe shell` either: a Mind is told counts, never the score.
     bond-score: float,
     bond-level: string,
     total-interactions: int,
@@ -42,6 +42,14 @@ export component BondScreen inherits Rectangle {
 
     in property <BondData> data;
     callback back-pressed();
+    // The person's one act on the bond: forget what it learned from their answers. Called from the
+    // button below, after its confirm, and from nowhere else (bond_receipts.rs, a source test).
+    callback forget-bond-history();
+    // Set when a press on "Forget it" changed nothing (the store could not be written). Empty
+    // otherwise. The forget itself is done when the press returns; nothing is left pending.
+    in property <string> forget-error: "";
+    // True while the button is asking "are you sure". Not kept: leaving the screen drops it.
+    property <bool> confirming-forget: false;
 
     background: Theme.bg-deep;
 
@@ -137,6 +145,78 @@ export component BondScreen inherits Rectangle {
                                 color: Theme.text-secondary;
                                 font-size: Theme.font-small;
                                 wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    text: "What the companion learned from your answers (the cards you allowed or refused, what you marked useful or not, what you undid) is kept for up to 180 days.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-caption;
+                    wrap: word-wrap;
+                }
+
+                if root.forget-error != "" : Text {
+                    text: root.forget-error;
+                    color: Theme.destructive;
+                    font-size: Theme.font-body;
+                    wrap: word-wrap;
+                }
+
+                if !root.confirming-forget : Rectangle {
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-card;
+                    height: 44px;
+                    Text {
+                        text: "Forget the bond history";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea { clicked => { root.confirming-forget = true; } }
+                }
+
+                if root.confirming-forget : VerticalLayout {
+                    spacing: Theme.sp-3;
+                    Text {
+                        text: "This empties what the companion learned from your answers. It can't be undone.";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.sp-3;
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            height: 44px;
+                            Text {
+                                text: "Keep it";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea { clicked => { root.confirming-forget = false; } }
+                        }
+                        Rectangle {
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-card;
+                            height: 44px;
+                            Text {
+                                text: "Forget it";
+                                color: Theme.destructive;
+                                font-size: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => {
+                                    root.confirming-forget = false;
+                                    root.forget-bond-history();
+                                }
                             }
                         }
                     }

@@ -1,5 +1,6 @@
 //! Files workbench. Workers perform I/O; the UI owns navigation and selection.
 use super::files_gone;
+mod files_bond;
 use crate::app_context::AppContext;
 use crate::{
     filebrowser as fsview, fileops, App, BreadcrumbSegment, FileDetailData, FileEntry,
@@ -37,9 +38,9 @@ struct Clipboard {
 }
 enum Job {
     Transfer(Clipboard, PathBuf),
-    Trash(Vec<PathBuf>),
+    Trash(Vec<PathBuf>, bool),
     Restore(Vec<fileops::TrashItem>),
-    Undo(Vec<String>),
+    Undo(Vec<String>, bool),
     Empty,
     Rename(PathBuf, String),
     Create(PathBuf, String, bool),
@@ -57,8 +58,8 @@ enum Event {
     ),
     Preview(u64, String, FileDetailData, String),
     Progress(String, f32),
-    // Message, what was created (name, is a folder), undo ids, moved paths, remaining trash.
-    Done(String, Option<(String, bool)>, Vec<String>, Vec<PathBuf>, Option<Vec<String>>),
+    // Message, created (name, folder), undo ids, moved paths, remaining trash, bond flags (files_bond).
+    Done(String, Option<(String, bool)>, Vec<String>, Vec<PathBuf>, Option<Vec<String>>, (bool, bool)),
     Notice(String),
 }
 #[derive(Clone)]
@@ -91,6 +92,7 @@ struct Browser {
     model: Rc<VecModel<FileEntry>>,
     clipboard: Option<Clipboard>,
     undo: Vec<String>,
+    undo_by_mind: bool,
     generation: u64,
     preview: u64,
     listing_cancel: Option<Arc<AtomicBool>>,
@@ -576,6 +578,7 @@ fn run_job(job: Job, cancel: Arc<AtomicBool>, sink: Sink) {
     let mut moved = vec![];
     let mut errors = vec![];
     let mut created = None;
+    let mut by_mind = (matches!(job, Job::Trash(_, true)), false);
     let mut done = 0usize;
     let mut total = 1usize;
     let mut label = "Completed";
@@ -628,7 +631,7 @@ fn run_job(job: Job, cancel: Arc<AtomicBool>, sink: Sink) {
                 }
             }
         }
-        Job::Trash(paths) => {
+        Job::Trash(paths, _) => {
             total = paths.len();
             label = "Moved to Trash";
             for p in paths {
@@ -667,7 +670,7 @@ fn run_job(job: Job, cancel: Arc<AtomicBool>, sink: Sink) {
                 }
             }
         }
-        Job::Undo(ids) => {
+        Job::Undo(ids, mind) => {
             label = "Restored";
             total = ids.len();
             match fileops::trash_items(&root) {
@@ -687,6 +690,7 @@ fn run_job(job: Job, cancel: Arc<AtomicBool>, sink: Sink) {
                 }
                 Err(e) => errors.push(e),
             }
+            by_mind.1 = mind && done > 0;
         }
         Job::Empty => {
             label = "Emptied Trash";
@@ -738,7 +742,7 @@ fn run_job(job: Job, cancel: Arc<AtomicBool>, sink: Sink) {
     let remaining = fileops::trash_items(&root)
         .ok()
         .map(|items| items.into_iter().map(|i| i.id).collect());
-    sink.send(Event::Done(message, created, undo, moved, remaining));
+    sink.send(Event::Done(message, created, undo, moved, remaining, by_mind));
 }
 
 thread_local! {
@@ -789,6 +793,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         model,
         clipboard: None,
         undo: vec![],
+        undo_by_mind: false,
         generation: 0,
         preview: 0,
         listing_cancel: None,
@@ -865,14 +870,12 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                     u.set_file_operation_text(text.into());
                     u.set_file_operation_progress(progress);
                 }
-                Event::Done(message, created, undo, moved, remaining) => {
+                Event::Done(message, created, undo, moved, remaining, by_mind) => {
                     s.job_cancel = None;
                     u.set_file_operation_busy(false);
                     u.set_file_operation_text(message.clone().into());
                     set_notice(&u, &message, created);
-                    if !undo.is_empty() {
-                        s.undo = undo;
-                    }
+                    s.settle_undo(undo, by_mind);
                     if let Some(ids) = remaining {
                         s.undo.retain(|id| ids.contains(id));
                     }
@@ -1020,7 +1023,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         if !s.trash {
             let paths = s.selected_paths();
             if !paths.is_empty() {
-                s.job(&u, Job::Trash(paths));
+                s.job(&u, Job::Trash(paths, crate::shell_view::asked_by_mind()));
             }
         }
     });
@@ -1032,7 +1035,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
                 .find(|i| i.entry.name == name.as_str())
                 .cloned()
             {
-                s.job(&u, Job::Trash(vec![item.path]));
+                s.job(&u, Job::Trash(vec![item.path], crate::shell_view::asked_by_mind()));
             }
         }
     });
@@ -1090,10 +1093,7 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         }
     });
     bind!(on_file_undo_trash, |u, s| {
-        let ids = s.undo.clone();
-        if !ids.is_empty() {
-            s.job(&u, Job::Undo(ids));
-        }
+        s.undo_trash(&u);
     });
     bind!(on_file_new_tab, |u, s| {
         if s.tabs.len() < 8 {

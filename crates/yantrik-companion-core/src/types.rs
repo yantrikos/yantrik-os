@@ -162,8 +162,6 @@ pub struct CompanionState {
     pub formality: f64,
     pub opinions_count: usize,
     pub shared_references_count: usize,
-    /// Whether bond level changed on the last interaction.
-    pub bond_level_changed: bool,
     // Phase 2: Proactive Intelligence fields
     pub current_hour: u32,
     pub current_day_of_week: u32,
