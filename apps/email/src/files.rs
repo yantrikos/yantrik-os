@@ -18,12 +18,16 @@ use yantrik_app::Paths;
 /// The draft file's name inside the data folder.
 pub const DRAFT: &str = "draft.json";
 
+/// The draft a Mind made, in its own file beside the person's (`state::mind_draft`).
+pub const MIND_DRAFT: &str = "mind_draft.json";
+
 /// What an imported file is kept as.
 pub const LEGACY_SUFFIX: &str = ".legacy.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Files {
     pub draft: PathBuf,
+    pub mind_draft: PathBuf,
     pub originals: PathBuf,
 }
 
@@ -33,6 +37,7 @@ impl Files {
     pub fn for_app(paths: &Paths) -> Files {
         Files {
             draft: overridden("YANTRIK_EMAIL_DRAFT").unwrap_or_else(|| paths.data_dir().join(DRAFT)),
+            mind_draft: paths.data_dir().join(MIND_DRAFT),
             originals: overridden("YANTRIK_EMAIL_HTML_DIR").unwrap_or_else(|| paths.cache_dir().to_path_buf()),
         }
     }

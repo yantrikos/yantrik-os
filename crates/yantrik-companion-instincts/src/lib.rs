@@ -53,6 +53,7 @@ mod dream_keeper;
 mod pattern_breaker;
 mod opportunity_scout;
 mod open_loops_guardian;
+pub mod commitment_prep;
 #[cfg(test)]
 mod test_util;
 #[cfg(test)]
@@ -114,6 +115,7 @@ pub use dream_keeper::DreamKeeperInstinct;
 pub use pattern_breaker::PatternBreakerInstinct;
 pub use opportunity_scout::OpportunityScoutInstinct;
 pub use open_loops_guardian::OpenLoopsGuardianInstinct;
+pub use commitment_prep::CommitmentPrepInstinct;
 
 /// Load instincts based on configuration.
 pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
@@ -340,6 +342,9 @@ pub fn load_instincts(settings: &InstinctSettings) -> Vec<Box<dyn Instinct>> {
     instincts.push(Box::new(OpenLoopsGuardianInstinct::new(
         settings.open_loops_threshold.unwrap_or(5),
     )));
+
+    // Commitment prep (loaded always; the person's say is in `commitment_store`: asked once before it acts, and a switch. Local: opens files and drafts, never sends or reaches out)
+    instincts.push(Box::new(CommitmentPrepInstinct));
 
     // Natural Communication instincts (always loaded — bond-gated internally)
     instincts.push(Box::new(AftermathInstinct));

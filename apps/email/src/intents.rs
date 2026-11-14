@@ -108,18 +108,42 @@ pub fn table(table: &mut Intents<Email>) {
             .risk("standard")
             .arg(Param::text("to"))
             .arg(Param::text("subject"))
-            .arg(Param::text("body")),
+            .arg(Param::text("body"))
+            .arg(
+                Param::text("attach")
+                    .optional()
+                    .describe("Absolute path of a file to attach to the draft. A draft with a file attached cannot be sent from here yet"),
+            )
+            .arg(
+                Param::text("commitment")
+                    .optional()
+                    .describe("The promise this draft is prepared for, so forgetting the promise clears the draft"),
+            ),
             |a| {
                 Ok(Command::Compose {
                     to: arg_text(a, "to"),
                     subject: arg_text(a, "subject"),
                     body: arg_text(a, "body"),
+                    attach: arg_text(a, "attach"),
+                    commitment: arg_text(a, "commitment"),
                 })
             },
         )
         // Sending is not offered on this surface on purpose: a draft can be read before it
         // leaves, and mail that has already gone cannot be taken back.
         .reply(|_| json!({ "drafted": true, "note": "waiting for the user to send it" })),
+    );
+    table.add(
+        Intent::new(
+            // Not a way to discard the person's draft: it clears only a draft prepared for the named
+            // promise, and only while the person has left it as Yantrik wrote it. The person's own
+            // Discard and Remove attachment are buttons, not intents.
+            Action::new("forget_prepared", "Clear the draft that was prepared for a promise that has been forgotten")
+                .risk("standard")
+                .arg(Param::text("commitment")),
+            |a| Ok(Command::ForgetPrepared(arg_text(a, "commitment"))),
+        )
+        .reply(|_| json!({ "ok": true })),
     );
     table.add(
         Intent::new(

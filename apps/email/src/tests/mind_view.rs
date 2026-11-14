@@ -181,7 +181,7 @@ fn the_composer_in_a_mind_view_window_does_not_show_the_saved_draft() {
     quiet(&app);
     assert!(!window_text(&app).contains(SENTINEL), "{}", window_text(&app));
     // The compose call fills the composer and the kept Cc and Bcc must not stay on screen.
-    app.run(Command::Compose { to: "m@x".into(), subject: "hi".into(), body: "there".into() });
+    app.run(Command::Compose { to: "m@x".into(), subject: "hi".into(), body: "there".into(), attach: String::new(), commitment: String::new() });
     quiet(&app);
     let text = window_text(&app);
     assert!(!text.contains(SENTINEL), "{text}");
@@ -203,37 +203,41 @@ fn a_mind_view_window_does_not_write_the_person_s_draft_when_it_ends() {
     for for_mind in [false, true] {
         let (app, file, draft) = with_draft_kept(&mailbox(), for_mind);
         let before = std::fs::read(&file).unwrap();
-        app.run(Command::Compose { to: "m@x".into(), subject: "hi".into(), body: "there".into() });
+        // Refused: the person's draft is in the way (#1184).
+        app.run(Command::Compose { to: "m@x".into(), subject: "hi".into(), body: "there".into(), attach: String::new(), commitment: String::new() });
         quiet(&app);
+        assert!(app.last_refusal().is_some());
         let paths = app.paths();
         app.event(yantrik_app::app::Event::ExitRequested(yantrik_app::app::ExitReason::Logout));
         let _ = app.shutdown();
         drop(app);
-        if for_mind {
-            assert_eq!(std::fs::read(&file).unwrap(), before, "the draft file is as it was");
-        }
+        assert_eq!(std::fs::read(&file).unwrap(), before, "the draft file is as it was");
         let again = TestApp::<Email>::start_at(paths, Vec::new());
         quiet(&again);
         again.ui(|ui| ui.invoke_compose_new());
         at_restart.push((again.ui(|ui| ui.get_compose_body().to_string()), draft.body));
     }
-    assert_eq!(at_restart[0].0, "there", "the check can see the lane: the person's composer is kept");
-    assert_eq!(at_restart[1].0, at_restart[1].1, "a Mind's composer left nothing in the lane");
+    for (body, kept) in &at_restart {
+        assert_eq!(body, kept, "nothing a Mind composed reached the person's draft");
+    }
 }
 
-/// `compose` is an intent: in a Mind's instance it leaves the composer as it does anywhere, the
-/// kept draft's Cc and Bcc included. Only the window's rendering of it is masked.
+/// `compose` is an intent: in a Mind's instance it behaves as it does anywhere, and anywhere it
+/// leaves the person's kept draft, with its Cc and Bcc, as it was (#1184).
 #[test]
-fn compose_leaves_the_same_composer_in_a_mind_view_window_as_anywhere() {
+fn compose_leaves_the_kept_draft_alone_in_a_mind_view_window_as_anywhere() {
     let mut got = Vec::new();
     for for_mind in [false, true] {
-        let (app, _, _) = with_draft_kept(&mailbox(), for_mind);
-        let answer = super::act(&app, "compose", json!({ "to": "m@x", "subject": "hi", "body": "there" })).unwrap();
+        let (app, file, draft) = with_draft_kept(&mailbox(), for_mind);
+        let before = std::fs::read(&file).unwrap();
+        let answer = super::act(&app, "compose", json!({ "to": "m@x", "subject": "hi", "body": "there" }));
         quiet(&app);
-        got.push((answer, app.model(|m| m.composer.text.clone()), app.describe()));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        assert_eq!(app.model(|m| m.composer.kept.clone()), Ok(Some(draft.clone())));
+        got.push(answer);
     }
     assert_eq!(got[0], got[1]);
-    assert!(got[0].1.cc.contains(SENTINEL), "the kept Cc is still on the draft");
+    assert!(got[0].as_ref().unwrap_err().contains("unsent message of your own"));
 }
 
 #[test]

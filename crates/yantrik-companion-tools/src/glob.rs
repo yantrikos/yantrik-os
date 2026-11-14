@@ -28,11 +28,15 @@ impl Tool for GlobTool {
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "Glob pattern (e.g. '**/*.rs', 'src/**/*.py', '*.toml', 'Cargo.*')"
+                            "description": "Glob pattern; * is any run of characters (e.g. '**/*.rs', 'src/**/*.py', '*.toml', 'Cargo.*', '*budget*.csv')"
                         },
                         "path": {
                             "type": "string",
                             "description": "Base directory to search from (default: current working directory or ~)"
+                        },
+                        "ignore_case": {
+                            "type": "boolean",
+                            "description": "Match upper and lower case letters alike (default false)"
                         }
                     },
                     "required": ["pattern"]
@@ -44,6 +48,7 @@ impl Tool for GlobTool {
     fn execute(&self, _ctx: &ToolContext, args: &Value) -> String {
         let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or_default();
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("~");
+        let ignore_case = args.get("ignore_case").and_then(|v| v.as_bool()).unwrap_or(false);
 
         if pattern.is_empty() {
             return "Error: pattern is required".to_string();
@@ -71,7 +76,7 @@ impl Tool for GlobTool {
 
         let mut results: Vec<(String, std::time::SystemTime)> = Vec::new();
         collect_matching_files(
-            &search_dir, &file_pattern, recursive, &mut results, 0,
+            &search_dir, &file_pattern, recursive, ignore_case, &mut results, 0,
         );
 
         if results.is_empty() {
@@ -129,40 +134,40 @@ fn parse_glob_pattern(pattern: &str) -> (String, String, bool) {
     (String::new(), pattern.to_string(), false)
 }
 
-/// Match a filename against a simple glob pattern.
-fn matches_pattern(pattern: &str, name: &str) -> bool {
-    if pattern == "*" {
-        return true;
+/// Match a filename against a glob pattern in which `*` stands for any run of characters (none
+/// included) and everything else stands for itself: `*.rs`, `Cargo.*`, `*q4*.csv`. With
+/// `ignore_case` an upper-case letter matches its lower-case one, as a person reads a file name.
+fn matches_pattern(pattern: &str, name: &str, ignore_case: bool) -> bool {
+    let fold = |s: &str| -> Vec<char> {
+        if ignore_case { s.to_lowercase().chars().collect() } else { s.chars().collect() }
+    };
+    let (pat, text) = (fold(pattern), fold(name));
+    // Walk both; on `*` remember where it was so a later mismatch can let it take one more character.
+    let (mut p, mut t, mut star, mut mark) = (0, 0, None, 0);
+    while t < text.len() {
+        if p < pat.len() && pat[p] == '*' {
+            star = Some(p);
+            mark = t;
+            p += 1;
+        } else if p < pat.len() && pat[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if let Some(s) = star {
+            p = s + 1;
+            mark += 1;
+            t = mark;
+        } else {
+            return false;
+        }
     }
-
-    // Handle *.ext
-    if let Some(ext) = pattern.strip_prefix("*.") {
-        return name.ends_with(&format!(".{}", ext));
-    }
-
-    // Handle prefix.*
-    if let Some(prefix) = pattern.strip_suffix(".*") {
-        return name.starts_with(&format!("{}.", prefix));
-    }
-
-    // Handle prefix*
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return name.starts_with(prefix);
-    }
-
-    // Handle *suffix
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return name.ends_with(suffix);
-    }
-
-    // Exact match
-    pattern == name
+    pat[p..].iter().all(|&c| c == '*')
 }
 
 fn collect_matching_files(
     dir: &str,
     file_pattern: &str,
     recursive: bool,
+    ignore_case: bool,
     results: &mut Vec<(String, std::time::SystemTime)>,
     depth: usize,
 ) {
@@ -193,11 +198,11 @@ fn collect_matching_files(
         if path.is_dir() {
             if recursive {
                 collect_matching_files(
-                    &path.to_string_lossy(), file_pattern, recursive,
+                    &path.to_string_lossy(), file_pattern, recursive, ignore_case,
                     results, depth + 1,
                 );
             }
-        } else if matches_pattern(file_pattern, &name) {
+        } else if matches_pattern(file_pattern, &name, ignore_case) {
             let mtime = entry.metadata()
                 .ok()
                 .and_then(|m| m.modified().ok())
@@ -221,10 +226,33 @@ mod link_tests {
         std::fs::write(root.join("parent/own.json"), "{}").unwrap();
         std::os::unix::fs::symlink(root.join("tree"), root.join("parent/lnk")).unwrap();
         let mut found = Vec::new();
-        super::collect_matching_files(&root.join("parent").to_string_lossy(), "*.json", true, &mut found, 0);
+        super::collect_matching_files(&root.join("parent").to_string_lossy(), "*.json", true, false, &mut found, 0);
         let _ = std::fs::remove_dir_all(&root);
         let names: Vec<_> = found.iter().map(|(p, _)| p.clone()).collect();
         assert_eq!(names.len(), 1, "{names:?}");
         assert!(names[0].ends_with("own.json"), "{names:?}");
+    }
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::matches_pattern as m;
+
+    #[test]
+    fn the_old_shapes_still_match_as_they_did() {
+        assert!(m("*.rs", "main.rs", false) && !m("*.rs", "main.rsx", false));
+        assert!(m("Cargo.*", "Cargo.toml", false) && !m("Cargo.*", "cargo.toml", false));
+        assert!(m("pre*", "prefix", false) && m("*fix", "prefix", false));
+        assert!(m("exact.txt", "exact.txt", false) && !m("exact.txt", "exact.txt2", false));
+        assert!(m("*", "anything", false));
+    }
+
+    #[test]
+    fn a_star_in_the_middle_matches_a_run_of_characters() {
+        assert!(m("*budget*.csv", "Q4-Budget-2026.csv", true));
+        assert!(!m("*budget*.csv", "Q4-Budget-2026.csv", false), "case matters unless asked");
+        assert!(m("*budget*.csv", "budget.csv", false), "a run can be empty");
+        assert!(!m("*budget*.csv", "budget.csv.bak", false));
+        assert!(m("a*b*c", "aXbYbZc", false));
     }
 }

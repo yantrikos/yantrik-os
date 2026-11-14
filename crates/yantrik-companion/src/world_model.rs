@@ -959,15 +959,7 @@ impl WorldModel {
 
     /// Get commitments approaching deadline (within `hours` hours from now).
     pub fn approaching_deadlines(conn: &Connection, hours: f64) -> Vec<Commitment> {
-        let now = now_ts();
-        let cutoff = now + hours * 3600.0;
-        Self::query_commitments_params(
-            conn,
-            "WHERE status IN ('pending', 'in_progress')
-             AND deadline > 0 AND deadline <= ?1 AND deadline > ?2
-             ORDER BY deadline ASC",
-            params![cutoff, now],
-        )
+        crate::commitment_store::approaching_at(conn, hours, crate::anticipation::now_ts())
     }
 
     /// Get overdue commitments.
@@ -1311,7 +1303,7 @@ impl WorldModel {
             .unwrap_or_default()
     }
 
-    fn query_commitments_params(
+    pub(crate) fn query_commitments_params(
         conn: &Connection,
         where_clause: &str,
         params: &[&dyn rusqlite::types::ToSql],

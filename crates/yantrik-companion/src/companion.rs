@@ -720,6 +720,8 @@ impl CompanionService {
 
         // World model tables (commitments, preferences, routines)
         crate::world_model::WorldModel::ensure_tables(&db.conn());
+        // What `commitment_prep` stores its proposals and results in.
+        crate::anticipation::AnticipationEngine::ensure_table(&db.conn());
 
         // Trust model tables (3-axis trust + event log)
         crate::trust_model::TrustModel::ensure_table(&db.conn());
@@ -1137,23 +1139,7 @@ impl CompanionService {
         //    (or that are not gated by skills at all, i.e., core instincts)
         if !snapshot.enabled_instincts.is_empty() {
             let before = self.instincts.len();
-            self.instincts.retain(|inst| {
-                let name = inst.name();
-                // Core instincts that are always on (scheduler, automation, bond, etc.)
-                let is_core = matches!(
-                    name,
-                    // Exact name() values from each instinct impl
-                    "scheduler" | "automation" | "BondMilestone" | "SelfAwareness"
-                    | "morning_brief" | "activity_reflector" | "serendipity"
-                    | "Aftermath" | "SocraticSpark" | "EveningReflection"
-                    | "ConversationalCallback" | "SilenceReveal"
-                    | "check_in" | "emotional_awareness" | "follow_up"
-                    | "reminder" | "pattern_surfacing" | "conflict_alerting"
-                    | "MemoryWeaver"
-                    | "predictive_workflow" | "routine" | "cognitive_load" | "smart_updates"
-                );
-                is_core || snapshot.enabled_instincts.contains(name)
-            });
+            crate::instinct_gate::keep_enabled(&mut self.instincts, &snapshot.enabled_instincts);
             tracing::info!(
                 before,
                 after = self.instincts.len(),
@@ -1317,7 +1303,7 @@ impl CompanionService {
 
     /// The highest tool permission this turn may use: the configured one, or the turn's own
     /// ceiling where that is lower.
-    fn max_permission_now(&self) -> PermissionLevel {
+    pub(crate) fn max_permission_now(&self) -> PermissionLevel {
         let configured = parse_permission(&self.config.tools.max_permission);
         match self.turn_ceiling {
             Some(ceiling) if ceiling < configured => ceiling,

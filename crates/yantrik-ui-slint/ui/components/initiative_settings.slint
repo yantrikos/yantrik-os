@@ -59,6 +59,7 @@ component Choice inherits YButton {
     clicked => { InitiativeState.set-family(self.family, self.value); }
 }
 
+export { PrepSwitch } from "../commitment_prep.slint";
 export component InitiativeSettings inherits VerticalLayout {
     spacing: Theme.sp-3;
 

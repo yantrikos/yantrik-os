@@ -108,6 +108,8 @@ pub mod boot;
 pub mod location;
 pub mod pins;
 mod morning_brief;
+mod commitment_prep;
+mod commitment_prep_open;
 mod window_switcher;
 /// The taskbar's corner button, Super+D and `show_desktop`: every window away, then back (#241).
 pub mod show_desktop;
@@ -195,6 +197,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     about::wire(ui, ctx);
     version::wire(ui, ctx);
     morning_brief::wire(ui, ctx);
+    commitment_prep::wire(ui, ctx);
     command_palette::wire(ui, ctx);
     cross_app::wire(ui, ctx);
     ai_onboarding::wire(ui, ctx);
