@@ -266,6 +266,9 @@ pub fn run<A: App>() -> ExitCode {
     }
     core.shutdown(GRACE);
     DRAIN.with(|cell| *cell.borrow_mut() = None);
+    // The control surface's thread is still serving, so nothing removes the mind door it bound;
+    // this is the exit every ending reaches.
+    crate::control::clear_mind_door();
     // A close, an `fx.exit()` and a logout are all 0; only a loop that failed with the display
     // still there is 1, and that one has its problem record.
     match ending {
@@ -372,5 +375,44 @@ mod tests {
         assert_eq!(filed[0].1.program, "runner-test");
         assert_eq!(filed[0].1.message, "model: The library is a newer format.");
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    /// The mind door goes with the app that bound it, and no further (#984).
+    ///
+    /// The exit path needs a display, so the rule `run` applies on the way out is driven here: the
+    /// door this process bound is gone, a door it was refused is not. Driven on a bookkeeping of the
+    /// test's own rather than the app's, because this test binary runs a control surface of its own
+    /// on a thread that records *its* door in the app's — see [`BoundDoor`].
+    #[cfg(unix)]
+    #[test]
+    fn the_door_this_app_bound_goes_when_the_app_does() {
+        use crate::control::BoundDoor;
+
+        let dir =
+            std::env::temp_dir().join(format!("yantrik-runner-door-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two doors, bound the way `bind_door` binds them. Only one belongs to this process: the
+        // other is a copy that holds the name, and its door is not this one's to delete.
+        let ours = dir.join("app-ours.sock");
+        let theirs = dir.join("app-theirs.sock");
+        let _ours = std::os::unix::net::UnixListener::bind(&ours).unwrap();
+        let _theirs = std::os::unix::net::UnixListener::bind(&theirs).unwrap();
+        let bound = BoundDoor::new();
+
+        // An app that never got a door has nothing to remove.
+        bound.clear();
+        assert!(ours.exists() && theirs.exists(), "an exit removed a door nobody bound");
+
+        bound.note(ours.clone());
+        bound.clear();
+        assert!(!ours.exists(), "the door this app bound outlived it");
+        assert!(theirs.exists(), "a door this app did not bind was removed");
+
+        // A second exit: a file already gone is not an error, and nothing of another copy's goes.
+        bound.clear();
+        assert!(theirs.exists());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
