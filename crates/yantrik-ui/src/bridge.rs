@@ -2171,11 +2171,13 @@ fn worker_loop(
                 // Meeting briefs: the OS's own preparation, ten minutes before a meeting with other
                 // people in it. Deterministic and local (no model, no network); off means nothing
                 // is read at all. The shell draws what is published here.
-                crate::wire::meeting_brief::publish(yantrik_companion::meeting_brief::local::tick_local(
-                    &companion.db.conn(),
-                    &companion.config.user_name,
-                    crate::wire::meeting_brief::enabled(),
-                ));
+                if !companion.briefs_unavailable {
+                    crate::wire::meeting_brief::publish(yantrik_companion::meeting_brief::local::tick_local(
+                        &companion.db.conn(),
+                        &companion.config.user_name,
+                        crate::wire::meeting_brief::enabled(),
+                    ));
+                }
 
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);

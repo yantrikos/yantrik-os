@@ -148,7 +148,7 @@ impl PromiseSource for Nothing {
 }
 
 /// A source that must never be asked: the person's switch is off.
-struct Forbidden;
+pub(super) struct Forbidden;
 
 impl EmailSource for Forbidden {
     fn exchanged(&self, _: &[String], _: i64, _: usize) -> Result<Vec<Mail>, String> {

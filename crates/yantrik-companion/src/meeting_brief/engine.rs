@@ -6,8 +6,6 @@
 //! shell restarted comes back. Every brief ends with exactly one outcome (opened, dismissed or
 //! ignored), and once it is over only that record is kept, never what the card said.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use chrono::{Duration, NaiveDateTime};
 use rusqlite::Connection;
 use yantrik_ipc_contracts::calendar::{CalendarEvent, EventsParams};
@@ -27,14 +25,6 @@ const LAST_CALL_SECS: i64 = 180;
 const GONE_AFTER_SECS: i64 = 90;
 /// How far back the outcomes `describe` counts reach.
 const OUTCOME_DAYS: f64 = 30.0;
-
-/// Set when the table could not be made: no brief is made or read, and the companion runs on.
-static UNAVAILABLE: AtomicBool = AtomicBool::new(false);
-
-/// Turn briefs off for this run, because the table they live in could not be created.
-pub fn unavailable() {
-    UNAVAILABLE.store(true, Ordering::Relaxed);
-}
 
 /// What a tick found.
 #[derive(Debug, Clone, Default)]
@@ -94,14 +84,14 @@ fn settle(conn: &Connection, events: &[CalendarEvent], own: &Own, now: i64) {
                     brief.missing_since = Some(now);
                     save(conn, &item, &brief);
                 }
-                Some(since) if now - since >= GONE_AFTER_SECS => AnticipationEngine::retire(conn, &item.id, PrepOutcome::Expired, now as f64),
+                Some(since) if now - since >= GONE_AFTER_SECS => end(conn, &item, now as f64),
                 Some(_) => {}
             }
             continue;
         }
         let still = listed.iter().filter_map(|e| meeting_of(e, own)).any(|m| m.start == brief.start);
         if !still {
-            AnticipationEngine::retire(conn, &item.id, PrepOutcome::Expired, now as f64);
+            end(conn, &item, now as f64);
         } else if brief.missing_since.take().is_some() {
             save(conn, &item, &brief);
         }
@@ -110,14 +100,14 @@ fn settle(conn: &Connection, events: &[CalendarEvent], own: &Own, now: i64) {
 
 /// Run one tick at local time `now`.
 ///
-/// `enabled` is the person's switch: off means nothing is read at all, not the calendar, not a
-/// source, not the table. A calendar that cannot be read changes nothing and the briefs already
-/// made are still returned.
+/// `enabled` is the person's switch: off gathers nothing, not from the calendar and not from a
+/// source, and takes back what is up ([`off`]). A calendar that cannot be read changes nothing
+/// and the briefs already made are still returned.
 pub fn tick(conn: &Connection, calendar: &dyn CalendarBackend, sources: &Sources<'_>, own: &Own, now: NaiveDateTime, enabled: bool) -> Outcome {
-    if !enabled || UNAVAILABLE.load(Ordering::Relaxed) {
-        return Outcome::default();
-    }
     let Some(now_unix) = to_unix(now) else { return Outcome::default() };
+    if !enabled {
+        return off(conn, now_unix);
+    }
     let now_ts = now_unix as f64;
     let params = EventsParams { start_date: stamp(now), end_date: stamp(now + Duration::hours(LOOK_AHEAD_HOURS)) };
     match calendar.list(&params) {
@@ -200,13 +190,34 @@ fn make(conn: &Connection, meeting: &Meeting, sources: &Sources<'_>, own: &Own, 
     );
 }
 
-/// End the briefs whose time is up: each gets its outcome, and what the card said is emptied.
-/// Shown and never pressed is "ignored"; one nobody saw ends as "expired" and is not counted.
+/// The switch is off, or its state is not known: nothing is gathered and no card is drawn, and
+/// what the person has not kept is taken back. Every brief that is up ends now, and the briefs
+/// whose time is up are emptied, as they would have been with the switch on. Only the table is
+/// read and written; no source is asked, and what a card said does not wait in it until the
+/// person turns briefs back on. The outcomes are the table's, so `describe` still counts them.
+pub fn off(conn: &Connection, now: i64) -> Outcome {
+    let now_ts = now as f64;
+    for item in live(conn, now) {
+        end(conn, &item, now_ts);
+    }
+    finish(conn, now_ts);
+    AnticipationEngine::cleanup_expired(conn, now_ts);
+    Outcome { cards: Vec::new(), fresh: Vec::new(), outcomes: outcomes(conn, now_ts) }
+}
+
+/// End one brief at `now`, whatever the reason, and empty what it held. Shown and never pressed
+/// is "ignored"; one nobody saw ends as "expired" and is not counted. One the person pressed
+/// already keeps that outcome.
+fn end(conn: &Connection, item: &PreparedItem, now: f64) {
+    let said = brief_of(item).is_some_and(|b| !b.is_empty());
+    let outcome = if said && item.surfaced { PrepOutcome::Ignored } else { PrepOutcome::Expired };
+    AnticipationEngine::retire(conn, &item.id, outcome, now);
+}
+
+/// End the briefs whose time is up.
 fn finish(conn: &Connection, now: f64) {
     for item in AnticipationEngine::ended(conn, &PreparedKind::MeetingBrief, now).into_iter().filter(is_brief) {
-        let said = brief_of(&item).is_some_and(|b| !b.is_empty());
-        let outcome = if said && item.surfaced { PrepOutcome::Ignored } else { PrepOutcome::Expired };
-        AnticipationEngine::retire(conn, &item.id, outcome, now);
+        end(conn, &item, now);
     }
 }
 

@@ -5,7 +5,7 @@ use chrono::{Duration, NaiveDateTime};
 use rusqlite::Connection;
 
 use super::files::FileRoots;
-use super::tests::{db, event, id_for, maya, now, now_ts, over, own, tick_with_mail, Calendar, Mailbox, Notebook, Nothing};
+use super::tests::{db, event, id_for, maya, now, now_ts, over, own, tick_with_mail, Calendar, Forbidden, Mailbox, Notebook, Nothing};
 use super::*;
 use crate::anticipation::{AnticipationEngine, PrepOutcome};
 
@@ -47,7 +47,7 @@ fn an_event_the_calendar_keeps_out_is_ended_and_what_it_held_is_emptied() {
     tick_at(&conn, &cal, n, 1);
     let gone = tick_at(&conn, &cal, n, 3);
     assert!(gone.cards.is_empty());
-    assert_eq!(over(&conn, &id_for(&e)), Some(PrepOutcome::Expired), "gone is not an outcome the person gave");
+    assert_eq!(over(&conn, &id_for(&e)), Some(PrepOutcome::Ignored), "a card that was shown and never pressed ends as ignored, however it ended");
 }
 
 // ── An edited event ─────────────────────────────────────────────────────────────────────
@@ -162,4 +162,63 @@ fn a_brief_nobody_saw_is_not_counted_as_ignored() {
     tick(&conn, &cal, &sources, &own(), n, true);
     let end = tick(&conn, &cal, &sources, &own(), n + Duration::minutes(41), true);
     assert_eq!(end.outcomes, Outcomes::default());
+}
+
+// ── The switch is off, or not known ─────────────────────────────────────────────────────
+
+/// What the brief held, counted in the whole table.
+fn held(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM prepared_items WHERE data LIKE '%SEED%' OR data LIKE '%Slides%' OR description LIKE '%Q4%' OR trigger_data LIKE '%Q4%'",
+        [],
+        |r| r.get(0),
+    )
+    .expect("count")
+}
+
+/// A tick with the switch off, and sources that panic when asked.
+fn off_at(conn: &Connection, n: NaiveDateTime, minutes: i64) -> Outcome {
+    let roots = FileRoots::default();
+    let sources = Sources { emails: &Forbidden, notes: &Forbidden, promises: &Forbidden, files: &roots };
+    tick(conn, &Forbidden, &sources, &own(), n + Duration::minutes(minutes), false)
+}
+
+fn brief_up(conn: &Connection, n: NaiveDateTime) -> CalendarEvent {
+    let mut e = event("e1", "Q4 planning", n + Duration::minutes(10), vec![maya()]);
+    e.description = "SEED-DESCRIPTION line".into();
+    let out = tick_at(conn, &Calendar::of(vec![e.clone()]), n, 0);
+    assert_eq!(out.cards.len(), 1);
+    assert_eq!(held(conn), 1, "the card is in the table");
+    e
+}
+
+#[test]
+fn turning_briefs_off_takes_back_what_a_card_held_without_asking_any_source() {
+    let (conn, n) = (db(), now());
+    let e = brief_up(&conn, n);
+    let out = off_at(&conn, n, 5);
+    assert!(out.cards.is_empty() && out.fresh.is_empty());
+    assert_eq!(held(&conn), 0, "nothing it said is left, with the meeting still ahead");
+    assert_eq!(over(&conn, &id_for(&e)), Some(PrepOutcome::Ignored), "it was shown and not pressed");
+    // And it stays over for this meeting when briefs are turned on again.
+    let back = tick_at(&conn, &Calendar::of(vec![e]), n, 6);
+    assert!(back.cards.is_empty() && back.fresh.is_empty());
+}
+
+#[test]
+fn a_meeting_that_ends_while_briefs_are_off_still_leaves_only_its_record() {
+    let (conn, n) = (db(), now());
+    let e = brief_up(&conn, n);
+    off_at(&conn, n, 41);
+    assert_eq!(held(&conn), 0);
+    assert_eq!(over(&conn, &id_for(&e)), Some(PrepOutcome::Ignored));
+}
+
+#[test]
+fn an_off_tick_does_not_zero_the_outcomes_it_does_not_gather() {
+    let (conn, n) = (db(), now());
+    let e = brief_up(&conn, n);
+    press(&conn, &id_for(&e), Press::Dismissed, now_ts(n));
+    let out = off_at(&conn, n, 5);
+    assert_eq!(out.outcomes, Outcomes { opened: 0, dismissed: 1, ignored: 0 }, "the table's own count, not a default");
 }

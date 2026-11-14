@@ -45,6 +45,6 @@ mod tests_window;
 mod tests_sources;
 
 pub use assemble::{gather, Gathered, Sources};
-pub use engine::{cards, press, tick, unavailable, Outcome};
+pub use engine::{cards, off, press, tick, Outcome};
 pub use model::{item_id, Brief, Card, Counts, Open, Outcomes, Press, Row};
 pub use window::{Meeting, Own, Person};

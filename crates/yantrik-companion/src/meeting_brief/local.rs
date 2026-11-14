@@ -110,11 +110,11 @@ pub fn own(conn: &Connection, user_name: &str) -> Own {
 ///
 /// Nothing here waits on a service: the calendar and notes come from the fetcher's snapshot, the
 /// email cache, the commitments and the anticipation table are short local reads and writes, and
-/// the refresh is asked for with a send that cannot block. Off (`enabled` false) does nothing at
-/// all, and asks for nothing.
+/// the refresh is asked for with a send that cannot block. Off (`enabled` false) asks for nothing
+/// and gathers nothing: it only takes back what is up ([`engine::off`]).
 pub fn tick_with(conn: &Connection, user_name: &str, fetcher: &Fetcher, now: chrono::NaiveDateTime, enabled: bool) -> Outcome {
     if !enabled {
-        return Outcome::default();
+        return off(conn, now);
     }
     let snapshot = fetcher.snapshot();
     let missing = Missing::default();
@@ -143,8 +143,16 @@ fn fetcher() -> &'static Fetcher {
 
 /// The worker's tick against the real stores, at the local time now.
 pub fn tick_local(conn: &Connection, user_name: &str, enabled: bool) -> Outcome {
+    let now = chrono::Local::now().naive_local();
     if !enabled {
-        return Outcome::default();
+        // Off does not even start the fetcher: a machine with briefs off never reaches a service
+        // or a folder.
+        return off(conn, now);
     }
-    tick_with(conn, user_name, fetcher(), chrono::Local::now().naive_local(), true)
+    tick_with(conn, user_name, fetcher(), now, true)
+}
+
+/// Take back what is up, from the table alone.
+fn off(conn: &Connection, now: chrono::NaiveDateTime) -> Outcome {
+    super::window::to_unix(now).map_or_else(Outcome::default, |at| engine::off(conn, at))
 }
