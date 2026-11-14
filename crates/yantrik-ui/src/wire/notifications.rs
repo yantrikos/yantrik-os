@@ -698,10 +698,13 @@ fn apply_tick(ui: &App, tick: Tick) {
             }
             resync(ui);
             crate::wire::for_you::tick(ui);
+            crate::wire::meeting_brief::tick(ui);
         }
         Tick::Down(why) => {
             with_mirror(|m| m.unreachable(why));
             resync(ui);
+            // The briefs are the companion's, not the store's: the card does not wait on it.
+            crate::wire::meeting_brief::tick(ui);
         }
     }
 }

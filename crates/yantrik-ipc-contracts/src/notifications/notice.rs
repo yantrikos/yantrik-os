@@ -760,6 +760,10 @@ pub struct Initiative {
     /// `None` is no quiet hours.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quiet_hours: Option<QuietHours>,
+    /// The person turned meeting briefs off (Settings → Minds → Initiative). Stored as the
+    /// off state so a settings file from before the switch existed reads as on, its default.
+    /// The OS prepares these itself; no mind is told this, and `wire` does not carry it.
+    pub meeting_briefs_off: bool,
 }
 
 impl Initiative {

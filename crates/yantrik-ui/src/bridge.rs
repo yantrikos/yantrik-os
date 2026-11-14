@@ -240,6 +240,9 @@ pub enum CompanionCommand {
     RenameUser { name: String },
     /// Rename the companion (persists to config).
     RenameCompanion { name: String },
+    /// The person dismissed a meeting brief's card: recorded in the prepared-items table, so it
+    /// stays gone after a restart.
+    DismissMeetingBrief { id: String },
     /// Request a structured morning brief for the desktop card.
     GetMorningBrief {
         reply_tx: Sender<MorningBriefSnapshot>,
@@ -981,6 +984,11 @@ impl CompanionBridge {
     /// Get ambient intelligence state (sentiment, cognitive_load).
     pub fn ambient_state(&self) -> (f32, f32) {
         (self.ambient.sentiment(), self.ambient.cognitive_load())
+    }
+
+    /// Record that a meeting brief's card was dismissed.
+    pub fn dismiss_meeting_brief(&self, id: String) {
+        let _ = self.cmd_tx.send(CompanionCommand::DismissMeetingBrief { id });
     }
 
     /// Trigger a think cycle with current focus interruptibility and focus data.
@@ -1973,6 +1981,9 @@ fn worker_loop(
                     }
                 }
             }
+            Ok(CompanionCommand::DismissMeetingBrief { id }) => {
+                yantrik_companion::meeting_brief::dismiss(&companion.db.conn(), &id);
+            }
             Ok(CompanionCommand::Think { interruptibility, window_title, process_name, idle_seconds }) => {
                 // Update Context Cortex focus from system signals
                 if let Some(ref mut cortex) = companion.cortex {
@@ -2153,6 +2164,15 @@ fn worker_loop(
                     &yantrik_companion::trust_model::TrustEvent::DailyInteraction,
                 );
                 yantrik_companion::trust_model::TrustModel::apply_daily_decay(&companion.db.conn());
+
+                // Meeting briefs: the OS's own preparation, ten minutes before a meeting with other
+                // people in it. Deterministic and local (no model, no network); off means nothing
+                // is read at all. The shell draws what is published here.
+                crate::wire::meeting_brief::publish(yantrik_companion::meeting_brief::local::tick_local(
+                    &companion.db.conn(),
+                    &companion.config.user_name,
+                    crate::wire::meeting_brief::enabled(),
+                ));
 
                 let state = companion.build_state();
                 let mut urge_specs = companion.evaluate_instincts(&state);

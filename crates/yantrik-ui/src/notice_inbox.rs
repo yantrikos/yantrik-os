@@ -77,7 +77,8 @@ pub struct Screen {
 }
 
 impl Screen {
-    fn holds(&self) -> bool {
+    /// Whether the screen is one nothing pops over right now.
+    pub fn holds(&self) -> bool {
         self.silent || self.do_not_disturb || self.focus || self.fullscreen || self.call
     }
 }
@@ -122,6 +123,10 @@ pub enum Opening {
     Event(String),
     /// A Notes id.
     Note(String),
+    /// A message in Email, found by its subject. No notice button names one (the allowlist is
+    /// files, events, notes and links); the meeting brief's rows do, and open it through the
+    /// same opener.
+    Message(String),
     /// An http or https URL, and the host the button shows.
     Url { url: String, host: String },
 }

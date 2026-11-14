@@ -66,6 +66,7 @@ mod navigate;
 pub mod notifications;
 // The Lens's For you inbox of mind notices, their toasts and their one button.
 pub mod for_you;
+pub mod meeting_brief;
 // Settings → Minds → Initiative.
 pub mod initiative;
 mod power;
@@ -178,6 +179,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     // The one-time copy of the old workshops folder, and the notice that says where they went.
     crate::workshop_move::at_start();
     for_you::wire(ui);
+    meeting_brief::wire(ui, ctx);
     initiative::wire(ui);
     skill_store::wire(ui, ctx);
     device_dashboard::wire(ui, ctx);

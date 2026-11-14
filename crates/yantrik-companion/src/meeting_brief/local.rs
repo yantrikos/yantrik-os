@@ -4,11 +4,15 @@
 use rusqlite::Connection;
 use yantrik_ipc_contracts::notes::NoteSummary;
 
+use super::assemble::Sources;
 use super::emails::{EmailSource, Mail};
+use super::engine::{self, Outcome};
+use super::files::FileRoots;
 use super::model::Open;
 use super::notes::{NoteHit, NoteSource};
 use super::promises::{Promise, PromiseSource};
 use super::window::Own;
+use crate::calendar::backend::ServiceCalendar;
 use crate::email::db;
 use crate::world_model::{Commitment, CommitmentSource, WorldModel};
 
@@ -69,4 +73,17 @@ pub fn own(conn: &Connection, user_name: &str) -> Own {
         .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(0)).map(|rows| rows.flatten().collect()))
         .unwrap_or_default();
     Own::new(addresses, user_name)
+}
+
+/// One tick against the real stores, at the local time now. `enabled` is the person's switch;
+/// off reads nothing. The home folder is `$HOME`, and a machine without one has no files to
+/// offer, not a search of the wrong place.
+pub fn tick_local(conn: &Connection, user_name: &str, enabled: bool) -> Outcome {
+    if !enabled {
+        return Outcome::default();
+    }
+    let roots = std::env::var_os("HOME").map(|h| FileRoots::in_home(std::path::Path::new(&h))).unwrap_or_default();
+    let (mail, promises) = (EmailCache { conn }, WorldModelPromises { conn });
+    let sources = Sources { emails: &mail, notes: &ServiceNotes, promises: &promises, files: &roots };
+    engine::tick(conn, &ServiceCalendar, &sources, &own(conn, user_name), chrono::Local::now().naive_local(), true)
 }
