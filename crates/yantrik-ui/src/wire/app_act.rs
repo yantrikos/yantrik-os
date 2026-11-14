@@ -7,6 +7,8 @@
 
 use std::time::{Duration, Instant};
 
+use slint::ComponentHandle;
+
 use yantrik_ipc_transport::SyncRpcClient;
 
 use super::for_you::Say;

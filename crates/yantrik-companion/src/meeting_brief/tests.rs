@@ -28,7 +28,7 @@ pub(super) fn db() -> Connection {
 }
 
 pub(super) fn prepare(conn: &Connection) {
-    AnticipationEngine::ensure_table(conn);
+    AnticipationEngine::ensure_table(conn).expect("prepared_items table");
     crate::email::db::init_tables(conn);
     crate::world_model::WorldModel::ensure_tables(conn);
 }
