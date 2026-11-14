@@ -192,8 +192,12 @@ jobs:
           key: iso-release-v1
           cache-on-failure: true
 
+      # -j 2 (#1234): the scheduled run of 14 Nov lost its runner in this step at full parallelism.
       - name: Build the workspace (release)
-        run: cargo build --release --workspace --locked
+        run: |
+          .github/ci-sampler.sh &
+          trap 'kill $! 2>/dev/null || true' EXIT
+          cargo build --release --workspace --locked -j 2
 
       # labwc with the window switcher renderer (#872): the reviewed patch on the labwc trixie
       # has today (its security updates included), so a Debian fix reaches Yantrik's build at the
