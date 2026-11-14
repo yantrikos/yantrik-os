@@ -39,8 +39,9 @@ Pranab, after pass 1: "make it sharper, think of macOS and Windows". The chrome 
 | 2, a window's edge | The compositor's light border beside the window's light hairline | The compositor's border is a dark keyline (the ground, 60% of the way to black) and the window's own hairline (`Theme.window-edge`, 18% white) sits inside it | Two light lines side by side were a soft 2px frame |
 | 2, what marks a choice in force | A tint of the accent (sidebar row, segmented control) | A neutral plate; in a sidebar with a 3px rule and the icon in the app's colour (`YNavRow`, the one row every sidebar draws); in a segmented control a raised plate in a sunk track | A tint of the accent over a navy ground is one more navy |
 | 2, the dark accent | `#8FB4E3` | `#74AAF5`: the same hue with more chroma. 7.9:1 as ink on the ground and under the ground's ink. Light mode's `#2B64A8` is unchanged | As the fill of a tile that is on, the paler blue read as a tint of the ground and not as a state |
+| 3B, the dock | 48px tall, 32px tiles in 40px slots | 64px tall, 48px tiles in 52px buttons, 6px of plate around them. Still centred, hugging its icons and flush on the bottom edge, with no magnification | Beside a window's title bar the dock's tiles were the smallest things on the screen |
 
-The accent is its own commit, so it can be taken back alone. The dock's size (64px with 48px tiles) is its own pull request, because an update has to make the compositor take the new margin.
+The dock's size and the accent are each their own commit, so either can be taken back alone.
 
 ---
 
