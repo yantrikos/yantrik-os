@@ -366,7 +366,7 @@ fn moving_an_events_start_replaces_its_brief() {
     let moved = event("e1", "Q4 planning", n + Duration::minutes(9) + Duration::seconds(1), vec![maya()]);
     cal.set(vec![moved.clone()]);
     let out = tick_with_mail(&conn, &cal, n);
-    assert_eq!(over(&conn, &id_for(&first)), Some(PrepOutcome::Expired), "the old item is over, and holds nothing");
+    assert_eq!(over(&conn, &id_for(&first)), Some(PrepOutcome::Ignored), "the old item was shown, so it is ignored; it is over and holds nothing");
     assert_eq!(out.cards.len(), 1);
     assert_eq!(out.cards[0].id, id_for(&moved));
     assert_eq!(out.fresh, vec![id_for(&moved)], "the new one is shown");
@@ -375,7 +375,7 @@ fn moving_an_events_start_replaces_its_brief() {
     cal.set(vec![event("e1", "Q4 planning", n + Duration::hours(3), vec![maya()])]);
     let out = tick_with_mail(&conn, &cal, n);
     assert!(out.cards.is_empty());
-    assert_eq!(over(&conn, &id_for(&moved)), Some(PrepOutcome::Expired));
+    assert_eq!(over(&conn, &id_for(&moved)), Some(PrepOutcome::Ignored));
 }
 
 #[test]
