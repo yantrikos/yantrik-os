@@ -4,7 +4,7 @@
 use serde_json::{json, Value};
 use yantrik_testing::Call;
 
-use super::{open, AGENT};
+use super::{open, AGENT, PROMPT};
 use crate::command::Command;
 
 fn keys(v: &Value) -> Vec<&str> {
@@ -63,6 +63,35 @@ fn run_refuses_a_blank_command_a_missing_shell_and_a_dead_one_in_the_sentences_i
     assert_eq!(none, "No shell is open in this Terminal; `new_tab` starts one.");
     let none = f.act("send_input", json!({ "text": "x" })).unwrap_err();
     assert_eq!(none, "No shell is open in this Terminal; `new_tab` starts one.");
+}
+
+/// A half-typed line of the person's is theirs: `run` used to write its own Return onto it.
+#[test]
+fn run_refuses_a_line_the_person_is_typing_and_is_itself_again_once_their_line_has_ran() {
+    let f = open();
+    f.type_until("echo HAL", "HAL");
+    let half = f.act("run", json!({ "command": "echo NEVER_TYPED" })).unwrap_err();
+    assert_eq!(half, "The person is typing a line in this shell; `run` ends their line with its Return. Wait for their line to finish, or start your own tab with `new_tab`.");
+    assert_eq!(f.notice(), half, "said twice: to the caller, and on the notice line");
+    assert!(f.screen().contains("echo HAL"), "their line is still there, unfinished: {}", f.screen());
+
+    // They finish the line themselves. Only once the shell is back at its prompt is `run`'s Return
+    // the end of a line of its own.
+    f.app.run(Command::Input(b"LO\r".to_vec()));
+    f.until("the shell back at its prompt", |f| {
+        let at_prompt = f.app.model(|m| {
+            m.session().is_some_and(|s| {
+                let snap = s.snapshot();
+                snap.text.lines().nth(usize::from(snap.cursor.0)).unwrap_or("").trim_end() == PROMPT
+            })
+        });
+        at_prompt && f.screen().contains("HALLO")
+    });
+
+    let answer = f.act("run", json!({ "command": "echo AGAIN_MARK" })).unwrap();
+    assert!(answer["output"].as_str().unwrap().contains("AGAIN_MARK"), "{answer}");
+    f.quiet();
+    assert!(!f.screen().contains("NEVER_TYPED"), "the refusal sent nothing to the shell");
 }
 
 #[test]
