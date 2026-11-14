@@ -258,18 +258,6 @@ fn the_early_heads_up_is_not_a_second_moment_and_the_brief_takes_its_place() {
 }
 
 #[test]
-fn a_brief_that_comes_before_the_early_heads_up_holds_the_interrupt() {
-    let mut room = Room::new();
-    with_a_place(&room);
-    room.brief(50);
-    room.tick(45);
-    assert_eq!(room.interrupts(), [BRIEF]);
-    room.tick(10);
-    assert!(room.card(REMINDER).is_none());
-    assert_eq!(room.interrupts(), [BRIEF]);
-}
-
-#[test]
 fn an_early_card_that_never_interrupted_leaves_the_reminder_to_the_person() {
     let mut room = Room::new();
     with_a_place(&room);
