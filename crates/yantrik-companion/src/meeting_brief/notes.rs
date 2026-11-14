@@ -41,8 +41,18 @@ pub fn queries(title: &str, people: &[Person]) -> Vec<String> {
 /// that were found are lost with it, because half a section is worse than a retry on the next tick.
 pub fn section(source: &dyn NoteSource, title: &str, people: &[Person]) -> Result<Vec<Row>, String> {
     let mut found: Vec<(NoteHit, usize)> = Vec::new();
+    let mut failed: Option<String> = None;
     for q in queries(title, people) {
-        for hit in source.search(&q)? {
+        // Every search is tried even after one fails, so a source that fetches ahead learns all
+        // of what was wanted at once.
+        let hits = match source.search(&q) {
+            Ok(hits) => hits,
+            Err(why) => {
+                failed.get_or_insert(why);
+                continue;
+            }
+        };
+        for hit in hits {
             if hit.title.trim().is_empty() {
                 continue;
             }
@@ -51,6 +61,9 @@ pub fn section(source: &dyn NoteSource, title: &str, people: &[Person]) -> Resul
                 None => found.push((hit, 1)),
             }
         }
+    }
+    if let Some(why) = failed {
+        return Err(why);
     }
     found.sort_by(|(a, na), (b, nb)| nb.cmp(na).then_with(|| b.modified_at.cmp(&a.modified_at)));
     Ok(found

@@ -97,8 +97,8 @@ fn check(w: &MinimalSoftwareWindow, ui: &MeetingBriefProbe, scale: f32, output: 
 
     // Long words are cut with an ellipsis inside the card's padding, never run into it: the strip
     // between the last button's edge and the card's edge holds nothing but the card's own fill.
-    let fill = px(LEFT + CARD_W - 4, TOP + 6);
-    let strip: usize = (TOP + 4..bottom - 4)
+    let fill = px(LEFT + CARD_W - 4, TOP + card_h / 2);
+    let strip: usize = (TOP + 12..bottom - 12)
         .flat_map(|y| (LEFT + CARD_W - PAD + 1..LEFT + CARD_W - 3).map(move |x| (x, y)))
         .filter(|&(x, y)| px(x, y) != fill)
         .count();
