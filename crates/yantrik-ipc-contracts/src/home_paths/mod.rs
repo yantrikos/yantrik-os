@@ -18,6 +18,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+mod secrets;
 mod stat;
 mod tree;
 mod verdict;
@@ -30,8 +31,11 @@ mod tests;
 #[cfg(all(test, unix))]
 mod protected_tests;
 #[cfg(all(test, unix))]
+mod secret_tests;
+#[cfg(all(test, unix))]
 mod write_tests;
 
+pub use secrets::{is_secret_name, pattern_asks_for_a_secret, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
 pub use stat::stat;
 pub use tree::{may_land, may_read_tree};
 pub use verdict::{may_create, may_read_file, may_write_file};
@@ -114,6 +118,20 @@ pub const PROTECTED: &[&str] = &[
     ".local/share/yantrik-mind",
     ".config/yantrik-mind",
     ".config/yantrik-mind.env",
+    // Browser profiles, which hold the person's saved logins, cookies and history, and the mail
+    // programs' accounts (#1247). `run_command` alone kept the browsers; every other side that
+    // reads files could reach them.
+    ".mozilla",
+    ".config/chromium",
+    ".config/google-chrome",
+    ".config/bravesoftware",
+    ".var/app/com.google.chrome",
+    ".var/app/org.chromium.chromium",
+    ".var/app/com.brave.browser",
+    "snap/chromium",
+    "snap/firefox",
+    ".thunderbird",
+    ".config/evolution",
 ];
 
 /// The places [`PROTECTED`] keeps under `prefix` (`.config/`, `.local/share/`), without it: what
@@ -124,7 +142,8 @@ fn under_prefix(prefix: &'static str) -> impl Iterator<Item = &'static str> {
     PROTECTED.iter().filter_map(move |place| place.strip_prefix(prefix))
 }
 
-/// Whether `path` passes through a protected place, compared a whole component at a time and
+/// Whether `path` passes through a protected place, or is a file that holds a credential by its
+/// name wherever it is kept (`secrets.rs`), compared a whole component at a time and
 /// without regard to case (a case-folding filesystem makes `.SSH` the same folder): `.ssh` is
 /// protected, `.ssh-notes` is not, and `.config/labwc` only as those two in a row.
 ///
@@ -190,6 +209,7 @@ pub fn is_protected_with(path: &Path, places: &Places<'_>) -> bool {
     };
     // A Mind's workshops are held by one check, the prefix and the inode (workshops.rs).
     listed
+        || secrets::names_a_secret(path)
         || places.home.is_some_and(|home| moved(home) || workshops::holds(path, home))
         || places.data_home.is_some_and(|base| workshops::Root::at(&base.join("yantrik/workshops")).holds(path))
         || places.data_home.is_some_and(|base| under_prefix(".local/share/").any(|place| under(base, place)))

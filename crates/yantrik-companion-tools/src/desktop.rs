@@ -344,6 +344,8 @@ impl Tool for RunCommandTool {
         }
         match crate::safe_command::run(&argv) {
             Ok((stdout, stderr)) => {
+                // A listing shows only what the AI may read (#1247).
+                let stdout = crate::safe_command_listing::without_protected(&argv, &stdout);
                 let mut result = String::new();
                 if !stdout.is_empty() {
                     let truncated = if stdout.len() > 2000 { &stdout[..stdout.floor_char_boundary(2000)] } else { &stdout };
