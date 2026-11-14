@@ -227,7 +227,8 @@ impl Reach {
 /// bool that could not tell "no shell" from "shell with no model".
 ///
 /// It answers from memory. A worker thread asks the shell (`companion.status`) every
-/// [`REACH_EVERY`] while anybody in this process keeps asking, and this reads what it last heard.
+/// [`REACH_EVERY`] — longer while the answer keeps coming back the same — while anybody in
+/// this process keeps asking, and this reads what it last heard.
 ///
 /// It used to ask the shell itself, on whatever thread called it, and the thread that calls it is
 /// the window's: every app's agent rail runs it on a four-second Slint timer. A control surface's
@@ -254,9 +255,30 @@ pub fn reach() -> Reach {
         .get()
 }
 
-/// How often the watcher asks the shell while somebody is listening. Under the rails' own four
-/// seconds, so a rail is never more than one of its own ticks behind the shell.
+/// How often the watcher asks the shell while somebody is listening and the answer keeps
+/// changing. Under the rails' own four seconds, so a rail is never more than one of its own
+/// ticks behind the shell.
 pub const REACH_EVERY: Duration = Duration::from_secs(2);
+
+/// How many times longer the watcher sleeps once the answer keeps coming back the same
+/// (#983): two seconds becomes ten. A shell that was there a moment ago has usually not
+/// moved, and a socket round trip every two seconds all day to confirm that is what keeps
+/// an otherwise idle app awake. A change in the answer — the shell starting, dropping, a
+/// model arriving — is seen one backoff late at worst, and the rails refresh on their own
+/// four-second beat anyway.
+const REACH_BACKOFF_FACTOR: u32 = 5;
+
+/// The sleep before the next probe: `every` while the answer keeps changing, and
+/// `every * REACH_BACKOFF_FACTOR` (ten seconds as configured) once a probe has returned
+/// the same answer as the one before. A pure choice of a number, kept apart from the
+/// thread and the mutex so a test can pin it without waiting on either.
+fn next_probe_interval(every: Duration, same_as_last: bool) -> Duration {
+    if same_as_last {
+        every.saturating_mul(REACH_BACKOFF_FACTOR)
+    } else {
+        every
+    }
+}
 
 /// The longest the watcher's first answer is waited for. A shell that is there answers a status
 /// in a millisecond or two; this is a ceiling, not an expected cost.
@@ -352,6 +374,9 @@ impl ReachWatch {
         loop {
             let reach = (self.probe)();
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            // The answer cannot have changed if it keeps arriving the same, so while that
+            // holds the next ask waits out a backoff instead of `every` (#983).
+            let same = s.last == Some(reach);
             s.last = Some(reach);
             s.landings += 1;
             self.landed.notify_all();
@@ -359,8 +384,9 @@ impl ReachWatch {
                 s.running = false;
                 return;
             }
+            let sleep = next_probe_interval(self.every, same);
             drop(s);
-            std::thread::sleep(self.every);
+            std::thread::sleep(sleep);
         }
     }
 }
@@ -533,6 +559,59 @@ mod tests {
         assert!(
             watch.state.lock().unwrap().running,
             "an ask wakes the watcher"
+        );
+    }
+
+    /// The defect: the watcher probed the shell on a socket round trip every `every` even
+    /// when the answer kept arriving the same (#983). A probe that always answers the same
+    /// is then followed for a window bounded by `idle` (not by the clock: the watcher stops
+    /// once nobody asks), and at most half the probes the fixed-interval watcher of before
+    /// could fit in the same window — a margin, not a hair, so a slow machine cannot
+    /// schedule its way through it either way.
+    #[test]
+    fn an_unchanging_answer_is_not_reprobed_every_tick() {
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let every = Duration::from_millis(50);
+        let idle = Duration::from_millis(800);
+        let watch = ReachWatch::new(
+            slow_probe(0, Reach::Ready, asked.clone()),
+            every,
+            Duration::from_secs(5),
+            idle,
+        );
+        watch.get();
+
+        // The watcher stops once `idle` passes without an ask, so the probe count below is
+        // bounded by `idle` and needs no stopwatch of its own.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while watch.state.lock().unwrap().running {
+            assert!(Instant::now() < deadline, "the watcher never went idle");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let count = asked.load(std::sync::atomic::Ordering::SeqCst);
+        // The old fixed cadence fitted at least idle/every probes into the same window;
+        // from the second one on, the backoff makes that cadence impossible. The margin
+        // (a factor, not a hair) is what keeps this honest on a slow CI box.
+        let fixed = (idle.as_millis() / every.as_millis()) as usize;
+        assert!(
+            count * 2 <= fixed,
+            "{count} probes in a window the fixed watcher filled with at least {fixed}"
+        );
+    }
+
+    /// The interval rule as a number, with no thread and no clock: a repeated answer backs
+    /// the next probe off by the factor, a changing one goes straight back to `every`.
+    #[test]
+    fn the_next_probe_waits_every_while_answers_change_and_the_backoff_while_they_repeat() {
+        assert_eq!(next_probe_interval(REACH_EVERY, false), REACH_EVERY);
+        assert_eq!(
+            next_probe_interval(REACH_EVERY, true),
+            REACH_EVERY.saturating_mul(REACH_BACKOFF_FACTOR)
+        );
+        assert_eq!(
+            next_probe_interval(REACH_EVERY, true),
+            Duration::from_secs(10),
+            "two seconds backs off to ten"
         );
     }
 }
