@@ -196,7 +196,8 @@ fn open_action(ui: &App, id: &str) {
     tick(ui);
 }
 
-/// What a press says back, on the card or row it was pressed on: `(ui, key, words)`.
+/// What a press says back, on the card or row it was pressed on: `(ui, key, words)`. Empty words
+/// are the press having worked: the app or the shell did open it. Anything else is why it did not.
 pub(crate) type Say = fn(&App, &str, &str);
 
 /// Open what a button named, as the person, now that its check has passed: the one opener for the
@@ -222,7 +223,10 @@ pub(crate) fn carry_out(ui: &App, key: &str, opening: Opening, say: Say) {
                 .ok_or_else(|| "there is no private place to copy it to (XDG_RUNTIME_DIR is not set)".to_string())
                 .and_then(|into| notice_inbox::read_only_copy(&path, &into, &format!("{key}-{name}")));
             match opened {
-                Ok(target) => super::open_with::launch(&how, &name, &target, Some(ui)),
+                Ok(target) => {
+                    super::open_with::launch(&how, &name, &target, Some(ui));
+                    say(ui, key, "");
+                }
                 Err(why) => say(ui, key, &format!("Not opened: {why}.")),
             }
         }
@@ -273,7 +277,10 @@ fn open_event(ui: &App, card: &str, event: String, say: Say) {
             .and_then(|e| e["start"].as_str().map(|s| s.chars().take(10).collect::<String>()))
             .filter(|d| d.len() == 10);
         let _ = weak.upgrade_in_event_loop(move |ui| match found {
-            Some(date) => forward_to_app(&ui, "calendar", "show_date", Some(serde_json::json!({ "date": date }))),
+            Some(date) => {
+                forward_to_app(&ui, "calendar", "show_date", Some(serde_json::json!({ "date": date })));
+                say(&ui, &card, "");
+            }
             None => say(&ui, &card, "Not opened: Calendar does not know this event."),
         });
     });

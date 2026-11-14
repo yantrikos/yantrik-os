@@ -44,6 +44,8 @@ thread_local! {
     static DRAWN: RefCell<Vec<CardView>> = const { RefCell::new(Vec::new()) };
     /// A line under a card: what a button that could not open something says.
     static NOTES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// Where an opened card's press is recorded. Set by [`wire`], read where the opener answers.
+    static PRESSES: RefCell<Option<std::sync::Arc<crate::bridge::CompanionBridge>>> = const { RefCell::new(None) };
 }
 
 fn published() -> std::sync::MutexGuard<'static, Published> {
@@ -141,26 +143,38 @@ pub struct CardView {
     pub note: String,
 }
 
+/// What a button opens, in a word, for the button's fixed label.
+fn kind_of(open: &Open) -> &'static str {
+    match open {
+        Open::Message { .. } => "email",
+        Open::Note { .. } => "note",
+        Open::File { .. } => "file",
+        Open::Event { .. } => "event",
+    }
+}
+
 /// The card for `card` at `now`: sections with nothing in them are left out.
 pub fn card_view(card: &Card, now: i64, note: &str) -> CardView {
     let b = &card.brief;
     let mut lines: Vec<LineView> = Vec::new();
     let mut at = 0i32;
-    let mut section = |heading: &str, kind: &str, rows: &[Row]| {
+    let mut section = |heading: &str, rows: &[Row]| {
         for (i, r) in rows.iter().enumerate() {
             lines.push(LineView {
                 heading: if i == 0 { heading.to_string() } else { String::new() },
                 text: r.text.clone(),
                 row: if r.open.is_some() { at } else { -1 },
-                kind: kind.to_string(),
+                // What the button opens, whatever section the row is in: a promise opens the
+                // email or the event it was found in.
+                kind: r.open.as_ref().map(kind_of).unwrap_or_default().to_string(),
             });
             at += 1;
         }
     };
-    section("LAST EMAILS WITH THEM", "email", &b.emails);
-    section("YOUR NOTES", "note", &b.notes);
-    section("PROMISES", "promise", &b.promises);
-    section("FILES", "file", &b.files);
+    section("LAST EMAILS WITH THEM", &b.emails);
+    section("YOUR NOTES", &b.notes);
+    section("PROMISES", &b.promises);
+    section("FILES", &b.files);
     for (i, line) in b.description.iter().enumerate() {
         lines.push(LineView { heading: if i == 0 { "ABOUT".to_string() } else { String::new() }, text: line.clone(), row: -1, kind: String::new() });
     }
@@ -242,19 +256,19 @@ pub fn wire(ui: &App, ctx: &AppContext) {
         }
     });
 
-    let (weak, bridge) = (ui.as_weak(), ctx.bridge.clone());
+    // The card is "opened" when something opened, which only the opener knows: `say` is told.
+    PRESSES.with(|p| *p.borrow_mut() = Some(ctx.bridge.clone()));
+    let weak = ui.as_weak();
     state.on_open_row(move |id, row| {
-        let Some(ui) = weak.upgrade() else { return };
-        if open_row(&ui, id.as_str(), row) {
-            bridge.meeting_brief_press(id.to_string(), Press::Opened);
+        if let Some(ui) = weak.upgrade() {
+            open_row(&ui, id.as_str(), row);
         }
     });
 
-    let (weak, bridge) = (ui.as_weak(), ctx.bridge.clone());
+    let weak = ui.as_weak();
     state.on_open_event(move |id| {
-        let Some(ui) = weak.upgrade() else { return };
-        if open_event(&ui, id.as_str()) {
-            bridge.meeting_brief_press(id.to_string(), Press::Opened);
+        if let Some(ui) = weak.upgrade() {
+            open_event(&ui, id.as_str());
         }
     });
 }
@@ -267,38 +281,51 @@ fn card_by_id(id: &str) -> Option<Card> {
     published().cards.iter().find(|c| c.id == id).cloned()
 }
 
-/// A line under the card a button was pressed on. `key` is the card's id, then `#` and the row.
+/// What an opener's answer on `key` (the card's id, then `#` and the row) means for the card:
+/// empty words are something having opened, which is the card's "opened" outcome, recorded
+/// through `record`. A row that ends "Not opened: ..." is not.
+fn answered(key: &str, text: &str, record: impl FnOnce(String, Press)) {
+    if text.is_empty() {
+        record(key.split('#').next().unwrap_or(key).to_string(), Press::Opened);
+    }
+}
+
+/// A line under the card a button was pressed on, and the card's outcome if it opened.
 fn say(ui: &App, key: &str, text: &str) {
+    answered(key, text, |id, press| {
+        PRESSES.with(|p| {
+            if let Some(bridge) = p.borrow().as_ref() {
+                bridge.meeting_brief_press(id, press);
+            }
+        })
+    });
     let card = key.split('#').next().unwrap_or(key).to_string();
     NOTES.with(|n| n.borrow_mut().insert(card, text.to_string()));
     DRAWN.with(|d| d.borrow_mut().clear());
     tick(ui);
 }
 
-/// Press a row's Open. Answers whether a press was made on a card that is there (it is the
-/// card's "opened" outcome); a locked screen, a card that has gone, or a row with nothing to open
-/// is not.
-fn open_row(ui: &App, id: &str, row: i32) -> bool {
+/// Press a row's Open. Nothing happens on a locked screen, for a card that has gone, or for a row
+/// with nothing to open. The answer comes to [`say`].
+fn open_row(ui: &App, id: &str, row: i32) {
     if crate::control::locked_screen(ui.get_current_screen()) {
-        return false;
+        return;
     }
-    let Some(card) = card_by_id(id) else { return false };
-    let Some(open) = usize::try_from(row).ok().and_then(|i| rows(&card).get(i).and_then(|r| r.open.clone())) else { return false };
+    let Some(card) = card_by_id(id) else { return };
+    let Some(open) = usize::try_from(row).ok().and_then(|i| rows(&card).get(i).and_then(|r| r.open.clone())) else { return };
     let key = format!("{id}#{row}");
     match opening(&open, &home()) {
         Ok(opening) => super::for_you::carry_out(ui, &key, opening, say),
         Err(why) => say(ui, &key, &format!("Not opened: {why}.")),
     }
-    true
 }
 
-fn open_event(ui: &App, id: &str) -> bool {
+fn open_event(ui: &App, id: &str) {
     if crate::control::locked_screen(ui.get_current_screen()) {
-        return false;
+        return;
     }
-    let Some(card) = card_by_id(id) else { return false };
+    let Some(card) = card_by_id(id) else { return };
     super::for_you::carry_out(ui, &format!("{id}#event"), Opening::Event(card.brief.event_id.clone()), say);
-    true
 }
 
 /// Once a second, after the notification poll: draw the cards. Reads what the worker published;
@@ -382,6 +409,19 @@ mod tests {
     }
 
     #[test]
+    fn a_buttons_label_names_what_it_opens_not_the_section_it_is_in() {
+        let mut c = card(1_000, 5_000);
+        c.brief.promises = vec![
+            row("You told Ravi: send the numbers", Some(message("m-2"))),
+            row("Maya said: share the deck", Some(Open::Event { id: "e9".into() })),
+            row("by hand", None),
+        ];
+        let kinds: Vec<String> = card_view(&c, 0, "").lines.into_iter().map(|l| l.kind).collect();
+        assert_eq!(&kinds[..4], ["email", "note", "email", "event"], "the first section's rows and the promises' own");
+        assert_eq!(kinds[4], "", "a row with nothing to open has no label");
+    }
+
+    #[test]
     fn a_rows_number_names_the_row_its_button_opens() {
         let c = card(1_000, 5_000);
         let all = rows(&c);
@@ -443,6 +483,18 @@ mod tests {
         // Once it has caught up and its answer no longer holds the card, the note is dropped.
         publish(answer(vec![]));
         assert!(DISMISSED.lock().unwrap().iter().all(|d| *d != c.id));
+    }
+
+    #[test]
+    fn a_card_is_opened_when_something_opened_and_not_when_its_row_says_it_was_not() {
+        let key = "meeting:e1:2000#1";
+        let mut recorded = Vec::new();
+        answered(key, "Not opened: no message with that id.", |id, press| recorded.push((id, press)));
+        answered(key, "Not opened: the app did not accept it.", |id, press| recorded.push((id, press)));
+        assert!(recorded.is_empty(), "a press that opened nothing is not an outcome");
+        answered(key, "", |id, press| recorded.push((id, press)));
+        answered("meeting:e1:2000#event", "", |id, press| recorded.push((id, press)));
+        assert_eq!(recorded, [("meeting:e1:2000".to_string(), Press::Opened), ("meeting:e1:2000".to_string(), Press::Opened)]);
     }
 
     #[test]

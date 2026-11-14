@@ -1,4 +1,4 @@
-//! The meeting brief card (components/meeting_brief_card.slint), drawn from fixture data with a
+//! The meeting brief card (components/meeting_brief_panel.slint), drawn from fixture data with a
 //! long title, long rows and all five sections, at text scale 1.0 and 1.5. A card is as tall as
 //! its content; nothing a row says may run out of it (it is cut with an ellipsis, not clipped or
 //! overflowing); the stack the desktop draws stops where it is given; and no key opens anything:
