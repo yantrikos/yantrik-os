@@ -17,7 +17,7 @@ import os
 import stat
 
 PROTECTED = (
-    ".ssh", ".gnupg", ".config/labwc", ".config/yantrik", "memory.db", ".bashrc", ".profile",
+    ".ssh", ".gnupg", "private-keys-v1.d", ".config/labwc", ".config/yantrik", "memory.db", ".bashrc", ".profile",
     ".bash_history", ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zshenv",
     ".zprofile", ".zlogin", ".pam_environment", ".config/autostart", ".config/environment.d",
     ".config/systemd", ".local/share/applications", ".config/mimeapps.list",

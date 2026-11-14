@@ -54,6 +54,8 @@ pub use writes::{resolve, where_programs_look, HIDDEN_RULE};
 pub const PROTECTED: &[&str] = &[
     ".ssh",
     ".gnupg",
+    // Where gpg keeps its private keys; a copy of the folder is as secret as the original.
+    "private-keys-v1.d",
     ".config/labwc",
     ".config/yantrik",
     "memory.db",

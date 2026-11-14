@@ -481,13 +481,13 @@ fn in_scratch(path: &std::path::Path) -> bool {
 /// included, and no link to follow says where (the files rule refuses these too, `hard_link`;
 /// security review of #942, finding 3).
 #[cfg(unix)]
-fn has_second_name(path: &std::path::Path) -> bool {
+pub fn has_second_name(path: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.nlink() > 1)
 }
 
 #[cfg(not(unix))]
-fn has_second_name(_path: &std::path::Path) -> bool {
+pub fn has_second_name(_path: &std::path::Path) -> bool {
     false
 }
 

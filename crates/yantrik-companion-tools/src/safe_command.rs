@@ -160,7 +160,9 @@ struct Allowed {
 fn allowed(program: &str) -> Option<Allowed> {
     let a = |flags, valued, long, long_valued| Some(Allowed { flags, valued, long, long_valued });
     match program {
-        "ls" => a("alhrtSRdF1", "", &["--all", "--human-readable", "--reverse", "--recursive", "--directory", "--classify"], &[]),
+        // No -F or --classify: they print `*`, `/`, `@` after a name, and a listing filter that has to
+        // know every decoration is one that misses the next (#1247, review M2).
+        "ls" => a("alhrtSRd1", "", &["--all", "--human-readable", "--reverse", "--recursive", "--directory"], &[]),
         "cat" => a("nbEsAT", "", &["--number", "--show-all"], &[]),
         "head" | "tail" => a("q", "nc", &["--quiet"], &["--lines", "--bytes"]),
         "wc" => a("lwcmL", "", &["--lines", "--words", "--bytes", "--chars"], &[]),
@@ -182,7 +184,10 @@ fn allowed(program: &str) -> Option<Allowed> {
 /// `find`: the paths to look in, then only these tests, each with its one value. Nothing that
 /// runs, writes, deletes or reads a list of names from a file is here to be given.
 const FIND_TESTS: &[&str] = &["-name", "-iname", "-type", "-maxdepth", "-mindepth", "-size", "-mtime", "-mmin"];
-const FIND_ACTIONS: &[&str] = &["-print", "-print0"];
+/// Only `-print`, which ends each name with a newline, the one form the listing filter reads. Not
+/// `-print0`: its NUL-joined names are one "line" to a filter that splits on newlines, and the AI
+/// has no use for the form (#1247, review H1).
+const FIND_ACTIONS: &[&str] = &["-print"];
 
 /// Whether `argv` (already [`expand`]ed) may run, and why not. `home` is the person's home.
 pub fn check(argv: &[String], home: &str) -> Result<(), String> {
@@ -287,12 +292,16 @@ pub fn check(argv: &[String], home: &str) -> Result<(), String> {
             if *p != "-" && !std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false) {
                 return Err(format!("{program} reads regular files only here; {p} is not one"));
             }
+            // A file with a second name may be a protected file under another one (#1247, review M1).
+            if *p != "-" && std::fs::canonicalize(p).is_ok_and(|real| crate::has_second_name(&real)) {
+                return Err(format!("{program} may not read {p}: the file has a second name (a hard link), and the other name may be a place the AI never reads"));
+            }
         }
     }
     Ok(())
 }
 
-/// `find PATH... [TEST VALUE]... [-print|-print0]`, and nothing else.
+/// `find PATH... [TEST VALUE]... [-print]`, and nothing else.
 fn check_find(args: &[String]) -> Result<(), String> {
     let mut i = 0;
     while i < args.len() && !args[i].starts_with('-') {

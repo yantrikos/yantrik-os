@@ -220,12 +220,15 @@ impl Tool for AnalyzeDiskTool {
         let dir = std::path::Path::new(&expanded);
 
         // 1. Largest items (top 10)
-        let largest = super::disk_scan::largest_items(dir);
+        let (largest, hidden) = super::disk_scan::largest_items(dir);
         if !largest.is_empty() {
             report.push(format!("Largest items in {}:", path));
             for (bytes, name) in largest {
                 report.push(format!("  {}	{}", super::format_size(bytes), name));
             }
+        }
+        if hidden > 0 {
+            report.push(format!("({hidden} entries are not shown: each is a place or file the AI never reads)"));
         }
 
         // 2. Old files (>30 days, summarized)

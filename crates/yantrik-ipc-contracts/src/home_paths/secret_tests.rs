@@ -119,3 +119,72 @@ fn a_search_pattern_is_refused_by_what_it_asks_for() {
         assert!(!pattern_asks_for_a_secret(fine), "{fine}");
     }
 }
+
+/// Review M4 of #1247: each name below was readable before the lists grew.
+#[test]
+fn every_credential_the_review_lists_is_refused_by_name() {
+    for name in [
+        // Key formats.
+        "putty.ppk", "key.p8", "service.keytab", "backup.age", "vault.kdb", "login.keychain", "login.keychain-db",
+        // Cloud and CLI credentials copied out of their folders.
+        "application_default_credentials.json", "access_tokens.db", "credentials.db", "kubeconfig", "hosts.yml",
+        ".s3cfg", ".boto", "credentials.tfrc.json",
+        // Other dotfiles.
+        ".envrc", ".my.cnf", ".htpasswd", ".authinfo", ".authinfo.gpg",
+        // Browser stores.
+        "key3.db", "signons.sqlite", "Local State", "Login Data For Account", "Cookies-journal", "Login Data-journal",
+        // `id_dsa` was missing from the starts.
+        "id_dsa", "id_dsa.bak",
+    ] {
+        assert!(is_secret_name(name), "{name}");
+        assert!(is_protected(Path::new(&format!("/home/ann/old/{name}"))), "{name}");
+    }
+}
+
+#[test]
+fn a_backup_copy_of_a_credential_is_that_credential() {
+    for name in [
+        "tokens.json.bak", "tokens (1).json", "credentials.json.bak", "auth.json.old", "id_dsa.bak", "tokens.json.orig",
+        "tokens.json.backup", "tokens.json.copy", "tokens.json~", "TOKENS (12).JSON", "tokens (2).json.bak", ".env.bak",
+        "kubeconfig.old", "Local State.bak",
+    ] {
+        assert!(is_secret_name(name), "{name}");
+        assert!(is_protected(Path::new(&format!("/home/ann/backup/{name}"))), "{name}");
+    }
+}
+
+/// Only an ending or a number before the extension makes a copy: a word in the middle does not.
+#[test]
+fn what_only_looks_like_a_copy_stays_readable() {
+    for name in [
+        "notes.bak.md", "old-tokens-notes.txt", "tokens.md.bak", "tokens (a).json", "tokens ().json", "tokens (1)x.json",
+        "keynote.txt", "id_rsa.pub", "id_rsa.pub.bak", "id_dsa.pub", "api.key.txt", "notes (1).md", ".bak", "~", "image.agent",
+        "hosts.yaml", "state.json", "local-state.md",
+    ] {
+        assert!(!is_secret_name(name), "{name}");
+        assert!(!is_protected(Path::new(&format!("/home/ann/Documents/{name}"))), "{name}");
+    }
+}
+
+#[test]
+fn gpgs_private_key_folder_is_protected_wherever_it_is_copied() {
+    for p in ["/home/ann/.gnupg/private-keys-v1.d/x.key", "/home/ann/backup/private-keys-v1.d/abc", "/home/ann/backup/private-keys-v1.d"] {
+        assert!(is_protected(Path::new(p)), "{p}");
+    }
+    assert!(!is_protected(Path::new("/home/ann/backup/private-keys-v1.d-notes.md")));
+}
+
+/// Plain `*.gpg` and `*.asc` are ciphertext or public keys more often than not (the review).
+#[test]
+fn ciphertext_and_public_keys_stay_readable() {
+    for name in ["report.gpg", "public.asc", "release.agekey.md"] {
+        assert!(!is_secret_name(name), "{name}");
+    }
+}
+
+#[test]
+fn a_search_for_a_backup_copy_is_a_search_for_the_secret() {
+    for asked in ["tokens.json.bak", "tokens (1).json", "*.ppk", "id_dsa*", "kubeconfig"] {
+        assert!(pattern_asks_for_a_secret(asked), "{asked}");
+    }
+}

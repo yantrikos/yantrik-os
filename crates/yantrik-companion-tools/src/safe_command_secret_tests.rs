@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::safe_command::{check, expand, protected, run, words};
-use crate::safe_command_listing::without_protected;
+use crate::safe_command_listing::{stderr_without_protected, without_protected};
 
 const FAKE: &str = "FAKE-SECRET-DO-NOT-PRINT";
 
@@ -174,4 +174,94 @@ fn browser_profiles_are_refused_by_the_one_shared_list() {
     for p in [".mozilla/x", ".config/chromium/x", ".config/BraveSoftware/x", ".var/app/com.google.Chrome/x", "snap/firefox/x", ".thunderbird/x"] {
         assert!(protected(&format!("/home/ann/{p}")), "{p}");
     }
+}
+
+/// Review H1: `-print0` joins names with NUL, which a filter that splits lines never sees.
+#[test]
+fn find_print0_is_refused_and_every_allowed_print_form_hides_a_secret() {
+    let h = home("print0");
+    put(&h, "backup/tokens.json");
+    put(&h, "backup/id_rsa");
+    put(&h, "backup/notes.md");
+    let dir = h.0.join("backup");
+    let refused = verdict(&format!("find {} -print0", dir.display()), &h.0).unwrap_err();
+    assert!(refused.contains("-print0"), "{refused}");
+    for line in [format!("find {}", dir.display()), format!("find {} -print", dir.display()), format!("find {} -type f -print", dir.display())] {
+        assert_eq!(verdict(&line, &h.0), Ok(()), "{line}");
+        let argv = words(&line).unwrap();
+        let (out, _) = run(&argv).unwrap();
+        assert!(out.contains("tokens.json"), "{line}: the raw output holds it");
+        let shown = without_protected(&argv, &out);
+        assert!(shown.contains("notes.md"), "{line}: {shown}");
+        assert!(!shown.contains("tokens.json") && !shown.contains("id_rsa") && !shown.contains(FAKE), "{line}: {shown}");
+    }
+}
+
+/// Review M2: a classified name is `tokens.json*` to a filter that matches whole names.
+#[test]
+fn ls_does_not_decorate_names_and_hides_an_executable_secret() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = home("classify");
+    for rel in ["backup/tokens.json", "backup/server.pem"] {
+        let at = put(&h, rel);
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    put(&h, "backup/notes.md");
+    std::fs::create_dir_all(h.0.join("backup/credentials")).unwrap();
+    let dir = h.0.join("backup");
+    for flags in ["-F", "-lF", "--classify", "-aF1"] {
+        let refused = verdict(&format!("ls {flags} {}", dir.display()), &h.0).unwrap_err();
+        assert!(refused.contains("not one of the options"), "{flags}: {refused}");
+    }
+    for flags in ["-l", "-la", "-1", "-R"] {
+        let argv = words(&format!("ls {flags} {}", dir.display())).unwrap();
+        let (out, _) = run(&argv).unwrap();
+        let shown = without_protected(&argv, &out);
+        assert!(shown.contains("notes.md"), "{flags}: {shown}");
+        assert!(!shown.contains("tokens.json") && !shown.contains("server.pem") && !shown.contains("credentials"), "{flags}: {shown}");
+    }
+}
+
+/// Review M1: the other name of a hard-linked secret is no secret name, and no link to follow.
+#[test]
+fn a_hard_link_to_a_secret_is_refused_by_every_reader() {
+    let h = home("hard");
+    let real = put(&h, "backup/tokens.json");
+    let second = h.0.join("Documents/data.bin");
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::hard_link(&real, &second).unwrap();
+    for program in ["cat", "head", "tail", "grep -l FAKE", "grep FAKE", "sha256sum", "md5sum", "wc", "file", "sort", "diff"] {
+        let refused = verdict(&format!("{program} {}", second.display()), &h.0).unwrap_err();
+        assert!(refused.contains("hard link"), "{program}: {refused}");
+        assert!(!refused.contains(FAKE));
+    }
+    // A link to the file reaches the same two names.
+    let soft = h.0.join("Documents/via-link.txt");
+    std::os::unix::fs::symlink(&second, &soft).unwrap();
+    assert!(verdict(&format!("cat {}", soft.display()), &h.0).is_err());
+    // A file with one name is read as before.
+    let own = put(&h, "Documents/plain.txt");
+    assert_eq!(verdict(&format!("cat {own}"), &h.0), Ok(()));
+}
+
+/// Review L1: an error that quotes a protected path says which one.
+#[test]
+fn stderr_does_not_name_a_protected_path() {
+    let h = home("stderr");
+    let missing = h.0.join("backup/tokens.json");
+    let argv = words(&format!("ls {}", missing.display())).unwrap();
+    let (_, err) = run(&argv).unwrap();
+    assert!(err.contains("tokens.json"), "the raw error holds the name, so the filter has work to do: {err}");
+    let shown = stderr_without_protected(&err);
+    assert!(!shown.contains("tokens.json") && shown.contains("1 lines of error text are not shown"), "{shown}");
+    for line in [
+        "find: '/home/ann/backup/id_rsa': Permission denied",
+        "find: \u{2018}/home/ann/old/credentials.json\u{2019}: Permission denied",
+        "ls: cannot access `server.pem': No such file or directory",
+        "find: '/home/ann/.ssh/x': Permission denied",
+    ] {
+        assert!(!stderr_without_protected(line).contains("/home/ann"), "{line}");
+    }
+    let fine = "find: '/home/ann/Documents/keynote.txt': Permission denied\n";
+    assert_eq!(stderr_without_protected(fine), fine);
 }

@@ -22,19 +22,28 @@ fn tree_size(path: &Path) -> u64 {
 }
 
 /// The ten biggest entries of `dir` that do not start with `.` (what `dir/*` matches), largest
-/// first, as `(bytes, name)`.
-pub fn largest_items(dir: &Path) -> Vec<(u64, String)> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+/// first, as `(bytes, name)`, and how many entries were left out because they are protected files
+/// or places (a name says where a secret is kept; #1247, review M3).
+pub fn largest_items(dir: &Path) -> (Vec<(u64, String)>, usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return (Vec::new(), 0) };
+    let mut hidden = 0;
     let mut items: Vec<(u64, String)> = entries
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            (!name.starts_with('.')).then(|| (tree_size(&e.path()), name))
+            if name.starts_with('.') {
+                return None;
+            }
+            if yantrik_ipc_contracts::home_paths::is_protected(&e.path()) {
+                hidden += 1;
+                return None;
+            }
+            Some((tree_size(&e.path()), name))
         })
         .collect();
     items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     items.truncate(10);
-    items
+    (items, hidden)
 }
 
 /// The regular files at depth 1 and 2 under `dir`, as `(name, bytes, modified)`.
@@ -96,7 +105,8 @@ mod tests {
     #[test]
     fn the_biggest_items_leave_dotfiles_out_and_sort_by_size() {
         let dir = tree("items");
-        let items = largest_items(&dir);
+        let (items, hidden) = largest_items(&dir);
+        assert_eq!(hidden, 0);
         assert_eq!(items.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(), ["big", "small.rs"]);
         assert!(items[0].0 >= 5010);
         let _ = std::fs::remove_dir_all(dir);
@@ -116,6 +126,22 @@ mod tests {
 
     #[test]
     fn a_path_with_shell_words_is_only_a_path() {
-        assert!(largest_items(Path::new("/nonexistent/$(touch x);y")).is_empty());
+        assert!(largest_items(Path::new("/nonexistent/$(touch x);y")).0.is_empty());
+    }
+
+    /// Review M3 of #1247: the names and sizes of the biggest entries are what `analyze_disk` prints.
+    #[test]
+    fn a_protected_file_is_counted_and_never_listed() {
+        let dir = tree("secret");
+        for name in ["tokens.json", "server.pem", "tokens.json.bak"] {
+            std::fs::write(dir.join(name), vec![0u8; 90000]).unwrap();
+        }
+        std::fs::create_dir_all(dir.join("private-keys-v1.d")).unwrap();
+        std::fs::write(dir.join("keynote.txt"), vec![0u8; 8000]).unwrap();
+        let (items, hidden) = largest_items(&dir);
+        let names: Vec<&str> = items.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["big", "keynote.txt", "small.rs"]);
+        assert_eq!(hidden, 4);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

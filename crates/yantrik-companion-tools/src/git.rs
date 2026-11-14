@@ -16,6 +16,12 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(GitDiffFileTool));
 }
 
+/// [`run_git`] for a command that names files (`status`, `--stat`, `commit`, `stash`): a protected
+/// path is left out of what it prints (#1247).
+fn run_git_names(dir: &str, git_args: &[&str]) -> String {
+    super::git_secrets::without_protected(dir, &run_git(dir, git_args))
+}
+
 /// Run a git command in a validated directory.
 fn run_git(dir: &str, git_args: &[&str]) -> String {
     // Where git really goes is checked first: a link or a .git file can lead into a workshop.
@@ -80,7 +86,7 @@ impl Tool for GitStatusTool {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
         };
-        run_git(&expanded, &["status", "--short", "--branch"])
+        run_git_names(&expanded, &["status", "--short", "--branch"])
     }
 }
 
@@ -168,9 +174,9 @@ impl Tool for GitDiffTool {
         };
 
         if staged {
-            run_git(&expanded, &["diff", "--cached", "--stat"])
+            run_git_names(&expanded, &["diff", "--cached", "--stat"])
         } else {
-            run_git(&expanded, &["diff", "--stat"])
+            run_git_names(&expanded, &["diff", "--stat"])
         }
     }
 }
@@ -356,7 +362,7 @@ impl Tool for GitCommitTool {
             }
         }
 
-        run_git(&expanded, &["commit", "-m", message])
+        run_git_names(&expanded, &["commit", "-m", message])
     }
 }
 
@@ -404,7 +410,7 @@ impl Tool for GitShowTool {
             return "Error: invalid commit ref (only alphanumeric, ^, ~ allowed)".to_string();
         }
 
-        let out = run_git(&expanded, &["show", "--stat", commit]);
+        let out = run_git_names(&expanded, &["show", "--stat", commit]);
         if out.len() > 3000 {
             format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
         } else {
@@ -457,7 +463,7 @@ impl Tool for GitStashTool {
         };
 
         match action {
-            "push" | "pop" | "list" => run_git(&expanded, &["stash", action]),
+            "push" | "pop" | "list" => run_git_names(&expanded, &["stash", action]),
             _ => format!("Error: invalid stash action '{}' (use push, pop, or list)", action),
         }
     }
@@ -502,7 +508,12 @@ impl Tool for GitDiffFileTool {
             Err(e) => return format!("Error: {e}"),
         };
 
-        let out = run_git(&expanded, &["diff", "--", file]);
+        // The repository was checked above; the file is checked as a path of its own, and as the
+        // names git would diff for it (#1247).
+        if let Err(e) = validate_path(&format!("{expanded}/{file}")).and_then(|_| super::git_secrets::check_pathspec(&expanded, file)) {
+            return format!("Error: {e}");
+        }
+        let out = run_git(&expanded, &["diff", "--no-renames", "--", file]);
         if out.len() > 3000 {
             format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
         } else {

@@ -6,6 +6,12 @@
 //! folder would still print that name, and the name says where a secret is kept. Every entry that
 //! [`crate::safe_command::protected`] refuses is dropped here, and a count says that some were
 //! left out, never which.
+//!
+//! What this cannot hide is that something is there. The count says how many entries were left
+//! out, so `find ~/backup -name 't*'` answering "1 entries are not shown" tells the AI that a
+//! secret whose name starts with `t` exists. That is a known limit, accepted: a name is never
+//! printed, and a count with no name is not a way to read the file (#1247, review L2). The same
+//! holds for the line count of [`stderr_without_protected`].
 
 use std::path::Path;
 
@@ -19,6 +25,40 @@ pub fn without_protected(argv: &[String], stdout: &str) -> String {
         _ => return stdout.to_string(),
     };
     with_count(kept, hidden)
+}
+
+/// `stderr` of a command without the lines that quote a protected path: `find` and `ls` name what
+/// they could not open (`ls: cannot access 'x/tokens.json'`), and the name is what must not be
+/// shown (#1247, review L1). The quotes are the ASCII ones and the curly ones GNU tools use in
+/// a UTF-8 locale.
+pub fn stderr_without_protected(stderr: &str) -> String {
+    let (kept, hidden): (Vec<&str>, Vec<&str>) =
+        stderr.lines().partition(|line| !quoted(line).into_iter().any(crate::safe_command::protected));
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    if !hidden.is_empty() {
+        out.push_str(&format!("({} lines of error text are not shown: each names a place or file the AI never reads)\n", hidden.len()));
+    }
+    out
+}
+
+/// What `line` holds between a pair of quotes: `'…'`, `‘…’` or `` `…' ``.
+fn quoted(line: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut open: Option<usize> = None;
+    for (at, c) in line.char_indices() {
+        match (open, c) {
+            (None, '\'' | '‘' | '`') => open = Some(at + c.len_utf8()),
+            (Some(from), '\'' | '’') => {
+                found.push(&line[from..at]);
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 /// The lines whose path (`path_of` finds it; none means the line holds no path) is not protected.
@@ -64,7 +104,7 @@ fn is_recursive(arg: &str) -> bool {
 
 /// Whether the entry a line of `ls` prints (the whole line, or its tail after the date of a long
 /// listing, and the target of a link) is protected inside `dir`.
-fn names_a_protected_entry(line: &str, dir: &str) -> bool {
+pub(crate) fn names_a_protected_entry(line: &str, dir: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
     (0..words.len()).any(|from| {
         let tail = words[from..].join(" ");
