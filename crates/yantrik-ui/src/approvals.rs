@@ -485,8 +485,15 @@ const IMITATED: [&str; 7] = [
 /// byte-order mark, the interlinear annotation marks, and the tag characters — and the rest of
 /// category Cf: the Arabic number and end-of-ayah signs, the Syriac abbreviation mark, the Kaithi
 /// number signs, the Egyptian hieroglyph format controls, the shorthand format controls and the
-/// musical symbol beams. The one list on this desktop: the per-call sentence's sanitiser
-/// (`control_approvals::sanitised_explanation`) and the card's escapes read it too (review of #639).
+/// musical symbol beams. Since #1071 the list holds more than Cf, because these draw as a blank
+/// or change the glyph next to them: the Hangul fillers (U+115F, U+1160, U+3164, U+FFA0 — a blank
+/// that can stand in for a space), Ogham space mark, the en/em/thin spaces U+2000..U+200A, the
+/// medium mathematical space and the ideographic space — blanks that can make two words read as
+/// one, while U+00A0 NO-BREAK SPACE draws as an ordinary visible blank and is deliberately not
+/// here — and the variation selectors U+FE00..U+FE0F and U+E0100..U+E01EF, which draw as nothing
+/// and can change what an emoji-adjacent glyph looks like. The one list on this desktop: the
+/// per-call sentence's sanitiser (`control_approvals::sanitised_explanation`) and the card's
+/// escapes read it too (review of #639).
 pub(crate) fn is_format_char(c: char) -> bool {
     matches!(
         c as u32,
@@ -497,12 +504,20 @@ pub(crate) fn is_format_char(c: char) -> bool {
             | 0x070F
             | 0x0890..=0x0891
             | 0x08E2
+            | 0x115F..=0x1160
+            | 0x1680
             | 0x180E
+            | 0x2000..=0x200A
             | 0x200B..=0x200F
             | 0x202A..=0x202E
+            | 0x205F
             | 0x2060..=0x2064
             | 0x2066..=0x206F
+            | 0x3000
+            | 0x3164
+            | 0xFE00..=0xFE0F
             | 0xFEFF
+            | 0xFFA0
             | 0xFFF9..=0xFFFB
             | 0x110BD
             | 0x110CD
@@ -511,6 +526,7 @@ pub(crate) fn is_format_char(c: char) -> bool {
             | 0x1D173..=0x1D17A
             | 0xE0001
             | 0xE0020..=0xE007F
+            | 0xE0100..=0xE01EF
     )
 }
 
