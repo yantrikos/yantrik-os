@@ -20,6 +20,8 @@ use crate::calendar::backend::CalendarBackend;
 /// How far ahead the calendar is read. A stored brief whose event is not in this window any more
 /// was moved far off or deleted.
 const LOOK_AHEAD_HOURS: i64 = 24;
+/// Within this many seconds of the start, a brief with a section missing is shown as it is.
+const LAST_CALL_SECS: i64 = 180;
 
 /// What a tick found.
 #[derive(Debug, Clone, Default)]
@@ -110,8 +112,9 @@ fn make(conn: &Connection, meeting: &super::window::Meeting, sources: &Sources<'
         }
     }
     let gathered = gather(meeting, sources, own, now);
-    // Nothing found because a source did not answer is not "nothing to say": try again next tick.
-    if gathered.brief.is_empty() && !gathered.complete {
+    // A source that did not answer is not "nothing to say", and a brief missing a section is not
+    // final while there is time: try again next tick. In the last minutes what there is is shown.
+    if !gathered.complete && (gathered.brief.is_empty() || meeting.start - now > LAST_CALL_SECS) {
         return;
     }
     let was_announced = existing.as_ref().is_some_and(|i| i.surfaced && brief_of(i).is_some_and(|b| !b.is_empty()));

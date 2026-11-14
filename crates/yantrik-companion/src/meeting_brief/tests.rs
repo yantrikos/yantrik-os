@@ -194,6 +194,13 @@ fn slides_mail(now: NaiveDateTime) -> Mail {
     Mail { from_name: "Maya Chen".into(), from_addr: "maya@work.test".into(), subject: "Slides for Friday".into(), date_ts: at }
 }
 
+/// One cached message from Maya, so a brief for a meeting with her is never empty.
+pub(super) fn maya_email_row(conn: &Connection, now: NaiveDateTime) {
+    let account = crate::email::db::ensure_account(conn, "Home", ME, "imap");
+    let at = (super::window::to_unix(now).expect("local time") - 3600) as f64;
+    crate::email::db::upsert_email(conn, account, 1, "INBOX", "maya@work.test", "Maya", ME, "Slides for Friday", at, "", true, "<1@t>", "");
+}
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("meeting-brief-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -225,7 +232,7 @@ fn an_event_ten_minutes_away_gets_a_brief() {
     assert_eq!(out.cards[0].id, id_for(&e));
     assert_eq!(out.fresh, vec![id_for(&e)]);
     assert_eq!(out.cards[0].brief.people, vec!["Maya Chen".to_string()], "the person's own address is left out");
-    assert_eq!(out.cards[0].brief.when.len(), 11, "10:00\u{2013}10:30 shaped");
+    assert_eq!(out.cards[0].brief.when.chars().count(), 11, "10:00\u{2013}10:30 shaped");
 }
 
 #[test]
@@ -441,7 +448,7 @@ fn with_the_switch_off_nothing_is_read_or_gathered() {
 /// any client compiles and runs (every test above is one). And no file of it names one.
 #[test]
 fn no_file_of_the_gatherer_names_a_model_or_a_network_client() {
-    let files: [(&str, &str); 11] = [
+    let files: [(&str, &str); 12] = [
         ("assemble.rs", include_str!("assemble.rs")),
         ("emails.rs", include_str!("emails.rs")),
         ("engine.rs", include_str!("engine.rs")),
@@ -452,6 +459,7 @@ fn no_file_of_the_gatherer_names_a_model_or_a_network_client() {
         ("mod.rs", include_str!("mod.rs")),
         ("notes.rs", include_str!("notes.rs")),
         ("promises.rs", include_str!("promises.rs")),
+        ("remote.rs", include_str!("remote.rs")),
         ("window.rs", include_str!("window.rs")),
     ];
     let forbidden = [

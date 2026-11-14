@@ -1,6 +1,8 @@
 //! The real sources: the companion's email cache, the world model's commitments and the notes
 //! service, which is a program on this machine reached over its local socket.
 
+use std::sync::{Arc, OnceLock};
+
 use rusqlite::Connection;
 use yantrik_ipc_contracts::notes::NoteSummary;
 
@@ -11,6 +13,7 @@ use super::files::FileRoots;
 use super::model::Open;
 use super::notes::{NoteHit, NoteSource};
 use super::promises::{Promise, PromiseSource};
+use super::remote::{CachedNotes, Fetcher, SnapshotCalendar};
 use super::window::Own;
 use crate::calendar::backend::ServiceCalendar;
 use crate::email::db;
@@ -75,15 +78,37 @@ pub fn own(conn: &Connection, user_name: &str) -> Own {
     Own::new(addresses, user_name)
 }
 
-/// One tick against the real stores, at the local time now. `enabled` is the person's switch;
-/// off reads nothing. The home folder is `$HOME`, and a machine without one has no files to
-/// offer, not a search of the wrong place.
-pub fn tick_local(conn: &Connection, user_name: &str, enabled: bool) -> Outcome {
+/// One worker tick at local time `now`, against the local stores and what `fetcher` last found.
+///
+/// Nothing here waits on a service: the calendar and notes come from the fetcher's snapshot, the
+/// email cache, the commitments and the anticipation table are short local reads and writes, and
+/// the refresh is asked for with a send that cannot block. Off (`enabled` false) does nothing at
+/// all, and asks for nothing.
+pub fn tick_with(conn: &Connection, user_name: &str, fetcher: &Fetcher, now: chrono::NaiveDateTime, enabled: bool) -> Outcome {
     if !enabled {
         return Outcome::default();
     }
     let roots = std::env::var_os("HOME").map(|h| FileRoots::in_home(std::path::Path::new(&h))).unwrap_or_default();
+    let snapshot = fetcher.snapshot();
+    let notes = CachedNotes { snapshot: &snapshot, missing: Default::default() };
     let (mail, promises) = (EmailCache { conn }, WorldModelPromises { conn });
-    let sources = Sources { emails: &mail, notes: &ServiceNotes, promises: &promises, files: &roots };
-    engine::tick(conn, &ServiceCalendar, &sources, &own(conn, user_name), chrono::Local::now().naive_local(), true)
+    let sources = Sources { emails: &mail, notes: &notes, promises: &promises, files: &roots };
+    let outcome = engine::tick(conn, &SnapshotCalendar(&snapshot), &sources, &own(conn, user_name), now, true);
+    // The calendar once per tick, and only the searches a brief was waiting for.
+    fetcher.request(notes.missing.take());
+    outcome
+}
+
+/// The fetcher for this process: started on first use, with the real calendar and notes service.
+fn fetcher() -> &'static Fetcher {
+    static FETCHER: OnceLock<Fetcher> = OnceLock::new();
+    FETCHER.get_or_init(|| Fetcher::spawn(Arc::new(ServiceCalendar), Arc::new(ServiceNotes)))
+}
+
+/// The worker's tick against the real stores, at the local time now.
+pub fn tick_local(conn: &Connection, user_name: &str, enabled: bool) -> Outcome {
+    if !enabled {
+        return Outcome::default();
+    }
+    tick_with(conn, user_name, fetcher(), chrono::Local::now().naive_local(), true)
 }

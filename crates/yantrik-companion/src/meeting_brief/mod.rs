@@ -15,7 +15,9 @@
 //!   gatherer can be run without any of the real stores.
 //! - [`assemble`]: the five sections of one meeting, under a time budget.
 //! - [`engine`]: the tick: store once per event and start, replace on change, honour dismissal.
-//! - [`local`]: the real sources.
+//! - [`local`]: the real sources, and the worker's tick.
+//! - [`remote`]: the calendar and notes service, asked on a thread of their own so the
+//!   companion's worker never waits on them.
 //! - [`model`]: the brief itself, as it is stored and as the shell reads it.
 
 pub mod assemble;
@@ -27,10 +29,13 @@ pub mod local;
 pub mod model;
 pub mod notes;
 pub mod promises;
+pub mod remote;
 pub mod window;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_remote;
 #[cfg(test)]
 mod tests_sources;
 

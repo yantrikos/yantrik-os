@@ -306,3 +306,51 @@ fn a_title_with_no_meaningful_word_looks_at_no_files() {
     assert!(rows.is_empty() && walked.entries == 0);
     let _ = std::fs::remove_dir_all(h);
 }
+
+struct NoMail;
+
+impl EmailSource for NoMail {
+    fn exchanged(&self, _: &[String], _: i64, _: usize) -> Result<Vec<Mail>, String> {
+        Ok(Vec::new())
+    }
+}
+
+struct NoPromises;
+
+impl PromiseSource for NoPromises {
+    fn made_by(&self, _: &str) -> Result<Vec<Promise>, String> {
+        Ok(Vec::new())
+    }
+    fn made_to(&self, _: &str) -> Result<Vec<Promise>, String> {
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn gathering_one_meeting_in_a_crowded_home_folder_takes_under_200_ms() {
+    use super::assemble::{gather, Sources};
+    use super::window::Meeting;
+    let h = home("budget");
+    for i in 0..6_000 {
+        std::fs::write(h.join(format!("Downloads/img-{i:05}.png")), "").expect("write");
+    }
+    let roots = FileRoots::in_home(&h);
+    let book = Notebook(vec![]);
+    let sources = Sources { emails: &NoMail, notes: &book, promises: &NoPromises, files: &roots };
+    let meeting = Meeting {
+        event_id: "e1".into(),
+        title: "Orion launch".into(),
+        start: NOW + 600,
+        end: NOW + 2400,
+        when: "10:00\u{2013}10:30".into(),
+        place: None,
+        description: String::new(),
+        people: vec![person("Maya Chen", "maya@work.test"), person("Ravi Rao", "ravi@work.test")],
+    };
+    let started = std::time::Instant::now();
+    let gathered = gather(&meeting, &sources, &own(), NOW);
+    let took = started.elapsed();
+    assert!(took < Duration::from_millis(200), "gathering took {took:?}");
+    assert!(gathered.complete);
+    let _ = std::fs::remove_dir_all(h);
+}
