@@ -404,6 +404,18 @@ yantrik-os/
 
 ## Privacy and security
 
+- **Chromium's own calls home are off, and that reaches your Chromium too.** The browsers the
+  companion and the minds start run with switches that turn off Chromium's background calls to
+  Google (the Optimization Guide, component updates, field trials and the like); your own Browser
+  pin keeps its own settings. Beside that, the image installs one managed policy file,
+  `/etc/chromium/policies/managed/yantrik-no-phone-home.json`, and Debian's Chromium reads that
+  folder for every profile, yours included. It turns off usage metrics, "make searches and browsing
+  better" URL data collection, the on-device AI model download, background mode (Chromium no
+  longer keeps running after its last window closes) and Sync. It does not touch translation or
+  component updates. It is put in place once, when the machine has none and never had one; a later
+  update upgrades it only while it is still exactly what we shipped. **To opt out, delete the file
+  (`sudo rm /etc/chromium/policies/managed/yantrik-no-phone-home.json`):** it is not put back, and
+  an edited copy is left as you made it. Your own files in that folder are never read or changed.
 - **The OS itself sends nothing anywhere.** No telemetry, no phone-home, no analytics. The
   image ships pointed at loopback and at nothing else, because an endpoint baked into a public
   image is an endpoint every copy of it talks to. With nobody at the keyboard the OS itself

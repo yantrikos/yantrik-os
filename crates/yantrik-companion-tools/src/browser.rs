@@ -536,7 +536,7 @@ impl Tool for LaunchBrowserTool {
 }
 
 /// The switches of a companion identity's Chromium. Both sides of the #1175/#1206 merge are held here:
-/// Chromium's calls home stay off (#1175: `--disable-background-networking`, `--disable-component-update`),
+/// Chromium's calls home stay off (#1175: `ports::quiet_args`, one `--disable-features=`),
 /// and there is no DevTools switch at all, so this window has no port for anything to speak to (#1200).
 fn chrome_args(headless: bool, profile: &std::path::Path, url: &str) -> Vec<String> {
     let mut chrome_args: Vec<String> = vec![
@@ -545,8 +545,6 @@ fn chrome_args(headless: bool, profile: &std::path::Path, url: &str) -> Vec<Stri
         format!("--user-data-dir={}", profile.display()),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
-        "--disable-background-networking".into(),
-        "--disable-component-update".into(),
         // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
         "--disable-blink-features=AutomationControlled".into(),
         // Anti-detection: realistic viewport size
@@ -568,6 +566,9 @@ fn chrome_args(headless: bool, profile: &std::path::Path, url: &str) -> Vec<Stri
             "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
         );
     }
+    // Chromium's calls home stay off (#1175): the one list from `ports::quiet_args`, never a copy,
+    // with exactly one `--disable-features=`. It adds no DevTools switch, port or origin (#1200).
+    ports::append_quiet(&mut chrome_args);
     // No DevTools switch at all: this window has no port for anything to speak to (#1200).
     chrome_args.push(url.to_string());
     chrome_args
@@ -2587,6 +2588,19 @@ mod mind_display_tests {
         assert!(why.contains("never opened on the person's desktop"), "{why}");
     }
 
+    /// The launch's real argv, headed and headless: every quiet switch, exactly one
+    /// `--disable-features=`, no debugging switch, and the address last.
+    #[test]
+    fn the_launch_browser_argv_makes_no_calls_home() {
+        for headless in [false, true] {
+            let a = chrome_args(headless, std::path::Path::new("/tmp/p"), "https://example.org/");
+            ports::carries_quiet(&a).unwrap();
+            assert!(a.iter().all(|x| !x.contains("remote-debugging") && !x.contains("remote-allow-origins")), "{a:?}");
+            assert_eq!(a.last().unwrap(), "https://example.org/");
+            assert_eq!(a.contains(&"--headless=new".to_string()), headless);
+        }
+    }
+
     #[test]
     fn open_url_no_longer_runs_xdg_open() {
         let src = include_str!("desktop.rs");
@@ -2603,6 +2617,8 @@ mod mind_display_tests {
             for flag in ["--disable-background-networking", "--disable-component-update"] {
                 assert!(args.iter().any(|a| a == flag), "{flag} missing (headless={headless})");
             }
+            ports::carries_quiet(&args).unwrap();
+            assert_eq!(args.iter().filter(|a| a.starts_with("--disable-features=")).count(), 1, "{args:?}");
             assert!(args.iter().all(|a| !a.contains("remote-debugging") && !a.contains("remote-allow-origins")), "{args:?}");
             assert_eq!(args.last().map(String::as_str), Some("about:blank"));
         }

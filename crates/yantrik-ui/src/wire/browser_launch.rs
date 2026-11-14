@@ -205,6 +205,9 @@ pub fn mind_view_args(app_id: &str, program: &Path, args: &[&str]) -> Vec<String
         // Chromium app in Mind View is not given a pipe: nothing would hold it (`pipe_role`).
         let mut out: Vec<String> = yantrik_browser_ports::launch_flags(Side::MindView).into_iter().filter(|f| browser || f != PIPE_FLAG).collect();
         out.extend(args.iter().filter(|a| !is_own_by_side(a) && (!browser || a.starts_with('-'))).map(|a| a.to_string()));
+        // A mind's browser makes no calls home of its own (#1175). Never `person_args`: the person's
+        // own Browser keeps its own settings. Before the blank page, which stays last.
+        yantrik_browser_ports::append_quiet(&mut out);
         if browser {
             out.push("about:blank".into());
         }
@@ -274,6 +277,21 @@ mod tests {
 
     fn flag(args: &[String], name: &str) -> Vec<String> {
         args.iter().filter(|a| a.starts_with(name)).cloned().collect()
+    }
+
+    /// #1175: a mind's Mind View browser makes no calls home, with exactly one `--disable-features=`
+    /// even when the caller already had one; the person's own Browser gets none of it.
+    #[test]
+    fn mind_views_browser_is_quiet_and_the_persons_is_not() {
+        let args = mind_view_args("browser", Path::new("/usr/bin/chromium"), &["--no-first-run", "--disable-features=Foo"]);
+        yantrik_browser_ports::carries_quiet(&args).unwrap();
+        let list = args.iter().find_map(|a| a.strip_prefix("--disable-features=")).unwrap();
+        assert!(list.split(',').any(|f| f == "Foo"), "the caller's own feature is kept: {list}");
+        let person = person_args("chromium", &["--no-first-run"]);
+        for s in yantrik_browser_ports::QUIET_SWITCHES {
+            assert!(!person.iter().any(|a| a == s), "the person's Browser keeps its own settings: {s} in {person:?}");
+        }
+        assert!(!person.iter().any(|a| a.starts_with("--disable-features=")), "{person:?}");
     }
 
     #[test]

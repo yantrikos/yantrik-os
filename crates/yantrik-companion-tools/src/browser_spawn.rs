@@ -8,6 +8,8 @@ use std::process::Command;
 
 use yantrik_ipc_contracts::home_paths::workshops;
 
+pub use yantrik_browser_ports::quiet_args;
+
 /// `binary args` as a command that runs in the browser view (the workshops base hidden), or the
 /// reason it must not run: nothing is started unwrapped on a machine that holds workshops.
 pub fn walled(home: &Path, binary: &str, args: &[String]) -> Result<Command, String> {

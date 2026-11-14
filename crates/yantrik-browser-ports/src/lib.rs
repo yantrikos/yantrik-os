@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 pub mod listener;
 pub mod procs;
 pub mod stream;
+pub mod quiet;
+pub use quiet::{append_quiet, carries_quiet, quiet_args, DISABLED_FEATURES, QUIET_SWITCHES};
 
 include!(concat!(env!("OUT_DIR"), "/ports.rs"));
 
