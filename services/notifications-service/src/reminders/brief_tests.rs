@@ -3,6 +3,7 @@
 //! no second grant).
 
 use chrono::{Duration as ChronoDuration, Local, Timelike, Utc};
+use yantrik_ipc_contracts::notifications::Notification;
 use yantrik_ipc_contracts::notifications::notice::{Attention, Family, FamilySetting, GrantReason, Notice, QuietHours};
 
 use super::*;
