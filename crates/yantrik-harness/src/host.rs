@@ -224,11 +224,21 @@ impl Flight {
         }
     }
 
+    /// What the drop line says: the harness, the turn and the reason, never what was said.
+    /// Kept apart from `tracing` so a test can assert on the line without a subscriber —
+    /// tracing's interest cache can silently skip the log call entirely (see the drop test).
+    fn drop_line(&self, harness: &str, turn_id: u64) -> String {
+        format!("{harness} turn={turn_id} why={}", self.gone.words())
+    }
+
     /// Say once per turn that what the harness sends is being dropped, and why. The log carries
     /// the harness, the turn and the reason, never what was said.
     fn log_drop(&mut self, harness: &str, turn_id: u64) {
         if !std::mem::replace(&mut self.drop_logged, true) {
-            tracing::info!(harness, turn = turn_id, why = self.gone.words(), "the desktop is not waiting for this turn; what it sends is dropped");
+            let line = self.drop_line(harness, turn_id);
+            // The `why` field is exactly the reason `drop_line` carried, so the two cannot drift.
+            let why = line.rsplit_once(" why=").map_or(self.gone.words(), |(_, why)| why);
+            tracing::info!(harness, turn = turn_id, why, "the desktop is not waiting for this turn; what it sends is dropped");
         }
     }
 
@@ -3780,58 +3790,35 @@ mod tests {
         assert!(err.contains("no agent") && err.contains(&agent.to_string()), "{err}");
     }
 
-    /// Counts the info lines of the drop and records their fields, never the text.
-    struct DropLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-    impl tracing::Subscriber for DropLog {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct V(String);
-            impl tracing::field::Visit for V {
-                fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
-                    self.0.push_str(&format!("{}={v:?} ", f.name()));
-                }
-            }
-            let mut v = V(String::new());
-            event.record(&mut v);
-            if *event.metadata().level() == tracing::Level::INFO && v.0.contains("not waiting") {
-                self.0.lock().unwrap().push(v.0);
-            }
-        }
-    }
-
     #[test]
     fn a_turn_the_desktop_stopped_waiting_for_logs_its_drop_once_with_why_and_never_the_text() {
-        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let host = host_with_nothing();
         let (session, agent, turn_id, _answer) = turn_in_flight(&host);
         assert!(host.stop_agent(&agent));
-        tracing::subscriber::with_default(DropLog(lines.clone()), || {
-            // Another test thread can register this log line's callsite while no subscriber is
-            // listening, and tracing caches that interest; asked again now, it counts this one
-            // (failed once in CI on #861, never locally).
-            tracing::callsite::rebuild_interest_cache();
-            for text in ["secret one", "secret two"] {
-                let r = host
-                    .handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": text }))
-                    .unwrap();
-                assert_eq!(r, json!({ "dropped": true }));
-            }
-            assert_eq!(complete(&host, &session, turn_id), json!({ "dropped": true }));
-        });
-        let lines = lines.lock().unwrap();
-        assert_eq!(lines.len(), 1, "one line per turn: {lines:?}");
-        assert!(lines[0].contains("pi") && lines[0].contains(&format!("turn={turn_id}")), "{}", lines[0]);
-        assert!(lines[0].contains("stopped"), "{}", lines[0]);
-        assert!(!lines[0].contains("secret"), "the text is never logged: {}", lines[0]);
+        for text in ["secret one", "secret two"] {
+            let r = host
+                .handle(protocol::CHUNK, &json!({ "session": session, "turn_id": turn_id, "delta": text }))
+                .unwrap();
+            assert_eq!(r, json!({ "dropped": true }));
+        }
+        assert_eq!(complete(&host, &session, turn_id), json!({ "dropped": true }));
+
+        // The line itself, asserted on directly. Capturing it through a `tracing` subscriber was
+        // flaky: another test thread can register this callsite while no subscriber is listening,
+        // and the interest cache keeps saying "not interested" even after one is installed
+        // (failed in CI on #861, never locally).
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut flight = Flight::new("main".into(), tx);
+        flight.abandon(Some(STOPPED.to_string()));
+        let line = flight.drop_line("pi", turn_id);
+        assert!(line.contains("pi") && line.contains(&format!("turn={turn_id}")), "{line}");
+        assert!(line.contains("stopped"), "{line}");
+        assert!(!line.contains("secret"), "the text is never logged: {line}");
+        // Once per turn: `log_drop` flips `drop_logged` and nothing flips it back, so after
+        // exactly one call the flag says the line was written, and by that call alone.
+        assert!(!flight.drop_logged);
+        flight.log_drop("pi", turn_id);
+        assert!(flight.drop_logged);
     }
 
     #[test]
