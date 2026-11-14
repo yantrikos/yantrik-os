@@ -304,3 +304,185 @@ tools:
 ```
 
 Parameters are automatically sanitized. The companion discovers plugins on startup and makes them available as tools.
+
+## Developer Guide
+
+What to read to add something to the companion: the router that decides what answers a query,
+and the three surfaces you can add to — tools, recipes, instincts. The behaviour they produce is
+above ([Proactive Pipeline](#proactive-pipeline), [Instincts](#instincts), [Tools](#tools),
+[Permission Levels](#permission-levels)); here are the APIs. Every name below is read off the
+code, and each subsection names the file it came from.
+
+### CognitiveRouter
+
+`crates/yantrik-ml/src/llm/cognitive_router.rs` — `CognitiveRouter` is a first pass over a user
+query that decides what should answer it *without calling an LLM*. A match costs one embedding;
+only an unmatched query pays for a model. The companion builds one in `init_cognitive_router`
+(`crates/yantrik-companion/src/companion.rs`), registers every tool in the registry and every
+recipe template, and consults it as "Step 0.3" of a turn.
+
+`route(query) -> RouteDecision` works through these passes in order — the code labels them 0,
+0.5, 0.7 and 1, and `route_explain_inner` is the function that implements them:
+
+| Pass | Rule | `RouteDecision` |
+|---|---|---|
+| 0 — conversation | `check_conversation` reads the message as conversation | `Conversation { response }`, answered here |
+| 0.5 — keyword rules | `check_keyword_rules` matches arithmetic, time, units, disambiguation | `Tool` at score `1.0` |
+| 0.7 + 1 — embeddings | cosine similarity of the query against every registered recipe and every registered tool | `Recipe` or `Tool` |
+| fallthrough | nothing scored high enough | `NeedsLLM` |
+
+At the embedding pass the best recipe and the best tool compete on one scale. A recipe wins only
+by scoring strictly higher than the best tool *and* at least `similarity_threshold`. Before
+comparing, a recipe's score is multiplied by `recipe_composite_boost` when `detect_plan_shape`
+reads the query as `Composite` — several steps in one sentence — which is what lets
+"summarise my inbox and put it on the calendar" beat the single tool it would otherwise match.
+The two numbers that decide this are `pub` fields, both set by `CognitiveRouter::new`:
+
+| Field | Value | Effect |
+|---|---|---|
+| `similarity_threshold` | `0.35` | below this nothing is a match, and the query goes to the LLM |
+| `recipe_composite_boost` | `1.5` | multiplier on a recipe's score for a `Composite` query |
+
+A returned score is not automatically acted on. The call site executes a `Tool` match only at
+`score >= 0.50` and a `Recipe` match only at `score >= 0.40`; a lower score, or `NeedsLLM`,
+falls through to the LLM pipeline. So the router's threshold says what counts as a match, and the
+turn handler decides what is confident enough to run without a model.
+
+To see why a query went where it did, call `explain_route(query, top_n) -> RouteExplanation`. It
+reaches the same verdict as `route()` — it shares the scoring code — and reports the reasoning:
+the deciding `RouteLayer` (`Conversation`, `Keyword`, `Recipe`, `Tool`, `NeedsLLM`), the top
+`top_n` tool and recipe candidates with their scores, the detected `PlanShape`, the threshold in
+force, and `elapsed_ms`. `route()` asks for `top_n = 0`, which skips the candidate lists;
+`top_n > 0` is for answering "why did you do that?".
+
+### Tools: registration and permission
+
+Registering a tool with the router:
+
+```rust
+router.register_tool("deploy_staging", "Deploy a branch to staging", "devops");
+```
+
+The three arguments are concatenated into the one string that gets embedded — `name` with
+underscores replaced by spaces, then `description`, then `category`. So the description is the
+routing signal: a description that says what the tool is for is what makes it findable, and one
+that doesn't will never route. `register_tools` does the same for a batch in one embedding call,
+`unregister_tool` removes by name, `tool_count` reports the size. A tool that fails to embed is
+skipped with a warning rather than registered un-embedded. Registering an existing `name` again
+updates that entry in place instead of adding a duplicate, which is what a plugin reload relies on.
+
+The companion registers all of them at startup: `init_cognitive_router` walks
+`registry.list_metadata(PermissionLevel::Dangerous)` — the level enum is ordered, so passing its
+ceiling means "every tool".
+
+**Permission is a separate axis from routing.** Every tool carries one of four levels
+(`PermissionLevel`, `crates/yantrik-companion-core/src/permission.rs`). The enum derives `Ord` so
+that one comparison gates execution — `tool.permission() > ctx.max_permission` → deny — and
+`Display` writes the names lowercase:
+
+| `PermissionLevel` | What it permits |
+|---|---|
+| `Safe` | read-only, nothing changes |
+| `Standard` | writes, reversible |
+| `Sensitive` | changes system state |
+| `Dangerous` | destructive, or sends something off the machine |
+
+The router never reads the level: a `Dangerous` tool matches as readily as a `Safe` one. The
+level is checked when the tool executes, against the `max_permission` in the `ToolContext` it is
+given. `max_permission_now()` (`crates/yantrik-companion/src/companion.rs`) fills it from
+`tools.max_permission` in the config (see [Permission Levels](#permission-levels) above), lowered
+by the current turn's own ceiling when that is lower. Registering a tool therefore cannot widen
+what it is allowed to do. To add a tool without writing Rust, see [YAML Plugins](#yaml-plugins).
+
+### Recipes: steps and templates
+
+A recipe is a predetermined multi-step workflow. Unlike open-ended LLM work, its `Tool` steps run
+straight through the tool registry with no model in the loop (`Tool` is "Direct tool call — no LLM
+needed") — only `Think` steps call one (`crates/yantrik-companion/src/recipe.rs`, which keeps the
+steps of a recipe in `recipe_steps`, one row per step, so a run's progress is queryable). Steps
+include `Tool { tool_name, args, store_as, on_error }` and
+`Think { prompt, store_as, fallback_template }`, alongside `Filter`, `Aggregate` and `JumpIf`;
+a `{{var}}` reference in one step resolves to whatever an earlier step stored under `store_as`,
+and a `Think` step can carry a `fallback_template` for when no LLM is reachable.
+
+There are two sources:
+
+- **Built-in templates** — `crates/yantrik-companion/src/recipe_templates/mod.rs`: a
+  `RecipeTemplate` is static metadata (`id`, `name`, `description`, `category`, `keywords`,
+  `required_vars`) plus `steps: fn() -> Vec<RecipeStep>` and an optional `trigger`.
+  `all_templates()` collects them from the domain modules (routines, communication, research,
+  system, personal, formations) and `get_template(id)` looks one up by id.
+- **Recipes the companion wrote** — created from natural language through the `create_recipe`
+  tool and stored in SQLite, with manual, cron, event and signal triggers.
+
+To make a template routable it must reach the router, which is what the first four fields are
+for:
+
+```rust
+router.register_recipe(
+    "builtin_morning_briefing",
+    "Morning briefing",
+    "Summarise the calendar, the weather and unread mail",
+    "routine",
+    &["morning", "brief", "today"],
+);
+```
+
+`name`, `description`, `category` and `keywords` are joined into the embedded string, so
+`keywords` are the phrase-level hook — the words a person actually types. Like tools, a repeated
+`id` updates in place, `register_recipes` takes a batch, and `recipe_count` reports the size.
+`route()` returns a recipe's `id` and `name`; the turn handler passes those back to
+`get_template(id)` and runs the steps. A recipe that matches but is missing from the templates
+logs a warning and falls through to the LLM.
+
+### Instincts: the trait and urges
+
+An instinct is one struct implementing the `Instinct` trait
+(`crates/yantrik-companion-core/src/instincts.rs`), with the implementations in
+`crates/yantrik-companion-instincts/src/` and the catalogue of what ships above at
+[Instincts](#instincts):
+
+```rust
+pub trait Instinct: Send + Sync {
+    fn name(&self) -> &str;
+    fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec>;
+    fn on_interaction(&self, _state: &CompanionState, _user_text: &str) -> Vec<UrgeSpec> { vec![] }
+}
+```
+
+`evaluate` is called on each background cycle; `on_interaction` is for instincts with something
+to say about the turn that just happened and defaults to saying nothing. Both get a
+`CompanionState` — a read-only snapshot (`crates/yantrik-companion-core/src/types.rs`: absence
+via `absence_seconds()`, bond level and score, hour and weekday, idle seconds, pending triggers,
+active patterns, model tier, and the rest) and return `Vec<UrgeSpec>`; an empty vector means
+nothing to report this cycle, which is the normal answer.
+
+An `UrgeSpec` is a claim that something is worth surfacing, built with
+`UrgeSpec::new(instinct_name, reason, urgency)` and shaped by chainable builders —
+`with_cooldown`, `with_context`, `with_message`, `guaranteed`, `with_time_sensitivity`,
+`with_category`, `with_autonomy`. Four fields are how an urge gets its turn. `new` seeds
+`time_sensitivity`, `category` and `autonomy` from the per-instinct table in
+`crates/yantrik-companion-core/src/urge_defaults.rs`, so a builder overrides what the instinct's
+own name already implies:
+
+- `urgency` — `0.0` (ignore) to `1.0` (act immediately), one of the inputs the scorer weighs.
+- `time_sensitivity` — `TimeSensitivity`: `Immediate`, `Today`, `Soon` or `Ambient`; the
+  selection tier.
+- `category` — `InstinctCategory`: `Anticipatory`, `Wellbeing`, `Social`, `Growth`, `Awareness`,
+  `Emotional`, `Meta`; fairness tracking and token budgets are per-category.
+- `autonomy` — `AutonomyTier`: `SilentBackground`, `NotifySuggestion`, `AskPermission`,
+  `InterruptNow`; an instinct the table does not list gets `NotifySuggestion`.
+
+The rest of the pipeline is deliberately not yours: `cooldown_key` is how a repeat urge boosts the
+pending one instead of duplicating it, `guaranteed` bypasses the urgency threshold, and whether
+the urge is heard at all — and whether it reaches Silence, Ambient, Whisper, Badge or Interrupt —
+is the [Proactive Pipeline](#proactive-pipeline)'s decision, informed by what you dismissed or
+acted on before. An instinct proposes; it never delivers.
+
+To add one: write the struct and its `Instinct` impl in `crates/yantrik-companion-instincts/src/`,
+declare it in that crate's `lib.rs`, and have `load_instincts(&InstinctSettings)` construct it —
+`InstinctSettings` (`crates/yantrik-companion-core/src/config.rs`) holds the per-instinct enable
+flags and thresholds, so an instinct it does not build is an instinct the config turned off.
+The copy an instinct puts in `reason` and `suggested_message` is held to the rules in
+`crates/yantrik-companion-instincts/tests/instinct_copy_guard.rs`: evidence, never testimony
+about feelings.
