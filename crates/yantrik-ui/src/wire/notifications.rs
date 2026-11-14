@@ -357,18 +357,21 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
         serde_json::json!({ "id": id, "action_id": action_id }),
     );
 
-    let ours = with_mirror(|m| {
-        m.get(id).and_then(|n| {
-            if n.source != yantrik_ipc_contracts::notifications::Source::Yantrik {
-                return None;
-            }
+    // A foreign notification's button is the sender's own to carry out — the service emits
+    // `ActionInvoked` — so one missing from this lookup is not a dead end and goes unsaid.
+    // Ours is: the mirror holds nothing to act on, and the person is owed the difference (#1107).
+    let (ours, foreign) = with_mirror(|m| match m.get(id) {
+        None => (None, false),
+        Some(n) if n.source != yantrik_ipc_contracts::notifications::Source::Yantrik => (None, true),
+        Some(n) => (
             n.actions
                 .iter()
                 .find(|a| a.id == action_id)
-                .map(|a| (n.app.clone(), a.args.clone(), n.sender.as_ref().is_some_and(|s| s.desktop)))
-        })
+                .map(|a| (n.app.clone(), a.args.clone(), n.sender.as_ref().is_some_and(|s| s.desktop))),
+            false,
+        ),
     })
-    .flatten();
+    .unwrap_or((None, false));
 
     // The service dismisses a notification whose button was pressed, and the next poll will say
     // so — but the button is gone from the screen now, because a person who pressed it is done.
@@ -386,6 +389,10 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
             } else {
                 forward_to_app(&ui, &app, action_id, args);
             }
+        } else if !foreign {
+            // Ours, and the mirror holds nothing to act on — gone, or the button is not on it.
+            // The toast is already off the screen; a press that went nowhere has to be said.
+            tell_press_failed(weak, PressFailure::Gone);
         }
     }
     tracing::info!(id, action_id, "notification action pressed");
@@ -395,24 +402,29 @@ fn invoke_action(weak: &slint::Weak<App>, id: &str, action_id: &str) {
 ///
 /// The app is started first if it is not running: a notification outlives the process that
 /// raised it, and "the download finished" is exactly the case where Download Manager has since
-/// been closed. If the app is not one of ours, or its surface never answers, that is logged and
-/// nothing else happens — the alternative is a button that reports success it did not observe.
+/// been closed. Every dead end is logged and said — a button that reports success it did not
+/// observe is as bad as one that says nothing at all (#1107).
 pub(crate) fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<serde_json::Value>) {
     let installed = crate::apps::Catalogue::shared().get();
     let Some((surface, opens_as)) = button_route(app, &installed) else {
         tracing::warn!(app, action, "a notification button named an app this desktop does not open");
+        tell_press_failed(&ui.as_weak(), PressFailure::NotRoutable);
         return;
     };
     let address = format!("app-{surface}");
     if !yantrik_app_runtime::service::is_up(&address) {
         match opens_as {
             Some(name) => ui.invoke_launch_app(name.into()),
-            None => tracing::warn!(app, action, "the app a notification button belongs to is closed and cannot be opened"),
+            None => {
+                tracing::warn!(app, action, "the app a notification button belongs to is closed and cannot be opened");
+                tell_press_failed(&ui.as_weak(), PressFailure::CannotOpen);
+            }
         }
     }
 
     let action = action.to_string();
     let args = args.unwrap_or_else(|| serde_json::json!({}));
+    let weak = ui.as_weak();
     let _ = std::thread::Builder::new()
         .name("yos-notification-action".into())
         .spawn(move || {
@@ -424,6 +436,7 @@ pub(crate) fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<ser
             }
             if !yantrik_app_runtime::service::is_up(&address) {
                 tracing::warn!(address, action, "the app a notification button belongs to did not open");
+                tell_press_failed(&weak, PressFailure::DidNotOpen);
                 return;
             }
             SyncRpcClient::clear_breaker(&yantrik_ipc_transport::RpcServer::default_address(&address));
@@ -438,10 +451,50 @@ pub(crate) fn forward_to_app(ui: &App, app: &str, action: &str, args: Option<ser
                     settled = reply["settled"].as_bool().unwrap_or(false),
                     "a notification button was carried out by the app that raised it"
                 ),
-                Err(e) => tracing::warn!(address, action, error = %e.message,
-                    "the app refused the action a notification button named"),
+                Err(e) => {
+                    tracing::warn!(address, action, error = %e.message,
+                        "the app refused the action a notification button named");
+                    tell_press_failed(&weak, PressFailure::Refused);
+                }
             }
         });
+}
+
+/// A button press that could not be carried out. Each of these used to end in a
+/// `tracing::warn!` the person never saw (#1107).
+#[derive(Clone, Copy)]
+enum PressFailure {
+    /// Our notification, and the mirror holds nothing to act on.
+    Gone,
+    /// The named app routes to no control surface.
+    NotRoutable,
+    /// Closed, and there is nothing to open it by.
+    CannotOpen,
+    /// Opened or opening, but its surface never came up in time.
+    DidNotOpen,
+    /// The app answered: no.
+    Refused,
+}
+
+/// The desktop's own sentence for one of them — fixed words, never the app's or a mind's.
+fn press_failure_said(why: PressFailure) -> &'static str {
+    match why {
+        PressFailure::Gone => "That button's notification is no longer there.",
+        PressFailure::NotRoutable => "That button's app is not one this desktop can act on.",
+        PressFailure::CannotOpen => "That button's app is closed and cannot be opened.",
+        PressFailure::DidNotOpen => "That button's app did not open in time.",
+        PressFailure::Refused => "That button's app refused the action.",
+    }
+}
+
+/// Say it, in a toast of the desktop's own (`toast::local`, not the store's — a failure to act
+/// is not news to keep). Any of these can be reached from a worker thread, so the raise rides
+/// into the event loop rather than touching the toast queue from here.
+fn tell_press_failed(weak: &slint::Weak<App>, why: PressFailure) {
+    let what = press_failure_said(why);
+    let _ = weak.clone().upgrade_in_event_loop(move |ui| {
+        crate::wire::toast::local(&ui.as_weak(), "Yantrik", what, "", 1);
+    });
 }
 
 /// Where one of our notifications' buttons goes: the surface the call is made on, and the name to
@@ -1405,6 +1458,43 @@ mod tests {
         assert!(body_of("notify_companion_thought").contains("post_companion(CompanionPost::Reflection"));
         assert!(body_of("deliver").contains("post_companion(CompanionPost::Result"));
         assert!(body_of("companion_said").contains("post_companion(CompanionPost::Result"), "a finished task's text is a model's");
+    }
+
+    /// A button press that could not be carried out used to end in a `tracing::warn!` nobody
+    /// saw: the toast was already gone, and the button had simply done nothing (#1107). Every
+    /// dead end has a sentence of the desktop's own, and reaches the toast.
+    #[test]
+    fn a_button_that_could_do_nothing_says_so() {
+        use super::{press_failure_said, PressFailure};
+        use PressFailure::{CannotOpen, DidNotOpen, Gone, NotRoutable, Refused};
+        for why in [Gone, NotRoutable, CannotOpen, DidNotOpen, Refused] {
+            let said = press_failure_said(why);
+            assert!(said.starts_with("That button's") && said.ends_with('.'), "the desktop's own words: {said}");
+            assert!(!said.chars().any(char::is_control) && !said.contains('\n'), "one line: {said}");
+        }
+        assert_ne!(press_failure_said(Gone), press_failure_said(Refused));
+
+        // Each dead end, still logged, also says it. Before the fix each of these found the
+        // `tracing::warn!` and nothing after it.
+        let src = include_str!("notifications.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let says_it_after = |logged: &str| {
+            let at = code.find(logged).unwrap_or_else(|| panic!("logged line gone: {logged}"));
+            let after: String = code[at..].chars().take(240).collect();
+            assert!(after.contains("tell_press_failed("), "{logged} is logged and left unsaid");
+        };
+        for logged in [
+            "\"a notification button named an app this desktop does not open\"",
+            "\"the app a notification button belongs to is closed and cannot be opened\"",
+            "\"the app a notification button belongs to did not open\"",
+            "\"the app refused the action a notification button named\"",
+        ] {
+            says_it_after(logged);
+        }
+        // And the press that found nothing in the mirror to act on. Only that arm: the
+        // locked-screen drop at the top of `invoke_action` stays silent on purpose (#203).
+        let gone = code.find("} else if !foreign {").unwrap_or_else(|| panic!("invoke_action's dead-end arm is gone"));
+        assert!(code[gone..].contains("tell_press_failed(weak, PressFailure::Gone)"));
     }
 
     /// Security review of #648, L3: model-written text must not reach a notification any way but
