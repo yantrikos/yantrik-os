@@ -463,7 +463,8 @@ fn with_the_switch_off_nothing_is_read_or_gathered() {
 // ── No model, no network ────────────────────────────────────────────────────────────────
 
 /// The gatherer takes four local sources as trait objects and nothing else, so a build without
-/// any client compiles and runs (every test above is one). And no file of it names one.
+/// any client compiles and runs (every test above is one). This one only guards the naming: it
+/// reads the source for the names of a model or a network client, and proves nothing beyond it.
 #[test]
 fn no_file_of_the_gatherer_names_a_model_or_a_network_client() {
     let files: [(&str, &str); 13] = [

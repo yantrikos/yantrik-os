@@ -112,14 +112,15 @@ if action == "seed":
     con.execute("INSERT OR IGNORE INTO email_accounts (name, email, provider) VALUES ('Demo (demo-mb)', ?, 'demo')", ("demo-mb-me@seed.test",))
     account = con.execute("SELECT id FROM email_accounts WHERE email = ?", ("demo-mb-me@seed.test",)).fetchone()[0]
     rows = [
-        (9001, "maya.chen@seed.test", "Maya Chen", "demo-mb-me@seed.test", "Slides for Friday", now - 2 * 86400, "<demo-mb-1@seed.test>"),
-        (9002, "demo-mb-me@seed.test", person, "ravi.rao@seed.test", "Q4 numbers", now - 1 * 86400, "<demo-mb-2@seed.test>"),
+        (9001, "INBOX", "maya.chen@seed.test", "Maya Chen", "demo-mb-me@seed.test", "Slides for Friday", now - 2 * 86400, "<demo-mb-1@seed.test>"),
+        # The person's own mail lives in Sent: its row must open from there.
+        (9002, "Sent", "demo-mb-me@seed.test", person, "ravi.rao@seed.test", "Q4 numbers", now - 1 * 86400, "<demo-mb-2@seed.test>"),
     ]
-    for uid, frm, name, to, subject, ts, mid in rows:
+    for uid, folder, frm, name, to, subject, ts, mid in rows:
         con.execute(
             "INSERT OR REPLACE INTO emails (account_id, uid, folder, from_addr, from_name, to_addr, subject, date_ts, body_preview, is_read, message_id, in_reply_to) "
-            "VALUES (?, ?, 'INBOX', ?, ?, ?, ?, ?, '', 1, ?, '')",
-            (account, uid, frm, name, to, subject, ts, mid),
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, '')",
+            (account, uid, folder, frm, name, to, subject, ts, mid),
         )
     # One promise each way; `evidence_text` carries the marker.
     for promisor, promisee, action_text in [
