@@ -34,16 +34,15 @@ pub const PROGRAMS: &[&str] = &[
 const READS_CONTENT: &[&str] = &["cat", "head", "tail", "grep", "sort", "diff", "wc", "file", "sha256sum", "md5sum"];
 
 /// Places a program that prints file contents is never given, beside the desktop's shared list
-/// (`BLOCKED_SEGMENTS`): the vendors' sign-in files, the Minds panel's account directories, and
-/// `/proc`, where `self/environ` is the environment with its keys.
+/// (`BLOCKED_SEGMENTS`, and the browser profiles and secret file names of `home_paths`): the
+/// vendors' sign-in files, the Minds panel's account directories, and `/proc`, where
+/// `self/environ` is the environment with its keys.
 const ALSO_PROTECTED: &[&str] = &[
     ".claude/.credentials.json", ".codex/auth.json", ".gemini/oauth_creds.json", ".qwen/oauth_creds.json",
     ".grok/auth.json", ".local/share/yantrik/accounts", ".netrc", ".git-credentials", ".docker/config.json",
     ".aws/credentials", ".kube/config", "/proc/", "/etc/shadow", "/etc/gshadow", "/etc/sudoers",
     ".config/gh/", ".npmrc", ".cargo/credentials", ".pgpass", ".pypirc", ".local/share/keyrings/",
-    ".password-store/", ".mozilla/", ".config/chromium/", ".config/google-chrome/", ".config/BraveSoftware/",
-    ".var/app/com.google.Chrome/", ".var/app/org.chromium.Chromium/", ".var/app/com.brave.Browser/",
-    "snap/chromium/", "snap/firefox/", "/sys/", "/dev/",
+    ".password-store/", "/sys/", "/dev/",
 ];
 
 /// Whether `path` is, or leads into, a place no content may be read from — as written, and again
@@ -309,6 +308,10 @@ fn check_find(args: &[String]) -> Result<(), String> {
         if FIND_TESTS.contains(&w) {
             if i + 1 >= args.len() {
                 return Err(format!("find {w} needs a value"));
+            }
+            // Looking for a secret by name is asking where it is kept (#1247).
+            if matches!(w, "-name" | "-iname") && yantrik_ipc_contracts::home_paths::pattern_asks_for_a_secret(&args[i + 1]) {
+                return Err(format!("find {w} {}: that name is a file the AI never reads, so it is not searched for", args[i + 1]));
             }
             i += 2;
         } else if FIND_ACTIONS.contains(&w) {
