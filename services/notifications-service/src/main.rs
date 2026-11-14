@@ -51,6 +51,7 @@
 //! shell draws them in the card's words. Nothing in the request can set any of it.
 
 mod archive;
+mod brief_notice;
 mod freedesktop;
 mod grant;
 mod names;
@@ -300,6 +301,12 @@ impl NotificationsHandler {
                 let forgotten = self.store.unbind(&harness).map_err(bad_request)?;
                 tracing::info!(harness = %harness, forgotten, "the person forgot a harness id's binding");
                 Ok(serde_json::json!({ "forgotten": forgotten }))
+            }
+
+            NOTICE_BRIEF => {
+                self.desktop_only(method, peer)?;
+                let ready = brief_notice::Ready::parse(&params).map_err(bad_request)?;
+                Ok(brief_notice::announce(&self.store, &ready, chrono::Local::now()))
             }
 
             INITIATIVE_SET => {

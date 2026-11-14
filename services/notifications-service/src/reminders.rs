@@ -122,6 +122,11 @@ fn tick<Tz: TimeZone>(store: &Store, dir: &Path, sent: &mut Sent, now: DateTime<
         if sent.has(due.kind, &due.id, &due.start) {
             continue;
         }
+        // One interrupt per event: the brief's notice already holds this one.
+        if due.kind == Kind::Reminder && crate::brief_notice::covers(store, &due.id, &due.start) {
+            sent.record(due.kind, &due.id, &due.start);
+            continue;
+        }
         let answer = store.add_os_notice(NAME, due.notice(&now));
         if answer["stored"] == true {
             tracing::info!(id = %due.id, kind = due.kind.as_str(), duplicate = answer["duplicate"] == true, "announced an event");
@@ -309,7 +314,8 @@ fn live_ids(events: &[CalendarEvent]) -> BTreeSet<String> {
         .flat_map(|(e, start)| {
             // An early card says the event has a place; once it has none, the card is taken back.
             let early = place_of(e).map(|_| notice_id(Kind::Early, &e.id, &start));
-            std::iter::once(notice_id(Kind::Reminder, &e.id, &start)).chain(early)
+            let brief = crate::brief_notice::notice_id(&e.id, &start);
+            [notice_id(Kind::Reminder, &e.id, &start), brief].into_iter().chain(early)
         })
         .collect()
 }
@@ -319,7 +325,7 @@ fn rfc3339(t: DateTime<Utc>) -> String {
 }
 
 /// "in 10 minutes", "in a minute", "now".
-fn minutes_phrase(minutes: i64) -> String {
+pub(crate) fn minutes_phrase(minutes: i64) -> String {
     match minutes {
         m if m <= 0 => "now".to_string(),
         1 => "in a minute".to_string(),
@@ -512,6 +518,9 @@ impl Sent {
         }
     }
 }
+
+#[cfg(test)]
+mod brief_tests;
 
 #[cfg(test)]
 mod tests {

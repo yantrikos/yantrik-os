@@ -58,6 +58,11 @@ pub const INITIATIVE_SET: &str = "notifications.initiative_set";
 /// it afresh. Params: `{ harness }`. Answers `{ forgotten: bool }`. Desktop only: the person
 /// presses Forget in Settings → Harnesses → Initiative.
 pub const NOTICE_UNBIND: &str = "notifications.notice_unbind";
+/// The meeting brief is ready. Params: `{ event_id, title, start }` (start in unix seconds).
+/// The service makes the calendar's notice for it and grants the interrupt itself, as for the
+/// calendar's own reminders; the shell never toasts a brief. Answers as a notice post does.
+/// Desktop only.
+pub const NOTICE_BRIEF: &str = "notifications.notice_brief";
 
 // ── Bounds ──────────────────────────────────────────────────────────────────────────────────
 
