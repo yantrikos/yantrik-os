@@ -21,6 +21,7 @@
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { PillButton, OnboardField } from "components/onboard_kit.slint";
+import { KeyReach, LinkText, TimezoneRow } from "components/installer_timezone.slint";
 
 export struct InstallerDisk {
     name: string,       // kernel name, e.g. "sda" — what the installer is handed
@@ -144,80 +145,6 @@ component SummaryRow inherits HorizontalLayout {
         horizontal-alignment: right;
         vertical-alignment: center;
         overflow: elide;
-    }
-}
-
-// What lets Tab reach a control the pointer clicks. The picker, the disk rows and the ticks
-// were TouchAreas alone, so Tab went from text field to button past every one of them (13 Oct
-// 2026). Space and Enter do what a click does; the arrow keys and Escape go to the controls that
-// answer them (`step` and `dismiss` say whether they did), and pass on otherwise. The control
-// draws its own ring from `has-focus`.
-component KeyReach inherits FocusScope {
-    callback activate();
-    callback step(/* -1 up, 1 down */ int) -> bool;
-    callback dismiss() -> bool;
-    key-pressed(event) => {
-        if (event.text == Key.Return || event.text == "\n" || event.text == " ") {
-            if (!event.repeat) { root.activate(); }
-            return accept;
-        }
-        if (event.text == Key.UpArrow && root.step(-1)) { return accept; }
-        if (event.text == Key.DownArrow && root.step(1)) { return accept; }
-        if (event.text == Key.Escape && root.dismiss()) { return accept; }
-        reject
-    }
-}
-
-// A small clickable word: Show password, More, Change. Tab reaches it too.
-component LinkText inherits Rectangle {
-    in property <string> text;
-    in property <bool> active: false;
-    in property <bool> strong: false;
-    // A focus stop of its own (Tab, Enter, Space), with a ring. Off for the links that sit
-    // beside a field whose own keys already reach them.
-    in property <bool> focusable: false;
-    // Each change puts focus here: how a screen drawn over this one hands focus back.
-    in property <int> focus-when: 0;
-    callback clicked();
-    width: label.preferred-width + (root.focusable ? 8px : 0);
-    height: label.preferred-height + (root.focusable ? 4px : 0);
-    border-radius: 4px;
-    border-width: fs.has-focus ? Theme.focus-ring-width : 0;
-    border-color: Theme.focus-ring;
-    accessible-role: button;
-    accessible-action-default => { root.clicked(); }
-    accessible-label: root.text;
-    changed focus-when => { if root.focusable { fs.focus(); } }
-    fs := FocusScope {
-        enabled: root.focusable;
-        key-pressed(event) => {
-            if (event.text == "\n" || event.text == " ") { if !event.repeat { root.clicked(); } return accept; }
-            reject
-        }
-    }
-    label := Text {
-        x: root.focusable ? 4px : 0;
-        text: root.text;
-        color: root.strong || root.active || touch.has-hover || link-key.has-focus ? Theme.accent : Theme.text-secondary;
-        font-size: Theme.fs-caption;
-        vertical-alignment: center;
-    }
-    // The ring sits just outside the word, so the word does not move when it shows.
-    if link-key.has-focus : Rectangle {
-        x: -4px;
-        y: -2px;
-        width: parent.width + 8px;
-        height: parent.height + 4px;
-        border-radius: 4px;
-        border-width: 1px;
-        border-color: Theme.focus-ring;
-    }
-    link-key := KeyReach {
-        activate => { root.clicked(); }
-    }
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
     }
 }
 
@@ -421,9 +348,9 @@ export component InstallerScreen inherits Rectangle {
     in-out property <bool> encrypt: true;
 
     // ── Review ──
-    // Detected from the network when the installer starts, "UTC" when that fails; editable.
+    // "UTC" when the installer starts (nothing asks the network); the person's to change. The row
+    // stays amber with a question until they answer it (TimezoneRow).
     in-out property <string> timezone;
-    property <bool> timezone-editing: false;
 
     // ── Install ──
     in-out property <bool> installing: false;
@@ -1325,39 +1252,9 @@ export component InstallerScreen inherits Rectangle {
                                     align: right;
                                 }
                             }
-                            HorizontalLayout {
-                                spacing: Theme.sp-3;
-                                Text {
-                                    text: "Timezone";
-                                    width: 130px;
-                                    color: Theme.text-dim;
-                                    font-size: Theme.fs-body;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: root.timezone != "" ? root.timezone : "Detecting…";
-                                    horizontal-stretch: 1;
-                                    color: root.timezone-error != "" && root.timezone != "" ? Theme.amber : Theme.text-primary;
-                                    font-size: Theme.fs-body;
-                                    font-weight: 500;
-                                    horizontal-alignment: right;
-                                    vertical-alignment: center;
-                                }
-                                VerticalLayout {
-                                    alignment: center;
-                                    LinkText {
-                                        text: root.timezone-editing ? "Done" : "Change";
-                                        strong: true;
-                                        clicked => { root.timezone-editing = !root.timezone-editing; }
-                                    }
-                                }
-                            }
-                            if root.timezone-editing || (root.timezone != "" && root.timezone-error != "") : OnboardField {
-                                width: 428px;
-                                value <=> root.timezone;
-                                placeholder: "Region/City, e.g. Europe/Berlin";
+                            TimezoneRow {
+                                timezone <=> root.timezone;
                                 error: root.timezone-error;
-                                accepted => { if root.timezone-error == "" { root.timezone-editing = false; } }
                             }
 
                             HorizontalLayout {

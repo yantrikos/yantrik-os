@@ -38,6 +38,7 @@ done
 conf() { sed -n "s/^$1 *= *//p" "$CONF" | head -1; }
 PERSON=$(conf person_port)
 MIND=$(conf mind_view_port)
+[ -n "$MIND" ] || { echo "SKIP  Mind View's browser has no DevTools port any more (#1200), so this proof, which reaches it by one, cannot run; see \"What VM 520 must prove\" on the #1200 PR"; exit 0; }
 MV_PROFILE_TAIL=$(conf mind_view_profile)
 STOP=$(dirname "$CONF")/stop_mind_view.py
 TURN_SECONDS=${TURN_SECONDS:-180}

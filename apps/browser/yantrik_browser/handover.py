@@ -85,6 +85,12 @@ def _flags_of(raw):
     return args[0].split() + args[1:]
 
 
+def _is_a_debugging_switch(word):
+    """Any DevTools switch but the pipe, in either dash spelling (Chromium on POSIX takes
+    `-name` as well as `--name`): a port, an address, a second pipe."""
+    return word.lstrip("-").startswith("remote-debugging-") and word.startswith("-")
+
+
 def is_the_system_bwrap(pid, proc="/proc", owner=None):
     """None when `pid` runs the system's bubblewrap: its `exe` reads as one of `SYSTEM_BWRAP` and
     is that very file, by (st_dev, st_ino) as `shell_is_installed` does (a file an update has
@@ -150,8 +156,8 @@ def browser_is_the_callers(pid, caller_pid, proc="/proc"):
     facts here, a hint and not a proof: a process can retitle itself to say anything. What binds
     the hand-over is that the caller is the installed shell, `pid` is its own child (or its wall's
     grandchild) and fd 3 of `pid` is the other end of the stream sent (`stream_is_the_browsers`,
-    from the kernel); the shell makes that pair only for the Browser it launches itself with the
-    pipe switch. A process that retitles itself to carry the flag still has to be in the shell's
+    from the kernel); the shell makes that pair only for the person's Browser and for Mind View's, each launched
+    with the pipe switch. A process that retitles itself to carry the flag still has to be in the shell's
     own tree and hold the shell's stream."""
     try:
         with open(os.path.join(proc, str(pid), "cmdline"), "rb") as f:
@@ -159,7 +165,7 @@ def browser_is_the_callers(pid, caller_pid, proc="/proc"):
     except OSError as e:
         return "that browser (pid %d) could not be read (%s)" % (pid, e)
     flags = _flags_of(raw)
-    if PIPE_FLAG not in flags or any(a.startswith("--remote-debugging-port") for a in flags):
+    if PIPE_FLAG not in flags or any(_is_a_debugging_switch(a) for a in flags if a != PIPE_FLAG):
         return "pid %d was not started with a DevTools pipe and no port" % pid
     return reaches_the_caller(pid, caller_pid, proc)
 

@@ -8,6 +8,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config_intervals::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonalityConfig {
     #[serde(default = "default_name")]
@@ -733,44 +735,6 @@ fn default_email_poll_minutes_f64() -> f64 {
     5.0
 }
 fn default_true_val() -> bool { true }
-fn default_news_interval() -> f64 { 60.0 }
-fn default_trend_interval() -> f64 { 45.0 }
-fn default_curiosity_idle() -> f64 { 15.0 }
-fn default_curiosity_interval() -> f64 { 4.0 }
-fn default_interest_interval() -> f64 { 3.0 }
-fn default_deal_interval() -> f64 { 6.0 }
-fn default_activity_interval() -> f64 { 4.0 }
-fn default_connection_weaver_interval() -> f64 { 5.0 }
-fn default_context_bridge_interval() -> f64 { 8.0 }
-fn default_deep_dive_interval() -> f64 { 6.0 }
-fn default_wonder_sense_interval() -> f64 { 4.0 }
-fn default_golden_find_interval() -> f64 { 6.0 }
-fn default_growth_mirror_interval() -> f64 { 18.0 }
-fn default_local_pulse_interval() -> f64 { 6.0 }
-fn default_tradition_keeper_interval() -> f64 { 22.0 }
-fn default_night_owl_interval() -> f64 { 2.5 }
-fn default_legacy_builder_interval() -> f64 { 168.0 } // ~weekly
-fn default_identity_thread_interval() -> f64 { 168.0 } // ~weekly
-fn default_myth_buster_interval() -> f64 { 8.0 }
-fn default_cooking_companion_interval() -> f64 { 6.0 }
-fn default_second_brain_interval() -> f64 { 12.0 }
-fn default_health_pulse_interval() -> f64 { 4.0 }
-fn default_money_mind_interval() -> f64 { 12.0 }
-fn default_relationship_radar_interval() -> f64 { 6.0 }
-fn default_goal_keeper_interval() -> f64 { 6.0 }
-fn default_decision_lab_interval() -> f64 { 8.0 }
-fn default_skill_forge_interval() -> f64 { 12.0 }
-fn default_time_capture_interval() -> f64 { 12.0 }
-fn default_mentor_match_interval() -> f64 { 48.0 }
-fn default_debrief_partner_interval() -> f64 { 6.0 }
-fn default_philosophy_companion_interval() -> f64 { 48.0 }
-fn default_devils_advocate_interval() -> f64 { 24.0 }
-fn default_energy_map_interval() -> f64 { 48.0 }
-fn default_future_self_interval() -> f64 { 72.0 }
-fn default_dream_keeper_interval() -> f64 { 72.0 }
-fn default_cultural_radar_interval() -> f64 { 24.0 }
-fn default_pattern_breaker_interval() -> f64 { 72.0 }
-fn default_opportunity_scout_interval() -> f64 { 48.0 }
 
 impl Default for InstinctSettings {
     fn default() -> Self {
@@ -1687,6 +1651,10 @@ pub struct CompanionConfig {
     /// request needs, instead of the chat model. Off unless an endpoint is set.
     #[serde(default)]
     pub judge: JudgeConfig,
+    /// Whether instincts may search the web while nobody is at the keyboard. Off until the person
+    /// allows it on the shell's card (`background_research`); the per-instinct flags sit beneath it.
+    #[serde(default)]
+    pub background_research: bool,
 }
 
 /// OAuth connector configuration for external services.
@@ -1820,6 +1788,7 @@ impl Default for CompanionConfig {
             ck5: CK5Config::default(),
             chat: ChatConfig::default(),
             judge: JudgeConfig::default(),
+            background_research: false,
         }
     }
 }

@@ -421,6 +421,11 @@ jobs:
         run: bash deploy/yantrik-os/yantrik-broadcom-wifi selftest
       - name: A Mac's fans get its own limits
         run: bash deploy/yantrik-os/yantrik-mac-fans selftest
+      # Chromium's no-phone-home policy (#1175): one install step, root-owned 0644 at
+      # /etc/chromium/policies/managed/yantrik-no-phone-home.json, a person's own policies left
+      # alone, and the ISO build, the cloud-image build, the release bundle and the updater all use it.
+      - name: Chromium's no-phone-home policy has one install step every image path and the updater call
+        run: sh deploy/yantrik-os/stage-chromium-policy.sh selftest
       - name: The Mac support stages into a rootfs
         run: |
           root="$(mktemp -d)"
@@ -520,7 +525,7 @@ jobs:
         run: |
           sudo apt-get install -y -qq python3-websocket >/dev/null
           for t in test_live test_console test_local_files test_preexisting test_input test_screenshot test_reload_find test_tricks \
-                   test_ports test_listener test_guard test_ports_live test_pipe test_pipe_wall test_restart; do python3 tests/browser-core/$t.py || exit 1; done
+                   test_ports test_listener test_guard test_ports_live test_pipe test_pipe_wall test_restart test_held_pages; do python3 tests/browser-core/$t.py || exit 1; done
 
       # What an outside author copies and reads (the surface SDK's piece F): the Python template,
       # held to the protocol by the real `yos check`; the LibreOffice adapter, built only on the

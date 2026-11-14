@@ -349,7 +349,7 @@ mod tests {
             .join(format!("yantrik-companion-window-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let heard = crate::app_ui::tests::fake(dir.join("app-shell.sock"), reply);
+        let heard = crate::app_ask::tests::fake(dir.join("app-shell.sock"), reply);
         let desk = Desk {
             dir: Some(dir),
             wait: std::time::Duration::from_millis(600),

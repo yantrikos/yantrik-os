@@ -31,9 +31,6 @@ pub mod spotify;
 pub mod facebook;
 pub mod instagram;
 pub mod calendar;
-pub mod events;
-pub mod news;
-pub mod weather;
 
 use rusqlite::Connection;
 

@@ -154,6 +154,10 @@ impl Tool for ServiceControlTool {
             return "Error: service and action are required".to_string();
         }
 
+        if !matches!(action, "start" | "stop" | "restart") {
+            return "Error: action must be start, stop or restart".to_string();
+        }
+
         // Validate service name
         if service.contains(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.') {
             return "Error: invalid service name".to_string();

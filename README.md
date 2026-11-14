@@ -107,7 +107,8 @@ Not a chatbot. A proactive agent with:
 - **Pluggable minds** — the built-in companion is one harness among several. Anything that
   speaks the attach protocol can answer instead, managing its own endpoint and credentials.
   Five exist: Yantrik Mind, Hermes Agent, Pi, DeepSeek and OpenClaw — the last four ship as
-  source in `harnesses/`, and none of them is started until you configure it. See
+  source in `harnesses/`. Hermes is set up once a model is chosen in the first run; Pi, DeepSeek and
+  OpenClaw are not started until you configure them. See
   [docs/harness.md](docs/harness.md).
 - **YAML plugins** — add tools without writing Rust
 
@@ -403,15 +404,58 @@ yantrik-os/
 
 ## Privacy and security
 
-- **The OS itself sends nothing anywhere.** No telemetry, no phone-home, no analytics, no call
-  it makes on its own behalf. The image ships pointed at loopback and at nothing else, because
-  an endpoint baked into a public image is an endpoint every copy of it talks to. The two
-  places it does reach out are ones you asked for: the update check against
-  `releases.yantrikos.com`, and whatever your weather, mail and calendar are configured
-  against — and a problem report you chose to send. When an app crashes, the desktop writes a
-  record locally, scrubbed of your home directory, your user name and anything shaped like a
-  key; *Report a problem* shows you that exact file, and only pressing Send moves it, to
-  `report.yantrikos.com`, with no name, hostname or address attached.
+- **Chromium's own calls home are off, and that reaches your Chromium too.** The browsers the
+  companion and the minds start run with switches that turn off Chromium's background calls to
+  Google (the Optimization Guide, component updates, field trials and the like); your own Browser
+  pin keeps its own settings. Beside that, the image installs one managed policy file,
+  `/etc/chromium/policies/managed/yantrik-no-phone-home.json`, and Debian's Chromium reads that
+  folder for every profile, yours included. It turns off usage metrics, "make searches and browsing
+  better" URL data collection, the on-device AI model download, background mode (Chromium no
+  longer keeps running after its last window closes) and Sync. It does not touch translation or
+  component updates. It is put in place once, when the machine has none and never had one; a later
+  update upgrades it only while it is still exactly what we shipped. **To opt out, delete the file
+  (`sudo rm /etc/chromium/policies/managed/yantrik-no-phone-home.json`):** it is not put back, and
+  an edited copy is left as you made it. Your own files in that folder are never read or changed.
+- **The OS itself sends nothing anywhere.** No telemetry, no phone-home, no analytics. The
+  image ships pointed at loopback and at nothing else, because an endpoint baked into a public
+  image is an endpoint every copy of it talks to. With nobody at the keyboard the OS itself
+  makes two kinds of call: the update check against `releases.yantrikos.com`, and the clock sync
+  (NTP) to Debian's pool through `systemd-timesyncd`; on Macs with an older Broadcom Wi-Fi chip
+  it also fetches that driver once, from Debian's archive (or, failing that, Broadcom's firmware
+  from the host Debian's installer package uses). It never looks up where you are on its
+  own, and it never searches the web on its own: IP-based location lookups and background
+  research are each off until you allow them, and the one way a feature gets either is a card on
+  your screen saying what is sent and to whom (your internet address, to a weather or location
+  service; your search terms, to your own SearXNG or else DuckDuckGo), whose Allow button turns
+  it on (an answer of No is remembered, and Settings, under Minds, turns background research
+  off again or asks again). No bypass mode skips those cards, or the card before a problem
+  report is sent. Choosing a model in the first run sets up Hermes, the default mind, about 3 GB
+  from GitHub and Python's package index (the first-run screen says so before you choose, and
+  when the installer carried your choice nothing is downloaded until that screen has shown it),
+  which then keeps itself up to date. You can
+  also turn location lookups on yourself by putting `on` in `~/.config/yantrik/location-lookup`
+  (a file you own, mode 600, in a directory you own that neither other users nor the
+  `yantrik-minds` group can write); anything running as you can write that file too, so `yos
+  describe shell` shows "Location lookups: on (since …)" whenever they are on.
+  `YANTRIK_NO_GEOLOCATE=1` keeps them off even then. The
+  installers start the timezone at UTC (the graphical one) or the live system's zone (the text
+  one) and ask you to confirm or change it; neither asks the network. Everything else the OS
+  contacts is something you set up or ask for: a cloud model account (checked in the background
+  while it is your chosen model), another mind you install (which keeps itself up to date, and which we
+  ask not to report usage with `DO_NOT_TRACK=1`), your weather (from a public weather service, for a place you name or have saved), mail, calendar and connectors, and a problem
+  report you chose to send. Its code runner has no network unless you ask for one in your
+  own turn (the terminal, above, is not the code runner). Installing the packages a script needs is a web fetch, and so is a call
+  to a tool server or YAML plugin you add, so neither happens with nobody there. A turn is yours only when you
+  typed or spoke it: an urge, an automation, or a program asking the shell to send a message is not,
+  and with nobody there the companion cannot open a browser, start a harness install or Google's
+  sign-in page, or look up a place you did not save. When an app crashes or fails, the desktop writes a
+  record locally (`~/.local/share/yantrik/problems/`) with your home path, your user name and common key and
+  token shapes removed; other things a log line happens to contain, such as host names,
+  addresses or file names, are not removed. *Report a problem* shows you that record, and it
+  leaves the machine only when you press Send there or Allow a mind's request to send it. It
+  goes over HTTPS to `report.yantrikos.com`, which posts it as a public issue on this
+  repository. Nothing about you or the machine is added to it; the service sees your internet
+  address only to limit how often reports arrive.
 - **The mind is a separate question, and it is yours to answer.** This OS is built to be
   driven by any mind, cloud models included; that is the point of the harness protocol, and
   the token-efficiency comparison this project publishes was itself measured against a cloud
@@ -425,8 +469,12 @@ yantrik-os/
   most important thing in the bar.
 - **The memory is yours.** It lives at `/opt/yantrik/data/` as plain SQLite you can read,
   export or delete.
-- **Graded permissions.** Tools are safe, standard, sensitive or dangerous; the last two need
-  explicit approval.
+- **Graded permissions.** Tools are graded safe, standard, sensitive or dangerous, and the
+  machine has a ceiling above which nothing runs (`tools.max_permission`; the image ships
+  `sensitive`). The built-in companion runs its own tools up to that ceiling without asking you
+  each time, so lower it to restrict the companion. A mind you attach is asked about on your
+  screen: in the default `ask` mode its sensitive and dangerous actions put a card in front of
+  you, and the other modes ask about less, never past the ceiling.
 - **Path sandboxing.** File tools refuse `.ssh`, `.gnupg` and similar.
 - **A Mind's workshop is sealed on the program, not on the Mind.** A Mind builds in a workshop
   you grant on a card. A *sealed* job (`agent_run_sealed`) sees only its workshop and has no

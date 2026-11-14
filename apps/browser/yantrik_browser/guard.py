@@ -1,15 +1,15 @@
-"""Which browser a call may use: decided by who is calling and by what holds the port (#1085).
+"""Which browser a call may use: decided by who is calling and by what holds its pipe (#1085, #1200).
 
-Who is calling picks the port, deterministically and never by who answers first:
+Who is calling picks the browser, deterministically and never by who answers first:
 
   a mind (an agent token, the mind account, a caller the shell says descends from an attached
-  mind, or anyone not shown to be the person)  ->  Mind View's browser, its port and its profile
+  mind, or anyone not shown to be the person)  ->  Mind View's browser and its profile
   the person (their own `yos web`, `yos act browser`)  ->  their Browser, over its pipe (#1137)
 
-Then it is checked by what holds it (listener.py): Mind View's port must be held by a browser run
-by this account on Mind View's profile; the person's pipe must be held for a live browser that is
-not a mind's. A call is
-never sent to a browser it was not meant for, and a refusal says what is true.
+Then it is checked by what holds it: each side's pipe must be held for a live browser run by this
+account, Mind View's on Mind View's profile and the person's on none of a mind's (listener.py).
+Neither browser has a port (#1200). A call is never sent to a browser it was not meant for, and a
+refusal says what is true.
 """
 
 import os
@@ -24,11 +24,11 @@ from . import listener, ports
 
 SHELL_ASKED = 3.0
 SHELL_LOOKED_AT = 0.5    # seconds to connect to the shell's socket and read who holds it
-START_WAIT = 30.0        # seconds Mind View's browser is given to open its port once asked for
+START_WAIT = 30.0        # seconds Mind View's browser is given to be handed over once asked for
 
 
 class Denied(Exception):
-    """The call may not use what holds the port. The sentence is the caller's to read."""
+    """The call may not use what holds the pipe. The sentence is the caller's to read."""
 
 
 class Starting(Exception):
@@ -182,46 +182,34 @@ class Guard:
         return self.side_of(), (watch.gone if watch is not None else (lambda: False))
 
     def vet(self, side):
-        """The listener on `side`'s port if it is the right browser; None when nothing listens;
-        Denied (with the sentence) when something else does or it cannot be established. The
-        person's side is not a port: see `vet_person`."""
+        """`side`'s browser as a Listener (port 0, the hand-over's serial) if the browser the shell
+        handed over for it still runs, as this account, on the profile that makes it that side's:
+        Mind View's on Mind View's, the person's on none of a mind's. None when no browser has been
+        handed over; Denied (with the sentence) when what was is not that side's. Never a port:
+        anything listening on the person's old port is refused by name, whether or not a pipe is
+        held, because a Browser that has the pipe and a port too is being driven by something
+        other than this service."""
         if side == ports.PERSON:
-            return self.vet_person()
-        port = ports.port_of(side)
-        try:
-            held = self.identify(port)
-        except listener.Unidentified as e:
-            if e.nobody:
-                return None
-            raise Denied(self._unclear(side, port, str(e))) from None
-        if held.uid != self.uid:
-            raise Denied(self._unclear(side, port, "it runs as another account"))
-        if side == ports.MIND and not (held.place == listener.MIND_VIEW):
-            raise Denied(
-                "Nothing was done. Mind View's browser port (%d) is held by a browser that is not "
-                "Mind View's own, so it may be the person's, with their sign-ins and tabs. A mind "
-                "does not use it: no page was opened, read or changed and no tab list is shown. "
-                "Only the person can change this: they can close that browser, or do this part "
-                "themselves. Trying again will not change it." % port)
-        return held
-
-    def vet_person(self):
-        """The person's Browser, held over its pipe: a Listener (port 0, the hand-over's serial)
-        if the browser the shell handed over still runs, as this account, owning no mind's
-        profile. None when no Browser has been handed over. Never a port: anything listening on
-        the person's old port is refused by name, whether or not a pipe is held, because a Browser
-        that has the pipe and a port too is being driven by something other than this service."""
-        self._refuse_the_old_port()
-        held = self.pipes.current() if self.pipes is not None else None
+            self._refuse_the_old_port()
+        held = self.pipes.holder(side).current() if self.pipes is not None else None
         if held is None:
             return None
         if self.pipes.uid_of(held.pid) != self.uid:
-            raise Denied(self._unclear(ports.PERSON, 0, "it runs as another account"))
-        if listener.is_mind_side(listener.place_of_pid(self.pipes.proc, held.pid)):
+            raise Denied(self._unclear(side, "it runs as another account"))
+        place = listener.place_of_pid(self.pipes.proc, held.pid)
+        if side == ports.PERSON and listener.is_mind_side(place):
             raise Denied(
                 "Nothing was done. The browser the desktop handed over as your Browser is Mind View's "
                 "own. Close it and open your Browser again.")
-        return listener.Listener(0, self.uid, held.serial, (held.pid,), listener.PERSON)
+        if side == ports.MIND and place != listener.MIND_VIEW:
+            raise Denied(
+                "Nothing was done. The browser the desktop handed over as Mind View's is not on Mind "
+                "View's profile, so it may be the person's, with their sign-ins and tabs. A mind does "
+                "not use it: no page was opened, read or changed and no tab list is shown. Only the "
+                "person can change this: they can close that browser, or do this part themselves. "
+                "Trying again will not change it.")
+        place = listener.PERSON if side == ports.PERSON else listener.MIND_VIEW
+        return listener.Listener(0, self.uid, held.serial, (held.pid,), place)
 
     def _refuse_the_old_port(self):
         try:
@@ -236,8 +224,8 @@ class Guard:
             "outside the desktop, holds it. Close it and open your Browser again." % ports.PERSON_PORT)
 
     def start_mind_browser(self, wait=START_WAIT):
-        """Mind View's browser was wanted and is not open: ask the shell for it and wait for its port.
-        Returns the listener, or raises Denied saying what is true."""
+        """Mind View's browser was wanted and is not open: ask the shell for it and wait for it to be
+        handed over. Returns the listener, or raises Denied saying what is true."""
         try:
             self.starter()
         except Starting as e:
@@ -249,14 +237,13 @@ class Guard:
             if held is not None:
                 return held
             if time.monotonic() > deadline:
-                raise Denied("Mind View's browser was asked to open but did not open its debugging port "
+                raise Denied("Mind View's browser was asked to open but was not handed over "
                              "within %d s. Nothing was done." % wait)
             time.sleep(0.3)
 
     @staticmethod
-    def _unclear(side, port, why):
+    def _unclear(side, why):
         whose = "Mind View's browser" if side == ports.MIND else "the person's Browser"
-        where = "port %d" % port if port else "its pipe"
-        return ("Nothing was done. Which browser holds %s, where %s should be, could not be "
+        return ("Nothing was done. Which browser holds its pipe, where %s should be, could not be "
                 "established (%s), so it is not used. Only the person can change this: they can "
-                "close that browser, or do this part themselves." % (where, whose, why))
+                "close that browser, or do this part themselves." % (whose, why))

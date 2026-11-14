@@ -1,13 +1,15 @@
-"""Which DevTools port and profile each of the desktop's browsers has (#1085).
+"""Which profile each of the desktop's browsers has, and the one old DevTools port (#1085).
 
 There are two: the person's Browser (their own signed-in profile) and Mind View's browser (a
-profile of its own, which every mind's web tools drive). The numbers and paths are in
-browsers.conf (the yantrik-browser-ports crate owns it; a release copies it beside this file), and the Rust side (the yantrik-browser-ports crate) builds its
-constants from the same file. Nothing else spells them.
+profile of its own, which every mind's web tools drive). The paths are in browsers.conf (the
+yantrik-browser-ports crate owns it; a release copies it beside this file), and the Rust side
+builds its constants from the same file. Nothing else spells them.
 
-The person's Browser has no port any more (#1137): it runs with `--remote-debugging-pipe`, held by
-pipes.py. `PERSON_PORT` is the number it used to listen on, kept so the guard can say an older
-build's browser still does, and so that nothing else ever listens there.
+Neither browser has a port (#1137, #1200): each runs with `--remote-debugging-pipe`, held by
+pipes.py. A DevTools port is reachable by every process of the machine, and a job that speaks raw
+DevTools to it goes round the fence this service puts on a browser's tabs. `PERSON_PORT` is the
+number the person's Browser used to listen on, kept so the guard can say an older build's browser
+still does. Mind View's old port is spelled nowhere: nothing may fall back to it.
 """
 
 import os
@@ -33,8 +35,6 @@ def read_conf(path=CONF):
 
 _CONF = read_conf()
 PERSON_PORT = int(_CONF["person_port"])
-MIND_VIEW_PORT = int(_CONF["mind_view_port"])
-IDENTITY_PORTS = (int(_CONF["identity_port_first"]), int(_CONF["identity_port_last"]))
 MIND_VIEW_PROFILE = _CONF["mind_view_profile"]
 IDENTITY_PROFILES = _CONF["identity_profiles"]
 
@@ -63,15 +63,4 @@ def identities_root(environ=None):
     return os.path.join(data_home(environ), *IDENTITY_PROFILES.split("/"))
 
 
-def address(port):
-    return "http://127.0.0.1:%d" % port
-
-
 PERSON, MIND = "person", "mind"
-
-
-def port_of(side):
-    """The TCP port of a side's browser. The person's has none: there is no address to give."""
-    if side == PERSON:
-        raise ValueError("the person's Browser has no DevTools port; it is driven over its pipe")
-    return MIND_VIEW_PORT

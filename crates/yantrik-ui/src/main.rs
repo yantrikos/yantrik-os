@@ -69,6 +69,8 @@ mod power_status;
 mod control_network;
 mod caller_class;
 mod control_wifi_reconnect;
+mod control_location;
+mod control_research;
 mod control_mail;
 mod control_power;
 mod control_installer;
@@ -143,6 +145,8 @@ mod harness_catalogue;
 mod harness_install;
 // Hermes as the mind for a person who has not chosen one, until Yantrik Mind is ready.
 mod default_mind;
+#[cfg(test)]
+mod default_mind_screen_tests;
 mod config_store;
 mod models;
 mod focus;
@@ -232,6 +236,7 @@ mod trail;
 // What protects the credential vault on this machine, and the honest answer when nothing does.
 mod vault_lane;
 mod vault_unlock;
+mod turn_source;
 mod voice;
 mod dock_model;
 // NOTE: #[allow(dead_code)] required to avoid rustc 1.93.1 ICE in check_mod_deathness.
@@ -282,6 +287,7 @@ fn main() {
     // Load config
     let config_path = std::env::args().nth(1).map(PathBuf::from);
     let config = load_config(config_path.clone());
+    yantrik_companion::background_research::init(config.background_research, config_path.clone());
 
     // Propagate OAuth credentials from config to env vars (if not already set)
     if let Some(ref id) = config.connectors.google_client_id {
