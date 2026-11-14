@@ -78,7 +78,7 @@ fn the_ways_to_name_a_file_indirectly_are_refused() {
     for line in [
         format!("cd {} && cat tokens.json", h.0.join("backup").display()),
         format!("cat $(echo {at})"),
-        format!("echo {at} | xargs cat"),
+        format!("xargs cat {at}"),
         format!("find {} -exec cat {{}} ;", h.0.display()),
         format!("find {} -path *tokens.json", h.0.display()),
         format!("find {} -ipath *tokens.json", h.0.display()),
@@ -90,6 +90,16 @@ fn the_ways_to_name_a_file_indirectly_are_refused() {
     ] {
         assert!(verdict(&line, &h.0).is_err(), "{line}");
     }
+}
+
+/// `echo path | xargs cat` is one `echo` whose words are text: nothing is piped and nothing read.
+#[test]
+fn a_pipe_to_xargs_is_only_text() {
+    let h = home("pipe");
+    let at = put(&h, "backup/tokens.json");
+    let argv = words(&format!("echo {at} | xargs cat")).unwrap();
+    let (out, _) = run(&argv).unwrap();
+    assert!(!out.contains(FAKE), "{out}");
 }
 
 #[test]
