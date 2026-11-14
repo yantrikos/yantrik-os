@@ -61,8 +61,9 @@ struct Row {
     inode: u64,
 }
 
-/// The listening rows of `/proc/net/tcp` for `port`. IPv4 only: the desktop's browsers are
-/// started with `--remote-debugging-address=127.0.0.1`, and the client connects there.
+/// The listening rows of a `/proc/net/tcp` (or `net/tcp6`) table for `port`. `holders_in` reads
+/// the IPv4 table only: the desktop's browsers are started with
+/// `--remote-debugging-address=127.0.0.1`, and the client connects there.
 fn rows(table: &str, port: u16) -> Vec<Row> {
     let suffix = format!(":{port:04X}");
     table
@@ -105,6 +106,24 @@ pub fn holders_in(proc: &Path, port: u16) -> Result<(u32, u64, Vec<u32>), Why> {
     }
     pids.sort_unstable();
     Ok((first.uid, first.inode, pids))
+}
+
+/// `[::1]` as a `/proc/net/tcp6` local address is written.
+const LOOPBACK6: &str = "00000000000000000000000001000000";
+
+/// Whether something listens on `[::1]:`port`: where a browser an older build started (without
+/// `--remote-debugging-address`) ends up when the IPv4 port is taken. `holders_in` cannot see it,
+/// so a caller that refuses the port for want of a listener may state this instead of `Nobody`.
+/// It gates nothing here. An absent or unreadable `net/tcp6` is `false`, never an error.
+pub fn on_old_address_in(proc: &Path, port: u16) -> bool {
+    let Ok(table) = fs::read_to_string(proc.join("net/tcp6")) else { return false };
+    let want = format!("{LOOPBACK6}:{port:04X}");
+    rows(&table, port).iter().any(|r| r.local == want)
+}
+
+/// [`on_old_address_in`] on the real `/proc`.
+pub fn on_old_address(port: u16) -> bool {
+    on_old_address_in(Path::new("/proc"), port)
 }
 
 /// Who holds 127.0.0.1:`port`, reading `proc` (a `/proc`): a mind's browser when a holder owns a
@@ -199,6 +218,14 @@ pub(crate) mod tests {
                 t += &format!("   {i}: {local} 00000000:0000 0A 00000000:00000000 00:00000000 00000000  {uid}        0 {inode} 1 0\n");
             }
             fs::write(self.proc().join("net/tcp"), t).unwrap();
+        }
+        /// A `net/tcp6` with these local addresses listening.
+        pub fn table6(&self, locals: &[&str]) {
+            let mut t = String::from("  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n");
+            for (i, local) in locals.iter().enumerate() {
+                t += &format!("   {i}: {local} 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 555 1 0\n");
+            }
+            fs::write(self.proc().join("net/tcp6"), t).unwrap();
         }
         /// A process holding socket `inode`, with `cmdline` as its (irrelevant) command line.
         pub fn process(&self, pid: u32, inode: u64, cmdline: &[u8]) {
@@ -335,6 +362,24 @@ pub(crate) mod tests {
         fake.process(2, 1, b"chromium");
         fake.takes(&fake.profiles.mind_view, 2);
         assert_eq!(identify_in(&fake.proc(), 9223, &fake.profiles).unwrap().place, Place::MindView);
+    }
+
+    /// A browser an older build started (without `--remote-debugging-address`) lands on `[::1]`
+    /// when the IPv4 port is taken: the IPv4 table says `Nobody` and this is the one fact that
+    /// makes the refusal an honest one.
+    #[test]
+    fn the_old_address_is_a_fact_and_not_a_listener() {
+        let fake = Fake::new("old6");
+        assert!(!on_old_address_in(&fake.proc(), 9223), "no net/tcp6 at all is not an old address");
+        fake.table6(&["00000000000000000000000000000000:2407"]);
+        assert!(!on_old_address_in(&fake.proc(), 9223), "the whole of IPv6 is not [::1]");
+        fake.table6(&["00000000000000000000000001000000:2408"]);
+        assert!(!on_old_address_in(&fake.proc(), 9223), "another port is not this one's");
+        fake.table6(&["00000000000000000000000001000000:2407"]);
+        assert!(on_old_address_in(&fake.proc(), 9223));
+        // Stating it changes no gate: the IPv4 table still has no listener on the port.
+        fake.table(&[("0100007F:2408", 1000, 555)]);
+        assert_eq!(identify_in(&fake.proc(), 9223, &fake.profiles), Err(Why::Nobody));
     }
 
     #[test]
