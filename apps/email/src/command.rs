@@ -162,7 +162,8 @@ pub enum Command {
     Triage(i32),
     // ── A message ──
     Open(Pick),
-    Fetched { target: Target, outcome: Result<EmailDetail, String> },
+    /// A message read. `account` is the one it was read from, which the mark that follows uses.
+    Fetched { target: Target, account: String, outcome: Result<EmailDetail, String> },
     MarkedOnOpen { id: String, folder: String, outcome: Result<(), String> },
     /// Mark read (`true`), or flag: the toolbar's star turns the flag round, `flag` sets it.
     Mark { pick: Pick, flag: Flag, toggle: bool },

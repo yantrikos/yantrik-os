@@ -33,8 +33,10 @@ pub fn target(m: &Model, pick: &Pick) -> Result<Target, String> {
             if folder.trim().is_empty() || id.trim().is_empty() {
                 return Err("name the folder and the message id".to_string());
             }
-            if !account.trim().is_empty() && !account.trim().eq_ignore_ascii_case(m.account_name.trim()) {
-                return Err(format!("that message is in {}, and this app is showing {}", account.trim(), m.account_name));
+            // Before the first look has landed the app does not know its account yet; the open
+            // asks the mail service itself then (`message::open`), and checks there.
+            if let Some(e) = m.looked.then(|| other_account(account, &m.account_name)).flatten() {
+                return Err(e);
             }
             let at = m.rows.iter().position(|r| r.id == *id && r.folder.eq_ignore_ascii_case(folder));
             Ok(Target {
@@ -60,6 +62,14 @@ pub fn target(m: &Model, pick: &Pick) -> Result<Target, String> {
             Ok(of_row(row, Some(at)))
         }
     }
+}
+
+/// The refusal for a message named in `asked` when the account shown is `shown`, if they differ.
+/// No account asked for means the one shown.
+pub fn other_account(asked: &str, shown: &str) -> Option<String> {
+    let asked = asked.trim();
+    (!asked.is_empty() && !asked.eq_ignore_ascii_case(shown.trim()))
+        .then(|| format!("that message is in {asked}, and this app is showing {shown}"))
 }
 
 /// The message in the reading pane: its row when it is listed, its own flags when it is not.

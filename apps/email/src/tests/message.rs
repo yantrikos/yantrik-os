@@ -4,9 +4,10 @@
 
 use serde_json::json;
 use slint::Model as _;
+use yantrik_app::mind::fake::FakeMind;
 use yantrik_testing::Call;
 
-use super::{act, act_as_the_shell, detail, inbox, listed, message, notice, quiet, started, state, with_inbox};
+use super::{act, act_as_the_shell, detail, inbox, listed, message, notice, quiet, start_with, started, state, with_inbox};
 use crate::backend::fake::FakeMail;
 use crate::command::{Command, Flag, Pick};
 use crate::model::OPEN_MESSAGE;
@@ -362,4 +363,35 @@ fn open_message_id_is_the_shells_and_nobody_elses() {
     assert!(mail.asked_for("email.get_message").is_empty(), "nothing was read, and so nothing was marked read");
     assert!(act_as_the_shell(&app, "open_message_id", args).is_ok(), "the shell's own press still opens it");
     assert_eq!(mail.asked_for("email.get_message").len(), 1);
+}
+
+/// The press that starts Email is the first thing it is asked. The app does not know its account
+/// until its first look lands; an exact open made before that must not be refused as "another
+/// account", and must read and mark the message in the account the mail service has.
+#[test]
+fn an_exact_open_before_the_first_look_has_landed_opens_the_message() {
+    let mail = with_inbox().answering("email.get_message", detail("900", "Slides for Friday", "Maya <maya@example.com>", false, ""));
+    let (app, _) = start_with(&mail, FakeMind::new());
+    let args = json!({ "folder": "INBOX", "message_id": "900", "account": "YOU@example.com" });
+    let answer = act_as_the_shell(&app, "open_message_id", args).unwrap();
+    assert_eq!(answer["subject"], "Slides for Friday");
+    assert_eq!(
+        mail.asked_for("email.get_message"),
+        [json!({ "account_id": "acct-1", "folder": "INBOX", "message_id": "900" })]
+    );
+    assert_eq!(
+        mail.asked_for("email.mark_read")[0],
+        json!({ "account_id": "acct-1", "folder": "INBOX", "message_id": "900", "read": true }),
+        "read in the account that was found, not in an account of \"\""
+    );
+}
+
+#[test]
+fn a_cold_exact_open_still_refuses_another_account() {
+    let mail = with_inbox();
+    let (app, _) = start_with(&mail, FakeMind::new());
+    let args = json!({ "folder": "INBOX", "message_id": "900", "account": "other@example.org" });
+    let e = act_as_the_shell(&app, "open_message_id", args).unwrap_err();
+    assert!(e.contains("other@example.org") && e.contains("you@example.com"), "{e}");
+    assert!(mail.asked_for("email.get_message").is_empty());
 }

@@ -10,9 +10,9 @@ use yantrik_app::Refused;
 use yantrik_ipc_contracts::email::{EmailDetail, EmailSummary};
 
 use super::mailbox::{change_counts_of, set_rows};
-use super::pick::{subject_at, target};
+use super::pick::{other_account, subject_at, target};
 use super::{clear_notice, say};
-use crate::backend::calls;
+use crate::backend::{calls, MailService};
 use crate::command::{Command, Flag, Pick, Removal, Target, Work};
 use crate::model::{part, Model};
 use crate::{rows, state, Email};
@@ -32,6 +32,12 @@ pub fn open(m: &mut Model, pick: &Pick, fx: &mut Effects<Email>) -> Result<(), R
         Err(e) => return Err(Refused::new("no_message", e)),
     };
     let account = m.account();
+    // Before the first look has landed the account is not known here: an exact open (the meeting
+    // brief's, on a cold start) finds it out itself, in its own job and under its own call.
+    let asked = match pick {
+        Pick::Exact { account, .. } => account.clone(),
+        _ => String::new(),
+    };
     let mail = m.mail.clone();
     fx.spawn_keyed_or(
         JobKey { feature: "open", scope: Scope::App },
@@ -40,19 +46,42 @@ pub fn open(m: &mut Model, pick: &Pick, fx: &mut Effects<Email>) -> Result<(), R
         move |cancel| {
             // Another message was opened before this one started; its result would be dropped.
             if cancel.is_set() {
-                return Command::Fetched { target, outcome: Err(super::mailbox::REPLACED.to_string()) };
+                return Command::Fetched { target, account, outcome: Err(super::mailbox::REPLACED.to_string()) };
             }
+            let account = if account.is_empty() {
+                match the_account(mail.as_ref(), &asked) {
+                    Ok(id) => id,
+                    Err(e) => return Command::Fetched { target, account, outcome: Err(e) },
+                }
+            } else {
+                account
+            };
             // From the folder the row was listed from: the same UID read out of INBOX was a
             // different message, which is what opening mail outside INBOX used to show (#275).
             let outcome = calls::get_message(mail.as_ref(), &account, &target.folder, &target.id)
                 .map_err(|e| format!("Could not open that message: {e}"));
-            Command::Fetched { target, outcome }
+            Command::Fetched { target, account, outcome }
         },
     );
     Ok(())
 }
 
-pub fn fetched(m: &mut Model, target: Target, outcome: Result<EmailDetail, String>, fx: &mut Effects<Email>) {
+/// The id of the account the mail service has, for an open made before this app has looked: and
+/// the refusal when the message is in another one.
+fn the_account(mail: &dyn MailService, asked: &str) -> Result<String, String> {
+    let state = state::decide(calls::accounts(mail));
+    match other_account(asked, &state.account_name()) {
+        Some(e) => Err(e),
+        None if state.account_id().is_empty() => {
+            let why = state.notice();
+            let why = if why.is_empty() { "no mail account is set up".to_string() } else { why };
+            Err(format!("Could not open that message: {why}"))
+        }
+        None => Ok(state.account_id()),
+    }
+}
+
+pub fn fetched(m: &mut Model, target: Target, account: &str, outcome: Result<EmailDetail, String>, fx: &mut Effects<Email>) {
     let detail = match outcome {
         Ok(detail) => detail,
         Err(e) => {
@@ -78,7 +107,7 @@ pub fn fetched(m: &mut Model, target: Target, outcome: Result<EmailDetail, Strin
     if !detail.is_read {
         // The flag goes to the mailbox the message is in, and the unread count that moves is
         // that mailbox's — the same reason the fetch above names its folder.
-        let account = m.account();
+        let account = account.to_string();
         let mail = m.mail.clone();
         fx.spawn_or(Command::Unfinished(Work::Change), move |_| {
             let outcome = calls::mark_read(mail.as_ref(), &account, &target.folder, &target.id, true);
