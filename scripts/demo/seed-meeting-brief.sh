@@ -17,9 +17,19 @@
 # /opt/yantrik/data/memory.db; the shell must have run once, so its tables exist):
 #   ~/.local/share/yantrik/calendar/demo-mb-event.json   the event (the calendar service reads it)
 #   ~/.local/share/yantrik/notes/demo-mb-orion-notes.md  a note whose title has "Orion" in it
-#   ~/Documents/demo-orion-launch-plan.md                a file whose name has "orion" in it
+#   ~/Documents/demo-mb-orion-launch-plan.md             a file whose name has "orion" in it
+#                                                        (refused if a file of that name is
+#                                                        already there and is not this script's)
 #   wm_commitments                                       two open promises, one each way
 #   email_accounts, emails                               a demo account and two cached messages
+#                                                        (nothing syncs from this table: the email
+#                                                        sync reads the configured accounts, so an
+#                                                        account of provider "demo" is never dialled)
+#
+# The two promises are between the person and the other people, so they are written with the
+# person's own name: YANTRIK_USER_NAME, or `user_name:` in YANTRIK_CONFIG (default
+# /opt/yantrik/config.yaml). With neither, `seed` stops: promises under another name would not
+# be the person's and would not show.
 #
 # This is test data for a machine nobody is using. Do not run it on a person's own machine.
 set -euo pipefail
@@ -35,7 +45,14 @@ CAL_DIR="$HOME/.local/share/yantrik/calendar"
 NOTES_DIR="$HOME/.local/share/yantrik/notes"
 EVENT_FILE="$CAL_DIR/$EVENT_ID.json"
 NOTE_FILE="$NOTES_DIR/demo-mb-orion-notes.md"
-DOC_FILE="$HOME/Documents/demo-orion-launch-plan.md"
+DOC_FILE="$HOME/Documents/demo-mb-orion-launch-plan.md"
+CONFIG="${YANTRIK_CONFIG:-/opt/yantrik/config.yaml}"
+
+user_name() {
+  if [ -n "${YANTRIK_USER_NAME:-}" ]; then printf '%s' "$YANTRIK_USER_NAME"; return; fi
+  [ -f "$CONFIG" ] || return 0
+  sed -n 's/^[[:space:]]*user_name:[[:space:]]*//p' "$CONFIG" | head -1 | sed -e 's/^["'"'"']//' -e 's/["'"'"'][[:space:]]*$//'
+}
 
 stamp() { date -d "+$1 minutes" +%Y-%m-%dT%H:%M:%S; }
 
@@ -57,7 +74,7 @@ write_event() {
   "is_all_day": false,
   "location": "Room 4",
   "attendees": [
-    { "name": "Demo User", "email": "$ME", "status": "Accepted" },
+    { "name": "$(user_name)", "email": "$ME", "status": "Accepted" },
     { "name": "Maya Chen", "email": "$MAYA", "status": "Accepted" },
     { "name": "Ravi Rao", "email": "$RAVI", "status": "Pending" }
   ],
@@ -71,10 +88,10 @@ EOF
 }
 
 db() {
-  python3 - "$DB" "$1" <<'PY'
+  python3 - "$DB" "$1" "$(user_name)" <<'PY'
 import sqlite3, sys, time
 
-path, action = sys.argv[1], sys.argv[2]
+path, action, person = sys.argv[1], sys.argv[2], sys.argv[3]
 now = time.time()
 con = sqlite3.connect(path, timeout=15)
 con.execute("PRAGMA busy_timeout = 15000")
@@ -96,7 +113,7 @@ if action == "seed":
     account = con.execute("SELECT id FROM email_accounts WHERE email = ?", ("demo-mb-me@seed.test",)).fetchone()[0]
     rows = [
         (9001, "maya.chen@seed.test", "Maya Chen", "demo-mb-me@seed.test", "Slides for Friday", now - 2 * 86400, "<demo-mb-1@seed.test>"),
-        (9002, "demo-mb-me@seed.test", "Demo User", "ravi.rao@seed.test", "Q4 numbers", now - 1 * 86400, "<demo-mb-2@seed.test>"),
+        (9002, "demo-mb-me@seed.test", person, "ravi.rao@seed.test", "Q4 numbers", now - 1 * 86400, "<demo-mb-2@seed.test>"),
     ]
     for uid, frm, name, to, subject, ts, mid in rows:
         con.execute(
@@ -106,8 +123,8 @@ if action == "seed":
         )
     # One promise each way; `evidence_text` carries the marker.
     for promisor, promisee, action_text in [
-        ("Demo User", "Ravi Rao", "send the Q4 numbers"),
-        ("Maya Chen", "Demo User", "share the deck"),
+        (person, "Ravi Rao", "send the Q4 numbers"),
+        ("Maya Chen", person, "share the deck"),
     ]:
         con.execute(
             "INSERT INTO wm_commitments (promisor, promisee, action, deadline, status, confidence, source_type, source_data, evidence_text, related_entities, completion_evidence, created_at, updated_at) "
@@ -145,6 +162,11 @@ case "${1:-}" in
   seed)
     need_db
     minutes="${2:-12}"
+    [ -n "$(user_name)" ] || { echo "no user name: set YANTRIK_USER_NAME (or user_name: in $CONFIG)" >&2; exit 1; }
+    if [ -e "$DOC_FILE" ] && ! grep -q "$MARK" "$DOC_FILE"; then
+      echo "$DOC_FILE exists and is not this script's; not overwriting it" >&2
+      exit 1
+    fi
     db unseed >/dev/null
     write_event "$minutes"
     mkdir -p "$NOTES_DIR" "$HOME/Documents"
