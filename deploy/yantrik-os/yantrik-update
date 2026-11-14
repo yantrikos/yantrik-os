@@ -703,7 +703,7 @@ cmd_migrate_ownership() {
   say "Making $PREFIX root's; $owner keeps logs/ and data/"
   chown root:root "$PREFIX" && chmod 0755 "$PREFIX"
   for d in "$BIN_DIR" "$SHARE_DIR" "$UPDATES_DIR" "$BACKUP_DIR" "$PREFIX/models" "$PREFIX/skills" \
-           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory"; do
+           "$PREFIX/i18n" "$PREFIX/ui-deployments" "$PREFIX/memory" "$UPDATE_STATE_DIR"; do
     [ -e "$d" ] || continue
     chown -R root:root "$d"
     chmod -R go-w "$d"
@@ -894,6 +894,7 @@ from it. Change it with: yantrik-update set-channel nightly" ;;
     reconcile_polkit || true
     reconcile_helpers || true
     reconcile_sysctl || true
+    reconcile_chromium_policy || true
     reconcile_serial_console || true
     reconcile_registries || true
     reconcile_podman_socket || true
@@ -2643,6 +2644,83 @@ reconcile_polkit() {
       warn "could not install $dest (no sudo here); the power menu may ask for an administrator"
     fi
   done
+}
+
+# Chromium's no-phone-home policy (#1175), into /etc/chromium/policies/managed through the one
+# install step the image builds use. Only where Chromium is (or its config folder is): the
+# package list installs it before this runs. Both files are taken only when they are what the build
+# shipped and root's; the script runs as root. Nothing else in that folder is touched, a person's
+# own policies included, and nothing is removed.
+#
+# The person's choice wins. Chromium reads this folder for the person's own browser too, so the file
+# is put in place when it is missing AND this machine has never had it (the marker below), or when
+# the file on disk is byte-identical to a version of ours that was shipped before and ours changed.
+# Deleted after install, or edited: left alone, with one line saying so. Opting out is deleting it.
+#
+# The marker is root's: $UPDATE_STATE_DIR/chromium-policy lists the sha256 of every version this
+# machine has had installed (or found in place). CHROMIUM_POLICY_SHIPPED lists versions that were
+# shipped before the marker existed (images built with the file in them), so an older one of ours is
+# upgraded and not mistaken for the person's edit.
+CHROMIUM_POLICY_SHIPPED="93f55ddc7da167f37cb2ed4f6197fe3f1234543c35fc96c65487f1679312b56d"
+chromium_policy_marker() { printf '%s' "$UPDATE_STATE_DIR/chromium-policy"; }
+chromium_policy_known() {   # is sha256 $1 a version of ours: shipped before, or recorded here
+  local m; m="$(chromium_policy_marker)"
+  case " $CHROMIUM_POLICY_SHIPPED " in *" $1 "*) return 0 ;; esac
+  [ -f "$m" ] && [ "$(stat -c %u "$m" 2>/dev/null)" = "$ROOT_UID" ] && grep -qxF "$1" "$m"
+}
+chromium_policy_ever() {    # has this machine ever had the file put in place
+  local m; m="$(chromium_policy_marker)"
+  [ -f "$m" ] && [ "$(stat -c %u "$m" 2>/dev/null)" = "$ROOT_UID" ] && [ -s "$m" ]
+}
+chromium_policy_record() {  # root adds sha256 $1 to the marker; refuses unless the state dir and marker are root's
+  local m d; m="$(chromium_policy_marker)"; d="$(dirname "$m")"
+  chromium_policy_known "$1" && [ -f "$m" ] && grep -qxF "$1" "$m" && return 0
+  local script='d=$1 h=$2 m=$3 u=$4
+    [ -e "$d" ] || [ -L "$d" ] || mkdir -m 0755 "$d" || exit 1
+    { [ ! -L "$d" ] && [ -d "$d" ] && [ "$(stat -c %u "$d")" = "$u" ] && [ -z "$(find "$d" -maxdepth 0 -perm /022)" ]; } || exit 1
+    if [ -e "$m" ] || [ -L "$m" ]; then { [ -f "$m" ] && [ ! -L "$m" ]; } || exit 1; fi
+    t="$(mktemp "$d/.chromium-policy.XXXXXX")" || exit 1
+    { [ ! -f "$m" ] || cat "$m"; printf "%s\n" "$h"; } > "$t" && chmod 0644 "$t" && mv -f "$t" "$m" || { rm -f "$t"; exit 1; }'
+  if [ "$(id -u)" = 0 ]; then
+    sh -c "$script" sh "$d" "$1" "$m" "$ROOT_UID"
+  else
+    sudo -n true >/dev/null 2>&1 || { warn "not recording the Chromium policy in $d: sudo -n is not available here, so it cannot be written as root"; return 1; }
+    sudo -n sh -c "$script" sh "$d" "$1" "$m" "$ROOT_UID" 2>/dev/null
+  fi || { warn "not recording the Chromium policy in $d: it is not a folder of root's alone, or its marker is not a plain file"; return 1; }
+}
+# The root the policy goes into: / on a machine; a variable only so the selftest can name a scratch one.
+CHROMIUM_ROOT=/
+reconcile_chromium_policy() {
+  local dir="$PREFIX/share/chromium" script json dest="${CHROMIUM_ROOT%/}/etc/chromium/policies/managed/yantrik-no-phone-home.json" want have out
+  script="$dir/stage-chromium-policy.sh"; json="$dir/yantrik-no-phone-home.json"
+  [ -d "$dir" ] || return 0
+  [ -d "${CHROMIUM_ROOT%/}/etc/chromium" ] || command -v chromium >/dev/null 2>&1 || { info "no Chromium on this machine; its policy not installed"; return 0; }
+  if ! root_file_ok chromium/stage-chromium-policy.sh "$script" || ! root_file_ok chromium/yantrik-no-phone-home.json "$json"; then
+    warn "refusing $dir: not root's alone, or not what this build ships"
+    return 0
+  fi
+  want="$(sha256sum "$json" | cut -d' ' -f1)"
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    if [ -f "$dest" ] && [ ! -L "$dest" ]; then
+      have="$(sha256sum "$dest" | cut -d' ' -f1)"
+      if [ "$have" = "$want" ]; then
+        chromium_policy_record "$want" || true      # found in place: from now on a deletion is the person's
+        [ "$(stat -c %a:%u "$dest" 2>/dev/null)" = "644:$ROOT_UID" ] && return 0
+      elif ! chromium_policy_known "$have"; then
+        info "Chromium policy $dest was changed by its owner; left as it is"
+        return 0
+      fi
+    fi
+  elif chromium_policy_ever; then
+    info "Chromium policy $dest was removed by its owner; not put back (delete or edit it to opt out)"
+    return 0
+  fi
+  if out="$(sudo -n sh "$script" "$CHROMIUM_ROOT" "$json" 2>&1)"; then
+    chromium_policy_record "$want" || warn "Chromium policy installed, but its record in $UPDATE_STATE_DIR could not be written"
+    info "Chromium policy in place: $dest"
+  else
+    warn "could not install $dest (${out:-no sudo here}); Chromium keeps its default calls home"
+  fi
 }
 
 # The root helpers the bundle ships (share/root-helpers), installed root-owned into /usr/lib/yantrik
@@ -4903,6 +4981,7 @@ cmd_reconcile() {
   reconcile_polkit
   reconcile_helpers
   reconcile_sysctl
+  reconcile_chromium_policy
   reconcile_serial_console
   reconcile_sudo_rule
   reconcile_minds
@@ -5422,6 +5501,91 @@ cmd_selftest() {
   t "nor a link to a list" "[exit 1]" "$(trusted)"
   rm -f "$tp/share/packages.list"
   t "a build without one says so" "ships no" "$(trusted)"
+
+  # The Chromium policy (#1175): reconcile hands the shipped json to the one install step, as the
+  # build's own root-owned, hash-listed files, and refuses a changed one. sudo is a stand-in that
+  # runs the step against a scratch root.
+  local cp="$root/chromium" cr="$root/chromium-root"
+  mkdir -p "$cp/bin" "$cp/share/chromium" "$cr/stub" "$cr/etc/chromium/policies/managed"
+  cp "$here/stage-chromium-policy.sh" "$cp/share/chromium/stage-chromium-policy.sh"
+  cp "$here/chromium-managed-policy.json" "$cp/share/chromium/yantrik-no-phone-home.json"
+  printf '#!/bin/sh\n' > "$cr/stub/chromium"; chmod +x "$cr/stub/chromium"
+  printf '{"HomepageLocation":"x"}\n' > "$cr/etc/chromium/policies/managed/mine.json"
+  (cd "$cp/share" && sha256sum chromium/*) > "$cp/bin/yantrik-root-files.sha256"
+  chmod 0755 "$cp" "$cp/bin" "$cp/share" "$cp/share/chromium"; chmod 0644 "$cp/share/chromium/"*
+  local pol="$cr/etc/chromium/policies/managed/yantrik-no-phone-home.json" mk="$cp/update-state/chromium-policy"
+  chromium_try() { (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+                    UPDATE_STATE_DIR="$cp/update-state" CHROMIUM_ROOT="$cr" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+                    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0
+                             if [ "$1" = sh ] && [ "$2" = -c ]; then shift; sh "$@"; elif [ "$1" = sh ] && [ "$3" = "$cr" ]; then sh "$2" "$3" "$4"; else return 1; fi; }
+                    reconcile_chromium_policy 2>&1); }
+  chromium_try >/dev/null
+  is "reconcile puts the Chromium policy in place, and leaves a person's own alone" "yes|yes" \
+    "$(cmp -s "$cp/share/chromium/yantrik-no-phone-home.json" "$pol" && echo yes || echo no)|$(grep -q HomepageLocation "$cr/etc/chromium/policies/managed/mine.json" && echo yes || echo no)"
+  is "a fresh install is recorded as shipped" "1" "$(wc -l < "$mk" | tr -d ' ')"
+  rm -f "$pol"
+  is "a policy the person deleted is not put back, and the line says so" "no|yes" \
+    "$(chromium_try | grep -q 'removed by its owner' && l=yes || l=no; [ -e "$pol" ] && echo yes || echo no)|$(chromium_try | grep -q 'removed by its owner' && echo yes || echo no)"
+  printf '{"MetricsReportingEnabled":true}\n' > "$pol"
+  is "a policy the person edited is not overwritten, and the line says so" "yes|yes" \
+    "$(grep -q true "$pol" && echo yes || echo no)|$(chromium_try | grep -q 'changed by its owner' && echo yes || echo no)"
+  # Our older version: the file on disk is what an earlier build shipped, and the build's now differs.
+  cp "$cp/share/chromium/yantrik-no-phone-home.json" "$cp/old.json"
+  printf '{"X":1}\n' > "$pol"; sha256sum "$pol" | cut -d' ' -f1 >> "$mk"
+  is "an older version of ours is upgraded" "yes" "$(chromium_try >/dev/null; cmp -s "$cp/old.json" "$pol" && echo yes || echo no)"
+  # A fresh machine whose marker is missing and file is missing: installed. One with the file already
+  # in place (an image built with it): recorded, so a later deletion is respected.
+  rm -f "$pol" "$mk"
+  chromium_try >/dev/null
+  is "a machine that never had it gets it (no marker, no file)" "yes" "$([ -e "$pol" ] && echo yes || echo no)"
+  rm -f "$mk"; chromium_try >/dev/null; rm -f "$pol"; chromium_try >/dev/null
+  is "a file found in place is recorded, so deleting it afterwards sticks" "no" "$([ -e "$pol" ] && echo yes || echo no)"
+  # The image builds record the marker (MEDIUM 1): a deletion before the first update sticks.
+  rm -rf "$cr/img"; mkdir -p "$cr/img/opt/yantrik"
+  sh "$here/stage-chromium-policy.sh" "$cr/img" "$cp/share/chromium/yantrik-no-phone-home.json" opt/yantrik/update-state/chromium-policy
+  local ipol="$cr/img/etc/chromium/policies/managed/yantrik-no-phone-home.json" imk="$cr/img/opt/yantrik/update-state/chromium-policy"
+  is "an image tree carries the marker: shipped sha256, 644, folder 755" "yes|644|755" \
+    "$([ "$(cat "$imk")" = "$(sha256sum "$ipol" | cut -d' ' -f1)" ] && echo yes || echo no)|$(stat -c %a "$imk")|$(stat -c %a "$cr/img/opt/yantrik/update-state")"
+  rm -f "$ipol"
+  (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+   UPDATE_STATE_DIR="$cr/img/opt/yantrik/update-state" CHROMIUM_ROOT="$cr/img" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+   sudo() { return 1; }; reconcile_chromium_policy >/dev/null 2>&1)
+  local iout; iout="$( (PREFIX="$cp" SHARE_DIR="$cp/share" BIN_DIR="$cp/bin" ROOT_FILES="$cp/bin/yantrik-root-files.sha256" \
+   UPDATE_STATE_DIR="$cr/img/opt/yantrik/update-state" CHROMIUM_ROOT="$cr/img" ROOT_UID="$(id -u)" PATH="$cr/stub:$PATH"
+   sudo() { return 1; }; reconcile_chromium_policy) 2>&1 )"
+  is "a file deleted from a fresh image before the first update stays deleted" "no" "$([ -e "$ipol" ] && echo yes || echo no)"
+  t "a file deleted from a fresh image is said to be removed by its owner" "removed by its owner" "$iout"
+  is "migrate-ownership hands the update-state dir (with the policy marker) back to root" "yes" \
+    "$(declare -f cmd_migrate_ownership | grep -qF '"$UPDATE_STATE_DIR"' && echo yes || echo no)"
+  # With sudo -n unavailable the warning says so and does not blame the folder.
+  rm -rf "$cp/update-state"; mkdir -m 0755 "$cp/update-state"
+  local sout; sout="$( (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(( $(id -u) + 1 ))"
+    id() { echo 1000; }; sudo() { return 1; }; chromium_policy_record abc123) 2>&1 )"
+  t "no sudo -n: the warning says so" "sudo -n is not available" "$sout"
+  rm -rf "$cp/update-state"
+  # The marker is written only through a root-owned plain folder and file (LOW 1).
+  rm -f "$mk"; rm -rf "$cp/update-state"; mkdir -m 0755 "$cp/update-state"
+  : > "$cp/other"; ln -s "$cp/other" "$mk"
+  local rc=0; (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(id -u)"
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  is "a symlinked marker is refused and not written through" "1|0" "$rc|$(wc -c < "$cp/other" | tr -d ' ')"
+  rm -f "$mk"; chmod 0777 "$cp/update-state"; rc=0
+  (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(id -u)"
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  is "a state dir others can write is refused" "1|no" "$rc|$([ -e "$mk" ] && echo yes || echo no)"
+  rc=0
+  (PREFIX="$cp" UPDATE_STATE_DIR="$cp/update-state" ROOT_UID="$(( $(id -u) + 1 ))"
+    sudo() { [ "$1" = -n ] && shift; [ "$1" = true ] && return 0; shift; sh "$@"; }; chromium_policy_record abc123 >/dev/null 2>&1) || rc=$?
+  chmod 0755 "$cp/update-state"
+  is "a state dir not owned by root is refused" "1" "$rc"
+  rm -rf "$cp/update-state"
+  # A policy file that is not what the build shipped is not installed from.
+  rm -f "$pol" "$mk"
+  printf '{"X":1}\n' > "$cp/share/chromium/yantrik-no-phone-home.json"
+  chromium_try >/dev/null
+  is "a policy file that is not what the build shipped is not installed" "no" \
+    "$([ -e "$pol" ] && echo yes || echo no)"
+  cp "$cp/old.json" "$cp/share/chromium/yantrik-no-phone-home.json"
 
   # The install itself, with a stand-in apt and dpkg. Never as root: the stand-ins are refused to
   # root, so as root this would run the real apt.

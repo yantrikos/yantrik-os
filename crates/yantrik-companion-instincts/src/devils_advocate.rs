@@ -37,6 +37,10 @@ impl Instinct for DevilsAdvocateInstinct {
         "DevilsAdvocate"
     }
 
+    fn searches_web(&self) -> bool {
+        true
+    }
+
     fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
         // Gate: bond must be Confidant or above — this is intimate
         if state.bond_level < BondLevel::Confidant {

@@ -5,7 +5,7 @@
 //! promises that the OS itself sends nothing anywhere except what the person asked for, and a
 //! crash reporter that posted on its own would make that false. So a panic, a crash or a failure
 //! becomes a small JSON file under `~/.local/share/yantrik/problems/`, already scrubbed of the
-//! user's home, name and anything shaped like a credential — and the shell's "Report a problem"
+//! user's home, name and the common shapes of a credential (`problems_redact`) — and the shell's "Report a problem"
 //! screen shows the person that exact file before they press Send. See
 //! `design/problem-reports-2026-09-23.md`.
 //!
@@ -17,6 +17,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::problems_redact::redact_secrets;
 
 /// How many records are kept. The oldest go first; fifty crashes is a pattern, not an archive.
 pub const KEEP: usize = 50;
@@ -149,37 +151,6 @@ fn replace_word(text: &str, word: &str, with: &str) -> String {
             out.push(ch);
             i += ch.len_utf8();
         }
-    }
-    out
-}
-
-/// The shapes a credential takes in a log line. Each prefix is followed by the token it names,
-/// which is replaced up to the next whitespace or quote.
-fn redact_secrets(text: &str) -> String {
-    const PREFIXES: &[&str] = &[
-        "sk-", "ghp_", "gho_", "github_pat_", "xoxb-", "xoxp-", "AKIA", "Bearer ", "bearer ",
-        "token=", "TOKEN=", "api_key=", "API_KEY=", "apikey=", "key=", "KEY=", "password=",
-        "PASSWORD=", "secret=", "SECRET=",
-    ];
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    'scan: while !rest.is_empty() {
-        for prefix in PREFIXES {
-            if rest.starts_with(prefix) {
-                // Keep the prefix that names the thing, drop the thing.
-                let after = &rest[prefix.len()..];
-                let end = after
-                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
-                    .unwrap_or(after.len());
-                out.push_str(prefix);
-                out.push_str("<redacted>");
-                rest = &after[end..];
-                continue 'scan;
-            }
-        }
-        let ch = rest.chars().next().unwrap();
-        out.push(ch);
-        rest = &rest[ch.len_utf8()..];
     }
     out
 }
@@ -468,16 +439,14 @@ mod tests {
         assert_eq!(replace_word("al-b al_c", "al", "<u>"), "al-b al_c");
     }
 
+    /// The widened shapes reach a record through `scrub`, the one door a record is written by.
     #[test]
-    fn things_shaped_like_credentials_are_redacted() {
-        let out = redact_secrets(
-            "using sk-abc123DEF token=xyz, Authorization: Bearer eyJhbGci ghp_0123456789 done",
-        );
-        assert_eq!(
-            out,
-            "using sk-<redacted> token=<redacted>, Authorization: Bearer <redacted> ghp_<redacted> done"
-        );
-        assert_eq!(redact_secrets("nothing secret here"), "nothing secret here");
+    fn scrub_removes_json_url_jwt_google_hugging_face_and_gitlab_credentials() {
+        let text = r#"{"api_key": "sk_live_1"} https://u:pw@h/ eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln AIzaSyD-9tSrke72PouQ hf_abcdefghijk glpat-abc123"#;
+        let out = scrub(text);
+        for gone in ["sk_live_1", "u:pw", "eyJhbGciOi", "SyD-9tSrke72", "abcdefghijk", "abc123"] {
+            assert!(!out.contains(gone), "{gone} survived: {out}");
+        }
     }
 
     #[test]

@@ -15,6 +15,8 @@ use yantrik_browser_ports::{self as ports, Place};
 use yantrik_ipc_contracts::mind_view::FOR_MIND_VAR;
 
 use super::browser_side::{self, CDP_HOST, CDP_PORT};
+
+mod search;
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 
 const MAX_TEXT_CHARS: usize = 6000;
@@ -584,6 +586,46 @@ impl Tool for LaunchBrowserTool {
     }
 }
 
+/// The arguments of the browser `launch_browser` starts (headed unless `headless`): the one list
+/// of Chromium's calls home from `ports::quiet_args`, never a copy of it.
+fn launch_args(headless: bool, profile: &std::path::Path, port: u16, url: &str) -> Vec<String> {
+    let mut chrome_args: Vec<String> = vec![
+        // Headless has no display to be ozone's platform; it is set to headless below.
+        if headless { "--ozone-platform=headless".into() } else { "--ozone-platform=wayland".into() },
+        format!("--user-data-dir={}", profile.display()),
+        "--no-first-run".into(),
+        "--no-default-browser-check".into(),
+        // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
+        "--disable-blink-features=AutomationControlled".into(),
+        // Anti-detection: realistic viewport size
+        "--window-size=1920,1080".into(),
+    ];
+    // The one list of Chromium's calls home, shared with the headless start.
+    chrome_args.extend(super::browser_spawn::quiet_args());
+    // Headed by default, and that is the point rather than an oversight. What makes a site
+    // trust this browser is not a flag: it is a real profile with a real logged-in session, on
+    // the user's own machine and their own address. A headless window on a datacentre IP is
+    // what every cloud automation service is fighting, and running on someone's desktop is the
+    // one advantage they cannot buy. Headless is for background work on sites that do not care.
+    //
+    // `--disable-gpu` is deliberately absent when headed: it forces software rendering, and a
+    // SwiftShader WebGL string is itself a fingerprint.
+    if headless {
+        chrome_args.push("--headless=new".into());
+        chrome_args.push("--disable-gpu".into());
+        // The one signal `--headless=new` still leaks to any script that looks.
+        chrome_args.push(
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
+        );
+    }
+    // Loopback only, and the one Origin `connect_tab` presents: Chrome 2026 refuses a DevTools
+    // websocket whose Origin it does not know, and a web page's script cannot present this one.
+    chrome_args.extend(ports::debugging_flags(port));
+    chrome_args.push(url.to_string());
+
+    chrome_args
+}
+
 /// `launch_browser`'s work, also what `open_url` does when no browser is up yet.
 fn launch_browser(args: &serde_json::Value) -> String {
     // Run watchdog check before launch — kill zombies from previous sessions
@@ -621,37 +663,7 @@ fn launch_browser(args: &serde_json::Value) -> String {
         Err(e) => return format!("Error: {e}"),
     };
 
-    let mut chrome_args: Vec<String> = vec![
-        // Headless has no display to be ozone's platform; it is set to headless below.
-        if headless { "--ozone-platform=headless".into() } else { "--ozone-platform=wayland".into() },
-        format!("--user-data-dir={}", profile.display()),
-        "--no-first-run".into(),
-        "--no-default-browser-check".into(),
-        // Anti-detection: prevent navigator.webdriver=true (primary CAPTCHA trigger)
-        "--disable-blink-features=AutomationControlled".into(),
-        // Anti-detection: realistic viewport size
-        "--window-size=1920,1080".into(),
-    ];
-    // Headed by default, and that is the point rather than an oversight. What makes a site
-    // trust this browser is not a flag: it is a real profile with a real logged-in session, on
-    // the user's own machine and their own address. A headless window on a datacentre IP is
-    // what every cloud automation service is fighting, and running on someone's desktop is the
-    // one advantage they cannot buy. Headless is for background work on sites that do not care.
-    //
-    // `--disable-gpu` is deliberately absent when headed: it forces software rendering, and a
-    // SwiftShader WebGL string is itself a fingerprint.
-    if headless {
-        chrome_args.push("--headless=new".into());
-        chrome_args.push("--disable-gpu".into());
-        // The one signal `--headless=new` still leaks to any script that looks.
-        chrome_args.push(
-            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
-        );
-    }
-    // Loopback only, and the one Origin `connect_tab` presents: Chrome 2026 refuses a DevTools
-    // websocket whose Origin it does not know, and a web page's script cannot present this one.
-    chrome_args.extend(ports::debugging_flags(port));
-    chrome_args.push(url.to_string());
+    let chrome_args = launch_args(headless, &profile, port, url);
 
     // A headed window goes where a mind's windows go, and nowhere else: Mind View's display
     // with the person's cleared, or a refusal. Headless draws nothing, so it needs no display
@@ -1280,118 +1292,7 @@ impl Tool for WebSearchTool {
             return "Error: query too long (max 500 chars)".to_string();
         }
 
-        // Try SearXNG first (local, fast, no rate limits)
-        match searxng_search(query) {
-            Ok(results) => return results,
-            Err(e) => tracing::debug!("SearXNG unavailable ({e}), trying browser/DDG"),
-        }
-
-        // Auto-launch headless browser if not running — fall back to DuckDuckGo if unavailable
-        if let Err(e) = ensure_headless_browser() {
-            tracing::info!("Browser unavailable ({e}), using DuckDuckGo HTML fallback");
-            return duckduckgo_html_search(query);
-        }
-
-        // URL-encode the query
-        let encoded: String = query
-            .chars()
-            .map(|c| match c {
-                ' ' => '+'.to_string(),
-                c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') => {
-                    c.to_string()
-                }
-                c => format!("%{:02X}", c as u32),
-            })
-            .collect();
-
-        let url = format!("https://www.google.com/search?q={}&num=10&hl=en", encoded);
-
-        let (mut ws, _tab) = match connect_first_tab() {
-            Ok(v) => v,
-            Err(e) => return format!("Error connecting to browser: {e}"),
-        };
-
-        // Navigate to Google search
-        if let Err(e) = cdp_send(&mut ws, "Page.navigate", json!({ "url": url })) {
-            return format!("Navigation error: {e}");
-        }
-
-        // Wait for results to load
-        std::thread::sleep(Duration::from_secs(3));
-
-        // Extract structured search results via JS
-        let js = r#"
-            (function() {
-                var results = [];
-                // Google search result blocks
-                var items = document.querySelectorAll('div.g, div[data-hveid]');
-                for (var i = 0; i < items.length && results.length < 10; i++) {
-                    var el = items[i];
-                    var link = el.querySelector('a[href^="http"]');
-                    if (!link) continue;
-                    var url = link.href;
-                    if (url.includes('google.com') || url.includes('accounts.google')) continue;
-                    var titleEl = el.querySelector('h3');
-                    var title = titleEl ? titleEl.innerText : '';
-                    if (!title) continue;
-                    var snippetEl = el.querySelector('div[data-sncf], span.aCOpRe, div.VwiC3b, div[style*="line"]');
-                    var snippet = snippetEl ? snippetEl.innerText : '';
-                    if (!snippet) {
-                        // Try getting text from the result block minus the title
-                        var allText = el.innerText || '';
-                        var parts = allText.split('\n').filter(function(l) { return l.length > 20 && l !== title; });
-                        snippet = parts.slice(0, 2).join(' ');
-                    }
-                    results.push(title + '\n' + url + '\n' + snippet.substring(0, 200));
-                }
-                if (results.length === 0) {
-                    // Fallback: just get page text
-                    return 'NO_STRUCTURED_RESULTS\n' + (document.body ? document.body.innerText.substring(0, 4000) : '');
-                }
-                return results.join('\n---\n');
-            })()
-        "#;
-
-        let raw = eval_js(&mut ws, js).unwrap_or_default();
-
-        // Check for CAPTCHA on Google search
-        let page_title = eval_js(&mut ws, "document.title").unwrap_or_default();
-        if let Some(captcha_msg) = detect_captcha(&page_title, &raw, "") {
-            cleanup_after_data_extraction(&mut ws);
-            tracing::info!("Google CAPTCHA detected, falling back to DuckDuckGo: {captcha_msg}");
-            return duckduckgo_html_search(query);
-        }
-
-        if raw.starts_with("NO_STRUCTURED_RESULTS") {
-            // Fallback to plain text results
-            let text = raw.strip_prefix("NO_STRUCTURED_RESULTS\n").unwrap_or(&raw);
-            let truncated = if text.len() > 4000 { &text[..text.floor_char_boundary(4000)] } else { text };
-            cleanup_after_data_extraction(&mut ws);
-            return format!("Search results for: {query}\n\n{truncated}");
-        }
-
-        // Parse structured results
-        let mut output = format!("Search results for: {query}\n\n");
-        for (i, block) in raw.split("\n---\n").enumerate() {
-            let lines: Vec<&str> = block.lines().collect();
-            if lines.len() >= 2 {
-                let title = lines[0];
-                let url = lines[1];
-                let snippet = if lines.len() > 2 { lines[2..].join(" ") } else { String::new() };
-                output.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i + 1, title, url, snippet));
-            }
-        }
-
-        if output.len() > 5000 {
-            let boundary = output.floor_char_boundary(5000);
-            output.truncate(boundary);
-            output.push_str("\n... (truncated)");
-        }
-
-        // Clear page so stale content isn't mistaken for user activity
-        cleanup_after_data_extraction(&mut ws);
-
-        output
+        search::web_search(query)
     }
 }
 
@@ -2756,6 +2657,19 @@ mod mind_display_tests {
     fn with_no_shell_a_headed_window_is_refused_not_sent_to_wayland_0() {
         let why = display_for_mind().expect_err("no Mind View, no window");
         assert!(why.contains("never opened on the person's desktop"), "{why}");
+    }
+
+    /// The headed launch's real argv (and the headless one `launch_browser` can also start): every
+    /// quiet switch, exactly one `--disable-features=`, the debugging flags, and the address last.
+    #[test]
+    fn the_launch_browser_argv_makes_no_calls_home() {
+        for headless in [false, true] {
+            let a = launch_args(headless, std::path::Path::new("/tmp/p"), 9223, "https://example.org/");
+            ports::carries_quiet(&a).unwrap();
+            assert!(a.contains(&"--remote-debugging-port=9223".to_string()), "{a:?}");
+            assert_eq!(a.last().unwrap(), "https://example.org/");
+            assert_eq!(a.contains(&"--headless=new".to_string()), headless);
+        }
     }
 
     #[test]

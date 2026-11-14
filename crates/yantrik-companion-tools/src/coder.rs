@@ -27,6 +27,7 @@ use yantrik_ipc_contracts::home_paths::workshops;
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel};
 use crate::coder_deps::install_deps;
+use crate::coder_sandbox;
 use crate::spawn::SandboxMode;
 
 const SCRIPTS_DIR: &str = "/home/yantrik/.config/yantrik/scripts";
@@ -203,13 +204,34 @@ const PIP_NAME_MAP: &[(&str, &str)] = &[
     ("yfinance", "yfinance"),
 ];
 
+/// The statements on one line of Python: cut at a `#` outside quotes (a comment's `; import x` is no
+/// import) and at each `;` outside quotes (a string's `; import x` is no import either). One line
+/// at a time, so a string that spans lines is not followed; that case existed before and is no worse.
+fn statements(line: &str) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in line.chars() {
+        if let Some(q) = quote {
+            out.last_mut().unwrap().push(c);
+            if escaped { escaped = false; } else if c == '\\' { escaped = true; } else if c == q { quote = None; }
+            continue;
+        }
+        match c {
+            '#' => break,
+            ';' => out.push(String::new()),
+            '\'' | '"' => { quote = Some(c); out.last_mut().unwrap().push(c); }
+            _ => out.last_mut().unwrap().push(c),
+        }
+    }
+    out
+}
+
 pub(crate) fn detect_python_deps(content: &str) -> Vec<String> {
     let mut packages = HashSet::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        // Skip comments
-        if trimmed.starts_with('#') { continue; }
-
+    // A line may hold several statements: `import x; print(x.y)` imports x (gate 9, bar 5 note).
+    for statement in content.lines().flat_map(statements) {
+        let trimmed = statement.trim();
         let module = if let Some(rest) = trimmed.strip_prefix("import ") {
             // Handle "import x, y, z" and "import x as y"
             rest.split(',')
@@ -481,8 +503,23 @@ fn execute_script(
     let before = snapshot_dir(&out_dir);
     let before_scripts = snapshot_dir(&scripts);
 
-    // Decide whether to use bwrap
-    let use_bwrap = sandbox != SandboxMode::None && has_bwrap();
+    // Decide whether to use bwrap. A sandbox that was asked for and is not there is a refusal, not a
+    // quiet run without one.
+    let use_bwrap = match coder_sandbox::plan(sandbox, has_bwrap()) {
+        Ok(use_bwrap) => use_bwrap,
+        Err(why) => {
+            return ExecutionResult {
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: why,
+                duration_secs: 0.0,
+                timed_out: false,
+                generated_files: vec![],
+                error_analysis: None,
+                sandboxed: false,
+            };
+        }
+    };
 
     // Build command: either bwrap-wrapped or direct
     let mut cmd = if use_bwrap {
@@ -786,7 +823,7 @@ impl Tool for CodeExecuteTool {
                         "code": {"type": "string", "description": "Code to execute"},
                         "language": {"type": "string", "enum": ["python", "bash", "node", "ruby"], "description": "Language (default: python)"},
                         "timeout": {"type": "integer", "description": "Timeout in seconds (default 120, max 600)"},
-                        "sandbox": {"type": "string", "enum": ["strict", "network"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for API/web calls."}
+                        "sandbox": {"type": "string", "enum": ["strict", "network"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for API/web calls, and runs only in a turn the person started."}
                     },
                     "required": ["code"]
                 }
@@ -809,6 +846,17 @@ impl Tool for CodeExecuteTool {
         if code.is_empty() {
             return "Error: code is required".to_string();
         }
+
+        // Auto-install deps, before anything is written: a refusal leaves no trace.
+        let deps = match language {
+            "python" => detect_python_deps(code),
+            "node" | "javascript" => detect_node_deps(code),
+            _ => vec![],
+        };
+        let skipped = match install_deps(language, &deps) {
+            Ok(note) => note,
+            Err(err) => return err,
+        };
 
         let _ = std::fs::create_dir_all(scripts_dir());
         let _ = std::fs::create_dir_all(output_dir());
@@ -834,20 +882,6 @@ impl Tool for CodeExecuteTool {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
         }
-
-        // Auto-install deps
-        let deps = match language {
-            "python" => detect_python_deps(code),
-            "node" | "javascript" => detect_node_deps(code),
-            _ => vec![],
-        };
-        let skipped = match install_deps(language, &deps) {
-            Ok(note) => note,
-            Err(err) => {
-                let _ = std::fs::remove_file(&tmp_path);
-                return err;
-            }
-        };
 
         // Execute in sandbox
         let result = execute_script(&tmp_path, language, "", &HashMap::new(), timeout, None, sandbox);
@@ -1009,7 +1043,7 @@ impl Tool for ScriptRunTool {
                         "timeout": {"type": "integer", "description": "Timeout in seconds (default 120, max 600)"},
                         "env": {"type": "object", "description": "Environment variables to set (key-value pairs)"},
                         "working_dir": {"type": "string", "description": "Working directory (default: scripts dir)"},
-                        "sandbox": {"type": "string", "enum": ["strict", "network", "none"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for web portals/APIs. 'none': no sandbox."}
+                        "sandbox": {"type": "string", "enum": ["strict", "network", "none"], "description": "Sandbox mode. 'strict' (default): no network. 'network': allows network for web portals/APIs. 'none': no sandbox. Both run only in a turn the person started."}
                     },
                     "required": ["name"]
                 }
