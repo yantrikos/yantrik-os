@@ -2440,6 +2440,34 @@ mod tests {
         }
     }
 
+    /// A machine with an empty model cache fetched each OCR model with `--retry 3`, so every
+    /// request upstream's bucket answered with a 403 cost three exhausted retries before our own
+    /// mirror was tried at all — minutes of the ISO nightly per model, paid twice over.
+    /// The fetch is one attempt per source now, and the log names which source answered what.
+    #[test]
+    fn the_release_script_fails_fast_when_a_source_refuses_an_ocr_model() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/yantrik-os/build-release.sh");
+        let Ok(text) = std::fs::read_to_string(&script) else {
+            return; // Packaged source without the deploy tree; nothing to check against.
+        };
+        let from_ocr = match text.find("# The models yantrik-ocr reads") {
+            Some(i) => &text[i..],
+            None => panic!("{} no longer stages the OCR models", script.display()),
+        };
+        let ocr = match from_ocr.find("\n# Barlow is embedded") {
+            Some(i) => &from_ocr[..i],
+            None => panic!("the OCR staging block of {} no longer ends where this test reads it", script.display()),
+        };
+        // A 403 does not change between attempts, so retrying one only delays the next source.
+        assert!(ocr.contains("--retry 1"), "the OCR fetch retries a source that refused it");
+        assert!(!ocr.contains("--retry 3"), "the OCR fetch still retries three times per source");
+        // The HTTP status is what gets printed, so a failing nightly says which source started
+        // refusing instead of only "could not fetch from the mirror or upstream".
+        assert!(ocr.contains("--write-out '%{http_code}'"), "the OCR fetch does not capture the status");
+        assert!(ocr.contains("answered $code"), "the OCR fetch does not name the status it got");
+    }
+
     /// The .desktop entries reach every machine the binaries do, and by one rule.
     ///
     /// Our apps are found by their .desktop files (`crate::surfaces`), so a deploy that ships the
