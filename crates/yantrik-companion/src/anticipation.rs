@@ -153,9 +153,16 @@ pub struct AnticipationEngine;
 impl AnticipationEngine {
     /// Create the table. An error is the caller's to answer: a read-only or locked database must
     /// not stop the companion starting.
+    ///
+    /// Also turns `secure_delete` on for the connection, which is the companion's own. A brief is
+    /// emptied to a tombstone when its meeting is over (`retire`), and without this the old text
+    /// stays in the file's free pages and its write-ahead log until a checkpoint or a vacuum.
+    /// Note titles and file paths exist nowhere else in that database. A little write speed is
+    /// the price of the text leaving the file.
     pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS prepared_items (
+            "PRAGMA secure_delete = ON;
+            CREATE TABLE IF NOT EXISTS prepared_items (
                 id          TEXT PRIMARY KEY,
                 trigger_type TEXT NOT NULL,
                 trigger_data TEXT NOT NULL DEFAULT '{}',

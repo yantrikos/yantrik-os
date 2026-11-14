@@ -5,7 +5,7 @@ use chrono::{Duration, NaiveDateTime};
 use rusqlite::Connection;
 
 use super::files::FileRoots;
-use super::tests::{db, event, id_for, maya, now, now_ts, over, own, tick_with_mail, Calendar, Forbidden, Mailbox, Notebook, Nothing};
+use super::tests::{db, event, id_for, maya, now, now_ts, over, own, prepare, scratch, tick_with_mail, Calendar, Forbidden, Mailbox, Notebook, Nothing};
 use super::*;
 use crate::anticipation::{AnticipationEngine, PrepOutcome};
 
@@ -221,4 +221,41 @@ fn an_off_tick_does_not_zero_the_outcomes_it_does_not_gather() {
     press(&conn, &id_for(&e), Press::Dismissed, now_ts(n));
     let out = off_at(&conn, n, 5);
     assert_eq!(out.outcomes, Outcomes { opened: 0, dismissed: 1, ignored: 0 }, "the table's own count, not a default");
+}
+
+// ── What the file keeps ─────────────────────────────────────────────────────────────────
+
+/// A brief is made and its meeting ends, in a database file in WAL mode, and the file and its log
+/// are read as bytes after a checkpoint: whether what the card said is still in them.
+fn is_the_text_left_in_the_file(name: &str, secure_delete: bool) -> bool {
+    const SEED: &str = "SEEDED-STRING-IN-THE-DESCRIPTION";
+    let dir = scratch(name);
+    let conn = Connection::open(dir.join("companion.db")).expect("database file");
+    conn.execute_batch("PRAGMA journal_mode = WAL;").expect("wal");
+    prepare(&conn);
+    if !secure_delete {
+        conn.execute_batch("PRAGMA secure_delete = OFF;").expect("pragma");
+    }
+    let (n, mut e) = (now(), event("e1", "Q4 planning", now() + Duration::minutes(10), vec![maya()]));
+    e.description = format!("{SEED} and a line");
+    let cal = Calendar::of(vec![e]);
+    assert_eq!(tick_at(&conn, &cal, n, 0).cards.len(), 1);
+    assert_eq!(tick_at(&conn, &cal, n, 41).cards.len(), 0, "the meeting is over");
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).expect("checkpoint");
+    let mut bytes = Vec::new();
+    for file in std::fs::read_dir(&dir).expect("dir").flatten() {
+        bytes.extend(std::fs::read(file.path()).unwrap_or_default());
+    }
+    bytes.windows(SEED.len()).any(|w| w == SEED.as_bytes())
+}
+
+#[test]
+fn what_a_brief_said_is_not_in_the_database_file_once_its_meeting_is_over() {
+    assert!(!is_the_text_left_in_the_file("secure", true), "the text left the file with the row");
+}
+
+/// The check above can see what it looks for: with `secure_delete` off the same run leaves it.
+#[test]
+fn without_secure_delete_the_same_text_stays_in_the_file() {
+    assert!(is_the_text_left_in_the_file("insecure", false));
 }
