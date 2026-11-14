@@ -24,6 +24,8 @@ pub mod brain_loop;
 pub mod chat_bridge;
 pub mod bond;
 pub mod companion;
+#[cfg(test)]
+mod stopped_tests;
 pub mod config;
 pub mod config_file;
 pub mod mcp_client;

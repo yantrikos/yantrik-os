@@ -88,6 +88,10 @@ pub struct FallbackLLM {
     /// mutilation for nothing, so these decide whether it happens at all.
     primary_context_tokens: usize,
     fallback_context_tokens: usize,
+    /// The primary's cut flag, so a fallback call in flight when the provider is removed is closed
+    /// with it and not left to run out its client timeout.
+    #[cfg(feature = "api-llm")]
+    cut: Option<Arc<crate::llm::CutFlag>>,
 }
 
 impl FallbackLLM {
@@ -114,7 +118,16 @@ impl FallbackLLM {
             cooldown: PRIMARY_COOLDOWN,
             primary_context_tokens: DEFAULT_PRIMARY_CONTEXT_TOKENS,
             fallback_context_tokens,
+            #[cfg(feature = "api-llm")]
+            cut: None,
         }
+    }
+
+    /// Close the API fallback's calls with `cut` too (the flag the primary is armed with).
+    #[cfg(feature = "api-llm")]
+    pub fn with_cut(mut self, cut: Arc<crate::llm::CutFlag>) -> Self {
+        self.cut = Some(cut);
+        self
     }
 
     /// Create with an already-initialized fallback backend (for testing or pre-warming).
@@ -131,6 +144,8 @@ impl FallbackLLM {
             cooldown: PRIMARY_COOLDOWN,
             primary_context_tokens: DEFAULT_PRIMARY_CONTEXT_TOKENS,
             fallback_context_tokens: DEFAULT_FALLBACK_CONTEXT_TOKENS,
+            #[cfg(feature = "api-llm")]
+            cut: None,
         }
     }
 
@@ -166,11 +181,15 @@ impl FallbackLLM {
                 #[cfg(feature = "api-llm")]
                 {
                     // The API fallback is a llama-server on this machine.
-                    Arc::new(crate::llm::ApiLLM::new(
+                    let api = crate::llm::ApiLLM::new(
                         base_url.clone(),
                         None, // no API key for local server
                         model,
-                    ).for_provider("llamacpp"))
+                    ).for_provider("llamacpp");
+                    Arc::new(match &self.cut {
+                        Some(cut) => api.with_cut(cut.clone()),
+                        None => api,
+                    })
                 }
                 #[cfg(not(feature = "api-llm"))]
                 {
@@ -409,6 +428,8 @@ impl LLMBackend for FallbackLLM {
                 self.primary_success();
                 Ok(resp)
             }
+            // A backend the person stopped is not a failure to cover for.
+            Err(stopped) if stopped.downcast_ref::<crate::Stopped>().is_some() => Err(stopped),
             Err(primary_err) => {
                 self.primary_failure();
                 tracing::warn!(
@@ -459,6 +480,8 @@ impl LLMBackend for FallbackLLM {
                 self.primary_success();
                 Ok(resp)
             }
+            // A backend the person stopped is not a failure to cover for.
+            Err(stopped) if stopped.downcast_ref::<crate::Stopped>().is_some() => Err(stopped),
             Err(primary_err) => {
                 self.primary_failure();
                 tracing::warn!(

@@ -165,6 +165,11 @@ export struct AIStatusData {
     status: string,
     // The sentence under the name when the status is not "connected": what was found.
     detail: string,
+    // The companion was stopped because its provider was removed, and nothing has put it on one.
+    stopped: bool,
+    // While stopped: "<host> · <model>" of this computer's own setup (config.yaml), the one
+    // thing the way back would put the companion on; empty when that file names no address.
+    config-setup: string,
 }
 
 
@@ -1248,6 +1253,28 @@ export component SettingsScreen inherits Rectangle {
                                                 font-weight: 600;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // The way back from a stopped companion, with no restart: the stop is the
+                                    // default (nothing moves the companion on its own), and this is the
+                                    // person's own press to put it on this computer's setup (config.yaml).
+                                    if root.ai-status.stopped && root.ai-status.config-setup != "" : TouchArea {
+                                        height: 32px;
+                                        clicked => { root.set-primary-provider(""); }
+                                        Rectangle {
+                                            border-radius: Theme.r-sm;
+                                            background: Theme.hover-fill;
+                                            border-width: 1px;
+                                            border-color: Theme.border-subtle;
+                                            Text {
+                                                text: "Use this computer's setup for the companion (" + root.ai-status.config-setup + ")";
+                                                color: Theme.accent;
+                                                font-size: Theme.fs-caption;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                                overflow: elide;
                                             }
                                         }
                                     }
