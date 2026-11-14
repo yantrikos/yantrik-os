@@ -20,6 +20,13 @@ fn companion_on(llm: Arc<dyn LLMBackend>) -> CompanionService {
     CompanionService::new(db, llm, config)
 }
 
+fn companion_with_tools(llm: Arc<dyn LLMBackend>) -> CompanionService {
+    let db = YantrikDB::new(":memory:", 64).expect("in-memory database");
+    let mut config = CompanionConfig::default();
+    config.tools.enabled = true;
+    CompanionService::new(db, llm, config)
+}
+
 fn answer(text: &str) -> LLMResponse {
     LLMResponse {
         text: text.into(),
@@ -170,4 +177,66 @@ impl LLMBackend for Live {
     fn backend_name(&self) -> &str {
         "api"
     }
+}
+
+/// The gate's turn: the model answers with a tool call, the tool runs, and the provider is removed
+/// while the round after it is on the wire. The first reply is a call to `calculate`; the second
+/// call is the one the press lands in.
+struct ToolThenCut(Arc<LlmSwitch>);
+
+impl LLMBackend for ToolThenCut {
+    fn chat(
+        &self,
+        _: &[ChatMessage],
+        _: &GenerationConfig,
+        _: Option<&[serde_json::Value]>,
+    ) -> anyhow::Result<LLMResponse> {
+        // The round after the tool: the press lands here, and the call is thrown away.
+        self.0.cut();
+        Ok(answer("an answer from the removed provider"))
+    }
+    fn chat_streaming(
+        &self,
+        _: &[ChatMessage],
+        _: &GenerationConfig,
+        _: Option<&[serde_json::Value]>,
+        _: &mut dyn FnMut(&str),
+    ) -> anyhow::Result<LLMResponse> {
+        let arguments = r#"{"expression":"1+1"}"#;
+        let mut reply = answer("");
+        reply.tool_calls = vec![yantrik_ml::ToolCall {
+            name: "calculate".into(),
+            arguments: serde_json::from_str(arguments).expect("fixed JSON"),
+        }];
+        reply.api_tool_calls = vec![yantrik_ml::ApiToolCall {
+            id: "call_1".into(),
+            call_type: "function".into(),
+            function: yantrik_ml::ApiToolCallFunction { name: "calculate".into(), arguments: arguments.into() },
+        }];
+        Ok(reply)
+    }
+    fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+        Ok(text.len())
+    }
+    fn backend_name(&self) -> &str {
+        "api"
+    }
+}
+
+#[test]
+fn a_turn_cut_in_its_tool_round_says_no_provider_is_set_up() {
+    let switch = Arc::new(LlmSwitch::new());
+    let armed = switch.arm(Arc::new(ToolThenCut(switch.clone())));
+    let mut c = companion_with_tools(armed);
+    let mut shown = String::new();
+    let r = c.handle_message_streaming("what is one plus one", |t| {
+        if t == "__REPLACE__" {
+            shown.clear()
+        } else {
+            shown.push_str(t)
+        }
+    });
+    assert_eq!(r.message, NO_PROVIDER);
+    assert_eq!(shown, NO_PROVIDER);
+    assert!(!r.offline_mode, "a removed provider is not an offline one");
 }

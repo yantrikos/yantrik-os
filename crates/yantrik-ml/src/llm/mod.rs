@@ -14,6 +14,8 @@ mod llamacpp;
 mod cognitive_kernel;
 mod cognitive_router;
 mod fallback;
+mod cut_connector;
+mod cut_flag;
 mod revocable;
 #[cfg(test)]
 mod revocable_tests;
@@ -30,6 +32,7 @@ pub use self::llamacpp::LlamaCppLLM;
 pub use self::cognitive_kernel::CognitiveKernelLLM;
 pub use self::cognitive_router::{CognitiveRouter, RouteDecision, PlanShape, RouteExplanation, RouteLayer};
 pub use self::fallback::{FallbackLLM, FallbackConfig};
+pub use self::cut_flag::CutFlag;
 pub use self::revocable::{LlmSwitch, Revocable, Stopped, NO_PROVIDER, STOPPED_BACKEND, new_cut_flag};
 
 /// Backward-compatible alias for `CandleLLM`.

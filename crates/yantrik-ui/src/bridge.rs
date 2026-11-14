@@ -120,6 +120,8 @@ pub enum CompanionCommand {
         base_url: String,
         api_key: Option<String>,
         model: String,
+        /// `LlmSwitch::epoch` when the reload was asked for. A stop since then drops it.
+        epoch: u64,
     },
     /// Put the companion on no provider: its next turn reaches nobody and no key is held.
     /// Used when the provider it ran on is removed and there is no other.
@@ -975,6 +977,7 @@ impl CompanionBridge {
             base_url,
             api_key,
             model,
+            epoch: self.llm_switch.epoch(),
         });
     }
 
@@ -1769,31 +1772,35 @@ fn worker_loop(
                 cached_bond.store(companion.bond_level().as_u8(), Ordering::Relaxed);
                 push_bond(&companion, &ui_weak);
             }
-            Ok(CompanionCommand::ReloadLLM { provider_type, base_url, api_key, model }) => {
+            Ok(CompanionCommand::ReloadLLM { provider_type, base_url, api_key, model, epoch }) => {
                 tracing::info!(provider = %provider_type, model = %model, "Reloading LLM backend");
                 // Armed: a Remove cuts it on the pressing thread, and ends a reply being streamed.
-                let cut = yantrik_ml::new_cut_flag();
-                let new_llm = llm_switch.arm_flagged(
-                    cut.clone(),
-                    std::sync::Arc::new(
-                        yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model).for_provider(&provider_type).with_cut(cut),
-                    ),
-                );
-                // In memory, because swap_llm rebuilds a chat-model decision model whose
-                // locality is read from it. Never written to /opt/yantrik/config.yaml: that is
-                // the machine's file, with its comments and its own default, and a re-serialised
-                // copy silently replaced both (#524). A provider chosen in Settings lives in
-                // providers.yaml and is applied from there at every start (wire::settings).
-                companion.config.llm.backend = "api".into();
-                companion.config.llm.api_base_url = Some(base_url);
-                companion.config.llm.api_model = Some(model);
-                companion.config.llm.api_key = api_key;
-                companion.swap_llm(new_llm);
-                online.store(true, Ordering::Relaxed);
-                execute_suppression_logged = false;
-                tracing::info!("LLM reloaded successfully");
+                // None when a Remove came after the reload was asked for: it arms nothing, and
+                // the removed provider's key is not put back in the companion.
+                let reload = crate::provider_handoff::reload::Reload {
+                    provider_type: &provider_type,
+                    base_url: &base_url,
+                    api_key: api_key.as_deref(),
+                    model: &model,
+                    epoch,
+                };
+                if let Some(new_llm) = crate::provider_handoff::reload::armed_reload(&llm_switch, &reload) {
+                    // In memory, because swap_llm rebuilds a chat-model decision model whose
+                    // locality is read from it. Never written to /opt/yantrik/config.yaml: that is
+                    // the machine's file, with its comments and its own default, and a re-serialised
+                    // copy silently replaced both (#524). A provider chosen in Settings lives in
+                    // providers.yaml and is applied from there at every start (wire::settings).
+                    companion.config.llm.backend = "api".into();
+                    companion.config.llm.api_base_url = Some(base_url);
+                    companion.config.llm.api_model = Some(model);
+                    companion.config.llm.api_key = api_key;
+                    companion.swap_llm(new_llm);
+                    online.store(true, Ordering::Relaxed);
+                    execute_suppression_logged = false;
+                    tracing::info!("LLM reloaded successfully");
+                }
             }
-            Ok(CompanionCommand::StopLLM) => crate::provider_handoff::companion::stop(&mut companion, &online),
+            Ok(CompanionCommand::StopLLM) => crate::provider_handoff::companion::stop(&mut companion, &online, &llm_switch),
             Ok(CompanionCommand::RecordSystemEvent { text, domain, importance }) => {
                 if companion.is_incognito() {
                     tracing::debug!("Incognito: skipping RecordSystemEvent");
@@ -3306,7 +3313,7 @@ fn build_companion(config: CompanionConfig, llm_switch: &yantrik_ml::LlmSwitch) 
                 }
             }
         };
-        std::sync::Arc::new(FallbackLLM::new(primary_llm, Some(fallback_cfg)))
+        std::sync::Arc::new(FallbackLLM::new(primary_llm, Some(fallback_cfg)).with_cut(cut.clone()))
     } else {
         primary_llm
     };

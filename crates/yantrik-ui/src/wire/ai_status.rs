@@ -107,6 +107,26 @@ pub(crate) fn config_key() -> Option<String> {
     CONFIG_KEY.get().and_then(|m| m.lock().ok().and_then(|k| k.clone()))
 }
 
+/// config.yaml's address and model as the shell read them at start (url, model): what the way back
+/// from a stop puts the companion on. Kept apart from Settings' fields, which choosing a provider
+/// overwrites with that provider's model, so a removed provider's model is never offered or sent.
+static CONFIG_TARGET: Mutex<(String, String)> = Mutex::new((String::new(), String::new()));
+
+pub(crate) fn set_config_target(url: &str, model: &str) {
+    *CONFIG_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = (url.to_string(), model.to_string());
+}
+
+/// (address, model) of config.yaml; empty strings where it names none.
+pub(crate) fn config_target() -> (String, String) {
+    CONFIG_TARGET.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The stopped card, offering config.yaml's own address and model.
+pub(crate) fn way_back_card() -> AIStatusData {
+    let (url, model) = config_target();
+    stopped_card(&url, &model)
+}
+
 /// What the companion is pointed at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Target {
@@ -293,7 +313,7 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
     );
     super::runs_on_card::publish(ui);
     if stopped {
-        ui.set_settings_ai_status(stopped_card(&ui.get_settings_llm_api_url(), &ui.get_settings_llm_api_model()));
+        ui.set_settings_ai_status(way_back_card());
         return;
     }
     let Some(target) = target else {

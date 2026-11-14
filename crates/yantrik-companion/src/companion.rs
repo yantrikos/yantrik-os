@@ -3450,8 +3450,6 @@ impl CompanionService {
                     }
                 }
             }
-            // The model was reached and answered with thinking alone (a Qwen3 that spent the whole
-            // budget thinking, VM 542): say so, in words, rather than show an empty bubble.
             Err(e) if e.downcast_ref::<yantrik_ml::Stopped>().is_some() => {
                 response_text = e.to_string();
                 on_token("__REPLACE__");
@@ -3459,6 +3457,8 @@ impl CompanionService {
                 model_failure = Some(response_text.clone());
                 agent_loop.fail("the provider was removed");
             }
+            // The model was reached and answered with thinking alone (a Qwen3 that spent the whole
+            // budget thinking, VM 542): say so, in words, rather than show an empty bubble.
             Err(e) if answered_badly(&*e).is_some() => {
                 self.note_llm_reachable();
                 response_text = answered_badly(&*e).unwrap_or_default();

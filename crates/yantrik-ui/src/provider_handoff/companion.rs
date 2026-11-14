@@ -108,9 +108,16 @@ impl yantrik_ml::LLMBackend for NoProvider {
 
 /// The worker's side of `StopLLM`, run in order behind the turn that was running. The backend was
 /// already cut when the button was pressed (`CompanionBridge::stop_llm`); this takes the stopped
-/// backend out of the companion: no address, no key, and one that refuses every call.
-pub(crate) fn stop(companion: &mut yantrik_companion::CompanionService, online: &std::sync::atomic::AtomicBool) {
+/// backend out of the companion: no address, no key, and one that refuses every call. The switch
+/// is released too, so it holds no backend and no key once the stop is applied, whatever order the
+/// commands came in. Its epoch stays: a reload asked for after the press is still wanted.
+pub(crate) fn stop(
+    companion: &mut yantrik_companion::CompanionService,
+    online: &std::sync::atomic::AtomicBool,
+    switch: &yantrik_ml::LlmSwitch,
+) {
     tracing::info!("the stopped backend is out of the companion");
+    switch.release();
     companion.config.llm.api_base_url = None;
     companion.config.llm.api_key = None;
     companion.swap_llm(Arc::new(NoProvider));
@@ -122,6 +129,18 @@ pub(crate) fn stop(companion: &mut yantrik_companion::CompanionService, online: 
 pub(crate) fn reload_config(bridge: &CompanionBridge, base_url: String, key: Option<String>, model: String) {
     note_on_saved(None);
     bridge.reload_llm("api".into(), base_url, key, model);
+}
+
+/// The way back, and "stop using the saved provider": put the companion on config.yaml's own
+/// address and model (`ai_status::config_target`) with its key. False, and nothing sent, when
+/// config.yaml names no address.
+pub(crate) fn put_back_on_config(bridge: &CompanionBridge) -> bool {
+    let (url, model) = crate::wire::ai_status::config_target();
+    if url.trim().is_empty() {
+        return false;
+    }
+    reload_config(bridge, url, crate::wire::ai_status::config_key(), model);
+    true
 }
 
 /// The saved provider the companion ran on is gone. Stopped first, now and in this thread, so the

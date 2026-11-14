@@ -152,9 +152,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(home: &Home) -> Self {
+        // The lock first: the stop state is process-wide, and a test between `stop_llm` and its
+        // assert must not have it cleared by one that is only starting.
+        let vault = crate::vault_unlock::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::provider_handoff::companion::note_on_saved(None);
         crate::provider_handoff::companion::note_running();
-        let vault = crate::vault_unlock::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         yantrikdb_core::vault::lock();
         let db = home.path().join("memory.db");
         let conn = rusqlite::Connection::open(&db).expect("open the store");
@@ -357,11 +359,45 @@ fn a_stopped_companion_is_put_back_on_this_computers_setup_by_one_reload_with_no
     assert!(crate::provider_handoff::companion::is_stopped());
     assert!(f.told.try_iter().any(|c| matches!(c, CompanionCommand::StopLLM)));
 
-    crate::provider_handoff::companion::reload_config(&f.bridge, "https://config.example.test/v1".into(), None, "m".into());
+    crate::wire::ai_status::set_config_target("https://config.example.test/v1", "m");
+    assert!(crate::provider_handoff::companion::put_back_on_config(&f.bridge));
 
     assert!(!crate::provider_handoff::companion::is_stopped(), "the stop is over");
     assert!(matches!(f.told.try_iter().collect::<Vec<_>>().as_slice(), [CompanionCommand::ReloadLLM { base_url, .. }] if base_url == "https://config.example.test/v1"));
     assert!(f.bridge.is_online());
+}
+
+/// The button offers, and the reload sends, config.yaml's model: a provider chosen for the
+/// companion leaves its own model in Settings' field (the gate's `gate9-stub`), and neither the
+/// card nor the reload reads that field.
+#[test]
+fn the_way_back_offers_and_reloads_with_config_yamls_model_and_not_the_removed_providers() {
+    let h = home("way_back_model");
+    let f = Fixture::new(&h);
+    crate::wire::ai_status::set_config_target("https://aig.example.test/v1", "qwen3.8:27b");
+    f.bridge.stop_llm();
+    f.told.try_iter().for_each(drop);
+
+    assert_eq!(crate::wire::ai_status::way_back_card().config_setup.as_str(), "aig.example.test \u{b7} qwen3.8:27b");
+    assert!(crate::provider_handoff::companion::put_back_on_config(&f.bridge));
+    match f.told.try_iter().collect::<Vec<_>>().as_slice() {
+        [CompanionCommand::ReloadLLM { model, base_url, .. }] => {
+            assert_eq!((model.as_str(), base_url.as_str()), ("qwen3.8:27b", "https://aig.example.test/v1"));
+        }
+        other => panic!("one reload was expected, got {} commands", other.len()),
+    }
+}
+
+#[test]
+fn a_computer_with_no_address_in_config_yaml_has_no_way_back() {
+    let h = home("way_back_none");
+    let f = Fixture::new(&h);
+    crate::wire::ai_status::set_config_target("  ", "m");
+    f.bridge.stop_llm();
+    f.told.try_iter().for_each(drop);
+    assert!(!crate::provider_handoff::companion::put_back_on_config(&f.bridge));
+    assert!(f.told.try_iter().next().is_none());
+    assert_eq!(crate::wire::ai_status::way_back_card().config_setup.as_str(), "");
 }
 
 #[test]

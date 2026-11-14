@@ -103,7 +103,7 @@ pub use llm::LlamaCppLLM;
 pub use llm::CognitiveKernelLLM;
 pub use llm::{CognitiveRouter, RouteDecision, PlanShape, RouteExplanation, RouteLayer};
 pub use llm::{FallbackLLM, FallbackConfig};
-pub use llm::{LlmSwitch, Revocable, Stopped, NO_PROVIDER, STOPPED_BACKEND, new_cut_flag};
+pub use llm::{CutFlag, LlmSwitch, Revocable, Stopped, NO_PROVIDER, STOPPED_BACKEND, new_cut_flag};
 
 // ── Provider registry exports ──────────────────────────────────────
 

@@ -193,6 +193,48 @@ fn arming_a_new_backend_cuts_the_one_it_replaces() {
 }
 
 #[test]
+fn the_epoch_moves_on_a_cut_and_not_on_arming() {
+    let switch = LlmSwitch::new();
+    let start = switch.epoch();
+    switch.arm(Counting::plain());
+    switch.arm(Counting::plain());
+    assert_eq!(switch.epoch(), start, "arming is not a stop");
+    switch.cut();
+    assert_ne!(switch.epoch(), start, "a reload asked for before this is stale");
+    let after = switch.epoch();
+    switch.cut();
+    assert_ne!(switch.epoch(), after, "every stop moves it, with or without a backend armed");
+}
+
+#[test]
+fn releasing_the_switch_cuts_what_is_armed_and_keeps_the_epoch() {
+    let switch = LlmSwitch::new();
+    let live = switch.arm(Counting::plain());
+    let asked_at = switch.epoch();
+    switch.release();
+    assert!(is_stopped(&live.chat(&[], &GenerationConfig::default(), None).unwrap_err()));
+    assert_eq!(switch.epoch(), asked_at, "a reload asked for since the press is still wanted");
+}
+
+#[test]
+fn a_backend_asked_for_before_a_cut_is_not_armed_after_it() {
+    let switch = LlmSwitch::new();
+    let asked_at = switch.epoch();
+    let live = switch.arm(Counting::plain());
+    switch.cut();
+    let late = Counting::plain();
+    let flag = super::super::new_cut_flag();
+    assert!(switch.arm_flagged_at(asked_at, flag, late.clone()).is_none());
+    assert_eq!(late.calls(), 0);
+    assert!(is_stopped(&live.chat(&[], &GenerationConfig::default(), None).unwrap_err()));
+    // Asked for after the cut, it is armed.
+    let fresh = switch
+        .arm_flagged_at(switch.epoch(), super::super::new_cut_flag(), Counting::plain())
+        .expect("asked for after the cut");
+    fresh.chat(&[], &GenerationConfig::default(), None).expect("live");
+}
+
+#[test]
 fn a_stopped_primary_is_not_covered_for_by_the_fallback() {
     let (primary, fallback) = (Counting::plain(), Counting::plain());
     let switch = LlmSwitch::new();
@@ -224,9 +266,13 @@ mod stream {
     use super::*;
     use crate::llm::ApiLLM;
 
-    /// A server that streams one SSE chunk every 40 ms, for ever, and counts what it is asked.
+    const SSE_WORD: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"word \"}}]}\n\n";
+    /// What Ollama's `/api/chat` streams: one JSON object a line.
+    const OLLAMA_WORD: &str = "{\"message\":{\"content\":\"word \"},\"done\":false}\n";
+
+    /// A server that streams one chunk every 40 ms, for ever, and counts what it is asked.
     /// Sending fails once the client has closed the socket, which ends the thread.
-    fn slow_stream() -> (String, Arc<AtomicUsize>, Arc<AtomicBool>) {
+    fn slow_stream(chunk: &'static str) -> (String, Arc<AtomicUsize>, Arc<AtomicBool>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
         let requests = Arc::new(AtomicUsize::new(0));
@@ -252,7 +298,6 @@ mod stream {
                 if conn.write_all(head.as_bytes()).is_err() {
                     continue;
                 }
-                let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"word \"}}]}\n\n";
                 for _ in 0..500 {
                     if conn.write_all(chunk.as_bytes()).is_err() {
                         saw_close.store(true, Ordering::SeqCst);
@@ -275,7 +320,7 @@ mod stream {
 
     #[test]
     fn a_reply_being_streamed_is_closed_within_a_chunk_of_the_cut() {
-        let (url, requests, closed) = slow_stream();
+        let (url, requests, closed) = slow_stream(SSE_WORD);
         let switch = Arc::new(LlmSwitch::new());
         let armed = armed_api(&url, &switch);
         let (words, seen) = mpsc::channel::<()>();
@@ -308,13 +353,141 @@ mod stream {
         assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
+    /// Run `call` on its own thread and give it two seconds after the cut: a call that is not
+    /// closed by the cut would sit for the client's 300 s timeout.
+    fn cut_then_wait(
+        switch: &LlmSwitch,
+        call: impl FnOnce() -> Result<LLMResponse> + Send + 'static,
+    ) -> Result<LLMResponse> {
+        let (done, result) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(call());
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        switch.cut();
+        result
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the call ended within two seconds of the cut")
+    }
+
+    fn closed_soon(closed: &AtomicBool) -> bool {
+        let waited = std::time::Instant::now();
+        while !closed.load(Ordering::SeqCst) && waited.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        closed.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_whole_answer_being_sent_is_closed_within_a_line_of_the_cut() {
+        let (url, _, closed) = slow_stream(SSE_WORD);
+        let switch = LlmSwitch::new();
+        let armed = armed_api(&url, &switch);
+        let result = cut_then_wait(&switch, move || {
+            armed.chat(&[], &GenerationConfig::default(), None)
+        });
+        assert!(is_stopped(&result.expect_err("the call is cut")));
+        assert!(closed_soon(&closed), "the client closed its socket");
+    }
+
+    #[test]
+    fn an_ollama_whole_answer_being_sent_is_closed_within_a_line_of_the_cut() {
+        let (url, _, closed) = slow_stream(OLLAMA_WORD);
+        let switch = LlmSwitch::new();
+        let cut = super::super::new_cut_flag();
+        let api = ApiLLM::with_flavor(&url, Some("fake-key-for-tests".into()), "stub", true)
+            .with_cut(cut.clone());
+        let armed = switch.arm_flagged(cut, Arc::new(api));
+        let result = cut_then_wait(&switch, move || {
+            armed.chat(&[], &GenerationConfig::default(), None)
+        });
+        assert!(is_stopped(&result.expect_err("the call is cut")));
+        assert!(closed_soon(&closed), "the client closed its socket");
+    }
+
+    /// A server that takes the request and then says nothing: a model still thinking. It sets
+    /// the flag when the client closes.
+    fn silent_server() -> (String, Arc<AtomicBool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let closed = Arc::new(AtomicBool::new(false));
+        let saw_close = closed.clone();
+        std::thread::spawn(move || {
+            while let Ok((mut conn, _)) = listener.accept() {
+                let mut sink = [0u8; 4096];
+                // The request, then nothing but the client's close, which reads as zero bytes.
+                while let Ok(n) = conn.read(&mut sink) {
+                    if n == 0 {
+                        saw_close.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+            }
+        });
+        (url, closed)
+    }
+
+    #[test]
+    fn a_call_waiting_for_the_first_byte_is_closed_by_the_cut() {
+        let (url, closed) = silent_server();
+        let switch = LlmSwitch::new();
+        let armed = armed_api(&url, &switch);
+        let result = cut_then_wait(&switch, move || {
+            armed.chat(&[], &GenerationConfig::default(), None)
+        });
+        assert!(is_stopped(&result.expect_err("the call is cut")));
+        assert!(closed_soon(&closed), "the client closed its socket");
+    }
+
+    #[test]
+    fn a_fallback_call_in_flight_is_closed_by_the_cut() {
+        use crate::llm::{FallbackConfig, FallbackLLM};
+        let (url, closed) = silent_server();
+        let switch = LlmSwitch::new();
+        let cut = super::super::new_cut_flag();
+        // The primary refuses at once (nothing listens on port 1), so the call goes to the fallback.
+        let primary = ApiLLM::new("http://127.0.0.1:1/v1", None, "stub");
+        let fallback = FallbackLLM::new(
+            Arc::new(primary),
+            Some(FallbackConfig::Api { base_url: url, model: "stub".into() }),
+        )
+        .with_cut(cut.clone());
+        let armed = switch.arm_flagged(cut, Arc::new(fallback));
+        let result = cut_then_wait(&switch, move || {
+            armed.chat(&[], &GenerationConfig::default(), None)
+        });
+        assert!(is_stopped(&result.expect_err("the call is cut")));
+        assert!(closed_soon(&closed), "the fallback's socket was closed");
+    }
+
+    #[test]
+    fn a_finished_call_leaves_no_socket_for_the_cut_to_hold() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut sink = [0u8; 4096];
+                let _ = conn.read(&mut sink);
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{SSE_WORD}data: [DONE]\n\n"
+                );
+                let _ = conn.write_all(reply.as_bytes());
+            }
+        });
+        let cut = super::super::new_cut_flag();
+        let api = ApiLLM::new(&url, Some("fake-key-for-tests".into()), "stub").with_cut(cut.clone());
+        api.chat(&[], &GenerationConfig::default(), None)
+            .expect("the server answered");
+        assert_eq!(cut.open_sockets(), 0, "its extra handle would keep the connection open");
+    }
+
     #[test]
     fn a_cut_client_sends_no_request_at_all() {
-        let (url, requests, _) = slow_stream();
+        let (url, requests, _) = slow_stream(SSE_WORD);
         let cut = super::super::new_cut_flag();
         let api =
             ApiLLM::new(&url, Some("fake-key-for-tests".into()), "stub").with_cut(cut.clone());
-        cut.store(true, Ordering::SeqCst);
+        cut.cut();
         // Straight at the client, with no `Revocable` in front: the client's own flag is what
         // stops the call that a wrapper already past its check would make.
         assert!(is_stopped(

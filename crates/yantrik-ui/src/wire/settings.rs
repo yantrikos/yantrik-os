@@ -1033,11 +1033,9 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
                 crate::wire::provider_panel::reload_primary_telling(&ui, &bridge, &chosen);
             }
             None => {
-                let url = ui.get_settings_llm_api_url().to_string();
-                let model = ui.get_settings_llm_api_model().to_string();
-                if !url.trim().is_empty() {
-                    crate::provider_handoff::companion::reload_config(&bridge, url, crate::wire::ai_status::config_key(), model);
-                }
+                // config.yaml's own address and model, never Settings' model field: choosing the
+                // provider that was just removed overwrote that with its model.
+                crate::provider_handoff::companion::put_back_on_config(&bridge);
             }
         }
         push_providers_to_ui(&ui, &store);
