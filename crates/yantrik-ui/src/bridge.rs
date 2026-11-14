@@ -1780,7 +1780,7 @@ fn worker_loop(
                 let reload = crate::provider_handoff::reload::Reload {
                     provider_type: &provider_type,
                     base_url: &base_url,
-                    api_key: api_key.as_deref(),
+                    key: api_key.as_deref(),
                     model: &model,
                     epoch,
                 };

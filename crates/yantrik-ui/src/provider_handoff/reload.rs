@@ -9,7 +9,7 @@ use yantrik_ml::{LLMBackend, LlmSwitch};
 pub(crate) struct Reload<'a> {
     pub provider_type: &'a str,
     pub base_url: &'a str,
-    pub api_key: Option<&'a str>,
+    pub key: Option<&'a str>,
     pub model: &'a str,
     /// [`LlmSwitch::epoch`] when the reload was asked for.
     pub epoch: u64,
@@ -25,7 +25,7 @@ pub(crate) fn armed_reload(switch: &LlmSwitch, reload: &Reload) -> Option<Arc<dy
         return None;
     }
     let cut = yantrik_ml::new_cut_flag();
-    let api = yantrik_ml::ApiLLM::new(reload.base_url, reload.api_key.map(str::to_string), reload.model)
+    let api = yantrik_ml::ApiLLM::new(reload.base_url, reload.key.map(str::to_string), reload.model)
         .for_provider(reload.provider_type)
         .with_cut(cut.clone());
     // One step under the switch's lock: a stop between the check above and here drops it too.

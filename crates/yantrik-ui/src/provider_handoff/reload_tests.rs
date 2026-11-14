@@ -33,7 +33,7 @@ fn silent_server() -> (String, Arc<AtomicUsize>) {
 }
 
 fn reload<'a>(url: &'a str, epoch: u64) -> Reload<'a> {
-    Reload { provider_type: "custom", base_url: url, api_key: Some(FAKE_KEY), model: "stub", epoch }
+    Reload { provider_type: "custom", base_url: url, key: Some(FAKE_KEY), model: "stub", epoch }
 }
 
 fn bridge(dir: &tempfile::TempDir) -> (Arc<CompanionBridge>, crossbeam_channel::Receiver<crate::bridge::CompanionCommand>) {
