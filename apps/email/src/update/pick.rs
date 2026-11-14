@@ -29,6 +29,25 @@ pub fn target(m: &Model, pick: &Pick) -> Result<Target, String> {
             .and_then(|at| m.rows.get(at))
             .map(|row| of_row(row, None))
             .ok_or_else(|| format!("there is no message at row {}", i64::from(*key) + 1)),
+        Pick::Exact { account, folder, id } => {
+            if folder.trim().is_empty() || id.trim().is_empty() {
+                return Err("name the folder and the message id".to_string());
+            }
+            // Before the first look has landed the app does not know its account yet; the open
+            // asks the mail service itself then (`message::open`), and checks there.
+            if let Some(e) = m.looked.then(|| other_account(account, &m.account_name)).flatten() {
+                return Err(e);
+            }
+            let at = m.rows.iter().position(|r| r.id == *id && r.folder.eq_ignore_ascii_case(folder));
+            Ok(Target {
+                id: id.clone(),
+                folder: folder.clone(),
+                subject: at.map(|i| m.rows[i].item.subject.clone()).unwrap_or_default(),
+                was_read: at.is_some_and(|i| m.rows[i].item.is_read),
+                flagged: at.is_some_and(|i| m.rows[i].item.is_flagged),
+                shown: None,
+            })
+        }
         Pick::Named(which) => {
             let rows = m.message_rows();
             // Accepts a number as well as a string: `which=1` arrives as the text "1".
@@ -43,6 +62,14 @@ pub fn target(m: &Model, pick: &Pick) -> Result<Target, String> {
             Ok(of_row(row, Some(at)))
         }
     }
+}
+
+/// The refusal for a message named in `asked` when the account shown is `shown`, if they differ.
+/// No account asked for means the one shown.
+pub fn other_account(asked: &str, shown: &str) -> Option<String> {
+    let asked = asked.trim();
+    (!asked.is_empty() && !asked.eq_ignore_ascii_case(shown.trim()))
+        .then(|| format!("that message is in {asked}, and this app is showing {shown}"))
 }
 
 /// The message in the reading pane: its row when it is listed, its own flags when it is not.

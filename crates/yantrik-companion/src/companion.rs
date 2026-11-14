@@ -543,6 +543,9 @@ pub struct CompanionService {
     /// Reachability of `llm`, so a dead backend logs once per state change (#30).
     llm_offline_log: OfflineLogGate,
     pub config: CompanionConfig,
+    /// The table meeting briefs live in could not be made: none is made or read, and nothing of
+    /// theirs (the fetcher, the file walk) is started. The companion runs on.
+    pub briefs_unavailable: bool,
     pub urge_queue: UrgeQueue,
     instincts: Vec<Box<dyn Instinct>>,
 
@@ -720,6 +723,12 @@ impl CompanionService {
 
         // World model tables (commitments, preferences, routines)
         crate::world_model::WorldModel::ensure_tables(&db.conn());
+
+        // Prepared items (meeting briefs): kept across restarts so a brief is made and
+        // announced once, and a dismissal holds.
+        let briefs_unavailable = crate::anticipation::AnticipationEngine::ensure_table(&db.conn())
+            .map_err(|e| tracing::error!(error = %e, "could not create the prepared items table; meeting briefs are off"))
+            .is_err();
 
         // Trust model tables (3-axis trust + event log)
         crate::trust_model::TrustModel::ensure_table(&db.conn());
@@ -910,6 +919,7 @@ impl CompanionService {
             llm,
             llm_offline_log: OfflineLogGate::default(),
             config,
+            briefs_unavailable,
             urge_queue,
             instincts,
             conversation_history: Vec::new(),

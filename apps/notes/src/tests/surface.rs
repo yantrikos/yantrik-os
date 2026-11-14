@@ -236,3 +236,18 @@ fn a_reload_call_whose_save_first_fails_is_refused_and_nothing_is_reloaded() {
     assert_eq!(state(&app)["note_count"], 1, "nothing was reloaded");
     assert_eq!(state(&app)["unsaved"], true);
 }
+
+/// The meeting brief opens a note by its file name. Two notes may share a title, and by title the
+/// first listed wins, so a row for the second would open the first.
+#[test]
+fn a_note_is_opened_by_its_id_even_when_another_has_the_same_title() {
+    let app = started();
+    act(&app, "new_note", json!({ "title": "Twin" })).unwrap();
+    act(&app, "new_note", json!({ "title": "Twin" })).unwrap();
+    let ids: Vec<String> = app.model(|m| m.library.iter().filter(|n| n.title() == "Twin").map(|n| n.id.clone()).collect());
+    assert_eq!(ids.len(), 2, "two notes with one title");
+    for id in ids.iter().rev() {
+        act(&app, "open_note", json!({ "title": id })).unwrap();
+        assert_eq!(state(&app)["open_note"], *id, "the one asked for, not the first listed");
+    }
+}

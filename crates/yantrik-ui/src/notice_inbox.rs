@@ -122,6 +122,10 @@ pub enum Opening {
     Event(String),
     /// A Notes id.
     Note(String),
+    /// A message in Email, exactly: the account's address, the folder and the id there. No notice
+    /// button names one (the allowlist is files, events, notes and links); the meeting brief's
+    /// rows do, and open it through the same opener.
+    Message { account: String, folder: String, id: String },
     /// An http or https URL, and the host the button shows.
     Url { url: String, host: String },
 }

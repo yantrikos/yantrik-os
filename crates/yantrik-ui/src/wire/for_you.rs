@@ -186,12 +186,27 @@ fn open_action(ui: &App, id: &str) {
         return;
     };
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-    let note = |text: &str| NOTES.with(|n| n.borrow_mut().insert(id.to_string(), text.to_string()));
     match notice_inbox::plan(&action, &home) {
-        Err(why) => {
-            note(&format!("Not opened: {why}."));
-        }
-        Ok(Opening::File(path)) => {
+        Err(why) => say_on_card(ui, id, &format!("Not opened: {why}.")),
+        Ok(opening) => carry_out(ui, id, opening, say_on_card),
+    }
+    act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
+    with_mirror(|m| m.mark_read_locally(id));
+    resync(ui);
+    tick(ui);
+}
+
+/// What a press says back, on the card or row it was pressed on: `(ui, key, words)`. Empty words
+/// are the press having worked: the app or the shell did open it. Anything else is why it did not.
+pub(crate) type Say = fn(&App, &str, &str);
+
+/// Open what a button named, as the person, now that its check has passed: the one opener for the
+/// For you cards and for the meeting brief's rows, so a card never gets a second way to open a
+/// file, a note, an event or a message. `key` names the card or row, for its copy's file name and
+/// for `say`.
+pub(crate) fn carry_out(ui: &App, key: &str, opening: Opening, say: Say) {
+    match opening {
+        Opening::File(path) => {
             let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             use crate::mime_dispatch::FileAction;
             let how = match crate::mime_dispatch::classify(&name) {
@@ -206,31 +221,40 @@ fn open_action(ui: &App, id: &str) {
             // later, after the check, when a component could have become a symlink.
             let opened = card_copies()
                 .ok_or_else(|| "there is no private place to copy it to (XDG_RUNTIME_DIR is not set)".to_string())
-                .and_then(|into| notice_inbox::read_only_copy(&path, &into, &format!("{id}-{name}")));
+                .and_then(|into| notice_inbox::read_only_copy(&path, &into, &format!("{key}-{name}")));
             match opened {
-                Ok(target) => super::open_with::launch(&how, &name, &target, Some(ui)),
-                Err(why) => {
-                    note(&format!("Not opened: {why}."));
+                Ok(target) => {
+                    super::open_with::launch(&how, &name, &target, Some(ui));
+                    say(ui, key, "");
                 }
+                Err(why) => say(ui, key, &format!("Not opened: {why}.")),
             }
         }
-        Ok(Opening::Url { url, host }) => {
+        Opening::Url { url, host } => {
             let host2 = host.clone();
             let _ = std::thread::Builder::new().name("yos-notice-url".into()).spawn(move || {
                 if let Err(e) = crate::open_url::open(&url) {
                     tracing::warn!(host = %host2, error = %e, "a card's link could not be opened");
                 }
             });
-            note(&format!("Opened {host} in the browser."));
+            say(ui, key, &format!("Opened {host} in the browser."));
         }
-        Ok(Opening::Note(reference)) => {
-            forward_to_app(ui, "notes", "open_note", Some(serde_json::json!({ "title": reference })));
+        // The app's answer comes back to the card's line, so a press that opened nothing says so.
+        Opening::Note(reference) => {
+            super::app_act::act(ui, "notes", "open_note", serde_json::json!({ "title": reference }), key, say);
         }
-        Ok(Opening::Event(reference)) => open_event(ui, id, reference),
+        Opening::Message { account, folder, id } => {
+            let args = serde_json::json!({ "account": account, "folder": folder, "message_id": id });
+            super::app_act::act(ui, "email", "open_message_id", args, key, say);
+        }
+        Opening::Event(reference) => open_event(ui, key, reference, say),
     }
-    act(NOTICE_SHOWN, serde_json::json!({ "id": id, "opened": true }));
-    with_mirror(|m| m.mark_read_locally(id));
-    resync(ui);
+}
+
+/// A line under a For you card.
+fn say_on_card(ui: &App, card: &str, text: &str) {
+    NOTES.with(|n| n.borrow_mut().insert(card.to_string(), text.to_string()));
+    DRAWN.with(|d| d.borrow_mut().clear());
     tick(ui);
 }
 
@@ -241,7 +265,7 @@ fn card_copies() -> Option<std::path::PathBuf> {
 }
 
 /// Show an event in Calendar, once Calendar says it knows the id. Asked off the UI thread.
-fn open_event(ui: &App, card: &str, event: String) {
+fn open_event(ui: &App, card: &str, event: String, say: Say) {
     let weak = ui.as_weak();
     let card = card.to_string();
     let _ = std::thread::Builder::new().name("yos-notice-event".into()).spawn(move || {
@@ -253,12 +277,11 @@ fn open_event(ui: &App, card: &str, event: String) {
             .and_then(|e| e["start"].as_str().map(|s| s.chars().take(10).collect::<String>()))
             .filter(|d| d.len() == 10);
         let _ = weak.upgrade_in_event_loop(move |ui| match found {
-            Some(date) => forward_to_app(&ui, "calendar", "show_date", Some(serde_json::json!({ "date": date }))),
-            None => {
-                NOTES.with(|n| n.borrow_mut().insert(card, "Not opened: Calendar does not know this event.".into()));
-                DRAWN.with(|d| d.borrow_mut().clear());
-                tick(&ui);
+            Some(date) => {
+                forward_to_app(&ui, "calendar", "show_date", Some(serde_json::json!({ "date": date })));
+                say(&ui, &card, "");
             }
+            None => say(&ui, &card, "Not opened: Calendar does not know this event."),
         });
     });
 }

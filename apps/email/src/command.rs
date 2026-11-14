@@ -41,6 +41,9 @@ pub enum Pick {
     /// What a caller named: a row number from `describe.messages`, or part of a subject or
     /// sender. Empty means the message that is open.
     Named(String),
+    /// Exactly this message: its account's address (empty when the caller did not say), the
+    /// folder it is in and its id there. Never found by its words.
+    Exact { account: String, folder: String, id: String },
 }
 
 /// One message, as a command acts on it.
@@ -159,7 +162,8 @@ pub enum Command {
     Triage(i32),
     // ── A message ──
     Open(Pick),
-    Fetched { target: Target, outcome: Result<EmailDetail, String> },
+    /// A message read. `account` is the one it was read from, which the mark that follows uses.
+    Fetched { target: Target, account: String, outcome: Result<EmailDetail, String> },
     MarkedOnOpen { id: String, folder: String, outcome: Result<(), String> },
     /// Mark read (`true`), or flag: the toolbar's star turns the flag round, `flag` sets it.
     Mark { pick: Pick, flag: Flag, toggle: bool },

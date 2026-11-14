@@ -36,8 +36,9 @@ use yantrik_app::refused::Refused;
 use yantrik_app::timers::{Fired, ManualTimers, Sink};
 use yantrik_app::watch::Seen;
 use yantrik_ipc_transport::gate::{Authority, Mode};
-use yantrik_surface::{AgentTokenScope, CallerScope, Later, LaterScope, LocalRegistry};
+use yantrik_surface::{AgentTokenScope, Caller, CallerScope, Later, LaterScope, LocalRegistry};
 
+mod callers;
 mod display_clock;
 mod frames;
 pub mod headless;
@@ -114,6 +115,7 @@ pub struct Call {
     pub name: String,
     pub args: Value,
     pub agent_token: Option<String>,
+    pub(crate) caller: Option<Caller>,
     pub mode: String,
     pub granted: bool,
     pub expect_revision: Option<String>,
@@ -125,6 +127,7 @@ impl Call {
             name: name.into(),
             args,
             agent_token: None,
+            caller: None,
             mode: "bypass_all".into(),
             granted: false,
             expect_revision: None,
@@ -320,7 +323,9 @@ impl<A: App> TestApp<A> {
             }
             let mut table = Intents::new();
             A::intents(&mut table);
-            let registry = Rc::new(intents::registry(&core, table));
+            let mut surface = intents::registry(&core, table);
+            surface.set_shell_judge(callers::is_the_shell);
+            let registry = Rc::new(surface);
             core.attach_registry(registry.clone());
             let under: Rc<dyn Any> = Rc::new(Under {
                 core,
@@ -544,7 +549,7 @@ impl<A: App> TestApp<A> {
     pub fn act_as(&self, call: Call) -> Result<Pending, String> {
         self.with(move |u| {
             let _agent = AgentTokenScope::enter(call.agent_token.clone());
-            let _who = CallerScope::enter(None);
+            let _who = CallerScope::enter(call.caller);
             // As the socket's dispatch does: a call that carries a person's Allow is one the
             // handler sees as granted (`control::call_was_granted`).
             let _granted = yantrik_app::control::GrantedScope::enter(call.granted);

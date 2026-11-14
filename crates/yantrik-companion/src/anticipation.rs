@@ -151,9 +151,18 @@ impl PrepOutcome {
 pub struct AnticipationEngine;
 
 impl AnticipationEngine {
-    pub fn ensure_table(conn: &Connection) {
+    /// Create the table. An error is the caller's to answer: a read-only or locked database must
+    /// not stop the companion starting.
+    ///
+    /// Also turns `secure_delete` on for the connection, which is the companion's own. A brief is
+    /// emptied to a tombstone when its meeting is over (`retire`), and without this the old text
+    /// stays in the file's free pages and its write-ahead log until a checkpoint or a vacuum.
+    /// Note titles and file paths exist nowhere else in that database. A little write speed is
+    /// the price of the text leaving the file.
+    pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS prepared_items (
+            "PRAGMA secure_delete = ON;
+            CREATE TABLE IF NOT EXISTS prepared_items (
                 id          TEXT PRIMARY KEY,
                 trigger_type TEXT NOT NULL,
                 trigger_data TEXT NOT NULL DEFAULT '{}',
@@ -170,7 +179,6 @@ impl AnticipationEngine {
             CREATE INDEX IF NOT EXISTS idx_prep_expires ON prepared_items(expires_at);
             CREATE INDEX IF NOT EXISTS idx_prep_surfaced ON prepared_items(surfaced);",
         )
-        .expect("failed to create prepared_items table");
     }
 
     /// Store a prepared item.
@@ -194,8 +202,7 @@ impl AnticipationEngine {
     }
 
     /// Get items that are currently relevant (relevant_at <= now < expires_at, not surfaced).
-    pub fn get_relevant(conn: &Connection) -> Vec<PreparedItem> {
-        let now = now_ts();
+    pub fn get_relevant(conn: &Connection, now: f64) -> Vec<PreparedItem> {
         let mut stmt = match conn.prepare(
             "SELECT id, trigger_type, trigger_data, kind, description, data,
                     relevant_at, expires_at, surfaced, outcome, created_at
@@ -211,6 +218,78 @@ impl AnticipationEngine {
             .ok()
             .map(|rows| rows.flatten().collect())
             .unwrap_or_default()
+    }
+
+    /// One item by id, whatever its state.
+    pub fn get(conn: &Connection, id: &str) -> Option<PreparedItem> {
+        conn.query_row(
+            "SELECT id, trigger_type, trigger_data, kind, description, data,
+                    relevant_at, expires_at, surfaced, outcome, created_at
+             FROM prepared_items WHERE id = ?1",
+            params![id],
+            Self::row_to_item,
+        )
+        .ok()
+    }
+
+    /// Items of one kind that are in their window at `now` and are not over, surfaced or not
+    /// (no outcome yet, or opened and still on): what a surface that was just restarted has to
+    /// draw again.
+    pub fn get_active(conn: &Connection, kind: &PreparedKind, now: f64) -> Vec<PreparedItem> {
+        let mut stmt = match conn.prepare(
+            "SELECT id, trigger_type, trigger_data, kind, description, data,
+                    relevant_at, expires_at, surfaced, outcome, created_at
+             FROM prepared_items
+             WHERE kind = ?1 AND relevant_at <= ?2 AND expires_at > ?2 AND (outcome IS NULL OR outcome = 'useful')
+             ORDER BY relevant_at ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![kind.as_str(), now], Self::row_to_item)
+            .ok()
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    /// End an item at `now` and keep only the record of it: what it held is emptied (`data`, the
+    /// description and the trigger), while its id, its outcome and whether it was surfaced stay.
+    /// It gets `outcome` unless it already has one.
+    pub fn retire(conn: &Connection, id: &str, outcome: PrepOutcome, now: f64) {
+        let _ = conn.execute(
+            "UPDATE prepared_items
+             SET data = '{}', description = '', trigger_data = '{}',
+                 outcome = COALESCE(outcome, ?2), expires_at = MIN(expires_at, ?3)
+             WHERE id = ?1",
+            params![id, outcome.as_str(), now],
+        );
+    }
+
+    /// Items of `kind` that are over and still hold their contents: ended by the clock.
+    pub fn ended(conn: &Connection, kind: &PreparedKind, now: f64) -> Vec<PreparedItem> {
+        let mut stmt = match conn.prepare(
+            "SELECT id, trigger_type, trigger_data, kind, description, data,
+                    relevant_at, expires_at, surfaced, outcome, created_at
+             FROM prepared_items WHERE kind = ?1 AND expires_at <= ?2 AND data <> '{}'",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![kind.as_str(), now], Self::row_to_item).ok().map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// How many items of `kind` made since `since` ended each way: outcome word and count.
+    pub fn outcome_counts(conn: &Connection, kind: &PreparedKind, since: f64) -> HashMap<String, u32> {
+        let mut counts = HashMap::new();
+        let Ok(mut stmt) = conn
+            .prepare("SELECT outcome, COUNT(*) FROM prepared_items WHERE kind = ?1 AND created_at >= ?2 AND outcome IS NOT NULL GROUP BY outcome")
+        else {
+            return counts;
+        };
+        if let Ok(rows) = stmt.query_map(params![kind.as_str(), since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u32))) {
+            counts.extend(rows.flatten());
+        }
+        counts
     }
 
     /// Mark an item as surfaced.
@@ -230,8 +309,7 @@ impl AnticipationEngine {
     }
 
     /// Clean up expired items.
-    pub fn cleanup_expired(conn: &Connection) -> u64 {
-        let now = now_ts();
+    pub fn cleanup_expired(conn: &Connection, now: f64) -> u64 {
 
         // Mark unsurfaced expired items
         let _ = conn.execute(
@@ -329,7 +407,7 @@ mod tests {
 
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        AnticipationEngine::ensure_table(&conn);
+        AnticipationEngine::ensure_table(&conn).unwrap();
         conn
     }
 
@@ -356,7 +434,7 @@ mod tests {
 
         AnticipationEngine::store(&conn, &item);
 
-        let relevant = AnticipationEngine::get_relevant(&conn);
+        let relevant = AnticipationEngine::get_relevant(&conn, now);
         assert_eq!(relevant.len(), 1);
         assert_eq!(relevant[0].id, "p1");
         assert_eq!(relevant[0].kind, PreparedKind::MeetingBrief);
@@ -382,7 +460,7 @@ mod tests {
 
         AnticipationEngine::store(&conn, &item);
 
-        let relevant = AnticipationEngine::get_relevant(&conn);
+        let relevant = AnticipationEngine::get_relevant(&conn, now);
         assert!(relevant.is_empty());
     }
 
@@ -407,7 +485,7 @@ mod tests {
         AnticipationEngine::store(&conn, &item);
         AnticipationEngine::mark_surfaced(&conn, "p2");
 
-        let relevant = AnticipationEngine::get_relevant(&conn);
+        let relevant = AnticipationEngine::get_relevant(&conn, now);
         assert!(relevant.is_empty());
     }
 

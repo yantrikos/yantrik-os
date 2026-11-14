@@ -1,0 +1,196 @@
+// Meeting brief — the card the OS puts on the desktop ten minutes before a meeting with other
+// people in it, with what the person already has about those people: recent emails, their notes,
+// promises, files, and the event's own description. An empty section is not drawn.
+//
+// The OS prepares it on this machine and the person acts: every Open button is pointer-only, so
+// Tab cannot land on one, Enter or Space cannot press one, and the accessibility default action
+// does nothing on one. Only a click opens anything (YButton `pointer-only`). Dismiss opens
+// nothing, so it keeps the keyboard.
+//
+// Reads one global, MeetingBriefState, which the shell fills
+// (crates/yantrik-ui/src/wire/meeting_brief.rs). Everything is plain text, elided to one line,
+// in Theme tokens, so it scales with TextScale.
+import { Theme } from "theme.slint";
+import { YButton } from "y_button.slint";
+
+// One line of a section. `heading` is set on the first line of a section only, and `row` is the
+// index the Open button hands back, or -1 for a line with nothing to open.
+export struct BriefLineData {
+    heading: string,
+    text: string,
+    row: int,
+    // What the Open button opens, for its label: "email", "note", "promise" or "file".
+    kind: string,
+}
+
+export struct MeetingBriefData {
+    id: string,
+    title: string,
+    // "10:00–10:30, in 9 min"
+    when: string,
+    place: string,
+    // "With Maya Chen, Ravi Rao"
+    people: string,
+    lines: [BriefLineData],
+    // What a button that could not open something says.
+    note: string,
+}
+
+export global MeetingBriefState {
+    in property <[MeetingBriefData]> cards: [];
+    callback open-row(string, int);   // brief id, row index
+    callback open-event(string);      // brief id
+    callback dismiss(string);         // brief id
+}
+
+export component MeetingBriefPanel inherits Rectangle {
+    in property <MeetingBriefData> data;
+    // The most the card may be. Past it the rows scroll, and the title, the time and the buttons
+    // stay inside the card: they are what the person needs, and the rows are what can wait.
+    in property <length> room: 100000px;
+    // What the card would be with all its rows showing.
+    out property <length> natural-height: body.preferred-height;
+    out property <length> card-height: root.height;
+    out property <length> title-y: title.y;
+    out property <length> buttons-bottom: footer.y + footer.height;
+    background: Theme.bg-card;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    height: min(body.preferred-height, root.room);
+    clip: true;
+    accessible-role: groupbox;
+    accessible-label: "Brief for " + root.data.title;
+
+    body := VerticalLayout {
+        padding: Theme.sp-3;
+        spacing: Theme.sp-1;
+
+        title := Text {
+            text: root.data.title;
+            color: Theme.text-primary;
+            font-size: Theme.fs-body;
+            font-weight: 700;
+            overflow: elide;
+        }
+        Text {
+            text: root.data.when;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            overflow: elide;
+        }
+        if root.data.place != "" : Text {
+            text: root.data.place;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-caption;
+            overflow: elide;
+        }
+        if root.data.people != "" : Text {
+            text: root.data.people;
+            color: Theme.text-dim;
+            font-size: Theme.fs-caption;
+            overflow: elide;
+        }
+
+        // The rows scroll when the card is not tall enough for them, so the header above and the
+        // buttons below are never pushed out of the card.
+        Flickable {
+            viewport-height: rows.preferred-height;
+            preferred-height: rows.preferred-height;
+            min-height: 40px;
+            vertical-stretch: 1;
+            interactive: true;
+            rows := VerticalLayout {
+                width: parent.width;
+                spacing: 0px;
+        for line in root.data.lines : VerticalLayout {
+            spacing: 0px;
+            if line.heading != "" : Text {
+                text: line.heading;
+                color: Theme.text-dim;
+                font-size: Theme.fs-micro;
+                font-weight: 600;
+                letter-spacing: 1px;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: Theme.sp-2;
+                Text {
+                    text: line.text;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if line.row >= 0 : YButton {
+                    label: "Open";
+                    variant: 1;
+                    size: 0;
+                    pointer-only: true;
+                    // Fixed words: the row's own text can be a subject or a person's name,
+                    // and an accessible description is read out to whatever asks.
+                    tooltip: "Open this " + line.kind;
+                    clicked => { MeetingBriefState.open-row(root.data.id, line.row); }
+                }
+            }
+        }
+            }
+        }
+
+        if root.data.note != "" : Text {
+            text: root.data.note;
+            color: Theme.color-warning;
+            font-size: Theme.fs-micro;
+            overflow: elide;
+        }
+
+        footer := HorizontalLayout {
+            spacing: Theme.sp-1;
+            alignment: start;
+            YButton {
+                label: "Open in Calendar";
+                variant: 1;
+                size: 0;
+                pointer-only: true;
+                clicked => { MeetingBriefState.open-event(root.data.id); }
+            }
+            YButton {
+                label: "Dismiss";
+                variant: 1;
+                size: 0;
+                clicked => { MeetingBriefState.dismiss(root.data.id); }
+            }
+        }
+    }
+}
+
+// The cards, newest news first, at the foot of the box the owner gives it. Two are drawn only
+// when both fit whole; when they do not, one is drawn and the other waits for it to go. A single
+// card too tall for the box scrolls its rows. Nothing is clipped off its top.
+export component MeetingBriefStack inherits Rectangle {
+    clip: true;
+    property <length> gap: Theme.sp-2;
+    property <MeetingBriefData> none: { id: "", title: "", when: "", place: "", people: "", lines: [], note: "" };
+    // Where the title of the card on top is, and where its buttons end, inside this box.
+    out property <length> title-y: first.y + first.title-y;
+    out property <length> buttons-bottom: first.y + first.buttons-bottom;
+    // Whether two cards are drawn.
+    out property <bool> two: root.both;
+    property <bool> both: MeetingBriefState.cards.length > 1 && first.natural-height + second.natural-height + root.gap <= root.height;
+
+    first := MeetingBriefPanel {
+        visible: MeetingBriefState.cards.length > 0;
+        data: MeetingBriefState.cards.length > 0 ? MeetingBriefState.cards[0] : root.none;
+        room: root.height;
+        width: parent.width;
+        y: root.both ? root.height - second.height - root.gap - self.height : root.height - self.height;
+    }
+    second := MeetingBriefPanel {
+        visible: root.both;
+        data: MeetingBriefState.cards.length > 1 ? MeetingBriefState.cards[1] : root.none;
+        room: root.height - first.height - root.gap;
+        width: parent.width;
+        y: root.height - self.height;
+    }
+}

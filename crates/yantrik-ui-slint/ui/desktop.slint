@@ -37,6 +37,7 @@ import { AppGrid, AppGridItem } from "components/app_grid.slint";
 import { WindowItem } from "components/window_item.slint";
 import { CommandPalette, CommandItem } from "components/command_palette.slint";
 import { MorningBriefCard, BriefSection } from "components/morning_brief.slint";
+import { MeetingBriefStack } from "components/meeting_brief_panel.slint";
 
 import { YContextMenu } from "components/y_context_menu.slint";
 import { Bench } from "components/bench.slint";
@@ -704,6 +705,17 @@ export component DesktopScreen inherits Rectangle {
         sections: root.morning-brief-sections;
         dismissed => { root.morning-brief-dismissed(); }
         section-action(id) => { root.morning-brief-section-action(id); }
+    }
+
+    // ── Layer 2.75: Meeting briefs (floating, foot of the right side) ──
+    // Where the Bench has no icons and the whisper cards and the morning brief are not: above the
+    // taskbar, at the right. It is as tall as its cards, up to the room between the status bar and
+    // the taskbar.
+    MeetingBriefStack {
+        width: 360px;
+        height: min(parent.height - Theme.status-bar-height - Theme.taskbar-height - 2 * Theme.sp-4, 560px);
+        x: parent.width - root.right-inset - self.width - Theme.sp-4;
+        y: parent.height - Theme.taskbar-height - self.height - Theme.sp-4;
     }
 
     // ── Layer 3: Intent Lens overlay ──

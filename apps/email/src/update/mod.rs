@@ -38,7 +38,7 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
         Command::Searched { query, outcome } => mailbox::searched(m, &query, outcome, fx),
         Command::Triage(idx) => mailbox::triage(m, idx, fx),
         Command::Open(pick) => return message::open(m, &pick, fx),
-        Command::Fetched { target, outcome } => message::fetched(m, target, outcome, fx),
+        Command::Fetched { target, account, outcome } => message::fetched(m, target, &account, outcome, fx),
         Command::MarkedOnOpen { id, folder, outcome } => message::marked_on_open(m, &id, &folder, outcome, fx),
         Command::Mark { pick, flag, toggle } => return message::mark(m, &pick, flag, toggle, fx),
         Command::Marked { target, flag, wanted, call, read, listed } => {

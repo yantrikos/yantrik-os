@@ -94,6 +94,7 @@ mod private;
 #[cfg(test)]
 mod private_tests;
 mod registry;
+mod shell_only;
 mod surface;
 #[cfg(test)]
 mod vectors;

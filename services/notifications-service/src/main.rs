@@ -51,8 +51,10 @@
 //! shell draws them in the card's words. Nothing in the request can set any of it.
 
 mod archive;
+mod brief_notice;
 mod freedesktop;
 mod grant;
+mod moments;
 mod names;
 mod notices;
 mod reminders;
@@ -292,7 +294,7 @@ impl NotificationsHandler {
                 Ok(serde_json::json!({ "notice_feedback": feedback }))
             }
 
-            INITIATIVE => Ok(serde_json::to_value(self.store.initiative()).unwrap_or_default()),
+            INITIATIVE => Ok(moments::read_by(self.store.initiative(), is_desktop(peer))),
 
             NOTICE_UNBIND => {
                 self.desktop_only(method, peer)?;
@@ -300,6 +302,12 @@ impl NotificationsHandler {
                 let forgotten = self.store.unbind(&harness).map_err(bad_request)?;
                 tracing::info!(harness = %harness, forgotten, "the person forgot a harness id's binding");
                 Ok(serde_json::json!({ "forgotten": forgotten }))
+            }
+
+            NOTICE_BRIEF => {
+                self.desktop_only(method, peer)?;
+                let ready = brief_notice::Ready::parse(&params).map_err(bad_request)?;
+                Ok(brief_notice::announce(&self.store, &ready, chrono::Local::now()))
             }
 
             INITIATIVE_SET => {
@@ -706,12 +714,13 @@ fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"))
 }
 
-/// One change to the initiative settings: `quiet`, a `family` with its `setting`, or
+/// One change to the initiative settings: `quiet`, a `moment` with `on`, a `family` with its `setting`, or
 /// `quiet_hours` (`{start, end}`, or `null` for none).
 fn apply_initiative(settings: &mut notice::Initiative, params: &serde_json::Value) -> Result<(), String> {
     if let Some(quiet) = params["quiet"].as_bool() {
         settings.quiet = quiet;
     }
+    moments::apply(settings, params)?;
     if let Some(word) = params["family"].as_str() {
         let family = notice::Family::parse(word).ok_or_else(|| format!("`{word}` is not a family"))?;
         let setting = params["setting"].as_str().unwrap_or_default();

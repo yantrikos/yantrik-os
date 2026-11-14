@@ -982,7 +982,7 @@ impl WorldModel {
     pub fn commitments_by(conn: &Connection, promisor: &str) -> Vec<Commitment> {
         Self::query_commitments_params(
             conn,
-            "WHERE promisor = ?1 AND status NOT IN ('completed', 'cancelled', 'superseded')
+            "WHERE promisor = ?1 COLLATE NOCASE AND status NOT IN ('completed', 'cancelled', 'superseded')
              ORDER BY deadline ASC",
             params![promisor],
         )
@@ -992,7 +992,7 @@ impl WorldModel {
     pub fn commitments_to(conn: &Connection, promisee: &str) -> Vec<Commitment> {
         Self::query_commitments_params(
             conn,
-            "WHERE promisee = ?1 AND status NOT IN ('completed', 'cancelled', 'superseded')
+            "WHERE promisee = ?1 COLLATE NOCASE AND status NOT IN ('completed', 'cancelled', 'superseded')
              ORDER BY deadline ASC",
             params![promisee],
         )
