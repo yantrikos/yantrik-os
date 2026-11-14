@@ -395,6 +395,59 @@ class TestTheKernelSandbox(Machine):
         self.assertNotIn(SENTINEL, said)
         self.assertIsNone(office._private)  # noqa: SLF001 - its folder is gone
 
+    def test_a_start_whose_answer_never_arrives_ends_the_sandbox_it_started(self):
+        """`Spawner.run` can time out after the process was already started on its thread (#964):
+        the request that waited is refused with the timeout's sentence, and what it started no
+        longer runs. This fails before the fix: the started process is left running until `stop`."""
+        program = put(os.path.join(self.tmp, "opt", "lo", "program", "soffice"),
+                      "#!/bin/sh\nexec sleep 20\n")
+        os.chmod(program, 0o755)
+        office = agent_office.AgentOffice(soffice=program, home=self.home, env=self.env,
+                                          patience=20)
+        started = []
+
+        def deaf(work):
+            """The start stands up and is answered as a `Spawner.run` timeout answers it: not
+            at all — the value the Popen returned is lost with the timeout."""
+            started.append(work())
+            self.addCleanup(agent_office._kill, started[0])  # noqa: SLF001 - bites before the fix
+            raise support.OfficeError("the agents' sandbox was not started within 30s; nothing "
+                                      "was done")
+
+        office._spawner.run = deaf  # noqa: SLF001 - the tests' stand for a timed-out `run`
+        with self.assertRaises(support.OfficeError) as caught:
+            office.workspace(start=True)
+        self.assertIn("was not started within", str(caught.exception))
+        self.assertIsNone(office._process)  # noqa: SLF001 - the answer never arrived
+        self.assertIsNotNone(started[0].poll(), "the sandbox a timed-out start left running")
+        self.assertIsNone(office._private)  # noqa: SLF001 - its folder is gone
+
+    def test_a_soffice_that_never_answers_is_refused_and_its_sandbox_is_gone(self):
+        """The same start, timed out the other way: a stand-in soffice that says nothing and
+        sleeps past the patience is refused with the deadline's sentence, and the sandbox it
+        started is ended before the refusal is raised (#964). This fails before the fix: the
+        refusal was raised with the sandbox still running, until `stop`."""
+        program = put(os.path.join(self.tmp, "opt", "lo", "program", "soffice"),
+                      "#!/bin/sh\nexec sleep 120\n")
+        os.chmod(program, 0o755)
+        office = agent_office.AgentOffice(soffice=program, home=self.home, env=self.env,
+                                          patience=2)
+        started, real = [], subprocess.Popen
+
+        def in_flight(*args, **kw):
+            """The start's Popen, recorded so its death can be asserted."""
+            started.append(real(*args, **kw))
+            self.addCleanup(agent_office._kill, started[-1])  # noqa: SLF001 - bites before the fix
+            return started[-1]
+
+        with support.mock.patch("subprocess.Popen", side_effect=in_flight):
+            with self.assertRaises(support.OfficeError) as caught:
+                office.workspace(start=True)
+        self.assertIn("did not answer within", str(caught.exception))
+        self.assertIsNone(office._process)  # noqa: SLF001 - nothing of the start is kept
+        self.assertIsNotNone(started[0].poll(), "the sandbox a timed-out start left running")
+        self.assertIsNone(office._private)  # noqa: SLF001 - its folder is gone
+
 
 if __name__ == "__main__":
     unittest.main()
