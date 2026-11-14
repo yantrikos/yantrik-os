@@ -3,7 +3,7 @@
 // 1.5, and the stack the desktop draws, inside a box of fixed height. src/meeting_brief_tests.rs
 // drives it.
 import { Theme, TextScale } from "theme.slint";
-import { MeetingBriefCard, MeetingBriefData, MeetingBriefStack } from "components/meeting_brief_card.slint";
+import { MeetingBriefPanel, MeetingBriefData, MeetingBriefStack } from "components/meeting_brief_card.slint";
 
 export component MeetingBriefProbe inherits Window {
     width: 420px;
@@ -15,7 +15,7 @@ export component MeetingBriefProbe inherits Window {
     in property <MeetingBriefData> data;
     out property <length> card-height: one.height;
     out property <length> buttons-bottom: one.buttons-bottom;
-    one := MeetingBriefCard { x: 20px; y: 20px; width: 340px; data: root.data; }
+    one := MeetingBriefPanel { x: 20px; y: 20px; width: 340px; data: root.data; }
     MeetingBriefStack { x: 20px; y: 640px; width: 340px; height: 240px; }
 }
 

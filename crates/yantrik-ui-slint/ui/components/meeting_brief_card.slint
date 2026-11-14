@@ -43,7 +43,7 @@ export global MeetingBriefState {
     callback dismiss(string);         // brief id
 }
 
-export component MeetingBriefCard inherits Rectangle {
+export component MeetingBriefPanel inherits Rectangle {
     in property <MeetingBriefData> data;
     // The most the card may be. Past it the rows scroll, and the title, the time and the buttons
     // stay inside the card: they are what the person needs, and the rows are what can wait.
@@ -179,14 +179,14 @@ export component MeetingBriefStack inherits Rectangle {
     out property <bool> two: root.both;
     property <bool> both: MeetingBriefState.cards.length > 1 && first.natural-height + second.natural-height + root.gap <= root.height;
 
-    first := MeetingBriefCard {
+    first := MeetingBriefPanel {
         visible: MeetingBriefState.cards.length > 0;
         data: MeetingBriefState.cards.length > 0 ? MeetingBriefState.cards[0] : root.none;
         room: root.height;
         width: parent.width;
         y: root.both ? root.height - second.height - root.gap - self.height : root.height - self.height;
     }
-    second := MeetingBriefCard {
+    second := MeetingBriefPanel {
         visible: root.both;
         data: MeetingBriefState.cards.length > 1 ? MeetingBriefState.cards[1] : root.none;
         room: root.height - first.height - root.gap;
