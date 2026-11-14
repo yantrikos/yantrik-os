@@ -41,6 +41,9 @@ pub enum Pick {
     /// What a caller named: a row number from `describe.messages`, or part of a subject or
     /// sender. Empty means the message that is open.
     Named(String),
+    /// Exactly this message: its account's address (empty when the caller did not say), the
+    /// folder it is in and its id there. Never found by its words.
+    Exact { account: String, folder: String, id: String },
 }
 
 /// One message, as a command acts on it.

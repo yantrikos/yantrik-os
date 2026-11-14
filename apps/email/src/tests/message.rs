@@ -305,3 +305,38 @@ fn a_read_back_of_a_folder_no_longer_on_screen_does_not_paint_over_it() {
     assert_eq!(notice(&app), "");
     assert_eq!(state(&app)["folders"][0]["counts"], json!({ "unread": 1, "total": 2 }), "INBOX is the folder counted");
 }
+
+/// The meeting brief opens a message by where it is, not by what it says. `open_message` is a
+/// picker over the folder on screen: a subject found in several messages opens the first, a
+/// number opens a row, and a message in Sent is not found from the inbox.
+#[test]
+fn open_message_id_opens_exactly_that_message_from_any_folder() {
+    let decoy = message("101", "INBOX", "Q4 numbers v2", "Priya R. <priya@example.com>", false, false);
+    let mail = with_inbox()
+        .answering("email.list_messages", json!([decoy]))
+        .answering("email.get_message", detail("900", "Q4 numbers", "You <you@example.com>", true, ""));
+    let app = started(&mail);
+    let answer = act(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900", "account": "YOU@example.com" })).unwrap();
+    assert_eq!(answer["subject"], "Q4 numbers");
+    assert_eq!(
+        mail.asked_for("email.get_message"),
+        [json!({ "account_id": "acct-1", "folder": "Sent", "message_id": "900" })],
+        "the message in Sent, and not the decoy that shares most of its subject in the inbox"
+    );
+    assert_eq!(state(&app)["open_message"]["subject"], "Q4 numbers");
+}
+
+#[test]
+fn open_message_id_refuses_another_account_and_says_when_the_message_is_not_there() {
+    let mail = with_inbox();
+    let app = started(&mail);
+    let e = act(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900", "account": "other@example.org" })).unwrap_err();
+    assert!(e.contains("other@example.org"), "{e}");
+    assert!(mail.asked_for("email.get_message").is_empty(), "nothing was opened for another account");
+    let e = act(&app, "open_message_id", json!({ "folder": "", "message_id": "900" })).unwrap_err();
+    assert!(e.contains("folder"), "{e}");
+    let failing = with_inbox().failing("email.get_message", "NO such message");
+    let app = started(&failing);
+    let e = act(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900" })).unwrap_err();
+    assert_eq!(e, "Could not open that message: NO such message", "the app's answer is the card's line");
+}

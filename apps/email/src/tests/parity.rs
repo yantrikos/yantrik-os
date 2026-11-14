@@ -29,6 +29,16 @@ const BEFORE: &[Golden] = &[
         ],
     },
     Golden {
+        name: "open_message_id",
+        risk: "standard",
+        description: r#"Open exactly one message, by the account, folder and id that name it"#,
+        params: &[
+            ("folder", true, r#"The folder the message is in, e.g. INBOX or Sent"#),
+            ("message_id", true, r#"The message's id in that folder"#),
+            ("account", false, r#"The account's address; the message is refused when this app is showing another account"#),
+        ],
+    },
+    Golden {
         name: "select_folder",
         risk: "standard",
         description: r#"Switch to another mailbox"#,

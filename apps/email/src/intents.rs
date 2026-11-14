@@ -71,6 +71,21 @@ pub fn table(table: &mut Intents<Email>) {
         |a| Command::Open(Pick::Named(arg_text(a, "which"))),
     ));
     table.add(landed(
+        // Exactly one message, named the way the mail service names it: the folder and the id in
+        // it (UIDs are per mailbox), and the account when the caller knows it. A subject or a
+        // sender can be on many messages, and a message the person sent is not in the inbox, so
+        // the meeting brief's rows open mail by this and never by `open_message`. Graded as
+        // `open_message` is: opening marks the message read on the server.
+        Action::new("open_message_id", "Open exactly one message, by the account, folder and id that name it")
+            .risk("standard")
+            .arg(Param::text("folder").describe("The folder the message is in, e.g. INBOX or Sent"))
+            .arg(Param::text("message_id").describe("The message's id in that folder"))
+            .arg(Param::text("account").optional().describe(
+                "The account's address; the message is refused when this app is showing another account",
+            )),
+        |a| Command::Open(Pick::Exact { account: arg_text(a, "account"), folder: arg_text(a, "folder"), id: arg_text(a, "message_id") }),
+    ));
+    table.add(landed(
         // It looks local and is not: switching mailbox asks the mail server for that folder's
         // messages.
         Action::new("select_folder", "Switch to another mailbox")
