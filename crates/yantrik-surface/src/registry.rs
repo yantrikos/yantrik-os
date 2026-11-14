@@ -264,7 +264,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     }
 
     fn unknown(&self, name: &str) -> String {
-        let known: Vec<&str> = self.specs().iter().map(|a| a.name.as_str()).collect();
+        let known: Vec<&str> = self.actions.iter().filter(|(a, _)| !a.shell_only).map(|(a, _)| a.name.as_str()).collect();
         format!("unknown action `{name}`; this app offers: {}", known.join(", "))
     }
 
