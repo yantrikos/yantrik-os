@@ -207,7 +207,8 @@ fn check_stack(w: &MinimalSoftwareWindow) {
         assert!(bottom <= BOX + 0.5, "{scale}x: Dismiss ends at {bottom}, below the {BOX}px box");
         let px = |x: usize, y: usize| { let c = p.as_slice()[y * W + x]; (c.r, c.g, c.b) };
         let drawn = |y0: usize, y1: usize| (y0..y1).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| px(x, y) != GROUND).count();
-        assert!(drawn(TOP as usize, TOP as usize + 40) > 0, "{scale}x: the card's top is drawn at the box's top");
+        // The card sits at the foot of the box, so its last rows are drawn there.
+        assert!(drawn((TOP + BOX) as usize - 40, (TOP + BOX) as usize) > 0, "{scale}x: the card is drawn at the foot of the box");
         assert_eq!(drawn(0, TOP as usize - 1), 0, "{scale}x: nothing above the box");
         assert_eq!(drawn((TOP + BOX) as usize + 1, H), 0, "{scale}x: nothing below the box");
         // Two short cards both fit, and both are drawn.
