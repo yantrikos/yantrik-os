@@ -39,6 +39,9 @@ pub struct Server {
     pub port: u16,
     gate: Gate,
     stop: Arc<AtomicBool>,
+    /// Whether this server's port was listed with the engine's test seam, and so has to be taken
+    /// out of it again.
+    listed: bool,
     /// The `Range` header of each request, `None` where there was none, in the order they came.
     pub ranges: Arc<Mutex<Vec<Option<String>>>>,
 }
@@ -47,8 +50,9 @@ impl Server {
     /// A server an agent's fetch may reach: its port is listed with the engine's test seam
     /// (`engine/fetch.rs`), which lets nothing else on the loopback through.
     pub fn start(files: Vec<(&str, File)>) -> Server {
-        let server = Server::start_unlisted(files);
+        let mut server = Server::start_unlisted(files);
         crate::engine::listed::allow(server.port);
+        server.listed = true;
         server
     }
 
@@ -73,7 +77,7 @@ impl Server {
                 }
             }
         });
-        Server { port, gate, stop, ranges }
+        Server { port, gate, stop, listed: false, ranges }
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -99,6 +103,11 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // Unlisted before the listener is even told to shut down: the socket closes on the accept
+        // thread, and from then the port is the OS's to hand to the next server, listed or not.
+        if self.listed {
+            crate::engine::listed::deny(self.port);
+        }
         self.stop.store(true, Ordering::Relaxed);
         self.release();
     }
