@@ -48,6 +48,7 @@ mod for_you_tests;
 mod jump_tests;
 mod handoff_card_tests;
 mod prep_card_tests;
+mod email_compose_tests;
 mod picker_tests;
 mod first_run_tests;
 mod accounts_page_tests;
@@ -104,6 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "verify-jump-to-present") { return jump_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-handoff-card") { return handoff_card_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-prep-cards") { return prep_card_tests::run(&window, output); }
+    if args.iter().any(|a| a == "verify-email-compose") { return email_compose_tests::run(&window); }
     if args.iter().any(|a| a == "verify-picker") { return picker_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-first-run") { return first_run_tests::run(&window, output); }
     if args.iter().any(|a| a == "verify-accounts-page") { return accounts_page_tests::run(&window, output); }

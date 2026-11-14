@@ -14,10 +14,10 @@ use crate::model::{part, FileOp, Keep, Model};
 use crate::state::{checked_attachment, clear_mind_draft, load_mind_draft, save_mind_draft, shelf_path, Draft, MindDraft};
 use crate::Email;
 
-/// What the composer says while a draft carries a file the mail service cannot send. It shares the
-/// header row with Save Draft, Cancel and Send, so it is short: a long sentence there pushed those
-/// buttons off the right edge (VM 520). Send's own refusal says why, in full.
-pub const ATTACHED_STATUS: &str = "File attached, not sent here";
+/// What the composer says while a draft carries a file the mail service cannot send. It has a row
+/// of its own that wraps (`email.slint`), so it fits at any width and tells the person why Send will
+/// refuse before they press it.
+pub const ATTACHED_STATUS: &str = "A file is attached to this draft. Email cannot send attachments yet, so it will not be sent from here.";
 
 /// What the composer says on a draft Yantrik prepared that carries no file.
 const PREPARED_STATUS: &str = "Draft prepared for you";
@@ -118,6 +118,8 @@ fn shelve_held(m: &mut Model, incoming: Option<&str>) -> Result<Option<std::path
 /// Open the composer on the slot.
 pub fn show(m: &mut Model, fx: &mut Effects<Email>) {
     let Ok(Some(slot)) = m.composer.mind.clone() else { return };
+    // A notice about an earlier open (a failed one) is not about this one.
+    super::clear_notice(m, fx);
     m.composer.open = true;
     m.composer.in_slot = true;
     m.composer.unsure = false;

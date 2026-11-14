@@ -10,6 +10,7 @@ import { Icon, Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
 import { PreparedEntry, PreparedBar } from "email_prepared.slint";
+import { ComposeHeader } from "email_compose_header.slint";
 
 // ── Data Structures ──
 
@@ -1411,41 +1412,13 @@ export component EmailClient inherits Rectangle {
                     padding: Theme.sp-5;
                     spacing: Theme.sp-3;
 
-                    // Header bar
-                    HorizontalLayout {
-                        alignment: space-between;
-
-                        HorizontalLayout {
-                            spacing: Theme.sp-2;
-                            alignment: start;
-
-                            Text {
-                                text: "New Message";
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-title-2;
-                                font-weight: Theme.fw-title-2;
-                                vertical-alignment: center;
-                            }
-
-                            // Draft autosave indicator
-                            if root.email-draft-status != "" : Text { text: root.email-draft-status; color: Theme.text-dim; font-size: Theme.fs-caption; vertical-alignment: center; }
-                        }
-
-                        HorizontalLayout {
-                            spacing: Theme.sp-2;
-
-                            YButton { label: "Save Draft"; variant: 1; size: 0; clicked => { root.save-draft(); } }
-                            YButton { label: "Cancel"; variant: 1; size: 0; clicked => { root.cancel-compose(); } }
-
-                            YButton {
-                                label: root.is-sending ? "Sending…" : "Send"; disabled: root.is-sending; loading: root.is-sending;
-                                icon-path: Icons.send;
-                                variant: 0;
-                                clicked => {
-                                    root.send-email(root.compose-to, root.compose-cc, root.compose-bcc, root.compose-subject, root.compose-body);
-                                }
-                            }
-                        }
+                    // Header bar: the title and the three buttons, then the draft's status on its own row
+                    ComposeHeader {
+                        status: root.email-draft-status;
+                        is-sending: root.is-sending;
+                        save-draft => { root.save-draft(); }
+                        cancel-compose => { root.cancel-compose(); }
+                        send => { root.send-email(root.compose-to, root.compose-cc, root.compose-bcc, root.compose-subject, root.compose-body); }
                     }
 
                     Rectangle { height: 1px; background: Theme.border-subtle; }

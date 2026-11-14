@@ -1,0 +1,24 @@
+// The email composer's header (email_compose_header.slint) in a pane, on a ground that shows
+// anything drawn past the pane, for verify-email-compose.
+import { Theme } from "theme.slint";
+import { ComposeHeader } from "email_compose_header.slint";
+
+export component EmailComposeProbe inherits Window {
+    width: 1280px;
+    height: 800px;
+    background: #204060;
+    in property <string> status: "";
+    // The pane stops 40px short of the window's right edge; the strip after it must stay bare.
+    out property <length> pane-right: pane.x + pane.width;
+    out property <length> buttons-right: header.absolute-position.x + header.buttons-right;
+    out property <length> header-min-width: header.min-width;
+    pane := Rectangle {
+        x: 0px;
+        width: root.width - 40px;
+        background: Theme.bg-surface;
+        VerticalLayout {
+            padding: Theme.sp-5;
+            header := ComposeHeader { status: root.status; }
+        }
+    }
+}

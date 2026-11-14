@@ -498,3 +498,32 @@ fn the_persons_start_looks_at_once_as_it_always_did() {
     quiet(&app);
     assert!(!mail.asked().is_empty());
 }
+
+/// A failed open leaves its notice; a later open that works must not still say it.
+#[test]
+fn a_good_open_after_a_failed_one_clears_the_notice() {
+    let (a, b) = (HomeFile::new("stale-a"), HomeFile::new("stale-b"));
+    let paths = Paths::temporary(Email::ID);
+    let app = started_at(&paths);
+    for (to, file, id) in [("maya@example.com", &a, "24"), ("ravi@example.com", &b, "25")] {
+        let mut args = with_commitment(&file.path(), id);
+        args["to"] = json!(to);
+        act(&app, "compose", args).unwrap();
+        app.ui(|ui| ui.invoke_cancel_compose());
+        quiet(&app);
+    }
+    // The slot's write is stopped, as a full disk would: the open fails and says so.
+    let mut part = slot_file(&paths).into_os_string();
+    part.push(".part");
+    let part = std::path::PathBuf::from(part);
+    std::fs::create_dir(&part).unwrap();
+    app.run(crate::command::Command::OpenPreparedFor("24".into()));
+    quiet(&app);
+    assert!(notice(&app).contains("could not be opened"), "{}", notice(&app));
+    // Freed, the same open works, and the old sentence is gone.
+    std::fs::remove_dir(&part).unwrap();
+    app.run(crate::command::Command::OpenPreparedFor("24".into()));
+    quiet(&app);
+    assert_eq!(app.ui(|ui| ui.get_compose_to().to_string()), "maya@example.com");
+    assert_eq!(notice(&app), "", "the notice of the failed open is gone");
+}
