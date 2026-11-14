@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use yantrik_app::mind::fake::FakeMind;
 use yantrik_app::{App, Paths, Services};
-use yantrik_testing::TestApp;
+use yantrik_testing::{Call, TestApp};
 
 use crate::backend::fake::{self, FakeMail};
 use crate::Email;
@@ -46,6 +46,13 @@ pub(crate) fn quiet(app: &TestApp<Email>) {
 /// One call through the real dispatch, answered once its work has landed.
 pub(crate) fn act(app: &TestApp<Email>, name: &str, args: Value) -> Result<Value, String> {
     let pending = app.act(name, args)?;
+    quiet(app);
+    pending.settle()
+}
+
+/// The shell's own call, which is the only caller `open_message_id` answers.
+pub(crate) fn act_as_the_shell(app: &TestApp<Email>, name: &str, args: Value) -> Result<Value, String> {
+    let pending = app.act_as(Call::new(name, args).as_the_shell())?;
     quiet(app);
     pending.settle()
 }

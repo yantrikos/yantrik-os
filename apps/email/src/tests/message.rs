@@ -4,8 +4,9 @@
 
 use serde_json::json;
 use slint::Model as _;
+use yantrik_testing::Call;
 
-use super::{act, detail, inbox, listed, message, notice, quiet, started, state, with_inbox};
+use super::{act, act_as_the_shell, detail, inbox, listed, message, notice, quiet, started, state, with_inbox};
 use crate::backend::fake::FakeMail;
 use crate::command::{Command, Flag, Pick};
 use crate::model::OPEN_MESSAGE;
@@ -316,7 +317,7 @@ fn open_message_id_opens_exactly_that_message_from_any_folder() {
         .answering("email.list_messages", json!([decoy]))
         .answering("email.get_message", detail("900", "Q4 numbers", "You <you@example.com>", true, ""));
     let app = started(&mail);
-    let answer = act(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900", "account": "YOU@example.com" })).unwrap();
+    let answer = act_as_the_shell(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900", "account": "YOU@example.com" })).unwrap();
     assert_eq!(answer["subject"], "Q4 numbers");
     assert_eq!(
         mail.asked_for("email.get_message"),
@@ -330,13 +331,35 @@ fn open_message_id_opens_exactly_that_message_from_any_folder() {
 fn open_message_id_refuses_another_account_and_says_when_the_message_is_not_there() {
     let mail = with_inbox();
     let app = started(&mail);
-    let e = act(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900", "account": "other@example.org" })).unwrap_err();
+    let e = act_as_the_shell(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900", "account": "other@example.org" })).unwrap_err();
     assert!(e.contains("other@example.org"), "{e}");
     assert!(mail.asked_for("email.get_message").is_empty(), "nothing was opened for another account");
-    let e = act(&app, "open_message_id", json!({ "folder": "", "message_id": "900" })).unwrap_err();
+    let e = act_as_the_shell(&app, "open_message_id", json!({ "folder": "", "message_id": "900" })).unwrap_err();
     assert!(e.contains("folder"), "{e}");
     let failing = with_inbox().failing("email.get_message", "NO such message");
     let app = started(&failing);
-    let e = act(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900" })).unwrap_err();
+    let e = act_as_the_shell(&app, "open_message_id", json!({ "folder": "Sent", "message_id": "900" })).unwrap_err();
     assert_eq!(e, "Could not open that message: NO such message", "the app's answer is the card's line");
+}
+
+/// The exact open is the shell's, by pointer. An agent, the person's own `yos act` and a caller
+/// nobody could identify are refused before anything is asked of the mail server: a Mind that
+/// could walk folder and id would open, and mark read, whatever it liked.
+#[test]
+fn open_message_id_is_the_shells_and_nobody_elses() {
+    let mail = with_inbox().answering("email.get_message", detail("900", "Q4 numbers", "You <you@example.com>", true, ""));
+    let app = started(&mail);
+    let args = json!({ "folder": "Sent", "message_id": "900" });
+    let refused = |call: Call| app.act_as(call).map(|_| ()).unwrap_err();
+    for e in [
+        refused(Call::new("open_message_id", args.clone()).as_the_shell().as_agent("mind-1")),
+        refused(Call::new("open_message_id", args.clone()).as_yos()),
+        refused(Call::new("open_message_id", args.clone())),
+    ] {
+        assert!(e.contains("the desktop's own"), "{e}");
+    }
+    quiet(&app);
+    assert!(mail.asked_for("email.get_message").is_empty(), "nothing was read, and so nothing was marked read");
+    assert!(act_as_the_shell(&app, "open_message_id", args).is_ok(), "the shell's own press still opens it");
+    assert_eq!(mail.asked_for("email.get_message").len(), 1);
 }

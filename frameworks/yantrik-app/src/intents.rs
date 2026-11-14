@@ -284,6 +284,9 @@ pub fn admit(
         .iter()
         .find(|s| s.name == intent.name)
         .ok_or_else(|| format!("this app has no intent `{}`", intent.name))?;
+    if handed_over && spec.shell_only {
+        return Err(format!("`{}` is the shell's own and cannot come in by a launch", spec.name));
+    }
     let args = yantrik_surface::with_defaults(spec, &intent.args);
     yantrik_surface::check_arguments(spec, &args)?;
     let args = yantrik_surface::as_declared(spec, &args).into_owned();
@@ -482,6 +485,9 @@ mod tests {
         let e = admit(&specs, intent("set_step", json!({ "step": "5" })), true).unwrap_err();
         assert!(e.contains("safe or standard") && e.contains("sensitive"), "{e}");
         assert!(admit(&specs, intent("set_step", json!({ "step": "5" })), false).is_ok(), "the person's own command line");
+        let shells = vec![Action::new("open_exact", "The shell's own").risk("safe").shell_only()];
+        assert!(admit(&shells, intent("open_exact", json!({})), true).unwrap_err().contains("shell's own"));
+        assert!(admit(&shells, intent("open_exact", json!({})), false).is_ok(), "the person's own command line");
         let odd = vec![Action::new("odd", "Off the ladder").risk("whatever")];
         assert!(admit(&odd, intent("odd", json!({})), false).unwrap_err().contains("not a level"));
         let defaults = vec![Action::new("list", "List").risk("safe").arg(Param::integer("limit").optional().default(10))];
