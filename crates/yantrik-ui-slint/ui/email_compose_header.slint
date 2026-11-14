@@ -1,0 +1,62 @@
+// The composer's header: the title and Save Draft, Cancel and Send on one row, and under it, on a row
+// of its own, what the composer has to say about the draft (#1184, VM 520).
+//
+// The status used to share the row with the buttons, and a sentence long enough pushed Save Draft,
+// Cancel and Send off the right edge and raised the window's least width. Now the buttons always
+// have their preferred width and the title gives way first; the status wraps in a row below, so any
+// length of it fits at any width.
+import { Theme } from "theme.slint";
+import { YButton } from "components/y_button.slint";
+import { Icons } from "components/icon.slint";
+
+export component ComposeHeader inherits VerticalLayout {
+    in property <string> status: "";
+    in property <bool> is-sending: false;
+    // Where the last button ends, from the left edge of this header: tests keep it inside the pane.
+    out property <length> buttons-right: buttons.absolute-position.x - root.absolute-position.x + buttons.width;
+    callback save-draft();
+    callback cancel-compose();
+    callback send();
+
+    spacing: Theme.sp-3;
+
+    HorizontalLayout {
+        spacing: Theme.sp-2;
+
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            alignment: start;
+
+            Text {
+                text: "New Message";
+                color: Theme.text-primary;
+                font-size: Theme.fs-title-2;
+                font-weight: Theme.fw-title-2;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        buttons := HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: Theme.sp-2;
+
+            YButton { label: "Save Draft"; variant: 1; size: 0; clicked => { root.save-draft(); } }
+            YButton { label: "Cancel"; variant: 1; size: 0; clicked => { root.cancel-compose(); } }
+            YButton {
+                label: root.is-sending ? "Sending…" : "Send"; disabled: root.is-sending; loading: root.is-sending;
+                icon-path: Icons.send;
+                variant: 0;
+                clicked => { root.send(); }
+            }
+        }
+    }
+
+    if root.status != "" : Text {
+        text: root.status;
+        color: Theme.text-dim;
+        font-size: Theme.fs-caption;
+        wrap: word-wrap;
+    }
+}

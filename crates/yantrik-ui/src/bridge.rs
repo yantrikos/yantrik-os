@@ -244,6 +244,8 @@ pub enum CompanionCommand {
     GetMorningBrief {
         reply_tx: Sender<MorningBriefSnapshot>,
     },
+    /// The person pressed a button about preparing promised things; an empty id only asks.
+    PrepAnswer { action_id: String, reply_tx: Sender<crate::commitment_brief::Reply> },
     /// Shut down the worker.
     Shutdown,
 }
@@ -882,6 +884,13 @@ impl CompanionBridge {
         reply_rx
     }
 
+    /// The person's press of a button about preparing promised things, and what it leaves showing.
+    pub fn answer_commitment_prep(&self, action_id: String) -> Receiver<crate::commitment_brief::Reply> {
+        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
+        let _ = self.cmd_tx.send(CompanionCommand::PrepAnswer { action_id, reply_tx });
+        reply_rx
+    }
+
     /// Record a system event in the companion's memory.
     pub fn record_system_event(&self, text: String, domain: String, importance: f64) {
         let _ = self.cmd_tx.send(CompanionCommand::RecordSystemEvent {
@@ -1374,6 +1383,26 @@ fn worker_loop(
                     || text.starts_with("Recall shared references");
                 tracing::trace!(is_system_generated, "companion SendMessage");
 
+                // The setting for getting promised things ready is the person's own click. A request
+                // to change it is answered here, from the person's own words, before the threading
+                // context goes in front and before any model turn: no tools, no learning, no
+                // commitment noting (`switch_turn`).
+                if crate::switch_turn::answered_without_model(&text, is_system_generated, |reply| {
+                    if let Some(id) = &job {
+                        board.progress(id, reply, false);
+                    }
+                    let _ = token_tx.send(reply.to_string());
+                }) {
+                    if let Some(id) = &job {
+                        board.finish(id, Ok(yantrik_companion::commitment_consent::SWITCH_REPLY.to_string()));
+                    }
+                    if let Some(tx) = &model {
+                        let _ = tx.send(Served::NoModel);
+                    }
+                    let _ = token_tx.send("__DONE__".to_string());
+                    continue;
+                }
+
                 if !outside {
                     // Update ambient sentiment from user message
                     ambient.update_from_message(&text);
@@ -1408,30 +1437,7 @@ fn worker_loop(
 
                 // V18: Extract commitments from user messages
                 if !is_system_generated {
-                    let source = yantrik_companion::world_model::CommitmentSource::Conversation {
-                        turn_id: Some(msg_trace.as_u64().to_string()),
-                    };
-                    let extracted = yantrik_companion::commitment_extractor::extract_commitments(
-                        &text,
-                        &companion.config.user_name,
-                        &source,
-                    );
-                    if !extracted.is_empty() {
-                        let wm_commits = yantrik_companion::commitment_extractor::to_world_model_commitments(
-                            &extracted,
-                            &companion.config.user_name,
-                            source,
-                        );
-                        for c in &wm_commits {
-                            yantrik_companion::world_model::WorldModel::insert_commitment(
-                                &companion.db.conn(), c,
-                            );
-                        }
-                        tracing::info!(
-                            count = wm_commits.len(),
-                            "Extracted commitments from user message"
-                        );
-                    }
+                    companion.note_commitments(&text, msg_trace.as_u64());
                 }
 
                 // Resonance Model: record user interaction (positive quality for now)
@@ -2085,15 +2091,7 @@ fn worker_loop(
 
                         let approaching = yantrik_companion::world_model::WorldModel::approaching_deadlines(&companion.db.conn(), 24.0);
                         for c in &approaching {
-                            triggers.push(serde_json::json!({
-                                "trigger_type": "commitment_approaching",
-                                "commitment_id": c.id,
-                                "action": c.action,
-                                "promisor": c.promisor,
-                                "promisee": c.promisee,
-                                "deadline": c.deadline,
-                                "urgency": 0.6,
-                            }));
+                            triggers.push(yantrik_companion::commitment_prep::approaching_trigger(c));
                             event_bus.emit(
                                 yantrik_os::EventKind::CommitmentAlert {
                                     commitment_id: c.id.to_string(),
@@ -2341,6 +2339,7 @@ fn worker_loop(
                     .as_secs_f64();
 
                 // Daily budget check — skip all urges if over budget
+                companion.commitment_housekeeping();
                 let over_budget = companion.is_over_daily_budget();
                 if over_budget {
                     tracing::info!(
@@ -2357,6 +2356,10 @@ fn worker_loop(
                         reason = %spec.reason,
                         "Urge generated"
                     );
+                    // A promise to prepare is carried out by `commitment_prep`, not the model.
+                    if companion.run_commitment_urge(spec) {
+                        continue;
+                    }
                     if over_budget {
                         companion.record_suppressed_urge(&spec.cooldown_key, "daily budget exceeded");
                         continue;
@@ -2896,7 +2899,7 @@ fn worker_loop(
                     crate::app_context::time_of_day_greeting(),
                     user_name
                 );
-                let sections: Vec<MorningBriefSectionData> = companion
+                let mut sections: Vec<MorningBriefSectionData> = companion
                     .active_context
                     .sections_by_priority()
                     .into_iter()
@@ -2933,6 +2936,7 @@ fn worker_loop(
                         }
                     })
                     .collect();
+                sections.extend(crate::commitment_brief::sections(&companion));
 
                 let snapshot = if sections.is_empty() {
                     MorningBriefSnapshot {
@@ -2950,6 +2954,9 @@ fn worker_loop(
                 };
 
                 let _ = reply_tx.send(snapshot);
+            }
+            Ok(CompanionCommand::PrepAnswer { action_id, reply_tx }) => {
+                let _ = reply_tx.send(companion.person_answers_commitment_prep(&action_id));
             }
             Ok(CompanionCommand::RenameUser { name }) => {
                 companion.config.user_name = name.clone();

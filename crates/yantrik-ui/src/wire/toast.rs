@@ -140,6 +140,16 @@ pub fn local(ui_weak: &slint::Weak<App>, app: &str, summary: &str, body: &str, u
     );
 }
 
+/// `describe shell`'s `toasts`: the toasts the shell holds (id and summary, newest first), and whether
+/// the shell's own screenshot is hiding them. Held and drawn are different things: a toast in `live`
+/// that a picture does not show is a picture taken while `hidden_for_capture`, or a stacking problem.
+pub fn for_describe(ui: &App) -> serde_json::Value {
+    let live: Vec<serde_json::Value> = LIVE.with(|live| {
+        live.borrow().iter().map(|t| serde_json::json!({ "id": t.data.id.as_str(), "summary": t.data.summary.as_str() })).collect()
+    });
+    serde_json::json!({ "live": live, "hidden_for_capture": ui.global::<crate::CaptureState>().get_hiding() })
+}
+
 /// Hand the first [`VISIBLE`] to Slint and count the rest.
 fn republish(ui: &App) {
     let (shown, overflow) = LIVE.with(|live| {

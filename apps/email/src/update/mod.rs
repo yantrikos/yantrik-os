@@ -17,6 +17,7 @@ pub(crate) mod drafts;
 pub(crate) mod google;
 pub(crate) mod mailbox;
 mod message;
+pub(crate) mod mind_draft;
 mod pick;
 mod setup;
 
@@ -26,6 +27,14 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
     // Every command says what it drew. The composer's text and the setup fields are the window's
     // while the person types, so nothing redraws them unless a command put something there.
     fx.changed(part::MODEL);
+    // The first thing that needs the mailbox, on an Email only asked to `compose` so far: look now.
+    if m.compose_only && needs_mailbox(&command) {
+        // It waits for the look, so it is answered from the mailbox and not from nothing.
+        m.compose_only = false;
+        m.deferred = Some(command);
+        mailbox::look(m, crate::command::Look::Start, fx);
+        return Ok(());
+    }
     match command {
         Command::Look(why) => mailbox::look(m, why, fx),
         Command::Looked { why, folder, loaded } => mailbox::looked(m, why, &folder, loaded, fx),
@@ -51,7 +60,12 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
         Command::OpenOriginal => message::open_original(m, fx),
         Command::OriginalOpened(sentence) => say(m, fx, sentence),
         Command::ComposeNew => compose::compose_new(m, fx),
-        Command::Compose { to, subject, body } => compose::compose(m, to, subject, body, fx),
+        Command::Compose { to, subject, body, attach, commitment } => return compose::compose(m, to, subject, body, attach, commitment, fx),
+        Command::ForgetPrepared(commitment) => return mind_draft::forget_prepared(m, &commitment, fx),
+        Command::OpenPrepared => mind_draft::open_prepared(m, fx),
+        Command::OpenPreparedFor(commitment) => mind_draft::open_prepared_for(m, &commitment, fx),
+        Command::DiscardPrepared => mind_draft::discard_prepared(m, fx),
+        Command::RemoveAttachment => mind_draft::remove_attachment(m, fx),
         Command::Reply { all } => compose::reply(m, all, fx),
         Command::Forward => compose::forward(m, fx),
         Command::Edited { text, query } => {
@@ -83,6 +97,18 @@ pub fn update(m: &mut Model, command: Command, fx: &mut Effects<Email>) -> Resul
         Command::Unfinished(work) => unfinished(m, work, fx),
     }
     Ok(())
+}
+
+/// Whether a command is about the mail itself, which an agent's start has not looked at.
+fn needs_mailbox(command: &Command) -> bool {
+    matches!(command, Command::Open(_) | Command::SelectFolder(_) | Command::SearchFor(_) | Command::Mark { .. })
+}
+
+/// The look has landed, or failed: what waited for it runs now.
+pub(crate) fn release_deferred(m: &mut Model, fx: &mut Effects<Email>) {
+    if let Some(command) = m.deferred.take() {
+        fx.then(command);
+    }
 }
 
 /// Put a failure where the person can read it. `describe` publishes the same string.
@@ -153,5 +179,6 @@ fn unfinished(m: &mut Model, work: Work, fx: &mut Effects<Email>) {
     // The first look did not land: a message left unsent at the last close is offered anyway.
     if work == Work::Sync {
         drafts::offer_unsent(m, fx);
+        release_deferred(m, fx);
     }
 }

@@ -1,0 +1,35 @@
+// A toast over the column of cards for promised things, drawn the way the shell stacks them (the
+// whisper column, then the toast banner above it), for verify-toast. The window's size is the
+// screen's: the test sets it, at scale 1 and at scale 2.
+import { Theme } from "theme.slint";
+import { WhisperCardStack } from "components/whisper_card.slint";
+import { ToastBanner, ToastData } from "components/toast_banner.slint";
+
+export component ToastProbe inherits Window {
+    // The screen's size, in logical pixels: the test sets it for the scale it draws at.
+    in property <length> screen-width: 960px;
+    in property <length> screen-height: 540px;
+    width: root.screen-width;
+    height: root.screen-height;
+    background: #204060;
+    in property <[ToastData]> toasts;
+    out property <color> amber: Theme.amber;
+    out property <length> taskbar-height: Theme.taskbar-height;
+    out property <length> gap: Theme.sp-3;
+    // The summary as the banner draws it, measured: it must fit its room or it is cut with "…".
+    in property <string> summary: "";
+    out property <length> summary-width: measure.preferred-width;
+    measure := Text { text: root.summary; font-size: Theme.fs-body; font-weight: 500; visible: false; }
+
+    WhisperCardStack {
+        x: root.width - 316px;
+        y: Theme.status-bar-height + 8px;
+        height: parent.height - self.y - Theme.taskbar-height - Theme.sp-2;
+        cards: [];
+    }
+    ToastBanner {
+        width: 100%;
+        height: 100%;
+        toasts: root.toasts;
+    }
+}

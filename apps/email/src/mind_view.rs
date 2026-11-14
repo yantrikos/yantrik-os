@@ -22,6 +22,7 @@ use crate::command::Command;
 /// - Send, Reply and Forward carry mail out or quote it;
 /// - Save draft and the composer's own edits would write over the person's draft with text the
 ///   window cannot show;
+/// - the prepared draft's own buttons (open, discard, remove its file) are the person's;
 /// - Delete, Archive and the account setup change the mailbox or the person's accounts, and the
 ///   intents offer none of them.
 ///
@@ -39,6 +40,10 @@ pub fn refuses(command: &Command) -> bool {
             | Command::Ask(_)
             | Command::Delete(_)
             | Command::Archive(_)
+            | Command::OpenPrepared
+            | Command::OpenPreparedFor(_)
+            | Command::DiscardPrepared
+            | Command::RemoveAttachment
             | Command::AddAccount
             | Command::TestConnection(_)
             | Command::SaveAccount(_)
