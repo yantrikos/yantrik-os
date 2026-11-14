@@ -203,6 +203,11 @@ export component EmailClient inherits Rectangle {
     in property <[EmailAttachmentData]> email-attachments: [];
     in property <int> email-triage-view: 0;  // 0=all, 1=unread, 2=flagged
     in property <string> email-draft-status: "";  // "Draft saved" / "Draft restored" / ""
+    // Where the composer's last button ends and where the pane it is in ends, in this component's
+    // window coordinates, so a check can tell Send is inside the pane the person sees
+    // (tests/ui-preview, verify-email-compose). Read-only: the composer reports them as it is laid out.
+    out property <length> compose-buttons-right: 0px;
+    out property <length> compose-pane-right: 0px;
     in property <string> prepared-label: "";  // "Draft Yantrik prepared for Maya", or "" when none
     in property <bool> composing-prepared: false;  // the composer shows that draft
     in property <string> prepared-file: "";  // the file it carries, or ""
@@ -1411,9 +1416,13 @@ export component EmailClient inherits Rectangle {
                 if root.is-composing : VerticalLayout {
                     padding: Theme.sp-5;
                     spacing: Theme.sp-3;
+                    // The pane's right edge, in window coordinates, for the check on Send.
+                    changed width => { root.compose-pane-right = self.absolute-position.x + self.width; }
+                    changed absolute-position => { root.compose-pane-right = self.absolute-position.x + self.width; }
 
                     // Header bar: the title and the three buttons, then the draft's status on its own row
                     ComposeHeader {
+                        changed buttons-edge => { root.compose-buttons-right = self.buttons-edge; }
                         status: root.email-draft-status;
                         is-sending: root.is-sending;
                         save-draft => { root.save-draft(); }

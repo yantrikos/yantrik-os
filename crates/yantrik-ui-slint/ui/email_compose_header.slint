@@ -14,6 +14,9 @@ export component ComposeHeader inherits VerticalLayout {
     in property <bool> is-sending: false;
     // Where the last button ends, from the left edge of this header: tests keep it inside the pane.
     out property <length> buttons-right: buttons.absolute-position.x - root.absolute-position.x + buttons.width;
+    // The same edge, in the window's own coordinates: what EmailClient reports for the check that
+    // runs the real compose pane (tests/ui-preview/email_compose_probe.slint).
+    out property <length> buttons-edge: buttons.absolute-position.x + buttons.width;
     callback save-draft();
     callback cancel-compose();
     callback send();

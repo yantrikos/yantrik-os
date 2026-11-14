@@ -1,24 +1,23 @@
-// The email composer's header (email_compose_header.slint) in a pane, on a ground that shows
-// anything drawn past the pane, for verify-email-compose.
-import { Theme } from "theme.slint";
-import { ComposeHeader } from "email_compose_header.slint";
+// The real email client with the composer open over a prepared draft that carries a file, for
+// verify-email-compose. The header alone in a pane of its own width did not test what the person
+// sees: the compose pane is what is left of the window after the 220px folder column and the 340px
+// list, so Send is measured in that pane.
+import { EmailClient } from "email.slint";
 
 export component EmailComposeProbe inherits Window {
     width: 1280px;
     height: 800px;
-    background: #204060;
     in property <string> status: "";
-    // The pane stops 40px short of the window's right edge; the strip after it must stay bare.
-    out property <length> pane-right: pane.x + pane.width;
-    out property <length> buttons-right: header.absolute-position.x + header.buttons-right;
-    out property <length> header-min-width: header.min-width;
-    pane := Rectangle {
-        x: 0px;
-        width: root.width - 40px;
-        background: Theme.bg-surface;
-        VerticalLayout {
-            padding: Theme.sp-5;
-            header := ComposeHeader { status: root.status; }
-        }
+    out property <length> pane-right: client.compose-pane-right;
+    out property <length> buttons-right: client.compose-buttons-right;
+    // The least width the window can be made, as the layout says it.
+    out property <length> least-width: root.min-width;
+    client := EmailClient {
+        width: root.width;
+        height: root.height;
+        is-composing: true;
+        composing-prepared: true;
+        prepared-file: "/home/user/Documents/Q4-deck.ydeck";
+        email-draft-status: root.status;
     }
 }
