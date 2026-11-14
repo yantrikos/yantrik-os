@@ -47,7 +47,7 @@ export component MeetingBriefCard inherits Rectangle {
     in property <MeetingBriefData> data;
     // The most the card may be. Past it the rows scroll, and the title, the time and the buttons
     // stay inside the card: they are what the person needs, and the rows are what can wait.
-    in property <length> max-height: 100000px;
+    in property <length> room: 100000px;
     // What the card would be with all its rows showing.
     out property <length> natural-height: body.preferred-height;
     out property <length> card-height: root.height;
@@ -57,7 +57,7 @@ export component MeetingBriefCard inherits Rectangle {
     border-radius: Theme.r-lg;
     border-width: 1px;
     border-color: Theme.border-subtle;
-    height: min(body.preferred-height, root.max-height);
+    height: min(body.preferred-height, root.room);
     clip: true;
     accessible-role: groupbox;
     accessible-label: "Brief for " + root.data.title;
@@ -182,14 +182,14 @@ export component MeetingBriefStack inherits Rectangle {
     first := MeetingBriefCard {
         visible: MeetingBriefState.cards.length > 0;
         data: MeetingBriefState.cards.length > 0 ? MeetingBriefState.cards[0] : root.none;
-        max-height: root.height;
+        room: root.height;
         width: parent.width;
         y: root.both ? root.height - second.height - root.gap - self.height : root.height - self.height;
     }
     second := MeetingBriefCard {
         visible: root.both;
         data: MeetingBriefState.cards.length > 1 ? MeetingBriefState.cards[1] : root.none;
-        max-height: root.height - first.height - root.gap;
+        room: root.height - first.height - root.gap;
         width: parent.width;
         y: root.height - self.height;
     }
