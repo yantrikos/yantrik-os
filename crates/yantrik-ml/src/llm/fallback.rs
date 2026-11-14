@@ -409,6 +409,8 @@ impl LLMBackend for FallbackLLM {
                 self.primary_success();
                 Ok(resp)
             }
+            // A backend the person stopped is not a failure to cover for.
+            Err(stopped) if stopped.downcast_ref::<crate::Stopped>().is_some() => Err(stopped),
             Err(primary_err) => {
                 self.primary_failure();
                 tracing::warn!(
@@ -459,6 +461,8 @@ impl LLMBackend for FallbackLLM {
                 self.primary_success();
                 Ok(resp)
             }
+            // A backend the person stopped is not a failure to cover for.
+            Err(stopped) if stopped.downcast_ref::<crate::Stopped>().is_some() => Err(stopped),
             Err(primary_err) => {
                 self.primary_failure();
                 tracing::warn!(

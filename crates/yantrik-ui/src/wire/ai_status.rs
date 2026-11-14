@@ -66,13 +66,18 @@ pub(crate) fn set_config_llm(config: ConfigLlm) {
 /// is config.yaml's `llm.fallback` (`FallbackLLM`), and a saved primary swaps in a bare API
 /// backend that drops it, so with one applied no fallback is named. A provider's stored
 /// `is_fallback` flag builds nothing and is never named. In-process and CLI backends are
-/// described even with no address.
+/// described even with no address. `stopped`: the companion has no provider (its provider was
+/// removed), so it sends nowhere whatever config.yaml names, and no destination is claimed.
 pub(crate) fn companion_fact(
     target: Option<&Target>,
     config: &ConfigLlm,
     saved_primary_kind: Option<String>,
+    stopped: bool,
 ) -> Option<crate::runs_on::CompanionFact> {
     use crate::runs_on::{Backend, CompanionFact};
+    if stopped {
+        return None;
+    }
     let backend = if saved_primary_kind.is_some() { Backend::Api } else { config.backend };
     let provider_kind = saved_primary_kind.clone().unwrap_or_else(|| config.kind.clone());
     let fallback = if saved_primary_kind.is_some() { None } else { config.fallback.clone() };
@@ -227,17 +232,52 @@ pub(crate) fn card(target: Option<&Target>, health: &Health) -> AIStatusData {
         model_tier: SharedString::default(),
         status: status.into(),
         detail: detail.into(),
+        stopped: false,
+        config_setup: SharedString::default(),
+    }
+}
+
+/// The card of a companion whose provider was removed: it says so, names no destination, and
+/// carries what the way back would put it on (`config_setup`, empty when config.yaml names no
+/// address), for the one button that hands it back to this computer's setup.
+pub(crate) fn stopped_card(config_url: &str, config_model: &str) -> AIStatusData {
+    AIStatusData {
+        detail: yantrik_ml::NO_PROVIDER.into(),
+        stopped: true,
+        config_setup: config_offer(config_url, config_model).into(),
+        ..card(None, &Health::NotSetUp)
+    }
+}
+
+/// "<host> · <model>" of config.yaml's address, as the button names it; empty when it has none.
+/// The host is the one every surface draws (`shown_host`), never the sign-in details of the URL.
+pub(crate) fn config_offer(url: &str, model: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return String::new();
+    }
+    let host = match crate::runs_on::identity::shown_host(url) {
+        h if h.is_empty() => name_for(url),
+        h => h,
+    };
+    match model.trim() {
+        "" => host,
+        m => format!("{host} \u{b7} {m}"),
     }
 }
 
 /// Show what the companion is pointed at as "Checking", then ask it, and show the answer.
 pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
+    // A stopped companion has no destination: config.yaml's address is only what it could be put
+    // back on, offered on a button, and never named as where it sends.
+    let stopped = crate::provider_handoff::companion::is_stopped();
     let target = target(
         store,
         &ui.get_settings_llm_api_url(),
         &ui.get_settings_llm_api_model(),
         config_key(),
-    );
+    )
+    .filter(|_| !stopped);
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     // Before the config is known, nothing is claimed for it: an API, which is never "stays".
     let config = CONFIG_LLM
@@ -249,8 +289,13 @@ pub(crate) fn refresh(ui: &App, store: &ProviderStore) {
         target.as_ref(),
         &config,
         store.primary().map(|p| p.provider_type.clone()),
+        stopped,
     );
     super::runs_on_card::publish(ui);
+    if stopped {
+        ui.set_settings_ai_status(stopped_card(&ui.get_settings_llm_api_url(), &ui.get_settings_llm_api_model()));
+        return;
+    }
     let Some(target) = target else {
         ui.set_settings_ai_status(card(None, &Health::NotSetUp));
         return;
@@ -307,6 +352,20 @@ mod tests {
         assert_eq!(crate::provider_vault::read(&source, None), Ok(Some("sk-fake-config-key".to_string())));
     }
 
+    /// A stopped companion's card says its provider was removed, names no provider, and carries the
+    /// way back as "<host> · <model>" of config.yaml's address, with no sign-in details in it.
+    #[test]
+    fn a_stopped_card_names_no_provider_and_offers_this_computers_setup() {
+        let card = stopped_card("https://user:pw@aig.example.test/v1?key=k", "qwen3.8:27b");
+        assert!(card.stopped);
+        assert_eq!((card.provider_name.as_str(), card.status.as_str()), ("", "unset"));
+        assert_eq!(card.detail.as_str(), yantrik_ml::NO_PROVIDER);
+        assert_eq!(card.config_setup.as_str(), "aig.example.test \u{b7} qwen3.8:27b");
+        assert!(!card.config_setup.contains("pw") && !card.config_setup.contains("key"));
+        // No address in config.yaml: nothing to put it back on, so no button.
+        assert_eq!(stopped_card("  ", "m").config_setup.as_str(), "");
+    }
+
     fn listed(ids: &[&str]) -> Vec<ListedModel> {
         ids.iter().map(|i| ListedModel { id: i.to_string(), name: i.to_string(), size_bytes: 0 }).collect()
     }
@@ -323,20 +382,20 @@ mod tests {
             kind: kind.into(),
         };
         let t = target(&ProviderStore::default(), "http://localhost:11434/v1", "qwen3.5:9b", None).unwrap();
-        let f = companion_fact(Some(&t), &cfg(Backend::Api, None, "api"), None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, None, "api"), None, false).unwrap();
         assert_eq!((f.backend, f.fallback.as_deref(), f.provider_kind.as_str()), (Backend::Api, None, "api"));
-        let f = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), None, false).unwrap();
         assert_eq!(f.backend, Backend::ClaudeCli);
-        let saved = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), Some("litellm".into())).unwrap();
+        let saved = companion_fact(Some(&t), &cfg(Backend::ClaudeCli, None, "claude-cli"), Some("litellm".into()), false).unwrap();
         assert_eq!((saved.backend, saved.provider_kind.as_str()), (Backend::Api, "litellm"), "a saved primary is applied as the API, as what it was saved as");
-        let f = companion_fact(None, &cfg(Backend::InProcess, Some("Ollama at localhost:8341"), "llamacpp"), None).unwrap();
+        let f = companion_fact(None, &cfg(Backend::InProcess, Some("Ollama at localhost:8341"), "llamacpp"), None, false).unwrap();
         assert_eq!((f.backend, f.fallback.as_deref()), (Backend::InProcess, Some("Ollama at localhost:8341")));
-        assert!(companion_fact(None, &cfg(Backend::Api, None, "api"), None).is_none());
+        assert!(companion_fact(None, &cfg(Backend::Api, None, "api"), None, false).is_none());
         // Only config.yaml's fallback is named, and only while no saved primary is applied: a
         // saved primary swaps in a bare API backend that drops it.
-        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), None).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), None, false).unwrap();
         assert_eq!(f.fallback.as_deref(), Some("x"), "config.yaml's fallback is real");
-        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), Some("openai".into())).unwrap();
+        let f = companion_fact(Some(&t), &cfg(Backend::Api, Some("x"), "api"), Some("openai".into()), false).unwrap();
         assert_eq!(f.fallback, None, "a saved primary drops it");
 
     }

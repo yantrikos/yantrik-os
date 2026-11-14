@@ -153,6 +153,7 @@ struct Fixture {
 impl Fixture {
     fn new(home: &Home) -> Self {
         crate::provider_handoff::companion::note_on_saved(None);
+        crate::provider_handoff::companion::note_running();
         let vault = crate::vault_unlock::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         yantrikdb_core::vault::lock();
         let db = home.path().join("memory.db");
@@ -267,6 +268,100 @@ fn deleting_the_primary_leaves_a_companion_off_yantrik_models_with_no_key_and_no
     // Said once: the next change finds it already stopped.
     f.changed();
     assert!(f.told.try_iter().next().is_none());
+}
+
+/// A backend standing in for the removed provider: it counts the requests it gets, and holds the
+/// first one inside it until released, as a turn does while the model is thinking.
+struct Held {
+    requests: std::sync::atomic::AtomicUsize,
+    inside: crossbeam_channel::Sender<()>,
+    release: crossbeam_channel::Receiver<()>,
+}
+
+impl yantrik_ml::LLMBackend for Held {
+    fn chat(&self, _: &[yantrik_ml::ChatMessage], _: &yantrik_ml::GenerationConfig, _: Option<&[serde_json::Value]>) -> anyhow::Result<yantrik_ml::LLMResponse> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.requests.fetch_add(1, SeqCst) == 0 {
+            let _ = self.inside.send(());
+            let _ = self.release.recv_timeout(std::time::Duration::from_secs(10));
+        }
+        anyhow::bail!("an answer from the removed provider")
+    }
+
+    fn chat_streaming(&self, m: &[yantrik_ml::ChatMessage], c: &yantrik_ml::GenerationConfig, t: Option<&[serde_json::Value]>, _: &mut dyn FnMut(&str)) -> anyhow::Result<yantrik_ml::LLMResponse> {
+        self.chat(m, c, t)
+    }
+
+    fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
+        Ok(text.len())
+    }
+
+    fn backend_name(&self) -> &str {
+        "api"
+    }
+}
+
+/// Bar 4 in CI (gate 10, VM 520: a turn already running made one more call to the removed provider
+/// 26 s after the press, and the stop came 131 s late, behind that turn in the worker's queue).
+/// The test bridge's worker is a stub that never runs a turn, so the cut seen here is the one made
+/// on the pressing thread, through a real `LlmSwitch`.
+#[test]
+fn a_remove_pressed_while_a_turn_runs_cuts_every_clone_of_the_backend_on_the_pressing_thread() {
+    use std::sync::atomic::Ordering::SeqCst;
+    use yantrik_ml::LLMBackend as _;
+    let h = home("cut_while_a_turn_runs");
+    let f = Fixture::new(&h);
+    free_ai::set_state_for_test(&values(), &[]);
+    save_providers(vec![saved("p1", true, None)]);
+    crate::provider_handoff::companion::note_on_saved(Some("p1".into()));
+
+    let (inside_tx, inside) = crossbeam_channel::unbounded();
+    let (release_tx, release) = crossbeam_channel::unbounded();
+    let removed = Arc::new(Held { requests: Default::default(), inside: inside_tx, release });
+    let armed = f.bridge.llm_switch_for_test().arm(removed.clone());
+    let (cfg, msgs) = (yantrik_ml::GenerationConfig::default(), [yantrik_ml::ChatMessage::user("hello")]);
+    // The turn is inside the provider's call; the judge and a sub-agent hold clones of the backend.
+    let running = armed.clone();
+    let (turn_cfg, turn_msgs) = (cfg.clone(), msgs.clone());
+    let turn = std::thread::spawn(move || running.chat(&turn_msgs, &turn_cfg, None));
+    inside.recv_timeout(std::time::Duration::from_secs(10)).expect("the turn is inside the provider's call");
+    let (judge, sub_agent) = (armed.clone(), armed.clone());
+
+    // The press: the provider is removed in Settings.
+    save_providers(vec![]);
+    f.changed();
+
+    assert!(f.told.try_iter().any(|c| matches!(c, CompanionCommand::StopLLM)), "the worker is told too, to take it out in order");
+    assert!(crate::provider_handoff::companion::is_stopped());
+    for clone in [&judge, &sub_agent, &armed] {
+        let refused = clone.chat(&msgs, &cfg, None).err().expect("refused");
+        assert!(refused.downcast_ref::<yantrik_ml::Stopped>().is_some(), "{refused}");
+    }
+    assert_eq!(armed.backend_name(), "none", "so the companion answers at once that no provider is set up");
+    assert_eq!(removed.requests.load(SeqCst), 1, "nothing was sent to the removed provider after the press");
+
+    // The turn that was running is cut when the provider answers, and its answer is thrown away.
+    release_tx.send(()).unwrap();
+    let late = turn.join().unwrap().err().expect("cut");
+    assert!(late.downcast_ref::<yantrik_ml::Stopped>().is_some(), "{late}");
+    assert_eq!(removed.requests.load(SeqCst), 1);
+}
+
+/// The way back from a stop, with no restart: the button calls `reload_config`, which puts the
+/// companion on config.yaml's address and ends the stop.
+#[test]
+fn a_stopped_companion_is_put_back_on_this_computers_setup_by_one_reload_with_no_restart() {
+    let h = home("back_to_config");
+    let f = Fixture::new(&h);
+    f.bridge.stop_llm();
+    assert!(crate::provider_handoff::companion::is_stopped());
+    assert!(f.told.try_iter().any(|c| matches!(c, CompanionCommand::StopLLM)));
+
+    crate::provider_handoff::companion::reload_config(&f.bridge, "https://config.example.test/v1".into(), None, "m".into());
+
+    assert!(!crate::provider_handoff::companion::is_stopped(), "the stop is over");
+    assert!(matches!(f.told.try_iter().collect::<Vec<_>>().as_slice(), [CompanionCommand::ReloadLLM { base_url, .. }] if base_url == "https://config.example.test/v1"));
+    assert!(f.bridge.is_online());
 }
 
 #[test]

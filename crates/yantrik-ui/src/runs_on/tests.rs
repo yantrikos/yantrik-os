@@ -464,3 +464,25 @@ fn every_face_names_a_gateway_account_by_the_name_the_person_gave_it() {
     }
     assert!(r.details().contains("aig.mycluster.cyou"), "the exact address is a click away");
 }
+
+/// Gate 10 (VM 520): after its provider was removed the companion was stopped, and the composer
+/// still read "Sends your message … to: aig.myclust…" from config.yaml's address, a destination
+/// that gets nothing. A stopped companion names no host, and says where to add one.
+#[test]
+fn a_stopped_companion_over_a_config_yaml_address_names_no_host() {
+    use crate::wire::ai_status::{companion_fact, target, ConfigLlm};
+    use crate::wire::settings::ProviderStore;
+    let config = ConfigLlm { backend: Backend::Api, fallback: None, kind: "api".into() };
+    let t = target(&ProviderStore::default(), "https://aig.mycluster.cyou/v1", "qwen3.8:27b", None).unwrap();
+    let builtin = [MindFact { id: "companion".into(), name: "Yantrik Companion".into(), detail: None, answering: false, builtin: true, gateway: None }];
+
+    let running = companion_fact(Some(&t), &config, None, false);
+    let row = &resolve(&builtin, running.as_ref())[0];
+    assert!(row.destination().contains("aig.mycluster.cyou"), "running, it names its host: {}", row.destination());
+
+    let stopped = companion_fact(Some(&t), &config, None, true);
+    let row = &resolve(&builtin, stopped.as_ref())[0];
+    assert_eq!(row.destination(), "", "stopped, no destination is claimed");
+    assert!(!row.runs_on().contains("mycluster") && !row.source().contains("mycluster"), "{} / {}", row.runs_on(), row.source());
+    assert_eq!(row.plain_source(), "Add an AI account below to give it one");
+}

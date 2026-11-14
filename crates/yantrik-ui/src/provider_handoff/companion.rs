@@ -5,6 +5,7 @@
 //! removes the file and puts it back on the primary provider from Settings.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
@@ -62,19 +63,38 @@ pub(crate) fn primary_gone(home: &Path, saved: &crate::wire::settings::ProviderS
     on.is_some_and(|id| !saved.entries.iter().any(|e| e.id == id))
 }
 
-/// What the companion runs on when it has no provider: every turn is refused here, and nothing
-/// leaves the machine. It holds no address and no key.
-pub(crate) struct NoProvider;
+/// Whether the companion was stopped (its provider removed) and nothing has put it on a provider
+/// since. What the screens read so that none of them names a destination that gets nothing:
+/// config.yaml's address is the fallback of the card and the composer, and while stopped it is
+/// not where the companion sends.
+static STOPPED: AtomicBool = AtomicBool::new(false);
 
-const NO_PROVIDER: &str = "No AI provider is set up: the provider this companion used was removed. Add or choose one in Settings → AI & Intelligence.";
+/// The companion was stopped (`CompanionBridge::stop_llm`).
+pub(crate) fn note_stopped() {
+    STOPPED.store(true, Ordering::SeqCst);
+}
+
+/// A reload put the companion on a provider (`CompanionBridge::reload_llm`): it is not stopped.
+pub(crate) fn note_running() {
+    STOPPED.store(false, Ordering::SeqCst);
+}
+
+/// Whether the companion is stopped, with no provider.
+pub(crate) fn is_stopped() -> bool {
+    STOPPED.load(Ordering::SeqCst)
+}
+
+/// What the companion runs on when it has no provider: every turn is refused here with
+/// [`yantrik_ml::Stopped`], and nothing leaves the machine. It holds no address and no key.
+pub(crate) struct NoProvider;
 
 impl yantrik_ml::LLMBackend for NoProvider {
     fn chat(&self, _: &[yantrik_ml::ChatMessage], _: &yantrik_ml::GenerationConfig, _: Option<&[Value]>) -> anyhow::Result<yantrik_ml::LLMResponse> {
-        anyhow::bail!(NO_PROVIDER)
+        Err(yantrik_ml::Stopped.into())
     }
 
     fn chat_streaming(&self, _: &[yantrik_ml::ChatMessage], _: &yantrik_ml::GenerationConfig, _: Option<&[Value]>, _: &mut dyn FnMut(&str)) -> anyhow::Result<yantrik_ml::LLMResponse> {
-        anyhow::bail!(NO_PROVIDER)
+        Err(yantrik_ml::Stopped.into())
     }
 
     fn count_tokens(&self, text: &str) -> anyhow::Result<usize> {
@@ -82,13 +102,15 @@ impl yantrik_ml::LLMBackend for NoProvider {
     }
 
     fn backend_name(&self) -> &str {
-        "none"
+        yantrik_ml::STOPPED_BACKEND
     }
 }
 
-/// The worker's side of `StopLLM`: no address, no key, and a backend that fails every call.
+/// The worker's side of `StopLLM`, run in order behind the turn that was running. The backend was
+/// already cut when the button was pressed (`CompanionBridge::stop_llm`); this takes the stopped
+/// backend out of the companion: no address, no key, and one that refuses every call.
 pub(crate) fn stop(companion: &mut yantrik_companion::CompanionService, online: &std::sync::atomic::AtomicBool) {
-    tracing::info!("Stopping the LLM backend: no provider is set");
+    tracing::info!("the stopped backend is out of the companion");
     companion.config.llm.api_base_url = None;
     companion.config.llm.api_key = None;
     companion.swap_llm(Arc::new(NoProvider));

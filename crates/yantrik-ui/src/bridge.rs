@@ -381,6 +381,9 @@ pub struct CompanionBridge {
     memory_db: String,
     /// The credential vault's own thread (`vault_lane`): vault calls never queue behind a turn.
     vault_lane: crate::vault_lane::VaultLane,
+    /// What a Remove cuts: the backend the companion runs on, held here as well as by the worker so
+    /// the pressing thread can take it back without waiting for the turn the worker is in.
+    llm_switch: Arc<yantrik_ml::LlmSwitch>,
 }
 
 /// A companion you can use from another thread.
@@ -738,8 +741,10 @@ impl CompanionBridge {
         let vault_lane = crate::vault_lane::VaultLane::start(&memory_db);
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
+        let llm_switch = Arc::new(yantrik_ml::LlmSwitch::new());
+        let switch_w = llm_switch.clone();
         let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w);
+            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w, switch_w);
         });
 
         Self {
@@ -756,6 +761,7 @@ impl CompanionBridge {
             private: AtomicBool::new(private),
             memory_db,
             vault_lane,
+            llm_switch,
         }
     }
 
@@ -963,6 +969,7 @@ impl CompanionBridge {
     pub fn reload_llm(&self, provider_type: String, base_url: String, api_key: Option<String>, model: String) {
         // Mark online optimistically so UI shows correct status while reload happens
         self.online.store(true, Ordering::Relaxed);
+        crate::provider_handoff::companion::note_running();
         let _ = self.cmd_tx.send(CompanionCommand::ReloadLLM {
             provider_type,
             base_url,
@@ -972,7 +979,15 @@ impl CompanionBridge {
     }
 
     /// Stop the companion's LLM: no provider, no key. Its next turn says so instead of reaching one.
+    ///
+    /// The backend is cut here, on the calling thread, and not through the queue: the worker may be
+    /// inside a turn for minutes, and that turn, the judge and every sub-agent hold clones of the
+    /// backend, with its key. The queued `StopLLM` then takes the stopped backend out of the
+    /// companion in order, and a later `ReloadLLM` replaces it.
     pub fn stop_llm(&self) {
+        tracing::info!("Stopping the LLM backend: no provider is set");
+        self.llm_switch.cut();
+        crate::provider_handoff::companion::note_stopped();
         self.online.store(false, Ordering::Relaxed);
         let _ = self.cmd_tx.send(CompanionCommand::StopLLM);
     }
@@ -1127,6 +1142,7 @@ fn worker_loop(
     event_bus: yantrik_os::EventBus,
     board: crate::jobs::Board,
     decisions: yantrik_companion::decisions::Decisions,
+    llm_switch: Arc<yantrik_ml::LlmSwitch>,
 ) {
     // Save config services before moving config into build_companion
     let config_services = config.enabled_services.clone();
@@ -1138,7 +1154,7 @@ fn worker_loop(
     // is missing, not that there is no address. Staying up to answer with the real reason is
     // the difference between an OS that tells you the embedder is absent and one that looks
     // broken in sixteen places at once.
-    let mut companion = match build_companion(config) {
+    let mut companion = match build_companion(config, &llm_switch) {
         Ok(mut c) => {
             c.share_decisions(decisions);
             c
@@ -1755,8 +1771,13 @@ fn worker_loop(
             }
             Ok(CompanionCommand::ReloadLLM { provider_type, base_url, api_key, model }) => {
                 tracing::info!(provider = %provider_type, model = %model, "Reloading LLM backend");
-                let new_llm: std::sync::Arc<dyn yantrik_ml::LLMBackend> = std::sync::Arc::new(
-                    yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model).for_provider(&provider_type)
+                // Armed: a Remove cuts it on the pressing thread, and ends a reply being streamed.
+                let cut = yantrik_ml::new_cut_flag();
+                let new_llm = llm_switch.arm_flagged(
+                    cut.clone(),
+                    std::sync::Arc::new(
+                        yantrik_ml::ApiLLM::new(base_url.clone(), api_key.clone(), &model).for_provider(&provider_type).with_cut(cut),
+                    ),
                 );
                 // In memory, because swap_llm rebuilds a chat-model decision model whose
                 // locality is read from it. Never written to /opt/yantrik/config.yaml: that is
@@ -3145,7 +3166,7 @@ fn default_embedder() -> Result<CandleEmbedder, String> {
 ///
 /// The OS does not ship models -- a harness brings its own -- so "the embedder is not here"
 /// is a normal state on a fresh machine, not a fault. It has to degrade and say so.
-fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> {
+fn build_companion(config: CompanionConfig, llm_switch: &yantrik_ml::LlmSwitch) -> Result<CompanionService, String> {
     // Load embedder
     // Identity travels with the embedder so yantrikdb can distinguish a
     // same-model reattach from a different-model-same-dim swap, which would
@@ -3176,6 +3197,7 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
     };
 
     // Load LLM — select backend based on config
+    let cut = yantrik_ml::new_cut_flag();
     let primary_llm: std::sync::Arc<dyn LLMBackend> = if config.llm.is_claude_cli_backend() {
         // Claude Code CLI backend — uses `claude -p` for inference
         let model = config.llm.api_model.clone();
@@ -3209,7 +3231,7 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
             "Using API LLM backend"
         );
         let provider_type = yantrik_ml::thinking::provider_type_for_backend(&config.llm.backend);
-        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model).for_provider(provider_type))
+        std::sync::Arc::new(ApiLLM::new(base_url, config.llm.api_key.clone(), model).for_provider(provider_type).with_cut(cut.clone()))
     } else if config.llm.backend == "llamacpp" {
         let gguf = config.llm.gguf_path.as_deref()
             .ok_or_else(|| "gguf_path required for llamacpp backend".to_string())?;
@@ -3287,6 +3309,14 @@ fn build_companion(config: CompanionConfig) -> Result<CompanionService, String> 
         std::sync::Arc::new(FallbackLLM::new(primary_llm, Some(fallback_cfg)))
     } else {
         primary_llm
+    };
+
+    // Armed, as every backend the companion is given is, so a Remove cuts it on the pressing
+    // thread. The not-set-up backend holds no provider and is left as it is.
+    let llm: std::sync::Arc<dyn LLMBackend> = if llm.backend_name() == yantrik_ml::not_set_up::BACKEND {
+        llm
+    } else {
+        llm_switch.arm_flagged(cut, llm)
     };
 
     // Create YantrikDB
@@ -3499,7 +3529,13 @@ impl CompanionBridge {
             private: AtomicBool::new(false),
             memory_db: memory_db.to_string(),
             vault_lane: crate::vault_lane::VaultLane::start(memory_db),
+            llm_switch: Arc::new(yantrik_ml::LlmSwitch::new()),
         }
+    }
+
+    /// The switch the test bridge cuts, to arm a backend through (`ai_accounts::shared_tests`).
+    pub(crate) fn llm_switch_for_test(&self) -> Arc<yantrik_ml::LlmSwitch> {
+        self.llm_switch.clone()
     }
 
     /// Put a turn on the worker's queue, as a chat message does.

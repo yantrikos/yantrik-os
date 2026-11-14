@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read as _};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
@@ -33,6 +34,9 @@ pub struct ApiLLM {
     /// Qwen3 on a server the person runs ([`ApiLLM::for_provider`]), and cleared for good the
     /// first time that server refuses the field, so it is asked about once and not every turn.
     thinking_switch: AtomicBool,
+    /// Set when the person removes the provider this backend talks to ([`ApiLLM::with_cut`]):
+    /// no request is sent after it, and a reply being read is closed at its next line.
+    cut: Option<Arc<AtomicBool>>,
 }
 
 /// A guess at whether a URL is an Ollama, for callers that were not told.
@@ -84,6 +88,22 @@ impl ApiLLM {
             tier,
             model,
             thinking_switch: AtomicBool::new(false),
+            cut: None,
+        }
+    }
+
+    /// Stop this backend when `cut` is set: a request not yet sent is not sent, and a reply being
+    /// streamed is closed (the socket with it) at its next line, with [`crate::Stopped`].
+    pub fn with_cut(mut self, cut: Arc<AtomicBool>) -> Self {
+        self.cut = Some(cut);
+        self
+    }
+
+    /// [`crate::Stopped`] once the cut flag is set.
+    fn check_cut(&self) -> Result<()> {
+        match &self.cut {
+            Some(cut) if cut.load(Ordering::SeqCst) => Err(crate::Stopped.into()),
+            _ => Ok(()),
         }
     }
 
@@ -203,6 +223,7 @@ impl ApiLLM {
     }
 
     fn send_ollama_request(&self, body: &serde_json::Value) -> Result<ureq::Body> {
+        self.check_cut()?;
         let url = format!("{}/api/chat", self.ollama_base_url());
         let body_str = serde_json::to_string(body)?;
 
@@ -351,6 +372,7 @@ impl ApiLLM {
         let mut think_buf = String::new();
 
         for line_result in reader.lines() {
+            self.check_cut()?;
             let line: String = line_result.context("reading Ollama stream line")?;
             if line.trim().is_empty() {
                 continue;
@@ -621,6 +643,7 @@ impl ApiLLM {
     /// One POST to the chat endpoint: the body to read on a 200, else the status and what the
     /// server said (logged here, where it is still at hand).
     fn post_openai(&self, body: &serde_json::Value) -> Result<std::result::Result<ureq::Body, (u16, String)>> {
+        self.check_cut()?;
         let url = self.openai_endpoint_url();
         let body_str = serde_json::to_string(body)?;
 
@@ -755,6 +778,7 @@ impl ApiLLM {
         let mut tc_args: HashMap<usize, String> = HashMap::new();
 
         for line_result in reader.lines() {
+            self.check_cut()?;
             let line: String = line_result.context("reading SSE line")?;
 
             let data = if let Some(stripped) = line.strip_prefix("data: ") {
