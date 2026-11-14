@@ -5,6 +5,7 @@
 use serde_json::json;
 use yantrik_app::mind::fake::FakeMind;
 use yantrik_app::{App, Paths};
+use yantrik_testing::Call;
 
 use super::compose::{draft, type_into_composer};
 use super::{act, notice, quiet, start_at, state, with_inbox};
@@ -437,6 +438,35 @@ fn an_agent_start_compose_then_forget_prepared_clears_it_and_never_says_someone_
     act(&app, "forget_prepared", json!({ "commitment": "7" })).unwrap();
     assert!(!slot_file(&paths).exists(), "the slot is gone");
     assert!(mail.asked().is_empty(), "{:?}", mail.asked());
+}
+
+/// H1 (review of 435950ac): a Mind that reads an email could clear any prepared draft through
+/// `os_act`, which reaches Email without meeting the companion's refusal.
+#[test]
+fn an_agent_cannot_clear_a_prepared_draft() {
+    let file = HomeFile::new("h1");
+    let paths = Paths::temporary(Email::ID);
+    let mail = with_inbox();
+    let app = service_start(&paths, &mail);
+    quiet(&app);
+    act(&app, "compose", with_commitment(&file.path(), "7")).unwrap();
+    let before = std::fs::read(slot_file(&paths)).unwrap();
+    let call = Call::new("forget_prepared", json!({ "commitment": "7" })).as_agent("t");
+    let refused = app.act_as(call).and_then(|p| p.settle()).unwrap_err();
+    assert_eq!(refused, "forget_prepared is done by the companion's own housekeeping, not by an agent.");
+    assert_eq!(std::fs::read(slot_file(&paths)).unwrap(), before, "the slot file is byte-identical");
+    // The person's own side, with no token, still clears it.
+    act(&app, "forget_prepared", json!({ "commitment": "7" })).unwrap();
+    assert!(!slot_file(&paths).exists(), "cleared without a token");
+}
+
+/// H1: the grade is above `standard`, so a Mind that runs as the person meets the ceiling.
+#[test]
+fn clearing_a_prepared_draft_is_graded_sensitive() {
+    let (app, _) = start_at(Paths::temporary(Email::ID), &with_inbox(), FakeMind::new());
+    let published = app.describe()["actions"].as_array().cloned().unwrap_or_default();
+    let graded = published.iter().find(|a| a["name"] == "forget_prepared").map(|a| a["permission"].clone());
+    assert_eq!(graded, Some(json!("sensitive")), "{published:?}");
 }
 
 /// P1: the person is typing in the prepared draft when the clear arrives.

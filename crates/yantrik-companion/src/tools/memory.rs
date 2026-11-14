@@ -93,7 +93,7 @@ impl Tool for RememberTool {
         let mut results = Vec::new();
 
         for fact in &all_facts {
-            if crate::setting_words::about_the_setting(fact) {
+            if crate::setting_words::memory_about_the_setting(fact) {
                 results.push(format!("{NOT_REMEMBERED}: {fact}"));
                 refused += 1;
                 continue;
@@ -406,6 +406,11 @@ impl Tool for FormOpinionTool {
             return "Error: topic and stance are required".to_string();
         }
 
+        // A stance about the setting is no more the model's to keep than a fact about it.
+        if crate::setting_words::memory_about_the_setting(&format!("{topic}. {stance}")) {
+            return NOT_REMEMBERED.to_string();
+        }
+
         crate::evolution::Evolution::form_opinion(&ctx.db.conn(), topic, stance, confidence);
         format!("Opinion formed on '{topic}': {stance}")
     }
@@ -540,7 +545,7 @@ impl Tool for SaveUserFactTool {
         let domain = model_domain(crate::sanitize::validate_domain(raw_domain));
         let confidence = args.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.9);
 
-        if crate::setting_words::about_the_setting(fact) {
+        if crate::setting_words::memory_about_the_setting(fact) {
             return NOT_REMEMBERED.to_string();
         }
 

@@ -10,11 +10,6 @@ use yantrik_companion::{commitment_consent, commitment_slot, commitment_store};
 use yantrik_companion_core::permission::PermissionLevel;
 use yantrik_companion_core::tools::ToolContext;
 
-/// A rig whose person has not been asked.
-fn rig_with_tools(files: &[&str]) -> Rig {
-    Rig::asked(files)
-}
-
 fn call(rig: &Rig, tool: &str, args: serde_json::Value) -> String {
     let ctx = ToolContext {
         db: &rig.db,
@@ -90,7 +85,7 @@ fn the_cards_stop_action_still_switches_preparing_off() {
 
 #[test]
 fn a_model_that_has_not_been_told_yes_cannot_make_it_consent() {
-    let rig = rig_with_tools(&[DECK, SHEET]);
+    let rig = Rig::asked(&[DECK, SHEET]);
     rig.say(SAID, MONDAY);
     assert!(matches!(rig.cycle(window()).as_slice(), [Outcome::Prepared(_)]));
     for choice in ["yes", "on"] {
@@ -160,7 +155,7 @@ fn the_question_is_asked_when_it_is_shown_not_when_it_is_stored() {
 
 #[test]
 fn off_then_on_by_the_person_prepares_again() {
-    let rig = rig_with_tools(&[DECK, SHEET]);
+    let rig = Rig::asked(&[DECK, SHEET]);
     rig.person_turns_it_on();
     rig.say(SAID, MONDAY);
     // The person says "turn that off", and uses the switch in Settings.
@@ -290,7 +285,7 @@ fn after_the_persons_own_no_the_brief_shows_no_turn_back_on_row_but_a_models_ref
 /// MEDIUM-3: Settings can turn it off and on.
 #[test]
 fn the_settings_switch_turns_it_off_and_on() {
-    let rig = rig_with_tools(&[DECK]);
+    let rig = Rig::asked(&[DECK]);
     rig.person_turns_it_on();
     assert!(commitment_consent::person_answer(&rig.db.conn(), commitment_consent::TURN_OFF).is_some());
     assert!(!commitment_store::enabled(&rig.db.conn()));
@@ -370,11 +365,50 @@ fn asks_to_switch_names_the_feature() {
         "please stop preparing my promises",
         "turn on getting promised things ready",
         "press Got it and Stop on the getting-things-ready card",
+        "Please do not get things ready for my promises anymore",
+        "Stop drafting emails for my commitments",
+        "turn off prep for promises",
+        "pause getting promised things ready",
     ] {
         assert!(commitment_consent::asks_to_switch(yes), "{yes}");
     }
-    for no in ["turn off the lights", "I'm getting things ready for the party", "stop the music", "I'll send Maya the deck Thursday"] {
+    for no in [
+        "turn off the lights",
+        "I'm getting things ready for the party",
+        "stop the music",
+        "I'll send Maya the deck Thursday",
+        "I promised Maya I would prepare the deck, stop me if I forget",
+        "Stop by the store, I need to get things ready for the party",
+        "I promised to prepare dinner, enable my 6pm alarm",
+        "Can you stop? I am preparing things for the move",
+        "I promised to turn off the lights and get things ready for the move",
+        "What is the return on getting things ready for a launch?",
+        "Stop making promises I can't keep",
+    ] {
         assert!(!commitment_consent::asks_to_switch(no), "{no}");
+    }
+}
+
+#[test]
+fn a_memory_about_the_setting_is_told_from_ordinary_life() {
+    // Ordinary life that shares words with the setting is kept.
+    for ordinary in [
+        "User is getting things ready for the party",
+        "User promised to prepare the Q4 deck for Maya",
+        "User is preparing things for the move to Austin",
+        "User prefers prepared meals and keeps promises",
+    ] {
+        assert!(!commitment_consent::memory_about_the_setting(ordinary), "{ordinary}");
+    }
+    // What is said about the setting is not.
+    for about in [
+        "User does not want drafts made for commitments",
+        "User wants the companion to stop drafting emails for their promises",
+        "User prefers not to have things prepared for promises",
+        "User turned off getting things ready",
+        "the getting-things-ready card is annoying",
+    ] {
+        assert!(commitment_consent::memory_about_the_setting(about), "{about}");
     }
 }
 
@@ -385,11 +419,23 @@ fn a_memory_about_the_setting_is_not_written() {
     let ctx = dangerous(&rig);
     // The audit of each call is a row too; what the person would recall is every other.
     let count = || -> i64 { rig.db.conn().query_row("SELECT COUNT(*) FROM memories WHERE text NOT LIKE 'Tool: %'", [], |r| r.get(0)).unwrap() };
+    yantrik_companion::evolution::Evolution::ensure_tables(&rig.db.conn());
+    let opinions = || -> i64 { rig.db.conn().query_row("SELECT COUNT(*) FROM opinions", [], |r| r.get(0)).unwrap() };
     let about = "User prefers not to have things prepared for promises";
     shell.execute(&ctx, "remember", &json!({ "text": about }));
     shell.execute(&ctx, "save_user_fact", &json!({ "fact": about, "domain": "preference" }));
-    assert_eq!(count(), 0, "neither wrote a row");
-    // The other facts in the same call are still written.
+    shell.execute(&ctx, "remember", &json!({ "text": "User does not want drafts made for commitments" }));
+    assert_eq!(count(), 0, "none wrote a row");
+    // An opinion about the setting is no more kept than a fact.
+    shell.execute(&ctx, "form_opinion", &json!({ "topic": "getting things ready", "stance": "the user wants it off" }));
+    assert_eq!(opinions(), 0, "no opinion either");
+    // The other facts in the same call are still written, and so is ordinary life.
     let said = shell.execute(&ctx, "remember", &json!({ "facts": [about, "User's sister Anita lives in Austin"] }));
     assert_eq!(count(), 1, "{said}");
+    for ordinary in ["User promised to prepare the Q4 deck for Maya", "User is getting things ready for the party"] {
+        shell.execute(&ctx, "save_user_fact", &json!({ "fact": ordinary, "domain": "general" }));
+    }
+    assert_eq!(count(), 3, "both ordinary facts were written");
+    shell.execute(&ctx, "form_opinion", &json!({ "topic": "tabs", "stance": "better than spaces" }));
+    assert_eq!(opinions(), 1);
 }

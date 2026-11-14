@@ -15,12 +15,16 @@
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use yantrik_app::control::{Action, Param};
+use yantrik_app::control::{agent_is_calling, Action, Param};
 use yantrik_app::intents::{Args, Intent, Intents, Settle};
+use yantrik_app::Refused;
 
 use crate::command::{Command, Flag, Pick};
 use crate::model::Model;
 use crate::Email;
+
+/// What an agent is told when it asks to clear a prepared draft.
+const FORGET_PREPARED_REFUSAL: &str = "forget_prepared is done by the companion's own housekeeping, not by an agent.";
 
 /// How long a caller waits for the mail server's answer: two calls of the ten-second budget,
 /// the change and the folder read back after it.
@@ -138,10 +142,19 @@ pub fn table(table: &mut Intents<Email>) {
             // Not a way to discard the person's draft: it clears only a draft prepared for the named
             // promise, and only while the person has left it as Yantrik wrote it. The person's own
             // Discard and Remove attachment are buttons, not intents.
+            //
+            // Done by the companion's own housekeeping, never by an agent: a Mind that reads an
+            // email could otherwise clear every prepared draft through `os_act`. `sensitive`, so a
+            // Mind that runs as the person without a token meets the ceiling and a card.
             Action::new("forget_prepared", "Clear the draft that was prepared for a promise that has been forgotten")
-                .risk("standard")
+                .risk("sensitive")
                 .arg(Param::text("commitment")),
-            |a| Ok(Command::ForgetPrepared(arg_text(a, "commitment"))),
+            |a| {
+                if agent_is_calling() {
+                    return Err(Refused::new("agent_cannot_clear", FORGET_PREPARED_REFUSAL));
+                }
+                Ok(Command::ForgetPrepared(arg_text(a, "commitment")))
+            },
         )
         .reply(|_| json!({ "ok": true })),
     );
