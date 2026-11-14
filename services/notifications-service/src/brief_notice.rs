@@ -7,17 +7,17 @@
 //! past the start is never shown (`useful_until` is the start). Nothing else posts it: the shell
 //! asks, from the desktop only, and never toasts a brief itself.
 //!
-//! One interrupt per event and start. The event's own reminder and this notice are two cards for
-//! one meeting, so whichever is second does not interrupt again:
-//! - the brief's notice exists and was granted an interrupt: the reminder is not posted
-//!   ([`covers`]);
-//! - the reminder is already out: the brief is stored for the inbox only, and takes the
-//!   reminder's place there.
+//! One interrupt per event and start. The event's own reminder, its early "leave early" heads-up
+//! and this notice are cards for one meeting, so whichever is second does not interrupt again:
+//! - the brief's notice exists and was granted an interrupt, or it took the place of an early card
+//!   that had already interrupted: the reminder is not posted ([`covers`]);
+//! - the reminder, or the early card, is already out: the brief is stored for the inbox only, and
+//!   takes that card's place there. The early heads-up is not a moment of its own.
 
 use chrono::{DateTime, Duration, Local, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use yantrik_ipc_contracts::notifications::notice::{Attention, Family, FamilySetting, Notice};
 
-use crate::reminders::minutes_phrase;
+use crate::reminders::{minutes_phrase, notice_id as calendar_id, Kind};
 use crate::store::Store;
 
 /// What the brief's card is filed as: the calendar's own name.
@@ -55,21 +55,24 @@ pub fn notice_id(event: &str, start: &NaiveDateTime) -> String {
     format!("cal-brief:{event}:{}", start.format("%Y%m%dT%H%M"))
 }
 
-fn reminder_id(event: &str, start: &NaiveDateTime) -> String {
-    format!("cal-reminder:{event}:{}", start.format("%Y%m%dT%H%M"))
-}
-
 /// The desktop's notice with this id, whether or not it was dismissed since.
 fn held(store: &Store, id: &str) -> Option<Notice> {
     store.since(0).changed.into_iter().find_map(|n| n.notice.filter(|x| x.notice_id == id && x.harness.id == yantrik_ipc_contracts::notifications::notice::OS_HARNESS))
 }
 
 /// Whether the brief's notice already holds this event's interrupt, so the event's own reminder
-/// must not make a second one. Only a notice that was granted one counts: a brief the budget, the
-/// quiet hours or the person's settings kept in the inbox interrupts nobody, and the reminder is
-/// the person's own.
+/// must not make a second one. That is so when the brief was granted one, and when it took the
+/// place of an early card that had already interrupted. A brief the budget, the quiet hours or
+/// the person's settings kept in the inbox, with no early card before it, interrupts nobody, and
+/// the reminder is the person's own.
 pub fn covers(store: &Store, event: &str, start: &NaiveDateTime) -> bool {
-    held(store, &notice_id(event, start)).is_some_and(|n| n.granted == Attention::Interrupt)
+    held(store, &notice_id(event, start))
+        .is_some_and(|n| n.granted == Attention::Interrupt || interrupted(store, &calendar_id(Kind::Early, event, start)))
+}
+
+/// Whether the desktop's notice `id` was granted an interrupt.
+fn interrupted(store: &Store, id: &str) -> bool {
+    held(store, id).is_some_and(|n| n.granted == Attention::Interrupt)
 }
 
 /// Announce the brief of `ready` at `now`, and answer as the store does.
@@ -85,15 +88,27 @@ pub fn announce<Tz: TimeZone>(store: &Store, ready: &Ready, now: DateTime<Tz>) -
         return serde_json::json!({ "stored": false, "refused": "the meeting has started" });
     }
     let start = starts.with_timezone(&tz).naive_local();
-    let reminder = held(store, &reminder_id(&ready.event_id, &start));
+    let reminder_id = calendar_id(Kind::Reminder, &ready.event_id, &start);
+    let early_id = calendar_id(Kind::Early, &ready.event_id, &start);
+    let reminder = held(store, &reminder_id);
+    let early = held(store, &early_id);
     let settings = store.initiative();
     // Quiet hours hold every interrupt, and the event's own reminder is the one that is held and
     // toasted when they end; two held toasts for one meeting would come out together.
     let quiet = settings.quiet_hours.is_some_and(|q| q.ends_after(now.with_timezone(&Local)).is_some());
-    // The reminder already interrupted: the brief only takes its place in the inbox.
-    let interrupt = reminder.is_none() && !quiet;
-    // A brief the person switched off is stored hidden, and must not take a reminder with it.
-    let replaces = reminder.is_some() && settings.setting(&Family::Calendar) != FamilySetting::Off;
+    // The reminder or the early card already interrupted: the brief only takes its place in the
+    // inbox.
+    let interrupt = reminder.is_none() && !interrupted(store, &early_id) && !quiet;
+    // A brief the person switched off is stored hidden, and must not take a card with it. Of the
+    // two it may replace, the reminder is the one still up when it has come (it took the early
+    // card's place itself).
+    let replaces = if settings.setting(&Family::Calendar) == FamilySetting::Off {
+        None
+    } else if reminder.is_some() {
+        Some(reminder_id)
+    } else {
+        early.map(|_| early_id)
+    };
     let minutes = (left.num_seconds() + 59) / 60;
     let mut notice = serde_json::json!({
         "notice_id": notice_id(&ready.event_id, &start),
@@ -106,8 +121,8 @@ pub fn announce<Tz: TimeZone>(store: &Store, ready: &Ready, now: DateTime<Tz>) -
         "useful_until": starts.to_rfc3339_opts(SecondsFormat::Secs, true),
         "action": { "kind": "open_event", "ref": ready.event_id },
     });
-    if replaces {
-        notice["supersedes"] = reminder_id(&ready.event_id, &start).into();
+    if let Some(card) = replaces {
+        notice["supersedes"] = card.into();
     }
     store.add_os_notice(NAME, notice)
 }

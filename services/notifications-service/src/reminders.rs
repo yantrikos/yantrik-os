@@ -205,7 +205,7 @@ fn read_events(dir: &Path) -> Reading {
 
 /// Which announcement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Kind {
+pub(crate) enum Kind {
     /// The event's own, at its `reminder_minutes`.
     Reminder,
     /// The early heads-up for an event with a place.
@@ -223,7 +223,7 @@ impl Kind {
 
 /// The notice id for one announcement of an event at one start. The start is compact so the
 /// longest event id the calendar issues (64) still fits `notice::MAX_NOTICE_ID`.
-fn notice_id(kind: Kind, event: &str, start: &NaiveDateTime) -> String {
+pub(crate) fn notice_id(kind: Kind, event: &str, start: &NaiveDateTime) -> String {
     format!("{PREFIX}{}:{event}:{}", kind.as_str(), start.format("%Y%m%dT%H%M"))
 }
 

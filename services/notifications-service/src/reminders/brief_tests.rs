@@ -98,6 +98,14 @@ impl Drop for Room {
 
 const BRIEF: &str = "cal-brief:orion:20990318T0930";
 const REMINDER: &str = "cal-reminder:orion:20990318T0930";
+const EARLY: &str = "cal-early:orion:20990318T0930";
+
+/// An event with a place, which the calendar gives an early "leave early" heads-up.
+fn with_a_place(room: &Room) {
+    let mut event = meeting(room.start);
+    event.location = Some("Room 4".into());
+    std::fs::write(room.cal.join("orion.json"), serde_json::to_string(&event).unwrap()).unwrap();
+}
 
 #[test]
 fn the_brief_is_the_calendars_own_notice_and_says_the_time() {
@@ -231,4 +239,45 @@ fn the_brief_of_a_moved_or_deleted_event_is_taken_back_and_a_live_one_is_kept() 
     std::fs::remove_file(room.cal.join("orion.json")).unwrap();
     room.tick(9);
     assert!(room.card(BRIEF).unwrap().0.dismissed);
+}
+
+#[test]
+fn the_early_heads_up_is_not_a_second_moment_and_the_brief_takes_its_place() {
+    let mut room = Room::new();
+    with_a_place(&room);
+    room.tick(45);
+    assert_eq!(room.interrupts(), [EARLY], "the early card toasts, as it always did");
+    room.brief(10);
+    let (_, brief) = room.card(BRIEF).unwrap();
+    assert_eq!((brief.granted, brief.grant_reason), (Attention::Inbox, GrantReason::AskedInbox));
+    assert!(room.card(EARLY).unwrap().0.dismissed, "one card per meeting in the inbox");
+    assert_eq!(room.interrupts(), Vec::<String>::new(), "no second toast, and the card that had one is not shown again");
+    // The reminder that follows is the same meeting's third moment, and it is covered.
+    room.tick(10);
+    assert!(room.card(REMINDER).is_none(), "the early card's interrupt is the meeting's one");
+}
+
+#[test]
+fn a_brief_that_comes_before_the_early_heads_up_holds_the_interrupt() {
+    let mut room = Room::new();
+    with_a_place(&room);
+    room.brief(50);
+    room.tick(45);
+    assert_eq!(room.interrupts(), [BRIEF]);
+    room.tick(10);
+    assert!(room.card(REMINDER).is_none());
+    assert_eq!(room.interrupts(), [BRIEF]);
+}
+
+#[test]
+fn an_early_card_that_never_interrupted_leaves_the_reminder_to_the_person() {
+    let mut room = Room::new();
+    with_a_place(&room);
+    room.store.set_initiative(|s| s.set(&Family::Calendar, FamilySetting::InboxOnly)).unwrap();
+    room.tick(45);
+    assert_eq!(room.interrupts(), Vec::<String>::new());
+    room.brief(10);
+    assert_eq!(room.card(BRIEF).unwrap().1.granted, Attention::Inbox);
+    room.tick(10);
+    assert!(room.card(REMINDER).is_some_and(|(_, r)| r.granted == Attention::Interrupt), "the reminder is still the person's own");
 }
