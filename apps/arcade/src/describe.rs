@@ -59,5 +59,7 @@ pub fn view(m: &Model) -> View {
         )
 }
 
-/// Word for word as it has always been published, spaces and all.
-const NOTE: &str = "Every enumerated field and its words, and every numeric field and its                          range, exactly as new_character and new_game enforce them.";
+/// The words the old `view` published, minus the gap before "range" that came from a lost line
+/// continuation (#993). It was pinned here as it was because the old app said it that way; the
+/// parity test's copy of it is corrected in step.
+const NOTE: &str = "Every enumerated field and its words, and every numeric field and its range, exactly as new_character and new_game enforce them.";

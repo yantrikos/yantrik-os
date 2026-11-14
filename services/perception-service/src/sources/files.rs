@@ -543,11 +543,14 @@ fn init(flags: libc::c_uint) -> Result<libc::c_int, String> {
 fn rename_gap(covered: usize, unnameable: usize) -> String {
     if covered == 0 {
         return format!(
-            "no directory could be marked for renames ({unnameable} could not be named by the              kernel; a filesystem with no file-handle support, such as 9p or a network mount);              atomic-rename saves will not be seen"
+            "no directory could be marked for renames ({unnameable} could not be named by the \
+             kernel; a filesystem with no file-handle support, such as 9p or a network mount); \
+             atomic-rename saves will not be seen"
         );
     }
     format!(
-        "{unnameable} of {} watched directories cannot be named by the kernel; saves made by          renaming into those directories will not be seen",
+        "{unnameable} of {} watched directories cannot be named by the kernel; saves made by \
+         renaming into those directories will not be seen",
         covered + unnameable
     )
 }

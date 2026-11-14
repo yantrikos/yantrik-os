@@ -6,12 +6,16 @@
 //! `cargo run -q -p xtask -- check-agent-files`: every action an agent can reach that names a file
 //! is held to the rule for agents' files, or says why it needs none (agent_files.rs). It also runs
 //! as this crate's test, so `cargo test --workspace` holds it.
+//!
+//! `cargo run -q -p xtask -- check-sentences`: no string literal in the tree says a run of spaces
+//! where a line continuation (`\`) used to be (sentences.rs). It runs as this crate's test too.
 
 mod agent_files;
 mod layers;
 mod mind_spawn;
 mod ratchet;
 mod rules;
+mod sentences;
 mod workspace;
 
 use std::path::Path;
@@ -38,8 +42,15 @@ fn main() -> ExitCode {
             }
             problems.is_empty()
         }),
+        ["check-sentences"] => sentences::check(&workspace::root()).map(|problems| {
+            problems.iter().for_each(|p| println!("  {p}"));
+            if problems.is_empty() {
+                println!("Every string literal in the tree keeps its line continuations.");
+            }
+            problems.is_empty()
+        }),
         _ => Err(
-            "usage: cargo run -q -p xtask -- check-architecture [--write | --since <old baseline>] | check-agent-files"
+            "usage: cargo run -q -p xtask -- check-architecture [--write | --since <old baseline>] | check-agent-files | check-sentences"
                 .to_string(),
         ),
     };

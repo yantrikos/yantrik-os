@@ -100,7 +100,8 @@ fn missing_folder(parent: &Path, home: &Path) -> String {
     };
     // The way past first and the reason last, as every refusal here ends with its reason.
     format!(
-        "make it with the shell's files_new_folder, name \"{shown}\" (missing parent folders are made          too), then send the same save again; nothing written so far is lost: the folder {} does not exist",
+        "make it with the shell's files_new_folder, name \"{shown}\" (missing parent folders are made \
+         too), then send the same save again; nothing written so far is lost: the folder {} does not exist",
         parent.to_string_lossy()
     )
 }
