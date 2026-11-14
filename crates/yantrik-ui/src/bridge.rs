@@ -1383,6 +1383,26 @@ fn worker_loop(
                     || text.starts_with("Recall shared references");
                 tracing::trace!(is_system_generated, "companion SendMessage");
 
+                // The setting for getting promised things ready is the person's own click. A request
+                // to change it is answered here, from the person's own words, before the threading
+                // context goes in front and before any model turn: no tools, no learning, no
+                // commitment noting (`switch_turn`).
+                if crate::switch_turn::answered_without_model(&text, is_system_generated, |reply| {
+                    if let Some(id) = &job {
+                        board.progress(id, reply, false);
+                    }
+                    let _ = token_tx.send(reply.to_string());
+                }) {
+                    if let Some(id) = &job {
+                        board.finish(id, Ok(yantrik_companion::commitment_consent::SWITCH_REPLY.to_string()));
+                    }
+                    if let Some(tx) = &model {
+                        let _ = tx.send(Served::NoModel);
+                    }
+                    let _ = token_tx.send("__DONE__".to_string());
+                    continue;
+                }
+
                 if !outside {
                     // Update ambient sentiment from user message
                     ambient.update_from_message(&text);
