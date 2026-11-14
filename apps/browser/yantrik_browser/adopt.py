@@ -15,6 +15,7 @@ import threading
 import time
 
 ADOPT_WAIT = 3.0       # seconds adoption waits on one tab's reload: far below the driver's BUSY_WAIT
+CLOSE_WAIT = 5.0       # seconds a connection waits for the pages it closed to be gone
 ARRIVAL_RETRY = 0.5    # seconds between tries for the driver lock when the pipe arrives
 
 
@@ -40,6 +41,38 @@ def adopt_pages(browser):
         w.join(max(0.0, end - time.monotonic()))
     browser.adopted = True
     sweep(browser)
+
+
+def close_drawn_pages(browser, infos):
+    """A browser held from its start (Mind View's) is connected after it has been running for a
+    while: the service takes its stream only once the shell has offered it and the checks have
+    passed, and again after every restart of the service. What a page drew in that window was never
+    fenced, and would stay on screen (and in a screenshot of the window) until a call touched its
+    tab. A page cannot be judged untouched by its URL: an `about:blank` page that a `file:` page
+    wrote into still shows what it wrote. So, with the fence already up for new pages, ONE fresh
+    `about:blank` is opened first (closing the last page would close the browser, and Mind View is
+    never left with none), and then EVERY page target that existed before it is closed, whatever
+    its URL. Returns the targets that stay: the fresh page and what is not a page. A page that
+    cannot be closed fails the connection: nothing of it is left on screen to be trusted."""
+    old = [i for i in infos if i.get("type") == "page"]
+    fresh = browser.call("Target.createTarget", {"url": "about:blank"})
+    for info in old:
+        browser.call("Target.closeTarget", {"targetId": info["targetId"]})
+    gone = {i["targetId"] for i in old}
+    # The browser closes a page after it answers, so the page is waited for to be gone: on return
+    # nothing of it is on screen.
+    end = time.monotonic() + CLOSE_WAIT
+    while True:
+        left = [i for i in browser.call("Target.getTargets").get("targetInfos", []) if i.get("targetId") in gone]
+        if not left:
+            kept = [i for i in infos if i.get("targetId") not in gone]
+            if fresh.get("targetId"):
+                kept.append({"targetId": fresh["targetId"], "type": "page", "url": "about:blank"})
+            return kept
+        if time.monotonic() > end:
+            from .cdp import CdpError
+            raise CdpError("a page the browser drew before it was held would not close")
+        time.sleep(0.05)
 
 
 def snapshot(browser):
@@ -137,9 +170,10 @@ def sweep(browser, retry=False):
             pass
 
 
-def person_arrived(driver, serial, holder, ports, errors):
-    """The person's pipe was given. Connect to it, retrying until the driver's lock is taken or
-    this hand-over is no longer the held one: an arrival is never dropped because a call is busy."""
+def arrived(driver, side, serial, holder, errors):
+    """A browser's pipe was given. Connect to it, retrying until the driver's lock is taken or
+    this hand-over is no longer the held one: an arrival is never dropped because a call is busy.
+    Mind View's browser connects here too, which holds and fences whatever page it already has."""
     while True:
         held = holder.held
         if held is None or held.serial != serial:
@@ -147,7 +181,7 @@ def person_arrived(driver, serial, holder, ports, errors):
         if driver.lock.acquire(timeout=ARRIVAL_RETRY):
             break
     try:
-        browser = driver.sides.ready(ports.PERSON)
+        browser = driver.sides.ready(side)
         if browser is not None:
             browser.connect()
     except errors:

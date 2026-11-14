@@ -1,17 +1,21 @@
-"""A bare DevTools client for the tests that need a second party on the browser: no fence, no
-auto-attach, nothing of the surface. It stands in for the person's own browser window, for a page's
-script run as a click, and for whatever else is open when the surface connects (#1170)."""
+"""A bare DevTools client for the tests that need a party on the browser before the surface: no
+fence, no auto-attach, nothing of the surface. It stands in for a page's script run as a click, and
+for whatever is open when the surface connects: after a restart of it, or in the gap between a
+browser's start and its hand-over (#1170, #1200)."""
 
 import json
-import urllib.request
+import os
+
+from yantrik_browser import transport
 
 
 class Raw:
-    def __init__(self, address):
-        from websocket import create_connection
-        with urllib.request.urlopen(address + "/json/version", timeout=3) as r:
-            url = json.load(r)["webSocketDebuggerUrl"]
-        self.ws = create_connection(url, origin=address, suppress_origin=False, timeout=20)
+    """A bare client over a browser's DevTools pipe. A pipe is one stream: it speaks while the
+    service is not connected (the gap before the hand-over, or a restart) and is closed before the
+    service connects, which leaves the stream open for it."""
+
+    def __init__(self, holder):
+        self.t = transport.PipeTransport(os.dup(holder.held.sock.fileno()))
         self.ids = 0
 
     def call(self, method, params=None, session=None):
@@ -19,9 +23,9 @@ class Raw:
         msg = {"id": self.ids, "method": method, "params": params or {}}
         if session:
             msg["sessionId"] = session
-        self.ws.send(json.dumps(msg))
+        self.t.send(json.dumps(msg))
         while True:
-            got = json.loads(self.ws.recv())
+            got = json.loads(self.t.recv())
             if got.get("id") == self.ids:
                 return got.get("result", {})
 
@@ -36,4 +40,4 @@ class Raw:
         return (got.get("result") or {}).get("value")
 
     def close(self):
-        self.ws.close()
+        self.t.close()

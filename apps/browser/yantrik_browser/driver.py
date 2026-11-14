@@ -46,17 +46,19 @@ class Driver(LocalFilesMixin, ConsoleMixin, ShotMixin, InputsMixin):
         # to both sides, so a connection made by any call (a status) is never gateless.
         for b in {id(b): b for b in self.sides.browsers.values()}.values():
             b.fence.gate = lambda url, agent: self._asset_gate()(url, agent)
-        # The person's Browser outlives this service: when its pipe is handed over, connect to it at
-        # once, so every open tab is fenced and a `file:` page reloaded without waiting for a call.
-        self.sides.pipes.on_give = lambda: threading.Thread(
-            target=self._person_arrived, daemon=True, name="person-arrived").start()
+        # A browser outlives this service: when its pipe is handed over, connect to it at once, so
+        # every open tab is fenced (and a person's `file:` page reloaded) without waiting for a call.
+        for side in (ports.PERSON, ports.MIND):
+            self.sides.pipes.holder(side).on_give = (
+                lambda side=side: threading.Thread(target=self._arrived, args=(side,), daemon=True,
+                                                   name="%s-arrived" % side).start())
 
-    def _person_arrived(self):
-        holder = self.sides.pipes
+    def _arrived(self, side):
+        holder = self.sides.pipes.holder(side)
         held = holder.held
         if held is None:
             return
-        adopt.person_arrived(self, held.serial, holder, ports, (cdp.BrowserClosed, cdp.CdpError, guard.Denied))
+        adopt.arrived(self, side, held.serial, holder, (cdp.BrowserClosed, cdp.CdpError, guard.Denied))
 
     @property
     def browser(self):

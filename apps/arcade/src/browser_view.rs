@@ -20,7 +20,8 @@ pub(crate) fn headless_args(profile: &Path, url: &str) -> Vec<String> {
         "--mute-audio",
         "--hide-scrollbars",
         "--window-size=1280,720",
-        "--remote-debugging-port=0",
+        // The DevTools pipe: a stream only this app holds, and no port (#1200).
+        yantrik_browser_ports::PIPE_FLAG,
     ]
     .map(String::from)
     .to_vec();
@@ -30,8 +31,7 @@ pub(crate) fn headless_args(profile: &Path, url: &str) -> Vec<String> {
 }
 
 /// `binary args` as a command in the browser view, with the workshops hidden from it (#1124,
-/// round 8, finding 2): its DevTools port is on the host's loopback, and without the view the
-/// page it opens could read every workshop. Refused, with the reason, where that cannot be done.
+/// round 8, finding 2): without the view the page it opens could read every workshop. Refused, with the reason, where that cannot be done.
 pub(crate) fn walled(binary: &Path, args: &[String]) -> Result<Command, String> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     walled_at(&home, binary, args)
@@ -58,7 +58,7 @@ mod tests {
         match got {
             Ok(c) => {
                 let a: Vec<String> = c.get_args().map(|x| x.to_string_lossy().into_owned()).collect();
-                assert!(a.iter().any(|x| x == "--remote-debugging-port=0") && (c.get_program() == "/usr/bin/chromium" || a.iter().any(|x| x == "/usr/bin/chromium")));
+                assert!(a.iter().any(|x| x == yantrik_browser_ports::PIPE_FLAG) && !a.iter().any(|x| x.starts_with("--remote-debugging-port")) && (c.get_program() == "/usr/bin/chromium" || a.iter().any(|x| x == "/usr/bin/chromium")));
                 if workshops::find_bwrap().is_some() {
                     assert!(c.get_program().to_string_lossy().ends_with("bwrap"));
                     assert_eq!(a[..3], ["--dev-bind", "/", "/"]);

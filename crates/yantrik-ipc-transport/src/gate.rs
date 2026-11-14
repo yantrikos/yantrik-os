@@ -50,7 +50,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::SyncRpcClient;
+use crate::{always_asked::always_asked, SyncRpcClient};
 
 // ── The ceiling ─────────────────────────────────────────────────────
 
@@ -721,7 +721,7 @@ pub fn decide(
     // The app's own sentence, and the one input here that is not a grade. `safe` is excluded:
     // a read destroys nothing, so wording that happens to match cannot turn a look into a
     // question. The shell's `Modes::decide` and the bridge's `decide` draw the same line.
-    let irreversible = level > 0 && unrecoverable(purpose);
+    let irreversible = level > 0 && (unrecoverable(purpose) || always_asked(app_id, action));
     // And the app's word that the action runs whatever it is given (Pranab's decision of 29
     // September 2026). Cannot-be-undone wins where an action says both: that one always asks,
     // and this one is answered by a session rule.
@@ -731,8 +731,8 @@ pub fn decide(
     // run every grade — and every mode but full bypass asks about anything the app says cannot
     // be undone, and about anything it says runs whatever it is given. Bypass is "stop asking
     // me, except before what an app marks as impossible to undo, and once before commands"; full
-    // bypass is "stop asking me anything", an answer the person gave on purpose, for a while.
-    let asks = (irreversible && mode.asks_before_what_cannot_be_undone())
+    // bypass is "stop asking me anything" (an answer given for a while) except `always_asked`.
+    let asks = (irreversible && (mode.asks_before_what_cannot_be_undone() || always_asked(app_id, action)))
         || (open && mode.asks_before_open_ended())
         || level > mode.allows().max(grade(SOCKET_FLOOR).unwrap());
     // Held from a phone: above its level it asks in every mode, both bypasses included, and a

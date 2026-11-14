@@ -1017,9 +1017,9 @@ pub fn spawn_app_in(app_id: &str, bin: &str, args: &[&str], dir: Option<&std::pa
     spawn_launch(app_id, bin, args, dir, None, false)
 }
 
-/// The person's Browser, and nothing else: the one launch that is given a DevTools pipe (#1151,
-/// N3). A `.desktop` entry or a catalogue launch whose arguments carry the pipe switch is started
-/// like any other app, with no pipe.
+/// The person's Browser: one of the two launches given a DevTools pipe (#1151, N3); the other is
+/// Mind View's browser (`browser_launch::pipe_role`). A `.desktop` entry or a catalogue launch whose
+/// arguments carry the pipe switch is started like any other app, with no pipe.
 fn spawn_persons_browser(bin: &str, args: &[&str]) {
     spawn_launch("browser", bin, args, None, None, true)
 }
@@ -1161,12 +1161,13 @@ fn spawn_launch(
 /// with everything that names the person's session cleared and the seat's display set. Separate
 /// from [`launch`] so the environment a mind's app gets can be tested without starting anything.
 fn launch_command(
+    app_id: &str,
     path: &std::path::Path,
     args: &[&str],
     dir: Option<&std::path::Path>,
     seat: Option<&crate::mind_view::Seat>,
 ) -> Result<std::process::Command, String> {
-    let (program, argv) = super::browser_launch::start_line(path, args, seat.is_some())?;
+    let (program, argv) = super::browser_launch::start_line(app_id, path, args, seat.is_some())?;
     let mut command = std::process::Command::new(program);
     if let Some(dir) = dir {
         command.current_dir(dir);
@@ -1197,11 +1198,12 @@ pub(super) fn launch(
     persons_browser: bool,
 ) {
     let path = resolve_app_binary(bin);
-    let mut command = match launch_command(&path, args, dir, seat) {
+    let mut command = match launch_command(app_id, &path, args, dir, seat) {
         Ok(command) => command,
         Err(why) => return crate::running::mark_launch_failed(app_id, bin, &why, 0),
     };
-    let pipe = super::browser_pipe::attach_for(&mut command, args, persons_browser); // #1137
+    let role = super::browser_launch::pipe_role(app_id, &path, seat.is_some(), persons_browser);
+    let pipe = super::browser_pipe::attach_for(&mut command, args, role); // #1137, #1200
     match command
         // The shell is often started with SLINT_FULLSCREEN=1 (dev runs, kiosk sessions). A child
         // inherits the environment, and an app that inherits that variable opens fullscreen too.
@@ -1214,7 +1216,7 @@ pub(super) fn launch(
         Ok(mut child) => {
             let pid = child.id();
             tracing::info!(app = app_id, bin, pid, path = %path.display(), "App launched");
-            pipe.map(|pipe| pipe.offer(pid));
+            pipe.map(|(role, pipe)| pipe.offer(pid, role));
             // The shell now knows this window is open without asking the compositor. Recorded
             // before the reaper thread starts, so a describe that lands in the same instant sees
             // it.
@@ -1820,12 +1822,12 @@ mod tests {
     #[test]
     fn a_minds_launch_command_never_carries_the_persons_display() {
         let seat = crate::mind_view::Seat { wayland: "wayland-1".into(), x11: None };
-        let command = launch_command(std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat)).unwrap();
+        let command = launch_command("blender", std::path::Path::new("/usr/bin/blender"), &["--python", "x"], None, Some(&seat)).unwrap();
         assert_eq!(env_of(&command, "DISPLAY"), Some(None), "DISPLAY must be cleared for a mind");
         assert_eq!(env_of(&command, "WAYLAND_SOCKET"), Some(None));
         assert_eq!(env_of(&command, "WAYLAND_DISPLAY"), Some(Some("wayland-1".to_string())));
         assert_eq!(env_of(&command, "GDK_BACKEND"), Some(Some("wayland".to_string())));
-        let person = launch_command(std::path::Path::new("/usr/bin/blender"), &[], None, None).unwrap();
+        let person = launch_command("blender", std::path::Path::new("/usr/bin/blender"), &[], None, None).unwrap();
         assert_ne!(env_of(&person, "DISPLAY"), Some(None), "the person's own launch is untouched");
         assert_eq!(env_of(&person, "WAYLAND_DISPLAY"), None);
     }
@@ -2055,8 +2057,9 @@ mod tests {
         assert_eq!(route("browser"), Some(Launch::Browser));
     }
 
-    /// N3 (#1151): the DevTools pipe goes only with the launch the Browser arm makes. The one
-    /// call that says so is in that arm, and every other launch passes `false`.
+    /// N3 (#1151): the DevTools pipe goes only with the launch the Browser arm makes, or a launch in
+    /// Mind View's seat of the `browser` app (#1200, `pipe_role`). The one call that says so is in
+    /// that arm, and every other launch passes `false`.
     #[test]
     fn the_pipe_is_attached_only_from_the_browser_arm() {
         let src = include_str!("dock.rs");

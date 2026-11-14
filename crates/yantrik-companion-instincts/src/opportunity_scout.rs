@@ -34,6 +34,10 @@ impl Instinct for OpportunityScoutInstinct {
         "OpportunityScout"
     }
 
+    fn searches_web(&self) -> bool {
+        true
+    }
+
     fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
         // Gate: need known interests to match opportunities against
         if state.user_interests.is_empty() {
