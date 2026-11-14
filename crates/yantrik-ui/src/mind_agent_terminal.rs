@@ -26,6 +26,11 @@ const LOG_CAP: u64 = 4 * 1024 * 1024;
 /// directory's tmpfs while it runs; after this the view says so once and stops.
 const RUN_CAP: u64 = 1024 * 1024;
 
+/// Past this with no output the viewer closes itself: it is a window on the person's screen, and
+/// a mind that has written nothing for ten minutes has finished — #868 had one sit over the
+/// agent terminal for 14 hours.
+const IDLE_CLOSE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// One mirrored agent: its log, kept open, and what this command has written so far.
 struct Mirror {
     log: PathBuf,
@@ -33,6 +38,8 @@ struct Mirror {
     written: u64,
     capped: bool,
     clean: Cleaner,
+    /// When the agent last wrote, so a viewer of an agent gone quiet can close.
+    last_write: std::time::SystemTime,
 }
 
 #[derive(Default)]
@@ -157,6 +164,12 @@ fn file_stem(agent: &str) -> String {
     format!("{stem}-{hash:08x}")
 }
 
+/// Whether a viewer's agent has gone quiet. A clock that went backwards reads as fresh, never
+/// as infinitely stale.
+fn viewer_is_stale(last_write: std::time::SystemTime, now: std::time::SystemTime) -> bool {
+    now.duration_since(last_write).unwrap_or_default() >= IDLE_CLOSE
+}
+
 /// Where `agent`'s commands are mirrored.
 pub fn log_path(dir: &Path, agent: &str) -> PathBuf {
     dir.join("agent-terminal").join(format!("{}.log", file_stem(agent)))
@@ -250,7 +263,15 @@ fn begin_in(agent: &str, command: &str, log: PathBuf, mut file: std::fs::File) -
     with_state(|state| {
         state.logs.insert(
             agent.to_string(),
-            Mirror { log: log.clone(), file, written, capped: false, clean: Cleaner::default() },
+            Mirror {
+                log: log.clone(),
+                file,
+                written,
+                capped: false,
+                clean: Cleaner::default(),
+                // The `$` line counts as activity.
+                last_write: std::time::SystemTime::now(),
+            },
         )
     });
     Begin::Log(log)
@@ -279,6 +300,7 @@ pub fn mirror(agent: &str, bytes: &[u8]) {
             m.capped = true;
         }
         m.written += clean.len() as u64;
+        m.last_write = std::time::SystemTime::now();
         let _ = m.file.write_all(&clean);
     });
 }
@@ -364,12 +386,30 @@ pub fn show_later(agent: &str, log: PathBuf) -> Shown {
     }
 }
 
-/// Forget the viewer when it exits, so the next command opens a fresh one.
+/// Forget the viewer when it exits, and close it when its agent has gone quiet (#868), so the
+/// next command opens a fresh one.
 fn reap_later(agent: String, pid: u32) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         let gone = with_state(|state| match state.viewers.get_mut(&agent) {
-            Some(child) if child.id() == pid => !matches!(child.try_wait(), Ok(None)),
+            Some(child) if child.id() == pid => {
+                if matches!(child.try_wait(), Ok(None)) {
+                    // Alive: close it if the agent has gone quiet. The line goes into the log
+                    // first, so the window shows why it is going.
+                    if !state.logs.get(&agent).is_some_and(|m| {
+                        viewer_is_stale(m.last_write, std::time::SystemTime::now())
+                    }) {
+                        return false;
+                    }
+                    if let Some(m) = state.logs.get_mut(&agent) {
+                        let _ = m.file.write_all(b"\n\x1b[33m[viewer closed: no output for ten minutes]\x1b[0m\n");
+                    }
+                    let _ = child.kill();
+                    true
+                } else {
+                    true
+                }
+            }
             _ => true,
         });
         if gone {
@@ -378,6 +418,8 @@ fn reap_later(agent: String, pid: u32) {
                 if state.viewers.get(&agent).is_some_and(|c| c.id() == pid) {
                     state.viewers.remove(&agent);
                 }
+                // The agent's next command begins a fresh mirror and opens a fresh viewer.
+                state.logs.remove(&agent);
             });
             return;
         }
@@ -574,5 +616,27 @@ mod tests {
         let run = include_str!("control_agent_terminal.rs");
         assert!(run.contains("show_later("), "agent_run must not wait on show()");
         assert!(!run.contains("mind_agent_terminal::show("), "agent_run must not wait on show()");
+    }
+
+    /// A viewer is a window on the person's screen: one whose agent wrote a minute ago stays,
+    /// one silent past the cap closes (#868 sat over the agent terminal for 14 hours).
+    #[test]
+    fn a_viewer_closes_when_its_agent_has_gone_quiet() {
+        let now = std::time::SystemTime::now();
+        let ago = |secs: u64| now - std::time::Duration::from_secs(secs);
+        assert!(!viewer_is_stale(ago(60), now));
+        assert!(viewer_is_stale(ago(11 * 60), now));
+        assert!(viewer_is_stale(ago(10 * 60), now), "stale at exactly the cap");
+    }
+
+    /// The closing lives in the reaper that already watches every viewer, so it cannot be
+    /// dropped later without a test noticing.
+    #[test]
+    fn the_reaper_asks_whether_the_viewer_has_gone_stale_and_closes_it() {
+        let src = include_str!("mind_agent_terminal.rs");
+        let reaper = &src[src.find("fn reap_later(").unwrap()..];
+        let reaper = &reaper[..reaper.find("/// The words `agent_run`").unwrap()];
+        assert!(reaper.contains("viewer_is_stale("), "the reaper must ask whether the agent went quiet");
+        assert!(reaper.contains("kill()"), "a stale viewer must actually be closed");
     }
 }
