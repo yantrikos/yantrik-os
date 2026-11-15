@@ -195,7 +195,23 @@ pub fn is_protected(path: &Path) -> bool {
 /// it: Neovim's `%home%ann%.kube%config.swp`, Emacs's `!home!ann!.kube!config~` and
 /// `#!home!ann!.kube!config#` (review R6-L3). For a window title, which names the file only.
 pub fn names_a_protected_copy(name: &str) -> bool {
-    copy_marker::encoded_path(name).is_some_and(|original| is_protected(&original))
+    copy_marker::encoded_path(name).is_some_and(|original| is_listed_place(&original))
+}
+
+/// Whether `path` is in a listed place or has a secret's name, judged on its text alone: no
+/// filesystem, no links, no workshops, no XDG lookups. For a window title, which only names a file
+/// and may be judged thousands of times (review R7-H1). A place moved behind a link is the one miss.
+/// Every reader of contents asks [`is_protected`].
+pub fn is_listed_place(path: &Path) -> bool {
+    in_a_listed_place(path) || secrets::names_a_secret_by_name(path)
+}
+
+fn in_a_listed_place(path: &Path) -> bool {
+    // The list in lower case, made once: a title is judged by hundreds of words.
+    static LOWERED: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
+    let places = LOWERED.get_or_init(|| PROTECTED.iter().map(|place| lowered(Path::new(place))).filter(|want| !want.is_empty()).collect());
+    let parts = lowered(path);
+    places.iter().any(|want| parts.windows(want.len()).any(|w| w == want.as_slice()))
 }
 
 /// [`is_protected`] for a path asked about in `home`, which the person's `$HOME` is otherwise.
@@ -225,11 +241,6 @@ pub struct Places<'a> {
 
 /// [`is_protected`] with the home and the XDG base directories given.
 pub fn is_protected_with(path: &Path, places: &Places<'_>) -> bool {
-    let parts = lowered(path);
-    let listed = PROTECTED.iter().any(|place| {
-        let want = lowered(Path::new(place));
-        !want.is_empty() && parts.windows(want.len()).any(|w| w == want.as_slice())
-    });
     let under = |base: &Path, place: &str| {
         // As written and as resolved, since the path may be either.
         let at = base.join(place);
@@ -245,7 +256,7 @@ pub fn is_protected_with(path: &Path, places: &Places<'_>) -> bool {
         })
     };
     // A Mind's workshops are held by one check, the prefix and the inode (workshops.rs).
-    listed
+    in_a_listed_place(path)
         || secrets::names_a_secret(path)
         // An editor's copy that spells the path of a file into its name (review R5-H1).
         || path.file_name().and_then(|n| copy_marker::encoded_path(&n.to_string_lossy())).is_some_and(|original| is_protected_with(&original, places))

@@ -554,3 +554,4 @@ protected	/home/ann/keys/id_ed25519
 protected	/home/ann/dotfiles/ssh/id_ed25519
 readable	#!home!ann!documents!notes.md#
 open	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!documents!notes.md#
+secret	İİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİ.pem.bak

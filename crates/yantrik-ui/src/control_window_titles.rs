@@ -6,7 +6,7 @@
 //! name in it is replaced by the app's display name and marked `title_hidden`; the person's own
 //! view is whole.
 
-use yantrik_ipc_contracts::home_paths::{is_a_copy_name, is_protected, is_secret_name, names_a_protected_copy, NAME_MAX};
+use yantrik_ipc_contracts::home_paths::{is_a_copy_name, is_listed_place, is_secret_name, names_a_protected_copy, NAME_MAX};
 
 use crate::windows::{app_display_name, WindowEntry};
 
@@ -23,34 +23,69 @@ const IN_A_NAME: &str = "._-~#%!:+@$";
 /// Whether `title` names a secret: a word of it, or a run of words with the spaces between them kept
 /// that is at most [`NAME_MAX`] bytes (no file's name is longer, so no name is missed), is a secret
 /// name (also with the full stop, `?` or `:` a sentence puts after it: `Opening tokens.json.`), or
-/// an editor's copy of a protected file (`%home%ann%.kube%config.swp`), or a word that is a path
-/// (`~/.aws`, `/home/ann/.ssh/id_rsa`, `My Stuff/.kube`) is a protected place. `tokens.json*` (an
+/// an editor's copy of a protected file (`%home%ann%.kube%config.swp`, judged a word at a time, see
+/// [`is_an_editors_copy`]), or a word that is a path (`~/.aws`, `/home/ann/.ssh/id_rsa`,
+/// `My Stuff/.kube`), alone or with the words up to the end of the next one (`~/.config/Code - OSS/User`),
+/// is a protected place. `tokens.json*` (an
 /// editor's unsaved mark) is the name `tokens.json`. The runs matter because names have spaces in
 /// them: `Login Data`, `tokens (copy 1).json`, `tokens - Copy.json`, and a Dropbox conflict label
 /// of any length (reviews R5-M3, R6-L1).
 fn names_a_secret(title: &str) -> bool {
     let named = |span: &str| {
         let bare = span.trim_end_matches(['.', '?', '!', ':']);
-        is_secret_name(span) || (bare.len() < span.len() && is_secret_name(bare)) || names_a_protected_copy(span)
+        is_secret_name(span) || (bare.len() < span.len() && is_secret_name(bare))
     };
     let bounds = word_bounds(title, "");
-    let spans = bounds.iter().enumerate().flat_map(|(i, &(start, first_end))| {
+    // A run that reads as an earlier one is not judged again, and a start whose longest run does has
+    // had all of its runs judged: a title that says the same words over (a page may set one) costs
+    // its distinct runs only (review R7-H1).
+    let mut seen = std::collections::HashSet::new();
+    let by_runs = bounds.iter().enumerate().any(|(i, &(start, first_end))| {
+        // The words that end within NAME_MAX bytes of the start (they are in order, so a search finds the last).
+        let within = &bounds[i..i + bounds[i..].partition_point(|&(_, end)| end - start <= NAME_MAX)];
+        let Some(&(_, longest)) = within.last() else { return false };
+        if seen.contains(&title[start..longest]) {
+            return false;
+        }
         // A run that starts with a public key (`id_rsa.pub - gedit`, `id_rsa.pub.bak - gedit`) is no
         // private key that has words after it: the secret starts of names would take it for one.
         // Unless it is a whole copy name (`client_secret.pub - Copy.json`), which `is_secret_name`
         // reads the same way (review R6-L2). A run cut inside a bracket is not whole: the
         // `id_rsa.pub (copy 1` of `id_rsa.pub (copy 1) - gedit` is no copy of anything.
         let public = title[start..first_end].to_lowercase().contains(".pub");
-        bounds[i..]
-            .iter()
-            .take_while(move |&&(_, end)| end - start <= NAME_MAX)
-            .enumerate()
-            .map(move |(n, &(_, end))| (n, &title[start..end]))
-            .filter(move |&(n, span)| n == 0 || !public || is_a_whole_copy_name(span))
-            .map(|(_, span)| span)
+        within.iter().enumerate().map(|(n, &(_, end))| (n, &title[start..end])).filter(|&(n, span)| n == 0 || !public || is_a_whole_copy_name(span)).any(|(_, span)| seen.insert(span) && named(span))
     });
-    spans.into_iter().any(named)
-        || word_bounds(title, "/").into_iter().map(|(start, end)| &title[start..end]).filter(|word| word.contains('/')).any(is_a_protected_path)
+    let mut words = std::collections::HashSet::new();
+    by_runs
+        || bounds.iter().any(|&(start, end)| words.insert(&title[start..end]) && is_an_editors_copy(&title[start..end]))
+        || names_a_protected_path(title)
+}
+
+/// Whether some `/` word of `title` is a protected path, or is one with the words up to the end of
+/// the next `/` word joined on: `~/.config/Code - OSS/User/History/x` is the words `~/.config/Code`,
+/// `-` and `OSS/User/History/x`, and a place has a ` - ` in its name (review R7-L3). One more
+/// check for each word, whose span is at most [`PATH_SPAN`] bytes.
+fn names_a_protected_path(title: &str) -> bool {
+    let slashed: Vec<(usize, usize)> = word_bounds(title, "/").into_iter().filter(|&(start, end)| title[start..end].contains('/')).collect();
+    let pairs = slashed.windows(2).map(|pair| (pair[0].0, pair[1].1)).filter(|(start, end)| end - start <= PATH_SPAN);
+    let mut seen = std::collections::HashSet::new();
+    slashed.iter().copied().chain(pairs).any(|(start, end)| seen.insert(&title[start..end]) && is_a_protected_path(&title[start..end]))
+}
+
+/// The longest run of words that is read as one path, in bytes.
+const PATH_SPAN: usize = 4096;
+
+/// Whether `word` is an editor's copy that spells a protected path into its name. A word is judged
+/// alone, with at most one `#` taken off each end (Emacs's auto-save is `#!home!ann!.kube!config#`),
+/// and with the separator put in front when it is a word's tail: the `stuff%.kube%config.swp` of
+/// `%home%ann%my stuff%.kube%config.swp` is `/stuff/.kube/config.swp` (review R7-H1). Not every
+/// run of words: a title of 1,365 `%a` words has 100,000 runs.
+fn is_an_editors_copy(word: &str) -> bool {
+    let word = word.strip_prefix('#').unwrap_or(word);
+    let word = word.strip_suffix('#').unwrap_or(word);
+    ['%', '!'].into_iter().filter(|sep| word.contains(*sep)).any(|sep| {
+        names_a_protected_copy(word) || (!word.starts_with(sep) && names_a_protected_copy(&format!("{sep}{word}")))
+    })
 }
 
 /// Whether `span` is a copy name by its marker and closes every bracket it opens.
@@ -77,7 +112,8 @@ fn word_bounds(title: &str, also: &str) -> Vec<(usize, usize)> {
     found
 }
 
-/// Whether `word`, with a `~/` start read as the home, is a path into a protected place. A word
+/// Whether `word`, with a `~/` start read as the home, is a path into a protected place, judged on
+/// its text alone ([`is_listed_place`]: no filesystem, so a page's title costs nothing). A word
 /// that is not absolute is judged below `/`, since `PROTECTED` matches its parts anywhere: the
 /// `Stuff/.kube` of `~/My Stuff/.kube` is a protected place (review R6-L3).
 fn is_a_protected_path(word: &str) -> bool {
@@ -85,7 +121,7 @@ fn is_a_protected_path(word: &str) -> bool {
         (Some(rest), Some(home)) => std::path::Path::new(&home).join(rest),
         _ => std::path::Path::new("/").join(word),
     };
-    is_protected(&path)
+    is_listed_place(&path)
 }
 
 /// Whether a title is hidden from the caller: it is a mind, and the title names a secret.
@@ -95,10 +131,13 @@ pub fn hides(title: &str, mind: bool) -> bool {
 
 /// The app's id and display name as a mind is shown them. A window that declares no app id gets one
 /// derived from its title, so an id can name a secret as the title did: `tokens.json - foo` has the
-/// id `tokens.json`. Then both are [`A_WINDOW`]'s words, whatever the title says (review R6-M1).
-pub fn shown_app(app_id: &str, mind: bool) -> (String, String) {
+/// id `tokens.json`, and `tokens (copy 1).json - foo` the id `tokens`: a first word of a hidden
+/// title that is the id. Then both are [`A_WINDOW`]'s words, whatever the title says (reviews R6-M1,
+/// R7-L1). `title` is the title the id stands beside.
+pub fn shown_app(app_id: &str, title: &str, mind: bool) -> (String, String) {
     let name = app_display_name(app_id);
-    if hides(app_id, mind) || hides(&name, mind) {
+    let derived = hides(title, mind) && title.to_lowercase().split_whitespace().next() == Some(app_id);
+    if derived || hides(app_id, mind) || hides(&name, mind) {
         ("window".to_string(), A_WINDOW.to_string())
     } else {
         (app_id.to_string(), name)
@@ -109,7 +148,7 @@ pub fn shown_app(app_id: &str, mind: bool) -> (String, String) {
 /// title when the app has no name of its own) and its `title`, and `title_hidden: true` in place of
 /// both, with the app's display name, when `mind` is asking and either names a secret.
 pub fn cell(name: &str, title: &str, app_id: &str, mind: bool) -> serde_json::Value {
-    let (app, shown) = shown_app(app_id, mind);
+    let (app, shown) = shown_app(app_id, title, mind);
     if hides(title, mind) || hides(name, mind) {
         serde_json::json!({ "name": shown, "title": shown, "app": app, "title_hidden": true })
     } else {
@@ -128,14 +167,14 @@ pub fn notice_title(title: &str, mind: bool) -> (String, bool) {
 /// of its own is labelled by its window's title), and the app is as [`shown_app`] gives it (reviews
 /// R5-M2, R6-M1).
 pub fn dock_label(label: &str, app_id: &str, mind: bool) -> (String, String, bool) {
-    let (app, shown) = shown_app(app_id, mind);
+    let (app, shown) = shown_app(app_id, label, mind);
     if hides(label, mind) { (app, shown, true) } else { (app, label.to_string(), false) }
 }
 
 /// One row of `windows` for `describe shell`: `title` and `app`, and `title_hidden: true` in place
 /// of the title when `mind` is asking and the title names a secret.
 pub fn row(window: &WindowEntry, mind: bool) -> serde_json::Value {
-    let (app, shown) = shown_app(&window.app_id, mind);
+    let (app, shown) = shown_app(&window.app_id, &window.title, mind);
     if hides(&window.title, mind) {
         serde_json::json!({ "title": shown, "app": app, "title_hidden": true })
     } else {
@@ -150,7 +189,7 @@ pub fn in_front(title: Option<String>, windows: &[WindowEntry], mind: bool) -> O
     if !hides(&title, mind) {
         return Some(title);
     }
-    Some(windows.iter().find(|w| w.title == title).map_or_else(|| A_WINDOW.to_string(), |w| shown_app(&w.app_id, mind).1))
+    Some(windows.iter().find(|w| w.title == title).map_or_else(|| A_WINDOW.to_string(), |w| shown_app(&w.app_id, &w.title, mind).1))
 }
 
 #[cfg(test)]

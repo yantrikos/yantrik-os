@@ -66,6 +66,10 @@ fn a_title_that_sets_the_name_in_curly_quotes_or_a_sentence_is_hidden() {
         // Review R6-L3: an editor's copy of a protected file, and a path with a space before its protected part.
         "%home%ann%.kube%config.swp - less", "#!home!ann!.kube!config# - emacs", "/home/ann/My Backups/.kube/config - nvim",
         "config (~/My Stuff/.kube) - NVIM",
+        // Review R7-H1: an editor's copy with a space in its path, judged a word at a time.
+        "%home%ann%my stuff%.kube%config.swp - less", "#!home!ann!my stuff!.kube!config# - emacs",
+        // Review R7-L3: a protected place with ` - ` in its name.
+        "/home/ann/.config/Code - OSS/User/History/-1a/x.json - x", "~/.config/Code - OSS/Backups/1 - Code",
     ] {
         let shown = row(&window_entry("gedit", title), true);
         assert_eq!(shown["title_hidden"], true, "{title}");
@@ -75,6 +79,7 @@ fn a_title_that_sets_the_name_in_curly_quotes_or_a_sentence_is_hidden() {
     for title in ["“notes.md” Properties", "Opening notes.md.", "~/Documents - Files", "/home/ann/Documents/notes.md - nano", "id_rsa.pub… - gedit", "Budget – 2026 — Calc",
         "notes (copy 1).md - gedit", "Chapter 2.md - gedit", "Data Science (1).pdf - Viewer", "id_rsa.pub - gedit", "id_rsa.pub (copy 1) - gedit",
         "#!home!ann!documents!notes.md# - emacs", "/home/ann/My Backups/notes.md - nvim", "config (~/My Stuff/Documents) - NVIM",
+        "%home%ann%my stuff%notes.md.swp - less", "%a %b - Firefox", "~/.config/Code - OSS/User/settings.json - Code",
     ] {
         assert!(row(&window_entry("gedit", title), true).get("title_hidden").is_none(), "{title}");
     }
@@ -136,9 +141,10 @@ fn a_dock_label_that_is_a_secret_title_is_hidden_from_a_mind() {
 /// button; the person's own view is whole.
 #[test]
 fn an_app_id_derived_from_a_secret_title_is_hidden_from_a_mind() {
-    for title in ["tokens.json - foo", "id_ed25519 - foo"] {
+    // The last two are secrets by more than their first word (review R7-L1): the id is `tokens` and `local`.
+    for title in ["tokens.json - foo", "id_ed25519 - foo", "tokens (copy 1).json - foo", "Local State - foo"] {
         let window = window_entry("", title);
-        assert!(names_a_secret(&window.app_id) || names_a_secret(&app_display_name(&window.app_id)), "the id is derived from the title: {}", window.app_id);
+        assert!(title.to_lowercase().starts_with(&window.app_id), "the id is derived from the title: {}", window.app_id);
         let shown = [
             row(&window, true).to_string(),
             cell(title, title, &window.app_id, true).to_string(),
@@ -147,13 +153,37 @@ fn an_app_id_derived_from_a_secret_title_is_hidden_from_a_mind() {
         ];
         for json in shown {
             assert!(!json.to_lowercase().contains("tokens") && !json.contains("id_") && !json.to_lowercase().contains("id ed"), "{title}: {json}");
+            assert!(!json.to_lowercase().contains(&window.app_id), "{title}: {json}");
         }
         assert_eq!(row(&window, true)["app"], "window");
         assert_eq!(row(&window, false)["app"], window.app_id.as_str(), "the person sees the id whole");
         assert_eq!(dock_label(title, &window.app_id, false), (window.app_id.clone(), title.to_string(), false));
     }
-    assert_eq!(shown_app("gedit", true), ("gedit".to_string(), app_display_name("gedit")));
-    assert_eq!(shown_app("tokens.json", false), ("tokens.json".to_string(), app_display_name("tokens.json")));
+    assert_eq!(shown_app("gedit", "notes.md - gedit", true), ("gedit".to_string(), app_display_name("gedit")));
+    assert_eq!(shown_app("tokens.json", "tokens.json - foo", false), ("tokens.json".to_string(), app_display_name("tokens.json")));
+}
+
+/// Review R7-H1: a title of many short words cost seconds to minutes (100,000 runs, each reading the
+/// filesystem). Each is judged in under 50 ms, best of three. The judge is pure (`is_listed_place`
+/// reads no filesystem and no `HOME` but the `~/` of a path), so the test sets nothing: an
+/// environment variable set in a test races the tests that read it. The unfixed filter took 2 to 7
+/// seconds a title with no `HOME` at all, and more with one.
+#[test]
+fn a_four_kilobyte_title_of_short_words_is_judged_in_no_time() {
+    for title in [
+        "%a ".repeat(1365), "#%a# ".repeat(819), "!a!b ".repeat(819), "%.ssh ".repeat(682), "a/b ".repeat(1024),
+    ] {
+        let took = (0..3)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                let hidden = hides(&title, true);
+                assert!(!hidden, "no file has such a name: {}", &title[..12]);
+                start.elapsed()
+            })
+            .min()
+            .unwrap_or_default();
+        assert!(took < std::time::Duration::from_millis(50), "{}: {took:?}", &title[..12]);
+    }
 }
 
 /// Review R6-M2: a page's title of stacked markers cost cubic time per `describe shell`. Runs over

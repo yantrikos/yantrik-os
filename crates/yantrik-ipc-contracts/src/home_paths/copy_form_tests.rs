@@ -198,6 +198,32 @@ fn a_long_name_of_stacked_markers_is_judged_in_no_time() {
     // Above it, a name is judged as it stands: a long key name is still a key, and a long copy is no one's.
     let long = "a".repeat(NAME_MAX);
     assert!(is_secret_name(&format!("{long}.pem")) && !is_secret_name(&format!("{long}.pem.bak")));
+    // The length is the name's as given (review R7-L2): `İ` is 2 bytes and lower-cases to 3, so this
+    // 254-byte name is a real name, and the backup of a key.
+    let dotted = format!("{}.pem.bak", "\u{130}".repeat(123));
+    assert_eq!(dotted.len(), 254);
+    assert!(is_secret_name(&dotted) && is_protected(Path::new(&format!("/home/ann/x/{dotted}"))));
+    assert!(best_of_three(&|| is_secret_name(&dotted)).0 < std::time::Duration::from_millis(50));
+}
+
+/// Review R7-H1: a place is judged on its text for a window title, with no filesystem. A link to a
+/// secret is a secret to every reader of contents (`is_protected`) and is not to the title's judge.
+#[test]
+fn a_listed_place_is_judged_on_its_text_alone() {
+    for path in ["/home/ann/.kube/config", "/home/ann/backup/tokens.json", "/x/.ssh", "/x/tokens.json.bak"] {
+        assert!(is_listed_place(Path::new(path)), "{path}");
+    }
+    for path in ["/home/ann/notes.md", "/x/.ssh-notes", "/home/ann/Documents/id_rsa.pub"] {
+        assert!(!is_listed_place(Path::new(path)), "{path}");
+    }
+    assert!(names_a_protected_copy("%home%ann%.kube%config.swp") && !names_a_protected_copy("%home%ann%notes.md.swp"));
+    let dir = std::env::temp_dir().join(format!("yantrik-listed-place-{}", std::process::id()));
+    let (key, link) = (dir.join("tokens.json"), dir.join("notes.txt"));
+    let linked = std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&key, "FAKE").is_ok() && std::os::unix::fs::symlink(&key, &link).is_ok();
+    let (reads, title) = (is_protected(&link), is_listed_place(&link));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(linked, "the fixture was made");
+    assert!(reads && !title, "a link to a secret: protected {reads}, listed {title}");
 }
 
 /// Review R6-L2: a copy marker, whatever it is a copy of.

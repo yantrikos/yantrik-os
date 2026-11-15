@@ -54,10 +54,13 @@ fn matches_a_list(name: &str) -> bool {
 /// `.tokens.json.swp`, `tokens (1).json`; see [`super::copy_marker`]). Exact names, endings and
 /// starts only; `notes.bak.md` and `old-tokens-notes.txt` are not copies of anything.
 pub fn is_secret_name(name: &str) -> bool {
-    let name = name.to_lowercase();
     // No file has a longer name (NAME_MAX), so a longer one is no one's copy: it is judged as it
-    // stands, which keeps a page's 4 KB title from costing seconds (review R6-M2).
-    if name.len() > NAME_MAX {
+    // stands, which keeps a page's 4 KB title from costing seconds (review R6-M2). Its length is
+    // the name's as given: lower-casing makes `İ` longer, and a real 254-byte name is a name
+    // (review R7-L2).
+    let too_long = name.len() > NAME_MAX;
+    let name = name.to_lowercase();
+    if too_long {
         return matches_a_list(&name);
     }
     named_or_copied(&name, &mut HashSet::new())
@@ -91,14 +94,18 @@ fn named_or_copied(name: &str, seen: &mut HashSet<String>) -> bool {
 /// Whether `path` names a secret file: by its last part as written, and by the last part of where
 /// it leads when it is a link (`~/notes.txt -> ~/backup/tokens.json` is that file).
 pub(super) fn names_a_secret(path: &Path) -> bool {
-    let named = |p: &Path| p.file_name().is_some_and(|n| is_secret_name(&n.to_string_lossy()));
-    named(path)
+    names_a_secret_by_name(path)
         || path
             .symlink_metadata()
             .is_ok_and(|m| m.file_type().is_symlink())
             .then(|| path.canonicalize().ok())
             .flatten()
-            .is_some_and(|real| named(&real))
+            .is_some_and(|real| names_a_secret_by_name(&real))
+}
+
+/// Whether the last part of `path` as written is a secret's name: no filesystem.
+pub(super) fn names_a_secret_by_name(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| is_secret_name(&n.to_string_lossy()))
 }
 
 /// The shortest start of a name that a search pattern must give before it asks for a secret by

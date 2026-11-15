@@ -36,8 +36,20 @@ fn every_name_any_round_asserted_is_judged_as_a_title_too() {
                 whole += 1;
                 assert!(!hides(&title, true), "a decoy that a title hides: {title}");
             }
+            // Review R7-L3: a path is a title too, with the home the file spells as `/home/ann`.
+            "protected" => {
+                hidden += 1;
+                let title = format!("{name} - nvim");
+                assert!(hides(&title, true), "a protected path that a title shows: {title}");
+                assert!(!hides(&title, false), "the person sees the title whole: {title}");
+            }
+            "open" => {
+                whole += 1;
+                let title = format!("{name} - nvim");
+                assert!(!hides(&title, true), "a decoy path that a title hides: {title}");
+            }
             _ => {}
         }
     }
-    assert!(hidden > 100 && whole > 50, "both lists are read: {hidden} hidden, {whole} whole");
+    assert!(hidden > 200 && whole > 70, "both lists are read: {hidden} hidden, {whole} whole");
 }
