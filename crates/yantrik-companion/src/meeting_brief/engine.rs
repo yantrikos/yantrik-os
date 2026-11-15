@@ -100,13 +100,18 @@ fn settle(conn: &Connection, events: &[CalendarEvent], own: &Own, now: i64) {
 
 /// Run one tick at local time `now`.
 ///
-/// `enabled` is the person's switch: off gathers nothing, not from the calendar and not from a
-/// source, and takes back what is up ([`off`]). A calendar that cannot be read changes nothing
+/// `enabled` is the person's switch, as far as it is known. `Some(false)` is off: nothing is
+/// gathered, not from the calendar and not from a source, and what is up is taken back ([`off`]).
+/// `None` is not known yet (the service that holds the switch has not answered): nothing is
+/// gathered and nothing is drawn, but nothing the person has is ended either ([`unknown`]), since
+/// not knowing must not decide anything lasting. A calendar that cannot be read changes nothing
 /// and the briefs already made are still returned.
-pub fn tick(conn: &Connection, calendar: &dyn CalendarBackend, sources: &Sources<'_>, own: &Own, now: NaiveDateTime, enabled: bool) -> Outcome {
+pub fn tick(conn: &Connection, calendar: &dyn CalendarBackend, sources: &Sources<'_>, own: &Own, now: NaiveDateTime, enabled: Option<bool>) -> Outcome {
     let Some(now_unix) = to_unix(now) else { return Outcome::default() };
-    if !enabled {
-        return off(conn, now_unix);
+    match enabled {
+        Some(false) => return off(conn, now_unix),
+        None => return unknown(conn, now_unix),
+        Some(true) => {}
     }
     let now_ts = now_unix as f64;
     let params = EventsParams { start_date: stamp(now), end_date: stamp(now + Duration::hours(LOOK_AHEAD_HOURS)) };
@@ -190,16 +195,28 @@ fn make(conn: &Connection, meeting: &Meeting, sources: &Sources<'_>, own: &Own, 
     );
 }
 
-/// The switch is off, or its state is not known: nothing is gathered and no card is drawn, and
-/// what the person has not kept is taken back. Every brief that is up ends now, and the briefs
-/// whose time is up are emptied, as they would have been with the switch on. Only the table is
-/// read and written; no source is asked, and what a card said does not wait in it until the
-/// person turns briefs back on. The outcomes are the table's, so `describe` still counts them.
+/// The switch is off: nothing is gathered and no card is drawn, and what the person has not kept
+/// is taken back. Every brief that is up ends now, and the briefs whose time is up are emptied, as
+/// they would have been with the switch on. Only the table is read and written; no source is
+/// asked, and what a card said does not wait in it until the person turns briefs back on. The
+/// outcomes are the table's, so `describe` still counts them.
 pub fn off(conn: &Connection, now: i64) -> Outcome {
     let now_ts = now as f64;
     for item in live(conn, now) {
         end(conn, &item, now_ts);
     }
+    finish(conn, now_ts);
+    AnticipationEngine::cleanup_expired(conn, now_ts);
+    Outcome { cards: Vec::new(), fresh: Vec::new(), outcomes: outcomes(conn, now_ts) }
+}
+
+/// The switch's state is not known: nothing is gathered and no card is drawn, and nothing that is
+/// still live ends. A brief that is up keeps its row, so when the switch is known to be on its card
+/// is back and is not announced again, and when it is known to be off [`off`] retires it then.
+/// Only what is purely a matter of time happens: a meeting that is over is still emptied. The
+/// outcomes are the table's.
+pub fn unknown(conn: &Connection, now: i64) -> Outcome {
+    let now_ts = now as f64;
     finish(conn, now_ts);
     AnticipationEngine::cleanup_expired(conn, now_ts);
     Outcome { cards: Vec::new(), fresh: Vec::new(), outcomes: outcomes(conn, now_ts) }

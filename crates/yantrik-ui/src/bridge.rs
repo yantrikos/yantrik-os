@@ -2175,7 +2175,7 @@ fn worker_loop(
                     crate::wire::meeting_brief::publish(yantrik_companion::meeting_brief::local::tick_local(
                         &companion.db.conn(),
                         &companion.config.user_name,
-                        crate::wire::meeting_brief::enabled(),
+                        crate::wire::meeting_brief::switch(),
                     ));
                 }
 

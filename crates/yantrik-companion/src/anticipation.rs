@@ -154,15 +154,13 @@ impl AnticipationEngine {
     /// Create the table. An error is the caller's to answer: a read-only or locked database must
     /// not stop the companion starting.
     ///
-    /// Also turns `secure_delete` on for the connection, which is the companion's own. A brief is
-    /// emptied to a tombstone when its meeting is over (`retire`), and without this the old text
-    /// stays in the file's free pages and its write-ahead log until a checkpoint or a vacuum.
-    /// Note titles and file paths exist nowhere else in that database. A little write speed is
-    /// the price of the text leaving the file.
+    /// Sets no pragma: `secure_delete` is turned on for the statements that remove a brief's text
+    /// (`retire`, and `store` over a brief), on whichever connection runs them, and put back after.
+    /// Turned on for the connection it would cost every delete and update of the whole database,
+    /// and would not reach the shell's own press connection at all.
     pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
-            "PRAGMA secure_delete = ON;
-            CREATE TABLE IF NOT EXISTS prepared_items (
+            "CREATE TABLE IF NOT EXISTS prepared_items (
                 id          TEXT PRIMARY KEY,
                 trigger_type TEXT NOT NULL,
                 trigger_data TEXT NOT NULL DEFAULT '{}',
@@ -186,19 +184,44 @@ impl AnticipationEngine {
         let trigger_data = serde_json::to_string(&item.trigger).unwrap_or_default();
         let data = serde_json::to_string(&item.data).unwrap_or_default();
 
-        let _ = conn.execute(
-            "INSERT OR REPLACE INTO prepared_items
-             (id, trigger_type, trigger_data, kind, description, data, relevant_at, expires_at, surfaced, outcome, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![
-                item.id, item.trigger.type_tag(), trigger_data,
-                item.kind.as_str(), item.description,
-                data, item.relevant_at, item.expires_at,
-                item.surfaced as i32,
-                item.outcome.as_ref().map(|o| o.as_str()),
-                item.created_at,
-            ],
-        );
+        // A brief's text is replaced as it is updated (a note found late, a changed place), and the
+        // text it had must not stay in the page: replacing is a delete.
+        let replace = || {
+            conn.execute(
+                "INSERT OR REPLACE INTO prepared_items
+                 (id, trigger_type, trigger_data, kind, description, data, relevant_at, expires_at, surfaced, outcome, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![
+                    item.id, item.trigger.type_tag(), trigger_data,
+                    item.kind.as_str(), item.description,
+                    data, item.relevant_at, item.expires_at,
+                    item.surfaced as i32,
+                    item.outcome.as_ref().map(|o| o.as_str()),
+                    item.created_at,
+                ],
+            )
+        };
+        let _ = if item.kind == PreparedKind::MeetingBrief { Self::securely(conn, replace) } else { replace() };
+    }
+
+    /// Run `statement` with `secure_delete` on for it alone, so what it removes is zeroed in the
+    /// page rather than left in free space, and put the setting back as it was. The way
+    /// `run_store::erase` does it for an erasure. A brief's own text (note titles, file paths,
+    /// what mail said) exists nowhere else in the companion's database; the rest of the database
+    /// does not pay for it. A setting that cannot be read or put back is logged and the statement
+    /// still runs: the text leaving a page is best effort, the brief ending is not.
+    fn securely<T>(conn: &Connection, statement: impl FnOnce() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+        let previous: Option<i64> = conn.query_row("PRAGMA secure_delete", [], |r| r.get(0)).ok();
+        if let Err(e) = conn.pragma_update(None, "secure_delete", "ON") {
+            tracing::warn!(error = %e, "secure_delete could not be turned on for a brief's own statement");
+        }
+        let done = statement();
+        if let Some(previous) = previous {
+            if let Err(e) = conn.pragma_update(None, "secure_delete", previous) {
+                tracing::error!(error = %e, "secure_delete could not be put back on this connection");
+            }
+        }
+        done
     }
 
     /// Get items that are currently relevant (relevant_at <= now < expires_at, not surfaced).
@@ -256,13 +279,15 @@ impl AnticipationEngine {
     /// description and the trigger), while its id, its outcome and whether it was surfaced stay.
     /// It gets `outcome` unless it already has one.
     pub fn retire(conn: &Connection, id: &str, outcome: PrepOutcome, now: f64) {
-        let _ = conn.execute(
-            "UPDATE prepared_items
-             SET data = '{}', description = '', trigger_data = '{}',
-                 outcome = COALESCE(outcome, ?2), expires_at = MIN(expires_at, ?3)
-             WHERE id = ?1",
-            params![id, outcome.as_str(), now],
-        );
+        let _ = Self::securely(conn, || {
+            conn.execute(
+                "UPDATE prepared_items
+                 SET data = '{}', description = '', trigger_data = '{}',
+                     outcome = COALESCE(outcome, ?2), expires_at = MIN(expires_at, ?3)
+                 WHERE id = ?1",
+                params![id, outcome.as_str(), now],
+            )
+        });
     }
 
     /// Items of `kind` that are over and still hold their contents: ended by the clock.

@@ -110,11 +110,12 @@ pub fn own(conn: &Connection, user_name: &str) -> Own {
 ///
 /// Nothing here waits on a service: the calendar and notes come from the fetcher's snapshot, the
 /// email cache, the commitments and the anticipation table are short local reads and writes, and
-/// the refresh is asked for with a send that cannot block. Off (`enabled` false) asks for nothing
-/// and gathers nothing: it only takes back what is up ([`engine::off`]).
-pub fn tick_with(conn: &Connection, user_name: &str, fetcher: &Fetcher, now: chrono::NaiveDateTime, enabled: bool) -> Outcome {
-    if !enabled {
-        return off(conn, now);
+/// the refresh is asked for with a send that cannot block. Off (`Some(false)`) asks for nothing
+/// and gathers nothing: it only takes back what is up ([`engine::off`]). Not known (`None`) asks
+/// for nothing, gathers nothing and ends nothing ([`engine::unknown`]).
+pub fn tick_with(conn: &Connection, user_name: &str, fetcher: &Fetcher, now: chrono::NaiveDateTime, enabled: Option<bool>) -> Outcome {
+    if enabled != Some(true) {
+        return not_on(conn, now, enabled);
     }
     let snapshot = fetcher.snapshot();
     let missing = Missing::default();
@@ -122,7 +123,7 @@ pub fn tick_with(conn: &Connection, user_name: &str, fetcher: &Fetcher, now: chr
     let me = own(conn, user_name);
     let (mail, promises) = (EmailCache { conn }, WorldModelPromises { conn, me: [me.name.clone(), "user".to_string()].into_iter().filter(|n| !n.is_empty()).collect() });
     let sources = Sources { emails: &mail, notes: &notes, promises: &promises, files: &files };
-    let outcome = engine::tick(conn, &SnapshotCalendar(&snapshot), &sources, &me, now, true);
+    let outcome = engine::tick(conn, &SnapshotCalendar(&snapshot), &sources, &me, now, Some(true));
     // The searches of the meetings about to be due, so their briefs are complete when made.
     if let Some(at) = super::window::to_unix(now) {
         prefetch::want(&snapshot, at, &me, &missing);
@@ -142,17 +143,22 @@ fn fetcher() -> &'static Fetcher {
 }
 
 /// The worker's tick against the real stores, at the local time now.
-pub fn tick_local(conn: &Connection, user_name: &str, enabled: bool) -> Outcome {
+pub fn tick_local(conn: &Connection, user_name: &str, enabled: Option<bool>) -> Outcome {
     let now = chrono::Local::now().naive_local();
-    if !enabled {
-        // Off does not even start the fetcher: a machine with briefs off never reaches a service
-        // or a folder.
-        return off(conn, now);
+    if enabled != Some(true) {
+        // Off, or not known, does not even start the fetcher: a machine with briefs off never
+        // reaches a service or a folder.
+        return not_on(conn, now, enabled);
     }
-    tick_with(conn, user_name, fetcher(), now, true)
+    tick_with(conn, user_name, fetcher(), now, Some(true))
 }
 
-/// Take back what is up, from the table alone.
-fn off(conn: &Connection, now: chrono::NaiveDateTime) -> Outcome {
-    super::window::to_unix(now).map_or_else(Outcome::default, |at| engine::off(conn, at))
+/// What a tick does when the switch is not on, from the table alone: off takes back what is up,
+/// not known leaves it be.
+fn not_on(conn: &Connection, now: chrono::NaiveDateTime, enabled: Option<bool>) -> Outcome {
+    let Some(at) = super::window::to_unix(now) else { return Outcome::default() };
+    match enabled {
+        Some(false) => engine::off(conn, at),
+        _ => engine::unknown(conn, at),
+    }
 }

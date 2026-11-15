@@ -52,16 +52,27 @@ fn published() -> std::sync::MutexGuard<'static, Published> {
     PUBLISHED.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Whether the person has meeting briefs on. Read by the worker before it gathers anything.
-/// When the store has not said (just started, or its service is down) they are off: nothing is
-/// read until the person's choice is known.
+/// The person's switch for meeting briefs, as far as it is known: `Some(on)`, or `None` when the
+/// store has not said (just started, or its service is down). The worker reads this before it
+/// gathers anything: nothing is read until the choice is known, and not knowing ends nothing.
+pub fn switch() -> Option<bool> {
+    switch_of(crate::notice_desk::initiative_known().as_ref())
+}
+
+/// [`switch`] for the settings as the store last gave them.
+fn switch_of(settings: Option<&Initiative>) -> Option<bool> {
+    settings.map(|s| s.moment_on(MOMENT_MEETING_BRIEF))
+}
+
+/// Whether to draw briefs now: only when the person has them on. Not known is not drawn.
 pub fn enabled() -> bool {
-    enabled_by(crate::notice_desk::initiative_known().as_ref())
+    switch() == Some(true)
 }
 
 /// [`enabled`] for the settings as the store last gave them.
+#[cfg(test)]
 fn enabled_by(settings: Option<&Initiative>) -> bool {
-    settings.is_some_and(|s| s.moment_on(MOMENT_MEETING_BRIEF))
+    switch_of(settings) == Some(true)
 }
 
 /// The worker's answer for this tick: every live brief, and the ones just made. A brief just made
@@ -498,11 +509,14 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_is_off_until_the_store_has_said_it_is_on() {
-        assert!(!enabled_by(None), "unknown is off: nothing is read until the person's choice is known");
+    fn the_switch_is_three_things_and_only_on_is_drawn() {
+        assert_eq!(switch_of(None), None, "not known: nothing is read, and nothing is ended");
+        assert!(!enabled_by(None), "and nothing is drawn");
+        assert_eq!(switch_of(Some(&Initiative::default())), Some(true));
         assert!(enabled_by(Some(&Initiative::default())));
         let mut off = Initiative::default();
         off.set_moment(MOMENT_MEETING_BRIEF, false);
+        assert_eq!(switch_of(Some(&off)), Some(false));
         assert!(!enabled_by(Some(&off)));
     }
 }

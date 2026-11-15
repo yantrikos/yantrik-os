@@ -222,7 +222,7 @@ pub(super) fn tick_with_mail(conn: &Connection, calendar: &Calendar, now: NaiveD
     let notes = Notebook::with(vec![]);
     let roots = FileRoots::default();
     let sources = Sources { emails: &mail, notes: &notes, promises: &Nothing, files: &roots };
-    tick(conn, calendar, &sources, &own(), now, true)
+    tick(conn, calendar, &sources, &own(), now, Some(true))
 }
 
 /// `now` as the table keeps it.
@@ -422,11 +422,11 @@ fn a_brief_that_says_nothing_gets_no_card_and_no_toast_and_is_not_gathered_again
     let notes = Notebook::with(vec![]);
     let roots = FileRoots::default();
     let sources = Sources { emails: &mail, notes: &notes, promises: &Nothing, files: &roots };
-    let out = tick(&conn, &cal, &sources, &own(), n, true);
+    let out = tick(&conn, &cal, &sources, &own(), n, Some(true));
     assert!(out.cards.is_empty() && out.fresh.is_empty());
     let asked = notes.asked.get();
     assert!(asked > 0, "the sources were asked");
-    let out = tick(&conn, &cal, &sources, &own(), n + Duration::minutes(1), true);
+    let out = tick(&conn, &cal, &sources, &own(), n + Duration::minutes(1), Some(true));
     assert!(out.cards.is_empty() && out.fresh.is_empty());
     assert_eq!(notes.asked.get(), asked, "nothing to say is remembered, not asked again every minute");
 }
@@ -440,9 +440,9 @@ fn a_source_that_did_not_answer_is_not_recorded_as_nothing_to_say() {
     notes.broken.set(true);
     let roots = FileRoots::default();
     let sources = Sources { emails: &mail, notes: &notes, promises: &Nothing, files: &roots };
-    assert!(tick(&conn, &cal, &sources, &own(), n, true).cards.is_empty());
+    assert!(tick(&conn, &cal, &sources, &own(), n, Some(true)).cards.is_empty());
     notes.broken.set(false);
-    let out = tick(&conn, &cal, &sources, &own(), n + Duration::minutes(1), true);
+    let out = tick(&conn, &cal, &sources, &own(), n + Duration::minutes(1), Some(true));
     assert_eq!(out.cards.len(), 1, "the next tick tried again");
     assert_eq!(out.fresh.len(), 1);
 }
@@ -454,7 +454,7 @@ fn with_the_switch_off_nothing_is_read_or_gathered() {
     let (conn, n) = (db(), now());
     let roots = FileRoots::default();
     let sources = Sources { emails: &Forbidden, notes: &Forbidden, promises: &Forbidden, files: &roots };
-    let out = tick(&conn, &Forbidden, &sources, &own(), n, false);
+    let out = tick(&conn, &Forbidden, &sources, &own(), n, Some(false));
     assert!(out.cards.is_empty() && out.fresh.is_empty());
     let rows: i64 = conn.query_row("SELECT COUNT(*) FROM prepared_items", [], |r| r.get(0)).expect("count");
     assert_eq!(rows, 0);

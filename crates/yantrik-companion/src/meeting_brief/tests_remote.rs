@@ -77,7 +77,7 @@ fn a_slow_calendar_or_notes_service_never_delays_the_worker() {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(30) && cards == 0 {
         let t = Instant::now();
-        let out = tick_with(&conn, "Pat", &fetcher, n, true);
+        let out = tick_with(&conn, "Pat", &fetcher, n, Some(true));
         longest = longest.max(t.elapsed());
         cards = out.cards.len();
         std::thread::sleep(Duration::from_millis(200));
@@ -96,7 +96,7 @@ fn with_the_switch_off_the_services_are_never_asked() {
     let notes = Arc::new(SlowNotes(AtomicUsize::new(0)));
     let fetcher = Fetcher::spawn(calendar.clone(), notes.clone(), Arc::new(FileRoots::default()));
     for _ in 0..3 {
-        tick_with(&conn, "Pat", &fetcher, n, false);
+        tick_with(&conn, "Pat", &fetcher, n, Some(false));
     }
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(calendar.calls.load(Ordering::SeqCst), 0);
@@ -150,9 +150,9 @@ fn an_idle_tick_asks_the_calendar_once_and_the_notes_never() {
     });
     let notes = Arc::new(SlowNotes(AtomicUsize::new(0)));
     let fetcher = Fetcher::spawn(calendar.clone(), notes.clone(), Arc::new(FileRoots::default()));
-    tick_with(&conn, "Pat", &fetcher, n, true);
+    tick_with(&conn, "Pat", &fetcher, n, Some(true));
     until(|| calendar.calls.load(Ordering::SeqCst) >= 1);
-    tick_with(&conn, "Pat", &fetcher, n, true);
+    tick_with(&conn, "Pat", &fetcher, n, Some(true));
     until(|| calendar.calls.load(Ordering::SeqCst) >= 2);
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(calendar.calls.load(Ordering::SeqCst), 2, "one calendar call per tick");
@@ -188,7 +188,7 @@ fn a_failed_notes_search_is_asked_again_next_tick_and_does_not_hold_the_brief_ba
     let started = Instant::now();
     let mut card = None;
     while started.elapsed() < Duration::from_secs(10) && card.is_none() {
-        let out = tick_with(&conn, "Pat", &fetcher, n, true);
+        let out = tick_with(&conn, "Pat", &fetcher, n, Some(true));
         card = out.cards.into_iter().next();
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -206,9 +206,9 @@ fn the_searches_of_a_meeting_about_to_be_due_are_asked_before_its_brief_needs_th
     let calendar = Arc::new(Counting { events: orion(n, 12), calls: AtomicUsize::new(0) });
     let notes = Arc::new(SlowNotes(AtomicUsize::new(0)));
     let fetcher = Fetcher::spawn(calendar.clone(), notes.clone(), Arc::new(FileRoots::default()));
-    tick_with(&conn, "Pat", &fetcher, n, true);
+    tick_with(&conn, "Pat", &fetcher, n, Some(true));
     until(|| calendar.calls.load(Ordering::SeqCst) >= 1);
-    tick_with(&conn, "Pat", &fetcher, n, true);
+    tick_with(&conn, "Pat", &fetcher, n, Some(true));
     until(|| notes.0.load(Ordering::SeqCst) >= 1);
     assert!(notes.0.load(Ordering::SeqCst) >= 1, "the notes were asked ahead");
     assert_eq!(conn.query_row("SELECT COUNT(*) FROM prepared_items", [], |r| r.get::<_, i64>(0)).expect("count"), 0, "and no brief was made yet");
@@ -251,12 +251,12 @@ fn a_client_that_panics_ends_that_refresh_and_not_the_fetcher() {
     maya_email_row(&conn, n);
     let calendar = Arc::new(PanickingCalendar { events: orion(n, 10), calls: AtomicUsize::new(0) });
     let fetcher = Fetcher::spawn(calendar.clone(), Arc::new(SlowNotes(AtomicUsize::new(0))), Arc::new(FileRoots::default()));
-    tick_with(&conn, "Pat", &fetcher, n, true);
+    tick_with(&conn, "Pat", &fetcher, n, Some(true));
     until(|| calendar.calls.load(Ordering::SeqCst) >= 1);
     let started = Instant::now();
     let mut cards = 0;
     while started.elapsed() < Duration::from_secs(20) && cards == 0 {
-        cards = tick_with(&conn, "Pat", &fetcher, n, true).cards.len();
+        cards = tick_with(&conn, "Pat", &fetcher, n, Some(true)).cards.len();
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(calendar.calls.load(Ordering::SeqCst) >= 2, "the fetcher asked again after the fault");
@@ -290,7 +290,7 @@ fn a_folder_that_never_answers_costs_the_files_of_a_brief_and_nothing_else() {
     let started = Instant::now();
     let mut cards = 0;
     while started.elapsed() < Duration::from_secs(20) && cards == 0 {
-        cards = tick_with(&conn, "Pat", &fetcher, n, true).cards.len();
+        cards = tick_with(&conn, "Pat", &fetcher, n, Some(true)).cards.len();
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(cards, 1, "the brief was made without its files");
@@ -298,7 +298,7 @@ fn a_folder_that_never_answers_costs_the_files_of_a_brief_and_nothing_else() {
     // The calendar goes on being read while the walk is stuck, so no brief is stopped by it.
     let calls = calendar.calls.load(Ordering::SeqCst);
     while started.elapsed() < Duration::from_secs(20) && calendar.calls.load(Ordering::SeqCst) < calls + 2 {
-        tick_with(&conn, "Pat", &fetcher, n, true);
+        tick_with(&conn, "Pat", &fetcher, n, Some(true));
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(calendar.calls.load(Ordering::SeqCst) >= calls + 2, "the calendar is still asked every tick");

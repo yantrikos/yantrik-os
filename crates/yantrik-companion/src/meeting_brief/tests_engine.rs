@@ -88,11 +88,11 @@ fn a_brief_shown_without_a_source_is_filled_in_when_it_answers_and_not_announced
     notes.broken.set(true);
     let roots = FileRoots::default();
     let sources = Sources { emails: &mail, notes: &notes, promises: &Nothing, files: &roots };
-    let first = tick(&conn, &cal, &sources, &own(), n, true);
+    let first = tick(&conn, &cal, &sources, &own(), n, Some(true));
     assert_eq!((first.cards.len(), first.fresh.len()), (1, 1), "shown as it is, in the last minutes");
     assert_eq!(first.cards[0].brief.notes.len(), 0);
     notes.broken.set(false);
-    let second = tick(&conn, &cal, &sources, &own(), n + Duration::seconds(30), true);
+    let second = tick(&conn, &cal, &sources, &own(), n + Duration::seconds(30), Some(true));
     assert!(second.fresh.is_empty(), "the card is filled in, not announced again");
     assert_eq!(second.cards[0].brief.notes.len(), 1, "the source answered later and the brief has it");
 }
@@ -160,8 +160,8 @@ fn a_brief_nobody_saw_is_not_counted_as_ignored() {
     let notes = Notebook::with(vec![]);
     let roots = FileRoots::default();
     let sources = Sources { emails: &mail, notes: &notes, promises: &Nothing, files: &roots };
-    tick(&conn, &cal, &sources, &own(), n, true);
-    let end = tick(&conn, &cal, &sources, &own(), n + Duration::minutes(41), true);
+    tick(&conn, &cal, &sources, &own(), n, Some(true));
+    let end = tick(&conn, &cal, &sources, &own(), n + Duration::minutes(41), Some(true));
     assert_eq!(end.outcomes, Outcomes::default());
 }
 
@@ -181,7 +181,7 @@ fn held(conn: &Connection) -> i64 {
 fn off_at(conn: &Connection, n: NaiveDateTime, minutes: i64) -> Outcome {
     let roots = FileRoots::default();
     let sources = Sources { emails: &Forbidden, notes: &Forbidden, promises: &Forbidden, files: &roots };
-    tick(conn, &Forbidden, &sources, &own(), n + Duration::minutes(minutes), false)
+    tick(conn, &Forbidden, &sources, &own(), n + Duration::minutes(minutes), Some(false))
 }
 
 fn brief_up(conn: &Connection, n: NaiveDateTime) -> CalendarEvent {
@@ -224,39 +224,104 @@ fn an_off_tick_does_not_zero_the_outcomes_it_does_not_gather() {
     assert_eq!(out.outcomes, Outcomes { opened: 0, dismissed: 1, ignored: 0 }, "the table's own count, not a default");
 }
 
+/// A tick whose switch is not known, with sources that panic when asked.
+fn unknown_at(conn: &Connection, n: NaiveDateTime, minutes: i64) -> Outcome {
+    let roots = FileRoots::default();
+    let sources = Sources { emails: &Forbidden, notes: &Forbidden, promises: &Forbidden, files: &roots };
+    tick(conn, &Forbidden, &sources, &own(), n + Duration::minutes(minutes), None)
+}
+
+/// The service that holds the switch is down when the shell starts: the first tick does not know
+/// it. That must not decide anything lasting (it used to end every brief as ignored, for good).
+#[test]
+fn a_switch_that_is_not_known_ends_nothing_and_the_card_returns_when_it_is() {
+    let (conn, n) = (db(), now());
+    let e = brief_up(&conn, n);
+    let unknown = unknown_at(&conn, n, 5);
+    assert!(unknown.cards.is_empty() && unknown.fresh.is_empty(), "nothing drawn, nothing announced");
+    assert_eq!(held(&conn), 1, "the row is as it was");
+    assert_eq!(over(&conn, &id_for(&e)), None, "and nothing ended it");
+    assert_eq!(unknown.outcomes, Outcomes::default());
+    // The service answers: the switch is on. The card is back, and is not announced again.
+    let back = tick_at(&conn, &Calendar::of(vec![e.clone()]), n, 6);
+    assert_eq!(back.cards.len(), 1, "the card is back");
+    assert_eq!(over(&conn, &id_for(&e)), None, "and still open to an outcome");
+    assert!(back.fresh.is_empty(), "with no second announcement");
+    assert_eq!(back.outcomes, Outcomes::default(), "no ignored the person never chose");
+}
+
+/// What is purely a matter of time still happens when the switch is not known.
+#[test]
+fn a_meeting_that_ends_while_the_switch_is_not_known_is_still_emptied() {
+    let (conn, n) = (db(), now());
+    let e = brief_up(&conn, n);
+    unknown_at(&conn, n, 41);
+    assert_eq!(held(&conn), 0, "what the card said is gone with the meeting");
+    assert_eq!(over(&conn, &id_for(&e)), Some(PrepOutcome::Ignored));
+}
+
 // ── What the file keeps ─────────────────────────────────────────────────────────────────
 
-/// A brief is made and its meeting ends, in a database file in WAL mode, and the file and its log
-/// are read as bytes after a checkpoint: whether what the card said is still in them.
-fn is_the_text_left_in_the_file(name: &str, secure_delete: bool) -> bool {
-    const SEED: &str = "SEEDED-STRING-IN-THE-DESCRIPTION";
+const SEED: &str = "SEEDED-STRING-IN-THE-DESCRIPTION";
+
+/// A brief for an event whose description carries [`SEED`], made in a database file in WAL mode.
+fn brief_in_a_file(name: &str) -> (std::path::PathBuf, Connection, CalendarEvent, NaiveDateTime) {
     let dir = scratch(name);
     let conn = Connection::open(dir.join("companion.db")).expect("database file");
     conn.execute_batch("PRAGMA journal_mode = WAL;").expect("wal");
     prepare(&conn);
-    if !secure_delete {
-        conn.execute_batch("PRAGMA secure_delete = OFF;").expect("pragma");
-    }
     let (n, mut e) = (now(), event("e1", "Q4 planning", now() + Duration::minutes(10), vec![maya()]));
     e.description = format!("{SEED} and a line");
-    let cal = Calendar::of(vec![e]);
-    assert_eq!(tick_at(&conn, &cal, n, 0).cards.len(), 1);
-    assert_eq!(tick_at(&conn, &cal, n, 41).cards.len(), 0, "the meeting is over");
+    assert_eq!(tick_at(&conn, &Calendar::of(vec![e.clone()]), n, 0).cards.len(), 1);
+    (dir, conn, e, n)
+}
+
+/// Whether [`SEED`] is anywhere in the database's files, read as bytes after a TRUNCATE checkpoint.
+fn is_the_text_left_in_the_file(dir: &std::path::Path, conn: &Connection) -> bool {
     conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).expect("checkpoint");
     let mut bytes = Vec::new();
-    for file in std::fs::read_dir(&dir).expect("dir").flatten() {
+    for file in std::fs::read_dir(dir).expect("dir").flatten() {
         bytes.extend(std::fs::read(file.path()).unwrap_or_default());
     }
     bytes.windows(SEED.len()).any(|w| w == SEED.as_bytes())
 }
 
+/// The meeting ends on the companion's own connection: the text is not left in the file.
 #[test]
 fn what_a_brief_said_is_not_in_the_database_file_once_its_meeting_is_over() {
-    assert!(!is_the_text_left_in_the_file("secure", true), "the text left the file with the row");
+    let (dir, conn, e, n) = brief_in_a_file("secure");
+    assert_eq!(tick_at(&conn, &Calendar::of(vec![e]), n, 41).cards.len(), 0, "the meeting is over");
+    assert!(!is_the_text_left_in_the_file(&dir, &conn), "the text left the file with the row");
 }
 
-/// The check above can see what it looks for: with `secure_delete` off the same run leaves it.
+/// The commonest end is Dismiss, written first on a connection of the shell's own that never ran
+/// `ensure_table`. A setting of the companion's connection does not reach it, so the statement
+/// itself must clear the text.
 #[test]
-fn without_secure_delete_the_same_text_stays_in_the_file() {
-    assert!(is_the_text_left_in_the_file("insecure", false));
+fn a_dismissal_written_on_another_connection_leaves_no_text_in_the_file() {
+    let (dir, conn, e, n) = brief_in_a_file("dismissed");
+    let other = Connection::open(dir.join("companion.db")).expect("a second connection");
+    press(&other, &id_for(&e), Press::Dismissed, now_ts(n + Duration::minutes(2)));
+    assert_eq!(over(&conn, &id_for(&e)), Some(PrepOutcome::Dismissed));
+    assert!(!is_the_text_left_in_the_file(&dir, &conn), "the dismissed brief's text stayed in the page");
+}
+
+/// The check above can see what it looks for: the same text, emptied by a plain statement with
+/// nothing turned on, is still in the file.
+#[test]
+fn a_plain_update_of_the_same_row_leaves_the_text_in_the_file() {
+    let (dir, conn, _, _) = brief_in_a_file("plain");
+    conn.execute("UPDATE prepared_items SET data = '{}', description = '', trigger_data = '{}'", []).unwrap();
+    assert!(is_the_text_left_in_the_file(&dir, &conn));
+}
+
+/// The pragma is the statement's own: nothing leaves it on, and nothing global is set for the
+/// rest of the database.
+#[test]
+fn secure_delete_is_not_left_on_for_the_rest_of_the_database() {
+    let (_, conn, e, n) = brief_in_a_file("pragma");
+    let on = |c: &Connection| c.query_row("PRAGMA secure_delete", [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(on(&conn), 0, "not set by making a brief");
+    press(&conn, &id_for(&e), Press::Dismissed, now_ts(n + Duration::minutes(2)));
+    assert_eq!(on(&conn), 0, "and put back after the one that needed it");
 }
