@@ -4,6 +4,8 @@
 //! notification button whose card is gone. A row on a card that was pressed has to say when the
 //! app could not do it ("Not opened: ..."), so this one brings the app's answer back to the
 //! line the press came from.
+//!
+//! Who may press is the compiler's to hold: see [`press_message`].
 
 use std::time::{Duration, Instant};
 
@@ -12,6 +14,7 @@ use slint::ComponentHandle;
 use yantrik_ipc_transport::SyncRpcClient;
 
 use super::for_you::Say;
+use super::meeting_brief::BriefMessage;
 use super::notifications::button_route;
 use crate::App;
 
@@ -20,22 +23,15 @@ const COLD_START: Duration = Duration::from_secs(5);
 /// How long the app has to answer: a message is read from the mail server first.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 
-/// The actions only the shell's own press runs, as (app, action): an app declares them
-/// `shell_only`, `app.act` refuses them to every caller, and `app.press` runs them for the shell
-/// alone. This is the one place in the tree that sends `app.press` (a source scan test below holds
-/// it to that), so the companion's `app_action`, a recipe, a notification button's relay and
-/// every other path that sends `app.act` for someone else cannot reach one.
-const PRESSED: &[(&str, &str)] = &[("email", "open_message_id")];
-
-/// The method that carries `action` to `surface`: `app.press` for a press only the shell makes,
-/// `app.act` for everything else.
-fn method_for(surface: &str, action: &str) -> &'static str {
-    if PRESSED.contains(&(surface, action)) {
-        "app.press"
-    } else {
-        "app.act"
-    }
-}
+/// The method every ordinary press goes through: `app.act`, which an app refuses for an action it
+/// declares `shell_only`, whoever asks.
+const ACT: &str = "app.act";
+/// The method for the one press only the shell makes (`app.press`, which an app runs for the shell
+/// alone). It is spelled out here and nowhere else in the shell: only [`press_message`] sends it,
+/// and that takes a `BriefMessage`, which only the meeting brief can make. So the companion's
+/// `app_action`, a recipe, a notification button's relay and every other path that sends `app.act`
+/// for someone else cannot reach a press (the scans in `press_scan` back the compiler).
+const PRESS: &str = "app.press";
 
 /// The key of an app's `describe` state that says its first read has landed, for an app that
 /// answers a call before it (Notes reads its library after its socket is up, and refuses a call
@@ -59,8 +55,20 @@ pub fn said(reply: &Result<serde_json::Value, String>) -> String {
 }
 
 /// Ask `app` to do `action` with `args`, starting it if it is closed, and put its answer on the
-/// line `key` names through `say`. Asked on a thread of its own, never the UI thread.
+/// line `key` names through `say`. Asked on a thread of its own, never the UI thread. Always
+/// `app.act`: no caller can ask for a press through here.
 pub fn act(ui: &App, app: &str, action: &str, args: serde_json::Value, key: &str, say: Say) {
+    send(ui, app, ACT, action, args, key, say);
+}
+
+/// Press "open this message" in Email, as the shell, for a row of the meeting brief: the one
+/// `app.press`. Email opens exactly the message `message` names and answers on the row's line.
+pub fn press_message(ui: &App, message: &BriefMessage, key: &str, say: Say) {
+    let args = serde_json::json!({ "account": message.account(), "folder": message.folder(), "message_id": message.id() });
+    send(ui, "email", PRESS, "open_message_id", args, key, say);
+}
+
+fn send(ui: &App, app: &str, method: &'static str, action: &str, args: serde_json::Value, key: &str, say: Say) {
     let installed = crate::apps::Catalogue::shared().get();
     let Some((surface, opens_as)) = button_route(app, &installed) else {
         say(ui, key, "Not opened: this desktop does not open that app.");
@@ -94,9 +102,7 @@ pub fn act(ui: &App, app: &str, action: &str, args: serde_json::Value, key: &str
                     std::thread::sleep(Duration::from_millis(150));
                 }
             }
-            client
-                .call(method_for(&surface, &action), serde_json::json!({ "action": action, "args": args }))
-                .map_err(|e| e.message)
+            client.call(method, serde_json::json!({ "action": action, "args": args })).map_err(|e| e.message)
         } else {
             Err("the app did not open".to_string())
         };
@@ -109,118 +115,16 @@ pub fn act(ui: &App, app: &str, action: &str, args: serde_json::Value, key: &str
 mod tests {
     use super::*;
 
+    /// The compiler holds who can press; this holds what the press is: `act` sends `app.act`, the
+    /// message press sends `app.press`, and each method is spelled out once.
     #[test]
-    fn only_the_exact_open_is_sent_as_a_press() {
-        assert_eq!(method_for("email", "open_message_id"), "app.press");
-        for (app, action) in [("email", "open_message"), ("notes", "open_note"), ("calendar", "show_date"), ("notes", "open_message_id")] {
-            assert_eq!(method_for(app, action), "app.act", "{app}.{action}");
-        }
-    }
-
-    /// Every `.rs` and `.py` file under `dir` (not `target`, not `.git`), as (path from `root`, text).
-    fn sources(dir: &std::path::Path, root: &std::path::Path) -> Vec<(String, String)> {
-        let mut found = Vec::new();
-        let Ok(entries) = std::fs::read_dir(dir) else { return found };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if path.is_dir() {
-                if !matches!(&*name, "target" | ".git" | "node_modules") {
-                    found.extend(sources(&path, root));
-                }
-            } else if name.ends_with(".rs") || name.ends_with(".py") {
-                if let (Ok(text), Ok(rel)) = (std::fs::read_to_string(&path), path.strip_prefix(root)) {
-                    found.push((rel.display().to_string(), text));
-                }
-            }
-        }
-        found
-    }
-
-    fn repository() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
-    }
-
-    /// Every file under the repository that holds the method's name in quotes, as paths from the
-    /// repository root.
-    fn files_naming(method: &str) -> Vec<String> {
-        let root = repository();
-        let needle = format!("\"{method}\"");
-        let mut found: Vec<String> = sources(&root, &root).into_iter().filter(|(_, text)| text.contains(&needle)).map(|(path, _)| path).collect();
-        found.sort();
-        found
-    }
-
-    /// The non-test code of this crate, by file: each file up to its test module (`#[cfg(test)]`
-    /// on a `mod`), without the files that are only tests. A `#[cfg(test)]` on a single item is
-    /// kept: a helper made for tests is code too.
-    fn shell_code() -> Vec<(String, String)> {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let root = repository();
-        let before_tests = |text: &str| {
-            let lines: Vec<&str> = text.lines().collect();
-            let end = (0..lines.len())
-                .find(|&i| lines[i] == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|next| next.starts_with("mod ") || next.starts_with("#[path")))
-                .unwrap_or(lines.len());
-            lines[..end].join("\n")
-        };
-        sources(&src, &root)
-            .into_iter()
-            .filter(|(path, _)| !path.ends_with("tests.rs") && !path.contains("/tests/"))
-            .map(|(path, text)| (path, before_tests(&text)))
-            .collect()
-    }
-
-    /// The files of `shell_code` with a line that satisfies `hit`, sorted.
-    fn files_with_a_line(hit: impl Fn(&str) -> bool) -> Vec<String> {
-        let mut found: Vec<String> = shell_code().into_iter().filter(|(_, code)| code.lines().any(&hit)).map(|(path, _)| path).collect();
-        found.sort();
-        found
-    }
-
-    /// `app.press` is the shell's own press and nothing else's. The built-in companion runs inside
-    /// this process, so a path that merely sent `app.press` from here would be the companion's:
-    /// only this file sends it. The one other file that names it is an app's own dispatch, which
-    /// answers it.
-    #[test]
-    fn only_the_shells_press_sends_app_press() {
-        assert_eq!(
-            files_naming("app.press"),
-            ["crates/yantrik-ui/src/wire/app_act.rs", "frameworks/yantrik-app/src/control.rs"],
-            "a new sender of app.press can open any message by folder and id: it belongs in wire/app_act.rs and nowhere else"
-        );
-        let own = include_str!("app_act.rs");
-        let code = own.split("#[cfg(test)]").next().unwrap();
-        let sends: Vec<&str> = code.lines().filter(|l| l.contains("\"app.press\"")).collect();
-        assert_eq!(sends.len(), 1, "one place in this file picks the method: {sends:?}");
-    }
-
-    /// Who can make this file send `app.press`: `method_for` sends it for any caller that names
-    /// `email.open_message_id`. So the shell's own code that names that action, and the code that
-    /// builds the opening that names it, are held to the two places that are the person's press on
-    /// a meeting brief's row. A notice action, a For you card or a control action that came to
-    /// produce one from a poster's reference would let a Mind open any message by folder and id.
-    #[test]
-    fn only_the_brief_can_make_the_shell_press_open_a_message() {
-        // A construction, not a match arm that reads one: the name comes after any `=>` on its line.
-        let builds_a_message_opening = |l: &str| l.find("Opening::Message {").is_some_and(|at| l.find("=>").map_or(true, |arrow| at > arrow));
-        assert_eq!(
-            files_with_a_line(builds_a_message_opening),
-            ["crates/yantrik-ui/src/wire/meeting_brief.rs"],
-            "`Opening::Message` is built from the brief's own mail only, never from a poster's reference"
-        );
-        assert_eq!(
-            files_with_a_line(|l| l.contains("\"open_message_id\"")),
-            ["crates/yantrik-ui/src/wire/app_act.rs", "crates/yantrik-ui/src/wire/for_you.rs"],
-            "the press of an opening is the one For you row and the one table in app_act.rs"
-        );
-        // Not only the quoted literal: a method built with `concat!` or `format!` is caught too.
-        assert_eq!(
-            files_with_a_line(|l| l.contains("\"app.\"") && l.contains("\"press\"")),
-            Vec::<String>::new(),
-            "no file builds the name `app.press` from pieces: it is spelled out once, in app_act.rs"
-        );
+    fn act_is_never_a_press_and_the_message_press_is_the_only_one() {
+        assert_eq!((ACT, PRESS), ("app.act", "app.press"));
+        let code = include_str!("app_act.rs").split("#[cfg(test)]").next().unwrap();
+        let sends = |m: &str| code.lines().filter(|l| l.contains(&format!("\"{m}\""))).count();
+        assert_eq!((sends("app.press"), sends("app.act")), (1, 1), "each method has one place");
+        assert!(code.contains("send(ui, app, ACT,"), "act sends app.act");
+        assert_eq!(code.matches("PRESS,").count(), 1, "one caller sends the press");
     }
 
     #[test]

@@ -12,13 +12,15 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 use yantrik_ipc_contracts::notifications::notice::{self, FeedbackKind};
 use yantrik_ipc_contracts::notifications::{Notification, NOTICE_FEEDBACK, NOTICE_SHOWN};
 
-use super::notifications::{act, resync, with_mirror, SILENT_SCREENS};
+use super::notifications::{act, act_retrying, resync, with_mirror, SILENT_SCREENS};
 use crate::notice_inbox::{self, Opening, Screen, Toast};
 use crate::{App, InboxState, NoticeCardData, ToastData};
 
 thread_local! {
     /// Cards toasted by this shell, so a card is never toasted twice while the store's record of
-    /// it is on its way back through the poll.
+    /// it is on its way back through the poll. Also, for a desktop calendar card, its meeting
+    /// (`notice_inbox::meeting_key`): the early heads-up, the reminder and the brief are cards for
+    /// one meeting, and the shell shows one toast for it, whether or not the store has heard.
     static TOASTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Cards recorded as seen in the inbox, for the same reason.
     static SEEN: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -27,6 +29,10 @@ thread_local! {
     /// What the section last drew, so an unchanged second does not rebuild it.
     static DRAWN: RefCell<Vec<NoticeCardData>> = const { RefCell::new(Vec::new()) };
 }
+
+/// How many more times the report of a toast is sent when the service did not answer, one second
+/// apart (`call_retry`).
+const TOAST_REPORT_RETRIES: u32 = 3;
 
 pub fn wire(ui: &App) {
     let state = ui.global::<InboxState>();
@@ -102,7 +108,15 @@ pub fn tick(ui: &App) {
     .unwrap_or_default();
 
     for n in &due {
-        toast(ui, n);
+        // The meeting's toast is the first of its cards shown. A second one is not toasted, and
+        // the store is told it stayed in the inbox, so it learns why.
+        let again = notice_inbox::meeting_key(n).is_some_and(|key| !TOASTED.with(|t| t.borrow_mut().insert(key)));
+        if again {
+            TOASTED.with(|t| t.borrow_mut().insert(n.id.clone()));
+            act(NOTICE_SHOWN, serde_json::json!({ "id": n.id, "shown_as": "inbox" }));
+        } else {
+            toast(ui, n);
+        }
     }
 
     // Seen in the inbox: the Lens is open and the cards are on screen (its own page, or the
@@ -154,7 +168,9 @@ fn card(n: &Notification) -> NoticeCardData {
 /// Toast a granted interrupt, and tell the store it was shown that way.
 fn toast(ui: &App, n: &Notification) {
     TOASTED.with(|t| t.borrow_mut().insert(n.id.clone()));
-    act(NOTICE_SHOWN, serde_json::json!({ "id": n.id, "shown_as": "toast" }));
+    // Retried: the store reads "already toasted" from this report, and one lost to a busy or
+    // restarting service would let the next card for the meeting toast again.
+    act_retrying(NOTICE_SHOWN, serde_json::json!({ "id": n.id, "shown_as": "toast" }), TOAST_REPORT_RETRIES);
     let name = crate::notifications::sender_name(n);
     crate::wire::toast::push(
         ui,
@@ -243,10 +259,7 @@ pub(crate) fn carry_out(ui: &App, key: &str, opening: Opening, say: Say) {
         Opening::Note(reference) => {
             super::app_act::act(ui, "notes", "open_note", serde_json::json!({ "title": reference }), key, say);
         }
-        Opening::Message { account, folder, id } => {
-            let args = serde_json::json!({ "account": account, "folder": folder, "message_id": id });
-            super::app_act::act(ui, "email", "open_message_id", args, key, say);
-        }
+        Opening::Message(message) => super::app_act::press_message(ui, &message, key, say),
         Opening::Event(reference) => open_event(ui, key, reference, say),
     }
 }

@@ -811,18 +811,21 @@ fn watch_for_updates() {
 /// pressed — and the screen has already been updated optimistically, so there is nothing to wait
 /// for. A failure is logged and corrected by the next poll, which re-reads the store.
 pub(crate) fn act(method: &'static str, params: serde_json::Value) {
+    act_retrying(method, params, 0);
+}
+
+/// [`act`], and when the service does not answer (`call_retry`) tried `retries` more times, one
+/// second apart. For the one report the store cannot recover from a poll: that a toast was shown.
+pub(crate) fn act_retrying(method: &'static str, params: serde_json::Value, retries: u32) {
     let _ = std::thread::Builder::new()
         .name("yos-notification-call".into())
         .spawn(move || {
-            if let Err(e) = yantrik_app_runtime::service::ensure(SERVICE) {
-                tracing::warn!(method, error = %e, "the notifications service is not reachable");
-                return;
-            }
-            if let Err(e) = SyncRpcClient::for_service(SERVICE)
-                .with_timeout(Duration::from_secs(2))
-                .call(method, params)
-            {
-                tracing::warn!(method, error = %e.message, "a notification call was refused");
+            let sent = super::call_retry::retrying(retries, super::call_retry::GAP, || {
+                yantrik_app_runtime::service::ensure(SERVICE).map_err(super::call_retry::unheard)?;
+                SyncRpcClient::for_service(SERVICE).with_timeout(Duration::from_secs(2)).call(method, params.clone())
+            });
+            if let Err(e) = sent {
+                tracing::warn!(method, error = %e.message, "a notification call failed");
             }
         });
 }

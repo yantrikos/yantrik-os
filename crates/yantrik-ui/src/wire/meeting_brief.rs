@@ -217,11 +217,43 @@ fn slint_card(v: &CardView) -> MeetingBriefData {
     }
 }
 
+/// The message a brief's row names: the account's address, the folder and the id there, exactly.
+///
+/// The only thing the shell's press of `email.open_message_id` (`app_act::press_message`) takes,
+/// and only this module can make one: the fields are private and so is the constructor, which the
+/// compiler holds to the brief's own mail. A notice action, a For you card or a control action
+/// has no way to produce one from a poster's reference, so none of them can make the shell press
+/// open a message by folder and id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BriefMessage {
+    account: String,
+    folder: String,
+    id: String,
+}
+
+impl BriefMessage {
+    fn new(account: &str, folder: &str, id: &str) -> BriefMessage {
+        BriefMessage { account: account.to_string(), folder: folder.to_string(), id: id.to_string() }
+    }
+
+    pub(crate) fn account(&self) -> &str {
+        &self.account
+    }
+
+    pub(crate) fn folder(&self) -> &str {
+        &self.folder
+    }
+
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 /// What a row's button opens, once the notice inbox's own check has passed it.
 fn opening(open: &Open, home: &std::path::Path) -> Result<Opening, String> {
     let action = |kind: ActionKind, reference: &str| NoticeAction { label: "Open".into(), kind, reference: reference.into() };
     match open {
-        Open::Message { account, folder, id } => Ok(Opening::Message { account: account.clone(), folder: folder.clone(), id: id.clone() }),
+        Open::Message { account, folder, id } => Ok(Opening::Message(BriefMessage::new(account, folder, id))),
         Open::Note { id } => notice_inbox::plan(&action(ActionKind::OpenNote, id), home),
         Open::File { path } => notice_inbox::plan(&action(ActionKind::OpenFile, path), home),
         Open::Event { id } => notice_inbox::plan(&action(ActionKind::OpenEvent, id), home),
@@ -475,7 +507,7 @@ mod tests {
         // The exact message, from the folder it is in: a subject names nothing here.
         assert_eq!(
             opening(&message("m-1"), &home),
-            Ok(Opening::Message { account: "me@home.test".into(), folder: "Sent".into(), id: "m-1".into() })
+            Ok(Opening::Message(BriefMessage::new("me@home.test", "Sent", "m-1")))
         );
         let _ = std::fs::remove_dir_all(home);
     }
