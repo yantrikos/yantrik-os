@@ -11,15 +11,18 @@
 //! next.
 //!
 //! So each found rectangle is settled onto the ink before anything else is done with it: the
-//! run of rows that have ink in them around the line's densest row, and the columns from the
-//! first glyph to the last, with a margin of blank pixels. That rectangle depends on the
-//! picture and not on the finder's mood, and it is the one both the memory and the engine are
-//! given. A line that has only moved settles onto the same pixels wherever it is.
+//! tallest run of rows that have ink in them (with the specks that belong to it: the dot of an
+//! i, an accent, an underline), and the columns from the first glyph to the last, with a margin
+//! of blank pixels. That rectangle depends on the picture and not on the finder's mood, and it
+//! is the one both the memory and the engine are given. A line that has only moved settles onto
+//! the same pixels wherever it is.
 //!
-//! When the ink does not say (text over a photograph, a line that runs into its neighbours),
-//! the found rectangle is kept as it is. Nothing is lost but the remembering.
+//! When the ink does not say (text over a photograph, a line that runs into its neighbours, two
+//! lines in one rectangle, a rectangle taller than a line), the found rectangle is kept as it is.
+//! A rule under a line, or a field's border, is a run of its own and stays with the line.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use crate::read::Bounds;
 
@@ -32,9 +35,13 @@ const GROW: u32 = 6;
 /// better than one cut to the glyphs.
 const MARGIN: u32 = 2;
 
-/// The tallest run of rows that counts as a speck (the dot of an i, an accent, an underscore),
-/// and the widest gap it may stand off from its line by.
+/// The least a speck may be, in rows: the dot of an i, an accent, an underline. It is also how
+/// far it may stand off from its line. Both grow with the line, to a third of its height, so
+/// the dots of large type are not cut off.
 const SPECK: u32 = 3;
+
+/// A found rectangle taller than this is no line: it is kept as it is, and not searched.
+const MOST_ROWS: u32 = 200;
 
 /// The picture, and which of its pixels are ink for the line being settled.
 struct Ink<'a> {
@@ -72,9 +79,65 @@ fn background(rgb: &[u8], width: u32, around: &Bounds) -> Option<[u8; 3]> {
     seen.into_iter().max_by_key(|(colour, count)| (*count, *colour)).map(|(colour, _)| colour)
 }
 
+/// The rows of the line, given how much ink each row from `above` has: `None` when the ink
+/// does not say where the line is. `open_above` and `open_below` say whether the rows looked at
+/// end short of the picture's own edge.
+fn line_rows(rows: &[u32], above: u32, found: Range<u32>, open_above: bool, open_below: bool) -> Option<(u32, u32)> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    let mut start = None;
+    for (n, count) in rows.iter().copied().chain(std::iter::once(0)).enumerate() {
+        let y = above + n as u32;
+        match (start, count > 0) {
+            (None, true) => start = Some(y),
+            (Some(from), false) => {
+                runs.push((from, y));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    let inside = |run: &(u32, u32)| run.1.min(found.end).saturating_sub(run.0.max(found.start));
+    let (chosen, &(top, bottom)) = runs.iter().enumerate().filter(|(_, run)| inside(run) > 0).max_by_key(|(_, run)| (inside(run), std::cmp::Reverse(run.0)))?;
+    // Ink all the way to the edge of where we looked: the line has no edge of its own there,
+    // unless that edge is the edge of the picture.
+    if (top == above && open_above) || (bottom == above + rows.len() as u32 && open_below) {
+        return None;
+    }
+    // A speck (the dot of an i, an accent, an underline) is as tall, and may stand as far off,
+    // as a third of the line; never less than SPECK rows.
+    let speck = SPECK.max((bottom - top) / 3);
+    let (mut line_top, mut line_bottom) = (top, bottom);
+    let (mut nearest_above, mut nearest_below) = (None, None);
+    for run in runs.iter().enumerate().filter(|(n, _)| *n != chosen).map(|(_, run)| run) {
+        // Another run as tall as a speck inside the found rectangle is another line: the ink
+        // does not say which of them this rectangle is for.
+        if inside(run) > speck {
+            return None;
+        }
+        // A speck belongs to the line only if it lies wholly inside what the finder found, so
+        // the tips of the next line's letters are not taken for one.
+        if run.0 < found.start || run.1 > found.end || run.1 - run.0 > speck {
+            continue;
+        }
+        if run.1 <= top && top - run.1 <= speck && nearest_above.is_none_or(|(_, end)| run.1 > end) {
+            nearest_above = Some((run.0, run.1));
+        }
+        if run.0 >= bottom && run.0 - bottom <= speck && nearest_below.is_none_or(|(start, _)| run.0 < start) {
+            nearest_below = Some((run.0, run.1));
+        }
+    }
+    if let Some((from, _)) = nearest_above {
+        line_top = from;
+    }
+    if let Some((_, to)) = nearest_below {
+        line_bottom = to;
+    }
+    Some((line_top, line_bottom))
+}
+
 /// Settle a found rectangle onto the line's own ink, in an RGB image `width` × `height`.
 pub fn settle(rgb: &[u8], width: u32, height: u32, found: &Bounds) -> Bounds {
-    if found.w == 0 || found.h == 0 || found.x + found.w > width || found.y + found.h > height {
+    if found.w == 0 || found.h == 0 || found.h > MOST_ROWS || found.x + found.w > width || found.y + found.h > height {
         return *found;
     }
     let (x0, x1) = (found.x, found.x + found.w);
@@ -84,53 +147,12 @@ pub fn settle(rgb: &[u8], width: u32, height: u32, found: &Bounds) -> Bounds {
     let Some(background) = background(rgb, width, &around) else { return *found };
     let ink = Ink { rgb, width, background };
 
-    // The row with the most ink is in the body of the letters, wherever the finder put its
-    // edges. The line is the run of inked rows around it.
+    // The line is the tallest run of inked rows inside the found rectangle, with the specks
+    // that belong to it. A rule under the text, or a field's border, is a run of its own.
     let rows: Vec<u32> = (above..below).map(|y| ink.in_row(y, x0, x1)).collect();
-    let row = |y: u32| rows[(y - above) as usize];
-    let Some(densest) = (found.y..found.y + found.h).max_by_key(|y| (row(*y), std::cmp::Reverse(*y))).filter(|y| row(*y) > 0) else {
+    let Some((mut top, mut bottom)) = line_rows(&rows, above, found.y..found.y + found.h, above > 0, below < height) else {
         return *found;
     };
-    let (mut top, mut bottom) = (densest, densest + 1);
-    while top > above && row(top - 1) > 0 {
-        top -= 1;
-    }
-    while bottom < below && row(bottom) > 0 {
-        bottom += 1;
-    }
-    // Ink all the way to the edge of where we looked: the line has no edge of its own there,
-    // unless that edge is the edge of the picture.
-    if (top == above && above > 0 && row(top) > 0) || (bottom == below && below < height && row(bottom - 1) > 0) {
-        return *found;
-    }
-    // A speck just above or below, inside what the finder found, belongs to the line: the dot
-    // of an i on a line with no tall letter stands off from it by a blank row or two. It is
-    // measured as far as it goes, not only as far as the finder's edge, so the tips of the
-    // next line's letters are not mistaken for one.
-    let speck = |from: u32, towards_top: bool| -> Option<u32> {
-        let step = |y: u32| if towards_top { y.checked_sub(1).filter(|y| *y >= above) } else { Some(y + 1).filter(|y| *y < below) };
-        let within = |y: &u32| (found.y..found.y + found.h).contains(y);
-        let mut y = from;
-        for _ in 0..=SPECK {
-            y = step(y).filter(within)?;
-            if row(y) > 0 {
-                let mut end = y;
-                let mut tall = 1;
-                while let Some(next) = step(end).filter(|next| row(*next) > 0) {
-                    end = next;
-                    tall += 1;
-                }
-                return (tall <= SPECK && within(&end)).then_some(end);
-            }
-        }
-        None
-    };
-    if let Some(up) = speck(top, true) {
-        top = up;
-    }
-    if let Some(down) = speck(bottom - 1, false) {
-        bottom = down + 1;
-    }
 
     // Left and right: from the finder's edge to the nearest edge of ink, outwards if the edge
     // fell inside a glyph and inwards if it fell in the air.

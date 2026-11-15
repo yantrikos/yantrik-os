@@ -7,6 +7,7 @@
 //! each one is, and reads only the ones the caller asks for. A caller that remembers what a
 //! line said the last time it looked exactly like this (`memory`) asks for few.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
@@ -27,7 +28,7 @@ pub struct Line {
 }
 
 /// Where a line is, before anything in it is read: an upright rectangle inside the image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Bounds {
     pub x: u32,
     pub y: u32,
@@ -35,7 +36,8 @@ pub struct Bounds {
     pub h: u32,
 }
 
-/// How long each half took, in seconds.
+/// How long each half took, in seconds. `find` is everything before the models read a line:
+/// finding, settling, and matching against what is remembered.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Timing {
     pub find: f64,
@@ -84,15 +86,15 @@ impl Reader {
         let started = Instant::now();
         let words = self.engine.detect_words(&input).map_err(|e| format!("text detection failed: {e}"))?;
         let rects = self.engine.find_text_lines(&input, &words);
-        let find = started.elapsed().as_secs_f64();
 
-        let bounds: Vec<Bounds> = rects
+        let settled = rects
             .iter()
             .map(|line| around(line.iter().flat_map(|word| word.corners()).map(|corner| (corner.x, corner.y)), width, height))
-            .map(|found| settle(rgb, width, height, &found))
-            .collect();
+            .map(|found| settle(rgb, width, height, &found));
+        let bounds = distinct(settled);
         let mut wanted = wanted(&bounds);
         wanted.resize(bounds.len(), false);
+        let find = started.elapsed().as_secs_f64();
         // The engine reads the settled rectangle, not the words the finder drew: what a line
         // says is then decided by its pixels alone, and reads the same on every look.
         let chosen: Vec<Vec<RotatedRect>> = bounds.iter().zip(&wanted).filter(|(bounds, want)| **want && bounds.w > 0 && bounds.h > 0).map(|(bounds, _)| vec![upright(bounds)]).collect();
@@ -121,6 +123,13 @@ impl Reader {
             .collect();
         Ok(Found { bounds, lines, timing: Timing { find, read } })
     }
+}
+
+/// The rectangles, each once, in the order they first came: two found rectangles that settle
+/// onto the same ink are one line.
+fn distinct(bounds: impl Iterator<Item = Bounds>) -> Vec<Bounds> {
+    let mut seen = HashSet::new();
+    bounds.filter(|bounds| seen.insert(*bounds)).collect()
 }
 
 /// A rectangle as the engine takes one: a single upright word.
@@ -166,6 +175,24 @@ mod tests {
 
     fn line(text: &str) -> Line {
         Line { text: text.into(), x: 1, y: 2, w: 3, h: 4 }
+    }
+
+    #[test]
+    fn two_found_rectangles_over_the_same_ink_are_one_line() {
+        let (w, h) = (100u32, 40u32);
+        let mut rgb = vec![20u8; (w * h * 3) as usize];
+        for y in 10..20 {
+            for x in (10..60).filter(|x| x % 4 != 0) {
+                let at = ((y * w + x) * 3) as usize;
+                rgb[at..at + 3].fill(230);
+            }
+        }
+        let wobbled = [Bounds { x: 8, y: 8, w: 54, h: 14 }, Bounds { x: 9, y: 9, w: 52, h: 12 }];
+        let other = Bounds { x: 8, y: 28, w: 54, h: 8 };
+        let settled = wobbled.iter().chain([&other]).map(|found| crate::settle::settle(&rgb, w, h, found));
+        let lines = distinct(settled);
+        assert_eq!(lines.len(), 2, "the two over the ink are one, the empty one is kept as found: {lines:?}");
+        assert_eq!(lines[1], other);
     }
 
     #[test]

@@ -146,3 +146,101 @@ fn a_line_that_runs_into_something_wider_keeps_the_found_rectangle() {
     let found = Bounds { x: 28, y: 38, w: 82, h: 14 };
     assert_eq!(settle(&rgb, WIDTH, HEIGHT, &found), found);
 }
+
+/// The rows `line` covers, as a range.
+fn rows_of(line: &Bounds) -> std::ops::Range<u32> {
+    line.y..line.y + line.h
+}
+
+#[test]
+fn an_underlined_line_keeps_its_letters() {
+    for gap in [1, 2] {
+        let mut rgb = paper();
+        write(&mut rgb, 10, 40, 20, 10, 1);
+        // The rule is as wide as the text and lies `gap` blank rows under it.
+        fill(&mut rgb, 10, 50 + gap, 20 * 8 - 2, 1, PEN);
+        let line = settle(&rgb, WIDTH, HEIGHT, &Bounds { x: 8, y: 38, w: 163, h: 17 });
+        assert!(rows_of(&line).start <= 40 && rows_of(&line).end >= 51 + gap, "gap {gap}: letters and rule, got {line:?}");
+        assert!(rows_of(&line).end <= 51 + gap + MARGIN, "gap {gap}: no more than the rule's own margin, got {line:?}");
+    }
+}
+
+#[test]
+fn a_field_border_inside_the_found_rectangle_is_not_the_line() {
+    let mut rgb = paper();
+    write(&mut rgb, 10, 40, 10, 10, 1);
+    // The bottom border of a field: two rows thick, two rows under the text, much wider than it.
+    fill(&mut rgb, 6, 52, 88, 2, PEN);
+    let line = settle(&rgb, WIDTH, HEIGHT, &Bounds { x: 6, y: 38, w: 88, h: 18 });
+    assert!(rows_of(&line).start <= 40 && rows_of(&line).end >= 54, "the letters, and the border they sit on, got {line:?}");
+    assert!(line.h >= 14, "not the border alone, got {line:?}");
+}
+
+#[test]
+fn two_rows_in_one_found_rectangle_keep_the_found_rectangle() {
+    let mut rgb = paper();
+    write(&mut rgb, 10, 38, 20, 10, 1);
+    write(&mut rgb, 10, 52, 20, 10, 2);
+    let found = Bounds { x: 8, y: 36, w: 163, h: 28 };
+    assert_eq!(settle(&rgb, WIDTH, HEIGHT, &found), found, "the ink does not say which row is the line");
+}
+
+#[test]
+fn the_dot_of_an_i_in_large_type_stays_with_its_line() {
+    let mut rgb = paper();
+    // A body 16 rows tall, and a dot 4 × 4 standing 3 blank rows above it.
+    write(&mut rgb, 10, 46, 20, 16, 1);
+    fill(&mut rgb, 30, 39, 4, 4, PEN);
+    let line = settle(&rgb, WIDTH, HEIGHT, &Bounds { x: 8, y: 36, w: 163, h: 30 });
+    assert!(rows_of(&line).start <= 39, "the dot is part of the line, got {line:?}");
+    assert!(rows_of(&line).end >= 62);
+}
+
+#[test]
+fn a_found_rectangle_taller_than_any_line_is_kept_without_looking() {
+    let mut rgb: Vec<u8> = PAPER.iter().copied().cycle().take((WIDTH * 400 * 3) as usize).collect();
+    write(&mut rgb, 10, 100, 20, 10, 1);
+    let found = Bounds { x: 0, y: 0, w: WIDTH, h: 300 };
+    assert_eq!(settle(&rgb, WIDTH, 400, &found), found);
+}
+
+/// Real type: DejaVu Sans, drawn with ImageMagick 6 (`settle_font.pgm`, 128 × 100, grey, binary
+/// PGM). From the top: "Read the docs" at 15 px with a rule three rows under it, "École à
+/// Genève" at 16 px, and "mini fix" at 30 px, whose dots stand 2 rows clear of the body.
+fn font() -> (Vec<u8>, u32, u32) {
+    let file = include_bytes!("settle_font.pgm");
+    let mut fields = file.splitn(4, |byte| *byte == b'\n');
+    let text = |field: Option<&[u8]>| String::from_utf8_lossy(field.unwrap_or_default()).into_owned();
+    assert_eq!(text(fields.next()), "P5");
+    let size = text(fields.next());
+    let (w, h) = size.split_once(' ').unwrap();
+    let _ = fields.next();
+    let grey = fields.next().unwrap();
+    let rgb = grey.iter().flat_map(|g| [*g; 3]).collect();
+    (rgb, w.parse().unwrap(), h.parse().unwrap())
+}
+
+#[test]
+fn real_type_with_a_rule_under_it_keeps_its_letters() {
+    let (rgb, w, h) = font();
+    // The text is rows 4 to 16 and the rule is row 20.
+    let line = settle(&rgb, w, h, &Bounds { x: 2, y: 2, w: 104, h: 22 });
+    assert!(rows_of(&line).start <= 4 && rows_of(&line).end > 20, "the letters and the rule, got {line:?}");
+    assert!(line.h > 17, "not the rule alone, got {line:?}");
+}
+
+#[test]
+fn real_large_type_keeps_the_dots_of_its_is() {
+    let (rgb, w, h) = font();
+    // The dots are rows 65 to 68, the body 71 to 88.
+    let line = settle(&rgb, w, h, &Bounds { x: 2, y: 62, w: 124, h: 30 });
+    assert!(rows_of(&line).start <= 65 && rows_of(&line).end >= 89, "dots and body, got {line:?}");
+}
+
+#[test]
+fn real_accents_stay_with_their_line() {
+    let (rgb, w, h) = font();
+    // The accents begin at row 31, the baseline is row 46.
+    let line = settle(&rgb, w, h, &Bounds { x: 2, y: 28, w: 124, h: 22 });
+    assert!(rows_of(&line).start <= 31 && rows_of(&line).end >= 47, "accents and letters, got {line:?}");
+}

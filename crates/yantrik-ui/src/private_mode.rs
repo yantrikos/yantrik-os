@@ -82,6 +82,10 @@ pub fn enforce(on: bool, bridge: &Arc<CompanionBridge>) {
     if let Some(host) = crate::wire::harness::host() {
         host.pause(on.then(|| PAUSED.to_string()));
     }
+    // The text reader remembers what the lines it has read said. It goes, and that with it:
+    // when Private mode goes on, so nothing read before is held through it, and when it goes
+    // off, so the Minds that come back find an empty memory, not what the person read alone.
+    crate::capture::reader::forget();
     if on {
         // What was waiting for an answer from the person on an agent's behalf is withdrawn: an
         // Allow pressed during Private mode would be an agent acting in it.
@@ -90,8 +94,6 @@ pub fn enforce(on: bool, bridge: &Arc<CompanionBridge>) {
         }
         // The agents' commands, which run as the person, stop.
         crate::control_agent_terminal::shutdown();
-        // The text reader remembers what the lines it has read said. It goes, and that with it.
-        crate::capture::reader::forget();
     }
     let _ = std::thread::Builder::new().name("private-mode".into()).spawn(move || {
         if on {

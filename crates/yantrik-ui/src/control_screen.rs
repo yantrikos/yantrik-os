@@ -8,9 +8,11 @@
 //!
 //! The reader is kept running between reads (`capture::reader`), and remembers what each line
 //! said for as long as it runs, so a read of a display that changed a little is quick (#1256).
-//! Each display has its own memory in it: a reading of Mind View is not made faster by what
-//! was read on the desktop, so its time says nothing about the desktop. The reader is ended
-//! when the screen locks and when the person goes private.
+//! Each display, and each caller of it, has its own memory in it (`reader_space`): a reading of
+//! Mind View is not made faster by what was read on the desktop, and one Mind's reading is not
+//! made faster by what another Mind's app drew, so how long a read took says nothing about
+//! anyone else's screen. The reader is ended when the screen locks and whenever Private mode
+//! changes, and a read that was asked for before then fails (`reader::epoch`).
 //!
 //! Two displays, two grades, because they are two different things to look at:
 //!
@@ -26,6 +28,15 @@
 //! and every one of those that has a surface is already readable by any mind through describe;
 //! the reading adds the ones that have none. Which mind opened which app is not tracked yet, so
 //! one mind can read another's terminal there — noted on #257, not hidden.
+//!
+//! What the memory could leak, and does not: a Mind that draws a guessed line in an app of its
+//! own on Mind View could read it back and see from the cost (`cost.remembered`, or just the
+//! time) whether another Mind's app showed exactly that line earlier. So the memory is kept
+//! per caller, and the caller is the one the shell resolved on the dispatch thread, before the
+//! read is handed off. What it still leaks: the same caller can learn what *it* had read
+//! before, which it was told then. A Mind and the person never share one, and an agent whose
+//! token was not believed, or a Mind with no name, has a space of its own that no named
+//! caller shares.
 //!
 //! The shell's state rule already refuses every act while the desktop is locked, so neither can
 //! read a locked screen (the lock screen itself, captured, says only the time and whose it is —
@@ -46,6 +57,7 @@ use yantrik_app_runtime::control::{self, Action, App as ControlSurface, Param};
 // screenshot actions use too: `capture::grab`.
 use crate::capture::grab::{self, region_arg, seen_for_good, Display};
 use crate::capture::reader;
+use crate::capture::reader_space::space;
 
 /// How long the reading may take. A first read of a full display is 9 s on a 2013 Xeon without
 /// AVX2 (VM 520) and 1.5 s on a current desktop CPU; a read of a display that changed a little
@@ -125,9 +137,36 @@ fn ocr_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/opt/yantrik/bin/yantrik-ocr"))
 }
 
-/// Capture `display` (or a rectangle of it) and read its text. Blocking: seconds.
-fn read(display: Display, region: Option<String>) -> Result<serde_json::Value, String> {
+/// Who is calling, as the memory's key. Read on the dispatch thread: nowhere else has the
+/// caller in scope.
+fn caller_now() -> String {
+    use crate::mind_view::{requester_now, Requester};
+    if let Some(who) = crate::mind_identity::identity_now() {
+        return who.key();
+    }
+    match requester_now() {
+        Requester::Person => "person".to_string(),
+        Requester::Mind(_) => "unnamed-mind".to_string(),
+    }
+}
+
+/// Nothing is read for a person who is private or whose screen is locked, and no answer is
+/// let out after either began.
+fn refuse_while_closed() -> Result<(), String> {
+    if crate::private_mode::is_on() {
+        return Err("Private mode is on: nothing is read".to_string());
+    }
+    if crate::session_lock::is_locked() {
+        return Err("the screen is locked: nothing is read".to_string());
+    }
+    Ok(())
+}
+
+/// Capture `display` (or a rectangle of it) and read its text, into `space` of the reader's
+/// memory. `epoch` is the reader's, as it was when the read was asked for. Blocking: seconds.
+fn read(display: Display, region: Option<String>, space: String, epoch: u64) -> Result<serde_json::Value, String> {
     let _turn = Turn::take()?;
+    refuse_while_closed()?;
     let bin = ocr_bin();
     if !bin.exists() {
         return Err(format!(
@@ -138,10 +177,10 @@ fn read(display: Display, region: Option<String>) -> Result<serde_json::Value, S
     let capture = Capture::new()?;
     grab::grab(display, region.as_deref(), grab::Format::Ppm, false, &capture.0)?;
 
-    // The display's name is also the name of its memory in the reader: one display never
-    // remembers for another.
-    let request = serde_json::json!({ "image": capture.0.to_string_lossy(), "space": display.name(), "max_lines": MAX_LINES });
-    let mut read = reader::ask(&bin, &request, READ_LIMIT)?;
+    // The space is the display and the caller: one never remembers for another.
+    let request = serde_json::json!({ "image": capture.0.to_string_lossy(), "space": space, "max_lines": MAX_LINES });
+    let mut read = reader::ask(&bin, &request, READ_LIMIT, epoch)?;
+    refuse_while_closed()?;
     let lines = read["lines"].as_array().cloned().unwrap_or_default();
     let clipped = lines.len() > MAX_LINES || read["clipped"] == true;
     read["lines"] = serde_json::Value::Array(lines.into_iter().take(MAX_LINES).collect());
@@ -169,7 +208,12 @@ fn answer(display: Display, args: &serde_json::Value) -> Result<serde_json::Valu
         Some(r) => Some(region_arg(r)?),
         None => None,
     };
-    let work = move || read(display, region);
+    // Both are taken here, on the dispatch thread, before the read is handed off: the caller is
+    // in scope only here, and a lock or Private mode that comes while the read waits for a
+    // worker, or for `grim`, must still end it.
+    let space = space(display.name(), &caller_now());
+    let epoch = reader::epoch();
+    let work = move || read(display, region, space, epoch);
     control::answer_later(work)
         .map(|()| serde_json::json!({ "answering": "off the UI thread" }))
         .or_else(|work| work())
@@ -235,6 +279,18 @@ mod tests {
         // session rule from covering it. If this sentence loses the words, read_screen goes
         // back to running unasked in auto.
         assert!(yantrik_app_runtime::control::unrecoverable(READ_SCREEN_PURPOSE));
+    }
+
+    /// The caller and the epoch are in scope on the dispatch thread only: they are taken there,
+    /// before the read is handed to a worker. Checked where it stands, as `control.rs` does.
+    #[test]
+    fn the_memory_space_and_the_epoch_are_taken_before_the_read_is_handed_off() {
+        let source = include_str!("control_screen.rs");
+        let body = source.split("fn answer(display").nth(1).and_then(|rest| rest.split("\n}\n").next()).expect("answer");
+        let handed_off = body.find("answer_later").expect("answer_later");
+        for taken in ["caller_now()", "reader::epoch()"] {
+            assert!(body.find(taken).is_some_and(|at| at < handed_off), "{taken} must come before answer_later");
+        }
     }
 
     #[test]

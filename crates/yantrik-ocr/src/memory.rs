@@ -23,7 +23,8 @@
 //!
 //! # Not a way to be told something that is not there
 //!
-//! Lines are matched by a keyed hash of their pixels, with a key made afresh for every process.
+//! Lines are matched by two independent keyed 64-bit hashes of their pixels (the rectangle's
+//! size is part of both), each with a key made afresh for every process, and both must match.
 //! A program that draws pixels cannot work out which pixels would be mistaken for a line that
 //! was on screen earlier.
 //!
@@ -42,10 +43,32 @@ use crate::read::{Bounds, Line};
 pub const MAX_LINES: usize = 4096;
 
 /// Displays remembered at most.
-pub const MAX_SPACES: usize = 4;
+pub const MAX_SPACES: usize = 8;
 
 /// Looks a line is kept for without being seen, once the space is full.
 pub const KEPT_FOR: u64 = 32;
+
+/// What pixels hash to: two independent 64-bit keyed hashes, both of which must agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Key(u64, u64);
+
+/// Two hashers fed the same bytes.
+struct Twin(<RandomState as BuildHasher>::Hasher, <RandomState as BuildHasher>::Hasher);
+
+impl Twin {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.write(bytes);
+        self.1.write(bytes);
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.write(&n.to_le_bytes());
+    }
+
+    fn finish(self) -> Key {
+        Key(self.0.finish(), self.1.finish())
+    }
+}
 
 /// What a rectangle of pixels said when it was read: its text and where its characters were
 /// inside the rectangle, or `None` for a rectangle that held nothing worth reporting (an icon,
@@ -53,8 +76,6 @@ pub const KEPT_FOR: u64 = 32;
 /// is full of such rectangles, and each would be read again on every look.
 #[derive(Debug, Clone, PartialEq)]
 struct Said {
-    width: u32,
-    height: u32,
     line: Option<Inside>,
     seen: u64,
 }
@@ -72,28 +93,32 @@ struct Inside {
 /// One display's memory.
 #[derive(Default)]
 struct Space {
-    lines: HashMap<u64, Said>,
+    lines: HashMap<Key, Said>,
     /// The last image read here, and what it said.
-    last: Option<(u64, Vec<Line>)>,
+    last: Option<(Key, Vec<Line>)>,
     looks: u64,
 }
 
 /// Everything the reader remembers.
 pub struct Memory {
-    keys: RandomState,
+    keys: [RandomState; 2],
     spaces: HashMap<String, Space>,
 }
 
 impl Default for Memory {
     fn default() -> Self {
-        Self { keys: RandomState::new(), spaces: HashMap::new() }
+        Self { keys: [RandomState::new(), RandomState::new()], spaces: HashMap::new() }
     }
 }
 
 impl Memory {
+    fn twin(&self) -> Twin {
+        Twin(self.keys[0].build_hasher(), self.keys[1].build_hasher())
+    }
+
     /// The key of a whole image.
-    pub fn image_key(&self, rgb: &[u8], width: u32, height: u32) -> u64 {
-        let mut hasher = self.keys.build_hasher();
+    pub fn image_key(&self, rgb: &[u8], width: u32, height: u32) -> Key {
+        let mut hasher = self.twin();
         hasher.write_u32(width);
         hasher.write_u32(height);
         hasher.write(rgb);
@@ -102,8 +127,8 @@ impl Memory {
 
     /// The key of the pixels inside `bounds` of an RGB image `width` wide. An image too short
     /// for the rectangle is hashed as far as it goes; the rectangle's size is part of the key.
-    pub fn line_key(&self, rgb: &[u8], width: u32, bounds: &Bounds) -> u64 {
-        let mut hasher = self.keys.build_hasher();
+    pub fn line_key(&self, rgb: &[u8], width: u32, bounds: &Bounds) -> Key {
+        let mut hasher = self.twin();
         hasher.write_u32(bounds.w);
         hasher.write_u32(bounds.h);
         let (x0, x1) = (bounds.x as usize * 3, (bounds.x + bounds.w).min(width) as usize * 3);
@@ -130,7 +155,7 @@ impl Memory {
     }
 
     /// What the last look at `space` said, when `image` is the very image it looked at.
-    pub fn same_image(&mut self, space: &str, image: u64) -> Option<Vec<Line>> {
+    pub fn same_image(&mut self, space: &str, image: Key) -> Option<Vec<Line>> {
         let space = self.space(space);
         space.looks += 1;
         space.last.as_ref().filter(|(last, _)| *last == image).map(|(_, lines)| lines.clone())
@@ -138,10 +163,10 @@ impl Memory {
 
     /// What the pixels with this key said when they were last read in `space`, placed where
     /// they are now. `None`: never read. `Some(None)`: read, and nothing worth reporting.
-    pub fn recall(&mut self, space: &str, key: u64, bounds: &Bounds) -> Option<Option<Line>> {
+    pub fn recall(&mut self, space: &str, key: Key, bounds: &Bounds) -> Option<Option<Line>> {
         let space = self.space(space);
         let looks = space.looks;
-        let said = space.lines.get_mut(&key).filter(|said| said.width == bounds.w && said.height == bounds.h)?;
+        let said = space.lines.get_mut(&key)?;
         said.seen = looks;
         Some(said.line.as_ref().map(|inside| Line {
             text: inside.text.clone(),
@@ -153,7 +178,7 @@ impl Memory {
     }
 
     /// Remember what the pixels with this key said, found at `bounds`.
-    pub fn keep(&mut self, space: &str, key: u64, bounds: &Bounds, line: Option<&Line>) {
+    pub fn keep(&mut self, space: &str, key: Key, bounds: &Bounds, line: Option<&Line>) {
         let space = self.space(space);
         if space.lines.len() >= MAX_LINES {
             let looks = space.looks;
@@ -166,11 +191,11 @@ impl Memory {
         }
         let line = line.map(|line| Inside { text: line.text.clone(), dx: line.x - bounds.x as i32, dy: line.y - bounds.y as i32, w: line.w, h: line.h });
         let seen = space.looks;
-        space.lines.insert(key, Said { width: bounds.w, height: bounds.h, line, seen });
+        space.lines.insert(key, Said { line, seen });
     }
 
     /// Remember the whole image a look at `space` just read, and what it said.
-    pub fn keep_image(&mut self, space: &str, image: u64, lines: &[Line]) {
+    pub fn keep_image(&mut self, space: &str, image: Key, lines: &[Line]) {
         self.space(space).last = Some((image, lines.to_vec()));
     }
 

@@ -120,14 +120,44 @@ fn two_readers_do_not_share_their_keys() {
     assert_ne!(one.line_key(&rgb, WIDTH, &at(4, 4)), other.line_key(&rgb, WIDTH, &at(4, 4)));
 }
 
+/// The size of a rectangle is part of both keys: the same pixels cut to another shape are
+/// another line.
 #[test]
-fn a_remembered_line_of_another_size_is_not_given_for_this_one() {
+fn a_rectangle_of_another_size_has_another_key() {
+    let memory = Memory::default();
+    let rgb = image(&[(at(4, 4), 90)]);
+    let (one, wider) = (memory.line_key(&rgb, WIDTH, &at(4, 4)), memory.line_key(&rgb, WIDTH, &Bounds { w: 31, ..at(4, 4) }));
+    assert_ne!(one.0, wider.0);
+    assert_ne!(one.1, wider.1);
+}
+
+/// Two hashes, with keys of their own, and a line is remembered only when both agree.
+#[test]
+fn a_line_needs_both_of_its_keys_to_be_remembered() {
     let mut memory = Memory::default();
     let rgb = image(&[(at(4, 4), 90)]);
     let key = memory.line_key(&rgb, WIDTH, &at(4, 4));
-    memory.keep("desktop", key, &at(4, 4), Some(&line("make test", &at(4, 4))));
-    let wider = Bounds { w: 31, ..at(4, 4) };
-    assert_eq!(memory.recall("desktop", key, &wider), None, "the same key for another rectangle is not the same line");
+    assert_ne!(key.0, key.1, "two hashes, not one twice");
+    memory.keep("desktop", key, &at(4, 4), None);
+    assert_eq!(memory.recall("desktop", Key(key.0, key.1 ^ 1), &at(4, 4)), None, "the first half alone is not the line");
+    assert_eq!(memory.recall("desktop", Key(key.0 ^ 1, key.1), &at(4, 4)), None, "nor the second");
+    assert_eq!(memory.recall("desktop", key, &at(4, 4)), Some(None));
+    let other = Memory::default().line_key(&rgb, WIDTH, &at(4, 4));
+    assert!(other.0 != key.0 && other.1 != key.1, "and no half is shared with another process");
+}
+
+/// What one caller's app drew must not make another caller's read faster.
+#[test]
+fn one_caller_never_remembers_for_another() {
+    let mut memory = Memory::default();
+    let rgb = image(&[(at(4, 4), 90)]);
+    let key = memory.line_key(&rgb, WIDTH, &at(4, 4));
+    let image_key = memory.image_key(&rgb, WIDTH, HEIGHT);
+    memory.keep("mind_view/aria", key, &at(4, 4), Some(&line("a token only B's app drew", &at(4, 4))));
+    memory.keep_image("mind_view/aria", image_key, &[line("a token", &at(4, 4))]);
+    assert_eq!(memory.recall("mind_view/bo", key, &at(4, 4)), None);
+    assert_eq!(memory.same_image("mind_view/bo", image_key), None);
+    assert!(memory.same_image("mind_view/aria", image_key).is_some());
 }
 
 #[test]
@@ -144,31 +174,32 @@ fn a_rectangle_past_the_end_of_the_image_is_hashed_without_a_panic() {
 fn memory_is_bounded_and_keeps_what_was_seen_lately() {
     let mut memory = Memory::default();
     let recent = Bounds { x: 0, y: 0, w: 3, h: 3 };
-    for key in 0..(MAX_LINES as u64 * 3) {
+    for n in 0..(MAX_LINES as u64 * 3) {
+        let key = Key(n, n);
         // A look for every hundred lines, so old lines age.
-        if key % 100 == 0 {
-            memory.same_image("desktop", u64::MAX);
-            memory.recall("desktop", u64::MAX - 1, &recent);
+        if n % 100 == 0 {
+            memory.same_image("desktop", Key(u64::MAX, 0));
+            memory.recall("desktop", Key(u64::MAX - 1, 0), &recent);
         }
-        if key == 0 {
-            memory.keep("desktop", u64::MAX - 1, &recent, None);
+        if n == 0 {
+            memory.keep("desktop", Key(u64::MAX - 1, 0), &recent, None);
         }
         memory.keep("desktop", key, &at(0, 0), None);
     }
     let kept = memory.spaces["desktop"].lines.len();
     assert!(kept <= MAX_LINES, "{kept} lines kept");
-    assert_eq!(memory.recall("desktop", u64::MAX - 1, &recent), Some(None), "a line seen on every look is still there");
-    assert_eq!(memory.recall("desktop", 0, &at(0, 0)), None, "one not seen since the start is gone");
+    assert_eq!(memory.recall("desktop", Key(u64::MAX - 1, 0), &recent), Some(None), "a line seen on every look is still there");
+    assert_eq!(memory.recall("desktop", Key(0, 0), &at(0, 0)), None, "one not seen since the start is gone");
 }
 
 #[test]
 fn only_so_many_displays_are_remembered_and_the_least_used_goes_first() {
     let mut memory = Memory::default();
     for look in 0..10 {
-        memory.same_image("desktop", look);
+        memory.same_image("desktop", Key(look, look));
     }
     for n in 0..MAX_SPACES * 2 {
-        memory.same_image(&format!("display-{n}"), 0);
+        memory.same_image(&format!("display-{n}"), Key(0, 0));
     }
     assert!(memory.spaces.len() <= MAX_SPACES);
     assert!(memory.spaces.contains_key("desktop"), "the display looked at most is kept");
