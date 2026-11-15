@@ -247,6 +247,16 @@ fn connected_is_said_only_after_a_real_call_or_a_probe() {
     assert_eq!(s.words, "key missing");
     let s = judge(&Input { gateway_down: Some("127.0.0.1:7460 is in use".into()), ..base.clone() });
     assert_eq!(s.state, "unreachable");
+    // A tier switched Off is said so, with a fix that turns it on; it is not "gone" and no key is asked for.
+    let s = judge(&Input { last_call: Some(call(990, 403, "tier_off")), ..base.clone() });
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("not-allowed", "switched off · turn it on in Free AI accounts", Fix::TurnOn));
+    let s = judge(&Input { probe: Some(Probe { at: 990, outcome: Outcome::SwitchedOff }), ..base.clone() });
+    assert_eq!((s.words.as_str(), s.fix), ("switched off · turn it on in Free AI accounts", Fix::TurnOn));
+    // Keys not read yet is not "key missing".
+    let s = judge(&Input { last_call: Some(call(990, 503, "keys_not_known_yet")), ..base.clone() });
+    assert_eq!((s.state, s.fix), ("checking", Fix::None));
+    let s = judge(&Input { last_call: Some(call(990, 404, "account_not_found")), ..base.clone() });
+    assert_eq!(s.words, "not set up · that account is gone");
     let s = judge(&Input { answer: None, ..base.clone() });
     assert_eq!((s.state, s.fix), ("not-set-up", Fix::AddKey));
     // A call for another model says nothing about this one.
@@ -320,4 +330,53 @@ fn switching_mind_never_relabels_what_an_earlier_mind_said() {
     assert!(bubble.contains("root.data.mind != \"\" ? root.data.mind : root.mind-name"), "the label is the message's own");
     let lens = include_str!("../../../yantrik-ui-slint/ui/components/intent_lens.slint");
     assert!(lens.contains("root.messages[idx - 1].mind != msg.mind"), "a new mind starts a new group");
+}
+
+#[test]
+fn a_withdrawal_outranks_an_older_success() {
+    let base = Input { now: 1_000, on_gateway: true, answer: Some(crate::answering::Answer { account_id: "free-groq".into(), account: "Groq".into(), model: "gpt-oss-20b".into(), lane: false, called_at: None }), ..Input::default() };
+    let fresh_call = Some(Call { account: "free-groq".into(), model: "gpt-oss-20b".into(), ..call(990, 200, "") });
+    let ok_probe = Some(Probe { at: 990, outcome: Outcome::Ok });
+    let connected = judge(&Input { last_call: fresh_call.clone(), probe: ok_probe.clone(), ..base.clone() });
+    assert_eq!(connected.state, "connected", "before the tier is switched Off");
+    let off = judge(&Input { last_call: fresh_call.clone(), probe: ok_probe.clone(), withdrawn: Some("tier_off"), ..base.clone() });
+    assert_eq!((off.state, off.fix, off.words.as_str()), ("not-allowed", Fix::TurnOn, "switched off · turn it on in Free AI accounts"));
+    let no_key = judge(&Input { last_call: fresh_call, probe: ok_probe, withdrawn: Some("key_missing"), ..base.clone() });
+    assert_eq!((no_key.state, no_key.fix), ("key-missing", Fix::AddKey));
+    let gone = judge(&Input { probe: Some(Probe { at: 990, outcome: Outcome::Gone }), ..base });
+    assert_eq!((gone.state, gone.words.as_str()), ("not-set-up", "not set up · that model is gone"), "no endless checking");
+}
+
+#[test]
+fn probes_of_accounts_that_left_the_list_are_forgotten() {
+    super::probe_for_test("free-groq", Some(Outcome::Ok));
+    super::probe_for_test("mine", Some(Outcome::Ok));
+    super::keep_probes_of(&["mine".to_string()]);
+    assert!(!super::probe_for_test("free-groq", None));
+    assert!(super::probe_for_test("mine", None));
+    super::keep_probes_of(&[]);
+}
+
+#[test]
+fn a_withdrawn_tier_the_gateway_refused_is_never_connected_and_says_why() {
+    // The real resolver gives no answer for a withdrawn tier (the gateway refuses it first), so
+    // `judge` is handed only the refusal. A probe and a call that were fine must not matter.
+    let said = |code: &'static str| {
+        let refusal = yantrik_gateway::Refusal::new(403, code, "x");
+        let i = Input { now: 1_000, on_gateway: true, answer: None, refusal: Some(refusal), last_call: Some(call(990, 200, "ok")), probe: Some(Probe { at: 990, outcome: Outcome::Ok }), ..Input::default() };
+        judge(&i)
+    };
+    let off = said("tier_off");
+    assert_eq!((off.state, off.words.as_str(), off.fix), ("not-allowed", "switched off \u{b7} turn it on in Free AI accounts", Fix::TurnOn));
+    for code in ["key_missing", "vault_locked"] {
+        let s = said(code);
+        assert_eq!((s.state, s.words.as_str(), s.fix), ("key-missing", "key missing", Fix::AddKey), "{code}");
+    }
+    let s = said("keys_not_known_yet");
+    assert_eq!((s.state, s.words.as_str(), s.fix), ("checking", "checking", Fix::None));
+    for code in ["tier_off", "key_missing", "vault_locked", "keys_not_known_yet"] {
+        let s = said(code);
+        assert_ne!(s.state, "connected", "{code}");
+        assert!(!s.words.contains("not set up"), "{code}: {}", s.words);
+    }
 }

@@ -1644,10 +1644,14 @@ impl CompanionService {
     /// plain sentence naming the fix, before anything else runs (the router's canned greetings
     /// included): the person learns at once that nothing can think yet, and why.
     fn not_set_up(&self, on_token: &mut dyn FnMut(&str)) -> Option<AgentResponse> {
-        if self.llm.backend_name() != yantrik_ml::not_set_up::BACKEND {
-            return None;
+        // A backend that was stopped, or cut, says that its provider was removed, not that no
+        // model was ever chosen.
+        let message = match self.llm.backend_name() {
+            yantrik_ml::not_set_up::BACKEND => yantrik_ml::not_set_up::NOT_SET_UP,
+            yantrik_ml::STOPPED_BACKEND => yantrik_ml::NO_PROVIDER,
+            _ => return None,
         }
-        let message = yantrik_ml::not_set_up::NOT_SET_UP.to_string();
+        .to_string();
         on_token(&message);
         Some(AgentResponse { message, memories_recalled: 0, urges_delivered: vec![], tool_calls_made: vec![], offline_mode: false, without_model: true, model_failure: None })
     }
@@ -2234,6 +2238,13 @@ impl CompanionService {
                 Ok(r) => {
                     self.note_llm_reachable();
                     r
+                }
+                // The provider was removed while this turn ran: say so, never "local mode".
+                Err(e) if e.downcast_ref::<yantrik_ml::Stopped>().is_some() => {
+                    response_text = e.to_string();
+                    model_failure = Some(response_text.clone());
+                    agent_loop.fail("the provider was removed");
+                    break;
                 }
                 Err(e) if answered_badly(&*e).is_some() => {
                     self.note_llm_reachable();
@@ -3372,6 +3383,14 @@ impl CompanionService {
                                     response_text = round_text;
                                 }
                             }
+                            Err(e) if e.downcast_ref::<yantrik_ml::Stopped>().is_some() => {
+                                response_text = e.to_string();
+                                on_token("__REPLACE__");
+                                on_token(&response_text);
+                                model_failure = Some(response_text.clone());
+                                agent_loop.fail("the provider was removed");
+                                break;
+                            }
                             Err(_) if !response_text.is_empty() => break,
                             Err(e) if answered_badly(&*e).is_some() => {
                                 self.note_llm_reachable();
@@ -3430,6 +3449,13 @@ impl CompanionService {
                         }
                     }
                 }
+            }
+            Err(e) if e.downcast_ref::<yantrik_ml::Stopped>().is_some() => {
+                response_text = e.to_string();
+                on_token("__REPLACE__");
+                on_token(&response_text);
+                model_failure = Some(response_text.clone());
+                agent_loop.fail("the provider was removed");
             }
             // The model was reached and answered with thinking alone (a Qwen3 that spent the whole
             // budget thinking, VM 542): say so, in words, rather than show an empty bubble.
