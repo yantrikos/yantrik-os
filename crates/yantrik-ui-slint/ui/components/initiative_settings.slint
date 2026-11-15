@@ -34,6 +34,10 @@ export global InitiativeState {
     in property <string> quiet-hours: "Off";
     // Why a change did not take, said under the section.
     in property <string> notice: "";
+    // Meeting briefs: the card the OS prepares ten minutes before a meeting with other people in
+    // it. On unless the person turned it off; off means nothing is gathered at all.
+    in property <bool> meeting-briefs: true;
+    callback set-meeting-briefs(bool);
     callback set-quiet(bool);
     callback set-family(string, string);
     callback next-quiet-hours();
@@ -119,6 +123,26 @@ export component InitiativeSettings inherits VerticalLayout {
                     variant: 1;
                     size: 0;
                     clicked => { InitiativeState.next-quiet-hours(); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.sp-3;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text { text: "Meeting briefs"; color: Theme.text-primary; font-size: Theme.fs-body; font-weight: 600; }
+                    Text {
+                        text: "Ten minutes before a meeting with other people in it, a card gathers your recent emails, notes, promises and files about them. The OS prepares it on this machine; nothing is sent anywhere and nothing opens on its own.";
+                        color: Theme.text-dim;
+                        font-size: Theme.fs-caption;
+                        wrap: word-wrap;
+                    }
+                }
+                YSwitch {
+                    label: "Meeting briefs";
+                    on: InitiativeState.meeting-briefs;
+                    toggled => { InitiativeState.set-meeting-briefs(!InitiativeState.meeting-briefs); }
                 }
             }
 

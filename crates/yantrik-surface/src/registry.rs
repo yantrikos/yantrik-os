@@ -8,7 +8,9 @@ use yantrik_ipc_transport::gate::{self, decide, Authority, LADDER};
 use yantrik_ipc_transport::reach::{self, Reach};
 
 use crate::args::{as_declared, check_arguments, declaration_problems};
+use crate::context::Caller;
 use crate::private::{Hold, PrivacySource};
+use crate::shell_only;
 
 /// What an app reports about itself, for a surface whose describe closure lives on one thread.
 pub type Describer = dyn Fn() -> View;
@@ -56,6 +58,8 @@ pub struct Registry<D: ?Sized = Describer, H: ?Sized = Handler> {
     pub(crate) shown_in_private: Vec<String>,
     pub(crate) presence: Option<Box<D>>,
     pub(crate) privacy: Option<Box<PrivacySource>>,
+    /// Who counts as the shell for an action declared [`Action::shell_only`].
+    pub(crate) shell_judge: fn(Option<Caller>) -> bool,
 }
 
 impl<D: ?Sized, H: ?Sized> Registry<D, H> {
@@ -69,7 +73,14 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
             shown_in_private: Vec::new(),
             presence: None,
             privacy: None,
+            shell_judge: shell_only::is_the_shell,
         }
+    }
+
+    /// Judge the shell by `judge` instead of by the kernel's peer credentials: a test's stand-in
+    /// for a process it cannot be.
+    pub fn set_shell_judge(&mut self, judge: fn(Option<Caller>) -> bool) {
+        self.shell_judge = judge;
     }
 
     /// The id this surface publishes, and the app a grant for one of its actions is bound to.
@@ -102,6 +113,14 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
             Some(rule) => rule(name),
             None => Ok(()),
         }
+    }
+
+    /// Whether `name` is an action `app.act` must treat as one that does not exist: one declared
+    /// [`Action::shell_only`], which only `app.press` runs. Every reader a caller can reach
+    /// ([`Registry::grade_of`], [`Registry::check_call`], [`Registry::explain`], `act`) answers it
+    /// with [`Registry::unknown`], word for word, so no refusal confirms the action is there.
+    pub(crate) fn is_hidden(&self, name: &str) -> bool {
+        self.actions.iter().any(|(a, _)| a.name == name && a.shell_only)
     }
 
     /// One thing this surface can be asked to do. A declaration the dispatch cannot check is
@@ -140,6 +159,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     pub fn specs(&self) -> Vec<Action> {
         self.actions
             .iter()
+            .filter(|(a, _)| !a.shell_only)
             .map(|(a, _)| {
                 let mut spec = a.clone();
                 spec.permission = self.effective_grade(&spec.name, spec.permission);
@@ -156,7 +176,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     pub fn grade_of(&self, name: &str) -> Result<&'static str, String> {
         self.actions
             .iter()
-            .find(|(a, _)| a.name == name)
+            .find(|(a, _)| a.name == name && !a.shell_only)
             .map(|(a, _)| self.effective_grade(&a.name, a.permission))
             .ok_or_else(|| self.unknown(name))
     }
@@ -243,7 +263,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     }
 
     fn unknown(&self, name: &str) -> String {
-        let known: Vec<&str> = self.actions.iter().map(|(a, _)| a.name.as_str()).collect();
+        let known: Vec<&str> = self.actions.iter().filter(|(a, _)| !a.shell_only).map(|(a, _)| a.name.as_str()).collect();
         format!("unknown action `{name}`; this app offers: {}", known.join(", "))
     }
 
@@ -263,8 +283,11 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     /// which is every action that did not opt in — and is what tells an asker to draw no line.
     /// `Ok("")` is the app's own honest "nothing about THIS call", and draws no line either.
     pub fn explain(&self, name: &str, args: &Value) -> Result<String, String> {
-        let (spec, _) =
-            self.actions.iter().find(|(a, _)| a.name == name).ok_or_else(|| self.unknown(name))?;
+        let (spec, _) = self
+            .actions
+            .iter()
+            .find(|(a, _)| a.name == name && !a.shell_only)
+            .ok_or_else(|| self.unknown(name))?;
         match &spec.explainer {
             Some(explainer) => Ok(explainer.sentence(args)),
             None => Err(format!(
@@ -346,6 +369,24 @@ where
     /// view, and for a caller nobody vouches for the handler's own answer and refusal are withheld,
     /// so no reply and no refusal says more than `describe` would.
     pub fn act_in(
+        &self,
+        name: &str,
+        args: &Value,
+        expect_revision: Option<&str>,
+        action_id: &str,
+        authority: &Authority,
+        hold: Hold,
+    ) -> Result<Value, String> {
+        // An action only `app.press` runs is, here, one that is not there.
+        if self.is_hidden(name) {
+            return Err(self.unknown(name));
+        }
+        self.dispatch(name, args, expect_revision, action_id, authority, hold)
+    }
+
+    /// The dispatch `act_in` and `press_in` share, after each has settled whether the action may
+    /// be reached by the method that was used.
+    pub(crate) fn dispatch(
         &self,
         name: &str,
         args: &Value,

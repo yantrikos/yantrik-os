@@ -634,7 +634,7 @@ impl ServiceHandler for ControlRpc {
         match (answer, later) {
             // The work runs here, off the UI thread, and the view beside its result is read
             // again on the UI thread once it has — under Private mode as it is then.
-            (Ok(envelope), Some(later)) if method == "app.act" => {
+            (Ok(envelope), Some(later)) if matches!(method, "app.act" | "app.press") => {
                 let to = ReplyTo { pid: who.map(|c| c.pid), surface: &self.app_id };
                 finish_later_published(envelope, later, to, move |private| {
                     on_ui_thread(who, move |reg| {
@@ -740,6 +740,32 @@ impl ControlRpc {
                 .map_err(unanswered)?
                 // An action that legitimately refuses is an application error, not a transport
                 // failure: -32602 keeps it out of the client's circuit breaker.
+                .map_err(|why| refusal(recheck_refusal(private, to, why)))
+                .map(|mut reply| {
+                    recheck_private(private, to, &mut reply, || on_ui_thread(who, |reg| reg.published(true)).ok());
+                    reply
+                })
+            }
+
+            // The shell's own press, and the only way to run an action declared `shell_only`
+            // (`yantrik_surface::shell_only`). `app.act` refuses such an action to everyone; this
+            // refuses everything else, and every caller but the shell, in one sentence that
+            // confirms nothing. No agent token is lifted off the call and none is accepted: a
+            // token that arrives is entered below, where the dispatch refuses it.
+            "app.press" => {
+                let call = ActCall::parse(&params)?;
+                let action_id = next_action_id(&self.service_id);
+                let authority = Authority::now();
+                let ActCall { action, args, agent_token, expect_revision, .. } = call;
+                let private = privacy::is_private();
+                let to = ReplyTo { pid: who.map(|c| c.pid), surface: &self.app_id };
+                let hold = Hold::for_caller(private, to);
+                tracing::info!(id = %action_id, caller_pid = who.map(|c| c.pid).unwrap_or(0), "app.press");
+                on_ui_thread(who, move |reg| {
+                    let _agent = AgentTokenScope::enter(agent_token);
+                    reg.press_in(&action, &args, expect_revision.as_deref(), &action_id, &authority, hold)
+                })
+                .map_err(unanswered)?
                 .map_err(|why| refusal(recheck_refusal(private, to, why)))
                 .map(|mut reply| {
                     recheck_private(private, to, &mut reply, || on_ui_thread(who, |reg| reg.published(true)).ok());

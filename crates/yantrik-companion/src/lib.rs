@@ -88,6 +88,7 @@ pub mod cognitive_router;
 pub mod commitment_extractor;
 pub mod workspaces;
 pub mod anticipation;
+pub mod meeting_brief;
 pub mod relationship_intelligence;
 pub mod companion_modes;
 pub mod world_model;
