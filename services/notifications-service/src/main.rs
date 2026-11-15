@@ -60,7 +60,6 @@ mod notices;
 mod reminders;
 mod store;
 
-use std::path::Path;
 use std::sync::Arc;
 
 use yantrik_ipc_contracts::notifications::*;
@@ -599,7 +598,7 @@ const NAMELESS: &str = "unknown";
 /// And judged by where that binary IS, not what it is called (security re-review of #611): one
 /// of the desktop's binaries (`owner::DESKTOP_BINARIES`) in the install directory, or in the
 /// directory this service itself was started from when that directory can be trusted (see
-/// [`own_dir_counts`]). A copy at `/tmp/yantrik-ui` has the right name and gets nothing for it:
+/// [`owner::own_dir_counts`]). A copy at `/tmp/yantrik-ui` has the right name and gets nothing for it:
 /// the name `Yantrik` on the toast and the row is what #114 is about.
 ///
 /// And only from the service's own user (`attribute`'s `same_user`, from `SO_PEERCRED`): a mind
@@ -619,43 +618,7 @@ const NAMELESS: &str = "unknown";
 /// service hands the shell when the shell is spawned, so being the desktop is a capability the
 /// shell holds rather than a fact read from `/proc` after the fact.
 fn is_the_desktop(who: &Program) -> bool {
-    let own_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .filter(|d| own_dir_counts(d));
-    who.direct.as_ref().is_some_and(|f| desktop_exe(&f.exe, own_dir.as_deref()))
-}
-
-/// The rule behind `is_the_desktop`, with the service's own directory passed in so it can be
-/// tested without being installed.
-fn desktop_exe(exe: &str, own_dir: Option<&Path>) -> bool {
-    owner::is_installed_desktop_binary(exe) || own_dir.is_some_and(|d| owner::is_desktop_binary_in(exe, d))
-}
-
-/// Whether the directory this service runs from may vouch for a binary beside it.
-///
-/// A developer's cargo target directory is writable by that developer, so a file dropped there
-/// named `yantrik-ui` would otherwise become the desktop (security review of #614). A debug
-/// build is a developer's machine by definition; a release build counts its own directory only
-/// when root owns it and neither group nor others can write to it.
-fn own_dir_counts(dir: &Path) -> bool {
-    #[cfg(unix)]
-    let (uid, mode) = {
-        use std::os::unix::fs::MetadataExt;
-        match std::fs::metadata(dir) {
-            Ok(m) => (m.uid(), m.mode()),
-            Err(_) => return cfg!(debug_assertions),
-        }
-    };
-    #[cfg(not(unix))]
-    let (uid, mode) = (u32::MAX, 0o777);
-    dir_vouches(cfg!(debug_assertions), uid, mode)
-}
-
-/// [`own_dir_counts`]'s judgement, from the facts, so the release rule can be tested from a
-/// debug build.
-fn dir_vouches(debug: bool, uid: u32, mode: u32) -> bool {
-    debug || (uid == 0 && mode & 0o022 == 0)
+    who.direct.as_ref().is_some_and(|f| owner::is_installed_desktop_program(&f.exe))
 }
 
 /// What this machine can establish about whoever is on the socket, read now.
@@ -1040,6 +1003,31 @@ mod tests {
         assert!(since.get("harness_bindings").is_none(), "{since}");
     }
 
+    /// `since` carries the initiative settings too, and `notifications.initiative` withholds the
+    /// moments the person switched off and their quiet hours from every caller but the desktop:
+    /// so must the poll, or any mind reading it learns what that one hides.
+    #[test]
+    fn since_gives_a_peer_that_is_not_the_desktop_neither_the_moments_nor_the_quiet_hours() {
+        let h = handler();
+        h.store
+            .set_initiative(|s| {
+                s.moments_off = vec![notice::MOMENT_MEETING_BRIEF.to_string()];
+                s.quiet_hours = Some(notice::QuietHours { start: 22, end: 7 });
+                s.quiet = true;
+                Ok(())
+            })
+            .unwrap();
+        let since = h.dispatch(SINCE, serde_json::json!({ "revision": 0 }), None).unwrap();
+        let initiative = &since["initiative"];
+        assert!(initiative.get("moments_off").is_none_or(|m| m.as_array().is_some_and(|m| m.is_empty())), "{since}");
+        assert!(initiative.get("quiet_hours").is_none(), "{since}");
+        assert_eq!(initiative["quiet"], true, "what a harness is told is still told");
+        // The desktop's own poll still carries them.
+        let desktop = serde_json::to_value(h.store.since_for(0, true)).unwrap();
+        assert_eq!(desktop["initiative"]["moments_off"], serde_json::json!([notice::MOMENT_MEETING_BRIEF]));
+        assert_eq!(desktop["initiative"]["quiet_hours"]["start"], 22);
+    }
+
     /// Two doors the first round of fixes for #831's findings 1 and 7 left open: `since`, which
     /// carries the same records as `list`, and a plain post whose `replaces_id` names a notice.
     #[test]
@@ -1237,15 +1225,6 @@ mod tests {
     }
 
     #[test]
-    fn a_release_build_trusts_its_own_directory_only_when_root_holds_it() {
-        assert!(dir_vouches(true, 1000, 0o755), "a debug build is a developer's machine");
-        assert!(dir_vouches(false, 0, 0o755), "root-owned, written by nobody else");
-        assert!(!dir_vouches(false, 1000, 0o755), "the developer's own target directory");
-        assert!(!dir_vouches(false, 0, 0o775), "group-writable");
-        assert!(!dir_vouches(false, 0, 0o757), "world-writable");
-    }
-
-    #[test]
     fn the_desktops_name_goes_by_where_the_binary_is_not_what_it_is_called() {
         // A copy of the shell outside the install directory, on the socket itself.
         let copy = peer_identity::choose(vec![facts(31, "/tmp/yantrik-ui", "yantrik-ui")]);
@@ -1257,12 +1236,9 @@ mod tests {
         let script = peer_identity::choose(vec![facts(32, "/usr/bin/python3.11", "yantrik-ui")]);
         assert!(!is_the_desktop(&script));
 
-        // A developer's build counts beside this service's own build, and nowhere else.
-        let build = Path::new("/home/yantrik/targets/dev/release");
-        assert!(desktop_exe("/home/yantrik/targets/dev/release/yantrik-ui", Some(build)));
-        assert!(!desktop_exe("/tmp/yantrik-ui", Some(build)));
-        assert!(!desktop_exe("/home/yantrik/targets/dev/release/yantrik-ui", None));
-        assert!(desktop_exe("/opt/yantrik/bin/yantrik-ui (deleted)", None), "replaced by an update");
+        // The rule itself (a developer's build counts beside this program's own, and nowhere
+        // else) is `owner::desktop_exe`, tested there; this service has no copy of it.
+        assert!(owner::is_installed_desktop_program("/opt/yantrik/bin/yantrik-ui (deleted)"), "replaced by an update");
     }
 
     #[test]

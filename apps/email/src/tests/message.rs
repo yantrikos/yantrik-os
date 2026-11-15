@@ -343,21 +343,40 @@ fn open_message_id_refuses_another_account_and_says_when_the_message_is_not_ther
     assert_eq!(e, "Could not open that message: NO such message", "the app's answer is the card's line");
 }
 
-/// The exact open is the shell's, by pointer. An agent, the person's own `yos act` and a caller
-/// nobody could identify are refused before anything is asked of the mail server: a Mind that
-/// could walk folder and id would open, and mark read, whatever it liked.
+/// The exact open is the shell's press and nobody's `app.act`. `app.act` refuses it whoever sends
+/// it, the shell's own process included (the built-in companion runs in that process and sends no
+/// token); `app.press` runs it for the shell only, and refuses an agent, `yos` and a caller nobody
+/// could identify. Nothing is asked of the mail server by any refused call: a Mind that could walk
+/// folder and id would open, and mark read, whatever it liked.
 #[test]
-fn open_message_id_is_the_shells_and_nobody_elses() {
+fn open_message_id_is_the_shells_press_and_nobody_elses() {
     let mail = with_inbox().answering("email.get_message", detail("900", "Q4 numbers", "You <you@example.com>", true, ""));
     let app = started(&mail);
     let args = json!({ "folder": "Sent", "message_id": "900" });
     let refused = |call: Call| app.act_as(call).map(|_| ()).unwrap_err();
-    for e in [
-        refused(Call::new("open_message_id", args.clone()).as_the_shell().as_agent("mind-1")),
-        refused(Call::new("open_message_id", args.clone()).as_yos()),
-        refused(Call::new("open_message_id", args.clone())),
+    let by_act: Vec<String> = [
+        // The shell's own process through `app.act`: the companion's `app_action`, a recipe, a
+        // notification button's relay all arrive like this.
+        Call::new("open_message_id", args.clone()).as_the_shell(),
+        Call::new("open_message_id", args.clone()).as_the_shell().as_agent("mind-1"),
+        Call::new("open_message_id", args.clone()).as_yos(),
+        Call::new("open_message_id", args.clone()),
+    ]
+    .into_iter()
+    .map(refused)
+    .collect();
+    let absent = refused(Call::new("open_nothing", args.clone()).as_the_shell());
+    for e in &by_act {
+        assert_eq!(e.replace("open_message_id", "NAME"), absent.replace("open_nothing", "NAME"), "said as an action that is not there");
+    }
+    for call in [
+        Call::new("open_message_id", args.clone()).as_the_shell().as_agent("mind-1").pressed(),
+        Call::new("open_message_id", args.clone()).as_yos().pressed(),
+        Call::new("open_message_id", args.clone()).pressed(),
+        Call::new("open_message", json!({ "which": "1" })).as_the_shell().pressed(),
     ] {
-        assert!(e.contains("the desktop's own"), "{e}");
+        let e = refused(call);
+        assert!(e.starts_with("there is nothing to press"), "{e}");
     }
     quiet(&app);
     assert!(mail.asked_for("email.get_message").is_empty(), "nothing was read, and so nothing was marked read");

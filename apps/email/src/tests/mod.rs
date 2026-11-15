@@ -50,9 +50,9 @@ pub(crate) fn act(app: &TestApp<Email>, name: &str, args: Value) -> Result<Value
     pending.settle()
 }
 
-/// The shell's own call, which is the only caller `open_message_id` answers.
+/// The shell's own press (`app.press`), the only way `open_message_id` is run.
 pub(crate) fn act_as_the_shell(app: &TestApp<Email>, name: &str, args: Value) -> Result<Value, String> {
-    let pending = app.act_as(Call::new(name, args).as_the_shell())?;
+    let pending = app.act_as(Call::new(name, args).as_the_shell().pressed())?;
     quiet(app);
     pending.settle()
 }

@@ -20,6 +20,23 @@ const COLD_START: Duration = Duration::from_secs(5);
 /// How long the app has to answer: a message is read from the mail server first.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 
+/// The actions only the shell's own press runs, as (app, action): an app declares them
+/// `shell_only`, `app.act` refuses them to every caller, and `app.press` runs them for the shell
+/// alone. This is the one place in the tree that sends `app.press` (a source scan test below holds
+/// it to that), so the companion's `app_action`, a recipe, a notification button's relay and
+/// every other path that sends `app.act` for someone else cannot reach one.
+const PRESSED: &[(&str, &str)] = &[("email", "open_message_id")];
+
+/// The method that carries `action` to `surface`: `app.press` for a press only the shell makes,
+/// `app.act` for everything else.
+fn method_for(surface: &str, action: &str) -> &'static str {
+    if PRESSED.contains(&(surface, action)) {
+        "app.press"
+    } else {
+        "app.act"
+    }
+}
+
 /// The key of an app's `describe` state that says its first read has landed, for an app that
 /// answers a call before it (Notes reads its library after its socket is up, and refuses a call
 /// while it does). Email handles it inside the app; an app not listed is asked at once.
@@ -78,7 +95,7 @@ pub fn act(ui: &App, app: &str, action: &str, args: serde_json::Value, key: &str
                 }
             }
             client
-                .call("app.act", serde_json::json!({ "action": action, "args": args }))
+                .call(method_for(&surface, &action), serde_json::json!({ "action": action, "args": args }))
                 .map_err(|e| e.message)
         } else {
             Err("the app did not open".to_string())
@@ -91,6 +108,59 @@ pub fn act(ui: &App, app: &str, action: &str, args: serde_json::Value, key: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_exact_open_is_sent_as_a_press() {
+        assert_eq!(method_for("email", "open_message_id"), "app.press");
+        for (app, action) in [("email", "open_message"), ("notes", "open_note"), ("calendar", "show_date"), ("notes", "open_message_id")] {
+            assert_eq!(method_for(app, action), "app.act", "{app}.{action}");
+        }
+    }
+
+    /// Every `.rs` and `.py` file under the repository (not `target`, not `.git`) that holds the
+    /// method's name in quotes, as paths from the repository root.
+    fn files_naming(method: &str) -> Vec<String> {
+        fn walk(dir: &std::path::Path, root: &std::path::Path, needle: &str, found: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if path.is_dir() {
+                    if !matches!(&*name, "target" | ".git" | "node_modules") {
+                        walk(&path, root, needle, found);
+                    }
+                } else if (name.ends_with(".rs") || name.ends_with(".py"))
+                    && std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle))
+                {
+                    found.push(path.strip_prefix(root).unwrap().display().to_string());
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = root.canonicalize().unwrap();
+        let mut found = Vec::new();
+        walk(&root, &root, &format!("\"{method}\""), &mut found);
+        found.sort();
+        found
+    }
+
+    /// `app.press` is the shell's own press and nothing else's. The built-in companion runs inside
+    /// this process, so a path that merely sent `app.press` from here would be the companion's:
+    /// only this file sends it. The one other file that names it is an app's own dispatch, which
+    /// answers it.
+    #[test]
+    fn only_the_shells_press_sends_app_press() {
+        assert_eq!(
+            files_naming("app.press"),
+            ["crates/yantrik-ui/src/wire/app_act.rs", "frameworks/yantrik-app/src/control.rs"],
+            "a new sender of app.press can open any message by folder and id: it belongs in wire/app_act.rs and nowhere else"
+        );
+        let own = include_str!("app_act.rs");
+        let code = own.split("#[cfg(test)]").next().unwrap();
+        let sends: Vec<&str> = code.lines().filter(|l| l.contains("\"app.press\"")).collect();
+        assert_eq!(sends.len(), 1, "one place in this file picks the method: {sends:?}");
+    }
 
     #[test]
     fn a_cold_notes_is_waited_for_until_its_library_has_loaded() {

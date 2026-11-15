@@ -1773,4 +1773,19 @@ mod button_route_tests {
         assert_eq!(route("browser"), None, "the browser publishes nothing");
         assert_eq!(route("no-such-app"), None);
     }
+
+    /// A notification button is a poster's own words: `{app: "email", actions: [{id:
+    /// "open_message_id", args: {...}}]}` from any same-user process or a Mind. `forward_to_app`
+    /// carries it to the app as the shell, so it must only ever send `app.act`, which refuses an
+    /// action only the shell's own press runs, and never `app.press`.
+    #[test]
+    fn a_notification_button_is_carried_as_app_act_and_never_as_a_press() {
+        let src = include_str!("notifications.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let at = &code[code.find("fn forward_to_app(").expect("fn forward_to_app")..];
+        let body = &at[..at.find("\n}\n").unwrap()];
+        assert!(body.contains(".call(\"app.act\""), "{body}");
+        assert!(!body.contains("press"), "{body}");
+        assert!(!body.contains("app_act::"), "the shell's own press is not what a button does: {body}");
+    }
 }

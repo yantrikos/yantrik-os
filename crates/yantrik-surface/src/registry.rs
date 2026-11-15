@@ -115,12 +115,12 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
         }
     }
 
-    /// An action the shell alone may call is refused to every other caller: see [`shell_only`].
-    fn shell_allows(&self, spec: &Action) -> Result<(), String> {
-        if spec.shell_only {
-            shell_only::require(&spec.name, self.shell_judge)?;
-        }
-        Ok(())
+    /// Whether `name` is an action `app.act` must treat as one that does not exist: one declared
+    /// [`Action::shell_only`], which only `app.press` runs. Every reader a caller can reach
+    /// ([`Registry::grade_of`], [`Registry::check_call`], [`Registry::explain`], `act`) answers it
+    /// with [`Registry::unknown`], word for word, so no refusal confirms the action is there.
+    fn is_hidden(&self, name: &str) -> bool {
+        self.actions.iter().any(|(a, _)| a.name == name && a.shell_only)
     }
 
     /// One thing this surface can be asked to do. A declaration the dispatch cannot check is
@@ -176,7 +176,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     pub fn grade_of(&self, name: &str) -> Result<&'static str, String> {
         self.actions
             .iter()
-            .find(|(a, _)| a.name == name)
+            .find(|(a, _)| a.name == name && !a.shell_only)
             .map(|(a, _)| self.effective_grade(&a.name, a.permission))
             .ok_or_else(|| self.unknown(name))
     }
@@ -257,7 +257,6 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
         // on the way (#154's lesson, applied to #203's rule).
         self.state_allows(name)?;
         if let Some((spec, _)) = self.actions.iter().find(|(a, _)| a.name == name) {
-            self.shell_allows(spec)?;
             check_arguments(spec, args)?;
         }
         Ok(grade)
@@ -284,8 +283,11 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     /// which is every action that did not opt in — and is what tells an asker to draw no line.
     /// `Ok("")` is the app's own honest "nothing about THIS call", and draws no line either.
     pub fn explain(&self, name: &str, args: &Value) -> Result<String, String> {
-        let (spec, _) =
-            self.actions.iter().find(|(a, _)| a.name == name).ok_or_else(|| self.unknown(name))?;
+        let (spec, _) = self
+            .actions
+            .iter()
+            .find(|(a, _)| a.name == name && !a.shell_only)
+            .ok_or_else(|| self.unknown(name))?;
         match &spec.explainer {
             Some(explainer) => Ok(explainer.sentence(args)),
             None => Err(format!(
@@ -375,6 +377,60 @@ where
         authority: &Authority,
         hold: Hold,
     ) -> Result<Value, String> {
+        // An action only `app.press` runs is, here, one that is not there.
+        if self.is_hidden(name) {
+            return Err(self.unknown(name));
+        }
+        self.dispatch(name, args, expect_revision, action_id, authority, hold)
+    }
+
+    /// `app.press`: run an action declared [`Action::shell_only`], and nothing else, for the
+    /// shell's own press. Everything else — a caller that is not the shell as the kernel says
+    /// (`set_shell_judge`), a call that carries an agent token, an action that is published, an
+    /// action that is not there — is refused in the one sentence [`shell_only::PRESS_REFUSED`], so
+    /// a probe learns nothing. Past that gate it meets what an `act` meets: the state rule, the
+    /// arguments, the ceiling and the mode, the guard, the handler.
+    ///
+    /// No grant is read: a press is the person's pointer on their own screen, and a grant is bound
+    /// to a call that asks to be allowed.
+    pub fn press_in(
+        &self,
+        name: &str,
+        args: &Value,
+        expect_revision: Option<&str>,
+        action_id: &str,
+        authority: &Authority,
+        hold: Hold,
+    ) -> Result<Value, String> {
+        if !self.is_hidden(name) || !shell_only::is_a_press_by_the_shell(self.shell_judge) {
+            return Err(shell_only::PRESS_REFUSED.to_string());
+        }
+        self.dispatch(name, args, expect_revision, action_id, authority, hold)
+    }
+
+    /// [`Registry::press_in`] in process, as [`Registry::act`] is `act_in`: nobody is vouched for.
+    pub fn press(
+        &self,
+        name: &str,
+        args: &Value,
+        expect_revision: Option<&str>,
+        action_id: &str,
+        authority: &Authority,
+    ) -> Result<Value, String> {
+        self.press_in(name, args, expect_revision, action_id, authority, Hold::of(self.private_now(), false))
+    }
+
+    /// The dispatch `act_in` and `press_in` share, after each has settled whether the action may
+    /// be reached by the method that was used.
+    fn dispatch(
+        &self,
+        name: &str,
+        args: &Value,
+        expect_revision: Option<&str>,
+        action_id: &str,
+        authority: &Authority,
+        hold: Hold,
+    ) -> Result<Value, String> {
         let private = hold.is_private();
         let Some((spec, run)) = self.actions.iter().find(|(a, _)| a.name == name) else {
             return Err(self.unknown(name));
@@ -385,7 +441,6 @@ where
         // the refusal is the same whatever the arguments, the grade or the mode say. The shell's
         // rule is the locked desktop (#203).
         self.state_allows(name)?;
-        self.shell_allows(spec)?;
 
         // Present, known, and of the declared type or losslessly converted to it — see `args`.
         // First, and before any grant is spent: a malformed call is refused for what is wrong with

@@ -77,9 +77,11 @@ pub fn table(table: &mut Intents<Email>) {
         // the meeting brief's rows open mail by this and never by `open_message`. Graded as
         // `open_message` is: opening marks the message read on the server.
         //
-        // The shell's alone (`shell_only`): not published, and refused to every other caller. A
-        // Mind or `yos act` that could name a folder and an id could walk a mailbox, each message
-        // opening in front of the person and marked read out there for others to see.
+        // The shell's alone (`shell_only`): not published, refused by `app.act` to every caller
+        // (the built-in companion runs inside the shell and sends no token, so no judge of the
+        // caller could tell it from the person), and run only by `app.press`, which only the
+        // shell's own press sends. A Mind that could name a folder and an id could walk a
+        // mailbox, each message opening in front of the person and marked read out there.
         Action::new("open_message_id", "Open exactly one message, by the account, folder and id that name it")
             .shell_only()
             .risk("standard")
