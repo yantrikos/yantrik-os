@@ -39,7 +39,9 @@ round 2 (comment 6889527314) found what this design still had to close.
   checksum-checked) and the `runner` user (uid 1001, no password, no sudo). `openssh-server`
   is removed. The files in `ct/` are pushed in, root-owned:
   - `yantrik-ci-launch`: reads the one-job config once and deletes it, loads the egress
-    filter, then starts the runner as `runner` with the hook and
+    filter, then starts the runner as `runner` (as a transient `systemd-run` service, so that
+    the job's process tree reaches the container's pid 1, which
+    `yantrik-agent-terminal`'s identity test needs) with the hook and
     `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0` set.
   - `yantrik-ci-egress` and `/etc/yantrik-ci/egress.nft`: the filter.
   - `yantrik-ci-job-started.sh`: the hook.

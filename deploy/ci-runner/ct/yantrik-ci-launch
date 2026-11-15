@@ -20,11 +20,18 @@ rmdir /run/yantrik-ci 2> /dev/null || true
 rm -rf /home/runner/actions-runner
 cp -a /opt/actions-runner /home/runner/actions-runner
 chown -R runner:runner /home/runner/actions-runner
-cd /home/runner/actions-runner
-exec runuser -u runner -- env -i \
-  HOME=/home/runner USER=runner LOGNAME=runner SHELL=/bin/bash LANG=C.UTF-8 \
-  RUSTUP_HOME=/opt/rust/rustup \
-  PATH=/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
-  ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/yantrik-ci-job-started.sh \
+
+# The runner starts as a transient service of the container's init, not as a child of this
+# process: `pct exec` leaves this process with no parent inside the container, and a job that
+# walks /proc up from itself to pid 1 (yantrik-agent-terminal's identity test) must reach init.
+# --wait --pipe keeps this script alive for the runner's life, forwards its output and exit
+# status. The service has no task limit of its own; the container's pids.max is the bound.
+exec systemd-run --quiet --wait --pipe --collect --service-type=exec \
+  -p User=runner -p WorkingDirectory=/home/runner/actions-runner -p TasksMax=infinity \
+  --setenv=HOME=/home/runner --setenv=USER=runner --setenv=LOGNAME=runner \
+  --setenv=SHELL=/bin/bash --setenv=LANG=C.UTF-8 \
+  --setenv=RUSTUP_HOME=/opt/rust/rustup \
+  --setenv=PATH=/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --setenv=CARGO_PROFILE_DEV_DEBUG=0 --setenv=CARGO_INCREMENTAL=0 \
+  --setenv=ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/yantrik-ci-job-started.sh \
   /home/runner/actions-runner/run.sh --jitconfig "$cfg"
