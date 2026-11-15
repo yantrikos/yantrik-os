@@ -646,11 +646,7 @@ pub fn publish(
             // Files in /etc or ~/.ssh, and the listing, the recent row and even the folder's
             // name are what the file tools would never give it (#443). The places, the view and
             // whether something is loading say nothing about the folder, and stay.
-            let files = if screen == 8 {
-                crate::control_files_mind::for_caller(files, &ui.get_file_browser_path())
-            } else {
-                files
-            };
+            let files = if screen == 8 { crate::control_files_mind::for_caller(files, &ui.get_file_browser_path()) } else { files };
 
             // The wizard, when the wizard is up. This is the screen an agent is most likely to
             // meet first and, until it published anything, the only one it could not read.
