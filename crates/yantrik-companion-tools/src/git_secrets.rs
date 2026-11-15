@@ -8,7 +8,8 @@
 //! - [`check_pathspec`] refuses a file argument that is, or matches, a protected path, before
 //!   any diff runs: the names git itself would diff are listed first.
 //! - [`without_protected`] drops from a status or a stat the lines that name a protected path,
-//!   and says how many, never which. The count tells that something is there, as for `find`
+//!   and says how many, never which. Git's quoted paths (`"tokens (1).json"`) are spelled out first
+//!   ([`super::git_quote`]). The count tells that something is there, as for `find`
 //!   (see `safe_command_listing`).
 
 use std::path::Path;
@@ -19,7 +20,7 @@ const REFUSED: &str = "is, or leads into, a place or file the AI never reads";
 
 /// Whether `file`, a pathspec for `git diff` in the repository `repo`, may be diffed: it is a
 /// plain path (no `:(magic)` form, no option, not the whole tree), and no changed file it
-/// selects is protected. Contents are never printed here.
+/// selects is protected. It fails closed: when git cannot list the selection, the answer is no. Contents are never printed here.
 pub fn check_pathspec(repo: &str, file: &str) -> Result<(), String> {
     if file.starts_with([':', '-']) || file == "." {
         return Err(format!("git_diff_file takes the path of one file or folder, not '{file}'"));
@@ -31,8 +32,9 @@ pub fn check_pathspec(repo: &str, file: &str) -> Result<(), String> {
     let listed = super::git_guard::command(repo)
         .args(["diff", "--name-only", "-z", "--relative", "--no-renames", "--", file])
         .output();
+    // If git cannot say what the pathspec selects, nothing is diffed (review N6).
     let Ok(listed) = listed.map_err(|_| ()).and_then(|o| o.status.success().then_some(o).ok_or(())) else {
-        return Ok(());
+        return Err(format!("git could not list what {file} selects, so it is not diffed"));
     };
     let names = String::from_utf8_lossy(&listed.stdout);
     if names.split('\0').filter(|n| !n.is_empty()).any(|n| is_protected(&Path::new(repo).join(n))) {
@@ -48,7 +50,9 @@ pub fn without_protected(repo: &str, out: &str) -> String {
     let mut hidden = 0;
     for line in out.lines() {
         // A stat line ends in ` | 3 ++-`; a rename reads `old => new` (stat) or `old -> new` (status).
-        let names = whole_renames(line.rsplit_once(" | ").map_or(line, |(names, _)| names));
+        // Git quotes a path with a space, a `"`, a `\` or a non-ASCII character; match what it spells.
+        let plain = super::git_quote::unquoted(line);
+        let names = whole_renames(plain.rsplit_once(" | ").map_or(plain.as_str(), |(names, _)| names));
         if crate::safe_command_listing::names_a_protected_entry(&names, repo) {
             hidden += 1;
         } else {

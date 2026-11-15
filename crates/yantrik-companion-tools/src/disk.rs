@@ -159,23 +159,25 @@ impl Tool for DirSizeTool {
         };
 
         // Total size
-        match std::process::Command::new("du")
-            .args(["-h", "--max-depth", &depth.to_string(), &expanded])
-            .output()
-        {
+        let argv = ["du", "-h", "--max-depth", &depth.to_string(), &expanded].map(String::from);
+        match std::process::Command::new(&argv[0]).args(&argv[1..]).output() {
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
-                // Sort by size (du output is already structured)
-                let mut lines: Vec<&str> = text.lines().collect();
+                // `du` ends with the folder asked about, which was validated: its line is the total.
+                let total_line = text.lines().last().unwrap_or("unknown").to_string();
+                // A protected folder below it is counted, never named (#1247, review N5).
+                let shown = crate::safe_command_listing::without_protected(&argv, &text);
+                let mut lines: Vec<&str> = shown.lines().collect();
+                let note = lines.pop_if(|line| line.starts_with('('));
                 lines.truncate(30);
+                lines.extend(note);
                 if lines.is_empty() {
                     format!("Could not calculate size of {path}")
                 } else {
-                    let total_line = lines.last().copied().unwrap_or("unknown");
-                    format!("Directory size ({path}):\n{}\nTotal: {}", lines.join("\n"), total_line)
+                    format!("Directory size ({path}):\n{}\nTotal: {total_line}", lines.join("\n"))
                 }
             }
-            Ok(o) => format!("du failed: {}", String::from_utf8_lossy(&o.stderr)),
+            Ok(o) => format!("du failed: {}", crate::safe_command_listing::stderr_without_protected(&String::from_utf8_lossy(&o.stderr))),
             Err(e) => format!("Error: {e}"),
         }
     }
@@ -255,3 +257,7 @@ File types:".to_string());
         }
     }
 }
+
+#[cfg(test)]
+#[path = "disk_tests.rs"]
+mod tests;

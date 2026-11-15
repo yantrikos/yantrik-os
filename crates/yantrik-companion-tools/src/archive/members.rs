@@ -63,6 +63,10 @@ pub fn member_verdict(name: &str, dest: &str, validate: impl Fn(&str) -> Result<
         return Err(format!("the archive member {name} would land outside {dest}; nothing was extracted"));
     }
     let place = Path::new(dest).join(member);
+    // The name of a protected place is not repeated: it would say where a secret is kept.
+    if yantrik_ipc_contracts::home_paths::is_protected(&place) {
+        return Err("an archive member would be written to a place the AI never writes to; nothing was extracted".to_string());
+    }
     validate(&place.to_string_lossy())
         .map(|_| ())
         .map_err(|e| format!("the archive member {name} cannot be written there: {e}; nothing was extracted"))
@@ -101,6 +105,18 @@ mod tests {
         assert!(member_verdict(".config/autostart/x.desktop", "/home/ann", validate).is_err());
         assert!(member_verdict("/etc/profile", "/home/ann", validate).is_err());
         assert!(member_verdict("a/../../.bashrc", "/home/ann/in", validate).is_err());
+    }
+
+    /// Review N4 of #1247: a refusal for a protected member does not name it.
+    #[test]
+    fn a_member_that_lands_on_a_protected_name_is_refused_without_the_name() {
+        let validate = |p: &str| Err::<String, String>(format!("{p} is protected"));
+        for name in ["credentials.json", "deep/tokens (1).json", "k/private-keys-v1.d/ABC.key", "x/server.pem.1"] {
+            let refused = member_verdict(name, "/home/ann/in", validate).unwrap_err();
+            let last = name.rsplit('/').next().unwrap_or(name);
+            assert!(!refused.contains(last) && !refused.contains("private-keys"), "{name}: {refused}");
+            assert!(refused.contains("nothing was extracted"), "{refused}");
+        }
     }
 
     #[test]

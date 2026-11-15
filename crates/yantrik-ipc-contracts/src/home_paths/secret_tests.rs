@@ -153,6 +153,62 @@ fn a_backup_copy_of_a_credential_is_that_credential() {
     }
 }
 
+/// Review N1 of #1247: editor swap and recovery files, package-manager files and the copy names
+/// that other systems' file managers give. Each form, for a `.json` and a `.pem` credential.
+#[test]
+fn every_copy_form_of_a_credential_is_that_credential() {
+    for original in ["tokens.json", "server.pem"] {
+        let (stem, ext) = original.split_once('.').unwrap();
+        let mut forms: Vec<String> = [
+            ".save", ".swp", ".swo", ".tmp", ".dpkg-old", ".dpkg-dist", ".rpmsave", ".rpmnew", ".prev", ".1", ".2", ".12",
+            ".~1~", ".~12~", ".bak2", ".bak.1", ".bak.bak", ".SAVE", " (copy)", " (another copy)", " - Copy", " - copy (2)",
+        ]
+        .iter()
+        .map(|end| format!("{original}{end}"))
+        .collect();
+        forms.extend([
+            format!(".{original}.swp"), format!(".{original}.swo"), format!("#{original}#"), format!(".#{original}"),
+            format!("{stem} (copy).{ext}"), format!("{stem} (another copy).{ext}"), format!("{stem} (3rd copy).{ext}"),
+            format!("{stem} (2nd copy).{ext}"), format!("{stem} (11th copy).{ext}"), format!("{stem} - Copy.{ext}"),
+            format!("{stem} - Copy (2).{ext}"), format!("{stem} copy.{ext}"), format!("{stem} copy 2.{ext}"),
+            format!("{stem}(1).{ext}"), format!("{stem} (1).{ext}"), format!("Copy of {original}"),
+            format!("Copy of {stem} (2).{ext}"), format!("{original}.bak (1)"),
+        ]);
+        for name in forms {
+            assert!(is_secret_name(&name), "{name}");
+            assert!(is_protected(Path::new(&format!("/home/ann/backup/{name}"))), "{name}");
+        }
+    }
+    // A dotfile's own swap file keeps its dot: `.env.swp` is `.env`.
+    for name in [".env.swp", ".env.save", ".netrc.2", ".#.env"] {
+        assert!(is_secret_name(name), "{name}");
+    }
+}
+
+/// What looks like a marker on something that is no credential stays readable (review N1).
+#[test]
+fn the_new_copy_forms_leave_their_decoys_readable() {
+    for name in [
+        "notes copy.md", "photo (copy).jpg", "chapter.2.md", "report.json.1.txt", "copy of notes.md", "swap.swp", "notes.save",
+        "notes (another copy).md", "notes - Copy.md", "notes.~1~", "#notes#", ".#notes", ".notes.swp", "notes.dpkg-old",
+        "tokens.json.1.txt", "tokens.json (copy).txt", "copy of tokens-notes.md", "tokens copy notes.json", "tokens.2x",
+        "mytokens.json.2", "tokens.json.bakx", "tokens.json.2b", "tokens.jsonn.save",
+    ] {
+        assert!(!is_secret_name(name), "{name}");
+        assert!(!is_protected(Path::new(&format!("/home/ann/Documents/{name}"))), "{name}");
+    }
+}
+
+#[test]
+fn the_oldest_copy_forms_still_hold() {
+    for name in [
+        "tokens.json.bak",
+    ] {
+        assert!(is_secret_name(name), "{name}");
+        assert!(is_protected(Path::new(&format!("/home/ann/backup/{name}"))), "{name}");
+    }
+}
+
 /// Only an ending or a number before the extension makes a copy: a word in the middle does not.
 #[test]
 fn what_only_looks_like_a_copy_stays_readable() {
@@ -186,5 +242,19 @@ fn ciphertext_and_public_keys_stay_readable() {
 fn a_search_for_a_backup_copy_is_a_search_for_the_secret() {
     for asked in ["tokens.json.bak", "tokens (1).json", "*.ppk", "id_dsa*", "kubeconfig"] {
         assert!(pattern_asks_for_a_secret(asked), "{asked}");
+    }
+}
+
+/// Review N4 of #1247: the refusal to read a folder whole does not name the protected child.
+#[test]
+fn a_folder_with_a_secret_inside_is_refused_without_naming_it() {
+    let (_d, home) = home();
+    for rel in ["credentials.json", "deep/er/tokens (1).json", "keys/private-keys-v1.d/ABC.key"] {
+        put(&home, &format!("tree/{rel}"));
+        let refused = may_read_tree(&home.join("tree")).unwrap_err();
+        let last = rel.rsplit('/').next().unwrap();
+        assert!(refused.contains("something protected is inside"), "{rel}: {refused}");
+        assert!(!refused.contains(last) && !refused.contains("private-keys"), "{rel}: {refused}");
+        std::fs::remove_dir_all(home.join("tree")).unwrap();
     }
 }

@@ -42,21 +42,6 @@ pub const SECRET_PREFIXES: &[&str] =
 /// The one exception to the `id_*` prefixes: a public key is not a secret.
 const PUBLIC_KEY_ENDING: &str = ".pub";
 
-/// Endings an ordinary backup copy adds to a name: `tokens.json.bak`, `notes~`.
-const COPY_ENDINGS: &[&str] = &[".bak", ".old", ".orig", ".backup", ".copy", "~"];
-
-/// `name` without one copy marker: an ending of [`COPY_ENDINGS`], or the ` (N)` a file manager
-/// puts before the extension (`tokens (1).json` is `tokens.json`). `name` is lower case.
-fn without_copy_marker(name: &str) -> Option<String> {
-    if let Some(bare) = COPY_ENDINGS.iter().find_map(|end| name.strip_suffix(end)).filter(|bare| !bare.is_empty()) {
-        return Some(bare.to_string());
-    }
-    let open = name.rfind(" (")?;
-    let (number, rest) = name[open + 2..].split_once(')')?;
-    let counted = !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit());
-    (counted && (rest.is_empty() || rest.starts_with('.'))).then(|| format!("{}{rest}", &name[..open]))
-}
-
 fn matches_a_list(name: &str) -> bool {
     SECRET_NAMES.contains(&name)
         || SECRET_SUFFIXES.iter().any(|end| name.ends_with(end))
@@ -64,14 +49,22 @@ fn matches_a_list(name: &str) -> bool {
 }
 
 /// Whether a file called `name` (a last part, not a path) holds a credential by its name, or is a
-/// backup copy of one (`tokens.json.bak`, `tokens (1).json`). Exact names, endings and starts
-/// only; `notes.bak.md` and `old-tokens-notes.txt` are not copies of anything.
+/// copy of one made by an editor, a package manager or a file manager (`tokens.json.bak`,
+/// `.tokens.json.swp`, `tokens (1).json`; see [`super::copy_marker`]). Exact names, endings and
+/// starts only; `notes.bak.md` and `old-tokens-notes.txt` are not copies of anything.
 pub fn is_secret_name(name: &str) -> bool {
-    let mut name = name.to_lowercase();
-    while let Some(bare) = without_copy_marker(&name) {
-        name = bare;
+    named_or_copied(&name.to_lowercase())
+}
+
+/// A name with a copy marker is judged by what it is a copy of (markers peel one at a time), so
+/// `id_rsa.pub.bak` is as public as `id_rsa.pub`; a name without one is judged as it stands.
+fn named_or_copied(name: &str) -> bool {
+    let originals = super::copy_marker::originals(name);
+    if originals.is_empty() {
+        matches_a_list(name)
+    } else {
+        originals.iter().any(|bare| named_or_copied(bare))
     }
-    matches_a_list(&name)
 }
 
 /// Whether `path` names a secret file: by its last part as written, and by the last part of where

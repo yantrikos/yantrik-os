@@ -370,3 +370,36 @@ fn a_default_naming_libreoffice_is_refused_by_the_handler_not_the_extension() {
     let gone = crate::mime_dispatch::FileAction::DesktopApp("soffice.desktop".into());
     assert!(agent_verdict(&gone, &[]).is_err());
 }
+
+/// Review N3 of #1247: in a folder a mind may see, the names of protected files are left out of
+/// `describe shell` and counted; the decoys and the places stay.
+#[test]
+fn a_minds_files_description_names_no_protected_file_and_counts_them() {
+    let (_d, home) = home("protected-names");
+    let entry = |name: &str| serde_json::json!({ "name": name, "dir": false });
+    let shown = serde_json::json!({
+        "path": "~/Downloads",
+        "entries": [entry("x.pem"), entry("tokens (1).json"), entry("notes.md"), entry("private-keys-v1.d")],
+        "recent": [entry("x.pem"), entry("notes.md")],
+        "shown": 4,
+        "total": 4,
+        "selected": "tokens (1).json",
+        "preview_name": "x.pem",
+        "notice": "Copied x.pem",
+        "operation": "",
+        "places": [{"label": "Home", "path": "~"}],
+    });
+    let mind = hide_protected(shown.clone(), "~/Downloads", &home);
+    for secret in ["x.pem", "tokens", "private-keys"] {
+        assert!(!mind.to_string().contains(secret), "{secret}: {mind}");
+    }
+    assert_eq!(mind["hidden"], 3);
+    assert_eq!(mind["shown"], 1);
+    assert_eq!(mind["entries"][0]["name"], "notes.md");
+    assert_eq!(mind["recent"].as_array().map(Vec::len), Some(1));
+    assert_eq!(mind["places"][0]["path"], "~", "what says nothing about the folder stays");
+    // A selection that is no secret stays; the person's own view is not passed through this at all.
+    let plain = hide_protected(serde_json::json!({ "entries": [entry("notes.md")], "selected": "notes.md" }), "~/Downloads", &home);
+    assert_eq!(plain["selected"], "notes.md");
+    assert!(plain["hidden"].is_null());
+}

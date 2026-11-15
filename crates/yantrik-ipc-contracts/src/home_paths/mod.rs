@@ -18,6 +18,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+mod copy_marker;
 mod secrets;
 mod stat;
 mod tree;

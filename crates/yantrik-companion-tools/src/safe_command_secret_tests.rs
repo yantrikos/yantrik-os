@@ -253,7 +253,7 @@ fn stderr_does_not_name_a_protected_path() {
     let (_, err) = run(&argv).unwrap();
     assert!(err.contains("tokens.json"), "the raw error holds the name, so the filter has work to do: {err}");
     let shown = stderr_without_protected(&err);
-    assert!(!shown.contains("tokens.json") && shown.contains("1 lines of error text are not shown"), "{shown}");
+    assert!(!shown.contains("tokens.json") && shown.contains("1 line of error text not shown"), "{shown}");
     for line in [
         "find: '/home/ann/backup/id_rsa': Permission denied",
         "find: \u{2018}/home/ann/old/credentials.json\u{2019}: Permission denied",

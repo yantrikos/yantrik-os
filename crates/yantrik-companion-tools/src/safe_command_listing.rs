@@ -39,7 +39,8 @@ pub fn stderr_without_protected(stderr: &str) -> String {
         out.push('\n');
     }
     if !hidden.is_empty() {
-        out.push_str(&format!("({} lines of error text are not shown: each names a place or file the AI never reads)\n", hidden.len()));
+        let lines = if hidden.len() == 1 { "line" } else { "lines" };
+        out.push_str(&format!("({} {lines} of error text not shown: each names a place or file the AI never reads)\n", hidden.len()));
     }
     out
 }
