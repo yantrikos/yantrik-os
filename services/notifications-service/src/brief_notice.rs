@@ -10,9 +10,13 @@
 //! One interrupt per event and start. The event's own reminder, its early "leave early" heads-up
 //! and this notice are cards for one meeting, so whichever is second does not interrupt again:
 //! - the brief's notice exists and was granted an interrupt, or it took the place of an early card
-//!   that had already interrupted: the reminder is not posted ([`covers`]);
-//! - the reminder, or the early card, is already out: the brief is stored for the inbox only, and
-//!   takes that card's place there. The early heads-up is not a moment of its own.
+//!   the shell showed as a toast: the reminder is not posted ([`covers`]);
+//! - the reminder, or the early card, was shown as a toast: the brief is stored for the inbox
+//!   only, and takes that card's place there. The early heads-up is not a moment of its own.
+//!
+//! "Already the meeting's toast" is what the shell reported as shown ([`toasted`]), never the
+//! grant: a granted card the shell is holding has made no toast, and one replaced while held never
+//! will.
 
 use chrono::{DateTime, Duration, Local, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use yantrik_ipc_contracts::notifications::notice::{Attention, Family, FamilySetting, Notice, OS_HARNESS};
@@ -69,12 +73,20 @@ fn held(store: &Store, id: &str) -> Option<Notice> {
 /// the reminder is the person's own.
 pub fn covers(store: &Store, event: &str, start: &NaiveDateTime) -> bool {
     held(store, &notice_id(event, start))
-        .is_some_and(|n| n.granted == Attention::Interrupt || interrupted(store, &calendar_id(Kind::Early, event, start)))
+        .is_some_and(|n| n.granted == Attention::Interrupt || toasted(store, &calendar_id(Kind::Early, event, start)))
 }
 
-/// Whether the desktop's notice `id` was granted an interrupt.
-pub(crate) fn interrupted(store: &Store, id: &str) -> bool {
-    held(store, id).is_some_and(|n| n.granted == Attention::Interrupt)
+/// Whether the shell reported the desktop's notice `id` as shown as a toast (`mark_shown`, from
+/// `NOTICE_SHOWN`). What the person saw, not what was granted: a granted interrupt the shell is
+/// holding (a call, do-not-disturb, a locked screen) is not a toast yet, and a card replaced
+/// while held is never shown.
+pub(crate) fn toasted(store: &Store, id: &str) -> bool {
+    held(store, id).is_some_and(|n| n.shown_as.as_deref() == Some("toast"))
+}
+
+/// Whether this card holds an interrupt the shell has not shown yet.
+fn waiting_to_toast(n: &Notice) -> bool {
+    n.granted == Attention::Interrupt && n.shown_as.is_none()
 }
 
 /// Announce the brief of `ready` at `now`, and answer as the store does.
@@ -98,19 +110,20 @@ pub fn announce<Tz: TimeZone>(store: &Store, ready: &Ready, now: DateTime<Tz>) -
     // Quiet hours hold every interrupt, and the event's own reminder is the one that is held and
     // toasted when they end; two held toasts for one meeting would come out together.
     let quiet = settings.quiet_hours.is_some_and(|q| q.ends_after(now.with_timezone(&Local)).is_some());
-    // The reminder or the early card already interrupted: the brief only takes its place in the
-    // inbox.
-    let interrupt = reminder.is_none() && !interrupted(store, &early_id) && !quiet;
+    // The reminder or the early card was already shown as a toast: the brief only takes its place
+    // in the inbox. One that was granted but is still held is replaced, and the brief's is the
+    // toast.
+    let interrupt = !toasted(store, &reminder_id) && !toasted(store, &early_id) && !quiet;
     // A brief the person switched off is stored hidden, and must not take a card with it. Of the
     // two it may replace, the reminder is the one still up when it has come (it took the early
     // card's place itself).
-    let replaces = if settings.setting(&Family::Calendar) == FamilySetting::Off {
-        None
-    } else if reminder.is_some() {
-        Some(reminder_id)
-    } else {
-        early.map(|_| early_id)
-    };
+    let card = if reminder.is_some() { reminder.map(|n| (reminder_id, n)) } else { early.map(|n| (early_id, n)) };
+    // A brief that does not interrupt must not take away the card that will: one granted an
+    // interrupt that the shell has not shown yet (held by quiet hours, a call, a locked screen) is
+    // the meeting's toast, and replacing it would leave the meeting with none.
+    let replaces = card
+        .filter(|(_, n)| settings.setting(&Family::Calendar) != FamilySetting::Off && (interrupt || !waiting_to_toast(n)))
+        .map(|(id, _)| id);
     let minutes = (left.num_seconds() + 59) / 60;
     let mut notice = serde_json::json!({
         "notice_id": notice_id(&ready.event_id, &start),

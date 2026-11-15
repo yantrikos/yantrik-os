@@ -97,17 +97,23 @@ impl Drop for Room {
 }
 
 impl Room {
-    /// Every notice this meeting was ever granted an interrupt for, dismissed or not: the toasts
-    /// it made over its whole run.
+    /// Every notice the shell reported as shown as a toast, dismissed or not: what the person saw
+    /// over the meeting's whole run.
     fn toasts_ever(&self) -> Vec<String> {
         self.store
             .since(0)
             .changed
             .into_iter()
             .filter_map(|n| n.notice)
-            .filter(|x| x.granted == Attention::Interrupt && !x.hidden())
+            .filter(|x| x.shown_as.as_deref() == Some("toast") && !x.hidden())
             .map(|x| x.notice_id)
             .collect()
+    }
+
+    /// The shell showed the card `notice_id` as a toast.
+    fn shown_as_toast(&self, notice_id: &str) {
+        let (n, _) = self.card(notice_id).expect("the card to show exists");
+        self.store.mark_shown(&n.id, Some("toast"), false).unwrap();
     }
 
     /// The cards the person still has for this meeting.
@@ -165,6 +171,7 @@ fn one_toast_per_meeting_when_the_reminder_comes_first() {
     let mut room = Room::new();
     room.tick(10);
     assert_eq!(room.interrupts(), [REMINDER]);
+    room.shown_as_toast(REMINDER);
     // The brief arrives a minute later. It takes the reminder's place in the inbox and does not
     // interrupt again.
     assert_eq!(room.brief(9)["stored"], true);
@@ -183,6 +190,7 @@ fn a_reminder_set_earlier_has_already_toasted_so_the_brief_stays_in_the_inbox() 
     std::fs::write(room.cal.join("orion.json"), serde_json::to_string(&event).unwrap()).unwrap();
     room.tick(30);
     assert!(room.card(REMINDER).is_some());
+    room.shown_as_toast(REMINDER);
     room.brief(10);
     assert_eq!(room.card(BRIEF).unwrap().1.granted, Attention::Inbox);
     assert!(room.card(REMINDER).unwrap().0.dismissed);
@@ -267,6 +275,7 @@ fn the_early_heads_up_is_not_a_second_moment_and_the_brief_takes_its_place() {
     with_a_place(&room);
     room.tick(45);
     assert_eq!(room.interrupts(), [EARLY], "the early card toasts, as it always did");
+    room.shown_as_toast(EARLY);
     room.brief(10);
     let (_, brief) = room.card(BRIEF).unwrap();
     assert_eq!((brief.granted, brief.grant_reason), (Attention::Inbox, GrantReason::AskedInbox));
@@ -301,10 +310,65 @@ fn an_own_lead_of_twenty_minutes_still_makes_one_toast_and_leaves_one_card() {
     event.reminder_minutes = 20;
     std::fs::write(room.cal.join("orion.json"), serde_json::to_string(&event).unwrap()).unwrap();
     room.tick(45);
+    room.shown_as_toast(EARLY);
     room.tick(20);
     assert_eq!(room.card(REMINDER).unwrap().1.granted, Attention::Inbox, "the reminder takes the early card's place quietly");
     assert!(room.card(EARLY).unwrap().0.dismissed);
     room.brief(10);
     assert_eq!(room.toasts_ever(), [EARLY], "one toast between T-60 and the start");
     assert_eq!(room.cards_up(), [BRIEF], "and one undismissed card for the meeting");
+}
+
+/// A place and a 20-minute lead, so the early card, the reminder and the brief are three moments.
+fn with_a_place_and_a_lead_of_twenty(room: &Room) {
+    let mut event = meeting(room.start);
+    event.location = Some("Room 4".into());
+    event.reminder_minutes = 20;
+    std::fs::write(room.cal.join("orion.json"), serde_json::to_string(&event).unwrap()).unwrap();
+}
+
+/// R4-M1: a granted early card the shell is holding (a call, do-not-disturb) has made no toast.
+/// The reminder that replaces it keeps its interrupt, and so does the brief after it: one toast,
+/// when the hold ends, not none.
+#[test]
+fn an_early_card_held_by_the_shell_does_not_silence_the_reminder_or_the_brief() {
+    let mut room = Room::new();
+    with_a_place_and_a_lead_of_twenty(&room);
+    room.tick(45);
+    assert_eq!(room.card(EARLY).unwrap().1.granted, Attention::Interrupt, "granted, but the shell holds it: no shown_as");
+    room.tick(20);
+    assert_eq!(room.card(REMINDER).unwrap().1.granted, Attention::Interrupt, "nothing was shown, so this is the person's toast");
+    assert!(room.card(EARLY).unwrap().0.dismissed);
+    room.brief(10);
+    assert_eq!(room.card(BRIEF).unwrap().1.granted, Attention::Interrupt, "the reminder was never shown either");
+    assert!(room.card(REMINDER).unwrap().0.dismissed);
+    assert_eq!(room.interrupts(), [BRIEF], "exactly one undismissed card with an interrupt");
+    assert_eq!(room.cards_up(), [BRIEF]);
+}
+
+/// The default 10-minute lead: a reminder that was granted but never shown does not stop the brief.
+#[test]
+fn a_reminder_granted_but_never_shown_leaves_the_brief_its_interrupt() {
+    let mut room = Room::new();
+    room.tick(10);
+    assert_eq!(room.card(REMINDER).unwrap().1.granted, Attention::Interrupt);
+    room.brief(10);
+    assert_eq!(room.card(BRIEF).unwrap().1.granted, Attention::Interrupt, "the brief interrupts and replaces the held reminder");
+    assert_eq!(room.interrupts(), [BRIEF]);
+}
+
+/// Back to back with quiet hours: nothing was shown while they held every grant, so the held
+/// reminder is the meeting's one toast, and the brief that cannot interrupt must not take it away.
+#[test]
+fn quiet_hours_over_a_held_early_card_and_reminder_leave_the_meeting_one_toast() {
+    let mut room = Room::new();
+    with_a_place_and_a_lead_of_twenty(&room);
+    let hour = (room.start - ChronoDuration::minutes(20)).with_timezone(&Local).hour() as u8;
+    room.store.set_initiative(|s| { s.quiet_hours = Some(QuietHours { start: (hour + 23) % 24, end: (hour + 1) % 24 }); Ok(()) }).unwrap();
+    room.tick(45);
+    room.tick(20);
+    room.brief(10);
+    assert_eq!(room.card(BRIEF).unwrap().1.granted, Attention::Inbox, "quiet hours: the brief does not interrupt");
+    assert!(!room.card(REMINDER).unwrap().0.dismissed, "the held reminder is the toast, and the brief did not take it");
+    assert_eq!(room.interrupts(), [REMINDER], "one toast waits for the end of the quiet hours");
 }

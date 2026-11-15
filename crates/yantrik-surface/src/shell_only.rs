@@ -21,9 +21,14 @@
 //! limit `#154` records for the whole control surface); what this ends is a Mind, `yos`, a copy or
 //! a renamed interpreter using the act.
 
+use serde_json::Value;
+use yantrik_ipc_contracts::control_surface::View;
+use yantrik_ipc_transport::gate::Authority;
 use yantrik_ipc_transport::owner;
 
 use crate::context::{agent_token, caller, Caller};
+use crate::private::Hold;
+use crate::registry::Registry;
 
 /// What every refusal of `app.press` says: the same words for a caller that is not the shell, a
 /// press that carries an agent token, an action that is published and an action that is not there.
@@ -39,6 +44,48 @@ pub fn is_the_shell(who: Option<Caller>) -> bool {
 /// A call that carries an agent token is never the shell's.
 pub(crate) fn is_a_press_by_the_shell(judge: fn(Option<Caller>) -> bool) -> bool {
     agent_token().is_none() && judge(caller())
+}
+
+impl<D, H> Registry<D, H>
+where
+    D: ?Sized + Fn() -> View,
+    H: ?Sized + Fn(&Value) -> Result<Value, String>,
+{
+    /// `app.press`: run an action declared [`Action::shell_only`], and nothing else, for the
+    /// shell's own press. Everything else — a caller that is not the shell as the kernel says
+    /// (`set_shell_judge`), a call that carries an agent token, an action that is published, an
+    /// action that is not there — is refused in the one sentence [`PRESS_REFUSED`], so
+    /// a probe learns nothing. Past that gate it meets what an `act` meets: the state rule, the
+    /// arguments, the ceiling and the mode, the guard, the handler.
+    ///
+    /// No grant is read: a press is the person's pointer on their own screen, and a grant is bound
+    /// to a call that asks to be allowed.
+    pub fn press_in(
+        &self,
+        name: &str,
+        args: &Value,
+        expect_revision: Option<&str>,
+        action_id: &str,
+        authority: &Authority,
+        hold: Hold,
+    ) -> Result<Value, String> {
+        if !self.is_hidden(name) || !is_a_press_by_the_shell(self.shell_judge) {
+            return Err(PRESS_REFUSED.to_string());
+        }
+        self.dispatch(name, args, expect_revision, action_id, authority, hold)
+    }
+
+    /// [`Registry::press_in`] in process, as [`Registry::act`] is `act_in`: nobody is vouched for.
+    pub fn press(
+        &self,
+        name: &str,
+        args: &Value,
+        expect_revision: Option<&str>,
+        action_id: &str,
+        authority: &Authority,
+    ) -> Result<Value, String> {
+        self.press_in(name, args, expect_revision, action_id, authority, Hold::of(self.private_now(), false))
+    }
 }
 
 #[cfg(test)]
@@ -180,6 +227,22 @@ mod tests {
         assert!(!is_the_shell(None));
     }
 
+    /// Start `program` with `arg`, trying again while the system says it is busy: the copy was
+    /// just written, and a descriptor that is still open for writing in a process another test
+    /// thread forked makes the exec fail with ETXTBSY until that process execs (rust-lang/rust#114554).
+    fn spawn_when_not_busy(program: &std::path::Path, arg: &str) -> std::process::Child {
+        let mut tries = 0;
+        loop {
+            match std::process::Command::new(program).arg(arg).spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 10 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => return other.expect("the copy runs"),
+            }
+        }
+    }
+
     /// The name alone is not the shell: a copy of another program called `yantrik-ui`, in a
     /// directory the desktop does not keep its programs in, is refused.
     #[cfg(target_os = "linux")]
@@ -191,7 +254,7 @@ mod tests {
         let sleep = ["/usr/bin/sleep", "/bin/sleep"].into_iter().find(|p| std::path::Path::new(p).exists()).expect("a sleep to copy");
         let copy = dir.join(owner::SHELL_BINARY);
         std::fs::copy(sleep, &copy).unwrap();
-        let mut child = std::process::Command::new(&copy).arg("30").spawn().expect("the copy runs");
+        let mut child = spawn_when_not_busy(&copy, "30");
 
         let who = from(child.id() as i32);
         assert!(!is_the_shell(who), "a copy named yantrik-ui in a temp directory");

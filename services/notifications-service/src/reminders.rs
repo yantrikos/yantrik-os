@@ -128,10 +128,11 @@ fn tick<Tz: TimeZone>(store: &Store, dir: &Path, sent: &mut Sent, now: DateTime<
             continue;
         }
         let mut notice = due.notice(&now);
-        // One interrupt per event and start: an early card that was granted one is the meeting's
-        // toast, so the own reminder that follows it (whatever its lead) asks for the inbox, where
-        // it takes the early card's place. The brief then takes the reminder's.
-        if due.kind == Kind::Reminder && crate::brief_notice::interrupted(store, &notice_id(Kind::Early, &due.id, &due.start)) {
+        // One interrupt per event and start: an early card the shell showed as a toast is the
+        // meeting's toast, so the own reminder that follows it (whatever its lead) asks for the
+        // inbox, where it takes the early card's place. An early card only granted, and held, has
+        // made none: the reminder keeps its grant. The brief then takes the reminder's.
+        if due.kind == Kind::Reminder && crate::brief_notice::toasted(store, &notice_id(Kind::Early, &due.id, &due.start)) {
             notice["attention"] = "inbox".into();
         }
         let answer = store.add_os_notice(NAME, notice);
@@ -1018,6 +1019,8 @@ mod tests {
         // Fifty minutes on: both own reminders. The dentist's takes the early card's place, and
         // since that card already interrupted, it goes to the inbox: one toast per event.
         let later = now + ChronoDuration::minutes(50);
+        let (early_card, _) = card(&store, "cal-early:dentist:20990318T1000").unwrap();
+        store.mark_shown(&early_card.id, Some("toast"), false).unwrap();
         tick(&store, &cal, &mut sent, later);
         let mut shown: Vec<String> = cards(&store).into_iter().map(|(_, x)| x.notice_id).collect();
         shown.sort();
@@ -1100,9 +1103,14 @@ mod tests {
         let mut reasons: Vec<GrantReason> = cards(&store).into_iter().map(|(_, x)| x.grant_reason).collect();
         reasons.sort_by_key(|r| r.as_str().to_string());
         assert_eq!(reasons, [GrantReason::BudgetSpent, GrantReason::Granted, GrantReason::Granted], "two a day; the third waits");
-        // Their own reminders never spend the budget: the two whose early card interrupted go to
-        // the inbox (that card was the toast), and the one whose early card waited interrupts,
+        // Their own reminders never spend the budget: the two whose early card was shown as a toast
+        // go to the inbox (that card was the toast), and the one whose early card waited interrupts,
         // budget spent or not.
+        // The shell showed the two granted early cards as toasts; the third was never shown.
+        for (n, x) in cards(&store).into_iter().filter(|(_, x)| x.grant_reason == GrantReason::Granted) {
+            assert!(x.notice_id.starts_with("cal-early:"));
+            store.mark_shown(&n.id, Some("toast"), false).unwrap();
+        }
         tick(&store, &cal, &mut sent, now + ChronoDuration::minutes(50));
         let mut own: Vec<GrantReason> = cards(&store).into_iter().filter(|(_, x)| x.family == Family::Reminder).map(|(_, x)| x.grant_reason).collect();
         own.sort_by_key(|r| r.as_str().to_string());

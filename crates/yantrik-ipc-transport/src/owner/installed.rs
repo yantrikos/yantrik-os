@@ -114,6 +114,46 @@ mod tests {
         assert!(!installed_program("/home/me/.local/bin/yantrik-ui", SHELL_BINARY, None), "the right name in the wrong place");
     }
 
+    /// Start `program` with `arg`, trying again while the system says it is busy: the copy was
+    /// just written, and a descriptor that is still open for writing in a process another test
+    /// thread forked makes the exec fail with ETXTBSY until that process execs (rust-lang/rust#114554).
+    fn spawn_when_not_busy(program: &Path, arg: &str) -> std::process::Child {
+        let mut tries = 0;
+        loop {
+            match std::process::Command::new(program).arg(arg).spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 10 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => return other.expect("the copy runs"),
+            }
+        }
+    }
+
+    /// A program still open for writing is busy to exec, and starts once it is closed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_program_still_open_for_writing_is_started_once_it_is_closed() {
+        let dir = std::env::temp_dir().join(format!("yantrik-owner-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sleep = ["/usr/bin/sleep", "/bin/sleep"].into_iter().find(|p| Path::new(p).exists()).expect("a sleep to copy");
+        let copy = dir.join("busy-sleep");
+        std::fs::copy(sleep, &copy).unwrap();
+        let open = std::fs::OpenOptions::new().append(true).open(&copy).unwrap();
+        let busy = std::process::Command::new(&copy).arg("30").spawn().unwrap_err();
+        assert_eq!(busy.kind(), std::io::ErrorKind::ExecutableFileBusy, "the exec itself is refused while it is open");
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            drop(open);
+        });
+        let mut child = spawn_when_not_busy(&copy, "30");
+        let _ = child.kill();
+        let _ = child.wait();
+        closer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A live process whose program is a copy of `sleep` named `yantrik-ui` in a directory of its
     /// own: the right name, not where the desktop keeps it.
     #[cfg(target_os = "linux")]
@@ -125,7 +165,7 @@ mod tests {
         let sleep = ["/usr/bin/sleep", "/bin/sleep"].into_iter().find(|p| Path::new(p).exists()).expect("a sleep to copy");
         let copy = dir.join(SHELL_BINARY);
         std::fs::copy(sleep, &copy).unwrap();
-        let mut child = std::process::Command::new(&copy).arg("30").spawn().expect("the copy runs");
+        let mut child = spawn_when_not_busy(&copy, "30");
         let me = PeerCred { pid: child.id() as i32, uid: own_euid(), gid: 0, the_mind: false };
 
         // The old, name-only rule takes it for the shell; this one does not.

@@ -59,7 +59,7 @@ pub struct Registry<D: ?Sized = Describer, H: ?Sized = Handler> {
     pub(crate) presence: Option<Box<D>>,
     pub(crate) privacy: Option<Box<PrivacySource>>,
     /// Who counts as the shell for an action declared [`Action::shell_only`].
-    shell_judge: fn(Option<Caller>) -> bool,
+    pub(crate) shell_judge: fn(Option<Caller>) -> bool,
 }
 
 impl<D: ?Sized, H: ?Sized> Registry<D, H> {
@@ -119,7 +119,7 @@ impl<D: ?Sized, H: ?Sized> Registry<D, H> {
     /// [`Action::shell_only`], which only `app.press` runs. Every reader a caller can reach
     /// ([`Registry::grade_of`], [`Registry::check_call`], [`Registry::explain`], `act`) answers it
     /// with [`Registry::unknown`], word for word, so no refusal confirms the action is there.
-    fn is_hidden(&self, name: &str) -> bool {
+    pub(crate) fn is_hidden(&self, name: &str) -> bool {
         self.actions.iter().any(|(a, _)| a.name == name && a.shell_only)
     }
 
@@ -384,45 +384,9 @@ where
         self.dispatch(name, args, expect_revision, action_id, authority, hold)
     }
 
-    /// `app.press`: run an action declared [`Action::shell_only`], and nothing else, for the
-    /// shell's own press. Everything else — a caller that is not the shell as the kernel says
-    /// (`set_shell_judge`), a call that carries an agent token, an action that is published, an
-    /// action that is not there — is refused in the one sentence [`shell_only::PRESS_REFUSED`], so
-    /// a probe learns nothing. Past that gate it meets what an `act` meets: the state rule, the
-    /// arguments, the ceiling and the mode, the guard, the handler.
-    ///
-    /// No grant is read: a press is the person's pointer on their own screen, and a grant is bound
-    /// to a call that asks to be allowed.
-    pub fn press_in(
-        &self,
-        name: &str,
-        args: &Value,
-        expect_revision: Option<&str>,
-        action_id: &str,
-        authority: &Authority,
-        hold: Hold,
-    ) -> Result<Value, String> {
-        if !self.is_hidden(name) || !shell_only::is_a_press_by_the_shell(self.shell_judge) {
-            return Err(shell_only::PRESS_REFUSED.to_string());
-        }
-        self.dispatch(name, args, expect_revision, action_id, authority, hold)
-    }
-
-    /// [`Registry::press_in`] in process, as [`Registry::act`] is `act_in`: nobody is vouched for.
-    pub fn press(
-        &self,
-        name: &str,
-        args: &Value,
-        expect_revision: Option<&str>,
-        action_id: &str,
-        authority: &Authority,
-    ) -> Result<Value, String> {
-        self.press_in(name, args, expect_revision, action_id, authority, Hold::of(self.private_now(), false))
-    }
-
     /// The dispatch `act_in` and `press_in` share, after each has settled whether the action may
     /// be reached by the method that was used.
-    fn dispatch(
+    pub(crate) fn dispatch(
         &self,
         name: &str,
         args: &Value,

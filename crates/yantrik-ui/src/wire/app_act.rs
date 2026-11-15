@@ -117,30 +117,64 @@ mod tests {
         }
     }
 
-    /// Every `.rs` and `.py` file under the repository (not `target`, not `.git`) that holds the
-    /// method's name in quotes, as paths from the repository root.
-    fn files_naming(method: &str) -> Vec<String> {
-        fn walk(dir: &std::path::Path, root: &std::path::Path, needle: &str, found: &mut Vec<String>) {
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if path.is_dir() {
-                    if !matches!(&*name, "target" | ".git" | "node_modules") {
-                        walk(&path, root, needle, found);
-                    }
-                } else if (name.ends_with(".rs") || name.ends_with(".py"))
-                    && std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle))
-                {
-                    found.push(path.strip_prefix(root).unwrap().display().to_string());
+    /// Every `.rs` and `.py` file under `dir` (not `target`, not `.git`), as (path from `root`, text).
+    fn sources(dir: &std::path::Path, root: &std::path::Path) -> Vec<(String, String)> {
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else { return found };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if !matches!(&*name, "target" | ".git" | "node_modules") {
+                    found.extend(sources(&path, root));
+                }
+            } else if name.ends_with(".rs") || name.ends_with(".py") {
+                if let (Ok(text), Ok(rel)) = (std::fs::read_to_string(&path), path.strip_prefix(root)) {
+                    found.push((rel.display().to_string(), text));
                 }
             }
         }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let root = root.canonicalize().unwrap();
-        let mut found = Vec::new();
-        walk(&root, &root, &format!("\"{method}\""), &mut found);
+        found
+    }
+
+    fn repository() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    }
+
+    /// Every file under the repository that holds the method's name in quotes, as paths from the
+    /// repository root.
+    fn files_naming(method: &str) -> Vec<String> {
+        let root = repository();
+        let needle = format!("\"{method}\"");
+        let mut found: Vec<String> = sources(&root, &root).into_iter().filter(|(_, text)| text.contains(&needle)).map(|(path, _)| path).collect();
+        found.sort();
+        found
+    }
+
+    /// The non-test code of this crate, by file: each file up to its test module (`#[cfg(test)]`
+    /// on a `mod`), without the files that are only tests. A `#[cfg(test)]` on a single item is
+    /// kept: a helper made for tests is code too.
+    fn shell_code() -> Vec<(String, String)> {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let root = repository();
+        let before_tests = |text: &str| {
+            let lines: Vec<&str> = text.lines().collect();
+            let end = (0..lines.len())
+                .find(|&i| lines[i] == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|next| next.starts_with("mod ") || next.starts_with("#[path")))
+                .unwrap_or(lines.len());
+            lines[..end].join("\n")
+        };
+        sources(&src, &root)
+            .into_iter()
+            .filter(|(path, _)| !path.ends_with("tests.rs") && !path.contains("/tests/"))
+            .map(|(path, text)| (path, before_tests(&text)))
+            .collect()
+    }
+
+    /// The files of `shell_code` with a line that satisfies `hit`, sorted.
+    fn files_with_a_line(hit: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut found: Vec<String> = shell_code().into_iter().filter(|(_, code)| code.lines().any(&hit)).map(|(path, _)| path).collect();
         found.sort();
         found
     }
@@ -160,6 +194,33 @@ mod tests {
         let code = own.split("#[cfg(test)]").next().unwrap();
         let sends: Vec<&str> = code.lines().filter(|l| l.contains("\"app.press\"")).collect();
         assert_eq!(sends.len(), 1, "one place in this file picks the method: {sends:?}");
+    }
+
+    /// Who can make this file send `app.press`: `method_for` sends it for any caller that names
+    /// `email.open_message_id`. So the shell's own code that names that action, and the code that
+    /// builds the opening that names it, are held to the two places that are the person's press on
+    /// a meeting brief's row. A notice action, a For you card or a control action that came to
+    /// produce one from a poster's reference would let a Mind open any message by folder and id.
+    #[test]
+    fn only_the_brief_can_make_the_shell_press_open_a_message() {
+        // A construction, not a match arm that reads one: the name comes after any `=>` on its line.
+        let builds_a_message_opening = |l: &str| l.find("Opening::Message {").is_some_and(|at| l.find("=>").map_or(true, |arrow| at > arrow));
+        assert_eq!(
+            files_with_a_line(builds_a_message_opening),
+            ["crates/yantrik-ui/src/wire/meeting_brief.rs"],
+            "`Opening::Message` is built from the brief's own mail only, never from a poster's reference"
+        );
+        assert_eq!(
+            files_with_a_line(|l| l.contains("\"open_message_id\"")),
+            ["crates/yantrik-ui/src/wire/app_act.rs", "crates/yantrik-ui/src/wire/for_you.rs"],
+            "the press of an opening is the one For you row and the one table in app_act.rs"
+        );
+        // Not only the quoted literal: a method built with `concat!` or `format!` is caught too.
+        assert_eq!(
+            files_with_a_line(|l| l.contains("\"app.\"") && l.contains("\"press\"")),
+            Vec::<String>::new(),
+            "no file builds the name `app.press` from pieces: it is spelled out once, in app_act.rs"
+        );
     }
 
     #[test]
