@@ -9,7 +9,7 @@
 # Re-running rebuilds the template from scratch. It refuses to run while any clone in the
 # 9600-9699 range exists (a clone is linked to its template and would block the rebuild).
 #
-# It touches CT 9530 only.
+# It touches CT 9530 only (and reads CT 530's address for the firewall proofs).
 
 set -euo pipefail
 
@@ -17,8 +17,12 @@ TEMPLATE_ID=9530
 CLONE_MIN=9600
 CLONE_MAX=9699
 HOSTNAME_CT=yantrik-ci-template
+SRC_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+BUILD_CT=530 # the build host: read-only here, to learn the addresses a job must not reach
 STORAGE=local-lvm
-ROOTFS_GB=60
+ROOTFS_GB=150
+CPUUNITS=50 # CT 530 and the VMs keep the default 100: the build host wins on CPU (review N4)
+PIDS_MAX=32768
 CORES=32
 MEMORY_MB=32768
 SWAP_MB=8192
@@ -42,19 +46,6 @@ for ((id = CLONE_MIN; id <= CLONE_MAX; id++)); do
   fi
 done
 
-# Host-wide hardening the review asks for (M2). These sysctls are not namespaced: an
-# unprivileged CT reads the host's value, so they are set here, on the node.
-say "host sysctls (fs.protected_*)"
-cat > /etc/sysctl.d/90-yantrik-ci.conf <<'EOF'
-# Yantrik CI (#1234, review M2): a job in a throwaway CT cannot plant a symlink, file or
-# fifo in a sticky world-writable directory for another user's process to follow.
-fs.protected_symlinks = 1
-fs.protected_hardlinks = 1
-fs.protected_regular = 2
-fs.protected_fifos = 2
-EOF
-sysctl -q -p /etc/sysctl.d/90-yantrik-ci.conf
-
 if ct_conf_exists "$TEMPLATE_ID"; then
   say "removing the old template $TEMPLATE_ID"
   pct stop "$TEMPLATE_ID" > /dev/null 2>&1 || true
@@ -75,7 +66,10 @@ pct create "$TEMPLATE_ID" "$IMAGE" \
   --rootfs "$STORAGE:$ROOTFS_GB" \
   --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp" \
   --onboot 0 \
+  --cpuunits "$CPUUNITS" \
   --description "Template for throwaway CI runners (#1234). Built by deploy/ci-runner/make-template.sh. Do not edit by hand."
+# A fork bomb in a job is bounded by this, not by the node's pid_max (review N4). Clones copy it.
+echo "lxc.cgroup2.pids.max: $PIDS_MAX" >> "/etc/pve/lxc/$TEMPLATE_ID.conf"
 pct start "$TEMPLATE_ID"
 
 say "waiting for the network"
@@ -101,7 +95,9 @@ apt-get install -y --no-install-recommends \
   libxkbcommon-dev libfontconfig1-dev libfreetype6-dev libinput-dev libgbm-dev \
   libegl1-mesa-dev bubblewrap \
   git curl ca-certificates python3 jq build-essential \
-  cmake clang libclang-dev xz-utils zstd unzip procps
+  cmake clang libclang-dev xz-utils zstd unzip procps nftables
+# Nothing may listen in a job's container, and nothing logs in to it (review N9).
+apt-get purge -y openssh-server > /dev/null 2>&1 || true
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
@@ -111,7 +107,7 @@ useradd --uid 1001 --create-home --home-dir /home/runner --shell /bin/bash runne
 passwd -l runner > /dev/null
 # No sudo, no groups beyond its own.
 if getent group sudo | grep -qw runner; then gpasswd -d runner sudo; fi
-command -v sudo > /dev/null && echo "note: sudo is installed; runner is not in sudoers" || true
+if command -v sudo > /dev/null; then echo "note: sudo is installed; runner is not in sudoers"; fi
 
 # --- Rust, installed by root, read-only to everyone else -------------------------------
 export RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
@@ -151,51 +147,30 @@ chown -R root:root /opt/actions-runner
 chmod -R go-w /opt/actions-runner
 echo "$ver" > /opt/actions-runner/.yantrik-runner-version
 
-# --- the launcher: reads the one-job config once, deletes it, runs the runner as `runner` ----
-cat > /usr/local/sbin/yantrik-ci-launch <<'EOF'
-#!/bin/bash
-# Run by the controller (as root, via `pct exec`). The JIT config was pushed to a root-only
-# file a moment ago; it is read once and deleted before anything else happens, so the job
-# never finds it on disk.
-set -euo pipefail
-f=/run/yantrik-ci/jit
-[ -f "$f" ] || { echo "yantrik-ci-launch: no config" >&2; exit 70; }
-[ "$(stat -c '%u %a' "$f")" = "0 600" ] || { echo "yantrik-ci-launch: bad config perms" >&2; exit 71; }
-cfg=$(< "$f")
-rm -f "$f"
-rmdir /run/yantrik-ci 2> /dev/null || true
-
-# The listener keeps its working files (its credentials, _work, _diag) in its own directory,
-# and finds that directory from where its binary really is, so the job gets a copy of the
-# runner. /opt/actions-runner stays root-owned and untouched; what the job does to its copy
-# dies with the container.
-rm -rf /home/runner/actions-runner
-cp -a /opt/actions-runner /home/runner/actions-runner
-chown -R runner:runner /home/runner/actions-runner
-cd /home/runner/actions-runner
-exec runuser -u runner -- env -i \
-  HOME=/home/runner USER=runner LOGNAME=runner SHELL=/bin/bash LANG=C.UTF-8 \
-  RUSTUP_HOME=/opt/rust/rustup \
-  PATH=/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  /home/runner/actions-runner/run.sh --jitconfig "$cfg"
-EOF
-chmod 755 /usr/local/sbin/yantrik-ci-launch
-
 # --- the rest of the job's world -----------------------------------------------------
 mkdir -p /var/lib/yantrik/workshops
 chmod 755 /var/lib/yantrik /var/lib/yantrik/workshops
 
-# Documented here, enforced on the node (they are host-wide; see make-template.sh).
-cat > /etc/sysctl.d/90-yantrik-ci.conf <<'EOF'
-fs.protected_symlinks = 1
-fs.protected_hardlinks = 1
-fs.protected_regular = 2
-fs.protected_fifos = 2
-EOF
 PROVISION
 
+say "installing the launcher, the egress filter and the job-started hook"
+push() { pct push "$TEMPLATE_ID" "$SRC_DIR/ct/$1" "$2" --perms "$3" --user 0 --group 0; }
+pct exec "$TEMPLATE_ID" -- mkdir -p /etc/yantrik-ci /usr/local/libexec
+push egress.nft /etc/yantrik-ci/egress.nft 644
+push yantrik-ci-egress /usr/local/sbin/yantrik-ci-egress 755
+push yantrik-ci-launch /usr/local/sbin/yantrik-ci-launch 755
+push yantrik-ci-job-started.sh /usr/local/libexec/yantrik-ci-job-started.sh 755
+pct exec "$TEMPLATE_ID" -- chown root:root /etc/yantrik-ci /usr/local/libexec
+
+# The addresses a job must not reach, for the proofs: this node, the build host, the gateway.
+NODE_IP=$(ip -4 -o addr show "$BRIDGE" | awk '{sub(/\/.*/, "", $4); print $4; exit}')
+CT530_NET=$(pct config "$BUILD_CT" | grep '^net0:')
+CT530_IP=$(sed -n 's/.*ip=\([0-9.]*\).*/\1/p' <<< "$CT530_NET")
+GW_IP=$(sed -n 's/.*gw=\([0-9.]*\).*/\1/p' <<< "$CT530_NET")
+[ -n "$NODE_IP" ] && [ -n "$CT530_IP" ] && [ -n "$GW_IP" ] || die "cannot work out the LAN addresses for the proofs"
+
 say "proofs before it becomes a template"
-pct exec "$TEMPLATE_ID" -- bash -s <<'PROOF'
+pct exec "$TEMPLATE_ID" -- env NODE_IP="$NODE_IP" CT530_IP="$CT530_IP" GW_IP="$GW_IP" bash -s <<'PROOF'
 set -u
 fail=0
 check() { # check <label> <expected: ok|refused> <cmd...>
@@ -212,6 +187,49 @@ check "runner cannot write /opt/actions-runner" refused as_runner touch /opt/act
 check "runner cannot overwrite run.sh" refused as_runner sh -c ': >> /opt/actions-runner/run.sh'
 check "runner is not root" ok sh -c '[ "$(runuser -u runner -- id -u)" = 1001 ]'
 check "runner has no sudo" refused as_runner sudo -n true
+check "runner cannot write the job-started hook" refused as_runner sh -c ': >> /usr/local/libexec/yantrik-ci-job-started.sh'
+check "runner cannot replace the hook" refused as_runner mv /usr/local/libexec/yantrik-ci-job-started.sh /usr/local/libexec/x
+check "runner cannot write the egress rules" refused as_runner sh -c ': >> /etc/yantrik-ci/egress.nft'
+
+# The hook: it admits ci.yml's test job and nothing else.
+hook=/usr/local/libexec/yantrik-ci-job-started.sh
+ev=$(mktemp); chmod 644 "$ev"
+printf '{"pull_request":{"head":{"repo":{"full_name":"yantrikos/yantrik-os","fork":false}}}}' > "$ev"
+hookrun() { as_runner env -i PATH=/usr/bin:/bin "$@" "$hook"; }
+base="GITHUB_REPOSITORY=yantrikos/yantrik-os GITHUB_WORKFLOW_REF=yantrikos/yantrik-os/.github/workflows/ci.yml@refs/heads/main GITHUB_JOB=test GITHUB_EVENT_PATH=$ev"
+# shellcheck disable=SC2086
+check "hook admits push to main" ok hookrun $base GITHUB_EVENT_NAME=push
+# shellcheck disable=SC2086
+check "hook admits a same-repo PR" ok hookrun $base GITHUB_EVENT_NAME=pull_request
+printf '{"pull_request":{"head":{"repo":{"full_name":"evil/yantrik-os","fork":true}}}}' > "$ev"
+# shellcheck disable=SC2086
+check "hook refuses a fork PR" refused hookrun $base GITHUB_EVENT_NAME=pull_request
+# shellcheck disable=SC2086
+check "hook refuses another workflow" refused hookrun GITHUB_REPOSITORY=yantrikos/yantrik-os GITHUB_WORKFLOW_REF=yantrikos/yantrik-os/.github/workflows/x.yml@refs/heads/main GITHUB_JOB=test GITHUB_EVENT_NAME=push
+# shellcheck disable=SC2086
+check "hook refuses another job" refused hookrun GITHUB_REPOSITORY=yantrikos/yantrik-os GITHUB_WORKFLOW_REF=yantrikos/yantrik-os/.github/workflows/ci.yml@refs/heads/main GITHUB_JOB=clippy GITHUB_EVENT_NAME=push
+# shellcheck disable=SC2086
+check "hook refuses another repository" refused hookrun GITHUB_REPOSITORY=other/repo GITHUB_JOB=test GITHUB_EVENT_NAME=push
+rm -f "$ev"
+
+# The egress filter: loaded the way the launcher loads it. (The template had a network for
+# the provisioning above; from here on it has the job's.)
+/usr/local/sbin/yantrik-ci-egress
+tcp() { timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2"; }
+check "no node API (8006)" refused as_runner curl -m5 -sk "https://$NODE_IP:8006/"
+check "no node ssh" refused as_runner timeout 5 bash -c "exec 3<>/dev/tcp/$NODE_IP/22"
+check "no build host (CT 530) ssh" refused as_runner timeout 5 bash -c "exec 3<>/dev/tcp/$CT530_IP/22"
+check "no LAN http" refused as_runner curl -m5 -s "http://$CT530_IP/"
+check "no gateway http" refused as_runner curl -m5 -s "http://$GW_IP/"
+check "no gateway https" refused as_runner curl -m5 -sk "https://$GW_IP/"
+check "no port 80 to the internet" refused as_runner curl -m5 -s http://example.com/
+check "no ipv6" refused as_runner curl -m5 -6 -s https://api.github.com/zen
+check "GitHub reachable" ok as_runner curl -m10 -sSfo /dev/null https://api.github.com/zen
+check "index.crates.io reachable" ok as_runner curl -m10 -sSfo /dev/null https://index.crates.io/config.json
+check "static.crates.io reachable" ok as_runner curl -m10 -sSfo /dev/null -r 0-0 https://static.crates.io/crates/libc/libc-0.2.150.crate
+check "runner cannot list the rules" refused as_runner nft list ruleset
+check "runner cannot flush the rules" refused as_runner nft flush ruleset
+check "runner cannot reach the rules from a new namespace" refused as_runner unshare -Urn sh -c 'nft list ruleset && curl -m5 -s https://api.github.com/zen'
 rv=$(runuser -u runner -- bash -lc 'rustc --version' 2>&1 || true)
 case "$rv" in "rustc 1.92.0 "*) echo "PASS  rustc is 1.92.0 for a login shell";; *) echo "FAIL  rustc: $rv"; fail=1;; esac
 exit $fail
@@ -220,5 +238,6 @@ PROOF
 say "stopping and converting to a template"
 pct shutdown "$TEMPLATE_ID" --timeout 60 || pct stop "$TEMPLATE_ID"
 pct template "$TEMPLATE_ID"
-pct config "$TEMPLATE_ID" | grep -E '^(template|cores|memory|swap|rootfs|net0|features|unprivileged)'
+pct config "$TEMPLATE_ID" | grep -E '^(template|cores|cpuunits|memory|swap|rootfs|net0|features|unprivileged)'
+grep -E '^lxc\.cgroup2\.pids\.max' "/etc/pve/lxc/$TEMPLATE_ID.conf"
 say "template $TEMPLATE_ID ready"

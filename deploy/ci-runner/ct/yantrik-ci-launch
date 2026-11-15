@@ -1,0 +1,30 @@
+#!/bin/bash
+# Run by the controller (as root, via `pct exec`). The JIT config was pushed to a root-only
+# file a moment ago; it is read once and deleted before anything else happens, so the job
+# never finds it on disk. Then the egress filter goes up, and only then does the job's user
+# exist as a process.
+set -euo pipefail
+f=/run/yantrik-ci/jit
+[ -f "$f" ] || { echo "yantrik-ci-launch: no config" >&2; exit 70; }
+[ "$(stat -c '%u %a' "$f")" = "0 600" ] || { echo "yantrik-ci-launch: bad config perms" >&2; exit 71; }
+cfg=$(< "$f")
+rm -f "$f"
+rmdir /run/yantrik-ci 2> /dev/null || true
+
+/usr/local/sbin/yantrik-ci-egress
+
+# The listener keeps its working files (its credentials, _work, _diag) in its own directory,
+# and finds that directory from where its binary really is, so the job gets a copy of the
+# runner. /opt/actions-runner stays root-owned and untouched; what the job does to its copy
+# dies with the container.
+rm -rf /home/runner/actions-runner
+cp -a /opt/actions-runner /home/runner/actions-runner
+chown -R runner:runner /home/runner/actions-runner
+cd /home/runner/actions-runner
+exec runuser -u runner -- env -i \
+  HOME=/home/runner USER=runner LOGNAME=runner SHELL=/bin/bash LANG=C.UTF-8 \
+  RUSTUP_HOME=/opt/rust/rustup \
+  PATH=/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
+  ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/libexec/yantrik-ci-job-started.sh \
+  /home/runner/actions-runner/run.sh --jitconfig "$cfg"
