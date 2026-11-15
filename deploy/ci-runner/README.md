@@ -102,15 +102,18 @@ public internet" is the realistic limit.
 every port a clone can ever have (`veth9600i0` to `veth9699i0`). `clone_ports` and `clone_ok` hold the
 running clone's exact port and its own MAC (the `hwaddr` of its `net0`, from `pct config`); the
 controller adds them after the clone exists and before `pct start`, and removes them only once the CT is
-gone. **A port in `ci_ports` that is not pinned is dropped**: a clone that survives its job, or a table
-reload, has no network. Every other port, guest and CT 530 included, takes the first rule of each chain
+gone, or the CT is given up on. **A port in `ci_ports` that is not pinned is dropped**: a clone that
+survives its job (it is unpinned at once, and `destroy_ct` falls back to `cgroup.kill` when `pct stop`
+fails), or a table reload, has no network. Every other port, guest and CT 530 included, takes the first rule of each chain
 and is untouched. It uses no cluster firewall.
 
 **The fixed address (N3).** There is no DHCP for clones. `/etc/yantrik-ci/clone-net`, written by the
 operator (root-owned, not writable by others), is one line: `ip=<addr>/<len>,gw=<gw>`. The controller
 and `make-template.sh` refuse to run without it, and check it strictly: the format, an address inside
 `vmbr0`'s subnet with the same prefix, not the network or broadcast address, the gateway, the node or a
-resolver, and `gw` equal to the node's gateway. Before the clone starts, the controller sets its `net0`
+resolver or CT 530's address, and `gw` equal to the node's gateway. Before the first clone of each
+controller start, an ARP probe (a raw socket from address 0.0.0.0, no extra package) must get no answer
+for the address; if anything answers, the controller refuses to clone. Before the clone starts, the controller sets its `net0`
 to that `ip=`/`gw=` (its own MAC kept), so PVE writes a static config and no DHCP client runs in the CT.
 Pick an address nothing else uses and the router's DHCP pool does not hand out (or reserve it on the
 router); only one clone runs at a time, so one address is enough.
@@ -119,7 +122,9 @@ router); only one clone runs at a time, so one address is enough.
   carry the clone's own MAC; an ARP sender must be that MAC and may speak only for the clone's address
   (or 0.0.0.0, a probe); an IP packet must have the clone's address as its source. So there is no DHCP
   (its source is 0.0.0.0), no ARP for the gateway or any other host, and no spoofed source.
-- **`forward`:** ARP, and DNS to the node's resolvers, pass; IPv6 and every non-IPv4 frame, private,
+- **`forward`:** an IP frame from a clone must be addressed to the gateway's MAC (resolved by ARP when the
+  table is loaded; the loader refuses to load if it is unknown), or be for a resolver, so a clone cannot
+  hand a packet to another LAN host to route. ARP, and DNS to the node's resolvers, pass; IPv6 and every non-IPv4 frame, private,
   CGNAT, link-local, multicast, loopback, broadcast and reserved (`0.0.0.0/8`, `240.0.0.0/4`)
   destinations and our own public addresses (hairpin NAT would reach the router's admin page) are
   dropped; the rest is the public internet.
@@ -128,7 +133,9 @@ router); only one clone runs at a time, so one address is enough.
 The controller loads the table before every clone, pins the clone, and checks the table (and the pin)
 on every poll while the job runs; if it is gone (`nft flush ruleset`, a restart of `nftables.service`)
 it ends the CT. If a CT in 9600-9699 survives the end of a job, or the start-up cleanup, the controller
-stops, exits non-zero and leaves the table loaded. **Do not enable `nftables.service` on node2 with a
+unpins it, stops, **exits 3** and leaves the table loaded. The unit has `RestartPreventExitStatus=3`, so it
+stays `failed` (visible in `systemctl --failed`) instead of restarting every 30 seconds; deal with the CT,
+then `systemctl restart yantrik-ci-controller`. **Do not enable `nftables.service` on node2 with a
 `flush ruleset` configuration** (Debian's default `/etc/nftables.conf`): a restart removes the table,
 and the controller then ends the running job.
 
@@ -136,11 +143,14 @@ and the controller then ends the running job.
 `clone-net` file and prints `SKIPPED` without it. Phase 2 sends the spoofs on an isolated bridge
 `vmbr-yci-test` (no uplink, no other port, a dummy gateway and a third host in a netns), never on the real
 LAN. As CT root, with no CT rules, the clone takes the gateway's MAC, claims the gateway's and a third
-host's address with ARP, and sends DHCP (with a foreign client id and source 0.0.0.0, and a broadcast
-from its own address). Each runs with the filter off (the attack works) and on (the gateway's entry stays
+host's address with ARP, sends DHCP (with a foreign client id and source 0.0.0.0, and a broadcast from its
+own address), and sends an IP frame with a public destination to the third host's MAC (dropped) and to the
+gateway's (passes). Each runs with the filter off (the attack works) and on (the gateway's entry stays
 on its own port in `bridge fdb`, no neighbour entry changes, no DHCP arrives). An unpinned clone must
 reach nothing; a pinned one must resolve the gateway and reach its resolver. The test also checks that
-the clone has no DHCP client, and that bad `clone-net` lines are refused. The bridge, netns, clone and
+the clone has no DHCP client, that bad `clone-net` lines (including CT 530's address) are refused, and
+that the ARP probe tells a free address from one in use. Phase 1 repeats the validity and probe checks on
+the real address. The bridge, netns, clone and
 table are removed at the end.
 
 ### The job check (R1)
@@ -220,7 +230,8 @@ it stays so until the operator decides.
 **The clones' fixed address.** One line in `/etc/yantrik-ci/clone-net`, as root, mode 644 or tighter in a
 root-owned directory: `ip=192.168.4.NN/22,gw=192.168.4.1` (the prefix of `vmbr0`, the router as gateway).
 Pick an address nothing uses and the DHCP pool does not hand out. The controller and `make-template.sh`
-refuse to run without a valid file. Rebuild the template after changing it.
+refuse to run without a valid file. The controller re-reads it every cycle; no template rebuild is needed
+when it changes (the template's own net0 stays DHCP, and a clone's is replaced before it starts).
 
 **Own public addresses.** Put the router's WAN address and any other public address of ours in
 `/etc/yantrik-ci/own-public-ips`, one per line (`curl -s https://api.ipify.org` from a LAN machine
@@ -271,7 +282,8 @@ controller backs off. Rebuilding is the fix. Moving Rust is a PR of its own and 
 
 **Prove the host filter** (controller stopped, no CT in 9600-9699): `bash /root/ci-runner/check-host-filter.sh 9698`.
 **Test the controller** against a stub of GitHub on the isolated bridge: `bash /root/ci-runner/test/controller-test.sh`
-(100-run API body, refusals, the kill path, a surviving CT, API loss).
+(100-run API body, refusals, the kill path, a surviving CT, API loss, an address in use). It asserts the
+points that matter and ends with `ALL PASS` or `FAIL`.
 
 **Stop CI from using the host** (the `test` job then waits for a runner; switch its `runs-on` back to
 `ubuntu-24.04` if it must run meanwhile):

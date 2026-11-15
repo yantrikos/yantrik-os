@@ -29,7 +29,14 @@ destroy_ct() {
     log "refusing to destroy CT $id: it is not named yantrik-ci-$id, so it is not ours"
     return 1
   fi
-  pct stop "$id" > /dev/null 2>&1 || true
+  if ! pct stop "$id" > /dev/null 2>&1; then
+    # A hung or failing `pct stop`: end every task in the CT's cgroup, init included, from the kernel
+    # (cgroup.kill, Linux 5.14 and later), then let `pct destroy` have another go.
+    if [ -w "/sys/fs/cgroup/lxc/$id/cgroup.kill" ]; then
+      echo 1 > "/sys/fs/cgroup/lxc/$id/cgroup.kill" 2> /dev/null || true
+      sleep 2
+    fi
+  fi
   pct destroy "$id" --purge > /dev/null 2>&1 || true
   ! lxc_exists "$id"
 }
@@ -75,21 +82,61 @@ pool_ok() {
 
 CLONE_IP="" CLONE_LEN="" CLONE_GW=""
 
-# clone_net_check FILE NODE_CIDR GATEWAY RESOLVERS: read the one line `ip=<addr>/<len>,gw=<gw>`.
+# arp_query BRIDGE SPA TPA: ask the bridge's segment "who has TPA?" (sender address SPA, 0.0.0.0 for
+# a probe that updates no cache) and print the MAC of whoever answers, if anyone does within 3 s.
+# Raw AF_PACKET, no extra package on the node.
+arp_query() {
+  python3 - "$1" "$2" "$3" << 'PY'
+import socket, struct, sys, time
+br, spa, tpa = sys.argv[1:4]
+mac = bytes.fromhex(open('/sys/class/net/%s/address' % br).read().strip().replace(':', ''))
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0806))
+s.bind((br, 0))
+s.settimeout(0.5)
+req = b'\xff' * 6 + mac + b'\x08\x06' + struct.pack('!HHBBH6s4s6s4s', 1, 0x0800, 6, 4, 1, mac, socket.inet_aton(spa), b'\0' * 6, socket.inet_aton(tpa))
+end = time.time() + 3
+last = 0
+while time.time() < end:
+    if time.time() - last > 1:
+        s.send(req)
+        last = time.time()
+    try:
+        f = s.recv(2048)
+    except socket.timeout:
+        continue
+    if len(f) >= 42 and f[12:14] == b'\x08\x06' and struct.unpack('!H', f[20:22])[0] == 2 and f[28:32] == socket.inet_aton(tpa):
+        print(':'.join('%02x' % b for b in f[22:28]))
+        break
+PY
+}
+
+# clone_addr_free: nothing on the bridge's segment answers for the clone's address (L3). One probe
+# per controller start; after the first clone the address is ours.
+clone_addr_free() {
+  local who
+  who=$(arp_query "${CLONE_BRIDGE:-vmbr0}" 0.0.0.0 "$CLONE_IP")
+  if [ -n "$who" ]; then
+    log "REFUSING to clone: $CLONE_IP already answers on ${CLONE_BRIDGE:-vmbr0} (MAC $who)"
+    return 1
+  fi
+}
+
+# clone_net_check FILE NODE_CIDR GATEWAY RESOLVERS [DENY]: read the one line `ip=<addr>/<len>,gw=<gw>`.
 # Strict format; the address must be inside the node's subnet and not the network or broadcast
-# address, the gateway, the node, or a resolver; the gateway must be the node's own. Sets CLONE_IP,
+# address, the gateway, the node, a resolver or one of DENY (comma list: CT 530's address); the
+# gateway must be the node's own. Sets CLONE_IP,
 # CLONE_LEN and CLONE_GW, or returns non-zero with the reason logged. Fail closed.
 clone_net_check() {
-  local file=$1 nodecidr=$2 gw=$3 res=$4 line r
+  local file=$1 nodecidr=$2 gw=$3 res=$4 deny=${5:-} line r
   [ -f "$file" ] || { log "no $file: the clones' fixed address is not set"; return 1; }
   trusted_path "$(dirname "$file")" && trusted_path "$file" || return 1
   line=$(< "$file")
   [[ $line =~ ^ip=([0-9]{1,3}(\.[0-9]{1,3}){3})/([0-9]{1,2}),gw=([0-9]{1,3}(\.[0-9]{1,3}){3})$ ]] ||
     { log "$file is not one line 'ip=<addr>/<len>,gw=<gw>'"; return 1; }
   CLONE_IP=${BASH_REMATCH[1]} CLONE_LEN=${BASH_REMATCH[3]} CLONE_GW=${BASH_REMATCH[4]}
-  if ! r=$(python3 - "$CLONE_IP" "$CLONE_LEN" "$CLONE_GW" "$nodecidr" "$gw" "$res" 2>&1 << 'PY'
+  if ! r=$(python3 - "$CLONE_IP" "$CLONE_LEN" "$CLONE_GW" "$nodecidr" "$gw" "$res" "$deny" 2>&1 << 'PY'
 import ipaddress, sys
-ip, ln, cgw, nodecidr, gw, res = sys.argv[1:7]
+ip, ln, cgw, nodecidr, gw, res, deny = sys.argv[1:8]
 try:
     net = ipaddress.ip_interface(nodecidr).network
     a = ipaddress.ip_address(ip)
@@ -100,6 +147,7 @@ try:
     if ip == cgw or ip == gw or a == node: sys.exit("%s is the gateway or the node" % ip)
     if cgw != gw: sys.exit("gw %s is not the node's gateway %s" % (cgw, gw))
     if ip in [x for x in res.split(",") if x]: sys.exit("%s is a resolver" % ip)
+    if ip in [x for x in deny.split(",") if x]: sys.exit("%s is the build host's address" % ip)
 except ValueError as e:
     sys.exit(str(e))
 PY
@@ -121,8 +169,10 @@ node_values() {
 }
 
 clone_net_load() {
+  local ct530
   node_values || return 1
-  clone_net_check "$CLONE_NET_FILE" "$NODE_CIDR" "$NODE_GW" "$NODE_RES"
+  ct530=$(pct config "${BUILD_CT:-530}" 2> /dev/null | sed -n '/^net0:/s/.*ip=\([0-9.]*\).*/\1/p')
+  clone_net_check "$CLONE_NET_FILE" "$NODE_CIDR" "$NODE_GW" "$NODE_RES" "$ct530"
 }
 
 # clone_set_net ID: give the clone its fixed address before it starts: static `ip=`/`gw=` in its net0,
@@ -140,12 +190,13 @@ clone_set_net() {
 
 # --- the host-side filter (R3, H1, N1) -----------------------------------------------------
 
-# host_filter_render RESOLVERS GATEWAY CLONEIP OWN: load host-egress.nft with those values (comma
+# host_filter_render RESOLVERS GATEWAY CLONEIP OWN GWMAC: load host-egress.nft with those values (comma
 # lists, IPv4) and fill `ci_ports` with every port a clone can have. Atomic: the table is replaced
 # in one `nft -f`. The pin sets start empty; host_filter_add_clone fills them. A clone not pinned
 # has no network.
 host_filter_render() {
-  local res=$1 gw=$2 cloneip=$3 own=$4 pre ports="" i
+  local res=$1 gw=$2 cloneip=$3 own=$4 gwmac=$5 pre ports="" i
+  [[ $gwmac =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]] || { log "host filter: the gateway's MAC is unknown"; return 1; }
   [ -f "$LIB_DIR/host-egress.nft" ] || { log "host filter: $LIB_DIR/host-egress.nft is missing"; return 1; }
   trusted_path "$LIB_DIR/host-egress.nft" || return 1
   for ((i = ID_MIN; i <= ID_MAX; i++)); do ports+="${ports:+, }$(clone_port "$i")"; done
@@ -155,6 +206,7 @@ host_filter_render() {
     printf 'define ownpub = { %s }\n' "${own//,/, }"
     printf 'define gateway = %s\n' "$gw"
     printf 'define cloneip = %s\n' "$cloneip"
+    printf 'define gwmac = %s\n' "$gwmac"
     printf 'include "%s/host-egress.nft"\n' "$LIB_DIR"
     printf 'add element bridge yantrik_ci ci_ports { %s }\n' "$ports"
   } > "$pre"
@@ -168,7 +220,9 @@ host_filter_load() {
   trusted_path "$(dirname "$OWN_PUBLIC_FILE")" && trusted_path "$OWN_PUBLIC_FILE" || return 1
   node_values || return 1
   [ -n "$CLONE_IP" ] || { log "host filter: the clone's address is not set"; return 1; }
-  host_filter_render "$NODE_RES" "$NODE_GW" "$CLONE_IP" "$NODE_OWN"
+  local gwmac
+  gwmac=$(arp_query "${NODE_BRIDGE:-vmbr0}" "${NODE_CIDR%/*}" "$NODE_GW")
+  host_filter_render "$NODE_RES" "$NODE_GW" "$CLONE_IP" "$NODE_OWN" "$gwmac"
 }
 
 # The host-side port name of a clone.
@@ -190,9 +244,8 @@ host_filter_add_clone() {
   host_filter_ok "$id"
 }
 
-# Drop a clone's pin. Only once the CT is gone (the caller checks): a pin removed from a CT that
-# still runs would not matter now (an unpinned port is dropped), but the pin is not ours to remove
-# while the CT exists.
+# Drop a clone's pin. Called when the CT is gone, and also for a CT that survives its job: the
+# unpinned port is then dropped by the table (which stays loaded), so a survivor has no network.
 host_filter_remove_clone() {
   local id=$1 port mac
   port=$(clone_port "$id")

@@ -11,6 +11,9 @@ Type=simple
 ExecStart=/usr/local/sbin/yantrik-ci-controller
 Restart=always
 RestartSec=30
+# Exit 3: a clone survived its job (or the start-up cleanup). The unit stays failed, visible in
+# `systemctl --failed`, until the operator has dealt with the CT.
+RestartPreventExitStatus=3
 # SIGTERM goes to the controller alone; it stops the runner's CT and destroys it, then exits.
 # Anything still left after the timeout is killed, and the next start destroys the CT.
 KillMode=mixed

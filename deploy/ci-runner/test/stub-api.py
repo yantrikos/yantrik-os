@@ -6,7 +6,7 @@ The mode file decides what the runner and its job look like:
   busy      realistic config, busy, the job is ci.yml's test from this repo (admit)
   busyiso   busy, but the job belongs to iso.yml (refuse)
   busyfork  busy, ci.yml test, but a fork's head repository (refuse)
-  busynone  busy, but no job of this runner can be found (refuse after 2 looks)
+  busynone  busy, but no job of this runner can be found (refuse after 4 looks)
   busymany  as busy, but 100 large runs are in progress and ours is the last (M1)
   apidown   the runner endpoint answers 500 and so do the run lists (GitHub cannot be asked)
   apidownjob the runner endpoint answers 500 but the run list shows a job of this runner that is iso.yml's

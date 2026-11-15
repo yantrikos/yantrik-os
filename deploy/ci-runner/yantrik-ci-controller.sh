@@ -62,7 +62,7 @@ STOP=0
 CHILD_PID=
 RUNNER_PID=
 SURVIVOR=0
-CUR_ID=
+ADDR_CHECKED=0
 GROUP_ID=
 SWEPT=0
 WHY=
@@ -233,10 +233,11 @@ cycle() {
   id=$(free_id) || { log "no free CT id in $ID_MIN-$ID_MAX"; return 1; }
   pool_ok || return 1
   clone_net_load || { log "REFUSING to clone: the clones' fixed address is not set or not valid"; return 1; }
+  # Once per controller start: nothing else may answer for the clone's address (L3).
+  if [ "$ADDR_CHECKED" -eq 0 ]; then clone_addr_free || return 1; ADDR_CHECKED=1; fi
   host_filter_load || { log "REFUSING to clone: the host-side firewall is not in place"; return 1; }
   request_jit || return 1
 
-  CUR_ID=$id
   t0=$(date +%s)
   log "cycle: runner $RUNNER_NAME (GitHub id $RUNNER_GH_ID), CT $id"
 
@@ -337,9 +338,10 @@ finish_ct() {
     sleep 5
   done
   if lxc_exists "$id"; then
-    # A CT that survives is not ours to forget: its pin stays, the table is left alone, and the
-    # controller stops and exits non-zero (N1). The unpinned port has no network meanwhile.
-    log "ERROR: CT $id could not be destroyed: stopping the controller, the host filter stays loaded"
+    # A CT that survives is unpinned, so the table (left loaded) drops its port and it has no
+    # network; the controller stops and exits 3, which the unit does not restart (N1, L1, L2).
+    log "ERROR: CT $id could not be destroyed: unpinning it, stopping the controller, the host filter stays loaded"
+    host_filter_remove_clone "$id"
     SURVIVOR=1
     STOP=1
   else
@@ -347,7 +349,6 @@ finish_ct() {
   fi
   remove_runner
   log "done: CT $id, runner ${RUNNER_NAME:-?}, started $(date -u -d "@$t0" +%H:%M:%SZ), ended $(date -u +%H:%M:%SZ), job exit: $why${stats:+; $stats}"
-  CUR_ID=
 }
 
 # --- signals and main --------------------------------------------------------------------
@@ -370,8 +371,8 @@ main() {
     exit 1
   }
   if ! destroy_all_clones; then
-    log "ERROR: a CT in $ID_MIN-$ID_MAX survived the start-up cleanup: exiting, the host filter is left alone"
-    exit 1
+    log "ERROR: a CT in $ID_MIN-$ID_MAX survived the start-up cleanup: exiting 3, the host filter is left alone"
+    exit 3
   fi
 
   while [ "$STOP" -eq 0 ]; do
@@ -379,11 +380,6 @@ main() {
     wait_for_memory || break
     cycle
     rc=$?
-    # A CT that survives a cycle is cleaned before the next one starts.
-    if [ -n "$CUR_ID" ]; then
-      if destroy_ct "$CUR_ID"; then host_filter_remove_clone "$CUR_ID"; else SURVIVOR=1; fi
-      CUR_ID=
-    fi
     remove_runner
     [ "$STOP" -eq 0 ] || break
     cycles=$((cycles + 1))
@@ -401,10 +397,9 @@ main() {
     fi
   done
 
-  if [ -n "$CUR_ID" ]; then destroy_ct "$CUR_ID" || SURVIVOR=1; fi
   remove_runner
   log "controller stopped"
-  [ "$SURVIVOR" -eq 0 ] || exit 1
+  [ "$SURVIVOR" -eq 0 ] || exit 3
 }
 
 main "$@"

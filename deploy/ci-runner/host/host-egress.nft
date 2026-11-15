@@ -13,7 +13,9 @@
 # The clone has one fixed address, `$cloneip` (from /etc/yantrik-ci/clone-net), and no DHCP: nothing
 # from a clone may carry another source IP (not even 0.0.0.0 for DHCP), and ARP may only speak for
 # that address, so it can neither poison another host's entry nor starve or release a lease (N3).
-# `$resolvers`, `$ownpub`, `$gateway` and `$cloneip` are defined by the loader.
+# `$resolvers`, `$ownpub`, `$gateway`, `$gwmac` (the gateway's MAC, resolved at load) and `$cloneip`
+# are defined by the loader. Every IP frame from a clone must go to the gateway's MAC, or be for a
+# resolver (which may sit on the LAN): a clone cannot hand a packet to another LAN host to route.
 #
 # A clone may: use ARP as its own MAC and address, ask the node's resolvers for names, and send IPv4
 # from its address to the public internet. It may not: send with another MAC (which would poison the
@@ -46,6 +48,7 @@ table bridge yantrik_ci {
     iifname != @clone_ports drop
     ether type arp accept
     ether type != ip drop
+    ether daddr != $gwmac ip daddr != $resolvers counter drop
     ip daddr $resolvers udp dport 53 accept
     ip daddr $resolvers tcp dport 53 accept
     ip daddr $ownpub counter drop
