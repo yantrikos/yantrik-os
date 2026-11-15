@@ -168,7 +168,9 @@ fn read(display: Display, region: Option<String>) -> Result<serde_json::Value, S
         read["clipped"] = true.into();
     }
     if display == Display::Desktop {
-        read["in_front"] = crate::windows::in_front().into();
+        let windows = crate::windows::shell_windows();
+        let front = crate::control_window_titles::in_front(crate::windows::in_front(), &windows, crate::control_files_mind::a_mind_is_calling());
+        read["in_front"] = front.into();
         read["desktop_in_front"] = crate::windows::shell_in_front().into();
     }
     read["note"] = "Read from pixels: every window on the display, overlapping as drawn, each line \

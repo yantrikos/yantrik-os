@@ -32,6 +32,8 @@ mod tests;
 #[cfg(all(test, unix))]
 mod protected_tests;
 #[cfg(all(test, unix))]
+mod regression_tests;
+#[cfg(all(test, unix))]
 mod copy_form_tests;
 #[cfg(all(test, unix))]
 mod secret_tests;
@@ -238,6 +240,8 @@ pub fn is_protected_with(path: &Path, places: &Places<'_>) -> bool {
     // A Mind's workshops are held by one check, the prefix and the inode (workshops.rs).
     listed
         || secrets::names_a_secret(path)
+        // An editor's copy that spells the path of a file into its name (review R5-H1).
+        || path.file_name().and_then(|n| copy_marker::encoded_path(&n.to_string_lossy())).is_some_and(|original| is_protected_with(&original, places))
         || places.home.is_some_and(|home| moved(home) || workshops::holds(path, home))
         || places.data_home.is_some_and(|base| workshops::Root::at(&base.join("yantrik/workshops")).holds(path))
         || places.data_home.is_some_and(|base| under_prefix(".local/share/").any(|place| under(base, place)))

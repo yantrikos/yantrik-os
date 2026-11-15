@@ -15,14 +15,41 @@ const ENDINGS: &[&str] = &[
 ];
 
 /// The name an editor's swap or undo file is the swap of: `NAME.swp` or `.NAME.swp` (the dot of a
-/// dotfile kept: `.env.swp` is `.env`). Vim runs through `.swp`, `.swo` … `.swa` as swap files
-/// collide, and on through `.svz` … `.sva`, `.suz` … down to `.saa` (review L7); it keeps undo text
-/// in `.NAME.un~`, and Kate its journal in `.NAME.kate-swp`.
-fn swap_original(name: &str) -> Option<&str> {
+/// dotfile kept: `.env.swp` is `.env`). Any name may end `.swp`, `.swo` or `.swn`. Vim runs on
+/// through `.swa` … `.swm` and `.svz` … `.saa` as swap files collide, but only for its own
+/// `.NAME.s??` or a `%`/`!` spelling of a path, which is `wide`: `credentials.svg` and `cookies.sql`
+/// are no one's swap (review M1). Vim keeps undo text in `.NAME.un~`, and Kate its journal in
+/// `.NAME.kate-swp`.
+fn swap_original(name: &str, wide: bool) -> Option<&str> {
     let (bare, end) = name.rsplit_once('.')?;
-    let vim_swap = matches!(end.as_bytes(), [b's', b'w', b'a'..=b'p'] | [b's', b'a'..=b'v', b'a'..=b'z']);
-    let swap = end == "un~" || end == "kate-swp" || vim_swap;
+    let narrow = matches!(end, "swp" | "swo" | "swn");
+    let range = matches!(end.as_bytes(), [b's', b'w', b'a'..=b'p'] | [b's', b'a'..=b'v', b'a'..=b'z']);
+    let swap = end == "un~" || end == "kate-swp" || narrow || (wide && range);
     swap.then_some(bare)
+}
+
+/// The paths an editor's copy spells into its name, when `name` (a last part) is one: Neovim's swap
+/// and undo files (`%home%ann%.kube%config.swp`) and Emacs's backups (`!home!ann!.kube!config~`),
+/// with the marker removed and each `%` or `!` read as a `/` (`%%` and `!!` are the character
+/// itself). The caller judges the path, so a copy of a file in a protected place is protected
+/// (review R5-H1).
+pub(super) fn encoded_path(name: &str) -> Option<std::path::PathBuf> {
+    let name = name.to_lowercase();
+    let sep = name.chars().next().filter(|c| matches!(c, '%' | '!'))?;
+    let body = originals(&name).into_iter().find(|o| o.starts_with(sep)).unwrap_or(name);
+    let mut path = String::new();
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c == sep && chars.peek() == Some(&sep) => {
+                chars.next();
+                path.push(sep);
+            }
+            c if c == sep => path.push('/'),
+            c => path.push(c),
+        }
+    }
+    Some(path.into())
 }
 
 /// The names `name` (lower case) may be a copy of, each with one marker removed. Empty when
@@ -39,7 +66,8 @@ pub(super) fn originals(name: &str) -> Vec<String> {
             add(bare);
         }
     }
-    if let Some(bare) = swap_original(name) {
+    // Vim's whole range is for a dotfile's own swap and for a path spelled into a name.
+    if let Some(bare) = swap_original(name, name.starts_with(['.', '%', '!'])) {
         add(bare);
         bare.strip_prefix('.').map(&mut add);
     }
@@ -60,11 +88,14 @@ pub(super) fn originals(name: &str) -> Vec<String> {
     }
     // Where an editor keeps its copies away from the file, it spells the whole path into the name:
     // Neovim's swap and undo files with `%`, Emacs's backups with `!` (review R3-1). The file is
-    // the last part, so only the last part is kept; a URL-encoded name (`id_rsa%20old`) starts
-    // with its file, so the first part is kept too. The caller judges the whole name as well
-    // (review H1), so nothing here is the only verdict on a name.
+    // the last part, so it is kept with its swap ending removed; a URL-encoded name
+    // (`id_rsa%20old`) starts with its file, so the first part is kept when it looks like a file's
+    // name (starts with `.`, or has a `_` or `.`), and `cookies%20recipe.pdf` is not a cookie jar
+    // (review R5-L1). The caller judges the whole name as well (review H1).
     if let Some((first, last)) = name.split_once('%').zip(name.rsplit_once('%')).map(|((first, _), (_, last))| (first, last)) {
-        add(first);
+        if first.starts_with('.') || first.contains(['_', '.']) {
+            add(first);
+        }
         add(last);
     }
     if let Some(rest) = name.strip_prefix('!') {

@@ -346,3 +346,34 @@ fn output_that_reached_the_cap_ends_at_a_whole_line() {
     let (short, _) = run(&["sh".to_string(), "-c".to_string(), "printf 'tokens'".to_string()]).unwrap();
     assert_eq!(short, "tokens", "a pipe that ended before the cap is kept whole");
 }
+
+/// Review R5-L3: a capped pipe with no newline is empty, and says why.
+#[test]
+fn output_cut_at_the_cap_says_so() {
+    let (out, _) = run(&["sh".to_string(), "-c".to_string(), "yes a | tr -d '\\n' | head -c 70000".to_string()]).unwrap();
+    assert_eq!(out, "[output cut at 64 KiB]\n");
+    let (cut, _) = run(&["sh".to_string(), "-c".to_string(), "yes a | head -c 70000".to_string()]).unwrap();
+    assert!(cut.ends_with("a\n[output cut at 64 KiB]\n"), "{:?}", &cut[cut.len() - 30..]);
+}
+
+/// Review R5-H1: Neovim's and Emacs's copies of a file in a protected place are refused by `cat`,
+/// and `find ~/.local` prints a count, not a name.
+#[test]
+fn an_editors_copy_of_a_protected_place_is_refused_and_not_listed() {
+    let h = home("encoded");
+    let root = h.0.to_string_lossy().replace('/', "%");
+    let swap = format!(".local/state/nvim/swap/{root}%.kube%config.swp");
+    let undo = format!(".local/state/nvim/undo/{root}%.docker%config.json");
+    let backup = format!(".emacs.d/backups/{}!.kube!config~", h.0.to_string_lossy().replace('/', "!"));
+    for rel in [&swap, &undo, &backup] {
+        let at = put(&h, rel);
+        let refused = verdict(&format!("cat '{at}'"), &h.0).unwrap_err();
+        assert!(refused.contains("a place the AI never reads") && !refused.contains(FAKE), "{at}: {refused}");
+    }
+    put(&h, ".local/state/nvim/swap/notes.txt");
+    let argv = words(&format!("find {} -type f", h.0.join(".local").display())).unwrap();
+    let (out, _) = run(&argv).unwrap();
+    let shown = without_protected(&argv, &out);
+    assert!(shown.contains("notes.txt") && shown.contains("2 entries are not shown"), "{shown}");
+    assert!(!shown.contains("kube") && !shown.contains("docker"), "{shown}");
+}

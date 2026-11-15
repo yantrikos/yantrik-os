@@ -20,18 +20,41 @@ const A_NOTICE: &str = "a notification";
 /// brackets, quotes of every kind, dashes, bullets, ellipses) ends a word (review M4).
 const IN_A_NAME: &str = "._-~#%!:+@$";
 
-/// Whether `title` names a secret: a word of it is a secret name (also with the full stop, `?` or
-/// `:` a sentence puts after it: `Opening tokens.json.`), or a word that is a path (`~/.aws`,
-/// `/home/ann/.ssh/id_rsa`) is a protected place. `tokens.json*` (an editor's unsaved mark) is the
-/// name `tokens.json`.
+/// The most words a secret's name is judged over: `tokens (conflicted copy 2026-11-15 101530).json`
+/// is six, `Login Data for account` three.
+const MOST_WORDS: usize = 8;
+
+/// Whether `title` names a secret: a word of it, or a run of up to [`MOST_WORDS`] words with the
+/// spaces between them kept, is a secret name (also with the full stop, `?` or `:` a sentence puts
+/// after it: `Opening tokens.json.`), or a word that is a path (`~/.aws`, `/home/ann/.ssh/id_rsa`)
+/// is a protected place. `tokens.json*` (an editor's unsaved mark) is the name `tokens.json`. The
+/// runs matter because names have spaces in them: `Login Data`, `tokens (copy 1).json`,
+/// `tokens - Copy.json` (review R5-M3).
 fn names_a_secret(title: &str) -> bool {
-    let named = |word: &str| is_secret_name(word) || is_secret_name(word.trim_end_matches(['.', '?', '!', ':']));
-    words(title, "").any(named) || words(title, "/").filter(|word| word.contains('/')).any(is_a_protected_path)
+    let named = |span: &str| is_secret_name(span) || is_secret_name(span.trim_end_matches(['.', '?', '!', ':']));
+    let bounds = word_bounds(title, "");
+    let spans = bounds.iter().enumerate().flat_map(|(i, &(start, _))| bounds[i..bounds.len().min(i + MOST_WORDS)].iter().map(move |&(_, end)| &title[start..end]));
+    spans.into_iter().any(named)
+        || word_bounds(title, "/").into_iter().map(|(start, end)| &title[start..end]).filter(|word| word.contains('/')).any(is_a_protected_path)
 }
 
-/// The words of `title`: runs of letters, digits, [`IN_A_NAME`] and `also`.
-fn words<'a>(title: &'a str, also: &'static str) -> impl Iterator<Item = &'a str> {
-    title.split(move |c: char| !(c.is_alphanumeric() || IN_A_NAME.contains(c) || also.contains(c))).filter(|word| !word.is_empty())
+/// The byte range of each word of `title`: a run of letters, digits, [`IN_A_NAME`] and `also`.
+fn word_bounds(title: &str, also: &str) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut start = None;
+    // The end of the title closes the last word like any character that is not part of one.
+    for (at, c) in title.char_indices().chain(std::iter::once((title.len(), ' '))) {
+        let in_a_word = c.is_alphanumeric() || IN_A_NAME.contains(c) || also.contains(c);
+        match (in_a_word, start) {
+            (true, None) => start = Some(at),
+            (false, Some(from)) => {
+                found.push((from, at));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 /// Whether `word`, with a `~/` start read as the home, is an absolute path into a protected place.
@@ -67,6 +90,13 @@ pub fn cell(name: &str, title: &str, app_id: &str, mind: bool) -> serde_json::Va
 /// names a secret (a download's notice names the file), and whether it was hidden.
 pub fn notice_title(title: &str, mind: bool) -> (String, bool) {
     if hides(title, mind) { (A_NOTICE.to_string(), true) } else { (title.to_string(), false) }
+}
+
+/// The label of a dock button for `describe shell`: the app's display name when `mind` is asking and
+/// the label names a secret (an app with no name of its own is labelled by its window's title), and
+/// whether it was hidden (review R5-M2).
+pub fn dock_label(label: &str, app_id: &str, mind: bool) -> (String, bool) {
+    if hides(label, mind) { (app_display_name(app_id), true) } else { (label.to_string(), false) }
 }
 
 /// One row of `windows` for `describe shell`: `title` and `app`, and `title_hidden: true` in place

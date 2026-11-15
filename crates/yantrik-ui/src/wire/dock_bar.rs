@@ -147,13 +147,18 @@ pub fn for_describe(ui: &App) -> serde_json::Value {
     let buttons = ui.get_dock_buttons();
     let rows: Vec<DescribeRow> = buttons
         .iter()
-        .map(|b| DescribeRow {
-            app: b.app_id.to_string(),
-            label: b.label.to_string(),
-            pinned: b.pinned,
-            running: b.running,
-            windows: b.windows,
-            focused: b.focused,
+        .map(|b| {
+            let mind = crate::control_files_mind::a_mind_is_calling();
+            let (label, label_hidden) = crate::control_window_titles::dock_label(&b.label, &b.app_id, mind);
+            DescribeRow {
+                app: b.app_id.to_string(),
+                label,
+                label_hidden,
+                pinned: b.pinned,
+                running: b.running,
+                windows: b.windows,
+                focused: b.focused,
+            }
         })
         .collect();
     describe_value(&rows, ui.get_dock_capacity().max(0) as usize, ui.get_dock_first().max(0) as usize, ui.get_cards_pending() > 0)
@@ -163,6 +168,8 @@ pub fn for_describe(ui: &App) -> serde_json::Value {
 pub struct DescribeRow {
     pub app: String,
     pub label: String,
+    /// The label was the title of a window that names a secret, and `label` is the app's name.
+    pub label_hidden: bool,
     pub pinned: bool,
     pub running: bool,
     pub windows: i32,
@@ -176,7 +183,7 @@ pub fn describe_value(rows: &[DescribeRow], capacity: usize, first: usize, needs
         .iter()
         .enumerate()
         .map(|(i, b)| {
-            serde_json::json!({
+            let mut button = serde_json::json!({
                 "app": b.app,
                 "label": b.label,
                 "pinned": b.pinned,
@@ -184,7 +191,11 @@ pub fn describe_value(rows: &[DescribeRow], capacity: usize, first: usize, needs
                 "windows": b.windows,
                 "focused": b.focused,
                 "shown": i >= page.first && i < page.first + page.shown,
-            })
+            });
+            if b.label_hidden {
+                button["label_hidden"] = true.into();
+            }
+            button
         })
         .collect();
     serde_json::json!({
@@ -204,7 +215,7 @@ mod tests {
     use super::*;
 
     fn row(app: &str, running: bool) -> DescribeRow {
-        DescribeRow { app: app.into(), label: app.into(), pinned: true, running, windows: i32::from(running), focused: false }
+        DescribeRow { app: app.into(), label: app.into(), label_hidden: false, pinned: true, running, windows: i32::from(running), focused: false }
     }
 
     /// `describe shell` → `dock` is read by minds; its keys are a contract.

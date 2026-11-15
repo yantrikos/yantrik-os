@@ -60,6 +60,10 @@ fn the_round_three_forms_leave_their_decoys_readable() {
         "id_rsa.pub.part", "id_rsa.pub.bak", "100% done.md", "credentials: how to rotate.md", "cookies: chocolate chip.md",
         "tokens.json: what it holds.md", "login data: export notes.txt", "photo (copy 1).jpg", "notes (conflicted copy ann 2026-11-15 101530).md",
         "notes-10:30:00.md", "notes.trashinfo", "notes.md.svz",
+        // Review M1: ordinary three-letter endings on a bare secret name; L1: a URL-encoded space.
+        "credentials.svg", "credentials.sql", "credentials.sig", "credentials.sha", "credentials.srt", "credentials.ssh", "cookies.svg",
+        "cookies.sql", "cookies.sig", "kubeconfig.svg", "kubeconfig.sig", "cookies%20recipe.pdf", "credentials%20how-to.md",
+        "cookies%2Fchocolate.md", "%home%ann%notes.md.swp", "%home%ann%documents%config.swp",
     ] {
         assert!(!is_secret_name(name), "{name}");
         assert!(!is_protected(Path::new(&format!("/home/ann/Documents/{name}"))), "{name}");
@@ -97,5 +101,56 @@ fn nextcloud_and_thunar_copies_are_the_credential() {
 fn a_trash_record_and_vims_later_swap_names_are_the_credential() {
     for name in ["tokens.json.trashinfo", "server.pem.trashinfo", ".tokens.json.svz", ".tokens.json.sva", ".tokens.json.suz", ".tokens.json.saa"] {
         assert!(is_secret_name(name), "{name}");
+    }
+}
+
+/// Review M1: Vim's swap range past `.swp` is for a dotfile's own swap and for a path spelled into a
+/// name; a bare name keeps `.swp`, `.swo` and `.swn` only.
+#[test]
+fn vims_wide_swap_range_is_for_dotted_and_encoded_names() {
+    for name in [".tokens.json.svz", ".tokens.json.saa", "%home%ann%backup%tokens.json.svz", "tokens.json.swp", "tokens.json.swo", "tokens.json.swn"] {
+        assert!(is_secret_name(name), "{name}");
+    }
+    for name in ["credentials.svg", "cookies.sql", "kubeconfig.sig", "tokens.json.svz", "tokens.json.saa"] {
+        assert!(!is_secret_name(name), "{name}");
+    }
+}
+
+/// Review R5-H1: Neovim's and Emacs's copies of a file in a protected place spell its path into the
+/// name, so the place is judged, not only the last part `config`.
+#[test]
+fn an_editors_copy_of_a_file_in_a_protected_place_is_protected() {
+    for p in [
+        "/home/ann/.local/state/nvim/swap/%home%ann%.kube%config.swp",
+        "/home/ann/.local/state/nvim/undo/%home%ann%.kube%config",
+        "/home/ann/.local/state/nvim/swap/%home%ann%.docker%config.json.swp",
+        "/home/ann/.local/state/nvim/swap/%home%ann%.hermes%config.yaml.swp",
+        "/home/ann/.local/state/nvim/swap/%home%ann%.hermes%config.yaml.svz",
+        "/home/ann/.emacs.d/backups/!home!ann!.kube!config~",
+        "/home/ann/.emacs.d/backups/!home!ann!.kube!config.~3~",
+        "/home/ann/.local/state/nvim/swap/%HOME%ann%.Kube%Config.swp",
+    ] {
+        assert!(is_protected(Path::new(p)), "{p}");
+    }
+    for p in [
+        "/home/ann/.local/state/nvim/swap/%home%ann%notes.md.swp",
+        "/home/ann/.local/state/nvim/swap/%home%ann%documents%config.swp",
+        "/home/ann/.local/state/nvim/undo/%home%ann%documents%config",
+        "/home/ann/.emacs.d/backups/!home!ann!documents!config~",
+        "/home/ann/.emacs.d/backups/!home!ann!notes.md~",
+    ] {
+        assert!(!is_protected(Path::new(p)), "{p} stays readable");
+    }
+}
+
+/// Review R5-L1: the part before the first `%` is a file's name only when it looks like one.
+#[test]
+fn a_url_encoded_name_is_judged_by_its_first_part_only_when_that_is_a_file_name() {
+    for name in ["id_rsa%20old", ".env%20prod", "client_secret_1%2B.json"] {
+        assert!(is_secret_name(name), "{name}");
+    }
+    for name in ["cookies%20recipe.pdf", "credentials%20how-to.md", "cookies%2Fchocolate.md"] {
+        assert!(!is_secret_name(name), "{name}");
+        assert!(!is_protected(Path::new(&format!("/home/ann/Documents/{name}"))), "{name}");
     }
 }
