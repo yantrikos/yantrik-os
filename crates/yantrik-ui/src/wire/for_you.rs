@@ -110,10 +110,12 @@ pub fn tick(ui: &App) {
     for n in &due {
         // The meeting's toast is the first of its cards shown. A second one is not toasted, and
         // the store is told it stayed in the inbox, so it learns why.
-        let again = notice_inbox::meeting_key(n).is_some_and(|key| !TOASTED.with(|t| t.borrow_mut().insert(key)));
+        let key = notice_inbox::meeting_key(n);
+        let again = key.clone().is_some_and(|key| !TOASTED.with(|t| t.borrow_mut().insert(key)));
         if again {
             TOASTED.with(|t| t.borrow_mut().insert(n.id.clone()));
-            act(NOTICE_SHOWN, serde_json::json!({ "id": n.id, "shown_as": "inbox" }));
+            tracing::info!(key = ?key, id = %n.id, "a second card for a meeting stayed in the inbox");
+            act_retrying(NOTICE_SHOWN, serde_json::json!({ "id": n.id, "shown_as": "inbox" }), TOAST_REPORT_RETRIES);
         } else {
             toast(ui, n);
         }

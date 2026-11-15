@@ -460,3 +460,24 @@ fn quiet_hours_on_the_stores_clock_leave_the_held_reminder_to_toast_when_they_en
     assert_eq!(room.will_toast(), [REMINDER], "one toast");
     assert_eq!(room.cards_up().len(), 2, "two cards, one toast");
 }
+
+/// L3: a brief that supersedes the waiting reminder and cannot be written puts it back as it was.
+/// A read card never toasts, so a reminder left read would leave the meeting with no toast.
+#[test]
+fn a_brief_the_store_cannot_write_gives_the_waiting_reminder_back_unread() {
+    let mut room = Room::new();
+    room.tick(10);
+    let (reminder, _) = room.card(REMINDER).unwrap();
+    assert!(!reminder.read && !reminder.dismissed);
+    // The disk fills after the reminder is down: the next write cannot replace the sidecar.
+    let sidecar = crate::store::sidecar_path(&room.root.join("notifications.json"));
+    std::fs::remove_file(&sidecar).unwrap();
+    std::fs::create_dir(&sidecar).unwrap();
+    let answer = room.brief(10);
+    assert!(answer["retry_after_secs"].as_u64().is_some(), "{answer}");
+    assert!(room.card(BRIEF).is_none(), "the brief is not kept");
+    let (reminder, _) = room.card(REMINDER).unwrap();
+    assert!(!reminder.dismissed, "the reminder is back");
+    assert!(!reminder.read, "and unread, so it still toasts");
+    assert_eq!(room.will_toast(), [REMINDER]);
+}

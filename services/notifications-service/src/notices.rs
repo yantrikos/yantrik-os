@@ -188,7 +188,7 @@ impl Store {
     /// `home` is the person's home, which an `open_file` button must resolve under.
     ///
     /// Never under [`notice::OS_HARNESS`]: that id is the OS's own, posted in this process through
-    /// [`Store::add_os_notice`] and from nowhere else, whoever is on the socket.
+    /// [`Store::add_os_notice_at`] and from nowhere else, whoever is on the socket.
     pub fn add_notice(&self, post: NoticePost, home: &std::path::Path) -> serde_json::Value {
         if post.harness.id == notice::OS_HARNESS {
             tracing::warn!(uid = ?post.harness.uid, program = %post.harness.program, "a notice posted under the desktop's own harness id; refused");
@@ -233,7 +233,7 @@ impl Store {
     }
 
     /// The one path both kinds of notice are stored through. `os` is set only by
-    /// [`Store::add_os_notice`].
+    /// [`Store::add_os_notice_at`].
     fn store_notice(&self, post: NoticePost, home: &std::path::Path, os: bool, now: DateTime<Utc>) -> serde_json::Value {
         // Before anything changes, in memory too: a store that cannot write must not bind an id
         // or spend the budget for a card it will not keep.
@@ -340,10 +340,11 @@ impl Store {
             match state.notifications.iter().position(|n| mine(n, target) && !n.dismissed && !(os && !will_toast && waiting(n))) {
                 Some(index) => {
                     let old = &mut state.notifications[index];
+                    let was_read = old.read;
                     old.dismissed = true;
                     old.read = true;
                     old.revision = revision;
-                    superseded = Some(old.id.clone());
+                    superseded = Some((old.id.clone(), was_read));
                 }
                 None => checked.clamped.push("supersedes".into()),
             }
@@ -425,9 +426,10 @@ impl Store {
             if decision.spends {
                 state.budget.used = state.budget.used.saturating_sub(1);
             }
-            if let Some(old) = superseded {
+            if let Some((old, was_read)) = superseded {
                 for n in state.notifications.iter_mut().filter(|n| n.id == old) {
                     n.dismissed = false;
+                    n.read = was_read;
                 }
             }
             return answer::retry(notice::RETRY_UNAVAILABLE_SECS, &format!("the store could not be written: {e}"));
@@ -806,6 +808,28 @@ mod tests {
         let answer = store.add_notice(post("mind", n), &home());
         assert_eq!(answer["clamped"], json!(["supersedes"]), "{answer}");
         assert!(store.list().iter().any(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == "theirs")), "another harness's card stays");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The keep-rule for a waiting card is the OS's own: a Mind that takes back its interrupt with
+    /// an inbox card replaces it, and the toast is not left behind.
+    #[test]
+    fn a_mind_that_downgrades_its_own_waiting_card_replaces_it() {
+        let (store, dir) = temp_store();
+        store.add_notice(post("mind", notice("a", "discovery", "interrupt")), &home());
+        let granted = |id: &str| store.list().into_iter().find(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == id));
+        let a = granted("a").unwrap();
+        let held = a.notice.as_ref().unwrap();
+        assert_eq!((&held.granted, held.shown_as.as_deref()), (&Attention::Interrupt, None));
+        let mut b = notice("b", "discovery", "inbox");
+        b["supersedes"] = "a".into();
+        let answer = store.add_notice(post("mind", b), &home());
+        assert_eq!(answer["stored"], true, "{answer}");
+        assert!(answer.get("clamped").is_none(), "{answer}");
+        let all = store.since(0).changed;
+        let find = |id: &str| all.iter().find(|n| n.notice.as_ref().is_some_and(|x| x.notice_id == id)).unwrap();
+        assert!(find("a").dismissed, "the Mind's own card is replaced");
+        assert!(!find("b").notice.as_ref().unwrap().clamped.contains(&"supersedes".to_string()));
         let _ = std::fs::remove_dir_all(dir);
     }
 
