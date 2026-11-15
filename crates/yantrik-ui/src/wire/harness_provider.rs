@@ -313,6 +313,16 @@ pub(crate) fn explain_assign(harness: &str, provider: &str) -> String {
 }
 
 pub(crate) fn explain_revert(harness: &str) -> String {
+    let said = explain_revert_to_its_own(harness);
+    // The built-in companion has no settings file of its own to go back to: it goes back to the
+    // primary provider, and with none saved it is stopped (`companion::reload_with`).
+    if harness == provider_handoff::companion::ID && !said.is_empty() && crate::wire::settings::ProviderStore::load().primary().is_none() {
+        return format!("{said} No primary provider is saved, so the companion is left with no provider until one is chosen in Settings → AI & Intelligence.");
+    }
+    said
+}
+
+fn explain_revert_to_its_own(harness: &str) -> String {
     if provider_handoff::uses_gateway(&home(), harness) {
         if let Some(a) = provider_handoff::adapter_for(harness) {
             return format!(
@@ -359,11 +369,15 @@ pub(crate) fn assign(harness: &str, provider: &str) -> Result<String, String> {
         }
     }
     let card = plan.card(&home);
-    provider_handoff::apply(&home, &plan)?;
-    Ok(card)
+    let marker = provider_handoff::apply(&home, &plan)?;
+    Ok(match marker.replaced_note() {
+        Some(note) => format!("{card} {note}"),
+        None => card,
+    })
 }
 
-pub(crate) fn revert(harness: &str) -> Result<(), String> {
+/// `Some(sentence)` names a copy of the person's newer config that Apply kept; say it.
+pub(crate) fn revert(harness: &str) -> Result<Option<String>, String> {
     provider_handoff::revert(&home(), harness)
 }
 
@@ -398,10 +412,13 @@ pub(crate) fn wire(ui: &App) {
                 if p.card(&home()) != shown {
                     return Err("The provider or the harness's file changed since the card was shown; nothing was written. Choose again to see what it would do now.".to_string());
                 }
-                provider_handoff::apply(&home(), &p).map(|_| ())
+                provider_handoff::apply(&home(), &p).map(|m| m.replaced_note())
             });
-            if let Err(e) = outcome {
-                ui.set_harness_error(e.into());
+            ui.set_harness_notice("".into());
+            match outcome {
+                Ok(Some(note)) => ui.set_harness_notice(note.into()),
+                Ok(None) => {}
+                Err(e) => ui.set_harness_error(e.into()),
             }
         });
     }
@@ -417,8 +434,11 @@ pub(crate) fn wire(ui: &App) {
         let weak = ui.as_weak();
         ui.on_revert_provider(move |harness| {
             let Some(ui) = weak.upgrade() else { return };
-            if let Err(e) = revert(&harness) {
-                ui.set_harness_error(e.into());
+            ui.set_harness_notice("".into());
+            match revert(&harness) {
+                Ok(Some(note)) => ui.set_harness_notice(note.into()),
+                Ok(None) => {}
+                Err(e) => ui.set_harness_error(e.into()),
             }
         });
     }

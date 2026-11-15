@@ -939,12 +939,16 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
     // left behind with the provider gone from the list.
     let ui_weak = ui.as_weak();
     let ps = providers.clone();
+    let accounts_bridge = ctx.bridge.clone();
     ui.on_delete_provider(move |id| {
         let id = id.to_string();
+        let accounts_bridge = accounts_bridge.clone();
         tracing::info!(id = %id, "Deleting provider");
         let (ui_weak, ps) = (ui_weak.clone(), ps.clone());
         std::thread::spawn(move || {
             let outcome = remove_provider(&ps, &id);
+            // The account is gone from the list the gateway reads now, not at the next restart.
+            crate::ai_accounts::shared::sharing_changed(accounts_bridge);
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
                 if let Err(sentence) = &outcome {
@@ -1029,11 +1033,9 @@ fn wire_rest(ui: &App, ctx: &AppContext, providers: Arc<Mutex<ProviderStore>>) {
                 crate::wire::provider_panel::reload_primary_telling(&ui, &bridge, &chosen);
             }
             None => {
-                let url = ui.get_settings_llm_api_url().to_string();
-                let model = ui.get_settings_llm_api_model().to_string();
-                if !url.trim().is_empty() {
-                    bridge.reload_llm("api".into(), url, crate::wire::ai_status::config_key(), model);
-                }
+                // config.yaml's own address and model, never Settings' model field: choosing the
+                // provider that was just removed overwrote that with its model.
+                crate::provider_handoff::companion::put_back_on_config(&bridge);
             }
         }
         push_providers_to_ui(&ui, &store);

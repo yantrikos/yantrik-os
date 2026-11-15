@@ -35,6 +35,8 @@ pub mod tokens;
 pub mod upstream;
 
 #[cfg(test)]
+mod resend_tests;
+#[cfg(test)]
 mod tests;
 
 /// The gateway's port, fixed and documented (docs/harness.md, "Yantrik models"): harness configs
