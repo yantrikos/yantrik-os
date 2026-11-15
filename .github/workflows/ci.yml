@@ -1,5 +1,12 @@
 name: CI
 
+# SCRATCH BRANCH, NOT FOR MERGE (#1252, round 4): the refusal drill. The `test` job is renamed `test2`
+# and sent to the throwaway runner. Run it by hand, after the BASH_ENV probe has been read:
+#   gh workflow run ci.yml --ref scratch/1234-refusal-drill
+# Expected: the hook prints "::error::yantrik-build refuses this job: job test2" in "Set up job", AND
+# the controller logs "REFUSING the job of runner ...: job test2" within one poll (10 s) and ends the
+# CT. That is the only end-to-end proof that a refusal kills the CT. The job does no build.
+
 # What this exists for.
 #
 # This repository has a growing set of tests whose whole job is to catch a class of mistake
@@ -29,153 +36,19 @@ env:
   CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
-  test:
-    name: test
-    # #1234: GitHub's 16 GB runners kept losing this job mid-build with no log. A branch of this
-    # repository runs on `yantrik-build`: a throwaway container that exists for this one job
-    # and is destroyed after it (deploy/ci-runner/, which also says why it is not a standing
-    # runner). A pull request from a fork is sent to GitHub's machine by the expression below,
-    # but this file is the fork's to edit, so the expression is not what keeps a fork off the
-    # runner: the container's job-started hook is. It refuses any job that is not this
-    # workflow's `test`, from main or a branch of this repository, and the container's network
-    # reaches the public internet on 443 and nothing else.
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.head.repo.fork)) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
-    # Compiling the test binaries one job at a time (below) took 29 to 40 minutes on the runs
-    # measured for it, and a whole green run is then about 57 to 68 minutes (setup and Build
-    # about 13, the compile up to 40, Test and the selftest about 15). 90 leaves a slow runner
-    # room; a healthy run never reaches it, so it costs nothing.
-    timeout-minutes: 150
-
+  test2:
+    name: test2
+    runs-on: [self-hosted, yantrik-build]
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        with:
-          # On the throwaway runner the job's token is not left in .git/config for the job's
-          # own steps to find. The hosted path is unchanged.
-          persist-credentials: ${{ runner.environment == 'github-hosted' }}
-
-      # The engine is a git dependency pinned by revision in Cargo.toml, so there is nothing to
-      # check out beside this repository any more. For a week this workflow cloned the engine's
-      # main next door, main moved past Cargo.lock, and every run was red for a reason that had
-      # nothing to do with the commit being tested.
-
-      # The same swap the ISO build has (iso.yml, #606): rustc holds ~14 GB compiling the
-      # generated UI crate and a hosted runner has 16 GB. The test job was killed four times on
-      # 4 October (exit 143, "the runner has received a shutdown signal", no test failure) as the
-      # shell's UI grew. Swap on the runner's scratch disk lets the peak spill instead.
-      - name: Swap for the generated UI crate
-        if: runner.environment == 'github-hosted'
-        run: |
-          sudo swapoff -a || true
-          sudo fallocate -l 12G /mnt/yantrik-swap
-          sudo chmod 600 /mnt/yantrik-swap
-          sudo mkswap /mnt/yantrik-swap > /dev/null
-          sudo swapon /mnt/yantrik-swap
-          free -h
-
-      # The native libraries the workspace links against, found by looking for the -sys crates
-      # in Cargo.lock rather than by guessing: alsa-sys, libudev-sys, openssl-sys,
-      # speech-dispatcher-sys, wayland-sys. Slint's winit backend adds xkbcommon and fontconfig.
-      - name: System dependencies
-        if: runner.environment == 'github-hosted'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libasound2-dev \
-            libudev-dev \
-            libssl-dev \
-            libspeechd-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libinput-dev \
-            libgbm-dev \
-            libegl1-mesa-dev \
-            bubblewrap
-
-      # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
-      # stable is today: `rustup toolchain install` with no name reads that file.
-      - name: Rust toolchain
-        if: runner.environment == 'github-hosted'
-        run: rustup toolchain install && rustc --version
-
-      # Slint's macro expansion is the expensive part of this build, so a cache is the
-      # difference between a check that runs on every push and one that gets turned off.
-      - uses: Swatinem/rust-cache@v2
-        if: runner.environment == 'github-hosted'
-        with:
-          key: ci-v1
-
-      # ci-sampler.sh prints the machine's memory, swap and disk into this step's log every 20 s;
-      # see the script for why (the test job was being killed with nothing to say why).
-      # #1234: at full parallelism this step peaked at 15.6 GB RAM, 6.1 GB swap and about 390 MB
-      # free (run 43368601869), and lost its runner on larger trees with no log. One rustc alone
-      # reached 8 GB: the generated UI crate. It is built first, on its own, so its peak never
-      # meets the rest of the workspace's; the rest is then built at -j 2.
-      - name: Build the generated UI crate alone
-        if: runner.environment == 'github-hosted'
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo build -p yantrik-ui-slint --locked -j 1
-
-      - name: Build
-        if: runner.environment == 'github-hosted'
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo build --workspace --locked -j 2
-
-      # Ubuntu 24.04 runners refuse unprivileged user namespaces to unconfined programs, so bwrap
-      # (installed above) cannot map its uid and every outside-view test fails before it starts.
-      # Lift that on the runner, so the tests run inside the real outside view.
-      - name: Let bubblewrap make its user namespace
-        if: runner.environment == 'github-hosted'
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-      # The workshops root exists on a machine the installer has run on. With it here, the browser
-      # and app launches are checked with the tmpfs over it, as they are on a real machine.
-      - name: Make the workshops root
-        if: runner.environment == 'github-hosted'
-        run: sudo mkdir -p /var/lib/yantrik/workshops
-
-      # Compile the test binaries one cargo job at a time. Measured on the killed runs (#1182):
-      # two rustc processes for the generated-UI test crates ran together, one past 10 GB
-      # resident and one climbing past 5 GB, RAM sat at 15.6 of 16 GB, the 12 GB swap filled to
-      # 12.07 GB and the runner was torn down ("received a shutdown signal", exit 143) with
-      # 55 GB of disk free. One at a time, the peak is one crate's. Nothing is skipped: this
-      # builds exactly what the next step runs.
-      - name: Compile the test binaries
-        if: runner.environment == 'github-hosted'
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo test --workspace --locked --no-run -j 1
-
-      - name: Test
-        if: runner.environment == 'github-hosted'
-        run: |
-          .github/ci-sampler.sh &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          cargo test --workspace --locked
-
-      # The throwaway container (deploy/ci-runner/) has the toolchain, the native libraries and
-      # bubblewrap baked in, root-owned, and the workshops root made. It is fresh for this job,
-      # so there is no lock to take, no shared target dir and no temp dir to clean. The
-      # compiler is checked rather than trusted: a branch may edit rust-toolchain.toml.
-      - name: Build and test on the throwaway runner
-        if: runner.environment == 'self-hosted'
-        run: |
-          rustc --version | grep -q '^rustc 1.92.0 '
-          cargo build --workspace --locked -j 24
-          cargo test --workspace --locked -j 24 --no-fail-fast
+      - run: echo "refusal drill: this should never run on the throwaway runner"
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
   # failing every pull request on the day it lands. A lint family that has been fixed can
   # later be promoted to blocking; that is a later decision, not this job's.
   clippy:
+    if: false
     name: clippy
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -238,6 +111,7 @@ jobs:
   # fails only on what is new: what broke a rule on the day it landed is listed in
   # tools/xtask/architecture-baseline.txt, and that list may only shrink.
   architecture:
+    if: false
     name: architecture
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -266,6 +140,7 @@ jobs:
   # sources. It reports and does not enforce yet, as clippy did when it landed: the first runs
   # list what is there, and the job becomes blocking once that list is worked down.
   dependencies:
+    if: false
     name: dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -283,6 +158,7 @@ jobs:
           arguments: --workspace
 
   shell-scripts:
+    if: false
     name: shell scripts
     runs-on: ubuntu-24.04
     timeout-minutes: 25
