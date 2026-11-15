@@ -32,8 +32,10 @@
 use std::collections::HashMap;
 
 use serde::Serialize;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
+use zbus::zvariant::{ObjectPath, OwnedValue};
 use zbus::{proxy, Connection};
+
+use crate::handles::{self, Reference};
 
 /// How deep to walk. Toolkit trees nest hard; past this the content is layout, not meaning.
 const MAX_DEPTH: usize = 12;
@@ -48,9 +50,6 @@ const MAX_VISITS: usize = 3000;
 /// Text longer than this is a document, not a label.
 const MAX_TEXT: usize = 400;
 
-/// An AT-SPI object reference: which connection, and where on it.
-type Reference = (String, OwnedObjectPath);
-
 #[proxy(interface = "org.a11y.Bus", default_service = "org.a11y.Bus", default_path = "/org/a11y/bus")]
 trait A11yBus {
     fn get_address(&self) -> zbus::Result<String>;
@@ -60,6 +59,12 @@ trait A11yBus {
 trait Accessible {
     fn get_children(&self) -> zbus::Result<Vec<Reference>>;
     fn get_role_name(&self) -> zbus::Result<String>;
+    /// The application an object belongs to: its root on the same connection.
+    fn get_application(&self) -> zbus::Result<Reference>;
+    /// The object's states as a bit set, low word first.
+    fn get_state(&self) -> zbus::Result<Vec<u32>>;
+    #[zbus(property)]
+    fn parent(&self) -> zbus::Result<Reference>;
     #[zbus(property)]
     fn name(&self) -> zbus::Result<String>;
     #[zbus(property)]
@@ -81,18 +86,9 @@ trait Action {
     fn do_action(&self, index: i32) -> zbus::Result<bool>;
 }
 
-/// One window a person is looking at.
-#[derive(Debug, Clone, Serialize)]
-pub struct Window {
-    /// The application's own name for itself: `zenity`, `firefox`, `soffice`.
-    pub app: String,
-    pub title: String,
-    pub role: String,
-    pub pid: u32,
-    /// Opaque handle for `a11y.describe` and `a11y.act`. Deliberately not a path a caller could
-    /// construct: the only ones that work are ones we handed out.
-    pub id: String,
-}
+/// One window a person is looking at: the model's own type, so a listing and an event say the
+/// same thing about the same window.
+pub use crate::screen::WindowInfo as Window;
 
 /// One thing inside a window that a person would mention.
 #[derive(Debug, Clone, Serialize)]
@@ -112,9 +108,9 @@ pub struct Element {
 /// A connection to the accessibility bus.
 pub struct Atspi {
     conn: Connection,
-    /// Handed-out ids, so a caller can name an element without being able to invent one.
-    handles: HashMap<String, Reference>,
-    next_handle: u64,
+    /// Handed-out ids, so a caller can name an element without being able to invent one. Shared
+    /// with the watcher, so a window has one handle whoever saw it first.
+    handles: handles::Shared,
 }
 
 impl Atspi {
@@ -124,7 +120,7 @@ impl Atspi {
     /// headless box, a service started outside the user's session), or a session bus with no
     /// `org.a11y.Bus` on it (accessibility never started). Both are reported as themselves rather
     /// than as one vague failure, because the fix differs.
-    pub async fn connect() -> Result<Self, String> {
+    pub async fn connect(handles: handles::Shared) -> Result<Self, String> {
         let session = Connection::session()
             .await
             .map_err(|e| format!("no session bus, so no accessibility bus either: {e}"))?;
@@ -142,7 +138,12 @@ impl Atspi {
             .await
             .map_err(|e| format!("cannot connect to the accessibility bus: {e}"))?;
 
-        Ok(Self { conn, handles: HashMap::new(), next_handle: 0 })
+        Ok(Self { conn, handles })
+    }
+
+    /// The connection itself, for the watcher's signal subscription.
+    pub fn connection(&self) -> &Connection {
+        &self.conn
     }
 
     async fn accessible(&self, r: &Reference) -> Result<AccessibleProxy<'_>, String> {
@@ -155,15 +156,12 @@ impl Atspi {
             .map_err(|e| e.to_string())
     }
 
-    fn hand_out(&mut self, r: Reference) -> String {
-        self.next_handle += 1;
-        let id = format!("w{}", self.next_handle);
-        self.handles.insert(id.clone(), r);
-        id
+    fn hand_out(&self, r: Reference) -> String {
+        handles::hand_out(&self.handles, r)
     }
 
     pub fn resolve(&self, id: &str) -> Option<Reference> {
-        self.handles.get(id).cloned()
+        handles::resolve(&self.handles, id)
     }
 
     /// Every top-level window currently published.
@@ -171,7 +169,7 @@ impl Atspi {
     /// The registry's root has one child per application; each application's children are its
     /// windows. Anything that fails to answer is skipped rather than reported: an app that is
     /// shutting down mid-walk is normal, not news.
-    pub async fn windows(&mut self) -> Result<Vec<Window>, String> {
+    pub async fn windows(&self) -> Result<Vec<(Reference, Window)>, String> {
         let root: Reference = (
             "org.a11y.atspi.Registry".to_string(),
             ObjectPath::try_from("/org/a11y/atspi/accessible/root")
@@ -180,43 +178,102 @@ impl Atspi {
         );
 
         let apps = self.accessible(&root).await?.get_children().await.map_err(|e| e.to_string())?;
-        // `zbus::fdo::DBusProxy` rather than a hand-rolled one: the method is
-        // `GetConnectionUnixProcessID`, and zbus's name derivation turns a Rust
-        // `get_connection_unix_process_id` into `...ProcessId`. Spelled wrong the call fails, and
-        // a swallowed failure here reads as "pid 0" on every window.
-        let bus = zbus::fdo::DBusProxy::new(&self.conn).await.ok();
 
         let mut windows = Vec::new();
         for app_ref in apps {
             let Ok(app) = self.accessible(&app_ref).await else { continue };
             let app_name = app.name().await.unwrap_or_default();
-            let pid = match (&bus, zbus::names::BusName::try_from(app_ref.0.as_str())) {
-                (Some(b), Ok(name)) => match b.get_connection_unix_process_id(name).await {
-                    Ok(pid) => pid,
-                    Err(e) => {
-                        // Reported rather than silently zero. An application that cannot be
-                        // attributed is still worth listing, but nobody should read a 0 as a fact.
-                        tracing::debug!(bus_name = %app_ref.0, error = %e, "no pid for connection");
-                        0
-                    }
-                },
-                _ => 0,
-            };
+            let pid = self.pid_of(&app_ref.0).await;
             let Ok(children) = app.get_children().await else { continue };
 
             for win_ref in children {
-                let Ok(win) = self.accessible(&win_ref).await else { continue };
-                let role = win.get_role_name().await.unwrap_or_else(|_| "window".into());
-                let title = win.name().await.unwrap_or_default();
-                let id = self.hand_out(win_ref);
-                windows.push(Window { app: app_name.clone(), title, role, pid, id });
+                if let Some(window) = self.window_at(&win_ref, &app_name, pid).await {
+                    windows.push((win_ref, window));
+                }
             }
         }
         Ok(windows)
     }
 
+    /// One window, from its own reference: what the watcher asks when a window announces itself.
+    /// `None` when it has already gone, which for a window that just flashed past is normal.
+    pub async fn window(&self, win_ref: &Reference) -> Option<Window> {
+        let app_ref = self.accessible(win_ref).await.ok()?.get_application().await.ok()?;
+        let app_name = self.accessible(&app_ref).await.ok()?.name().await.unwrap_or_default();
+        let pid = self.pid_of(&win_ref.0).await;
+        self.window_at(win_ref, &app_name, pid).await
+    }
+
+    async fn window_at(&self, win_ref: &Reference, app_name: &str, pid: u32) -> Option<Window> {
+        let win = self.accessible(win_ref).await.ok()?;
+        let role = win.get_role_name().await.unwrap_or_else(|_| "window".into());
+        let title = win.name().await.unwrap_or_default();
+        let id = self.hand_out(win_ref.clone());
+        Some(Window { app: app_name.to_string(), title, role, pid, id })
+    }
+
+    /// The process behind a connection, or 0 when the bus will not say.
+    ///
+    /// `zbus::fdo::DBusProxy` rather than a hand-rolled one: the method is
+    /// `GetConnectionUnixProcessID`, and zbus's name derivation turns a Rust
+    /// `get_connection_unix_process_id` into `...ProcessId`. Spelled wrong the call fails, and
+    /// a swallowed failure here reads as "pid 0" on every window.
+    async fn pid_of(&self, bus_name: &str) -> u32 {
+        let Ok(bus) = zbus::fdo::DBusProxy::new(&self.conn).await else { return 0 };
+        let Ok(name) = zbus::names::BusName::try_from(bus_name) else { return 0 };
+        match bus.get_connection_unix_process_id(name).await {
+            Ok(pid) => pid,
+            Err(e) => {
+                // Reported rather than silently zero. An application that cannot be attributed
+                // is still worth listing, but nobody should read a 0 as a fact.
+                tracing::debug!(bus_name, error = %e, "no pid for connection");
+                0
+            }
+        }
+    }
+
+    /// An object's role and name: what a focus event needs to say where the focus went.
+    pub async fn role_and_name(&self, r: &Reference) -> Option<(String, String)> {
+        let acc = self.accessible(r).await.ok()?;
+        let role = acc.get_role_name().await.ok()?;
+        Some((role, acc.name().await.unwrap_or_default()))
+    }
+
+    /// An object's name alone: a window's new title.
+    pub async fn name_of(&self, r: &Reference) -> Option<String> {
+        self.accessible(r).await.ok()?.name().await.ok()
+    }
+
+    /// Whether a window says it is the active one.
+    pub async fn is_active(&self, r: &Reference) -> bool {
+        /// `ATSPI_STATE_ACTIVE` is state 1, so bit 1 of the low word.
+        const ACTIVE: u32 = 1 << 1;
+        let Ok(acc) = self.accessible(r).await else { return false };
+        acc.get_state().await.is_ok_and(|words| words.first().is_some_and(|low| low & ACTIVE != 0))
+    }
+
+    /// Ask the registry to have applications announce one kind of event. Applications emit only
+    /// what some listener registered for; the registry forgets a listener when it leaves the bus.
+    pub async fn register(&self, event: &str) -> zbus::Result<()> {
+        self.conn
+            .call_method(
+                Some("org.a11y.atspi.Registry"),
+                "/org/a11y/atspi/registry",
+                Some("org.a11y.atspi.Registry"),
+                "RegisterEvent",
+                &(event, Vec::<&str>::new()),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// The object one level up, for finding the window an element is in.
+    pub async fn parent_of(&self, r: &Reference) -> Option<Reference> {
+        self.accessible(r).await.ok()?.parent().await.ok()
+    }
+
     /// What is in one window, flattened to the parts worth mentioning.
-    pub async fn describe(&mut self, id: &str) -> Result<(String, Vec<Element>), String> {
+    pub async fn describe(&self, id: &str) -> Result<(String, Vec<Element>), String> {
         let root = self
             .resolve(id)
             .ok_or_else(|| format!("no window called `{id}`; call a11y.windows first"))?;
@@ -234,7 +291,7 @@ impl Atspi {
     /// Written as an explicit stack rather than recursion because an async fn cannot call itself
     /// without boxing, and a tree this shape would box on every node.
     async fn walk(
-        &mut self,
+        &self,
         root: &Reference,
         _depth: usize,
         out: &mut Vec<Element>,
@@ -260,13 +317,8 @@ impl Atspi {
             let worth_saying =
                 !name.is_empty() || !text.is_empty() || !actions.is_empty();
 
-            // Children are read before the handle is minted, because minting borrows `self`
-            // mutably and the proxy holds it immutably. Ending the proxy's life here rather than
-            // reordering the logic keeps the reading order of the code the reading order of the
-            // tree.
             let children =
                 if depth < MAX_DEPTH { acc.get_children().await.ok() } else { None };
-            drop(acc);
 
             if worth_saying {
                 let id = self.hand_out(node.clone());

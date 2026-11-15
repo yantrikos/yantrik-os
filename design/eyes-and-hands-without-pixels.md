@@ -113,6 +113,13 @@ window. The verb was permitted; the consequence was consent. So:
 4. **Events.** The invalidation stream above, sharing the run event spine. *Done:* a mind learns a
    dialog opened within 100ms without polling, and a slow subscriber gets a gap marker rather than
    silence. Days.
+
+   *Built for foreign windows and our own apps' accessibility trees, 15 November 2026 (#1256):*
+   `a11y.now` answers from a model the service keeps current, and `a11y.since` waits on a ring of
+   changes. Measured on VM 520: a dialog opening is told 51 ms after the application shows it,
+   listening costs no CPU while the screen is still, and 4,000 signals from one window in 2.4 s
+   become 18 events. It does not share the run event spine yet, and the browser's own channel
+   (CDP) and our apps' `describe` do not feed it.
 5. **Roles and labels in our own UI.** No `.slint` file sets an accessible role today, so our apps
    publish names without roles. This is the same work as keyboard navigation and screen-reader
    support: one model, two consumers. *Done:* every interactive element in the shell and one app
