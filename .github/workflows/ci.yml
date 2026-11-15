@@ -41,7 +41,7 @@ jobs:
     runs-on: [self-hosted, yantrik-build]
     timeout-minutes: 10
     steps:
-      - run: echo "refusal drill: this should never run on the throwaway runner"
+      - run: echo refusal drill - this should never run on the throwaway runner
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
