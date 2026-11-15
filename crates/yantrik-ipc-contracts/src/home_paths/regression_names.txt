@@ -555,3 +555,5 @@ protected	/home/ann/dotfiles/ssh/id_ed25519
 readable	#!home!ann!documents!notes.md#
 open	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!documents!notes.md#
 secret	İİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİ.pem.bak
+encoded	%home%ann%.config%code - oss%user%history%-1a2b%abcd.json.swp
+protected	/var/lib/yantrik/workshops/1000/hermes/shop

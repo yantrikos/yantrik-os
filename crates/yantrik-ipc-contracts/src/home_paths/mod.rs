@@ -199,14 +199,27 @@ pub fn names_a_protected_copy(name: &str) -> bool {
 }
 
 /// Whether `path` is in a listed place or has a secret's name, judged on its text alone: no
-/// filesystem, no links, no workshops, no XDG lookups. For a window title, which only names a file
-/// and may be judged thousands of times (review R7-H1). A place moved behind a link is the one miss.
+/// filesystem, no links, no XDG lookups. For a window title, which only names a file and may be
+/// judged thousands of times (review R7-H1). What it misses is protected for every reader and shown
+/// in a title (review R8-L2):
+///
+/// 1. a link to a secret (`notes.txt -> tokens.json`): the name is judged, not what it points at;
+/// 2. a place moved behind a link (`~/.kube` pointing to `~/dotfiles/kube`);
+/// 3. a place the XDG variables relocate (`XDG_CONFIG_HOME=~/cfg` makes `~/cfg/labwc/autostart`);
+/// 4. a workshop reached by another route than [`workshops::BASE`] as written (a link to it, a
+///    second mount of it, or a root under `XDG_DATA_HOME`): the prefix is matched as text, and the
+///    inode test that finds the others reads the filesystem.
+///
 /// Every reader of contents asks [`is_protected`].
 pub fn is_listed_place(path: &Path) -> bool {
     in_a_listed_place(path) || secrets::names_a_secret_by_name(path)
 }
 
 fn in_a_listed_place(path: &Path) -> bool {
+    // A Mind's workshops, by their fixed prefix as text.
+    if path.starts_with(workshops::BASE) {
+        return true;
+    }
     // The list in lower case, made once: a title is judged by hundreds of words.
     static LOWERED: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
     let places = LOWERED.get_or_init(|| PROTECTED.iter().map(|place| lowered(Path::new(place))).filter(|want| !want.is_empty()).collect());

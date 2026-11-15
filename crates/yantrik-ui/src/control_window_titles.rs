@@ -30,6 +30,10 @@ const IN_A_NAME: &str = "._-~#%!:+@$";
 /// editor's unsaved mark) is the name `tokens.json`. The runs matter because names have spaces in
 /// them: `Login Data`, `tokens (copy 1).json`, `tokens - Copy.json`, and a Dropbox conflict label
 /// of any length (reviews R5-M3, R6-L1).
+///
+/// At most [`RUN_BUDGET`] runs are judged: a title of distinct short words has up to 254,000, and a
+/// page chooses its title. A title with more is taken to name a secret (hidden from a mind: it fails
+/// closed). The densest title of 255 bytes has about 8,000 runs, and no real title comes near.
 fn names_a_secret(title: &str) -> bool {
     let named = |span: &str| {
         let bare = span.trim_end_matches(['.', '?', '!', ':']);
@@ -40,6 +44,7 @@ fn names_a_secret(title: &str) -> bool {
     // had all of its runs judged: a title that says the same words over (a page may set one) costs
     // its distinct runs only (review R7-H1).
     let mut seen = std::collections::HashSet::new();
+    let mut judged = 0;
     let by_runs = bounds.iter().enumerate().any(|(i, &(start, first_end))| {
         // The words that end within NAME_MAX bytes of the start (they are in order, so a search finds the last).
         let within = &bounds[i..i + bounds[i..].partition_point(|&(_, end)| end - start <= NAME_MAX)];
@@ -53,12 +58,33 @@ fn names_a_secret(title: &str) -> bool {
         // reads the same way (review R6-L2). A run cut inside a bracket is not whole: the
         // `id_rsa.pub (copy 1` of `id_rsa.pub (copy 1) - gedit` is no copy of anything.
         let public = title[start..first_end].to_lowercase().contains(".pub");
-        within.iter().enumerate().map(|(n, &(_, end))| (n, &title[start..end])).filter(|&(n, span)| n == 0 || !public || is_a_whole_copy_name(span)).any(|(_, span)| seen.insert(span) && named(span))
+        within.iter().enumerate().map(|(n, &(_, end))| (n, &title[start..end])).filter(|&(n, span)| n == 0 || !public || is_a_whole_copy_name(span)).any(|(_, span)| {
+            if !seen.insert(span) {
+                return false;
+            }
+            judged += 1;
+            judged >= RUN_BUDGET || named(span)
+        })
+    });
+    by_runs || names_an_editors_copy(title, &bounds) || names_a_protected_path(title)
+}
+
+/// The most runs of words [`names_a_secret`] judges in one title: about the 8,256 of the densest title
+/// of [`NAME_MAX`] bytes (review R8-M1).
+const RUN_BUDGET: usize = 8192;
+
+/// Whether some word of `title` is an editor's copy ([`is_an_editors_copy`]), alone or joined with
+/// everything up to the end of the next word that has the same `%` or `!` in it, when that is at most
+/// [`NAME_MAX`] bytes: the place `Code - OSS` has a ` - ` in its name, so
+/// `%home%ann%.config%Code - OSS%User%History%-1a2b%x.json.swp` is three words (review R8-L1). One
+/// more check for each word, and each span is judged once.
+fn names_an_editors_copy(title: &str, bounds: &[(usize, usize)]) -> bool {
+    let joined = ['%', '!'].into_iter().flat_map(|sep| {
+        let marked: Vec<(usize, usize)> = bounds.iter().copied().filter(|&(start, end)| title[start..end].contains(sep)).collect();
+        marked.windows(2).map(|pair| (pair[0].0, pair[1].1)).filter(|(start, end)| end - start <= NAME_MAX).collect::<Vec<_>>()
     });
     let mut words = std::collections::HashSet::new();
-    by_runs
-        || bounds.iter().any(|&(start, end)| words.insert(&title[start..end]) && is_an_editors_copy(&title[start..end]))
-        || names_a_protected_path(title)
+    bounds.iter().copied().chain(joined).any(|(start, end)| words.insert(&title[start..end]) && is_an_editors_copy(&title[start..end]))
 }
 
 /// Whether some `/` word of `title` is a protected path, or is one with the words up to the end of
@@ -136,7 +162,7 @@ pub fn hides(title: &str, mind: bool) -> bool {
 /// R7-L1). `title` is the title the id stands beside.
 pub fn shown_app(app_id: &str, title: &str, mind: bool) -> (String, String) {
     let name = app_display_name(app_id);
-    let derived = hides(title, mind) && title.to_lowercase().split_whitespace().next() == Some(app_id);
+    let derived = title.to_lowercase().split_whitespace().next() == Some(app_id) && hides(title, mind);
     if derived || hides(app_id, mind) || hides(&name, mind) {
         ("window".to_string(), A_WINDOW.to_string())
     } else {

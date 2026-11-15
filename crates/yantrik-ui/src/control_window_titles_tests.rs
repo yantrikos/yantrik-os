@@ -70,6 +70,11 @@ fn a_title_that_sets_the_name_in_curly_quotes_or_a_sentence_is_hidden() {
         "%home%ann%my stuff%.kube%config.swp - less", "#!home!ann!my stuff!.kube!config# - emacs",
         // Review R7-L3: a protected place with ` - ` in its name.
         "/home/ann/.config/Code - OSS/User/History/-1a/x.json - x", "~/.config/Code - OSS/Backups/1 - Code",
+        // Review R8-L1: an editor's copy of a file in those places has the ` - ` inside its encoded name.
+        "less %home%ann%.config%Code - OSS%User%History%-1a2b%AbCd.json.swp", "#!home!ann!.config!Code - OSS!User!History!-1a2b!AbCd.json# - emacs",
+        "!home!ann!.config!Code - OSS!Backups!ws1!file!9f8e~ - emacs",
+        // Review R8-L2: a workshop is protected for every reader, and a title that names one is too.
+        "ls -la /var/lib/yantrik/workshops/1000/hermes/shop",
     ] {
         let shown = row(&window_entry("gedit", title), true);
         assert_eq!(shown["title_hidden"], true, "{title}");
@@ -80,6 +85,7 @@ fn a_title_that_sets_the_name_in_curly_quotes_or_a_sentence_is_hidden() {
         "notes (copy 1).md - gedit", "Chapter 2.md - gedit", "Data Science (1).pdf - Viewer", "id_rsa.pub - gedit", "id_rsa.pub (copy 1) - gedit",
         "#!home!ann!documents!notes.md# - emacs", "/home/ann/My Backups/notes.md - nvim", "config (~/My Stuff/Documents) - NVIM",
         "%home%ann%my stuff%notes.md.swp - less", "%a %b - Firefox", "~/.config/Code - OSS/User/settings.json - Code",
+        "less %home%ann%.config%Code - OSS%User%settings.json.swp",
     ] {
         assert!(row(&window_entry("gedit", title), true).get("title_hidden").is_none(), "{title}");
     }
@@ -202,5 +208,54 @@ fn a_four_kilobyte_title_of_stacked_markers_is_judged_in_no_time() {
             .min()
             .unwrap_or_default();
         assert!(took < std::time::Duration::from_millis(50), "{took:?}");
+    }
+}
+
+/// A title of the `pieces`, joined by spaces, filled to at most 4,096 bytes.
+fn filled(pieces: impl Iterator<Item = String>) -> String {
+    let mut title = String::new();
+    for piece in pieces {
+        if title.len() + piece.len() + 1 > 4096 {
+            break;
+        }
+        if !title.is_empty() {
+            title.push(' ');
+        }
+        title.push_str(&piece);
+    }
+    title
+}
+
+/// A fixed sequence, so the test is the same on every run.
+fn lcg() -> impl Iterator<Item = u64> {
+    std::iter::successors(Some(1u64), |x| Some(x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407))).map(|x| x >> 33)
+}
+
+/// Review R8-M1: a title of distinct short words defeats the memo, and had up to 254,000 runs to
+/// judge (0.1 to 0.33 s in release, 2.4 s in debug). The judge stops at `RUN_BUDGET` runs and hides
+/// the title from a mind. Each is hidden and judged in under 250 ms, best of three (debug here: 50 to
+/// 155 ms with the budget, 1.0 to 3.5 s without; 150 ms was too near the slowest family to hold on a
+/// busy runner).
+#[test]
+fn a_four_kilobyte_title_of_distinct_words_is_hidden_within_the_budget() {
+    let tokens = ["%", "!", "#", "~", "a"];
+    for (family, title) in [
+        ("paths", filled((0..).map(|n| format!("~/a{n}/b/c/d/e")))),
+        ("copies", filled((0..).map(|n| format!("a{n} (copy 1).bak")))),
+        ("letters", filled(lcg().map(|x| char::from(b'a' + (x % 26) as u8).to_string()))),
+        ("tokens", filled(lcg().map(|x| tokens[(x % 5) as usize].to_string()))),
+    ] {
+        assert!(title.len() > 4000 && title.len() <= 4096, "{family}: {}", title.len());
+        let took = (0..3)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                let hidden = hides(&title, true);
+                assert!(hidden, "{family}: too many runs to judge is hidden from a mind");
+                start.elapsed()
+            })
+            .min()
+            .unwrap_or_default();
+        assert!(took < std::time::Duration::from_millis(250), "{family}: {took:?}");
+        assert!(!hides(&title, false), "{family}: the person sees it whole");
     }
 }
