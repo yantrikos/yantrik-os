@@ -3,9 +3,11 @@ name: CI
 # SCRATCH BRANCH, NOT FOR MERGE (#1252, round 4): the refusal drill. The `test` job is renamed `test2`
 # and sent to the throwaway runner. Run it by hand, after the BASH_ENV probe has been read:
 #   gh workflow run ci.yml --ref scratch/1234-refusal-drill
-# Expected: the hook prints "::error::yantrik-build refuses this job: job test2" in "Set up job", AND
-# the controller logs "REFUSING the job of runner ...: job test2" within one poll (10 s) and ends the
-# CT. That is the only end-to-end proof that a refusal kills the CT. The job does no build.
+# Expected: the hook prints "::error::yantrik-build refuses this job: job test2" in "Set up job"; AND the
+# controller logs either "REFUSING the job of runner ...: job test2" or "VIOLATION: ... job test2; it had
+# already finished" (the hook ends the job in seconds, often before the controller's next 10 s poll);
+# AND "done: CT ..." with the CT gone from `pct list`. The job does no build. This drill does not prove
+# the controller kills a running CT; the stub test (test/controller-test.sh, test 15) does.
 
 # What this exists for.
 #
