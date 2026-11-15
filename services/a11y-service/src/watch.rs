@@ -15,10 +15,13 @@
 //!
 //! # Nobody on the bus is trusted with the watcher's time
 //!
-//! Any local program can join the accessibility bus. Every question has a time limit, each
-//! connection has a ration of questions and is left alone for a while after it lets one time
-//! out, and full listings are at most one a second however many are asked for (`budget`). What
-//! a signal says about other connections' windows is not believed (`signals::root_change`).
+//! Any local program can join the accessibility bus. Every question has a time limit, and every
+//! answer is charged for the time it took, to its connection and to everyone together: a
+//! connection that has used its share waits, one that answers slowly or not at all is left alone
+//! for a while (`budget`). Nothing is asked of a connection the model has no window of and the
+//! last listing did not name (`plan`). Full listings are at most one a second however many are
+//! asked for, and ask applications together, skipping the slow (`listing`). What a signal says
+//! about other connections' windows is not believed (`signals::root_change`).
 //!
 //! # What is asked for
 //!
@@ -29,11 +32,14 @@
 //!
 //! While the person is private the model follows which windows exist and nothing else, nothing
 //! is recorded in the ring, no application is asked where the focus is or what changed, and the
-//! service refuses `a11y.now` and `a11y.since`. When it ends, a reader is told a gap.
+//! service refuses `a11y.now` and `a11y.since`. When it ends, a reader is told a gap. The edge is
+//! acted on wherever it is first seen, also by the fresh reading taken before something is
+//! recorded, and that the person was private is kept on `Sight`, so a private time that began or
+//! ended while the bus was away is told by the next session (`privacy`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use zbus::zvariant::ObjectPath;
@@ -41,9 +47,11 @@ use zbus::zvariant::ObjectPath;
 use crate::atspi::Atspi;
 use crate::budget::{Patience, Relists};
 use crate::handles::{self, Reference};
-use crate::screen::{Fact, Key, Kind, What};
+use crate::plan::{climb_blames_application, focus_fact, plan, Known, Step};
+use crate::privacy::{edge, Edge, Privacy};
+use crate::screen::{Fact, Key, Kind, Screen, What};
 use crate::sight::Sight;
-use crate::signals::{self, is_root, root_change, Raw, RootChange};
+use crate::signals::{is_root, Raw};
 
 /// What the applications are asked to announce. Each entry costs every application a little, so
 /// each one has to earn its place.
@@ -59,19 +67,16 @@ const EVENTS: [&str; 8] = [
 ];
 
 /// Sorted signals waiting for the watcher. Past this they are counted and told as a gap.
-const RAW_QUEUE: usize = 4096;
+pub const RAW_QUEUE: usize = 4096;
 
 /// Sorted signals taken in before the model is flushed and the clocks are looked at again.
 const BATCH: usize = 128;
 
 /// The longest one question to an application, or to the bus, may take.
-const CALL_LIMIT: Duration = Duration::from_millis(400);
+pub const CALL_LIMIT: Duration = Duration::from_millis(400);
 
 /// The longest finding the window an element is in may take, all its hops together.
 const CLIMB_LIMIT: Duration = Duration::from_millis(400);
-
-/// The longest connecting to the accessibility bus may take.
-const CONNECT_LIMIT: Duration = Duration::from_secs(5);
 
 /// The longest a full listing of every window may take.
 const LIST_LIMIT: Duration = Duration::from_secs(5);
@@ -80,18 +85,12 @@ const LIST_LIMIT: Duration = Duration::from_secs(5);
 /// screen, that the person went private or stopped being.
 const IDLE: Duration = Duration::from_secs(1);
 
-/// How long one reading of "is the person private" is trusted while signals pour in.
-const PRIVATE_FRESH: Duration = Duration::from_millis(100);
-
 /// Levels climbed at most to find the window an element is in.
 const MAX_HOPS: usize = 24;
 
 /// Elements whose window is remembered. Cleared whole when full, and when any window opens or
 /// closes.
 const MAX_REMEMBERED: usize = 4096;
-
-/// The longest pause between attempts to reach the accessibility bus.
-const RETRY_CAP: Duration = Duration::from_secs(30);
 
 fn key_of(reference: &Reference) -> Key {
     (reference.0.clone(), reference.1.as_str().to_string())
@@ -101,49 +100,52 @@ fn reference_of(key: &Key) -> Option<Reference> {
     ObjectPath::try_from(key.1.as_str()).ok().map(|path| (key.0.clone(), path.into()))
 }
 
-/// Whether the person is private, read from its file at most once per [`PRIVATE_FRESH`]: a
-/// firehose of signals must not become a firehose of file reads.
-struct Privacy {
-    read: fn() -> bool,
-    value: bool,
-    read_at: Option<Instant>,
-}
-
-impl Privacy {
-    fn check(&mut self, now: Instant) -> bool {
-        if self.read_at.is_none_or(|at| now.duration_since(at) >= PRIVATE_FRESH) {
-            self.value = (self.read)();
-            self.read_at = Some(now);
-        }
-        self.value
-    }
-}
-
 /// Wait for one answer, for at most `limit`.
-fn within<T>(runtime: &tokio::runtime::Runtime, limit: Duration, question: impl Future<Output = T>) -> Option<T> {
+pub fn within<T>(runtime: &tokio::runtime::Runtime, limit: Duration, question: impl Future<Output = T>) -> Option<T> {
     runtime.block_on(async { tokio::time::timeout(limit, question).await.ok() })
 }
 
-/// Ask an application one thing, if it may be asked now, and remember it if it did not answer.
+/// Ask an application one thing, if it may be asked now, and charge it for the time it took. One
+/// that did not answer is also remembered as slow.
 fn ask<T>(runtime: &tokio::runtime::Runtime, patience: &mut Patience, connection: &str, question: impl Future<Output = T>) -> Option<T> {
     if !patience.allows(connection, Instant::now()) {
         return None;
     }
+    let started = Instant::now();
     let answer = within(runtime, CALL_LIMIT, question);
+    let now = Instant::now();
+    patience.spent(connection, now.duration_since(started), now);
     if answer.is_none() {
-        patience.timed_out(connection, Instant::now());
+        patience.timed_out(connection, now);
     }
     answer
 }
 
+/// What the model and the last listing know about connections, for `plan`.
+struct View<'a> {
+    screen: &'a Screen,
+    named: &'a HashSet<String>,
+}
+
+impl Known for View<'_> {
+    fn has_window(&self, connection: &str) -> bool {
+        self.screen.has_connection(connection)
+    }
+
+    fn named(&self, connection: &str) -> bool {
+        self.named.contains(connection)
+    }
+}
+
 /// The watcher's own state for one connection to the bus.
-struct Watcher<'a> {
+pub struct Watcher<'a> {
     runtime: &'a tokio::runtime::Runtime,
     atspi: &'a Atspi,
     sight: &'a Sight,
     handles: &'a handles::Shared,
     privacy: Privacy,
-    /// Whether the person was private at the last look. The edges are acted on in `follow`.
+    /// Whether the person was private at the last look the watcher acted on. Begins as what the
+    /// last session left on `Sight`, so a private time that outlived a connection is not lost.
     private: bool,
     /// The connection that is the registry: the only one believed about applications.
     registry: String,
@@ -154,9 +156,34 @@ struct Watcher<'a> {
     relists: Relists,
     /// Whether the windows have been asked which of them is in front, once.
     front_asked: bool,
+    /// The applications the last listing named, whether or not they have a window.
+    named: HashSet<String>,
+    /// A window that took the front before the model knew it: taken as the front once a listing
+    /// has found it.
+    front_after_listing: Option<Key>,
 }
 
-impl Watcher<'_> {
+impl<'a> Watcher<'a> {
+    /// A watcher for one session. `registry` is the connection believed about applications.
+    pub fn new(runtime: &'a tokio::runtime::Runtime, atspi: &'a Atspi, sight: &'a Sight, handles: &'a handles::Shared, private: fn() -> bool, registry: String) -> Self {
+        Self {
+            runtime,
+            atspi,
+            sight,
+            handles,
+            privacy: Privacy::new(private),
+            // What the last session left: a private time that outlived a connection is not lost.
+            private: sight.private_seen(),
+            registry,
+            remembered: HashMap::new(),
+            patience: Patience::new(Instant::now()),
+            relists: Relists::new(Instant::now()),
+            front_asked: false,
+            named: HashSet::new(),
+            front_after_listing: None,
+        }
+    }
+
     fn apply(&mut self, fact: Fact) {
         let mut screen = self.sight.screen();
         let told = if self.private { screen.apply_quietly(fact, Instant::now()) } else { screen.apply(fact, Instant::now()) };
@@ -164,9 +191,7 @@ impl Watcher<'_> {
             // Most facts in a burst tell nothing, and must not each cost a read of the file.
             return;
         }
-        // Read afresh, not from the last look: an event told in the first moments of the
-        // private time must not be recorded.
-        let private = self.private || (self.privacy.read)();
+        let private = self.settle_privacy(&mut screen);
         self.tell(told, private);
     }
 
@@ -177,8 +202,23 @@ impl Watcher<'_> {
         let mut screen = self.sight.screen();
         let told = screen.flush(Instant::now());
         if !told.is_empty() {
-            self.tell(told, (self.privacy.read)());
+            let private = self.settle_privacy(&mut screen);
+            self.tell(told, private);
         }
+    }
+
+    /// Whether the person is private, read afresh, for something about to be recorded: an event
+    /// told in the first moments of the private time must not be recorded. If the person went
+    /// private since the last look, that is acted on here, before anything is dropped, so that a
+    /// private time shorter than the interval between looks leaves no focus and no held change
+    /// behind (#1257 review, N5). Called with the model's lock held.
+    fn settle_privacy(&mut self, screen: &mut Screen) -> bool {
+        if !self.private && edge(false, self.privacy.fresh(Instant::now())) == Some(Edge::Began) {
+            self.private = true;
+            self.sight.set_private_seen(true);
+            screen.private_began();
+        }
+        self.private
     }
 
     fn tell(&mut self, told: Vec<Kind>, private: bool) {
@@ -195,52 +235,69 @@ impl Watcher<'_> {
 
     /// Notice the person going private or stopping, and do what each edge needs.
     fn look_at_privacy(&mut self) {
-        let private = self.privacy.check(Instant::now());
-        if private == self.private {
-            return;
-        }
-        self.private = private;
+        let now = Instant::now();
+        let private = self.privacy.check(now);
+        let Some(edge) = edge(self.private, private) else { return };
         let mut screen = self.sight.screen();
-        if private {
-            screen.private_began();
-        } else {
-            let told = screen.private_ended();
-            self.sight.record(self.handles, (self.privacy.read)(), told);
+        match edge {
+            Edge::Began => {
+                self.private = true;
+                self.sight.set_private_seen(true);
+                screen.private_began();
+            }
+            Edge::Ended => {
+                self.private = false;
+                let told = screen.private_ended();
+                // Private again already: the gap is not told, and the next end tells it.
+                let again = self.privacy.fresh(now);
+                self.sight.record(self.handles, again, told);
+                self.sight.set_private_seen(again);
+            }
         }
     }
 
     /// Reconcile the model to a walk of every window: at the start, after a gap, and when an
-    /// application left without saying which windows it took. True when every application
-    /// answered; an application that did not keeps its windows and is asked again later.
-    fn relist(&mut self) -> bool {
-        match within(self.runtime, LIST_LIMIT, self.atspi.windows()) {
+    /// application left without saying which windows it took. What comes back is the connections
+    /// that did not answer, or `None` when there was no listing at all. An application that did
+    /// not answer keeps its windows and is asked again later.
+    fn relist(&mut self) -> Option<Vec<String>> {
+        let now = Instant::now();
+        let patience = &self.patience;
+        match within(self.runtime, LIST_LIMIT, self.atspi.windows(|connection| patience.is_slow(connection, now))) {
             Some(Ok(listing)) => {
                 let now = Instant::now();
-                for connection in &listing.unanswered {
-                    self.patience.timed_out(connection, now);
+                for asked in &listing.asked {
+                    self.patience.listed(&asked.connection, asked.took, now);
+                    if !asked.answered {
+                        self.patience.timed_out(&asked.connection, now);
+                    }
                 }
-                let everyone_answered = listing.unanswered.is_empty();
+                self.named = listing.apps.into_iter().collect();
+                let unanswered = listing.unanswered;
                 let windows = listing.windows.into_iter().map(|(reference, window)| (key_of(&reference), window)).collect();
-                self.apply(Fact::Listing { windows, unanswered: listing.unanswered });
-                everyone_answered
+                self.apply(Fact::Listing { windows, unanswered: unanswered.clone() });
+                if let Some(window) = self.front_after_listing.take() {
+                    self.apply(Fact::Activated(window));
+                }
+                Some(unanswered)
             }
             Some(Err(why)) => {
                 tracing::debug!(%why, "Could not list the windows");
-                false
+                None
             }
             None => {
                 tracing::debug!("Listing the windows took too long; the model keeps what it had");
-                false
+                None
             }
         }
     }
 
-    /// Which window is in front, asked once at the start. Told only when exactly one window says
-    /// it is active: two claims are not a fact.
-    fn find_front(&mut self) {
+    /// Which window is in front, asked once at the start, of every application that answered. Told
+    /// only when exactly one window says it is active: two claims are not a fact.
+    fn find_front(&mut self, unanswered: &[String]) {
         let keys: Vec<Key> = self.sight.screen().keys();
         let mut active = Vec::new();
-        for key in keys {
+        for key in keys.into_iter().filter(|key| !unanswered.contains(&key.0)) {
             let Some(reference) = reference_of(&key) else { continue };
             if ask(self.runtime, &mut self.patience, &key.0, self.atspi.is_active(&reference)) == Some(true) {
                 active.push(key);
@@ -279,10 +336,22 @@ impl Watcher<'_> {
         let mut current = source.clone();
         let mut found = None;
         for _ in 0..MAX_HOPS {
-            let left = deadline.saturating_duration_since(Instant::now());
+            let hop_started = Instant::now();
+            let left = deadline.saturating_duration_since(hop_started);
             let Some(reference) = reference_of(&current) else { break };
-            let Some(parent) = within(self.runtime, left, self.atspi.parent_of(&reference)) else {
-                self.patience.timed_out(&source.0, Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let parent = within(self.runtime, left, self.atspi.parent_of(&reference));
+            let now = Instant::now();
+            let took = now.duration_since(hop_started);
+            self.patience.spent(&source.0, took, now);
+            let Some(parent) = parent else {
+                // A climb that ran out of its shared limit on quick answers is not the
+                // application's fault.
+                if climb_blames_application(took, CLIMB_LIMIT) {
+                    self.patience.timed_out(&source.0, now);
+                }
                 break;
             };
             let Some(parent) = parent.map(|parent| key_of(&parent)) else { break };
@@ -322,10 +391,11 @@ impl Watcher<'_> {
         if self.private {
             return;
         }
-        let Some(reference) = reference_of(&source) else { return };
-        let Some(Some((role, name))) = ask(self.runtime, &mut self.patience, &source.0, self.atspi.role_and_name(&reference)) else { return };
+        // Not learning what the element is does not leave the old focus in place: it is told as
+        // an element of unknown role, which is treated as a password (`plan::focus_fact`).
+        let learned = reference_of(&source).and_then(|reference| ask(self.runtime, &mut self.patience, &source.0, self.atspi.role_and_name(&reference)).flatten());
         let window = self.window_of(&source);
-        self.apply(Fact::Focus { source, window, role, name });
+        self.apply(focus_fact(source, window, learned));
     }
 
     fn renamed(&mut self, source: Key, name: Option<String>) {
@@ -354,44 +424,49 @@ impl Watcher<'_> {
     }
 
     fn take(&mut self, raw: Raw) {
-        match raw {
-            Raw::Created(source) => self.learn(&source),
-            Raw::Activated(source) => {
-                self.learn(&source);
-                self.apply(Fact::Activated(source));
+        let step = {
+            let screen = self.sight.screen();
+            plan(raw, &self.registry, &View { screen: &screen, named: &self.named })
+        };
+        match step {
+            Step::Learn(window) => self.learn(&window),
+            Step::LearnAndActivate(window) => {
+                self.learn(&window);
+                self.apply(Fact::Activated(window));
             }
-            Raw::Deactivated(source) => self.apply(Fact::Deactivated(source)),
-            Raw::Destroyed(source) => self.apply(Fact::Closed(source)),
-            Raw::Focused(source) => self.focused(source),
-            Raw::Children { source, added, child } if is_root(&source.1) => match root_change(&source, added, child, &self.registry) {
-                RootChange::Relist => self.relists.want(),
-                RootChange::Learn(window) => self.learn(&window),
-                RootChange::Closed(window) => self.apply(Fact::Closed(window)),
-                RootChange::Ignore => {}
-            },
-            Raw::Children { source, .. } => self.touched(source, What::Children),
-            Raw::Text(source) => self.touched(source, What::Text),
-            Raw::Name { source, name } => self.renamed(source, name),
-            Raw::Vanished(connection) => {
-                if self.sight.screen().has_connection(&connection) {
-                    self.relists.want();
-                }
+            Step::Apply(fact) => self.apply(fact),
+            Step::Focus(source) => self.focused(source),
+            Step::Touch(source, what) => self.touched(source, what),
+            Step::Rename(source, name) => self.renamed(source, name),
+            Step::Relist => self.relists.want(),
+            Step::RelistThenActivate(window) => {
+                self.front_after_listing = Some(window);
+                self.relists.want();
             }
-            Raw::RegistryRestarted => self.registry_restarted(),
+            Step::RegistryRestarted => self.registry_restarted(),
+            Step::Nothing => {}
         }
     }
 
     /// Follow the bus until its stream ends.
-    fn follow(&mut self, raw: &Receiver<Raw>) {
+    pub fn follow(&mut self, raw: &Receiver<Raw>) {
         self.relists.want();
         loop {
             self.look_at_privacy();
             if self.relists.due(Instant::now()) {
-                let everyone_answered = self.relist();
-                self.relists.ran(everyone_answered, Instant::now());
-                if everyone_answered && !self.front_asked && !self.private {
+                // What is already queued is older than the listing about to be read, and is
+                // applied first: applied after it, an old title would replace the new one
+                // (#1257 review, N10).
+                for queued in raw.try_iter().take(RAW_QUEUE) {
+                    self.take(queued);
+                }
+                let listed = self.relist();
+                self.relists.ran(listed.as_ref().is_some_and(Vec::is_empty), Instant::now());
+                // After the first listing that returned at all, asking the applications that
+                // answered: one that never does must not leave the front unknown.
+                if let (Some(unanswered), false, false) = (listed, self.front_asked, self.private) {
                     self.front_asked = true;
-                    self.find_front();
+                    self.find_front(&unanswered);
                 }
             }
             let due = [self.sight.screen().next_due(), self.relists.next()].into_iter().flatten().min();
@@ -414,12 +489,13 @@ impl Watcher<'_> {
                 self.relists.want();
             }
             self.flush();
+            self.sight.set_slow_marks(self.patience.marks());
         }
     }
 }
 
 /// Ask the registry to have each of [`EVENTS`] announced. Returns how many it took.
-fn register(runtime: &tokio::runtime::Runtime, atspi: &Atspi) -> usize {
+pub fn register(runtime: &tokio::runtime::Runtime, atspi: &Atspi) -> usize {
     let mut registered = 0;
     for event in EVENTS {
         match within(runtime, CALL_LIMIT, atspi.register(event)) {
@@ -430,106 +506,3 @@ fn register(runtime: &tokio::runtime::Runtime, atspi: &Atspi) -> usize {
     }
     registered
 }
-
-/// Read, subscribe, register, and follow until the stream ends.
-fn listen(runtime: &tokio::runtime::Runtime, atspi: &Atspi, sight: &Sight, handles: &handles::Shared, private: fn() -> bool) -> Result<(), String> {
-    // The reader first, before anything is asked of the bus. Every message that arrives on the
-    // connection goes through its queue, and a full queue stops the answers arriving too: a
-    // busy bus must never be able to fill it while the watcher waits for an answer behind it.
-    let connection = zbus::blocking::Connection::from(atspi.connection().clone());
-    let messages = zbus::blocking::MessageIterator::from(&connection);
-    let (raw_tx, raw_rx) = mpsc::sync_channel(RAW_QUEUE);
-    let tally = sight.tally();
-    std::thread::Builder::new()
-        .name("a11y-signals".into())
-        .spawn(move || signals::read(messages, raw_tx, tally))
-        .map_err(|e| format!("no signal reader thread: {e}"))?;
-
-    // Subscribed before anything is listed, so nothing that happens during the listing is lost.
-    within(runtime, CALL_LIMIT, atspi.subscribe()).ok_or("the accessibility bus did not take the subscription in time")??;
-    let registry = within(runtime, CALL_LIMIT, atspi.registry_owner()).flatten().ok_or("the accessibility registry is not on the bus")?;
-    let registered = register(runtime, atspi);
-    if registered == 0 {
-        return Err("the accessibility registry registered none of the events".into());
-    }
-
-    sight.set_listening(true);
-    tracing::info!(events = registered, "Listening to the accessibility bus");
-    let now = Instant::now();
-    let mut watcher = Watcher {
-        runtime,
-        atspi,
-        sight,
-        handles,
-        privacy: Privacy { read: private, value: false, read_at: None },
-        private: false,
-        registry,
-        remembered: HashMap::new(),
-        patience: Patience::new(now),
-        relists: Relists::new(now),
-        front_asked: false,
-    };
-    watcher.follow(&raw_rx);
-    Ok(())
-}
-
-/// One connection to the bus, from first to last. The connection is closed on the way out
-/// whatever happened, which is what ends its reader thread: a session that failed half-way must
-/// not leave a reader behind for the next attempt to add to.
-fn session(runtime: &tokio::runtime::Runtime, sight: &Sight, handles: &handles::Shared, private: fn() -> bool) -> Result<(), String> {
-    let atspi = within(runtime, CONNECT_LIMIT, Atspi::connect(handles.clone())).ok_or("the accessibility bus did not answer in time")??;
-    let outcome = listen(runtime, &atspi, sight, handles, private);
-    let _ = within(runtime, CALL_LIMIT, atspi.connection().clone().close());
-    outcome
-}
-
-/// Start listening on a thread of its own, and hand back the reader's side. Returns at once;
-/// the bus is connected to lazily and retried, because accessibility often starts after the
-/// session does.
-pub fn start(handles: handles::Shared, private: fn() -> bool) -> Sight {
-    let sight = Sight::idle();
-    let feed = sight.clone();
-    let spawned = std::thread::Builder::new().name("a11y-watch".into()).spawn(move || watch_thread(feed, handles, private));
-    if let Err(e) = spawned {
-        tracing::error!(error = %e, "No watcher thread; the screen model will stay empty");
-    }
-    sight
-}
-
-fn watch_thread(sight: Sight, handles: handles::Shared, private: fn() -> bool) {
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            tracing::error!(error = %e, "No runtime; the screen model will stay empty");
-            return;
-        }
-    };
-    let mut pause = Duration::from_secs(1);
-    let mut last_why = String::new();
-    loop {
-        match session(&runtime, &sight, &handles, private) {
-            Ok(()) => {
-                tracing::warn!("The accessibility signal stream ended; connecting again");
-                pause = Duration::from_secs(1);
-            }
-            // Said once per reason, not once per attempt: a machine with no accessibility bus
-            // would otherwise write the same line every thirty seconds for ever.
-            Err(why) if why != last_why => {
-                tracing::warn!(%why, "Not listening to the accessibility bus; will keep trying");
-                last_why = why;
-            }
-            Err(_) => {}
-        }
-        if sight.set_listening(false) {
-            // The model is on its own until the next listing: a reader should know.
-            let _model = sight.screen();
-            sight.record(&handles, private(), vec![Kind::Gap]);
-        }
-        std::thread::sleep(pause);
-        pause = (pause * 2).min(RETRY_CAP);
-    }
-}
-
-#[cfg(test)]
-#[path = "watch_tests.rs"]
-mod tests;

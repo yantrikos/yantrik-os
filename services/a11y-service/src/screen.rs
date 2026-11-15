@@ -15,19 +15,27 @@
 //! An event says *that* something changed and *where*: which window, what kind of change. It
 //! never carries the changed text, and it never says how many changes it stands for: one
 //! text-changed signal is one keystroke, so a count would be the length of whatever was typed.
-//! Changes in a focused password field are not told at all.
+//! Changes in a focused password field are not told at all, and neither are changes in a focused
+//! field whose role could not be learned: when in doubt it is a password.
+//!
+//! Typing is still told as activity, but not as keystrokes (`throttle`): "text is changing in
+//! this window" at most once per [`TEXT_COALESCE`](crate::throttle::TEXT_COALESCE), stamped to the whole second by the ring
+//! (`sight`). Anyone who can read the stream learns that someone typed, and roughly when; not
+//! how fast, how much, or how often they corrected themselves.
 //!
 //! # Not a transcript
 //!
 //! Accessibility is a firehose: a page load is thousands of signals. Changes inside a window are
-//! therefore told at most once per [`COALESCE`]: the first one at once, so a reader learns within
-//! milliseconds that the window is changing, and whatever follows inside the interval as one more
-//! event.
+//! therefore told at most once per 150 ms (children, names, titles) or once per 2 s (text); see `throttle`
+//! for the two lanes.
 //!
 //! # Bounded
 //!
 //! Any program can announce any number of windows. The model keeps at most [`MAX_PER_CONNECTION`]
-//! for one connection and [`MAX_WINDOWS`] in all, and counts what it refused.
+//! for one connection and [`MAX_WINDOWS`] in all, and counts what it refused. When the model is
+//! full, a connection with few windows still gets one: the newest window of the connection with
+//! the most is closed to make room, told as an ordinary `window_closed`, so eight busy connections
+//! cannot lock every other application out.
 //!
 //! # Private mode
 //!
@@ -42,8 +50,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-/// The longest a window's changes are held back to be told as one.
-pub const COALESCE: Duration = Duration::from_millis(150);
+use crate::throttle::{Held, Target, Throttles};
 
 /// How long "the front window lost the front" waits for the next window to take it, so a switch
 /// between two windows is told as one change and not as two.
@@ -55,12 +62,12 @@ pub const MAX_PER_CONNECTION: usize = 64;
 /// Windows kept in all at most.
 pub const MAX_WINDOWS: usize = 512;
 
-/// Throttle records kept at most. Past this the idle ones are dropped: the cost is one change
-/// told a little early, never one withheld.
-const MAX_THROTTLED: usize = 512;
-
 /// The role a toolkit gives a field whose text is hidden as it is typed.
 const PASSWORD: &str = "password text";
+
+/// The role of a focused element whose role could not be learned. The password rule treats it as
+/// a password: not knowing is not a reason to tell.
+pub const UNKNOWN_ROLE: &str = "unknown";
 
 /// An accessibility object: which connection, and where on it. Plain strings, so the model needs
 /// no bus types.
@@ -89,7 +96,7 @@ pub enum What {
 }
 
 /// One thing the watcher learned, already resolved to windows.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fact {
     /// Every window there is, from a walk of the registry. The model is reconciled to it, except
     /// for the windows of `unanswered` connections: an application that did not answer in time
@@ -146,31 +153,9 @@ pub struct Counts {
     pub listings: u64,
     /// Times the stream had a hole.
     pub gaps: u64,
-    /// Windows announced and not kept, because their connection or the model was full.
+    /// Windows announced and not kept, because their connection or the model was full, and
+    /// windows closed again to make room for a connection with fewer.
     pub refused_windows: u64,
-}
-
-/// Changes inside one window (or one application) not yet told.
-#[derive(Debug, Default)]
-struct Held {
-    text: bool,
-    children: bool,
-    name: bool,
-    renamed: bool,
-}
-
-/// The throttle for one window or application: when it last spoke, and what it is holding.
-#[derive(Debug)]
-struct Throttle {
-    last_told: Instant,
-    held: Option<Held>,
-}
-
-/// Who a held change belongs to: a window, or an application whose window is not known.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Target {
-    Window(Key),
-    App(String),
 }
 
 /// What the model knows about one connection: how many windows it has, and its application.
@@ -191,7 +176,7 @@ pub struct Screen {
     focus: Option<Focus>,
     /// The focused element itself, for the rules that depend on what it is.
     focus_source: Option<Key>,
-    throttles: HashMap<Target, Throttle>,
+    throttles: Throttles,
     counts: Counts,
 }
 
@@ -236,7 +221,7 @@ impl Screen {
         let mut out = Vec::new();
         match fact {
             Fact::Listing { windows, unanswered } => self.reconcile(windows, &unanswered, now, &mut out),
-            Fact::Opened(key, info) => self.open(key, info, &mut out),
+            Fact::Opened(key, info) => self.open(key, info, now, &mut out),
             Fact::Closed(key) => self.close(&key, now, &mut out),
             Fact::Activated(key) => self.activate(key, &mut out),
             Fact::Deactivated(key) => {
@@ -255,19 +240,16 @@ impl Screen {
             }
             Fact::Touched { source, window, app, what } => {
                 // Typing in a password field is one text change per character. Neither that it
-                // happened nor when is anyone's to know (#1257 review, H5).
-                let secret = what == What::Text && self.focus_source.as_ref() == Some(&source) && self.focus.as_ref().is_some_and(|f| f.role == PASSWORD);
+                // happened nor when is anyone's to know, and a field whose role is not known is
+                // treated as one (#1257 review, H5 and N1).
+                let secret = what == What::Text && self.focus_source.as_ref() == Some(&source) && self.focus.as_ref().is_some_and(|f| f.role == PASSWORD || f.role == UNKNOWN_ROLE);
                 if !secret {
                     // A window that has gone is not one to report on; its application still is.
                     let target = match window.filter(|key| self.knows(key)) {
                         Some(key) => Target::Window(key),
                         None => Target::App(app),
                     };
-                    self.touch(target, now, &mut out, |held| match what {
-                        What::Text => held.text = true,
-                        What::Children => held.children = true,
-                        What::Name => held.name = true,
-                    });
+                    self.touch(target, what, now, &mut out);
                 }
             }
             Fact::Gap => {
@@ -288,7 +270,7 @@ impl Screen {
         let mut unheard = Vec::new();
         match fact {
             Fact::Listing { windows, unanswered } => self.reconcile(windows, &unanswered, now, &mut unheard),
-            Fact::Opened(key, info) => self.open(key, info, &mut unheard),
+            Fact::Opened(key, info) => self.open(key, info, now, &mut unheard),
             Fact::Closed(key) => self.close(&key, now, &mut unheard),
             Fact::Activated(key) => {
                 if self.knows(&key) {
@@ -332,9 +314,7 @@ impl Screen {
     }
 
     fn forget_held(&mut self) {
-        for throttle in self.throttles.values_mut() {
-            throttle.held = None;
-        }
+        self.throttles.forget_held();
         // A front that was lost and not yet taken is settled now, without a word.
         if self.front_lost_at.take().is_some() {
             self.front = None;
@@ -355,20 +335,8 @@ impl Screen {
             self.front = None;
             out.push(Kind::FrontChanged { window: None });
         }
-        let due: Vec<Target> = self
-            .throttles
-            .iter()
-            .filter(|(_, t)| t.held.is_some() && now.duration_since(t.last_told) >= COALESCE)
-            .map(|(target, _)| target.clone())
-            .collect();
-        for target in due {
-            let held = self.throttles.get_mut(&target).and_then(|t| {
-                t.last_told = now;
-                t.held.take()
-            });
-            if let Some(held) = held {
-                self.tell_held(&target, held, &mut out);
-            }
+        for (target, held) in self.throttles.due(now) {
+            self.tell_held(&target, held, &mut out);
         }
         self.counts.told += out.len() as u64;
         out
@@ -376,16 +344,19 @@ impl Screen {
 
     /// When `flush` next has something to say, if anything is waiting.
     pub fn next_due(&self) -> Option<Instant> {
-        let held = self.throttles.values().filter(|t| t.held.is_some()).map(|t| t.last_told + COALESCE);
-        held.chain(self.front_lost_at.map(|at| at + FRONT_GRACE)).min()
+        self.throttles.next_due().into_iter().chain(self.front_lost_at.map(|at| at + FRONT_GRACE)).min()
     }
 
-    fn open(&mut self, key: Key, info: WindowInfo, out: &mut Vec<Kind>) {
+    fn open(&mut self, key: Key, info: WindowInfo, now: Instant, out: &mut Vec<Kind>) {
         if self.knows(&key) {
             return;
         }
         let on_connection = self.connections.get(&key.0).map_or(0, |c| c.windows);
-        if on_connection >= MAX_PER_CONNECTION || self.windows.len() >= MAX_WINDOWS {
+        if on_connection >= MAX_PER_CONNECTION {
+            self.counts.refused_windows += 1;
+            return;
+        }
+        if self.windows.len() >= MAX_WINDOWS && !self.make_room_for(&key.0, on_connection, now, out) {
             self.counts.refused_windows += 1;
             return;
         }
@@ -394,6 +365,24 @@ impl Screen {
         out.push(Kind::WindowOpened { window: info.clone() });
         self.order.push(key.clone());
         self.windows.insert(key, info);
+    }
+
+    /// The model is full. A newcomer from a connection with fewer windows than an equal share is
+    /// let in, by closing the newest window of the connection that has the most (#1257 review,
+    /// N3). Without this, eight connections with 64 windows each lock every other application
+    /// out for as long as they stay. True when there is room now.
+    fn make_room_for(&mut self, connection: &str, holds: usize, now: Instant, out: &mut Vec<Kind>) -> bool {
+        let sharing = self.connections.len() + usize::from(!self.connections.contains_key(connection));
+        if holds >= MAX_WINDOWS / sharing.max(1) {
+            return false;
+        }
+        let Some(biggest) = self.connections.iter().filter(|(name, _)| name.as_str() != connection).max_by(|a, b| (a.1.windows, a.0).cmp(&(b.1.windows, b.0))).map(|(name, _)| name.clone()) else {
+            return false;
+        };
+        let Some(newest) = self.order.iter().rev().find(|key| key.0 == biggest).cloned() else { return false };
+        self.counts.refused_windows += 1;
+        self.close(&newest, now, out);
+        true
     }
 
     fn close(&mut self, key: &Key, now: Instant, out: &mut Vec<Kind>) {
@@ -441,24 +430,26 @@ impl Screen {
         // The model has the new title at once; a reader is told through the throttle, so a
         // window that retitles itself every frame is one event per interval.
         info.title = title;
-        self.touch(Target::Window(key), now, out, |held| held.renamed = true);
+        if let Some(held) = self.throttles.quick(Target::Window(key.clone()), now, |held| held.renamed = true) {
+            self.tell_held(&Target::Window(key), held, out);
+        }
     }
 
-    /// One change for `target`: told at once when the target has been quiet, held otherwise.
-    fn touch(&mut self, target: Target, now: Instant, out: &mut Vec<Kind>, mark: impl FnOnce(&mut Held)) {
-        if self.throttles.len() >= MAX_THROTTLED && !self.throttles.contains_key(&target) {
-            self.throttles.retain(|_, t| t.held.is_some());
-        }
-        let quiet = self.throttles.get(&target).is_none_or(|t| t.held.is_none() && now.duration_since(t.last_told) >= COALESCE);
-        if quiet {
-            let mut held = Held::default();
-            mark(&mut held);
-            self.throttles.insert(target.clone(), Throttle { last_told: now, held: None });
-            self.tell_held(&target, held, out);
+    /// One change for `target`. Text waits its own, longer interval; the rest is told at once
+    /// when the target has been quiet, and held otherwise.
+    fn touch(&mut self, target: Target, what: What, now: Instant, out: &mut Vec<Kind>) {
+        if what == What::Text {
+            self.throttles.text(target, now);
             return;
         }
-        let throttle = self.throttles.entry(target).or_insert(Throttle { last_told: now, held: None });
-        mark(throttle.held.get_or_insert_with(Held::default));
+        let held = self.throttles.quick(target.clone(), now, |held| match what {
+            What::Children => held.children = true,
+            What::Name => held.name = true,
+            What::Text => held.text = true,
+        });
+        if let Some(held) = held {
+            self.tell_held(&target, held, out);
+        }
     }
 
     fn tell_held(&self, target: &Target, held: Held, out: &mut Vec<Kind>) {
@@ -494,7 +485,7 @@ impl Screen {
         }
         for (key, info) in listing {
             match self.windows.get(&key).map(|known| known.title != info.title) {
-                None => self.open(key, info, out),
+                None => self.open(key, info, now, out),
                 Some(true) => self.rename(key, info.title, now, out),
                 Some(false) => {}
             }

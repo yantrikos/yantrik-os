@@ -90,6 +90,46 @@ fn no_counter_a_reader_can_see_counts_signals() {
         keys
     };
     let counts = Sight::idle().now()["counts"].clone();
-    assert_eq!(sorted_keys(&counts), ["dropped_private", "model", "overwritten", "signals_dropped"]);
+    assert_eq!(sorted_keys(&counts), ["dropped_private", "model", "overwritten", "signals_dropped", "slow_marks"]);
     assert_eq!(sorted_keys(&counts["model"]), ["gaps", "listings", "refused_windows", "told"]);
+}
+
+/// #1257 review, N1: a text event's time says the second, not the millisecond, because one text
+/// change is one keystroke.
+#[test]
+fn a_text_event_time_says_no_more_than_the_second() {
+    let text = Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["text"] };
+    assert_eq!(stamp(&text, 1_700_000_123_456), 1_700_000_123_000);
+    let sometimes = Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["text", "children"] };
+    assert_eq!(stamp(&sometimes, 1_700_000_123_456), 1_700_000_123_456, "a change that is not only text keeps its time");
+    assert_eq!(stamp(&Kind::Gap, 1_700_000_123_456), 1_700_000_123_456);
+
+    let sight = Sight::idle();
+    let handles = handles::Shared::default();
+    for _ in 0..5 {
+        sight.record(&handles, false, vec![text.clone()]);
+        std::thread::sleep(Duration::from_millis(7));
+    }
+    let page = sight.since(0, Duration::ZERO);
+    for event in page["events"].as_array().into_iter().flatten() {
+        assert_eq!(event["at_ms"].as_u64().map(|ms| ms % 1000), Some(0), "{event}");
+    }
+}
+
+/// #1257 review, N5: that the person was private is kept for the next session to tell.
+#[test]
+fn that_the_person_was_private_outlives_a_session() {
+    let sight = Sight::idle();
+    assert!(!sight.private_seen());
+    sight.set_private_seen(true);
+    assert!(sight.clone().private_seen(), "the next session reads the same flag");
+    sight.set_private_seen(false);
+    assert!(!sight.private_seen());
+}
+
+#[test]
+fn marking_a_connection_slow_is_counted_where_a_reader_can_see_it() {
+    let sight = Sight::idle();
+    sight.set_slow_marks(3);
+    assert_eq!(sight.now()["counts"]["slow_marks"], 3);
 }

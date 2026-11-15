@@ -90,8 +90,10 @@ impl<T: Clone> CursorRing<T> {
     }
 
     /// At most `limit` items from `since` on, waiting up to `wait` (at most [`MAX_WAIT`]) when
-    /// there is nothing yet. Zero is a fair `wait`: "what do you have right now".
+    /// there is nothing yet. Zero is a fair `wait`: "what do you have right now". A page is at
+    /// least one item, so a reader that follows `more` always moves.
     pub fn since(&self, since: u64, wait: Duration, limit: usize) -> Page<T> {
+        let limit = limit.max(1);
         let mut inner = self.lock();
         // A cursor from the future would wait out its whole patience while items arrived
         // behind it. It is read from here on instead, and told so.
@@ -227,6 +229,16 @@ mod tests {
         let page = ring.since(0, Duration::ZERO, ALL);
         assert_eq!(page.items, [0, 1]);
         assert_eq!(ring.next_seq(), 2);
+    }
+
+    /// #1257 review, N11: a page limit of zero returned `more: true` with the cursor where it
+    /// was, and a reader that followed `more` looped for ever.
+    #[test]
+    fn a_page_limit_of_zero_still_moves_the_cursor() {
+        let ring = CursorRing::new(8);
+        ring.push_with(|seq| seq);
+        let page = ring.since(0, Duration::ZERO, 0);
+        assert_eq!((page.items.len(), page.next_seq, page.more), (1, 1, false));
     }
 
     #[test]

@@ -33,12 +33,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::Serialize;
-use zbus::proxy::CacheProperties;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+use zbus::proxy::{CacheProperties, ProxyImpl};
+use zbus::zvariant::ObjectPath;
 use zbus::{proxy, Connection};
 
 use crate::handles::{self, Reference};
 use crate::limits;
+use crate::listing::{list_apps, Listing, APP_LIMIT};
 use crate::signals::{is_root, BUS, OBJECT_EVENTS, REGISTRY, WINDOW_EVENTS};
 
 /// How deep to walk. Toolkit trees nest hard; past this the content is layout, not meaning.
@@ -54,12 +55,14 @@ const MAX_VISITS: usize = 3000;
 /// Text longer than this is a document, not a label.
 const MAX_TEXT: usize = 400;
 
-/// The longest one application may take to list its own windows. One that is frozen costs a
-/// listing this much, and is reported as not having answered: it has not closed its windows.
-pub const APP_LIMIT: Duration = Duration::from_millis(400);
+/// The longest all the applications of one listing may take together. What was heard by then
+/// counts; the rest is reported as unanswered.
+const LISTING_LIMIT: Duration = Duration::from_secs(4);
 
-/// Messages the connection may hold for a reader of everything that arrives on it.
-const QUEUED: usize = 256;
+/// Messages the connection may hold for a reader of everything that arrives on it. The reader
+/// does nothing but sort, so a full queue means the machine is starved; a deep one rides out a
+/// page load without the watcher's own questions waiting behind a backlog (#1257 review, N9).
+const QUEUED: usize = 4096;
 
 #[proxy(interface = "org.a11y.Bus", default_service = "org.a11y.Bus", default_path = "/org/a11y/bus")]
 trait A11yBus {
@@ -116,15 +119,6 @@ pub struct Element {
     pub id: String,
 }
 
-/// What a walk of every application found.
-#[derive(Default)]
-pub struct Listing {
-    pub windows: Vec<(Reference, Window)>,
-    /// Connections that did not list their windows within [`APP_LIMIT`]. Their windows are not
-    /// in `windows`, and are not thereby closed.
-    pub unanswered: Vec<String>,
-}
-
 /// A connection to the accessibility bus.
 pub struct Atspi {
     conn: Connection,
@@ -167,12 +161,15 @@ impl Atspi {
         &self.conn
     }
 
-    /// A proxy that reads each property when asked and keeps none. zbus's default caches
-    /// lazily, which on a proxy made for one question turns a single property read into three
-    /// round trips (a match rule added, every property fetched, the rule removed) and fetches
-    /// descriptions and help texts nobody asked for (#1257 review, M4).
-    async fn accessible(&self, r: &Reference) -> Result<AccessibleProxy<'_>, String> {
-        AccessibleProxy::builder(&self.conn)
+    /// A proxy for one object that reads each property when asked and keeps none. zbus's default
+    /// caches lazily, which on a proxy made for one question turns a single property read into
+    /// three round trips (a match rule added, every property fetched, the rule removed) and
+    /// fetches descriptions and help texts nobody asked for (#1257 review, M4).
+    async fn proxy<P>(&self, r: &Reference) -> Result<P, String>
+    where
+        P: ProxyImpl<'static> + From<zbus::Proxy<'static>>,
+    {
+        P::builder(&self.conn)
             .destination(r.0.clone())
             .and_then(|b| b.path(r.1.clone()))
             .map_err(|e| e.to_string())?
@@ -180,6 +177,10 @@ impl Atspi {
             .build()
             .await
             .map_err(|e| e.to_string())
+    }
+
+    async fn accessible(&self, r: &Reference) -> Result<AccessibleProxy<'_>, String> {
+        self.proxy(r).await
     }
 
     fn hand_out(&self, r: Reference) -> String {
@@ -193,9 +194,10 @@ impl Atspi {
     /// Every top-level window currently published.
     ///
     /// The registry's root has one child per application; each application's children are its
-    /// windows. Anything that fails to answer is skipped rather than reported: an app that is
-    /// shutting down mid-walk is normal, not news.
-    pub async fn windows(&self) -> Result<Listing, String> {
+    /// windows. Applications are asked together, and those `skip` names are not asked: see
+    /// `listing`. Anything that fails to answer is not reported as gone: an app that is shutting
+    /// down mid-walk is normal, not news.
+    pub async fn windows(&self, skip: impl Fn(&str) -> bool) -> Result<Listing, String> {
         let root: Reference = (
             "org.a11y.atspi.Registry".to_string(),
             ObjectPath::try_from("/org/a11y/atspi/accessible/root")
@@ -208,19 +210,7 @@ impl Atspi {
             .await
             .map_err(|_| "the accessibility registry did not answer in time".to_string())??;
 
-        // Each application under its own limit: one that is frozen costs the listing that long,
-        // not the listing itself (#1257 review, H3).
-        let mut listing = Listing::default();
-        for app_ref in apps {
-            match tokio::time::timeout(APP_LIMIT, self.windows_of(&app_ref)).await {
-                Ok(mut found) => listing.windows.append(&mut found),
-                Err(_) => {
-                    tracing::debug!(bus_name = %app_ref.0, "An application did not list its windows in time");
-                    listing.unanswered.push(app_ref.0);
-                }
-            }
-        }
-        Ok(listing)
+        Ok(list_apps(apps, skip, |app| async move { self.windows_of(&app).await }, LISTING_LIMIT).await)
     }
 
     /// The windows of one application. An application that fails to answer is skipped rather
@@ -355,7 +345,7 @@ impl Atspi {
 
         let mut elements = Vec::new();
         let mut visits = 0usize;
-        self.walk(&root, 0, &mut elements, &mut visits).await;
+        self.walk(&root, &mut elements, &mut visits).await;
 
         let summary = summarise(&elements);
         Ok((summary, elements))
@@ -368,7 +358,6 @@ impl Atspi {
     async fn walk(
         &self,
         root: &Reference,
-        _depth: usize,
         out: &mut Vec<Element>,
         visits: &mut usize,
     ) {
@@ -418,14 +407,7 @@ impl Atspi {
     }
 
     async fn text_of(&self, r: &Reference) -> String {
-        let Ok(proxy) = TextProxy::builder(&self.conn)
-            .destination(r.0.clone())
-            .and_then(|b| b.path(r.1.clone()))
-            .map(|b| b.cache_properties(CacheProperties::No).build())
-        else {
-            return String::new();
-        };
-        let Ok(proxy) = proxy.await else { return String::new() };
+        let Ok(proxy) = self.proxy::<TextProxy>(r).await else { return String::new() };
         let Ok(count) = proxy.character_count().await else { return String::new() };
         if count <= 0 {
             return String::new();
@@ -440,14 +422,7 @@ impl Atspi {
     }
 
     async fn actions_of(&self, r: &Reference) -> Vec<String> {
-        let Ok(proxy) = ActionProxy::builder(&self.conn)
-            .destination(r.0.clone())
-            .and_then(|b| b.path(r.1.clone()))
-            .map(|b| b.build())
-        else {
-            return Vec::new();
-        };
-        let Ok(proxy) = proxy.await else { return Vec::new() };
+        let Ok(proxy) = self.proxy::<ActionProxy>(r).await else { return Vec::new() };
         proxy
             .get_actions()
             .await
@@ -468,13 +443,7 @@ impl Atspi {
             .resolve(element)
             .ok_or_else(|| format!("no element called `{element}`; call a11y.describe first"))?;
 
-        let proxy = ActionProxy::builder(&self.conn)
-            .destination(r.0.clone())
-            .and_then(|b| b.path(r.1.clone()))
-            .map_err(|e| e.to_string())?
-            .build()
-            .await
-            .map_err(|e| e.to_string())?;
+        let proxy = self.proxy::<ActionProxy>(&r).await?;
 
         let available = proxy.get_actions().await.map_err(|e| e.to_string())?;
         let wanted = action.trim().to_lowercase();
@@ -530,16 +499,6 @@ fn summarise(elements: &[Element]) -> String {
     } else {
         format!("{lead} — {}", parts.join(", "))
     }
-}
-
-/// Values arriving from another process are data, never instruction.
-///
-/// A window title is written by whoever wrote the application, and one of the things it can say is
-/// something that reads like a command. Nothing here interprets these strings; they are trimmed
-/// and passed along as content. Named so that stays true when someone extends this file.
-#[allow(dead_code)]
-fn untrusted(value: OwnedValue) -> String {
-    value.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_default()
 }
 
 #[cfg(test)]

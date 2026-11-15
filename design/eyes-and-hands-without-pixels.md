@@ -116,11 +116,11 @@ window. The verb was permitted; the consequence was consent. So:
 
    *Built for foreign windows and our own apps' accessibility trees, 15 November 2026 (#1256,
    #1257):* `a11y.now` answers from a model the service keeps current, and `a11y.since` waits on
-   a ring of changes. Measured on VM 520: a dialog opening is told 12 ms after the application
-   shows it, listening costs no CPU while the screen is still, and 2,000 changes to one window
-   in two seconds are told as about a dozen events with no signal dropped. It does not share the
-   run event spine yet, and the browser's own channel (CDP) and our apps' `describe` do not feed
-   it.
+   a ring of changes. Measured on VM 520 at an earlier head of #1257: a dialog opening is told
+   12 ms after the application shows it, and listening costs no CPU while the screen is still.
+   Text changes are told only once every two seconds since then (see below), and the bench has
+   not run on that code. It does not share the run event spine yet, and the browser's own
+   channel (CDP) and our apps' `describe` do not feed it.
 
    **Decided with it:**
    - *Who may read the stream.* The person's own programs only, as with `a11y.windows`: the
@@ -129,13 +129,30 @@ window. The verb was permitted; the consequence was consent. So:
      rule, and the secret-name filter of #1247 on every title and element name it carries. A
      pushed timeline of focus names and titles is a different thing from a look someone asked
      for, even where each carries the same words.
-   - *What it never says.* The text that changed; how many changes an event stands for (one
-     text-changed signal is one keystroke); anything about a focused password field; anything
-     from the time the person was private, which is told afterwards as one gap.
+   - *What it never says.* The text that changed; anything about a focused password field, or
+     about a focused element whose role could not be learned (it is treated as a password);
+     anything from the time the person was private, which is told afterwards as one gap, even
+     when that time was shorter than the service's interval between looks or spanned a
+     reconnection. How many changes an event stands for is not told either, and one text-changed
+     signal is one keystroke, so typing is told as activity and not as keystrokes: "text is
+     changing in this window" at most once every 2 s, the first only after 2 s, stamped to the
+     whole second. A reader still learns *that* someone typed in a window, and roughly when. What
+     it also still sees: a title set during the private time that is still current is in
+     `a11y.now` afterwards, because it is the present state of the window, as `a11y.windows` has
+     always said.
    - *Who is believed.* Any program can join the accessibility bus. That a connection left is
      believed only from the bus, that an application left only from the registry, and that a
-     window came or went only from the connection that owns it. Every question to an
-     application has a time limit and comes out of that application's own ration.
+     window came or went only from the connection that owns it.
+   - *Whose time.* Every question to an application has a time limit and is charged for the time
+     it took, to its connection (50 ms of waiting a second) and to everyone together (250 ms a
+     second); one that answers slower than 100 ms three times, or does not answer, is left alone
+     for 10 s. Nothing is asked of a connection the model has no window of and the last listing
+     did not name; a window announced by such a connection wants a listing instead. Listings are
+     at most one a second, ask applications sixteen at a time under 400 ms each, skip the slow
+     ones and ask at most 256. `a11y.describe` and `a11y.act` stop waiting after 10 s. The
+     model keeps at most 64 windows for one connection and 512 in all; when it is full, a
+     connection with few windows still gets one, by closing the newest window of the connection
+     with the most.
    - *The name.* These two methods stay `a11y.now` and `a11y.since`: they are what the
      accessibility bus knows. `screen.now` and `screen.since` are kept for the model that joins
      this source with our apps' own `describe`, the browser and the compositor.

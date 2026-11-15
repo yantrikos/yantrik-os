@@ -4,10 +4,19 @@
 # no lock and no socket the desktop's own service uses.
 #
 # Put a11y-service, sight-bench.py and sight-demo-app.py in $SIGHT_BENCH_DIR (default
-# /tmp/sight-demo) first. The report is $SIGHT_BENCH_DIR/report.json. Needs python3 with GTK 3
-# (python3-gi) and wlrctl, and a session with the accessibility bus on.
+# $XDG_RUNTIME_DIR/sight-demo, which only the caller can write to) first. The report is
+# $SIGHT_BENCH_DIR/report.json. Needs python3 with GTK 3 (python3-gi) and wlrctl, and a session
+# with the accessibility bus on.
+#
+# The directory is run from and parts of it are removed, so it must be the caller's own and not a
+# symlink: a fixed path in a shared directory such as /tmp is one anyone could have made first.
 set -u
-D=${SIGHT_BENCH_DIR:-/tmp/sight-demo}
+D=${SIGHT_BENCH_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/sight-demo}
+if [ -L "$D" ] || { [ -e "$D" ] && { [ ! -d "$D" ] || [ ! -O "$D" ]; }; }; then
+  echo "refusing $D: it is not a directory of your own, or it is a symlink" >&2
+  exit 1
+fi
+mkdir -p "$D" && chmod 700 "$D" || exit 1
 RT=$D/rt
 rm -rf "$RT"; mkdir -p "$RT"; chmod 700 "$RT"
 SESSION=/run/user/$(id -u)

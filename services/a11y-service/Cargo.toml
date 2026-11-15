@@ -17,3 +17,10 @@ tracing = { workspace = true }
 zbus = { workspace = true }
 # `time`: the watcher gives each question to an application a limit.
 tokio = { workspace = true, features = ["rt", "time"] }
+# `buffer_unordered`: a listing asks applications together, so one that never answers costs the
+# listing one limit, not one limit each. Already in the lock file, through zbus.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# `start_paused`: a listing of applications that never answer is tested in virtual time.
+tokio = { workspace = true, features = ["test-util"] }

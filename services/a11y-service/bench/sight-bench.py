@@ -125,10 +125,33 @@ def title(event):
     return ((event.get("window") or {}).get("title") or "") if isinstance(event.get("window"), dict) else ""
 
 
+def connection_of(connection, pid):
+    """The unique name on the accessibility bus of the process `pid`, or None."""
+    from gi.repository import Gio, GLib
+
+    bus = ("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus")
+    names = connection.call_sync(*bus, "ListNames", None, None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+    for name in names:
+        if not name.startswith(":"):
+            continue
+        try:
+            owner = connection.call_sync(*bus, "GetConnectionUnixProcessID", GLib.Variant("(s)", (name,)), None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+        except GLib.Error:
+            continue
+        if owner == pid:
+            return name
+    return None
+
+
 def hostile(rpc, demo, tell):
     """Join the accessibility bus as a stranger and send what a stranger should not be believed
     about: that connections left, that applications left, that another program's window closed.
-    Then check the model is still right and still quick."""
+    Then check the model is still right and still quick.
+
+    Every forgery is addressed to the service under test and to nobody else. A signal with a
+    destination is delivered whatever the match rules say, so the test is as good as a broadcast,
+    and no other listener on the person's bus (their screen reader, an application's bridge) ever
+    sees one."""
     import gi
 
     gi.require_version("Gio", "2.0")
@@ -139,6 +162,11 @@ def hostile(rpc, demo, tell):
     flags = Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION
     stranger = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
     root = "/org/a11y/atspi/accessible/root"
+    service = connection_of(stranger, PID)
+    if service is None:
+        # Never fall back to a broadcast.
+        stranger.close_sync(None)
+        return {"skipped": "the service under test is not on the accessibility bus"}
     before, _, _ = rpc.call("a11y.now")
     listings_before = before["counts"]["model"]["listings"]
 
@@ -146,9 +174,9 @@ def hostile(rpc, demo, tell):
     sent, until = 0, time.time() + 5
     while time.time() < until:
         for _ in range(100):
-            stranger.emit_signal(None, "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", GLib.Variant("(sss)", (":1.1", ":1.1", "")))
+            stranger.emit_signal(service, "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", GLib.Variant("(sss)", (":1.1", ":1.1", "")))
             body = GLib.Variant("(siiva{sv})", ("remove", 0, 0, GLib.Variant("(so)", (":1.1", root)), {}))
-            stranger.emit_signal(None, root, "org.a11y.atspi.Event.Object", "ChildrenChanged", body)
+            stranger.emit_signal(service, root, "org.a11y.atspi.Event.Object", "ChildrenChanged", body)
             sent += 2
         stranger.flush_sync(None)
         time.sleep(0.1)
@@ -164,25 +192,13 @@ def hostile(rpc, demo, tell):
         result["demo_window_listed_before_forged_close"] = bool(listed)
         # Find the demo's own connection and windows the way any program on the bus can, then
         # say, from our connection, that each of its windows was removed.
-        bus = ("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus")
-        names = stranger.call_sync(*bus, "ListNames", None, None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
-        owner = None
-        for name in names:
-            if not name.startswith(":"):
-                continue
-            try:
-                pid = stranger.call_sync(*bus, "GetConnectionUnixProcessID", GLib.Variant("(s)", (name,)), None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
-            except GLib.Error:
-                continue
-            if pid == demo["pid"]:
-                owner = name
-                break
+        owner = connection_of(stranger, demo["pid"])
         forged = 0
         if owner:
             children = stranger.call_sync(owner, root, "org.a11y.atspi.Accessible", "GetChildren", None, None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
             for child_bus, child_path in children:
                 body = GLib.Variant("(siiva{sv})", ("remove", 0, 0, GLib.Variant("(so)", (child_bus, child_path)), {}))
-                stranger.emit_signal(None, root, "org.a11y.atspi.Event.Object", "ChildrenChanged", body)
+                stranger.emit_signal(service, root, "org.a11y.atspi.Event.Object", "ChildrenChanged", body)
                 forged += 1
             stranger.flush_sync(None)
             time.sleep(0.5)
@@ -235,7 +251,8 @@ def private_time(rpc, tell, demo):
         "refused_while_private": refused,
         "events_dated_in_the_private_time": len(inside),
         "events_just_after": [e["kind"] for e in later[:4]],
-        "focus_after": after["focus"],
+        "focus_after": after["focus"] if demo and (after["focus"] or {}).get("window") == demo["id"] else None,
+        "focus_after_is_null": after["focus"] is None,
         "dropped_private": after["counts"]["dropped_private"] - before["counts"]["dropped_private"],
         "private_title_in_any_event_or_answer": any("PRIVATE-TITLE" in json.dumps(e) for e, _ in events) or "PRIVATE-TITLE" in json.dumps(after),
         "title_after": next((w["title"] for w in after["windows"] if demo and w["id"] == demo["id"]), None),
@@ -300,8 +317,11 @@ def main():
         report["handle_is_stable"] = any(w["id"] == demo["id"] for w in listed["windows"])
         described, _, _ = rpc.call("a11y.describe", {"window": demo["id"]})
         report["describe_summary"] = described["summary"]
-    report["front_now"] = (shown.get("front") or {}).get("title")
-    report["focus_now"] = shown.get("focus")
+    # Recorded only when they are the demo's: if the window manager did not bring it forward,
+    # the front window and the focused element are the person's own.
+    front_title = (shown.get("front") or {}).get("title") or ""
+    report["front_now"] = front_title if front_title.startswith("sight-demo") else None
+    report["focus_now"] = shown.get("focus") if demo and (shown.get("focus") or {}).get("window") == demo["id"] else None
 
     # 3. A firehose: one window changing its text as fast as its toolkit will announce it.
     counts_before = shown["counts"]
@@ -355,7 +375,9 @@ def main():
         "window opened (from the toolkit mapping it)": first_after("mapped", lambda e: e["kind"] == "window_opened" and title(e).startswith("sight-demo: Expenses")),
         "focus moved to Save": first_after("focus-button", lambda e: e["kind"] == "focus_moved" and e["name"] == "Save"),
         "focus moved to the text field": first_after("focus-entry", lambda e: e["kind"] == "focus_moved" and e["role"] == "text"),
-        "text typed": first_after("text", lambda e: e["kind"] == "content_changed" and "text" in e["what"]),
+        # Told two seconds after the first key, stamped to the whole second (a text change is
+        # one keystroke): the slack is the whole second it is rounded down by.
+        "text typed (held 2 s, stamped to the second)": first_after("text", lambda e: e["kind"] == "content_changed" and "text" in e["what"], slack_ms=1000),
         "window retitled": first_after("title", kind("window_renamed")),
         "dialog opened": first_after("dialog", lambda e: e["kind"] == "window_opened" and "Confirm" in title(e)),
         "dialog closed": first_after("close-dialog", kind("window_closed")),

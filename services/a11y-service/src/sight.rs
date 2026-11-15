@@ -36,6 +36,12 @@ pub struct Event {
 struct Meters {
     listening: AtomicBool,
     dropped_private: AtomicU64,
+    /// How many times the watcher marked a connection slow. It moves when an application is
+    /// slow or the watcher is late, never once per keystroke.
+    slow_marks: AtomicU64,
+    /// Whether the person was private at the last look the watcher acted on, and no gap has been
+    /// told since. Here and not in the watcher, so a new session tells it.
+    private_seen: AtomicBool,
     /// The signal reader's count and flag, kept across reconnections.
     signals: Arc<Tally>,
 }
@@ -50,6 +56,17 @@ pub struct Sight {
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The time an event is stamped with. "Text is changing" is told to the whole second only: one
+/// text change is one keystroke, so a millisecond would be the rhythm of someone's typing
+/// (#1257 review, N1). The model stays pure; the time is decided where the event gets one, which
+/// is also why a text event's time can be a little before an earlier event's.
+fn stamp(kind: &Kind, ms: u64) -> u64 {
+    match kind {
+        Kind::ContentChanged { what, .. } if what.as_slice() == ["text"] => ms / 1000 * 1000,
+        _ => ms,
+    }
 }
 
 impl Sight {
@@ -79,7 +96,7 @@ impl Sight {
                 self.meters.dropped_private.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
-            self.ring.push_with(|seq| Event { seq, at_ms: now_ms(), kind });
+            self.ring.push_with(|seq| Event { seq, at_ms: stamp(&kind, now_ms()), kind });
         }
     }
 
@@ -91,6 +108,21 @@ impl Sight {
     /// Whether the reader dropped signals since this was last asked.
     pub fn take_overflow(&self) -> bool {
         self.meters.signals.overflowed.swap(false, Ordering::Relaxed)
+    }
+
+    /// The watcher's count of connections marked slow, so a reader can see whether honest
+    /// applications are being marked because the watcher itself was late.
+    pub fn set_slow_marks(&self, marks: u64) {
+        self.meters.slow_marks.store(marks, Ordering::Relaxed);
+    }
+
+    /// Whether the person was private and the gap has not been told yet.
+    pub fn private_seen(&self) -> bool {
+        self.meters.private_seen.load(Ordering::Relaxed)
+    }
+
+    pub fn set_private_seen(&self, seen: bool) {
+        self.meters.private_seen.store(seen, Ordering::Relaxed);
     }
 
     /// Say whether the model is being fed. Returns whether it was before.
@@ -118,6 +150,7 @@ impl Sight {
                 "model": screen.counts(),
                 "signals_dropped": self.meters.signals.dropped.load(Ordering::Relaxed),
                 "dropped_private": self.meters.dropped_private.load(Ordering::Relaxed),
+                "slow_marks": self.meters.slow_marks.load(Ordering::Relaxed),
                 "overwritten": self.ring.overwritten(),
             },
         })

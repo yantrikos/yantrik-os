@@ -1,6 +1,7 @@
 //! The screen model's rules, each one stated as what a reader is told.
 
 use super::*;
+use crate::throttle::{COALESCE, MAX_THROTTLED, TEXT_COALESCE};
 
 fn key(n: u32) -> Key {
     (":1.7".to_string(), format!("/org/a11y/atspi/accessible/{n}"))
@@ -114,22 +115,34 @@ fn closing_the_front_window_hands_the_front_to_whoever_takes_it() {
 fn the_first_change_in_a_quiet_window_is_told_at_once() {
     let now = Instant::now();
     let mut screen = two_windows(now);
-    assert_eq!(screen.apply(touched(1, What::Text), now), [text_changed("w1")]);
+    let told = screen.apply(touched(1, What::Children), now);
+    assert_eq!(told, [Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["children"] }]);
+}
+
+/// #1257 review, N1: told at once, the first key of every pause is told to the millisecond.
+#[test]
+fn a_text_change_is_never_told_at_once_but_after_its_own_interval() {
+    let now = Instant::now();
+    let mut screen = two_windows(now);
+    assert!(screen.apply(touched(1, What::Text), now).is_empty(), "held");
+    assert!(screen.flush(now + COALESCE * 2).is_empty(), "the quick interval is not the one for text");
+    assert_eq!(screen.next_due(), Some(now + TEXT_COALESCE));
+    assert_eq!(screen.flush(now + TEXT_COALESCE), [text_changed("w1")]);
 }
 
 #[test]
 fn a_burst_in_one_window_is_one_more_event() {
     let now = Instant::now();
     let mut screen = two_windows(now);
-    assert_eq!(screen.apply(touched(1, What::Text), now).len(), 1, "the first, at once");
+    assert_eq!(screen.apply(touched(1, What::Children), now).len(), 1, "the first, at once");
     for n in 1..=500u64 {
-        let what = if n % 2 == 0 { What::Text } else { What::Children };
+        let what = if n % 2 == 0 { What::Name } else { What::Children };
         assert!(screen.apply(touched(1, what), now + Duration::from_micros(n * 100)).is_empty(), "held");
     }
     assert_eq!(screen.next_due(), Some(now + COALESCE));
     assert!(screen.flush(now + COALESCE / 2).is_empty(), "not due yet");
     let told = screen.flush(now + COALESCE);
-    assert_eq!(told, [Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["text", "children"] }]);
+    assert_eq!(told, [Kind::ContentChanged { window: Some("w1".into()), app: "gedit".into(), what: vec!["children", "name"] }]);
     assert!(screen.next_due().is_none(), "nothing waiting");
 }
 
@@ -144,11 +157,12 @@ fn a_burst_of_typing_is_not_counted_by_keystroke() {
         for n in 1..keystrokes {
             told.extend(screen.apply(touched(1, What::Text), now + Duration::from_micros(n * 50)));
         }
-        told.extend(screen.flush(now + COALESCE));
+        told.extend(screen.flush(now + TEXT_COALESCE));
         (serde_json::to_string(&told).expect("events are plain data"), serde_json::to_string(screen.counts()).expect("counts are plain data"))
     };
     let (twelve, twelve_counts) = typed(12);
     let (many, many_counts) = typed(2000);
+    assert!(twelve.contains("text"), "something was told: {twelve}");
     assert_eq!(twelve, many, "the events say the same whatever was typed");
     assert_eq!(twelve_counts, many_counts, "and so do the counters");
 }
@@ -166,9 +180,41 @@ fn text_changes_in_a_focused_password_field_are_not_told() {
     assert!(screen.flush(now + Duration::from_secs(5)).is_empty(), "and nothing was held to be told later");
     // Another field in the same window is told as ever, and so is the password field once the
     // focus is on something that is not one.
-    assert_eq!(screen.apply(touched(1, What::Text), now + Duration::from_secs(6)), [text_changed("w1")]);
-    screen.apply(focus_on(42, 1, "text", "Search"), now + Duration::from_secs(7));
-    assert_eq!(screen.apply(typing(), now + Duration::from_secs(8)), [text_changed("w1")]);
+    screen.apply(touched(1, What::Text), now + Duration::from_secs(6));
+    assert_eq!(screen.flush(now + Duration::from_secs(9)), [text_changed("w1")]);
+    screen.apply(focus_on(42, 1, "text", "Search"), now + Duration::from_secs(10));
+    screen.apply(typing(), now + Duration::from_secs(11));
+    assert_eq!(screen.flush(now + Duration::from_secs(14)), [text_changed("w1")]);
+}
+
+/// #1257 review, N1: a focus whose role could not be learned is not a reason to tell.
+#[test]
+fn text_changes_in_a_focused_field_whose_role_is_unknown_are_not_told() {
+    let now = Instant::now();
+    let mut screen = two_windows(now);
+    screen.apply(focus_on(41, 1, UNKNOWN_ROLE, ""), now);
+    let typing = || Fact::Touched { source: key(41), window: Some(key(1)), app: "gedit".into(), what: What::Text };
+    for n in 0..12u64 {
+        assert!(screen.apply(typing(), now + Duration::from_millis(n * 300)).is_empty(), "keystroke {n}");
+    }
+    assert!(screen.flush(now + Duration::from_secs(10)).is_empty(), "and nothing was held to be told later");
+}
+
+/// #1257 review, N1: 20 keys at 40 words a minute, with the watcher looking at the clock after
+/// each one, the way it does. Every key used to find the window quiet.
+#[test]
+fn typing_at_a_persons_speed_is_not_told_keystroke_by_keystroke() {
+    let now = Instant::now();
+    let mut screen = two_windows(now);
+    let mut told = Vec::new();
+    for n in 0..20u64 {
+        let at = now + Duration::from_millis(n * 300);
+        told.extend(screen.apply(touched(1, What::Text), at));
+        told.extend(screen.flush(at));
+    }
+    told.extend(screen.flush(now + Duration::from_secs(10)));
+    assert!(!told.is_empty(), "typing is still told as activity");
+    assert!(told.len() <= 4, "{} events for 20 keystrokes", told.len());
 }
 
 #[test]
@@ -383,4 +429,45 @@ fn many_applications_touching_do_not_grow_the_throttle_table_without_bound() {
         screen.apply(Fact::Touched { source: key(1), window: None, app: format!("app{n}"), what: What::Text }, now + Duration::from_millis(n));
     }
     assert!(screen.throttles.len() <= MAX_THROTTLED, "{} throttles", screen.throttles.len());
+}
+
+/// #1257 review, N3 (RV2 inverted): eight connections with 64 windows each filled the model, and
+/// an honest application's dialog was refused and only counted.
+#[test]
+fn a_full_model_still_takes_a_window_from_an_application_with_few() {
+    let now = Instant::now();
+    let mut screen = Screen::default();
+    for connection in 0..8u32 {
+        for n in 0..MAX_PER_CONNECTION as u32 {
+            let key: Key = (format!(":1.{connection}"), format!("/org/a11y/atspi/accessible/{n}"));
+            screen.apply(Fact::Opened(key, window(connection * 100 + n, "busy")), now);
+        }
+    }
+    assert_eq!(screen.windows().count(), MAX_WINDOWS, "the model is full");
+    let dialog: Key = (":1.99".to_string(), "/org/a11y/atspi/accessible/1".to_string());
+    let confirm = WindowInfo { id: "w9000".into(), app: "bank".into(), title: "Confirm payment".into(), role: "dialog".into(), pid: 9 };
+    let told = screen.apply(Fact::Opened(dialog.clone(), confirm.clone()), now);
+    assert_eq!(told.len(), 2, "one made room, and the dialog: {told:?}");
+    assert!(matches!(&told[0], Kind::WindowClosed { window } if window.id == "w763"), "the newest window of the biggest connection (:1.7), told as closed: {:?}", told[0]);
+    assert_eq!(told[1], Kind::WindowOpened { window: confirm });
+    assert!(screen.knows(&dialog));
+    assert_eq!(screen.windows().count(), MAX_WINDOWS, "still no more than the cap");
+    assert_eq!(screen.counts().refused_windows, 1, "the one that was closed to make room is counted");
+}
+
+/// The share is equal, not a licence to take everyone's: a connection already past it is refused.
+#[test]
+fn a_connection_with_its_share_cannot_take_from_others_in_a_full_model() {
+    let now = Instant::now();
+    let mut screen = Screen::default();
+    for connection in 0..8u32 {
+        for n in 0..MAX_PER_CONNECTION as u32 {
+            let key: Key = (format!(":1.{connection}"), format!("/org/a11y/atspi/accessible/{n}"));
+            screen.apply(Fact::Opened(key, window(connection * 100 + n, "busy")), now);
+        }
+    }
+    let before = screen.counts().refused_windows;
+    let told = screen.apply(Fact::Opened((":1.3".to_string(), "/org/a11y/atspi/accessible/500".to_string()), window(500, "one more")), now);
+    assert!(told.is_empty(), "the connection was already at its cap, and nobody else loses a window for it");
+    assert_eq!(screen.counts().refused_windows, before + 1);
 }

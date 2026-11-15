@@ -52,9 +52,14 @@ mod atspi;
 mod budget;
 mod handles;
 mod limits;
+mod listing;
+mod plan;
+mod privacy;
 mod screen;
+mod session;
 mod sight;
 mod signals;
+mod throttle;
 mod watch;
 
 use std::sync::mpsc::{self, Sender};
@@ -66,6 +71,18 @@ use yantrik_service_sdk::ring::MAX_WAIT;
 /// How long a caller waits for the accessibility bus. Walking a large tree costs a D-Bus
 /// round-trip per node, so a browser window is not instant, but nor should it be unbounded.
 const TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The longest `a11y.describe` or `a11y.act` may take. They are asked one at a time on one
+/// thread, so one frozen window would otherwise hold every later request, `a11y.windows` too,
+/// until each ran out of its caller's patience (#1257 review, N12).
+const WORK_LIMIT: Duration = Duration::from_secs(10);
+
+/// Wait for one request's answer, for at most [`WORK_LIMIT`].
+async fn limited<T>(what: &str, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    tokio::time::timeout(WORK_LIMIT, work)
+        .await
+        .unwrap_or_else(|_| Err(format!("the application did not answer a11y.{what} within {}s", WORK_LIMIT.as_secs())))
+}
 
 enum Request {
     Windows(Sender<Result<serde_json::Value, String>>),
@@ -81,7 +98,7 @@ fn main() {
     // `a11y.describe` opens.
     let handles = handles::Shared::default();
     // Listening starts with the service: the model is already current when it is first asked.
-    let sight = watch::start(handles.clone(), yantrik_service_sdk::is_private);
+    let sight = session::start(handles.clone(), yantrik_service_sdk::is_private);
 
     let (tx, rx) = mpsc::channel::<Request>();
     std::thread::Builder::new()
@@ -139,7 +156,7 @@ fn bus_thread(rx: mpsc::Receiver<Request>, handles: handles::Shared) {
 
             match request {
                 Request::Windows(tx) => {
-                    let reply = atspi.windows().await.map(|listing| {
+                    let reply = atspi.windows(|_| false).await.map(|listing| {
                         let windows: Vec<atspi::Window> =
                             listing.windows.into_iter().map(|(_, window)| window).collect();
                         serde_json::json!({
@@ -153,14 +170,13 @@ fn bus_thread(rx: mpsc::Receiver<Request>, handles: handles::Shared) {
                     let _ = tx.send(reply);
                 }
                 Request::Describe(id, tx) => {
-                    let reply = atspi.describe(&id).await.map(|(summary, elements)| {
+                    let reply = limited("describe", atspi.describe(&id)).await.map(|(summary, elements)| {
                         serde_json::json!({ "summary": summary, "elements": elements })
                     });
                     let _ = tx.send(reply);
                 }
                 Request::Act(element, action, tx) => {
-                    let reply = atspi
-                        .act(&element, &action)
+                    let reply = limited("act", atspi.act(&element, &action))
                         .await
                         .map(|did| serde_json::json!({ "did": did }));
                     let _ = tx.send(reply);
@@ -359,5 +375,16 @@ mod private_mode_tests {
         let err = a11y.handle("a11y.watch", serde_json::json!({})).unwrap_err();
         assert_eq!(err.code, -32601);
         assert!(err.message.contains("a11y.now") && err.message.contains("a11y.since"), "{}", err.message);
+    }
+
+    /// #1257 review, N12: one `describe` of a frozen window held the thread, and every later
+    /// request with it.
+    #[tokio::test(start_paused = true)]
+    async fn a_request_for_a_frozen_window_gives_up_at_its_limit_and_frees_the_thread() {
+        let frozen = async { std::future::pending::<Result<(), String>>().await };
+        let outer = tokio::time::timeout(WORK_LIMIT * 2, limited("describe", frozen)).await;
+        let answer = outer.expect("it gave up by itself, not because the test did");
+        assert!(answer.unwrap_err().contains("did not answer a11y.describe within 10s"));
+        assert_eq!(limited("act", async { Ok::<_, String>(7) }).await, Ok(7), "an answer in time is passed on");
     }
 }
