@@ -11,15 +11,17 @@ const ENDINGS: &[&str] = &[
     ".bak", ".old", ".orig", ".backup", ".copy", "~", ".save", ".tmp", ".dpkg-old", ".dpkg-dist", ".rpmsave",
     ".rpmnew", ".prev",
     // Editors' safe-write copies, and a browser's or a copy tool's unfinished transfer (review R3-1, R3-2).
-    "___jb_old___", "___jb_tmp___", ".part", ".partial", ".crdownload", ".filepart", ".download", ".sav", ".bk",
+    ".trashinfo", "___jb_old___", "___jb_tmp___", ".part", ".partial", ".crdownload", ".filepart", ".download", ".sav", ".bk",
 ];
 
 /// The name an editor's swap or undo file is the swap of: `NAME.swp` or `.NAME.swp` (the dot of a
 /// dotfile kept: `.env.swp` is `.env`). Vim runs through `.swp`, `.swo` … `.swa` as swap files
-/// collide; it keeps undo text in `.NAME.un~`, and Kate its journal in `.NAME.kate-swp`.
+/// collide, and on through `.svz` … `.sva`, `.suz` … down to `.saa` (review L7); it keeps undo text
+/// in `.NAME.un~`, and Kate its journal in `.NAME.kate-swp`.
 fn swap_original(name: &str) -> Option<&str> {
     let (bare, end) = name.rsplit_once('.')?;
-    let swap = end == "un~" || end == "kate-swp" || end.strip_prefix("sw").is_some_and(|l| matches!(l.as_bytes(), [b'a'..=b'p']));
+    let vim_swap = matches!(end.as_bytes(), [b's', b'w', b'a'..=b'p'] | [b's', b'a'..=b'v', b'a'..=b'z']);
+    let swap = end == "un~" || end == "kate-swp" || vim_swap;
     swap.then_some(bare)
 }
 
@@ -57,16 +59,25 @@ pub(super) fn originals(name: &str) -> Vec<String> {
         }
     }
     // Where an editor keeps its copies away from the file, it spells the whole path into the name:
-    // Neovim's swap and undo files with `%`, Emacs's backups with `!` (review R3-1).
-    if let Some((_, last)) = name.rsplit_once('%') {
+    // Neovim's swap and undo files with `%`, Emacs's backups with `!` (review R3-1). The file is
+    // the last part, so only the last part is kept; a URL-encoded name (`id_rsa%20old`) starts
+    // with its file, so the first part is kept too. The caller judges the whole name as well
+    // (review H1), so nothing here is the only verdict on a name.
+    if let Some((first, last)) = name.split_once('%').zip(name.rsplit_once('%')).map(|((first, _), (_, last))| (first, last)) {
+        add(first);
         add(last);
     }
     if let Some(rest) = name.strip_prefix('!') {
         add(rest.rsplit('!').next().unwrap_or(rest));
     }
-    // Windows leaves `NAME:Zone.Identifier` beside a download; LibreOffice `.~lock.NAME#` (review R3-5).
-    if let Some((bare, _stream)) = name.split_once(':') {
-        add(bare);
+    // Windows leaves `NAME:Zone.Identifier` beside a download; LibreOffice `.~lock.NAME#` (review
+    // R3-5). A stream is the text after the last colon, with no space in it: `notes: a title.md`
+    // has none (review L1), and `deploy-10:30:00.pem` keeps its own ending through the caller.
+    if let Some((bare, stream)) = name.rsplit_once(':') {
+        if !stream.contains(char::is_whitespace) {
+            add(bare);
+            add(stream);
+        }
     }
     if let Some(inner) = name.strip_prefix(".~lock.").and_then(|n| n.strip_suffix('#')) {
         add(inner);
@@ -136,13 +147,16 @@ fn without_name_marker(stem: &str) -> Vec<&str> {
     found
 }
 
-/// `copy`, `another copy`, `3rd copy` or `conflicted copy` (with whose it is before, and a date
-/// after): what GNOME Files, Finder, Dropbox and Nextcloud put in the brackets.
+/// `copy`, `copy 1`, `another copy`, `3rd copy` or a conflict label (whose it is before it, and a
+/// date and time after): what GNOME Files, Thunar, Finder, Dropbox and Nextcloud put in the
+/// brackets. A conflict label is taken as it is: the name is judged by the original it leaves,
+/// so a decoy such as `notes (conflicted copy 1).md` is still no one's secret (review M1).
 fn is_a_copy_label(inner: &str) -> bool {
-    const CONFLICT: &str = "conflicted copy";
-    if let Some(at) = inner.find(CONFLICT) {
-        let after = &inner[at + CONFLICT.len()..];
-        return after.is_empty() || after.strip_prefix(' ').is_some_and(|date| !date.is_empty() && date.bytes().all(|b| b.is_ascii_digit() || b == b'-'));
+    if inner.contains("conflicted copy") || inner.contains("case clash") {
+        return true;
+    }
+    if inner.strip_prefix("copy ").is_some_and(is_number) {
+        return true;
     }
     let Some(ordinal) = inner.strip_suffix(" copy") else { return inner == "copy" };
     let digits = ordinal.trim_end_matches(|c: char| c.is_ascii_alphabetic());

@@ -287,3 +287,62 @@ fn an_editors_swap_file_in_its_own_folder_is_refused_and_not_listed() {
     assert!(!shown.contains("tokens") && !shown.contains(FAKE), "{shown}");
     assert!(shown.contains("2 entries are not shown"), "{shown}");
 }
+
+/// Review H1: a key whose name holds a colon or a `%` is refused by `cat`, and `find` prints a
+/// count for it, as for any other copy.
+#[test]
+fn a_key_with_a_colon_or_a_percent_in_its_name_is_refused_and_not_listed() {
+    let h = home("colon");
+    let names = ["deploy-2026-11-15T10:30:00.pem", "notes:server.pem", "id_rsa%20old", ".env%20prod", "client_secret_1%2B.json", "backup:id_ed25519"];
+    for name in names {
+        let at = put(&h, &format!("backup/{name}"));
+        let refused = verdict(&format!("cat {at}"), &h.0).unwrap_err();
+        assert!(refused.contains("a place the AI never reads") && !refused.contains(FAKE), "{at}: {refused}");
+    }
+    let decoy = put(&h, "backup/credentials: how to rotate.md");
+    assert_eq!(verdict(&format!("cat '{decoy}'"), &h.0), Ok(()));
+    let argv = words(&format!("find {} -type f", h.0.join("backup").display())).unwrap();
+    let (out, _) = run(&argv).unwrap();
+    let shown = without_protected(&argv, &out);
+    assert!(shown.contains("credentials: how to rotate.md"), "{shown}");
+    assert!(shown.contains("6 entries are not shown"), "{shown}");
+    for part in ["deploy", "server", "id_rsa", ".env", "client_secret", "id_ed25519"] {
+        assert!(!shown.contains(part), "{part}: {shown}");
+    }
+}
+
+/// Review H2 and M5: an editor's history under a random name, and a shell's or Vim's memory, are
+/// refused by `cat`, and `find` over the folder prints a count only.
+#[test]
+fn an_editors_history_and_a_shells_memory_are_refused_and_not_listed() {
+    let h = home("history");
+    let held = [
+        ".config/Code/User/History/-1a2b/AbCd.json", ".config/Code/Backups/ws1/file/9f8e", ".config/VSCodium/User/History/-1a2b/AbCd.json",
+        ".config/Code - OSS/User/History/-1a2b/AbCd.json", ".zsh_history", ".local/state/nvim/shada/main.shada", ".viminfo",
+    ];
+    for rel in held {
+        let at = put(&h, rel);
+        let refused = verdict(&format!("cat '{at}'"), &h.0).unwrap_err();
+        assert!(refused.contains("a place the AI never reads") && !refused.contains(FAKE), "{at}: {refused}");
+    }
+    put(&h, ".config/Code/User/settings.json");
+    let argv = words(&format!("find {} -type f", h.0.join(".config").display())).unwrap();
+    let (out, _) = run(&argv).unwrap();
+    let shown = without_protected(&argv, &out);
+    assert!(shown.contains("settings.json"), "{shown}");
+    assert!(shown.contains("4 entries are not shown"), "{shown}");
+    for part in ["History", "Backups", "AbCd", "9f8e"] {
+        assert!(!shown.contains(part), "{part}: {shown}");
+    }
+}
+
+/// Review L4: output read up to the cap ends at a whole line, so a name cut in half by the cap is
+/// not shown as the start of a name. 65,530 bytes of one-letter lines, then `tokens.json`.
+#[test]
+fn output_that_reached_the_cap_ends_at_a_whole_line() {
+    let script = "yes a | head -c 65530; printf 'tokens.json\\n'";
+    let (out, _) = run(&["sh".to_string(), "-c".to_string(), script.to_string()]).unwrap();
+    assert!(!out.contains("tokens") && out.ends_with('\n'), "ends with {:?}", &out[out.len().saturating_sub(12)..]);
+    let (short, _) = run(&["sh".to_string(), "-c".to_string(), "printf 'tokens'".to_string()]).unwrap();
+    assert_eq!(short, "tokens", "a pipe that ended before the cap is kept whole");
+}

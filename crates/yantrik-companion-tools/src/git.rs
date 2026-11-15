@@ -376,6 +376,12 @@ impl Tool for GitShowTool {
             return "Error: invalid commit ref (only alphanumeric, ^, ~ allowed)".to_string();
         }
 
+        // `git show` prints the contents of a blob or a tree as it prints a commit's changes; a
+        // blob id of a protected file reads it with no name in sight. Only a commit is shown
+        // (review M2).
+        if !super::git_run::is_a_commit(&expanded, commit) {
+            return format!("Error: {commit} is not a commit");
+        }
         run_git_stat(&expanded, &["show", commit])
     }
 }

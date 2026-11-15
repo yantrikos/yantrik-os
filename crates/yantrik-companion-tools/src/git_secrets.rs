@@ -45,6 +45,7 @@ pub fn check_pathspec(repo: &str, file: &str) -> Result<(), String> {
 
 /// `out`, the answer of a git command in `repo` that names files (`status --short`, the files of
 /// a commit), without the lines that name a protected path.
+#[cfg(test)]
 pub fn without_protected(repo: &str, out: &str) -> String {
     let (kept, notice) = split_protected(repo, out, &[]);
     format!("{kept}{notice}")
@@ -53,6 +54,7 @@ pub fn without_protected(repo: &str, out: &str) -> String {
 /// [`without_protected`] for a stat: `changed` are the paths the stat is about. A name that git
 /// cut from the left (`...tail`) is judged by the changed path it ends: its tail is no secret
 /// name by itself (review R3-3).
+#[cfg(test)]
 pub fn without_protected_cut(repo: &str, out: &str, changed: &[String]) -> String {
     let (kept, notice) = split_protected(repo, out, changed);
     format!("{kept}{notice}")
@@ -67,7 +69,7 @@ pub fn split_protected(repo: &str, out: &str, changed: &[String]) -> (String, St
         // A stat line ends in ` | 3 ++-`; a rename reads `old => new` (stat) or `old -> new` (status).
         // Git quotes a path with a space, a `"`, a `\` or a non-ASCII character; match what it spells.
         let plain = super::git_quote::unquoted(line);
-        let names = whole_renames(plain.rsplit_once(" | ").map_or(plain.as_str(), |(names, _)| names));
+        let names = whole_renames(without_similarity(plain.rsplit_once(" | ").map_or(plain.as_str(), |(names, _)| names)));
         if crate::safe_command_listing::names_a_protected_entry(&names, repo) || cut_from_a_protected_path(&names, repo, changed) {
             hidden += 1;
         } else {
@@ -87,6 +89,16 @@ pub fn split_protected(repo: &str, out: &str, changed: &[String]) -> (String, St
 fn cut_from_a_protected_path(names: &str, repo: &str, changed: &[String]) -> bool {
     let Some(tail) = names.trim().strip_prefix("...") else { return false };
     changed.iter().any(|path| path.ends_with(tail) && is_protected(&Path::new(repo).join(path)))
+}
+
+/// `names` without a trailing ` (100%)`: the similarity git adds to a rename in a commit's summary
+/// (` rename notes.md => tokens.json (100%)`), which would otherwise end the new name (review M3).
+fn without_similarity(names: &str) -> &str {
+    names
+        .strip_suffix("%)")
+        .and_then(|rest| rest.rsplit_once(" ("))
+        .filter(|(_, number)| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(names, |(before, _)| before)
 }
 
 /// A stat's `dir/{old => new}/f` as the two whole paths, `dir/old/f -> dir/new/f`; any other

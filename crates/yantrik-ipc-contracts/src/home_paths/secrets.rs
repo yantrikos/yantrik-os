@@ -56,15 +56,14 @@ pub fn is_secret_name(name: &str) -> bool {
     named_or_copied(&name.to_lowercase())
 }
 
-/// A name with a copy marker is judged by what it is a copy of (markers peel one at a time), so
-/// `id_rsa.pub.bak` is as public as `id_rsa.pub`; a name without one is judged as it stands.
+/// A name is judged as it stands and by what it is a copy of (markers peel one at a time), so
+/// `deploy-10:30:00.pem` and `id_rsa%20old` are keys whatever a copy rule keeps of them (review
+/// H1). The one exception is a public key: `id_rsa.pub.bak` is as public as `id_rsa.pub`, though
+/// `id_rsa.pub.bak` by itself starts like a private key.
 fn named_or_copied(name: &str) -> bool {
     let originals = super::copy_marker::originals(name);
-    if originals.is_empty() {
-        matches_a_list(name)
-    } else {
-        originals.iter().any(|bare| named_or_copied(bare))
-    }
+    let public_copy = originals.iter().any(|original| original.ends_with(PUBLIC_KEY_ENDING));
+    (!public_copy && matches_a_list(name)) || originals.iter().any(|original| named_or_copied(original))
 }
 
 /// Whether `path` names a secret file: by its last part as written, and by the last part of where

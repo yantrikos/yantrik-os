@@ -222,3 +222,55 @@ fn a_secret_name_at_the_cut_is_hidden_whole() {
     assert!(!shown.contains("zz/") && !shown.contains(FAKE), "{shown}");
     assert!(shown.contains("entries are not shown"), "{shown}");
 }
+
+/// Review M2: `git show` of a blob id (whole or short) or a tree prints the object's contents, which
+/// no name rule sees. Only a commit is shown, and the refusal prints nothing of the object.
+#[test]
+fn git_show_refuses_a_blob_and_a_tree() {
+    let Some(r) = repo("show-blob") else { return };
+    let at = r.0.to_string_lossy().into_owned();
+    git(&r.0, &["add", "-A"]);
+    git(&r.0, &["commit", "-qm", "edited"]);
+    let id = |rev: &str| String::from_utf8(Command::new("git").current_dir(&r.0).args(["rev-parse", rev]).output().unwrap().stdout).unwrap().trim().to_string();
+    let blob = id("HEAD:credentials.json");
+    for rev in [blob.clone(), blob[..7].to_string(), id("HEAD^{tree}"), "HEAD~0^{tree}".to_string(), "notacommit".to_string()] {
+        let out = call(&crate::git::GitShowTool, serde_json::json!({ "path": at, "commit": rev }));
+        assert!(out.starts_with("Error:") && !out.contains(FAKE) && !out.contains("old"), "{rev}: {out}");
+    }
+    for rev in ["HEAD", "HEAD~1", "HEAD^"] {
+        let out = call(&crate::git::GitShowTool, serde_json::json!({ "path": at, "commit": rev }));
+        assert!(out.contains("notes.md") && !out.starts_with("Error:"), "{rev}: {out}");
+    }
+}
+
+/// Review M3: a commit's summary and a stat end a rename in ` (100%)`, so no word of the line is the
+/// secret name it renames to. Through `git_commit`, for the plain rename and the `{...}` one.
+#[test]
+fn a_rename_onto_a_secret_name_is_not_printed_by_commit() {
+    for (tag, from, to) in [("rename-plain", "notes.md", "tokens.json"), ("rename-braced", "deploy/notes.md", "deploy/tokens.json")] {
+        let Some(r) = repo(tag) else { return };
+        let at = r.0.to_string_lossy().into_owned();
+        std::fs::write(r.0.join("deploy/notes.md"), "old\n").unwrap();
+        git(&r.0, &["add", "-A"]);
+        git(&r.0, &["commit", "-qm", "more"]);
+        std::fs::write(r.0.join("notes.md"), "old\n").unwrap();
+        git(&r.0, &["checkout", "--", "."]);
+        git(&r.0, &["mv", from, to]);
+        let out = call(&crate::git::GitCommitTool, serde_json::json!({ "path": at, "message": "m" }));
+        assert!(out.contains("rename") || out.contains("entries are not shown"), "{tag}: {out}");
+        assert!(!out.contains("tokens") && !out.contains(FAKE), "{tag}: {out}");
+        assert!(out.contains("entries are not shown"), "{tag}: {out}");
+    }
+}
+
+/// Review M3, the rule itself: ` (100%)` is taken off before a rename is read, and only that.
+#[test]
+fn a_similarity_figure_is_peeled_before_a_rename_is_read() {
+    for line in [" rename notes.md => tokens.json (100%)", " rename a/{notes.md => tokens.json} (87%)", " R  notes.md -> tokens.json (100%)"] {
+        let shown = without_protected("/home/ann/proj", line);
+        assert!(!shown.contains("tokens"), "{line}: {shown}");
+    }
+    assert_eq!(without_protected("/home/ann/proj", " rename a.md => b.md (100%)"), " rename a.md => b.md (100%)");
+    assert_eq!(without_similarity("done (100%)"), "done");
+    assert_eq!(without_similarity("done (x%)"), "done (x%)");
+}

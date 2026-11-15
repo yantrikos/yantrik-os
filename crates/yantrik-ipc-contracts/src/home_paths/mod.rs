@@ -137,6 +137,29 @@ pub const PROTECTED: &[&str] = &[
     "snap/firefox",
     ".thunderbird",
     ".config/evolution",
+    // Editors keep a whole copy of every saved version under a random name, and their hot-exit
+    // text, which no name rule can see (review H2): VS Code, VSCodium and Code - OSS.
+    ".config/code/user/history",
+    ".config/code/backups",
+    ".config/vscodium/user/history",
+    ".config/vscodium/backups",
+    ".config/code - oss/user/history",
+    ".config/code - oss/backups",
+    ".var/app/com.visualstudio.code/config/code/user/history",
+    // What a shell, a REPL and Vim remember holds pasted tokens, commands that name secret files
+    // and yanked text (review M5).
+    ".zsh_history",
+    ".local/share/fish/fish_history",
+    ".python_history",
+    ".node_repl_history",
+    ".psql_history",
+    ".mysql_history",
+    ".viminfo",
+    ".local/state/nvim/shada",
+    // Files that record the names of files: the trash's, the recent-files list and Emacs's list of
+    // auto-save files (review L2).
+    ".local/share/recently-used.xbel",
+    ".emacs.d/auto-save-list",
 ];
 
 /// The places [`PROTECTED`] keeps under `prefix` (`.config/`, `.local/share/`), without it: what

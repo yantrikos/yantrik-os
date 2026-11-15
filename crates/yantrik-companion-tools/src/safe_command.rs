@@ -332,6 +332,20 @@ fn check_find(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The most of stdout and of stderr `run` reads.
+const OUT_CAP: usize = 64 * 1024;
+const ERR_CAP: usize = 16 * 1024;
+
+/// `read`, which was read up to `cap` bytes, as whole lines: when it reached the cap, whatever
+/// follows its last newline is dropped, because a name cut in half is no name the filters know
+/// (review L4). A pipe that ended before the cap is kept whole.
+fn whole_lines(mut read: Vec<u8>, cap: usize) -> Vec<u8> {
+    if read.len() >= cap {
+        read.truncate(read.iter().rposition(|&b| b == b'\n').map_or(0, |at| at + 1));
+    }
+    read
+}
+
 /// Run `argv`, directly, with a plain environment, no input and a time limit. Answers stdout and
 /// stderr, each cut to what a reply can carry.
 pub fn run(argv: &[String]) -> Result<(String, String), String> {
@@ -350,12 +364,12 @@ pub fn run(argv: &[String]) -> Result<(String, String), String> {
     let mut err = child.stderr.take().unwrap();
     let reader = std::thread::spawn(move || {
         let mut o = Vec::new();
-        let _ = (&mut out).take(64 * 1024).read_to_end(&mut o);
+        let _ = (&mut out).take(OUT_CAP as u64).read_to_end(&mut o);
         o
     });
     let ereader = std::thread::spawn(move || {
         let mut e = Vec::new();
-        let _ = (&mut err).take(16 * 1024).read_to_end(&mut e);
+        let _ = (&mut err).take(ERR_CAP as u64).read_to_end(&mut e);
         e
     });
     let start = Instant::now();
@@ -371,8 +385,8 @@ pub fn run(argv: &[String]) -> Result<(String, String), String> {
             Err(e) => return Err(format!("Failed to run command: {e}")),
         }
     }
-    let o = reader.join().unwrap_or_default();
-    let e = ereader.join().unwrap_or_default();
+    let o = whole_lines(reader.join().unwrap_or_default(), OUT_CAP);
+    let e = whole_lines(ereader.join().unwrap_or_default(), ERR_CAP);
     Ok((String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned()))
 }
 

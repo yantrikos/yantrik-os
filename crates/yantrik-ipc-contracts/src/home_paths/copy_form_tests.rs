@@ -57,9 +57,45 @@ fn the_round_three_forms_leave_their_decoys_readable() {
         "chapter 2.md", "notes.sync-conflict-20261115-123456-ABCDEFG.md", "notes.md:Zone.Identifier", ".~lock.notes.md#", "notes.kate-swp",
         "notes___jb_old___", "notes.crdownload", "notes~1", "chapter 2", "tokens.sync-conflict-2026-123456-ABCDEFG.md", "tokens.json.swq",
         "tokens.json.swpp", "tokens.json.sync-conflict-20261115-123456-ABC", "tokens (conflicted copy of nothing).md", "notes.backup1",
-        "id_rsa.pub.part", "100% done.md",
+        "id_rsa.pub.part", "id_rsa.pub.bak", "100% done.md", "credentials: how to rotate.md", "cookies: chocolate chip.md",
+        "tokens.json: what it holds.md", "login data: export notes.txt", "photo (copy 1).jpg", "notes (conflicted copy ann 2026-11-15 101530).md",
+        "notes-10:30:00.md", "notes.trashinfo", "notes.md.svz",
     ] {
         assert!(!is_secret_name(name), "{name}");
         assert!(!is_protected(Path::new(&format!("/home/ann/Documents/{name}"))), "{name}");
+    }
+}
+
+/// Review H1: a name with a colon, a `%` or a leading `!` is judged as it stands as well as by the
+/// part a copy rule keeps, so no copy rule makes a key readable.
+#[test]
+fn a_key_with_a_colon_or_a_percent_in_its_name_is_still_the_credential() {
+    for name in [
+        "deploy-2026-11-15T10:30:00.pem", "notes:server.pem", "id_rsa%20old", ".env%20prod", "client_secret_1%2B.json", "backup:id_ed25519",
+        "!home!ann!backup!id_rsa", "tokens.json:Zone.Identifier", "tokens.json::$DATA", "TOKENS.JSON:zone.identifier",
+    ] {
+        assert!(is_secret_name(name), "{name}");
+        assert!(is_protected(Path::new(&format!("/home/ann/backup/{name}"))), "{name}");
+    }
+}
+
+/// Review M1: Nextcloud's conflict name ends in a date and a time, Thunar's copy in a number.
+#[test]
+fn nextcloud_and_thunar_copies_are_the_credential() {
+    for name in [
+        "tokens (conflicted copy 2026-11-15 101530).json", "tokens (conflicted copy ann 2026-11-15 101530).json",
+        "server (conflicted copy 2026-11-15 101530).pem", "tokens (copy 1).json", "tokens (copy 12).json", "server (copy 1).pem",
+        "tokens (case clash 1).json",
+    ] {
+        assert!(is_secret_name(name), "{name}");
+        assert!(is_protected(Path::new(&format!("/home/ann/backup/{name}"))), "{name}");
+    }
+}
+
+/// Review L2 and L7: the trash's record of a name, and Vim's swap names past `.swa`.
+#[test]
+fn a_trash_record_and_vims_later_swap_names_are_the_credential() {
+    for name in ["tokens.json.trashinfo", "server.pem.trashinfo", ".tokens.json.svz", ".tokens.json.sva", ".tokens.json.suz", ".tokens.json.saa"] {
+        assert!(is_secret_name(name), "{name}");
     }
 }

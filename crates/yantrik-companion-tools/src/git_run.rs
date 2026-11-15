@@ -70,3 +70,14 @@ pub fn run_git_stat(dir: &str, git_args: &[&str]) -> String {
     let names: Vec<String> = run_raw(dir, &with(listing)).split('\0').filter(|n| !n.is_empty()).map(str::to_string).collect();
     names_hidden(dir, &shown, &names)
 }
+
+/// Whether `rev` names a commit in the repository `dir`, which is as far as git gets with
+/// `rev-parse --verify <rev>^{commit}`: a blob or a tree id, or a name that is nothing, is not one.
+/// Nothing of the object is printed.
+pub fn is_a_commit(dir: &str, rev: &str) -> bool {
+    super::git_guard::vet(dir).is_ok()
+        && super::git_guard::command(dir)
+            .args(["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")])
+            .output()
+            .is_ok_and(|o| o.status.success())
+}
