@@ -96,6 +96,26 @@ impl Drop for Room {
     }
 }
 
+impl Room {
+    /// Every notice this meeting was ever granted an interrupt for, dismissed or not: the toasts
+    /// it made over its whole run.
+    fn toasts_ever(&self) -> Vec<String> {
+        self.store
+            .since(0)
+            .changed
+            .into_iter()
+            .filter_map(|n| n.notice)
+            .filter(|x| x.granted == Attention::Interrupt && !x.hidden())
+            .map(|x| x.notice_id)
+            .collect()
+    }
+
+    /// The cards the person still has for this meeting.
+    fn cards_up(&self) -> Vec<String> {
+        self.store.since(0).changed.into_iter().filter(|n| !n.dismissed).filter_map(|n| n.notice).map(|x| x.notice_id).collect()
+    }
+}
+
 const BRIEF: &str = "cal-brief:orion:20990318T0930";
 const REMINDER: &str = "cal-reminder:orion:20990318T0930";
 const EARLY: &str = "cal-early:orion:20990318T0930";
@@ -268,4 +288,23 @@ fn an_early_card_that_never_interrupted_leaves_the_reminder_to_the_person() {
     assert_eq!(room.card(BRIEF).unwrap().1.granted, Attention::Inbox);
     room.tick(10);
     assert!(room.card(REMINDER).is_some_and(|(_, r)| r.granted == Attention::Interrupt), "the reminder is still the person's own");
+}
+
+/// The early card exists for any lead under 30 minutes, not only the default 10: with a lead of
+/// 20, the early card toasted at T-45, the reminder at T-20 found no brief yet to cover it and
+/// toasted too, and the brief at T-10 went to the inbox beside both.
+#[test]
+fn an_own_lead_of_twenty_minutes_still_makes_one_toast_and_leaves_one_card() {
+    let mut room = Room::new();
+    let mut event = meeting(room.start);
+    event.location = Some("Room 4".into());
+    event.reminder_minutes = 20;
+    std::fs::write(room.cal.join("orion.json"), serde_json::to_string(&event).unwrap()).unwrap();
+    room.tick(45);
+    room.tick(20);
+    assert_eq!(room.card(REMINDER).unwrap().1.granted, Attention::Inbox, "the reminder takes the early card's place quietly");
+    assert!(room.card(EARLY).unwrap().0.dismissed);
+    room.brief(10);
+    assert_eq!(room.toasts_ever(), [EARLY], "one toast between T-60 and the start");
+    assert_eq!(room.cards_up(), [BRIEF], "and one undismissed card for the meeting");
 }

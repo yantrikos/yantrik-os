@@ -127,7 +127,14 @@ fn tick<Tz: TimeZone>(store: &Store, dir: &Path, sent: &mut Sent, now: DateTime<
             sent.record(due.kind, &due.id, &due.start);
             continue;
         }
-        let answer = store.add_os_notice(NAME, due.notice(&now));
+        let mut notice = due.notice(&now);
+        // One interrupt per event and start: an early card that was granted one is the meeting's
+        // toast, so the own reminder that follows it (whatever its lead) asks for the inbox, where
+        // it takes the early card's place. The brief then takes the reminder's.
+        if due.kind == Kind::Reminder && crate::brief_notice::interrupted(store, &notice_id(Kind::Early, &due.id, &due.start)) {
+            notice["attention"] = "inbox".into();
+        }
+        let answer = store.add_os_notice(NAME, notice);
         if answer["stored"] == true {
             tracing::info!(id = %due.id, kind = due.kind.as_str(), duplicate = answer["duplicate"] == true, "announced an event");
         } else if answer["refused"].is_string() {
@@ -1008,7 +1015,8 @@ mod tests {
         assert_eq!((early.granted.clone(), early.grant_reason.clone()), (Attention::Interrupt, GrantReason::Granted));
         assert_eq!(store.since(0).changed.len(), 1);
 
-        // Fifty minutes on: both own reminders. The dentist's takes the early card's place.
+        // Fifty minutes on: both own reminders. The dentist's takes the early card's place, and
+        // since that card already interrupted, it goes to the inbox: one toast per event.
         let later = now + ChronoDuration::minutes(50);
         tick(&store, &cal, &mut sent, later);
         let mut shown: Vec<String> = cards(&store).into_iter().map(|(_, x)| x.notice_id).collect();
@@ -1016,7 +1024,9 @@ mod tests {
         assert_eq!(shown, ["cal-reminder:dentist:20990318T1000", "cal-reminder:standup:20990318T1000"], "one card per event");
         let (_, own) = card(&store, "cal-reminder:dentist:20990318T1000").unwrap();
         assert_eq!(own.family, Family::Reminder);
-        assert_eq!(own.grant_reason, GrantReason::Granted);
+        assert_eq!((own.granted, own.grant_reason), (Attention::Inbox, GrantReason::AskedInbox), "the early card was the toast");
+        let (_, standup) = card(&store, "cal-reminder:standup:20990318T1000").unwrap();
+        assert_eq!(standup.grant_reason, GrantReason::Granted, "an event with no early card: the reminder is the toast");
         let (gone, _) = card(&store, "cal-early:dentist:20990318T1000").unwrap();
         assert!(gone.dismissed);
         let _ = std::fs::remove_dir_all(dir);
@@ -1090,10 +1100,13 @@ mod tests {
         let mut reasons: Vec<GrantReason> = cards(&store).into_iter().map(|(_, x)| x.grant_reason).collect();
         reasons.sort_by_key(|r| r.as_str().to_string());
         assert_eq!(reasons, [GrantReason::BudgetSpent, GrantReason::Granted, GrantReason::Granted], "two a day; the third waits");
-        // Their own reminders all interrupt, budget spent or not.
+        // Their own reminders never spend the budget: the two whose early card interrupted go to
+        // the inbox (that card was the toast), and the one whose early card waited interrupts,
+        // budget spent or not.
         tick(&store, &cal, &mut sent, now + ChronoDuration::minutes(50));
-        let own: Vec<GrantReason> = cards(&store).into_iter().filter(|(_, x)| x.family == Family::Reminder).map(|(_, x)| x.grant_reason).collect();
-        assert_eq!(own, [GrantReason::Granted, GrantReason::Granted, GrantReason::Granted]);
+        let mut own: Vec<GrantReason> = cards(&store).into_iter().filter(|(_, x)| x.family == Family::Reminder).map(|(_, x)| x.grant_reason).collect();
+        own.sort_by_key(|r| r.as_str().to_string());
+        assert_eq!(own, [GrantReason::AskedInbox, GrantReason::AskedInbox, GrantReason::Granted]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

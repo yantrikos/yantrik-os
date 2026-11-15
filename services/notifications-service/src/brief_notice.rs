@@ -73,7 +73,7 @@ pub fn covers(store: &Store, event: &str, start: &NaiveDateTime) -> bool {
 }
 
 /// Whether the desktop's notice `id` was granted an interrupt.
-fn interrupted(store: &Store, id: &str) -> bool {
+pub(crate) fn interrupted(store: &Store, id: &str) -> bool {
     held(store, id).is_some_and(|n| n.granted == Attention::Interrupt)
 }
 
