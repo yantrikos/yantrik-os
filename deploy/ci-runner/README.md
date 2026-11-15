@@ -11,7 +11,7 @@ Release and nightly ISO builds (iso.yml: build, sign, publish) always run on Git
 GitHub's 16 GB runners lost the `test` job about half the time, with no log. Pranab decided
 (15 Nov) to run it on node2. The first attempt was one long-lived runner on the build host
 (CT 530); the security review of PR #1252 rejected that (round 1, comment 6888810312). Rounds 2
-(6889527314), 3 (6891217309) and 4 (6892879091) found what the throwaway design still had to close.
+(6889527314), 3 (6891217309), 4 (6892879091) and 5 (6893462695) found what the throwaway design still had to close.
 
 | Review id | Finding | Answer here |
 |---|---|---|
@@ -35,6 +35,7 @@ GitHub's 16 GB runners lost the `test` job about half the time, with no log. Pra
 | H1 (r4) | The host filter was L3 only: CT root could spoof its MAC, ARP the LAN, broadcast a rogue DHCP offer | `prerouting` chain before the bridge learns the MAC, per-clone pins, broadcast/reserved drops, DHCP rate limit (below); proved on an isolated bridge. |
 | M1-M4 (r4) | API body in the environment; slow job check; `pct exec` into a hostile CT; filter not re-checked | No API body in the environment or on a command line; 10 s poll, job looked up by `runner_name`, post-hoc audit; host-cgroup stats and `lvs`, `pct stop` first; `host_filter_ok` on every poll. |
 | L1-L5 (r4) | oom write fail-open; `veth96*`; unchecked libs; recycle on API error; table lingers | Fatal oom write and a `ci.yml` check; exact port set; run-time ownership checks; recycle only on a clear "not busy"; "Stop CI" removes the table. |
+| N1-N7 (r5) | An unpinned clone was unfiltered; "cannot tell" ran a job unbounded; DHCP and third-party ARP attacks; two looks too few; drill expectation; `nap` clobbered `CHILD_PID` | A constant `ci_ports` set, unpinned clone ports dropped, pin removed only once the CT is gone, controller stops if a CT survives; `last_ok`, `apilost` and an absolute cap; a fixed clone address and no DHCP; 4 looks; the drill and tests below; `RUNNER_PID`. |
 | L1-L4 | token in `.git/config`, `head.repo.fork`, toolchain, stale comment | `persist-credentials: false`, `!head.repo.fork`, baked-in toolchain plus a `rustc` check, comment deleted. |
 
 ### Repository settings (checked by Y on 15 Nov)
@@ -95,41 +96,52 @@ loopback. Input drops everything but replies. The rules load before the `runner`
 they do not load and verify, no runner starts. Filtering is by address, not by name: "443 to the
 public internet" is the realistic limit.
 
-### The host-side filter (R3, R10, H1)
+### The host-side filter (R3, R10, H1, N1, N3)
 
-`host/host-egress.nft` is a `table bridge yantrik_ci` that matches only frames entering a bridge from
-a port in its `clone_ports` set. The controller adds the running clone's exact port (`veth<ID>i0`) and
-its own MAC (the `hwaddr` of its `net0`, from `pct config`) after the clone exists and before
-`pct start`, and removes them when the CT ends, so the table matches nothing between jobs. Every other
-port, guest and CT 530 included, takes the first rule of each chain and is untouched. It uses no
-cluster firewall.
+`host/host-egress.nft` is a `table bridge yantrik_ci` with three port sets. `ci_ports` is constant:
+every port a clone can ever have (`veth9600i0` to `veth9699i0`). `clone_ports` and `clone_ok` hold the
+running clone's exact port and its own MAC (the `hwaddr` of its `net0`, from `pct config`); the
+controller adds them after the clone exists and before `pct start`, and removes them only once the CT is
+gone. **A port in `ci_ports` that is not pinned is dropped**: a clone that survives its job, or a table
+reload, has no network. Every other port, guest and CT 530 included, takes the first rule of each chain
+and is untouched. It uses no cluster firewall.
+
+**The fixed address (N3).** There is no DHCP for clones. `/etc/yantrik-ci/clone-net`, written by the
+operator (root-owned, not writable by others), is one line: `ip=<addr>/<len>,gw=<gw>`. The controller
+and `make-template.sh` refuse to run without it, and check it strictly: the format, an address inside
+`vmbr0`'s subnet with the same prefix, not the network or broadcast address, the gateway, the node or a
+resolver, and `gw` equal to the node's gateway. Before the clone starts, the controller sets its `net0`
+to that `ip=`/`gw=` (its own MAC kept), so PVE writes a static config and no DHCP client runs in the CT.
+Pick an address nothing else uses and the router's DHCP pool does not hand out (or reserve it on the
+router); only one clone runs at a time, so one address is enough.
 
 - **`prerouting` (priority -200, before the bridge learns the source MAC):** a frame from a clone must
-  carry the clone's own MAC; an ARP sender must be that MAC; ARP that claims the gateway, the
-  resolvers or the node's `vmbr0` address is dropped; DHCP client requests are rate-limited (10 a
-  minute) here, where a frame is seen once. A limit in `forward` starves the real client, because a
-  broadcast is seen there once per port it floods to.
-- **`forward`:** ARP, DHCP (to the gateway or broadcast), and DNS to the node's resolvers pass; IPv6
-  and every non-IPv4 frame, private, CGNAT, link-local, multicast, loopback, broadcast and reserved
-  (`0.0.0.0/8`, `240.0.0.0/4`) destinations and our own public addresses (hairpin NAT would reach the
-  router's admin page) are dropped; the rest is the public internet.
+  carry the clone's own MAC; an ARP sender must be that MAC and may speak only for the clone's address
+  (or 0.0.0.0, a probe); an IP packet must have the clone's address as its source. So there is no DHCP
+  (its source is 0.0.0.0), no ARP for the gateway or any other host, and no spoofed source.
+- **`forward`:** ARP, and DNS to the node's resolvers, pass; IPv6 and every non-IPv4 frame, private,
+  CGNAT, link-local, multicast, loopback, broadcast and reserved (`0.0.0.0/8`, `240.0.0.0/4`)
+  destinations and our own public addresses (hairpin NAT would reach the router's admin page) are
+  dropped; the rest is the public internet.
 - **`input`:** frames for the node itself (its API, its ssh) are dropped, ARP excepted.
 
 The controller loads the table before every clone, pins the clone, and checks the table (and the pin)
 on every poll while the job runs; if it is gone (`nft flush ruleset`, a restart of `nftables.service`)
-it ends the CT. **Do not enable `nftables.service` on node2 with a `flush ruleset` configuration**
-(Debian's default `/etc/nftables.conf`): a restart removes the table, and the controller then ends the
-running job.
+it ends the CT. If a CT in 9600-9699 survives the end of a job, or the start-up cleanup, the controller
+stops, exits non-zero and leaves the table loaded. **Do not enable `nftables.service` on node2 with a
+`flush ruleset` configuration** (Debian's default `/etc/nftables.conf`): a restart removes the table,
+and the controller then ends the running job.
 
-`check-host-filter.sh` proves it, with the controller stopped. Phase 1, on `vmbr0`, L3 only: the node's
-API and any port, CT 530, the gateway and our own public addresses are refused; GitHub and DNS work;
-CT 530 is read once, read-only, and its port is not in the set. Phase 2 sends the spoofs on an isolated
-bridge `vmbr-yci-test` (no uplink, no other port, a dummy gateway in a netns), never on the real LAN: as
-CT root, with no CT rules, the clone takes the gateway's MAC, claims the gateway's address with ARP, and
-broadcasts a rogue DHCP offer. Each is run with the filter off (the attack works) and on (the gateway's
-entry stays on its own port in `bridge fdb`, the node's neighbour entry keeps the gateway's MAC, the
-offer never arrives, a real DHCP request still does). The bridge, netns, clone and table are removed at
-the end.
+`check-host-filter.sh` proves it, with the controller stopped. Phase 1, on `vmbr0`, L3 only, needs the
+`clone-net` file and prints `SKIPPED` without it. Phase 2 sends the spoofs on an isolated bridge
+`vmbr-yci-test` (no uplink, no other port, a dummy gateway and a third host in a netns), never on the real
+LAN. As CT root, with no CT rules, the clone takes the gateway's MAC, claims the gateway's and a third
+host's address with ARP, and sends DHCP (with a foreign client id and source 0.0.0.0, and a broadcast
+from its own address). Each runs with the filter off (the attack works) and on (the gateway's entry stays
+on its own port in `bridge fdb`, no neighbour entry changes, no DHCP arrives). An unpinned clone must
+reach nothing; a pinned one must resolve the gateway and reach its resolver. The test also checks that
+the clone has no DHCP client, and that bad `clone-net` lines are refused. The bridge, netns, clone and
+table are removed at the end.
 
 ### The job check (R1)
 
@@ -139,11 +151,14 @@ it. Every 10 seconds it asks GitHub whether the runner is busy; once it is, it f
 through the public API (`runs?status=in_progress`, then each run's jobs, picking
 `runner_name == this runner`) and requires: workflow `.github/workflows/ci.yml`, job `test`, event
 `push`, `workflow_dispatch` or `pull_request`, and head repository `yantrikos/yantrik-os` itself.
-Anything else, or a job that cannot be found in two looks, ends the CT at once and is logged as
+Anything else, or a job that cannot be found in four looks, ends the CT at once and is logged as
 `REFUSING the job`. Nothing from the API goes through the environment or a command line (a run list of
 10 or more runs is over the 128 KiB limit of one environment string): the run list is reduced to four
-short fields per run. If the runner exits before the first poll (a short job), the controller looks the
-job up afterwards among the newest runs. Every job leaves an `audit:` line with the run id, workflow,
+short fields per run. If GitHub cannot say whether the runner is busy, the controller looks for the job anyway, and a job
+found is judged at once; after 5 minutes without an answer it ends the CT (`apilost`), and an absolute
+cap (idle limit plus job limit) applies whatever GitHub says. If the runner exits before the first poll
+(a short job), the controller looks the job up afterwards among the newest runs (`AUDIT-MISSING` if there
+is no record). Every job leaves an `audit:` line with the run id, workflow,
 job, event and head repository, and a job that ran and should not have is logged as `VIOLATION`.
 
 **The `BASH_ENV` probe** is the first real job. Branch `scratch/1234-hook-env-probe` (not for merge)
@@ -158,8 +173,12 @@ then, never approve a fork run whose diff touches `.github/`.
 
 **The refusal drill** comes after it. Branch `scratch/1234-refusal-drill` (not for merge) renames the
 job to `test2` on the throwaway runner; run it with `gh workflow run ci.yml --ref scratch/1234-refusal-drill`.
-Expect the hook's `::error::yantrik-build refuses this job` and the controller's
-`REFUSING the job ... job test2` within one poll, and the CT gone. Result: **not run yet**.
+Expect the hook's `::error::yantrik-build refuses this job` in "Set up job", **and** either the
+controller's `REFUSING the job ... job test2` or its `VIOLATION ... job test2` (the hook ends the job in
+seconds, usually before the next poll, so the controller may only see it afterwards), **and** `done: CT ...`
+with the CT gone from `pct list`. The drill does not prove the controller kills a *running* CT: the
+committed kill-path test (`test/controller-test.sh`, test 15) does, with a fake `pct` whose `exec` sleeps.
+Result: **not run yet**.
 
 ### Capacity
 
@@ -197,6 +216,11 @@ it stays so until the operator decides.
 
     printf 'fs.protected_regular = 2\nfs.protected_fifos = 2\n' > /etc/sysctl.d/90-yantrik-ci.conf
     sysctl -p /etc/sysctl.d/90-yantrik-ci.conf
+
+**The clones' fixed address.** One line in `/etc/yantrik-ci/clone-net`, as root, mode 644 or tighter in a
+root-owned directory: `ip=192.168.4.NN/22,gw=192.168.4.1` (the prefix of `vmbr0`, the router as gateway).
+Pick an address nothing uses and the DHCP pool does not hand out. The controller and `make-template.sh`
+refuse to run without a valid file. Rebuild the template after changing it.
 
 **Own public addresses.** Put the router's WAN address and any other public address of ours in
 `/etc/yantrik-ci/own-public-ips`, one per line (`curl -s https://api.ipify.org` from a LAN machine
@@ -246,12 +270,18 @@ controller backs off. Rebuilding is the fix. Moving Rust is a PR of its own and 
 `RUST_VERSION` in `make-template.sh` and the `grep` in `ci.yml` with it.
 
 **Prove the host filter** (controller stopped, no CT in 9600-9699): `bash /root/ci-runner/check-host-filter.sh 9698`.
+**Test the controller** against a stub of GitHub on the isolated bridge: `bash /root/ci-runner/test/controller-test.sh`
+(100-run API body, refusals, the kill path, a surviving CT, API loss).
 
 **Stop CI from using the host** (the `test` job then waits for a runner; switch its `runs-on` back to
 `ubuntu-24.04` if it must run meanwhile):
 
     systemctl disable --now yantrik-ci-controller
-    nft delete table bridge yantrik_ci      # the host filter lingers harmlessly otherwise
+    pct list | awk '$1 >= 9600 && $1 <= 9699'      # must print nothing: destroy any CT left, by hand
+    nft delete table bridge yantrik_ci      # only then; a clone left running would be unfiltered at L2 and L3 without it
+
+(An unpinned clone port is dropped while the table is loaded, so the table is what keeps a surviving
+clone harmless; remove it last.)
 
 **Read the logs**
 

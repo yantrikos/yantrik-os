@@ -16,7 +16,7 @@ lib=/usr/local/lib/yantrik-ci
 
 install -m 755 -o root -g root "$here/yantrik-ci-controller.sh" /usr/local/sbin/yantrik-ci-controller
 install -d -m 755 -o root -g root "$lib"
-install -m 644 -o root -g root "$here/lib/github.sh" "$here/lib/host.sh" "$here/host/host-egress.nft" "$lib/"
+install -m 644 -o root -g root "$here/lib/trust.sh" "$here/lib/github.sh" "$here/lib/host.sh" "$here/host/host-egress.nft" "$lib/"
 install -m 644 -o root -g root "$here/yantrik-ci-controller.service" /etc/systemd/system/yantrik-ci-controller.service
 install -d -m 700 -o root -g root "$token_dir" /var/log/yantrik-ci
 install -d -m 755 -o root -g root /etc/yantrik-ci
@@ -35,6 +35,11 @@ ROTATE
 systemctl daemon-reload
 
 echo "yantrik-ci-controller is installed. It is NOT enabled and NOT started."
+if [ ! -s /etc/yantrik-ci/clone-net ]; then
+  echo "Before the first start, give the clones their fixed address: one line, as root, in"
+  echo "/etc/yantrik-ci/clone-net:  ip=<addr>/<len>,gw=<gw>  (an address inside vmbr0's subnet that nothing else"
+  echo "uses and the router's DHCP pool does not hand out). The controller refuses to clone without it."
+fi
 if [ ! -s /etc/yantrik-ci/own-public-ips ]; then
   echo "Before the first start, list our own public addresses (the router's WAN address, any other),"
   echo "one per line, in /etc/yantrik-ci/own-public-ips, then rebuild the template."

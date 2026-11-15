@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Prove the host-side filter (#1252 reviews R3, H1). Run as root on the node, with the controller
-# stopped and no clone in 9600-9699. Two phases, both with a clone started WITHOUT the CT's own
-# rules, so everything below is what CT root can do:
+# Prove the host-side filter (#1252 reviews R3, H1, N1, N3). Run as root on the node, with the
+# controller stopped and no clone in 9600-9699. Every clone below is started WITHOUT the CT's own
+# rules, so everything shown is what CT root can do.
 #
-# 1. The real bridge (vmbr0), L3 only: the node's API, CT 530, the gateway and our own public
-#    addresses are refused; the public internet and DNS work; CT 530 is read once, read-only.
-#    Nothing here sends a spoofed frame.
-# 2. L2, on an isolated test bridge (vmbr-yci-test: no uplink, no other port, a dummy "gateway" in a
-#    netns, a stand-in for the node's own address). The clone spoofs the gateway's MAC, claims the
-#    gateway's IP with ARP, and broadcasts a rogue DHCP offer. Each is run once with the filter off
-#    (control: the attack works) and once with it on (the attack is dropped). The spoofs never touch
-#    the real LAN: they cannot, the test bridge has no way out.
+# Phase 1, the real bridge (vmbr0), L3 only, nothing spoofed. It needs the clones' fixed address
+# (/etc/yantrik-ci/clone-net); without it the phase prints "SKIPPED" and the L2 phase below, which uses
+# its own test address, is the whole proof.
 #
-# The clone and the test bridge are removed at the end, and so is the nft table.
+# Phase 2, L2, on an isolated test bridge (vmbr-yci-test: no uplink, no other port, a dummy "gateway"
+# in a netns, a stand-in for the node's address). The clone, as CT root, spoofs the gateway's MAC,
+# claims the gateway's and a third host's address with ARP, broadcasts a rogue DHCP offer, and sends
+# DHCP with a foreign client id. Each is run once with the filter off (control: the attack works) and
+# once with it on. A clone that is not pinned must reach nothing at all. The spoofs cannot reach the
+# real LAN: the test bridge has no way out.
+#
+# The clone, the test bridge, its netns and the nft table are removed at the end.
 #
 # Usage: check-host-filter.sh [CT-id]   (default 9698)
 
@@ -21,13 +23,13 @@ set -u
 ID=${1:-9698}
 LIB_DIR=${YANTRIK_CI_LIB:-/usr/local/lib/yantrik-ci}
 OWN_PUBLIC_FILE=${YANTRIK_CI_OWN_PUBLIC:-/etc/yantrik-ci/own-public-ips}
+CLONE_NET_FILE=${YANTRIK_CI_CLONE_NET:-/etc/yantrik-ci/clone-net}
 RUN_DIR=$(mktemp -d)
-ID_MIN=9600 ID_MAX=9699 TEMPLATE_ID=9530 BUILD_CT=530 POOL=pve/data
+ID_MIN=9600 ID_MAX=9699 TEMPLATE_ID=9530 BUILD_CT=530
 TB=vmbr-yci-test GWNS=yci-gw GWH=yci-gwh GWN=yci-gwn
-T_GW=10.77.0.1 T_NODE=10.77.0.2 T_CLONE=10.77.0.50
+T_GW=10.77.0.1 T_NODE=10.77.0.2 T_CLONE=10.77.0.50 T_THIRD=10.77.0.3
 log() { printf '   %s\n' "$*"; }
-trusted_path() { return 0; } # an operator's proof tool: the controller checks these at run time
-# shellcheck source=lib/host.sh
+. "$LIB_DIR/trust.sh"
 . "$LIB_DIR/host.sh"
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
@@ -52,59 +54,75 @@ wait_ct() { for _ in $(seq 1 60); do pct exec "$ID" -- "$@" > /dev/null 2>&1 && 
 
 # ============================ phase 1: the real bridge, L3 ============================
 echo "== phase 1: vmbr0, L3 (nothing is spoofed)"
-host_filter_load || { echo "FAIL: the host filter did not load"; exit 1; }
-node_ip=$(ip -4 -o addr show vmbr0 | awk '{sub(/\/.*/, "", $4); print $4; exit}')
-net=$(pct config "$BUILD_CT" | grep '^net0:')
-ct530=$(sed -n 's/.*ip=\([0-9.]*\).*/\1/p' <<< "$net")
-gw=$(ip -4 route show default | awk '{print $3; exit}')
-pct clone "$TEMPLATE_ID" "$ID" --hostname "yantrik-ci-$ID" > /dev/null || { echo "FAIL: clone"; exit 1; }
-host_filter_add_clone "$ID" || { echo "FAIL: pin"; exit 1; }
-pct start "$ID" || { echo "FAIL: start"; exit 1; }
-wait_ct getent hosts github.com || bad "the clone never got a network"
-echo "   CT rules loaded in the clone: $(pct exec "$ID" -- sh -c 'nft list tables | grep -c yantrik_ci || true')"
-check() { # check LABEL want(ok|refused) URL
-  local code got
-  code=$(pct exec "$ID" -- curl -m5 -sk -o /dev/null -w '%{http_code}' "$3" 2> /dev/null)
-  if [ "$code" = 000 ] || [ -z "$code" ]; then got=refused; else got=ok; fi
-  if [ "$got" = "$2" ]; then pass "$1 ($got)"; else bad "$1 (wanted $2, got $got, http $code)"; fi
-}
-check "node API :8006" refused "https://$node_ip:8006/"
-check "node, any port" refused "http://$node_ip:22/"
-check "CT 530 http" refused "http://$ct530/"
-check "gateway http" refused "http://$gw/"
-check "gateway https" refused "https://$gw/"
-for ip in $(grep -vE '^[[:space:]]*(#|$)' "$OWN_PUBLIC_FILE"); do check "own public address $ip :443" refused "https://$ip/"; done
-check "GitHub (public 443)" ok "https://api.github.com/zen"
-check "IPv6 to a public address" refused "https://[2606:4700:4700::1111]/"
-if pct exec "$ID" -- getent hosts index.crates.io > /dev/null 2>&1; then pass "DNS works (ok)"; else bad "DNS"; fi
-echo "   counters on the node:"
-nft list chain bridge yantrik_ci forward | grep -E 'counter packets' | sed 's/^/     /'
-nft list chain bridge yantrik_ci input | grep -E 'counter packets' | sed 's/^/     /'
-echo "== CT 530, read-only: its networking is unchanged"
-if [ "$(pct exec "$BUILD_CT" -- curl -sI -m10 -o /dev/null -w '%{http_code}' https://api.github.com 2> /dev/null)" = 200 ]; then
-  pass "CT 530 reaches api.github.com (HTTP 200)"
-else bad "CT 530 cannot reach api.github.com"; fi
-if nft get element bridge yantrik_ci clone_ports "{ veth${BUILD_CT}i0 }" > /dev/null 2>&1; then bad "CT 530's port is in the filter"; else pass "CT 530's port is not in the filter's port set"; fi
-destroy_ct "$ID" > /dev/null 2>&1
-host_filter_remove_clone "$ID"
+if [ ! -f "$CLONE_NET_FILE" ]; then
+  echo "SKIPPED: no $CLONE_NET_FILE (the clones' fixed address); phase 2 below uses its own test address"
+else
+  clone_net_load || { echo "FAIL: $CLONE_NET_FILE is not valid"; exit 1; }
+  host_filter_load || { echo "FAIL: the host filter did not load"; exit 1; }
+  node_ip=${NODE_CIDR%/*}
+  net=$(pct config "$BUILD_CT" | grep '^net0:')
+  ct530=$(sed -n 's/.*ip=\([0-9.]*\).*/\1/p' <<< "$net")
+  gw=$NODE_GW
+  pct clone "$TEMPLATE_ID" "$ID" --hostname "yantrik-ci-$ID" > /dev/null || { echo "FAIL: clone"; exit 1; }
+  clone_set_net "$ID" && host_filter_add_clone "$ID" || { echo "FAIL: address or pin"; exit 1; }
+  pct start "$ID" || { echo "FAIL: start"; exit 1; }
+  wait_ct getent hosts github.com || bad "the clone never got a network"
+  echo "   CT rules loaded in the clone: $(pct exec "$ID" -- sh -c 'nft list tables | grep -c yantrik_ci || true'); address $CLONE_IP"
+  check() { # check LABEL want(ok|refused) URL
+    local code got
+    code=$(pct exec "$ID" -- curl -m5 -sk -o /dev/null -w '%{http_code}' "$3" 2> /dev/null)
+    if [ "$code" = 000 ] || [ -z "$code" ]; then got=refused; else got=ok; fi
+    if [ "$got" = "$2" ]; then pass "$1 ($got)"; else bad "$1 (wanted $2, got $got, http $code)"; fi
+  }
+  check "node API :8006" refused "https://$node_ip:8006/"
+  check "node, any port" refused "http://$node_ip:22/"
+  check "CT 530 http" refused "http://$ct530/"
+  check "gateway http" refused "http://$gw/"
+  for ip in $(grep -vE '^[[:space:]]*(#|$)' "$OWN_PUBLIC_FILE"); do check "own public address $ip :443" refused "https://$ip/"; done
+  check "GitHub (public 443)" ok "https://api.github.com/zen"
+  check "IPv6 to a public address" refused "https://[2606:4700:4700::1111]/"
+  if pct exec "$ID" -- getent hosts index.crates.io > /dev/null 2>&1; then pass "DNS works (ok)"; else bad "DNS"; fi
+  echo "== CT 530, read-only: its networking is unchanged"
+  if [ "$(pct exec "$BUILD_CT" -- curl -sI -m10 -o /dev/null -w '%{http_code}' https://api.github.com 2> /dev/null)" = 200 ]; then
+    pass "CT 530 reaches api.github.com (HTTP 200)"
+  else bad "CT 530 cannot reach api.github.com"; fi
+  if nft get element bridge yantrik_ci clone_ports "{ veth${BUILD_CT}i0 }" > /dev/null 2>&1; then bad "CT 530's port is pinned"; else pass "CT 530's port is not pinned"; fi
+  if nft get element bridge yantrik_ci ci_ports "{ veth${BUILD_CT}i0 }" > /dev/null 2>&1; then bad "CT 530's port is in ci_ports"; else pass "CT 530's port is not in ci_ports (untouched)"; fi
+  destroy_ct "$ID" > /dev/null 2>&1
+  lxc_exists "$ID" || host_filter_remove_clone "$ID"
+fi
 
 # ============================ phase 2: L2, isolated bridge ============================
 echo "== phase 2: L2 on the isolated bridge $TB (no uplink)"
 ip link add "$TB" type bridge && ip addr add "$T_NODE/24" dev "$TB" && ip link set "$TB" up || { echo "FAIL: test bridge"; exit 1; }
 ip netns add "$GWNS" && ip link add "$GWH" type veth peer name "$GWN" && ip link set "$GWN" netns "$GWNS" || { echo "FAIL: test netns"; exit 1; }
-ip -n "$GWNS" addr add "$T_GW/24" dev "$GWN" && ip -n "$GWNS" link set "$GWN" up && ip -n "$GWNS" link set lo up
+ip -n "$GWNS" addr add "$T_GW/24" dev "$GWN" && ip -n "$GWNS" addr add "$T_THIRD/24" dev "$GWN" && ip -n "$GWNS" link set "$GWN" up && ip -n "$GWNS" link set lo up
 ip link set "$GWH" master "$TB" && ip link set "$GWH" up
 GWMAC=$(ip -n "$GWNS" -o link show "$GWN" | sed -n 's/.*link\/ether \([0-9a-f:]*\) .*/\1/p')
-echo "   isolated bridge: gateway $T_GW ($GWMAC) in netns $GWNS, node address $T_NODE; ports: $(bridge link show master "$TB" | wc -l)"
+echo "   isolated bridge: gateway $T_GW and a third host $T_THIRD ($GWMAC) in netns $GWNS, node address $T_NODE"
+
+# The test fixed address goes through the same check the controller uses.
+printf 'ip=%s/24,gw=%s\n' "$T_CLONE" "$T_GW" > "$RUN_DIR/clone-net"
+chmod 644 "$RUN_DIR/clone-net"
+clone_net_check "$RUN_DIR/clone-net" "$T_NODE/24" "$T_GW" "$T_GW" && pass "the test clone-net file passes the controller's check ($CLONE_IP/$CLONE_LEN gw $CLONE_GW)" || { bad "clone-net check"; exit 1; }
+for bad_line in "ip=$T_NODE/24,gw=$T_GW" "ip=$T_GW/24,gw=$T_GW" "ip=10.77.1.5/24,gw=$T_GW" "ip=10.77.0.255/24,gw=$T_GW" "ip=$T_CLONE/24,gw=10.77.0.9" "ip=$T_CLONE/16,gw=$T_GW" "ip=$T_CLONE/24 ,gw=$T_GW" "ip=300.1.1.1/24,gw=$T_GW"; do
+  printf '%s\n' "$bad_line" > "$RUN_DIR/bad"; chmod 644 "$RUN_DIR/bad"
+  if (clone_net_check "$RUN_DIR/bad" "$T_NODE/24" "$T_GW" "$T_GW" > /dev/null 2>&1); then bad "accepted '$bad_line'"; else :; fi
+done
+pass "bad clone-net lines are refused (the node, the gateway, outside the subnet, broadcast, wrong gw, wrong prefix, bad format)"
+clone_net_check "$RUN_DIR/clone-net" "$T_NODE/24" "$T_GW" "$T_GW" > /dev/null
 
 pct clone "$TEMPLATE_ID" "$ID" --hostname "yantrik-ci-$ID" > /dev/null || { echo "FAIL: clone"; exit 1; }
 CMAC=$(pct config "$ID" | sed -n '/^net0:/s/.*hwaddr=\([0-9A-Fa-f:]\{17\}\).*/\1/p')
-pct set "$ID" --net0 "name=eth0,bridge=$TB,hwaddr=$CMAC,ip=$T_CLONE/24" > /dev/null
+CLONE_BRIDGE=$TB clone_set_net "$ID" || { echo "FAIL: set net"; exit 1; }
 pct start "$ID" || { echo "FAIL: start"; exit 1; }
-wait_ct ip -4 addr show eth0 || bad "no address in the clone"
-for _ in $(seq 1 30); do pct exec "$ID" -- ip -4 addr show eth0 | grep -q "$T_CLONE" && break; sleep 1; done
+for _ in $(seq 1 30); do pct exec "$ID" -- ip -4 addr show eth0 2> /dev/null | grep -q "$T_CLONE" && break; sleep 1; done
 PORT=$(clone_port "$ID")
-bridge link show master "$TB" | awk '{print "   port:", $2}' | tr -d ':' | sed 's/^/ /'
+echo "   ports on $TB:"
+ip -br link show master "$TB" | sed 's/^/     /'
+dhcp_cfg=$(pct exec "$ID" -- sh -c 'grep -ciE "^DHCP=(yes|ipv4|true|ipv6)" /etc/systemd/network/eth0.network 2>/dev/null')
+dhcp_sock=$(pct exec "$ID" -- sh -c 'ss -uln | grep -c ":68 "')
+[ "$dhcp_cfg" = 0 ] && [ "$dhcp_sock" = 0 ] && pass "no DHCP client in the clone (static config: $(pct exec "$ID" -- sh -c 'grep -E "^(Address|Gateway)" /etc/systemd/network/eth0.network | tr "\n" " "'))" || bad "the clone runs or is configured for DHCP (config lines $dhcp_cfg, sockets on :68 $dhcp_sock)"
 
 cat > "$RUN_DIR/arp.py" <<'PY'
 import socket, struct, sys
@@ -119,15 +137,32 @@ for _ in range(3):
     s.send(frame(1, b'\xff' * 6, b'\x00' * 6))   # gratuitous request: "spa is at mac"
     s.send(frame(2, b'\xff' * 6, b'\xff' * 6))   # unsolicited reply
 PY
-cat > "$RUN_DIR/udp.py" <<'PY'
-import socket, sys
-sport, dport = int(sys.argv[1]), int(sys.argv[2])
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-s.setsockopt(socket.SOL_SOCKET, 25, b'eth0')  # SO_BINDTODEVICE: the clone has no route for a broadcast
-s.bind(('0.0.0.0', sport))
-for _ in range(3):
-    s.sendto(b'yantrik-l2-proof', ('255.255.255.255', dport))
+cat > "$RUN_DIR/dhcp.py" <<'PY'
+# A DHCP request to everyone. mode "sock": an ordinary socket (source: the clone's address).
+# mode "raw": a hand-made frame with source 0.0.0.0 and a FOREIGN client hardware address, as a
+# starvation or release attack would send it; the frame's own MAC is the clone's.
+import socket, struct, sys
+mode, sport, dport = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+if mode == "sock":
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    s.setsockopt(socket.SOL_SOCKET, 25, b'eth0')  # SO_BINDTODEVICE: no route is needed for a broadcast
+    s.bind(('0.0.0.0', sport))
+    for _ in range(3):
+        s.sendto(b'yantrik-l2-proof', ('255.255.255.255', dport))
+else:
+    own = open('/sys/class/net/eth0/address').read().strip()
+    src_mac = bytes.fromhex(own.replace(':', ''))
+    chaddr = bytes.fromhex('02deadbeef01') + b'\x00' * 10
+    bootp = struct.pack('!BBBBIHH4s4s4s4s', 1, 1, 6, 0, 0x1234, 0, 0x8000, b'\0' * 4, b'\0' * 4, b'\0' * 4, b'\0' * 4) + chaddr + b'\0' * 192 + b'\x63\x82\x53\x63' + b'\x35\x01\x03\xff'
+    udp = struct.pack('!HHHH', sport, dport, 8 + len(bootp), 0) + bootp
+    ip = struct.pack('!BBHHHBBH4s4s', 0x45, 0, 20 + len(udp), 0x4242, 0, 64, 17, 0, b'\0' * 4, b'\xff' * 4)
+    csum = sum(struct.unpack('!10H', ip)); csum = (csum & 0xffff) + (csum >> 16); csum = (csum & 0xffff) + (csum >> 16)
+    ip = ip[:10] + struct.pack('!H', ~csum & 0xffff) + ip[12:]
+    r = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+    r.bind(('eth0', 0))
+    for _ in range(3):
+        r.send(b'\xff' * 6 + src_mac + b'\x08\x00' + ip + udp)
 PY
 cat > "$RUN_DIR/listen.py" <<'PY'
 import socket, sys
@@ -136,70 +171,82 @@ s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 s.bind(('0.0.0.0', int(sys.argv[1])))
 s.settimeout(5)
 try:
-    data, addr = s.recvfrom(100)
-    print('RECEIVED', addr[0])
+    data, addr = s.recvfrom(1000)
+    print('RECEIVED')
 except socket.timeout:
     print('NOTHING')
 PY
 pct push "$ID" "$RUN_DIR/arp.py" /root/arp.py > /dev/null
-pct push "$ID" "$RUN_DIR/udp.py" /root/udp.py > /dev/null
+pct push "$ID" "$RUN_DIR/dhcp.py" /root/dhcp.py > /dev/null
 
 fdb_dev() { bridge fdb show br "$TB" | grep -i "$GWMAC" | grep -v permanent | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}'; }
-gw_relearn() { ip netns exec "$GWNS" ping -c1 -W1 "$T_NODE" > /dev/null 2>&1; ping -c1 -W1 -I "$TB" "$T_GW" > /dev/null 2>&1; }
-neigh_mac() { ip neigh show "$T_GW" dev "$TB" | awk '{for (i = 1; i <= NF; i++) if ($i == "lladdr") print $(i + 1)}'; }
-listen() { # listen PORT -> RECEIVED/NOTHING, with the clone sending after the listener is up
+learn() { ip netns exec "$GWNS" ping -c1 -W1 "$T_NODE" > /dev/null 2>&1; ping -c1 -W1 -I "$TB" "$T_GW" > /dev/null 2>&1; ping -c1 -W1 -I "$TB" "$T_THIRD" > /dev/null 2>&1; }
+neigh_mac() { ip neigh show "$1" dev "$TB" | awk '{for (i = 1; i <= NF; i++) if ($i == "lladdr") print $(i + 1)}'; }
+listen() { # listen PORT CMD...: the gateway side's view of what the clone sent
   ip netns exec "$GWNS" python3 "$RUN_DIR/listen.py" "$1" > "$RUN_DIR/listen.out" 2>&1 &
   local lp=$!
   sleep 1
-  "${@:2}"
+  "${@:2}" > /dev/null 2>&1
   wait "$lp"
   cat "$RUN_DIR/listen.out"
 }
-attacks() { # attacks LABEL: the three attacks once; sets MAC_RES BC_RES ARP_RES
-  local label=$1 out
-  gw_relearn; sleep 1
+attacks() { # attacks LABEL: sets MAC_RES RAW_RES SOCK_RES ARP_GW ARP_THIRD
+  local label=$1 before
+  learn; sleep 1
   # 1. MAC spoof: the clone takes the gateway's MAC and talks.
   pct exec "$ID" -- ip link set dev eth0 address "$GWMAC" > /dev/null 2>&1
   pct exec "$ID" -- ping -c3 -W1 "$T_NODE" > /dev/null 2>&1
   MAC_RES=$(fdb_dev)
   echo "   [$label] bridge fdb: $GWMAC is on port '${MAC_RES:-none}' (the gateway's own port is $GWH, the clone's is $PORT)"
   pct exec "$ID" -- ip link set dev eth0 address "$CMAC" > /dev/null 2>&1
-  gw_relearn; sleep 1
-  # 2. A rogue DHCP offer to everyone (UDP 67 -> 68 to 255.255.255.255), seen from the gateway's netns.
-  out=$(listen 68 pct exec "$ID" -- python3 /root/udp.py 67 68)
-  BC_RES=${out%% *}
-  echo "   [$label] rogue DHCP offer to 255.255.255.255:68, the gateway side: $out"
-  # 2b. A DHCP client's own request (68 -> 67) must still get through, rate-limited.
-  out=$(listen 67 pct exec "$ID" -- python3 /root/udp.py 68 67)
-  BC_OK=${out%% *}
-  echo "   [$label] DHCP client request 255.255.255.255:68->67, the gateway side: $out"
-  # 3. ARP: claim the gateway's address.
-  ping -c1 -W1 -I "$TB" "$T_GW" > /dev/null 2>&1
-  local before after
-  before=$(neigh_mac)
+  learn; sleep 1
+  # 2. DHCP from the clone, seen from the gateway's netns: a hand-made request with a foreign client
+  #    hardware address and source 0.0.0.0, and an ordinary broadcast from the clone's own address.
+  RAW_RES=$(listen 67 pct exec "$ID" -- python3 /root/dhcp.py raw 68 67)
+  SOCK_RES=$(listen 67 pct exec "$ID" -- python3 /root/dhcp.py sock 68 67)
+  echo "   [$label] DHCP request, foreign client id, source 0.0.0.0: the gateway side got $RAW_RES; broadcast from the clone's address: $SOCK_RES"
+  # 3. ARP: claim the gateway's address, then a third host's.
+  before=$(neigh_mac "$T_GW")
   pct exec "$ID" -- python3 /root/arp.py eth0 "$CMAC" "$T_GW" "$T_NODE" > /dev/null 2>&1
-  sleep 1
-  after=$(neigh_mac)
-  ARP_RES=$after
-  echo "   [$label] node's neighbour entry for $T_GW: before $before, after claiming it from the clone: $after"
+  sleep 1; ARP_GW=$(neigh_mac "$T_GW")
+  echo "   [$label] node's neighbour entry for the gateway $T_GW: before $before, after the clone claimed it: $ARP_GW"
+  before=$(neigh_mac "$T_THIRD")
+  pct exec "$ID" -- python3 /root/arp.py eth0 "$CMAC" "$T_THIRD" "$T_NODE" > /dev/null 2>&1
+  sleep 1; ARP_THIRD=$(neigh_mac "$T_THIRD")
+  echo "   [$label] node's neighbour entry for a third host $T_THIRD: before $before, after the clone claimed it: $ARP_THIRD"
 }
+lc() { printf '%s' "${1,,}"; }
 
 echo "-- control: the filter is OFF (the attacks should work)"
 nft delete table bridge yantrik_ci > /dev/null 2>&1
 attacks control
-c_mac=$MAC_RES c_bc=$BC_RES c_arp=$ARP_RES
-[ "$c_mac" = "$PORT" ] && echo "   control: the MAC spoof moved the gateway's entry to the clone's port" || echo "   control: the MAC spoof did not take (fdb on '${c_mac:-none}')"
-[ "$c_bc" = RECEIVED ] && echo "   control: the rogue broadcast got through" || echo "   control: the rogue broadcast did not arrive"
-[ "${c_arp,,}" = "${CMAC,,}" ] && echo "   control: the ARP claim poisoned the node's neighbour entry" || echo "   control: the ARP claim did not change the entry (${c_arp:-none})"
+[ "$MAC_RES" = "$PORT" ] && echo "   control: the MAC spoof moved the gateway's entry to the clone's port" || echo "   control: the MAC spoof did not take (fdb on '${MAC_RES:-none}')"
+[ "$RAW_RES" = RECEIVED ] && echo "   control: the foreign-client DHCP request got through" || echo "   control: the foreign DHCP request did not arrive"
+[ "$(lc "$ARP_GW")" = "$(lc "$CMAC")" ] && echo "   control: the ARP claim poisoned the gateway's entry" || echo "   control: the gateway ARP claim did not change the entry"
+[ "$(lc "$ARP_THIRD")" = "$(lc "$CMAC")" ] && echo "   control: the ARP claim poisoned the third host's entry" || echo "   control: the third-host ARP claim did not change the entry"
 
-echo "-- with the filter ON"
-host_filter_render "$T_GW" "$T_GW" "$T_NODE" 203.0.113.9 || { echo "FAIL: render"; exit 1; }
+echo "-- filter ON, the clone NOT pinned (a clone the controller has not pinned has no network)"
+host_filter_render "$T_GW" "$T_GW" "$T_CLONE" 203.0.113.9 || { echo "FAIL: render"; exit 1; }
+dns_probe() { ip netns exec "$GWNS" python3 "$RUN_DIR/listen.py" 53 > "$RUN_DIR/listen.out" 2>&1 & local lp=$!; sleep 1
+  pct exec "$ID" -- python3 -c "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); [s.sendto(b'q', ('$T_GW', 53)) for _ in range(3)]" > /dev/null 2>&1; wait "$lp"; cat "$RUN_DIR/listen.out"; }
+if [ "$(dns_probe)" = RECEIVED ]; then bad "an unpinned clone's DNS-style packet reached the resolver"; else pass "an unpinned clone reaches nothing (a packet to the resolver, which a pinned clone may send, never arrives)"; fi
+if pct exec "$ID" -- ping -c2 -W1 "$T_NODE" > /dev/null 2>&1; then bad "an unpinned clone reached the node"; else pass "an unpinned clone cannot reach the node either"; fi
+echo "   drops of unpinned ports: $(nft list chain bridge yantrik_ci prerouting | grep -E 'iifname != @clone_ports' | sed 's/.*counter //')"
+echo "   a port outside ci_ports is untouched: CT 530's port in ci_ports? $(nft get element bridge yantrik_ci ci_ports "{ veth530i0 }" > /dev/null 2>&1 && echo yes || echo no)"
+
+echo "-- filter ON, the clone pinned"
 host_filter_add_clone "$ID" || { echo "FAIL: pin"; exit 1; }
+learn
+pct exec "$ID" -- ping -c1 -W1 "$T_GW" > /dev/null 2>&1   # resolves the gateway's MAC (the ping itself is dropped: the gateway is private)
+nb=$(pct exec "$ID" -- ip neigh show "$T_GW" dev eth0 | awk '{for (i = 1; i <= NF; i++) if ($i == "lladdr") print $(i + 1)}')
+[ "$(lc "$nb")" = "$(lc "$GWMAC")" ] && pass "a pinned clone, with its own MAC and address, resolves the gateway by ARP ($nb)" || bad "a pinned clone cannot ARP for the gateway (neighbour '${nb:-none}')"
+[ "$(dns_probe)" = RECEIVED ] && pass "a pinned clone's packet to its resolver (UDP 53) arrives" || bad "a pinned clone cannot send DNS to the resolver"
 attacks filtered
 [ "$MAC_RES" = "$GWH" ] && pass "MAC spoof of the gateway: bridge fdb still shows the uplink port $GWH" || bad "MAC spoof: fdb shows '${MAC_RES:-none}'"
-[ "$BC_RES" = NOTHING ] && pass "broadcast to 255.255.255.255:68 (rogue DHCP offer) is dropped" || bad "the rogue broadcast got through"
-[ "$BC_OK" = RECEIVED ] && pass "a DHCP client request (68 -> 67) still reaches the gateway" || bad "DHCP client request blocked"
-[ "$ARP_RES" = "$GWMAC" ] && pass "ARP claiming the gateway: node's neighbour entry still has the gateway's MAC" || bad "ARP claim changed the node's entry to '${ARP_RES:-none}'"
+[ "$RAW_RES" = NOTHING ] && pass "DHCP with a foreign client id from source 0.0.0.0 is dropped" || bad "the foreign DHCP request got through"
+[ "$SOCK_RES" = NOTHING ] && pass "a broadcast from the clone's own address to port 67 is dropped" || bad "the broadcast got through"
+[ "$(lc "$ARP_GW")" = "$(lc "$GWMAC")" ] && pass "ARP claiming the gateway: the node's neighbour entry keeps the gateway's MAC" || bad "ARP claim changed the gateway's entry to '${ARP_GW:-none}'"
+[ "$(lc "$ARP_THIRD")" = "$(lc "$GWMAC")" ] && pass "ARP claiming a third host ($T_THIRD): the node's neighbour entry is unchanged" || bad "ARP claim changed the third host's entry to '${ARP_THIRD:-none}'"
 echo "   drop counters (prerouting, forward):"
 nft list chain bridge yantrik_ci prerouting | grep -E 'counter packets' | sed 's/^/     /'
 nft list chain bridge yantrik_ci forward | grep -E 'counter packets' | sed 's/^/     /'

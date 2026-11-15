@@ -1,46 +1,51 @@
-# Host-side egress filter for the CI clones (#1252 reviews R3, H1). Loaded on the node by the
+# Host-side egress filter for the CI clones (#1252 reviews R3, H1, N1, N3). Loaded on the node by the
 # controller before every clone (lib/host.sh), which refuses to clone if it is not in place. It is
 # the layer that does not depend on the CT's own root: a job that reaches root inside its CT and
 # flushes the CT's rules still meets this one, at L2 as well as L3.
 #
-# It matches ONLY frames entering a bridge from a port in `clone_ports`, which holds the exact host
-# side name of the running clone (veth<ID>i0) and nothing between jobs; every other port, guest and
-# CT 530 included, takes the first rule of each chain. `$resolvers`, `$ownpub`, `$gateway`, `$nodeip`
-# and `$arpguard` are defined by the loader. The controller adds the clone to `clone_ports` and to
-# `clone_ok` (its port and its own MAC, from `pct config`) after the clone and before `pct start`.
+# Three port sets. `ci_ports` is constant: every port a clone can ever have (veth9600i0 ..
+# veth9699i0), filled by the loader. `clone_ports` and `clone_ok` are the running clone's port and
+# its own MAC, added by the controller after the clone exists and before `pct start`, and removed
+# only after the CT is gone. A port in `ci_ports` that is not pinned is DROPPED, so a clone that
+# survives its job, or a table reload, has no network at all (N1). Every other port, guest and
+# CT 530 included, takes the first rule of each chain and is untouched.
 #
-# A clone may: use ARP (as its own MAC, and never for the gateway, the resolvers or the node's
-# address), ask DHCP for its lease (at most a few times a minute), ask the node's resolvers for names, and send
-# IPv4 to the public internet. It may not: send with another MAC (which would poison the bridge's
-# forwarding table), send to private, CGNAT, link-local, multicast, loopback, broadcast or reserved
-# destinations, to our own public addresses, to the node itself, or anything but IPv4.
+# The clone has one fixed address, `$cloneip` (from /etc/yantrik-ci/clone-net), and no DHCP: nothing
+# from a clone may carry another source IP (not even 0.0.0.0 for DHCP), and ARP may only speak for
+# that address, so it can neither poison another host's entry nor starve or release a lease (N3).
+# `$resolvers`, `$ownpub`, `$gateway` and `$cloneip` are defined by the loader.
+#
+# A clone may: use ARP as its own MAC and address, ask the node's resolvers for names, and send IPv4
+# from its address to the public internet. It may not: send with another MAC (which would poison the
+# bridge's forwarding table) or address, send DHCP, send to private, CGNAT, link-local, multicast,
+# loopback, broadcast or reserved destinations, to our own public addresses, to the node itself, or
+# anything but IPv4.
 
 table bridge yantrik_ci
 delete table bridge yantrik_ci
 
 table bridge yantrik_ci {
+  set ci_ports { type ifname; }
   set clone_ports { type ifname; }
   set clone_ok { type ifname . ether_addr; }
 
   # Before the bridge learns the source MAC (br_handle_frame_finish runs after this hook).
   chain prerouting {
     type filter hook prerouting priority -200; policy accept;
-    iifname != @clone_ports accept
+    iifname != @ci_ports accept
+    iifname != @clone_ports counter drop
     iifname . ether saddr != @clone_ok counter drop
     ether type arp iifname . arp saddr ether != @clone_ok counter drop
-    ether type arp arp saddr ip $arpguard counter drop
-    # DHCP starvation: a client asks a few times a minute. The limit sits here, where a frame is seen
-    # once; in `forward` a broadcast is seen once per port it floods to, and a limit there starves
-    # the legitimate client too.
-    udp sport 68 udp dport 67 limit rate over 10/minute burst 5 packets counter drop
+    ether type arp arp saddr ip != { $cloneip, 0.0.0.0 } counter drop
+    ether type ip ip saddr != $cloneip counter drop
   }
 
   chain forward {
     type filter hook forward priority filter; policy accept;
-    iifname != @clone_ports accept
+    iifname != @ci_ports accept
+    iifname != @clone_ports drop
     ether type arp accept
     ether type != ip drop
-    ip daddr { 255.255.255.255, $gateway } udp sport 68 udp dport 67 accept
     ip daddr $resolvers udp dport 53 accept
     ip daddr $resolvers tcp dport 53 accept
     ip daddr $ownpub counter drop
@@ -53,7 +58,8 @@ table bridge yantrik_ci {
   # Frames for the node itself (its API, its ssh): a clone never talks to the node.
   chain input {
     type filter hook input priority filter; policy accept;
-    iifname != @clone_ports accept
+    iifname != @ci_ports accept
+    iifname != @clone_ports drop
     ether type arp accept
     counter drop
   }

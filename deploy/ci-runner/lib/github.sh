@@ -223,7 +223,7 @@ check_job() {
 # Returns 0 admitted or nothing to say, 1 if it was a job this runner must not have taken.
 audit_job() {
   if ! find_job "per_page=30"; then
-    log "audit: runner $RUNNER_NAME: no job of this runner found among the newest runs"
+    log "AUDIT-MISSING: runner $RUNNER_NAME: no job of this runner found among the newest runs"
     return 0
   fi
   if job_verdict; then

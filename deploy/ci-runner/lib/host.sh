@@ -71,44 +71,104 @@ pool_ok() {
   return 1
 }
 
-# --- the host-side filter (R3, H1) -----------------------------------------------------------
+# --- the clone's fixed address (N3) --------------------------------------------------------
 
-# host_filter_render RESOLVERS GATEWAY NODEIP OWN: load host-egress.nft with those values (comma
-# lists, IPv4). Atomic: the table is replaced in one `nft -f`. The sets start empty; clones are
-# added by host_filter_add_clone.
+CLONE_IP="" CLONE_LEN="" CLONE_GW=""
+
+# clone_net_check FILE NODE_CIDR GATEWAY RESOLVERS: read the one line `ip=<addr>/<len>,gw=<gw>`.
+# Strict format; the address must be inside the node's subnet and not the network or broadcast
+# address, the gateway, the node, or a resolver; the gateway must be the node's own. Sets CLONE_IP,
+# CLONE_LEN and CLONE_GW, or returns non-zero with the reason logged. Fail closed.
+clone_net_check() {
+  local file=$1 nodecidr=$2 gw=$3 res=$4 line r
+  [ -f "$file" ] || { log "no $file: the clones' fixed address is not set"; return 1; }
+  trusted_path "$(dirname "$file")" && trusted_path "$file" || return 1
+  line=$(< "$file")
+  [[ $line =~ ^ip=([0-9]{1,3}(\.[0-9]{1,3}){3})/([0-9]{1,2}),gw=([0-9]{1,3}(\.[0-9]{1,3}){3})$ ]] ||
+    { log "$file is not one line 'ip=<addr>/<len>,gw=<gw>'"; return 1; }
+  CLONE_IP=${BASH_REMATCH[1]} CLONE_LEN=${BASH_REMATCH[3]} CLONE_GW=${BASH_REMATCH[4]}
+  if ! r=$(python3 - "$CLONE_IP" "$CLONE_LEN" "$CLONE_GW" "$nodecidr" "$gw" "$res" 2>&1 << 'PY'
+import ipaddress, sys
+ip, ln, cgw, nodecidr, gw, res = sys.argv[1:7]
+try:
+    net = ipaddress.ip_interface(nodecidr).network
+    a = ipaddress.ip_address(ip)
+    node = ipaddress.ip_interface(nodecidr).ip
+    if int(ln) != net.prefixlen: sys.exit("prefix /%s is not the node's /%d" % (ln, net.prefixlen))
+    if a not in net: sys.exit("%s is outside %s" % (ip, net))
+    if a in (net.network_address, net.broadcast_address): sys.exit("%s is the network or broadcast address" % ip)
+    if ip == cgw or ip == gw or a == node: sys.exit("%s is the gateway or the node" % ip)
+    if cgw != gw: sys.exit("gw %s is not the node's gateway %s" % (cgw, gw))
+    if ip in [x for x in res.split(",") if x]: sys.exit("%s is a resolver" % ip)
+except ValueError as e:
+    sys.exit(str(e))
+PY
+  ); then
+    log "REFUSING $file: $r"
+    CLONE_IP="" CLONE_LEN="" CLONE_GW=""
+    return 1
+  fi
+}
+
+# The node's own values for the check above (what the controller uses).
+node_values() {
+  NODE_CIDR=$(ip -4 -o addr show "${NODE_BRIDGE:-vmbr0}" | awk '{print $4; exit}')
+  NODE_GW=${YANTRIK_CI_GATEWAY:-$(ip -4 route show default | awk '{print $3; exit}')}
+  NODE_RES=$(awk '/^nameserver[ \t]/ {print $2}' /etc/resolv.conf | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | paste -sd, -)
+  NODE_OWN=$(grep -vE '^[[:space:]]*(#|$)' "$OWN_PUBLIC_FILE" 2> /dev/null | paste -sd, -)
+  [ -n "$NODE_CIDR" ] && [ -n "$NODE_GW" ] && [ -n "$NODE_RES" ] && [ -n "$NODE_OWN" ] ||
+    { log "need the node's address (${NODE_CIDR:-none}), gateway (${NODE_GW:-none}), resolvers (${NODE_RES:-none}) and $OWN_PUBLIC_FILE (${NODE_OWN:-empty})"; return 1; }
+}
+
+clone_net_load() {
+  node_values || return 1
+  clone_net_check "$CLONE_NET_FILE" "$NODE_CIDR" "$NODE_GW" "$NODE_RES"
+}
+
+# clone_set_net ID: give the clone its fixed address before it starts: static `ip=`/`gw=` in its net0,
+# its own MAC kept. PVE then writes a static config and no DHCP client runs in the CT.
+clone_set_net() {
+  local id=$1 mac
+  mac=$(pct config "$id" 2> /dev/null | sed -n '/^net0:/s/.*hwaddr=\([0-9A-Fa-f:]\{17\}\).*/\1/p')
+  [ -n "$mac" ] || { log "CT $id: no MAC in its net0"; return 1; }
+  if ! pct set "$id" --net0 "name=eth0,bridge=${CLONE_BRIDGE:-vmbr0},hwaddr=$mac,ip=$CLONE_IP/$CLONE_LEN,gw=$CLONE_GW,type=veth" > /dev/null 2>&1 ||
+    ! pct config "$id" | grep '^net0:' | grep -q "ip=$CLONE_IP/$CLONE_LEN"; then
+    log "CT $id: could not set its fixed address"
+    return 1
+  fi
+}
+
+# --- the host-side filter (R3, H1, N1) -----------------------------------------------------
+
+# host_filter_render RESOLVERS GATEWAY CLONEIP OWN: load host-egress.nft with those values (comma
+# lists, IPv4) and fill `ci_ports` with every port a clone can have. Atomic: the table is replaced
+# in one `nft -f`. The pin sets start empty; host_filter_add_clone fills them. A clone not pinned
+# has no network.
 host_filter_render() {
-  local res=$1 gw=$2 nodeip=$3 own=$4 pre
+  local res=$1 gw=$2 cloneip=$3 own=$4 pre ports="" i
   [ -f "$LIB_DIR/host-egress.nft" ] || { log "host filter: $LIB_DIR/host-egress.nft is missing"; return 1; }
   trusted_path "$LIB_DIR/host-egress.nft" || return 1
+  for ((i = ID_MIN; i <= ID_MAX; i++)); do ports+="${ports:+, }$(clone_port "$i")"; done
   pre=$(mktemp "$RUN_DIR/hostnft.XXXXXX")
   {
     printf 'define resolvers = { %s }\n' "${res//,/, }"
     printf 'define ownpub = { %s }\n' "${own//,/, }"
     printf 'define gateway = %s\n' "$gw"
-    printf 'define nodeip = %s\n' "$nodeip"
-    printf 'define arpguard = { %s, %s, %s }\n' "$gw" "${res//,/, }" "$nodeip"
+    printf 'define cloneip = %s\n' "$cloneip"
     printf 'include "%s/host-egress.nft"\n' "$LIB_DIR"
+    printf 'add element bridge yantrik_ci ci_ports { %s }\n' "$ports"
   } > "$pre"
   if ! nft -f "$pre" 2> /dev/null; then rm -f "$pre"; log "host filter: nft refused the ruleset"; return 1; fi
   rm -f "$pre"
   host_filter_ok
 }
 
-# host_filter_load: the same with the node's own values: its DNS servers, default gateway, vmbr0
-# address, and our own public addresses from $OWN_PUBLIC_FILE. Returns non-zero, and the caller
-# refuses the clone, if any of it is missing or not root's alone.
+# host_filter_load: the same with the node's own values. Needs clone_net_load first (CLONE_IP).
 host_filter_load() {
-  local res gw nodeip own
   trusted_path "$(dirname "$OWN_PUBLIC_FILE")" && trusted_path "$OWN_PUBLIC_FILE" || return 1
-  res=$(awk '/^nameserver[ \t]/ {print $2}' /etc/resolv.conf | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | paste -sd, -)
-  gw=$(ip -4 route show default | awk '{print $3; exit}')
-  nodeip=$(ip -4 -o addr show "${NODE_BRIDGE:-vmbr0}" | awk '{sub(/\/.*/, "", $4); print $4; exit}')
-  own=$(grep -vE '^[[:space:]]*(#|$)' "$OWN_PUBLIC_FILE" 2> /dev/null | paste -sd, -)
-  if [ -z "$res" ] || [ -z "$gw" ] || [ -z "$nodeip" ] || [ -z "$own" ]; then
-    log "host filter: need the node's resolvers (${res:-none}), gateway (${gw:-none}), address (${nodeip:-none}) and $OWN_PUBLIC_FILE (${own:-empty})"
-    return 1
-  fi
-  host_filter_render "$res" "$gw" "$nodeip" "$own"
+  node_values || return 1
+  [ -n "$CLONE_IP" ] || { log "host filter: the clone's address is not set"; return 1; }
+  host_filter_render "$NODE_RES" "$NODE_GW" "$CLONE_IP" "$NODE_OWN"
 }
 
 # The host-side port name of a clone.
@@ -130,6 +190,9 @@ host_filter_add_clone() {
   host_filter_ok "$id"
 }
 
+# Drop a clone's pin. Only once the CT is gone (the caller checks): a pin removed from a CT that
+# still runs would not matter now (an unpinned port is dropped), but the pin is not ours to remove
+# while the CT exists.
 host_filter_remove_clone() {
   local id=$1 port mac
   port=$(clone_port "$id")
@@ -145,12 +208,15 @@ host_filter_ok() {
   local fwd pre
   fwd=$(nft list chain bridge yantrik_ci forward 2> /dev/null) || { log "host filter: the table is not loaded"; return 1; }
   pre=$(nft list chain bridge yantrik_ci prerouting 2> /dev/null) || { log "host filter: the table is not loaded"; return 1; }
-  if ! { grep -q 'iifname != @clone_ports accept' <<< "$fwd" && grep -q 'ether type != ip drop' <<< "$fwd" &&
-    grep -qE '224.0.0.0/3|240.0.0.0/4' <<< "$fwd" && grep -q 'iifname . ether saddr != @clone_ok' <<< "$pre" &&
-    grep -q 'arp saddr ip' <<< "$pre"; }; then
+  if ! { grep -q 'iifname != @ci_ports accept' <<< "$fwd" && grep -q 'iifname != @clone_ports drop' <<< "$fwd" &&
+    grep -q 'ether type != ip drop' <<< "$fwd" && grep -qE '224\.0\.0\.0/3|240\.0\.0\.0/4' <<< "$fwd" &&
+    grep -q 'iifname . ether saddr != @clone_ok' <<< "$pre" && grep -q 'ip saddr !=' <<< "$pre" &&
+    grep -q 'arp saddr ip !=' <<< "$pre"; }; then
     log "host filter: the table is not what was loaded"
     return 1
   fi
+  nft get element bridge yantrik_ci ci_ports "{ $(clone_port "$ID_MIN") }" > /dev/null 2>&1 ||
+    { log "host filter: ci_ports is empty"; return 1; }
   if [ -n "${1:-}" ]; then
     nft get element bridge yantrik_ci clone_ports "{ $(clone_port "$1") }" > /dev/null 2>&1 ||
       { log "host filter: CT $1 is not pinned"; return 1; }

@@ -37,12 +37,16 @@ LOG_DIR=${YANTRIK_CI_LOG_DIR:-/var/log/yantrik-ci}
 RUN_DIR=${YANTRIK_CI_RUN_DIR:-/run/yantrik-ci}
 LIB_DIR=${YANTRIK_CI_LIB:-/usr/local/lib/yantrik-ci}
 OWN_PUBLIC_FILE=${YANTRIK_CI_OWN_PUBLIC:-/etc/yantrik-ci/own-public-ips}
+CLONE_NET_FILE=${YANTRIK_CI_CLONE_NET:-/etc/yantrik-ci/clone-net} # one line: ip=<addr>/<len>,gw=<gw>
+CLONE_BRIDGE=${YANTRIK_CI_BRIDGE:-vmbr0}
 TEMPLATE_ID=${YANTRIK_CI_TEMPLATE:-9530}
 POOL=${YANTRIK_CI_POOL:-pve/data}
 MIN_MEM_KB=${YANTRIK_CI_MIN_MEM_KB:-41943040} # 40 GiB, checked before a runner and while it idles
 JOB_LIMIT_S=${YANTRIK_CI_JOB_LIMIT:-10800}    # 3 h from the moment the runner takes a job
 IDLE_LIMIT_S=${YANTRIK_CI_IDLE_LIMIT:-10800}  # 3 h waiting for one: then a fresh runner
 IDLE_MIN_MEM_KB=${YANTRIK_CI_IDLE_MIN_MEM_KB:-$MIN_MEM_KB} # an idle runner is recycled below this
+APILOST_S=${YANTRIK_CI_APILOST:-300} # no answer from GitHub for this long: end the CT
+JOB_LOOKS=${YANTRIK_CI_LOOKS:-4} # looks for the job before it is refused (N4)
 POLL_S=${YANTRIK_CI_POLL:-10} # about 360 GitHub calls an hour while a runner idles
 RUNLOG_KB=${YANTRIK_CI_RUNLOG_KB:-51200} # 50 MB cap on a run's log (review N4)
 RUNLOG_DAYS=${YANTRIK_CI_RUNLOG_DAYS:-30}
@@ -56,6 +60,8 @@ ID_MAX=9699
 LOG_FILE=$LOG_DIR/controller.log
 STOP=0
 CHILD_PID=
+RUNNER_PID=
+SURVIVOR=0
 CUR_ID=
 GROUP_ID=
 SWEPT=0
@@ -80,18 +86,15 @@ nap() {
   CHILD_PID=
 }
 
-# trusted_path PATH: root-owned and not writable by group or others. Root sources these files, splices
-# /etc/yantrik-ci/own-public-ips into an nft ruleset and includes host-egress.nft, so anything that
-# is not root's alone is refused (L3). Used here before sourcing and by lib/host.sh.
-trusted_path() {
-  local m
-  m=$(stat -c '%u %a' "$1" 2> /dev/null) || { log "cannot stat $1"; return 1; }
-  if [ "${m%% *}" != 0 ] || [ $((8#${m#* } & 8#022)) -ne 0 ]; then
-    log "REFUSING to use $1: owner/mode '$m' (need root, not group- or other-writable)"
-    return 1
-  fi
-}
-for f in "$LIB_DIR" "$LIB_DIR/github.sh" "$LIB_DIR/host.sh"; do
+# The libraries are sourced as root, so they must be root's alone (L3). trust.sh is the check itself:
+# its own owner and mode are tested here, in line, before it is loaded; it then tests the rest.
+for f in "$LIB_DIR" "$LIB_DIR/trust.sh"; do
+  m=$(stat -c '%u %a' "$f" 2> /dev/null) || { log "cannot stat $f"; exit 1; }
+  if [ "${m%% *}" != 0 ] || [ $((8#${m#* } & 8#022)) -ne 0 ]; then log "REFUSING to use $f: owner/mode '$m'"; exit 1; fi
+done
+# shellcheck source=lib/trust.sh
+. "$LIB_DIR/trust.sh"
+for f in "$LIB_DIR/github.sh" "$LIB_DIR/host.sh"; do
   trusted_path "$f" || exit 1
 done
 
@@ -158,13 +161,15 @@ idle_recycle_ok() {
 }
 
 # wait_for_job PID ID: until the runner exits, the idle limit passes with no job, memory runs short
-# while it idles, its job is refused, the host filter is lost, or the job has run past its limit.
-# Every POLL_S: the host filter is checked (M4); the runner is asked whether it is busy; once it is,
-# its job is looked up on GitHub by runner_name until it is judged (M2). Sets WHY to
-# idle|lowmem|limit|stop|refused|filter|"" (the runner exited), and VERDICT_DONE.
+# while it idles, its job is refused, the host filter is lost, GitHub has not answered for APILOST_S,
+# or the job has run past its limit. Every POLL_S: the host filter is checked (M4); the runner is
+# asked whether it is busy; once it is, its job is looked up on GitHub by runner_name until it is
+# judged (M2); and if GitHub cannot say whether it is busy, the job is looked up anyway (N2). Sets WHY
+# to idle|lowmem|limit|stop|refused|filter|apilost|"" (the runner exited), and VERDICT_DONE.
 wait_for_job() {
-  local pid=$1 id=$2 t0 busy_since="" polled_ok=0 now st tries=0
+  local pid=$1 id=$2 t0 busy_since="" last_ok now st tries=0 cj
   t0=$(date +%s)
+  last_ok=$t0
   WHY=
   VERDICT_DONE=0
   while kill -0 "$pid" 2> /dev/null; do
@@ -174,39 +179,49 @@ wait_for_job() {
     if [ "$STOP" -ne 0 ]; then WHY=stop; return; fi
     kill -0 "$pid" 2> /dev/null || break
     if ! host_filter_ok "$id"; then log "the host filter was lost while CT $id ran: ending it"; WHY=filter; return; fi
-    if [ -z "$busy_since" ]; then
-      st=0
-      runner_busy || st=$?
-      if [ $st -eq 0 ]; then busy_since=$now; log "runner $RUNNER_NAME took a job"; fi
-      if [ $st -ne 2 ]; then polled_ok=1; fi
-    fi
-    # The job is looked up on GitHub, out of the workflow's reach: found and wrong, or not found
-    # in two looks, is a refusal (R1).
-    if [ -n "$busy_since" ] && [ "$VERDICT_DONE" -eq 0 ]; then
-      st=0
-      check_job || st=$?
-      case $st in
-        0) VERDICT_DONE=1; log "job admitted: $(job_audit_line)" ;;
+    st=0
+    runner_busy || st=$?
+    if [ $st -ne 2 ]; then last_ok=$now; fi
+    if [ $st -eq 0 ] && [ -z "$busy_since" ]; then busy_since=$now; log "runner $RUNNER_NAME took a job"; fi
+    # The job is looked up on GitHub, out of the workflow's reach: found and wrong, or not found in
+    # JOB_LOOKS looks, is a refusal (R1). When GitHub cannot say whether the runner is busy, look
+    # anyway: a job found is judged at once (N2).
+    if { [ -n "$busy_since" ] || [ $st -eq 2 ]; } && [ "$VERDICT_DONE" -eq 0 ]; then
+      cj=0
+      check_job || cj=$?
+      case $cj in
+        0)
+          VERDICT_DONE=1
+          [ -n "$busy_since" ] || { busy_since=$now; last_ok=$now; log "runner $RUNNER_NAME took a job"; }
+          log "job admitted: $(job_audit_line)"
+          ;;
         1) log "REFUSING the job of runner $RUNNER_NAME: $(job_audit_line): $JOB_VERDICT"; WHY=refused; return ;;
         *)
-          tries=$((tries + 1))
-          if [ "$tries" -ge 2 ]; then
-            log "REFUSING the job of runner $RUNNER_NAME: it could not be found on GitHub in $tries looks"
-            WHY=refused
-            return
+          if [ -n "$busy_since" ]; then
+            tries=$((tries + 1))
+            if [ "$tries" -ge "$JOB_LOOKS" ]; then
+              log "REFUSING the job of runner $RUNNER_NAME: it could not be found on GitHub in $tries looks"
+              WHY=refused
+              return
+            fi
           fi
           ;;
       esac
     fi
+    if [ $((now - last_ok)) -ge "$APILOST_S" ]; then
+      log "GitHub has not answered about runner $RUNNER_NAME for $((now - last_ok)) s: ending CT $id"
+      WHY=apilost
+      return
+    fi
     if [ -z "$busy_since" ] && ! mem_idle_ok && idle_recycle_ok; then WHY=lowmem; return; fi
     if [ -n "$busy_since" ]; then
       if [ $((now - busy_since)) -ge "$JOB_LIMIT_S" ]; then WHY=limit; return; fi
-    elif [ "$polled_ok" -eq 1 ]; then
-      if [ $((now - t0)) -ge "$IDLE_LIMIT_S" ] && idle_recycle_ok; then WHY=idle; return; fi
-    elif [ $((now - t0)) -ge "$JOB_LIMIT_S" ]; then
-      WHY=limit # GitHub cannot be asked about the runner: fall back to one plain clock
+    elif [ $((now - t0)) -ge "$IDLE_LIMIT_S" ] && idle_recycle_ok; then
+      WHY=idle
       return
     fi
+    # An absolute cap, whatever GitHub says.
+    if [ $((now - t0)) -ge $((IDLE_LIMIT_S + JOB_LIMIT_S)) ]; then WHY=limit; return; fi
   done
 }
 
@@ -217,6 +232,7 @@ cycle() {
   if [ "$SWEPT" -eq 0 ]; then sweep_runners; SWEPT=1; fi
   id=$(free_id) || { log "no free CT id in $ID_MIN-$ID_MAX"; return 1; }
   pool_ok || return 1
+  clone_net_load || { log "REFUSING to clone: the clones' fixed address is not set or not valid"; return 1; }
   host_filter_load || { log "REFUSING to clone: the host-side firewall is not in place"; return 1; }
   request_jit || return 1
 
@@ -232,7 +248,13 @@ cycle() {
   fi
   log "CT $id cloned ($CLONE_MODE clone) in $(($(date +%s) - t0)) s"
 
-  # Pin the clone's port and own MAC in the host filter before it exists on the bridge (H1).
+  # Its fixed address (no DHCP), then its port and own MAC pinned in the host filter, before it
+  # exists on the bridge (H1, N3).
+  if ! clone_set_net "$id"; then
+    JIT=
+    finish_ct "$id" "$t0" "net-failed"
+    return 1
+  fi
   if ! host_filter_add_clone "$id"; then
     log "REFUSING to start CT $id: the host filter could not pin it"
     JIT=
@@ -277,13 +299,13 @@ cycle() {
     pct exec "$id" -- /usr/local/sbin/yantrik-ci-launch 2>&1
     echo $? > "$rcfile"
   ) | head -c $((RUNLOG_KB * 1024)) >> "$runlog" &
-  CHILD_PID=$!
-  wait_for_job "$CHILD_PID" "$id"
+  RUNNER_PID=$!
+  wait_for_job "$RUNNER_PID" "$id"
 
   # Stopping the CT ends `pct exec` whatever the runner was doing.
   case $WHY in
     "")
-      wait "$CHILD_PID" 2> /dev/null
+      wait "$RUNNER_PID" 2> /dev/null
       job_rc=$(cat "$rcfile" 2> /dev/null || echo "unknown (run log full?)")
       # No verdict yet (a job shorter than a poll): look it up now, so every job leaves an audit line (M2).
       if [ "$VERDICT_DONE" -eq 0 ] && ! audit_job; then job_rc="1 (a job this runner must not take ran: see VIOLATION)"; fi
@@ -293,11 +315,13 @@ cycle() {
     limit) job_rc="124 (hit the ${JOB_LIMIT_S}s limit)" ;;
     refused) job_rc="1 (job refused)" ;;
     filter) job_rc="1 (host filter lost)" ;;
+    apilost) job_rc="1 (GitHub did not answer)" ;;
     stop) job_rc="143 (controller stopping)" ;;
   esac
   finish_ct "$id" "$t0" "$job_rc"
-  if [ -n "$WHY" ]; then wait "$CHILD_PID" 2> /dev/null; fi
-  CHILD_PID=
+  # (Not when the CT survived: its runner is still attached and would never end.)
+  if [ -n "$WHY" ] && [ "$SURVIVOR" -eq 0 ]; then wait "$RUNNER_PID" 2> /dev/null; fi
+  RUNNER_PID=
   rm -f "$rcfile"
   [ "${job_rc%% *}" = 0 ]
 }
@@ -313,9 +337,14 @@ finish_ct() {
     sleep 5
   done
   if lxc_exists "$id"; then
-    log "ERROR: CT $id could not be destroyed; the next start-up cleans it"
+    # A CT that survives is not ours to forget: its pin stays, the table is left alone, and the
+    # controller stops and exits non-zero (N1). The unpinned port has no network meanwhile.
+    log "ERROR: CT $id could not be destroyed: stopping the controller, the host filter stays loaded"
+    SURVIVOR=1
+    STOP=1
+  else
+    host_filter_remove_clone "$id"
   fi
-  host_filter_remove_clone "$id"
   remove_runner
   log "done: CT $id, runner ${RUNNER_NAME:-?}, started $(date -u -d "@$t0" +%H:%M:%SZ), ended $(date -u +%H:%M:%SZ), job exit: $why${stats:+; $stats}"
   CUR_ID=
@@ -340,7 +369,10 @@ main() {
     log "CT $TEMPLATE_ID is not a template: build it with make-template.sh"
     exit 1
   }
-  destroy_all_clones || log "start-up cleanup left a CT behind"
+  if ! destroy_all_clones; then
+    log "ERROR: a CT in $ID_MIN-$ID_MAX survived the start-up cleanup: exiting, the host filter is left alone"
+    exit 1
+  fi
 
   while [ "$STOP" -eq 0 ]; do
     find "$LOG_DIR/runs" -name '*.log' -mtime +"$RUNLOG_DAYS" -delete 2> /dev/null || true
@@ -348,7 +380,10 @@ main() {
     cycle
     rc=$?
     # A CT that survives a cycle is cleaned before the next one starts.
-    if [ -n "$CUR_ID" ]; then destroy_ct "$CUR_ID" || true; CUR_ID=; fi
+    if [ -n "$CUR_ID" ]; then
+      if destroy_ct "$CUR_ID"; then host_filter_remove_clone "$CUR_ID"; else SURVIVOR=1; fi
+      CUR_ID=
+    fi
     remove_runner
     [ "$STOP" -eq 0 ] || break
     cycles=$((cycles + 1))
@@ -366,9 +401,10 @@ main() {
     fi
   done
 
-  if [ -n "$CUR_ID" ]; then destroy_ct "$CUR_ID" || true; fi
+  if [ -n "$CUR_ID" ]; then destroy_ct "$CUR_ID" || SURVIVOR=1; fi
   remove_runner
   log "controller stopped"
+  [ "$SURVIVOR" -eq 0 ] || exit 1
 }
 
 main "$@"

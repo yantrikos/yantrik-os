@@ -40,6 +40,18 @@ command -v pct > /dev/null || die "pct not found: this is not a Proxmox node"
 grep -qvE '^[[:space:]]*(#|$)' "$OWN_PUBLIC" 2> /dev/null ||
   die "list our own public addresses (the router's WAN address, any other), one per line, in $OWN_PUBLIC"
 
+# The clones get a fixed address and no DHCP (#1252 N3). A template nobody can clone from is a waste, so
+# refuse until /etc/yantrik-ci/clone-net is there, one valid line, root's alone.
+log() { printf 'make-template: %s
+' "$*" >&2; }
+OWN_PUBLIC_FILE=$OWN_PUBLIC
+CLONE_NET_FILE=${YANTRIK_CI_CLONE_NET:-/etc/yantrik-ci/clone-net}
+# shellcheck source=lib/trust.sh
+. "$SRC_DIR/lib/trust.sh"
+# shellcheck source=lib/host.sh
+. "$SRC_DIR/lib/host.sh"
+clone_net_load || die "the clones' fixed address is not set or not valid ($CLONE_NET_FILE)"
+
 # A CT id lives in the cluster-wide config tree; a clone anywhere in the range blocks us.
 ct_conf_exists() { compgen -G "/etc/pve/nodes/*/lxc/$1.conf" > /dev/null; }
 
