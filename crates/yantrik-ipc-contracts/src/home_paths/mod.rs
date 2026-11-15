@@ -40,7 +40,7 @@ mod secret_tests;
 #[cfg(all(test, unix))]
 mod write_tests;
 
-pub use secrets::{is_secret_name, pattern_asks_for_a_secret, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
+pub use secrets::{is_a_copy_name, is_secret_name, pattern_asks_for_a_secret, NAME_MAX, SECRET_NAMES, SECRET_PREFIXES, SECRET_SUFFIXES};
 pub use stat::stat;
 pub use tree::{may_land, may_read_tree};
 pub use verdict::{may_create, may_read_file, may_write_file};
@@ -189,6 +189,13 @@ fn under_prefix(prefix: &'static str) -> impl Iterator<Item = &'static str> {
 /// its alias (security review of #942, finding 3).
 pub fn is_protected(path: &Path) -> bool {
     is_protected_in(path, None)
+}
+
+/// Whether `name` (a last part) is an editor's copy that spells a path in a protected place into
+/// it: Neovim's `%home%ann%.kube%config.swp`, Emacs's `!home!ann!.kube!config~` and
+/// `#!home!ann!.kube!config#` (review R6-L3). For a window title, which names the file only.
+pub fn names_a_protected_copy(name: &str) -> bool {
+    copy_marker::encoded_path(name).is_some_and(|original| is_protected(&original))
 }
 
 /// [`is_protected`] for a path asked about in `home`, which the person's `$HOME` is otherwise.

@@ -6,6 +6,7 @@
 //! refuses the copy on every side that shares the rule. The match is by exact name, ending or
 //! start, never by a word somewhere inside it: `tokens.md` and `keynote.txt` stay readable.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Files that hold a credential wherever they are kept: a copy in a backup folder is as secret as
@@ -53,17 +54,38 @@ fn matches_a_list(name: &str) -> bool {
 /// `.tokens.json.swp`, `tokens (1).json`; see [`super::copy_marker`]). Exact names, endings and
 /// starts only; `notes.bak.md` and `old-tokens-notes.txt` are not copies of anything.
 pub fn is_secret_name(name: &str) -> bool {
-    named_or_copied(&name.to_lowercase())
+    let name = name.to_lowercase();
+    // No file has a longer name (NAME_MAX), so a longer one is no one's copy: it is judged as it
+    // stands, which keeps a page's 4 KB title from costing seconds (review R6-M2).
+    if name.len() > NAME_MAX {
+        return matches_a_list(&name);
+    }
+    named_or_copied(&name, &mut HashSet::new())
+}
+
+/// The longest name a file has, in bytes.
+pub const NAME_MAX: usize = 255;
+
+/// Whether `name` is a copy of something by its marker alone, whatever it is a copy of:
+/// `client_secret.pub - Copy.json` is, `id_rsa.pub - gedit` is not.
+pub fn is_a_copy_name(name: &str) -> bool {
+    !super::copy_marker::originals(&name.to_lowercase()).is_empty()
 }
 
 /// A name is judged as it stands and by what it is a copy of (markers peel one at a time), so
 /// `deploy-10:30:00.pem` and `id_rsa%20old` are keys whatever a copy rule keeps of them (review
 /// H1). The one exception is a public key: `id_rsa.pub.bak` is as public as `id_rsa.pub`, though
 /// `id_rsa.pub.bak` by itself starts like a private key.
-fn named_or_copied(name: &str) -> bool {
+///
+/// `seen` holds the originals already judged, so stacked markers cost each distinct name once (review
+/// R6-M2). A name judged earlier was not secret, or the answer would have ended the walk.
+fn named_or_copied(name: &str, seen: &mut HashSet<String>) -> bool {
+    if !seen.insert(name.to_string()) {
+        return false;
+    }
     let originals = super::copy_marker::originals(name);
     let public_copy = originals.iter().any(|original| original.ends_with(PUBLIC_KEY_ENDING));
-    (!public_copy && matches_a_list(name)) || originals.iter().any(|original| named_or_copied(original))
+    (!public_copy && matches_a_list(name)) || originals.iter().any(|original| named_or_copied(original, seen))
 }
 
 /// Whether `path` names a secret file: by its last part as written, and by the last part of where

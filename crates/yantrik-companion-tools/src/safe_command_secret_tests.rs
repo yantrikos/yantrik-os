@@ -364,8 +364,11 @@ fn an_editors_copy_of_a_protected_place_is_refused_and_not_listed() {
     let root = h.0.to_string_lossy().replace('/', "%");
     let swap = format!(".local/state/nvim/swap/{root}%.kube%config.swp");
     let undo = format!(".local/state/nvim/undo/{root}%.docker%config.json");
-    let backup = format!(".emacs.d/backups/{}!.kube!config~", h.0.to_string_lossy().replace('/', "!"));
-    for rel in [&swap, &undo, &backup] {
+    let bang = h.0.to_string_lossy().replace('/', "!");
+    let backup = format!(".emacs.d/backups/{bang}!.kube!config~");
+    // Review R6-H1: Emacs's auto-save wraps the same spelling in `#…#`.
+    let autosave = format!(".emacs.d/.cache/auto-save/#{bang}!.kube!config#");
+    for rel in [&swap, &undo, &backup, &autosave] {
         let at = put(&h, rel);
         let refused = verdict(&format!("cat '{at}'"), &h.0).unwrap_err();
         assert!(refused.contains("a place the AI never reads") && !refused.contains(FAKE), "{at}: {refused}");

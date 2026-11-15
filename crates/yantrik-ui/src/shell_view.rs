@@ -139,6 +139,7 @@ mod tests {
             ("control_wifi_reconnect.rs", include_str!("control_wifi_reconnect.rs")),
             ("control_window_titles.rs", include_str!("control_window_titles.rs")),
             ("control_window_titles_tests.rs", include_str!("control_window_titles_tests.rs")),
+            ("control_window_titles_regression_tests.rs", include_str!("control_window_titles_regression_tests.rs")),
             ("control_workroom.rs", include_str!("control_workroom.rs")),
             ("control_workshop.rs", include_str!("control_workshop.rs")),
         ];

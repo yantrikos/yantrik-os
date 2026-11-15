@@ -59,6 +59,13 @@ fn a_title_that_sets_the_name_in_curly_quotes_or_a_sentence_is_hidden() {
         // Review R5-M3: names with spaces in them.
         "tokens (copy 1).json - gedit", "tokens 2.json - gedit", "tokens (1).json - Text Editor", "tokens - Copy.json - Kate",
         "“tokens (conflicted copy 2026-11-15 101530).json” Properties", "Login Data - DB Browser for SQLite", "Local State - gedit",
+        // Review R6-L1: a conflict label of eleven words.
+        "tokens (Ann Marie de la Cruz's conflicted copy 2026-11-15).json - gedit",
+        // Review R6-L2: a public key's name with a copy marker is no public key.
+        "client_secret.pub - Copy.json - gedit",
+        // Review R6-L3: an editor's copy of a protected file, and a path with a space before its protected part.
+        "%home%ann%.kube%config.swp - less", "#!home!ann!.kube!config# - emacs", "/home/ann/My Backups/.kube/config - nvim",
+        "config (~/My Stuff/.kube) - NVIM",
     ] {
         let shown = row(&window_entry("gedit", title), true);
         assert_eq!(shown["title_hidden"], true, "{title}");
@@ -66,7 +73,8 @@ fn a_title_that_sets_the_name_in_curly_quotes_or_a_sentence_is_hidden() {
         assert_eq!(row(&window_entry("gedit", title), false)["title"], title, "the person sees it whole: {title}");
     }
     for title in ["“notes.md” Properties", "Opening notes.md.", "~/Documents - Files", "/home/ann/Documents/notes.md - nano", "id_rsa.pub… - gedit", "Budget – 2026 — Calc",
-        "notes (copy 1).md - gedit", "Chapter 2.md - gedit", "Data Science (1).pdf - Viewer",
+        "notes (copy 1).md - gedit", "Chapter 2.md - gedit", "Data Science (1).pdf - Viewer", "id_rsa.pub - gedit", "id_rsa.pub (copy 1) - gedit",
+        "#!home!ann!documents!notes.md# - emacs", "/home/ann/My Backups/notes.md - nvim", "config (~/My Stuff/Documents) - NVIM",
     ] {
         assert!(row(&window_entry("gedit", title), true).get("title_hidden").is_none(), "{title}");
     }
@@ -106,9 +114,9 @@ fn a_notification_title_that_names_a_secret_is_hidden_from_a_mind() {
 /// a mind is given the app's name instead, and `describe shell` asks who is calling.
 #[test]
 fn a_dock_label_that_is_a_secret_title_is_hidden_from_a_mind() {
-    assert_eq!(dock_label("tokens.json - foo", "foo", true), (app_display_name("foo"), true));
-    assert_eq!(dock_label("tokens.json - foo", "foo", false), ("tokens.json - foo".to_string(), false));
-    assert_eq!(dock_label("notes.md - foo", "foo", true), ("notes.md - foo".to_string(), false));
+    assert_eq!(dock_label("tokens.json - foo", "foo", true), ("foo".to_string(), app_display_name("foo"), true));
+    assert_eq!(dock_label("tokens.json - foo", "foo", false), ("foo".to_string(), "tokens.json - foo".to_string(), false));
+    assert_eq!(dock_label("notes.md - foo", "foo", true), ("foo".to_string(), "notes.md - foo".to_string(), false));
     let hidden = crate::wire::dock_bar::describe_value(
         &[crate::wire::dock_bar::DescribeRow {
             app: "foo".into(), label: app_display_name("foo"), label_hidden: true, pinned: false, running: true, windows: 1, focused: true,
@@ -118,7 +126,51 @@ fn a_dock_label_that_is_a_secret_title_is_hidden_from_a_mind() {
     assert_eq!(hidden["buttons"][0]["label_hidden"], true);
     let dock = include_str!("wire/dock_bar.rs");
     assert!(
-        dock.contains("dock_label(&b.label, &b.app_id, mind)") && dock.contains("let mind = crate::control_files_mind::a_mind_is_calling();"),
+        dock.contains("dock_label(&b.label, &b.app_id, mind)") && dock.contains("                app,\n") && dock.contains("let mind = crate::control_files_mind::a_mind_is_calling();"),
         "`for_describe` asks who is calling"
     );
+}
+
+/// Review R6-M1: a window that declares no app id gets one from its title, so the id names the
+/// secret as the title did. A mind is given no part of it, in a row, a cell, `in_front` or a dock
+/// button; the person's own view is whole.
+#[test]
+fn an_app_id_derived_from_a_secret_title_is_hidden_from_a_mind() {
+    for title in ["tokens.json - foo", "id_ed25519 - foo"] {
+        let window = window_entry("", title);
+        assert!(names_a_secret(&window.app_id) || names_a_secret(&app_display_name(&window.app_id)), "the id is derived from the title: {}", window.app_id);
+        let shown = [
+            row(&window, true).to_string(),
+            cell(title, title, &window.app_id, true).to_string(),
+            format!("{:?}", in_front(Some(title.to_string()), std::slice::from_ref(&window), true)),
+            format!("{:?}", dock_label(title, &window.app_id, true)),
+        ];
+        for json in shown {
+            assert!(!json.to_lowercase().contains("tokens") && !json.contains("id_") && !json.to_lowercase().contains("id ed"), "{title}: {json}");
+        }
+        assert_eq!(row(&window, true)["app"], "window");
+        assert_eq!(row(&window, false)["app"], window.app_id.as_str(), "the person sees the id whole");
+        assert_eq!(dock_label(title, &window.app_id, false), (window.app_id.clone(), title.to_string(), false));
+    }
+    assert_eq!(shown_app("gedit", true), ("gedit".to_string(), app_display_name("gedit")));
+    assert_eq!(shown_app("tokens.json", false), ("tokens.json".to_string(), app_display_name("tokens.json")));
+}
+
+/// Review R6-M2: a page's title of stacked markers cost cubic time per `describe shell`. Runs over
+/// 255 bytes are not judged, and each name below it is judged once. The bound is the best of three
+/// runs under 50 ms: the fixed filter takes microseconds, the unfixed one seconds.
+#[test]
+fn a_four_kilobyte_title_of_stacked_markers_is_judged_in_no_time() {
+    for title in [format!("%{}", "~".repeat(4095)), format!("!{}", "~".repeat(4095)), format!("%{}", ":x".repeat(512)), format!("%{} \u{2014} Mozilla Firefox", "~".repeat(4090))] {
+        let took = (0..3)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                let hidden = hides(&title, true);
+                assert!(!hidden, "no file has such a name");
+                start.elapsed()
+            })
+            .min()
+            .unwrap_or_default();
+        assert!(took < std::time::Duration::from_millis(50), "{took:?}");
+    }
 }

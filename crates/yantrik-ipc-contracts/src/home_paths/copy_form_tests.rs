@@ -129,8 +129,15 @@ fn an_editors_copy_of_a_file_in_a_protected_place_is_protected() {
         "/home/ann/.emacs.d/backups/!home!ann!.kube!config~",
         "/home/ann/.emacs.d/backups/!home!ann!.kube!config.~3~",
         "/home/ann/.local/state/nvim/swap/%HOME%ann%.Kube%Config.swp",
+        // Review R6-H1: Emacs's auto-save wraps the same spelling in `#…#`.
+        "/home/ann/.emacs.d/.cache/auto-save/#!home!ann!.kube!config#",
+        "/home/ann/.emacs.d/.cache/auto-save/#!home!ann!.docker!config.json#",
+        "/home/ann/.cache/doom/autosave/#!home!ann!.hermes!config.yaml#",
+        "/home/ann/.cache/doom/autosave/#%home%ann%.kube%config#",
+        "/home/ann/.cache/doom/autosave/#!HOME!ann!.Kube!Config#",
     ] {
         assert!(is_protected(Path::new(p)), "{p}");
+        assert!(names_a_protected_copy(p.rsplit('/').next().unwrap_or(p)), "{p}");
     }
     for p in [
         "/home/ann/.local/state/nvim/swap/%home%ann%notes.md.swp",
@@ -138,8 +145,11 @@ fn an_editors_copy_of_a_file_in_a_protected_place_is_protected() {
         "/home/ann/.local/state/nvim/undo/%home%ann%documents%config",
         "/home/ann/.emacs.d/backups/!home!ann!documents!config~",
         "/home/ann/.emacs.d/backups/!home!ann!notes.md~",
+        "/home/ann/.emacs.d/.cache/auto-save/#!home!ann!documents!notes.md#",
+        "/home/ann/.cache/doom/autosave/#!home!ann!documents!config#",
     ] {
         assert!(!is_protected(Path::new(p)), "{p} stays readable");
+        assert!(!names_a_protected_copy(p.rsplit('/').next().unwrap_or(p)), "{p}");
     }
 }
 
@@ -152,5 +162,51 @@ fn a_url_encoded_name_is_judged_by_its_first_part_only_when_that_is_a_file_name(
     for name in ["cookies%20recipe.pdf", "credentials%20how-to.md", "cookies%2Fchocolate.md"] {
         assert!(!is_secret_name(name), "{name}");
         assert!(!is_protected(Path::new(&format!("/home/ann/Documents/{name}"))), "{name}");
+    }
+}
+
+/// Review R6-M2: a name of stacked markers cost cubic time, so a 4 KB page title froze the shell.
+/// Judged as it stands above NAME_MAX, and each original once below. The bound is the best of three
+/// runs under 50 ms: the fixed code takes microseconds, so a busy CI machine does not trip it, and
+/// the unfixed code takes seconds (it took 12 s for `is_protected`), which three runs cannot hide.
+#[test]
+fn a_long_name_of_stacked_markers_is_judged_in_no_time() {
+    let best_of_three = |work: &dyn Fn() -> bool| {
+        (0..3)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                let answer = work();
+                (start.elapsed(), answer)
+            })
+            .min_by_key(|(took, _)| *took)
+            .unwrap_or_default()
+    };
+    for lead in ["%", "!"] {
+        let name = format!("{lead}{}", "~".repeat(4095));
+        let (took, secret) = best_of_three(&|| is_secret_name(&name));
+        assert!(!secret && took < std::time::Duration::from_millis(50), "{lead}: {took:?}");
+        let (took, protected) = best_of_three(&|| is_protected(Path::new(&format!("/home/ann/{name}"))));
+        assert!(!protected && took < std::time::Duration::from_millis(50), "{lead} as a path: {took:?}");
+    }
+    let name = format!("%{}", ":x".repeat(512));
+    assert!(best_of_three(&|| is_secret_name(&name)).0 < std::time::Duration::from_millis(50));
+    // A name at NAME_MAX is still judged as a copy, once per original: about 2 ms in a debug build
+    // with the seen-set, 100 ms without it, so 30 ms tells the two apart in a debug build (CI's).
+    let at_the_limit = format!("%{}", "~".repeat(NAME_MAX - 1));
+    let (took, secret) = best_of_three(&|| is_secret_name(&at_the_limit));
+    assert!(!secret && took < std::time::Duration::from_millis(30), "{took:?}");
+    // Above it, a name is judged as it stands: a long key name is still a key, and a long copy is no one's.
+    let long = "a".repeat(NAME_MAX);
+    assert!(is_secret_name(&format!("{long}.pem")) && !is_secret_name(&format!("{long}.pem.bak")));
+}
+
+/// Review R6-L2: a copy marker, whatever it is a copy of.
+#[test]
+fn a_name_with_a_copy_marker_is_a_copy_name() {
+    for name in ["client_secret.pub - Copy.json", "tokens.json.bak", "notes (copy 1).md", "TOKENS (1).json"] {
+        assert!(is_a_copy_name(name), "{name}");
+    }
+    for name in ["id_rsa.pub - gedit", "notes.md", "id_rsa.pub"] {
+        assert!(!is_a_copy_name(name), "{name}");
     }
 }

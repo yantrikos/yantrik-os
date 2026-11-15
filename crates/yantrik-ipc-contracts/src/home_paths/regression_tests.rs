@@ -9,7 +9,7 @@ const ROUNDS: &str = include_str!("regression_names.txt");
 
 #[test]
 fn every_name_any_round_refused_is_still_refused() {
-    let mut seen = [0usize; 4];
+    let mut seen = [0usize; 5];
     for line in ROUNDS.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
         let (kind, subject) = line.split_once('\t').expect("a kind, a tab and a name");
         match kind {
@@ -30,6 +30,11 @@ fn every_name_any_round_refused_is_still_refused() {
             "open" => {
                 seen[3] += 1;
                 assert!(!is_protected(Path::new(subject)), "a decoy path that became protected: {subject}");
+            }
+            "encoded" => {
+                seen[4] += 1;
+                assert!(names_a_protected_copy(subject), "a protected copy that became readable: {subject}");
+                assert!(is_protected(Path::new(&format!("/home/ann/backup/{subject}"))), "a protected copy path that became readable: {subject}");
             }
             other => panic!("unknown kind {other}"),
         }

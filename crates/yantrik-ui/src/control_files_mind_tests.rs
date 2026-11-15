@@ -403,3 +403,24 @@ fn a_minds_files_description_names_no_protected_file_and_counts_them() {
     assert_eq!(plain["selected"], "notes.md");
     assert!(plain["hidden"].is_null());
 }
+
+/// Review R6-L4(a): the notice and the operation line of a folder where nothing was hidden still
+/// quote a secret's name: a copy into it shows its file before the folder lists it, and a failed
+/// copy leaves the path. A mind gets neither; an ordinary line stays.
+#[test]
+fn a_notice_or_operation_that_names_a_secret_is_blanked_whatever_the_listing() {
+    let home = std::path::PathBuf::from("/home/ann");
+    let files = |notice: &str, operation: &str| {
+        serde_json::json!({ "path": "~/Documents", "entries": [{ "name": "notes.md" }], "notice": notice, "operation": operation })
+    };
+    let blanked = hide_protected(
+        files("Could not copy: /home/ann/backup/tokens.json: Permission denied", "Copying \u{b7} 1 of 1 \u{b7} tokens.json"),
+        "~/Documents",
+        &home,
+    );
+    assert_eq!((blanked["notice"].as_str(), blanked["operation"].as_str()), (Some(""), Some("")), "{blanked}");
+    assert!(blanked["hidden"].is_null(), "nothing in the listing was hidden: {blanked}");
+    assert!(!blanked.to_string().contains("tokens"), "{blanked}");
+    let plain = hide_protected(files("Copied notes.md", "Copying \u{b7} 1 of 1 \u{b7} notes.md"), "~/Documents", &home);
+    assert_eq!((plain["notice"].as_str(), plain["operation"].as_str()), (Some("Copied notes.md"), Some("Copying \u{b7} 1 of 1 \u{b7} notes.md")));
+}

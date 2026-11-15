@@ -29,13 +29,16 @@ fn swap_original(name: &str, wide: bool) -> Option<&str> {
 }
 
 /// The paths an editor's copy spells into its name, when `name` (a last part) is one: Neovim's swap
-/// and undo files (`%home%ann%.kube%config.swp`) and Emacs's backups (`!home!ann!.kube!config~`),
-/// with the marker removed and each `%` or `!` read as a `/` (`%%` and `!!` are the character
+/// and undo files (`%home%ann%.kube%config.swp`), Emacs's backups (`!home!ann!.kube!config~`) and
+/// auto-saves (`#!home!ann!.kube!config#`), with the marker removed and each `%` or `!` read as a `/` (`%%` and `!!` are the character
 /// itself). The caller judges the path, so a copy of a file in a protected place is protected
 /// (review R5-H1).
 pub(super) fn encoded_path(name: &str) -> Option<std::path::PathBuf> {
-    let name = name.to_lowercase();
+    // Emacs's auto-save file wraps the same spelling in `#…#` (review R6-H1). Judged before the name
+    // is lowered: a title filter asks about every run of a long title, and almost none start so.
+    let name = name.strip_prefix('#').and_then(|n| n.strip_suffix('#')).unwrap_or(name);
     let sep = name.chars().next().filter(|c| matches!(c, '%' | '!'))?;
+    let name = name.to_lowercase();
     let body = originals(&name).into_iter().find(|o| o.starts_with(sep)).unwrap_or(name);
     let mut path = String::new();
     let mut chars = body.chars().peekable();

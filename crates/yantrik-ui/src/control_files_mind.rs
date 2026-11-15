@@ -266,6 +266,13 @@ pub fn hide_protected(mut files: serde_json::Value, label: &str, home: &Path) ->
         map.insert("notice".to_string(), json!(""));
         map.insert("operation".to_string(), json!(""));
     }
+    // And one that names a secret is blanked whatever the listing: a copy into this folder shows
+    // its file before the folder has it, and a failed copy leaves the path (review R6-L4).
+    for key in ["notice", "operation"] {
+        if map.get(key).and_then(Value::as_str).is_some_and(|text| crate::control_window_titles::hides(text, true)) {
+            map.insert(key.to_string(), json!(""));
+        }
+    }
     files
 }
 

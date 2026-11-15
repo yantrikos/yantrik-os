@@ -149,9 +149,9 @@ pub fn for_describe(ui: &App) -> serde_json::Value {
         .iter()
         .map(|b| {
             let mind = crate::control_files_mind::a_mind_is_calling();
-            let (label, label_hidden) = crate::control_window_titles::dock_label(&b.label, &b.app_id, mind);
+            let (app, label, label_hidden) = crate::control_window_titles::dock_label(&b.label, &b.app_id, mind);
             DescribeRow {
-                app: b.app_id.to_string(),
+                app,
                 label,
                 label_hidden,
                 pinned: b.pinned,

@@ -1,5 +1,6 @@
 # Every name and path a test of #1247 has asserted, one per line: `secret` (a name that is a
-# credential), `readable` (a decoy name), `protected` (a path) and `open` (a decoy path).
+# credential), `readable` (a decoy name), `protected` (a path), `open` (a decoy path) and `encoded` (an editor's copy that spells a protected
+# path into its name, which is a credential as a name and as a window title).
 secret	tokens.json
 secret	token.json
 secret	credentials.json
@@ -510,3 +511,46 @@ open	/home/ann/.local/state/nvim/swap/%home%ann%documents%config.swp
 open	/home/ann/.local/state/nvim/undo/%home%ann%documents%config
 open	/home/ann/.emacs.d/backups/!home!ann!documents!config~
 open	/home/ann/.emacs.d/backups/!home!ann!notes.md~
+secret	server.pem.bak
+secret	server.pem.old
+secret	server.pem.orig
+secret	server.pem.backup
+secret	server.pem.copy
+secret	server.pem~
+secret	tokens.json.old
+secret	TOKENS.JSON
+secret	client_secret_1.json
+secret	client_secret_123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com.json
+secret	clé.pem
+secret	egress.key
+secret	x.key
+secret	ABC.key
+secret	#id_ed25519#
+secret	.#id_ed25519
+secret	.id_ed25519.swp
+secret	.id_ed25519.swo
+secret	Copy of id_ed25519
+secret	id_ed25519.bak (1)
+secret	id_ed25519.SYNC-CONFLICT-20261115-123456-ABCDEFG
+encoded	%home%ann%.kube%config.swp
+encoded	%home%ann%.kube%config
+encoded	%home%ann%.docker%config.json.swp
+encoded	%home%ann%.hermes%config.yaml.swp
+encoded	%home%ann%.hermes%config.yaml.svz
+encoded	!home!ann!.kube!config~
+encoded	!home!ann!.kube!config.~3~
+encoded	%HOME%ann%.Kube%Config.swp
+encoded	#!home!ann!.kube!config#
+encoded	#!home!ann!.docker!config.json#
+encoded	#!home!ann!.hermes!config.yaml#
+encoded	#%home%ann%.kube%config#
+encoded	#!HOME!ann!.Kube!Config#
+protected	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!.kube!config#
+protected	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!.docker!config.json#
+protected	/home/ann/.cache/doom/autosave/#!home!ann!.hermes!config.yaml#
+protected	/home/ann/.cache/doom/autosave/#%home%ann%.kube%config#
+protected	/home/ann/backup/tokens.json
+protected	/home/ann/keys/id_ed25519
+protected	/home/ann/dotfiles/ssh/id_ed25519
+readable	#!home!ann!documents!notes.md#
+open	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!documents!notes.md#
