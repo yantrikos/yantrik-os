@@ -31,12 +31,17 @@ env:
 jobs:
   test:
     name: test
-    runs-on: ubuntu-24.04
+    # #1234: GitHub's 16 GB runners kept losing this job mid-build with no log. A branch of this
+    # repository runs on the build host (`yantrik-build`, a runner of its own user and its own
+    # target dir, which queues behind the host's other builds on their shared lock). A pull
+    # request from a fork never does: it runs on GitHub's machine, so no outside code ever runs
+    # on the build host.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
     # Compiling the test binaries one job at a time (below) took 29 to 40 minutes on the runs
     # measured for it, and a whole green run is then about 57 to 68 minutes (setup and Build
     # about 13, the compile up to 40, Test and the selftest about 15). 90 leaves a slow runner
     # room; a healthy run never reaches it, so it costs nothing.
-    timeout-minutes: 90
+    timeout-minutes: 150
 
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +56,7 @@ jobs:
       # 4 October (exit 143, "the runner has received a shutdown signal", no test failure) as the
       # shell's UI grew. Swap on the runner's scratch disk lets the peak spill instead.
       - name: Swap for the generated UI crate
+        if: runner.environment == 'github-hosted'
         run: |
           sudo swapoff -a || true
           sudo fallocate -l 12G /mnt/yantrik-swap
@@ -63,6 +69,7 @@ jobs:
       # in Cargo.lock rather than by guessing: alsa-sys, libudev-sys, openssl-sys,
       # speech-dispatcher-sys, wayland-sys. Slint's winit backend adds xkbcommon and fontconfig.
       - name: System dependencies
+        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -83,11 +90,14 @@ jobs:
       # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
       # stable is today: `rustup toolchain install` with no name reads that file.
       - name: Rust toolchain
-        run: rustup toolchain install && rustc --version
+        run: |
+          [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+          rustup toolchain install && rustc --version
 
       # Slint's macro expansion is the expensive part of this build, so a cache is the
       # difference between a check that runs on every push and one that gets turned off.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           key: ci-v1
 
@@ -98,12 +108,14 @@ jobs:
       # reached 8 GB: the generated UI crate. It is built first, on its own, so its peak never
       # meets the rest of the workspace's; the rest is then built at -j 2.
       - name: Build the generated UI crate alone
+        if: runner.environment == 'github-hosted'
         run: |
           .github/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
           cargo build -p yantrik-ui-slint --locked -j 1
 
       - name: Build
+        if: runner.environment == 'github-hosted'
         run: |
           .github/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
@@ -113,11 +125,13 @@ jobs:
       # (installed above) cannot map its uid and every outside-view test fails before it starts.
       # Lift that on the runner, so the tests run inside the real outside view.
       - name: Let bubblewrap make its user namespace
+        if: runner.environment == 'github-hosted'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       # The workshops root exists on a machine the installer has run on. With it here, the browser
       # and app launches are checked with the tmpfs over it, as they are on a real machine.
       - name: Make the workshops root
+        if: runner.environment == 'github-hosted'
         run: sudo mkdir -p /var/lib/yantrik/workshops
 
       # Compile the test binaries one cargo job at a time. Measured on the killed runs (#1182):
@@ -127,12 +141,14 @@ jobs:
       # 55 GB of disk free. One at a time, the peak is one crate's. Nothing is skipped: this
       # builds exactly what the next step runs.
       - name: Compile the test binaries
+        if: runner.environment == 'github-hosted'
         run: |
           .github/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
           cargo test --workspace --locked --no-run -j 1
 
       - name: Test
+        if: runner.environment == 'github-hosted'
         run: |
           .github/ci-sampler.sh &
           trap 'kill $! 2>/dev/null || true' EXIT
@@ -141,8 +157,20 @@ jobs:
       # The kernel's direct set for the mind account is read from the person's policy by the
       # proxy's own code (`yantrik-egress direct`). The updater's selftest runs it on real policy
       # files here, where it has just been built.
-      - name: The mind's direct set comes from the person's policy
-        run: YANTRIK_EGRESS_BIN=target/debug/yantrik-egress bash deploy/yantrik-os/yantrik-update selftest
+      # On the build host the whole build and test run under the host's one build lock
+      # (/build/locks/yantrik-ui.lock), so this job never compiles beside another build there:
+      # two at once is what took the host down on 27 and 28 Oct. The target dir is the runner's
+      # own and persists between runs. bubblewrap and the workshops root are set up on the host.
+      - name: Build and test on the build host
+        if: runner.environment == 'self-hosted'
+        env:
+          CARGO_TARGET_DIR: /build/ci-runner/target
+        run: |
+          . "$HOME/.cargo/env"
+          rustc --version
+          flock -w 5400 /build/locks/yantrik-ui.lock bash -c '
+            cargo build --workspace --locked -j 8 &&
+            cargo test --workspace --locked -j 8'
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
@@ -552,3 +580,15 @@ jobs:
       # `none` fails. Stdlib-only source text, like everything above; it runs no service.
       - name: Every method a service answers stands in the guide beside its grade
         run: python3 -m unittest discover -s tests/service-methods -v
+
+      # The kernel's direct set for the mind account is read from the person's policy by the
+      # proxy's own code (`yantrik-egress direct`). The updater's selftest runs it on real policy
+      # files here. It lives in this job, on GitHub's machine, because the test job may run on the
+      # build host, where its Chromium cases fail as a non-root user (#1234).
+      - name: Rust toolchain
+        run: rustup toolchain install && rustc --version
+
+      - name: The mind's direct set comes from the person's policy
+        run: |
+          cargo build -p yantrik-egress --locked
+          YANTRIK_EGRESS_BIN=target/debug/yantrik-egress bash deploy/yantrik-os/yantrik-update selftest
