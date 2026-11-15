@@ -33,7 +33,12 @@ const MOST_WORDS: usize = 8;
 fn names_a_secret(title: &str) -> bool {
     let named = |span: &str| is_secret_name(span) || is_secret_name(span.trim_end_matches(['.', '?', '!', ':']));
     let bounds = word_bounds(title, "");
-    let spans = bounds.iter().enumerate().flat_map(|(i, &(start, _))| bounds[i..bounds.len().min(i + MOST_WORDS)].iter().map(move |&(_, end)| &title[start..end]));
+    let spans = bounds.iter().enumerate().flat_map(|(i, &(start, first_end))| {
+        // A run that starts with a public key (`id_rsa.pub - gedit`) is no private key that has
+        // words after it: the secret starts of names would take it for one.
+        let public = title[start..first_end].to_lowercase().ends_with(".pub");
+        bounds[i..bounds.len().min(i + MOST_WORDS)].iter().enumerate().filter(move |(n, _)| *n == 0 || !public).map(move |(_, &(_, end))| &title[start..end])
+    });
     spans.into_iter().any(named)
         || word_bounds(title, "/").into_iter().map(|(start, end)| &title[start..end]).filter(|word| word.contains('/')).any(is_a_protected_path)
 }
