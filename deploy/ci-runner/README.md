@@ -130,6 +130,15 @@ memory is short and GitHub says the runner is still not busy, recycles it. The c
 it after `pct start`), so a global OOM ends the CI job first. `finish_ct` logs `memory.peak` and the
 oom counts of each job; size the CT's memory and `-j` from those after the first real runs.
 
+Measured on 15 Nov, a cold `cargo build --workspace --locked -j 24` then `cargo test --workspace
+--locked -j 24 --no-fail-fast` as `runner` in a clone of this template, filters on, with
+`NoNewPrivileges`: build 16 min, tests 28 min, disk 17 GB after the build and 23 GB after the tests
+(of 80 GB), `memory.peak` 32.6 GB (the 32 GB limit, mostly page cache; no oom event), 7601 tests
+passed, 39 ignored, 1 failed (`yantrik-studio`'s `a_key_pasted_where_a_variable_name_goes_is_said_nowhere`,
+which passes alone, with and without `NoNewPrivileges`: a flake under the full run). The only
+connection attempts beyond the rules were test fixtures (`1.1.1.1:9`, `192.0.2.x:8080/8888`,
+`198.51.100.9:8080`).
+
 ### Kernel (R6)
 
 The job runs on node2's kernel and can create user namespaces, which `bwrap` needs, and a network
