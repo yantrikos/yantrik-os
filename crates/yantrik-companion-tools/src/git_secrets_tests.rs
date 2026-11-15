@@ -30,6 +30,10 @@ fn repo(tag: &str) -> Option<Repo> {
     std::fs::create_dir_all(dir.join("deploy")).unwrap();
     let dir = dir.canonicalize().unwrap();
     git(&dir, &["init", "-q"]);
+    // The tool under test runs `git commit` itself, so the identity lives in the repository's own
+    // configuration: a CI runner has none of its own.
+    git(&dir, &["config", "user.name", "t"]);
+    git(&dir, &["config", "user.email", "t@t"]);
     for rel in ["credentials.json", "deploy/server.pem", "notes.md"] {
         std::fs::write(dir.join(rel), "old\n").unwrap();
     }
