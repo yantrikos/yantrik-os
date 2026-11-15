@@ -50,8 +50,24 @@ check "seed's own two rows are there" "$(sql "SELECT COUNT(*) FROM emails WHERE 
 check "a second seed does not double them" "$(sql "SELECT COUNT(*) FROM emails WHERE message_id LIKE '<demo-mb-%'")" 3
 check "two promises" "$(sql "SELECT COUNT(*) FROM wm_commitments WHERE evidence_text = 'demo-mb'")" 2
 
+# Rows that only look like ours: another case on the test account, and the right id on another account.
+python3 -c "
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.executescript('''
+INSERT INTO email_accounts (name, email, provider) VALUES ('Real', 'real@example.test', 'imap');
+INSERT INTO emails (account_id, uid, folder, from_addr, subject, date_ts, message_id)
+  VALUES (1, 3, 'INBOX', 'y@example.test', 'Upper', 1, '<DEMO-MB-BOX-1@seed.test>'),
+         (2, 1, 'INBOX', 'z@example.test', 'Real box', 1, '<demo-mb-box-2@seed.test>');
+''')" "$YANTRIK_DB"
+
 "$here/seed-meeting-brief.sh" unseed >/dev/null 2>&1
-check "unseed removes every demo row, the mailbox's too" "$(sql "SELECT COUNT(*) FROM emails WHERE message_id LIKE '<demo-mb-%'")" 0
+check "unseed with no test account leaves the mailbox's cached row" "$(sql "SELECT COUNT(*) FROM emails WHERE message_id = '<demo-mb-box-1@seed.test>'")" 1
+check "but takes seed's own two" "$(sql "SELECT COUNT(*) FROM emails WHERE message_id IN ('<demo-mb-1@seed.test>','<demo-mb-2@seed.test>')")" 0
+MB_IMAP_USER=gate@seed.test "$here/seed-meeting-brief.sh" unseed >/dev/null 2>&1
+check "unseed removes the test account's cached mailbox row" "$(sql "SELECT COUNT(*) FROM emails WHERE message_id = '<demo-mb-box-1@seed.test>'")" 0
+check "and not the same id in another case" "$(sql "SELECT COUNT(*) FROM emails WHERE message_id = '<DEMO-MB-BOX-1@seed.test>'")" 1
+check "and not the same id on another account" "$(sql "SELECT COUNT(*) FROM emails WHERE message_id = '<demo-mb-box-2@seed.test>' AND account_id = 2")" 1
 check "and leaves a row that is not ours" "$(sql "SELECT COUNT(*) FROM emails WHERE message_id = '<other@example.test>'")" 1
 check "no promises left" "$(sql "SELECT COUNT(*) FROM wm_commitments")" 0
 exit $failed

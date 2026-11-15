@@ -751,14 +751,19 @@ impl CompanionBridge {
         let board_w = board.clone();
         let llm_switch = Arc::new(yantrik_ml::LlmSwitch::new());
         let switch_w = llm_switch.clone();
-        let worker_handle = std::thread::spawn(move || {
-            worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w, switch_w);
-        });
+        // Named, so the default panic hook's stderr line says which thread panicked.
+        let worker_handle = std::thread::Builder::new()
+            .name("yos-companion".into())
+            .spawn(move || {
+                worker_loop(config, cmd_rx, self_tx, ui_weak, online_w, bond_w, ambient_w, bus_w, board_w, decisions_w, switch_w);
+            })
+            .map_err(|e| tracing::error!(error = %e, "could not start the companion worker"))
+            .ok();
 
         Self {
             board,
             cmd_tx,
-            worker_handle: Some(worker_handle),
+            worker_handle,
             online,
             cached_bond_level,
             ambient,
@@ -1583,13 +1588,7 @@ fn worker_loop(
                         );
                     }
                     Err(panic_info) => {
-                        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                            s.to_string()
-                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            "unknown panic".to_string()
-                        };
+                        let msg = crate::worker_guard::panic_summary(panic_info.as_ref());
                         tracing::error!(
                             panic = %msg,
                             elapsed_ms = start.elapsed().as_millis(),

@@ -131,6 +131,10 @@ con.execute("PRAGMA busy_timeout = 15000")
 me, maya, ravi = os.environ["MB_ME"], os.environ["MB_MAYA"], os.environ["MB_RAVI"]
 # The demo account is its own address, never the person's configured one.
 demo_account = "demo-mb-me@seed.test"
+# The test account's cached copies of what `seed-mailbox` appended: its ids, and its account only.
+test_user = os.environ.get("MB_IMAP_USER")
+BOX_ROWS = ("message_id GLOB '<demo-mb-box-[0-9]*@seed.test>' "
+            "AND account_id IN (SELECT id FROM email_accounts WHERE email = ?)")
 
 if action == "seed":
     if demo_mail:
@@ -172,7 +176,7 @@ if action == "seed":
 elif action in ("reseed", "unseed"):
     # Each delete on its own: a machine that never cached mail has no emails table, and that is
     # not a reason to leave the promises behind. Only rows carrying the marker are matched.
-    statements = [
+    statements = [(sql, ()) for sql in [
         # The two rows `seed` itself made, by their ids. NOT every `<demo-mb-%`: the mailbox the
         # runner seeded (`seed-mailbox`, ids `<demo-mb-box-N@...>`) is cached by the companion
         # under the same prefix, and `seed` must not wipe what the brief needs.
@@ -181,19 +185,26 @@ elif action in ("reseed", "unseed"):
         "DELETE FROM wm_commitments WHERE evidence_text = 'demo-mb'",
         # The brief made for the demo event, so seeding again makes a fresh one.
         "DELETE FROM prepared_items WHERE id LIKE 'meeting:demo-mb-event:%'",
-    ]
+    ]]
     if action == "unseed":
-        # Taking everything back also takes back the mailbox's cached copies.
-        statements.append("DELETE FROM emails WHERE message_id LIKE '<demo-mb-box-%'")
-    for sql in statements:
+        # Taking everything back also takes back the mailbox's cached copies: exactly the ids
+        # `seed-mailbox` makes, case-sensitively, and only on the test account. The person's real
+        # account is in the same table, and `LIKE` ignores case.
+        if test_user:
+            statements.append((f"DELETE FROM emails WHERE {BOX_ROWS}", (test_user,)))
+        else:
+            print("unseed: MB_IMAP_USER is not set, so the mailbox's cached rows are left alone", file=sys.stderr)
+    for sql, bound in statements:
         try:
-            con.execute(sql)
+            con.execute(sql, bound)
         except sqlite3.OperationalError:
             pass
 elif action == "status":
     q = lambda sql: con.execute(sql).fetchone()[0]
     try:
-        print("emails:", q("SELECT COUNT(*) FROM emails WHERE message_id LIKE '<demo-mb-%'"))
+        seeded = q("SELECT COUNT(*) FROM emails WHERE message_id IN ('<demo-mb-1@seed.test>', '<demo-mb-2@seed.test>')")
+        boxed = con.execute(f"SELECT COUNT(*) FROM emails WHERE {BOX_ROWS}", (test_user,)).fetchone()[0] if test_user else 0
+        print("emails:", seeded + boxed)
         print("promises:", q("SELECT COUNT(*) FROM wm_commitments WHERE evidence_text = 'demo-mb'"))
         print("briefs:", q("SELECT COUNT(*) FROM prepared_items WHERE id LIKE 'meeting:demo-mb-event:%'"))
     except sqlite3.OperationalError as e:

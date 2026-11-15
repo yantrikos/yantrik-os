@@ -50,9 +50,18 @@ fn is_ready(describe: &serde_json::Value, key: &str) -> bool {
 /// the library is read again, so this answer is not yet "there is no such note".
 const NO_SUCH_NOTE: &str = "No note is called";
 
-/// Whether `reply` to `action` on `app` says only that Notes' library may be out of date.
-fn library_may_be_stale(app: &str, action: &str, reply: &Result<serde_json::Value, String>) -> bool {
-    app == "notes" && action == "open_note" && matches!(reply, Err(why) if why.contains(NO_SUCH_NOTE))
+/// Whether Notes answered `Ok` with a note other than the file `asked` for: Notes matches a file
+/// name first and a title second, so a stale library can open a note titled like the file.
+fn opened_another(asked: &str, reply: &Result<serde_json::Value, String>) -> bool {
+    asked.ends_with(".md") && matches!(reply, Ok(v) if v["filename"].as_str().is_some_and(|f| f != asked))
+}
+
+/// Whether `reply` to `action` (asking for `asked`) on `app` says only that Notes' library may be
+/// out of date: no note has the name, or another note opened in its place.
+fn library_may_be_stale(app: &str, action: &str, asked: &str, reply: &Result<serde_json::Value, String>) -> bool {
+    app == "notes"
+        && action == "open_note"
+        && (matches!(reply, Err(why) if why.contains(NO_SUCH_NOTE)) || opened_another(asked, reply))
 }
 
 /// What a press says on its line: nothing when the app did it, else why it did not.
@@ -113,11 +122,15 @@ fn send(ui: &App, app: &str, method: &'static str, action: &str, args: serde_jso
                 }
             }
             let press = || client.call(method, serde_json::json!({ "action": action, "args": args })).map_err(|e| e.message);
+            let asked = args["title"].as_str().unwrap_or_default().to_string();
             let reply = press();
-            if library_may_be_stale(&surface, &action, &reply) {
+            if library_may_be_stale(&surface, &action, &asked, &reply) {
                 // Read the library again, once, and ask again: a note made while Notes was open.
                 let _ = client.call(ACT, serde_json::json!({ "action": "reload", "args": {} }));
-                press()
+                match press() {
+                    again if opened_another(&asked, &again) => Err("Notes opened another note".to_string()),
+                    again => again,
+                }
             } else {
                 reply
             }
@@ -157,11 +170,21 @@ mod tests {
     #[test]
     fn a_note_made_while_notes_was_open_is_looked_for_again_after_a_reload() {
         let missing = Err("No note is called \"demo-mb-orion-notes.md\". The library holds: \"Shopping\"".to_string());
-        assert!(library_may_be_stale("notes", "open_note", &missing));
-        assert!(!library_may_be_stale("notes", "open_note", &Ok(serde_json::json!({ "accepted": true }))));
-        assert!(!library_may_be_stale("notes", "open_note", &Err("The library is unavailable".into())), "only a missing name");
-        assert!(!library_may_be_stale("notes", "trash", &missing), "only an open");
-        assert!(!library_may_be_stale("email", "open_note", &missing), "only Notes");
+        assert!(library_may_be_stale("notes", "open_note", "a.md", &missing));
+        assert!(!library_may_be_stale("notes", "open_note", "a.md", &Ok(serde_json::json!({ "accepted": true }))));
+        assert!(!library_may_be_stale("notes", "open_note", "a.md", &Err("The library is unavailable".into())), "only a missing name");
+        assert!(!library_may_be_stale("notes", "trash", "a.md", &missing), "only an open");
+        assert!(!library_may_be_stale("email", "open_note", "a.md", &missing), "only Notes");
+    }
+
+    #[test]
+    fn a_note_titled_like_the_file_is_not_taken_for_the_file() {
+        let other = Ok(serde_json::json!({ "filename": "note-7.md", "title": "demo-mb-orion-notes.md" }));
+        let same = Ok(serde_json::json!({ "filename": "demo-mb-orion-notes.md" }));
+        assert!(library_may_be_stale("notes", "open_note", "demo-mb-orion-notes.md", &other), "another note opened");
+        assert!(!library_may_be_stale("notes", "open_note", "demo-mb-orion-notes.md", &same), "the file opened");
+        assert!(opened_another("demo-mb-orion-notes.md", &other), "still another after the reload");
+        assert!(!opened_another("Orion notes", &other), "a title is not a file name, so no claim is made");
     }
 
     #[test]

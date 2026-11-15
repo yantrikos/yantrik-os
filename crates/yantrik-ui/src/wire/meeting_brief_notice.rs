@@ -15,6 +15,8 @@ use yantrik_companion::meeting_brief::Card;
 use yantrik_ipc_contracts::notifications::NOTICE_BRIEF;
 
 /// How many times a refused-for-now post is tried, and how long between.
+/// The posting thread's name (at most 15 bytes, which is all Linux keeps).
+const THREAD: &str = "yos-mb-notice";
 const ATTEMPTS: u32 = 4;
 const RETRY: Duration = Duration::from_secs(5);
 /// How long one post may take.
@@ -67,7 +69,7 @@ pub fn announce(card: &Card) {
     static SENDER: OnceLock<Option<Sender<Ready>>> = OnceLock::new();
     let sender = SENDER.get_or_init(|| {
         let (tx, rx) = channel::<Ready>();
-        let spawned = std::thread::Builder::new().name("yos-meeting-brief-notice".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name(THREAD.into()).spawn(move || {
             for ready in rx {
                 for attempt in 0..ATTEMPTS {
                     match post(&ready) {
@@ -92,6 +94,11 @@ pub fn announce(card: &Card) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_thread_name_fits_what_linux_keeps() {
+        assert!(THREAD.len() <= 15);
+    }
 
     #[test]
     fn what_the_service_is_told_names_the_meeting_and_nothing_a_brief_holds() {

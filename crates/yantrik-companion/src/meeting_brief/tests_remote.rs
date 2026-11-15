@@ -354,3 +354,10 @@ fn a_change_to_the_calendar_reaches_the_card_on_the_very_next_tick() {
     let after = tick_fresh_with(&conn, "Pat", &fetcher, n, Some(true), wait);
     assert!(after.cards.is_empty(), "the card outlived its event by a tick");
 }
+
+#[test]
+fn every_thread_name_fits_what_linux_keeps_and_they_differ() {
+    let names: Vec<String> = ["fetch", "walk"].iter().map(|n| super::remote::thread_name(n)).collect();
+    assert!(names.iter().all(|n| n.len() <= 15), "{names:?}");
+    assert_ne!(names[0], names[1]);
+}

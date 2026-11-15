@@ -239,10 +239,15 @@ fn walk(shared: &Mutex<Snapshot>, files: &dyn FileSource, wanted: Vec<Vec<String
     snap.files.retain(|_, (_, at)| at.elapsed() < FRESH);
 }
 
+/// A service thread's name. Linux keeps 15 bytes, so each of these must tell the others apart in that.
+fn thread_name(name: &str) -> String {
+    format!("yos-mb-{name}")
+}
+
 /// Run `work` on a thread of its own for each request, until the fetcher is dropped. A fault in
 /// one service's client ends that request, not the thread: the next tick asks again.
 fn serve<T: Send + 'static>(name: &str, requests: Receiver<T>, work: impl Fn(T) + Send + 'static) {
-    let spawned = std::thread::Builder::new().name(format!("yos-meeting-brief-{name}")).spawn(move || {
+    let spawned = std::thread::Builder::new().name(thread_name(name)).spawn(move || {
         // Blocks until the worker asks: no timer, no polling.
         for request in requests {
             if catch_unwind(AssertUnwindSafe(|| work(request))).is_err() {

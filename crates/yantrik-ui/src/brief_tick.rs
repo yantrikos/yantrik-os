@@ -24,10 +24,19 @@ const BUSY: Duration = Duration::from_secs(2);
 /// How finely the loop looks at its stop flag, so the thread ends soon after the bridge does.
 const LOOK: Duration = Duration::from_millis(50);
 
+/// The clock's thread name (at most 15 bytes, which is all Linux keeps).
+const TICK_THREAD: &str = "yos-mb-tick";
+
 /// Whether this thread ticks the store (and so the worker does not): the store must be readable
 /// without the engine.
 pub fn ticks_here() -> bool {
     crate::memory_reader::is_plain()
+}
+
+/// Whether the brief's clock ticks: a plain store, and not in Private mode. The worker drops every
+/// `Think` in Private mode, so the brief did nothing then; the clock keeps that promise.
+pub fn clock_ticks(plain: bool, private: bool) -> bool {
+    plain && !private
 }
 
 /// Whether the companion worker's think arm ticks the briefs: not when the brief's own clock
@@ -47,8 +56,8 @@ impl BriefTick {
     pub fn start(db_path: String, user_name: String) -> BriefTick {
         let tick = BriefTick::new(user_name);
         let (stop, name) = (tick.stop.clone(), tick.name.clone());
-        let spawned = std::thread::Builder::new().name("yos-meeting-brief-tick".into()).spawn(move || {
-            run(EVERY, &stop, &name, &ticks_here, &|name, enabled| tick_store(&db_path, name, enabled));
+        let spawned = std::thread::Builder::new().name(TICK_THREAD.into()).spawn(move || {
+            run(EVERY, &stop, &name, &|| clock_ticks(ticks_here(), crate::private_mode::is_on()), &|name, enabled| tick_store(&db_path, name, enabled));
         });
         if let Err(e) = spawned {
             tracing::warn!(error = %e, "could not start the meeting brief clock; briefs ride the companion's think tick");
@@ -141,6 +150,19 @@ mod tests {
     fn briefs_tick_with_no_think_and_no_worker_at_all() {
         // There is no companion worker here, and no think command was ever sent: the clock alone ticks.
         assert!(ticks_in(Duration::from_millis(400), true) >= 3, "the brief tick ran without a Think");
+    }
+
+    #[test]
+    fn a_private_desktop_gathers_nothing() {
+        assert!(!clock_ticks(true, true));
+        assert!(clock_ticks(true, false));
+        assert!(!clock_ticks(false, false));
+        assert_eq!(ticks_in(Duration::from_millis(400), clock_ticks(true, true)), 0, "the clock ticked in Private mode");
+    }
+
+    #[test]
+    fn the_clock_thread_name_fits_what_linux_keeps() {
+        assert!(TICK_THREAD.len() <= 15);
     }
 
     #[test]
