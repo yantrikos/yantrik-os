@@ -168,9 +168,14 @@ jobs:
         run: |
           . "$HOME/.cargo/env"
           rustc --version
+          # A fresh temp dir per run: the host's /tmp holds other users' leftover test files,
+          # and a test that reuses a fixed name there meets a folder it cannot write.
+          export TMPDIR="/build/ci-runner/tmp/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf "$TMPDIR" && mkdir -p "$TMPDIR"
+          trap 'rm -rf "$TMPDIR"' EXIT
           flock -w 5400 /build/locks/yantrik-ui.lock bash -c '
             cargo build --workspace --locked -j 8 &&
-            cargo test --workspace --locked -j 8'
+            cargo test --workspace --locked -j 8 --no-fail-fast'
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
