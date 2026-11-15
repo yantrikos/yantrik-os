@@ -88,7 +88,7 @@ async fn no_more_than_sixteen_are_asked_at_once() {
     };
     let listing = list_apps((0..100).map(app).collect(), |_| false, per_app, Duration::from_secs(5)).await;
     assert_eq!(listing.windows.len(), 100);
-    assert_eq!(most.get(), AT_ONCE);
+    assert_eq!(most.get(), 16, "sixteen at once, not one by one and not all at once");
 }
 
 /// The listing's own limit is not an error: what was heard counts, the rest is unanswered.
