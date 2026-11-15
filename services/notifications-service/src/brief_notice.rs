@@ -1,7 +1,7 @@
 //! The meeting brief's one interrupt: "Orion launch sync in 10 minutes. Your brief is ready."
 //!
 //! The shell makes the brief and draws its card; the announcement is the notification service's
-//! to grant, through the same path the calendar's own reminders take (`Store::add_os_notice`, as
+//! to grant, through the same path the calendar's own reminders take (`Store::add_os_notice_at`, as
 //! the reserved `desktop` harness, family `calendar`). So the day's budget, quiet hours, quiet
 //! initiative and the person's On / Inbox only / Off for Calendar all apply, and a toast held
 //! past the start is never shown (`useful_until` is the start). Nothing else posts it: the shell
@@ -13,6 +13,13 @@
 //!   the shell showed as a toast: the reminder is not posted ([`covers`]);
 //! - the reminder, or the early card, was shown as a toast: the brief is stored for the inbox
 //!   only, and takes that card's place there. The early heads-up is not a moment of its own.
+//!
+//! Two cards, one toast. If the brief cannot interrupt (the day's budget, quiet initiative, the
+//! person's Calendar setting, quiet hours) and the event's own card is still waiting to toast, both
+//! cards stay: the person's own reminder is the meeting's toast and is never traded for an inbox
+//! card, and the brief is an inbox card beside it. Both end at the start (`useful_until`). The
+//! store decides this on the grant it makes ([`Store::add_os_notice_at`]), not the brief on its
+//! request, so that it is true whatever the grant turns out to be.
 //!
 //! "Already the meeting's toast" is what the shell reported as shown ([`toasted`]), never the
 //! grant: a granted card the shell is holding has made no toast, and one replaced while held never
@@ -84,11 +91,6 @@ pub(crate) fn toasted(store: &Store, id: &str) -> bool {
     held(store, id).is_some_and(|n| n.shown_as.as_deref() == Some("toast"))
 }
 
-/// Whether this card holds an interrupt the shell has not shown yet.
-fn waiting_to_toast(n: &Notice) -> bool {
-    n.granted == Attention::Interrupt && n.shown_as.is_none()
-}
-
 /// Announce the brief of `ready` at `now`, and answer as the store does.
 pub fn announce<Tz: TimeZone>(store: &Store, ready: &Ready, now: DateTime<Tz>) -> serde_json::Value {
     let Some(starts) = Utc.timestamp_opt(ready.start, 0).single() else {
@@ -117,13 +119,10 @@ pub fn announce<Tz: TimeZone>(store: &Store, ready: &Ready, now: DateTime<Tz>) -
     // A brief the person switched off is stored hidden, and must not take a card with it. Of the
     // two it may replace, the reminder is the one still up when it has come (it took the early
     // card's place itself).
-    let card = if reminder.is_some() { reminder.map(|n| (reminder_id, n)) } else { early.map(|n| (early_id, n)) };
-    // A brief that does not interrupt must not take away the card that will: one granted an
-    // interrupt that the shell has not shown yet (held by quiet hours, a call, a locked screen) is
-    // the meeting's toast, and replacing it would leave the meeting with none.
-    let replaces = card
-        .filter(|(_, n)| settings.setting(&Family::Calendar) != FamilySetting::Off && (interrupt || !waiting_to_toast(n)))
-        .map(|(id, _)| id);
+    let card = if reminder.is_some() { Some(reminder_id) } else { early.map(|_| early_id) };
+    // Always named: whether the card is really replaced is the store's call, on the grant it
+    // makes (a brief that will not toast leaves a reminder that is still waiting to toast).
+    let replaces = card.filter(|_| settings.setting(&Family::Calendar) != FamilySetting::Off);
     let minutes = (left.num_seconds() + 59) / 60;
     let mut notice = serde_json::json!({
         "notice_id": notice_id(&ready.event_id, &start),
@@ -139,5 +138,5 @@ pub fn announce<Tz: TimeZone>(store: &Store, ready: &Ready, now: DateTime<Tz>) -
     if let Some(card) = replaces {
         notice["supersedes"] = card.into();
     }
-    store.add_os_notice(NAME, notice)
+    store.add_os_notice_at(NAME, notice, now)
 }

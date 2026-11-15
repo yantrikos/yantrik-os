@@ -194,7 +194,13 @@ impl Store {
             tracing::warn!(uid = ?post.harness.uid, program = %post.harness.program, "a notice posted under the desktop's own harness id; refused");
             return answer::refused(&format!("`{}` is the id the desktop files its own notices under", notice::OS_HARNESS));
         }
-        self.store_notice(post, home, false)
+        self.store_notice(post, home, false, Utc::now())
+    }
+
+    /// [`Store::add_notice`] as of `now`, for the tests that fix the clock.
+    #[cfg(test)]
+    pub fn add_notice_at(&self, post: NoticePost, home: &std::path::Path, now: DateTime<Utc>) -> serde_json::Value {
+        self.store_notice(post, home, false, now)
     }
 
     /// Store one of the OS's own notices (the calendar's heads-ups and reminders), filed as `name`
@@ -203,7 +209,10 @@ impl Store {
     /// or refused by, the harness rate caps (its volume is bounded by the person's events); its
     /// feedback is recorded on the card but never queued, because nothing polls as the desktop;
     /// and the record says the desktop sent it, because it did.
-    pub fn add_os_notice(&self, name: &str, notice: serde_json::Value) -> serde_json::Value {
+    ///
+    /// Decided as of `now`: its budget day, quiet hours and hourly counts all read that clock, and
+    /// nothing else, so the caller that knows the moment (the calendar tick, the brief) says it.
+    pub fn add_os_notice_at(&self, name: &str, notice: serde_json::Value, now: DateTime<Utc>) -> serde_json::Value {
         let harness = NoticeHarness {
             id: notice::OS_HARNESS.to_string(),
             uid: Some(yantrik_ipc_transport::owner::own_euid()),
@@ -214,18 +223,23 @@ impl Store {
             program: String::new(),
         };
         // `home` only bounds an `open_file` button, which the OS's own notices never carry.
-        self.store_notice(NoticePost { notice, harness, os_id: false }, std::path::Path::new("/nonexistent"), true)
+        self.store_notice(NoticePost { notice, harness, os_id: false }, std::path::Path::new("/nonexistent"), true, now)
+    }
+
+    /// [`Store::add_os_notice_at`] on the wall clock, for the tests that do not care about time.
+    #[cfg(test)]
+    pub fn add_os_notice(&self, name: &str, notice: serde_json::Value) -> serde_json::Value {
+        self.add_os_notice_at(name, notice, Utc::now())
     }
 
     /// The one path both kinds of notice are stored through. `os` is set only by
     /// [`Store::add_os_notice`].
-    fn store_notice(&self, post: NoticePost, home: &std::path::Path, os: bool) -> serde_json::Value {
+    fn store_notice(&self, post: NoticePost, home: &std::path::Path, os: bool, now: DateTime<Utc>) -> serde_json::Value {
         // Before anything changes, in memory too: a store that cannot write must not bind an id
         // or spend the budget for a card it will not keep.
         if let Some(why) = self.blocked() {
             return answer::retry(notice::RETRY_UNAVAILABLE_SECS, why);
         }
-        let now = Utc::now();
         let harness = post.harness;
         if harness.id.trim().is_empty() {
             return answer::refused("a notice must name the harness that sent it");
@@ -292,23 +306,6 @@ impl Store {
             checked.notice_id = format!("os-{revision}");
         }
 
-        // Supersede only this harness's own card. One that names any other — another harness's,
-        // or one this store does not hold — changes nothing and is named, the same either way, so
-        // the answer says nothing about what other minds have sent.
-        let mut superseded = None;
-        if let Some(target) = &checked.supersedes {
-            match state.notifications.iter().position(|n| mine(n, target) && !n.dismissed) {
-                Some(index) => {
-                    let old = &mut state.notifications[index];
-                    old.dismissed = true;
-                    old.read = true;
-                    old.revision = revision;
-                    superseded = Some(old.id.clone());
-                }
-                None => checked.clamped.push("supersedes".into()),
-            }
-        }
-
         let local: DateTime<Local> = now.with_timezone(&Local);
         let today = local.format("%Y-%m-%d").to_string();
         if state.budget.day != today {
@@ -323,6 +320,33 @@ impl Store {
         }
         if decision.spends {
             state.budget.used += 1;
+        }
+
+        // Supersede only this harness's own card. One that names any other — another harness's,
+        // or one this store does not hold — changes nothing and is named, the same either way, so
+        // the answer says nothing about what other minds have sent.
+        //
+        // The OS's own card that is still waiting to toast is the exception, when this card will
+        // not toast: replacing it would leave the meeting with no toast. It stays, and is named
+        // the same way. Decided here, on the grant just made, under the lock.
+        let mut superseded = None;
+        if let Some(target) = &checked.supersedes {
+            let will_toast = decision.granted == notice::Attention::Interrupt || decision.held_until.is_some();
+            let waiting = |n: &Notification| {
+                n.notice.as_ref().is_some_and(|x| {
+                    (x.granted == notice::Attention::Interrupt || x.held_until.is_some()) && x.shown_as.is_none()
+                }) && !n.read
+            };
+            match state.notifications.iter().position(|n| mine(n, target) && !n.dismissed && !(os && !will_toast && waiting(n))) {
+                Some(index) => {
+                    let old = &mut state.notifications[index];
+                    old.dismissed = true;
+                    old.read = true;
+                    old.revision = revision;
+                    superseded = Some(old.id.clone());
+                }
+                None => checked.clamped.push("supersedes".into()),
+            }
         }
 
         let id = state.next_id;

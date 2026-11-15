@@ -97,6 +97,20 @@ impl Drop for Room {
 }
 
 impl Room {
+    /// The meeting's own undismissed cards that will make a toast: granted an interrupt, or held to
+    /// be toasted when quiet hours end. Minds' cards are not the meeting's.
+    fn will_toast(&self) -> Vec<String> {
+        self.store
+            .since(0)
+            .changed
+            .into_iter()
+            .filter(|n| !n.dismissed)
+            .filter_map(|n| n.notice)
+            .filter(|x| x.harness.id == notice::OS_HARNESS && !x.hidden() && (x.granted == Attention::Interrupt || x.held_until.is_some()))
+            .map(|x| x.notice_id)
+            .collect()
+    }
+
     /// Every notice the shell reported as shown as a toast, dismissed or not: what the person saw
     /// over the meeting's whole run.
     fn toasts_ever(&self) -> Vec<String> {
@@ -114,6 +128,26 @@ impl Room {
     fn shown_as_toast(&self, notice_id: &str) {
         let (n, _) = self.card(notice_id).expect("the card to show exists");
         self.store.mark_shown(&n.id, Some("toast"), false).unwrap();
+    }
+
+    /// Two Mind interrupts at `minutes` before the start: the day's budget is spent.
+    fn spend_the_budget(&self, minutes: i64) {
+        for id in ["other-1", "other-2"] {
+            let post = notice::NoticePost {
+                notice: serde_json::json!({ "notice_id": id, "family": "discovery", "title": "Found", "why": "x", "attention": "interrupt" }),
+                harness: notice::NoticeHarness { id: "mind".into(), uid: Some(1000), name: "mind".into(), ..Default::default() },
+                os_id: false,
+            };
+            let at = self.start - ChronoDuration::minutes(minutes);
+            assert_eq!(self.store.add_notice_at(post, &self.root, at)["stored"], true);
+        }
+    }
+
+    /// Quiet hours around the local hour of the instant `minutes` before the start: the clock the
+    /// store decides by is the one it is handed, never the machine's.
+    fn quiet_around(&self, minutes: i64) {
+        let hour = (self.start - ChronoDuration::minutes(minutes)).with_timezone(&Local).hour() as u8;
+        self.store.set_initiative(|s| { s.quiet_hours = Some(QuietHours { start: (hour + 23) % 24, end: (hour + 1) % 24 }); Ok(()) }).unwrap();
     }
 
     /// The cards the person still has for this meeting.
@@ -199,14 +233,7 @@ fn a_reminder_set_earlier_has_already_toasted_so_the_brief_stays_in_the_inbox() 
 #[test]
 fn the_third_interrupt_of_the_day_goes_to_the_inbox() {
     let room = Room::new();
-    for id in ["other-1", "other-2"] {
-        let post = notice::NoticePost {
-            notice: serde_json::json!({ "notice_id": id, "family": "discovery", "title": "Found", "why": "x", "attention": "interrupt" }),
-            harness: notice::NoticeHarness { id: "mind".into(), uid: Some(1000), name: "mind".into(), ..Default::default() },
-            os_id: false,
-        };
-        assert_eq!(room.store.add_notice(post, &room.root)["stored"], true);
-    }
+    room.spend_the_budget(10);
     room.brief(10);
     let (_, brief) = room.card(BRIEF).unwrap();
     assert_eq!((brief.granted, brief.grant_reason), (Attention::Inbox, GrantReason::BudgetSpent));
@@ -248,9 +275,7 @@ fn a_brief_the_person_switched_off_does_not_take_the_reminders_card() {
 #[test]
 fn quiet_hours_hold_the_brief_and_leave_the_interrupt_to_the_reminder() {
     let room = Room::new();
-    // Quiet around the clock the announcement is made on.
-    let hour = (room.start - ChronoDuration::minutes(10)).with_timezone(&Local).hour() as u8;
-    room.store.set_initiative(|s| { s.quiet_hours = Some(QuietHours { start: (hour + 23) % 24, end: (hour + 1) % 24 }); Ok(()) }).unwrap();
+    room.quiet_around(10);
     room.brief(10);
     let (_, brief) = room.card(BRIEF).unwrap();
     assert_eq!(brief.granted, Attention::Inbox);
@@ -354,6 +379,7 @@ fn a_reminder_granted_but_never_shown_leaves_the_brief_its_interrupt() {
     assert_eq!(room.card(REMINDER).unwrap().1.granted, Attention::Interrupt);
     room.brief(10);
     assert_eq!(room.card(BRIEF).unwrap().1.granted, Attention::Interrupt, "the brief interrupts and replaces the held reminder");
+    assert!(room.card(REMINDER).unwrap().0.dismissed, "the control: a brief that will toast does take the waiting reminder");
     assert_eq!(room.interrupts(), [BRIEF]);
 }
 
@@ -363,12 +389,74 @@ fn a_reminder_granted_but_never_shown_leaves_the_brief_its_interrupt() {
 fn quiet_hours_over_a_held_early_card_and_reminder_leave_the_meeting_one_toast() {
     let mut room = Room::new();
     with_a_place_and_a_lead_of_twenty(&room);
+    // Around the hour of the instants it is posted at, on the store's own clock.
     let hour = (room.start - ChronoDuration::minutes(20)).with_timezone(&Local).hour() as u8;
-    room.store.set_initiative(|s| { s.quiet_hours = Some(QuietHours { start: (hour + 23) % 24, end: (hour + 1) % 24 }); Ok(()) }).unwrap();
+    room.store.set_initiative(|s| { s.quiet_hours = Some(QuietHours { start: (hour + 22) % 24, end: (hour + 1) % 24 }); Ok(()) }).unwrap();
     room.tick(45);
     room.tick(20);
     room.brief(10);
     assert_eq!(room.card(BRIEF).unwrap().1.granted, Attention::Inbox, "quiet hours: the brief does not interrupt");
     assert!(!room.card(REMINDER).unwrap().0.dismissed, "the held reminder is the toast, and the brief did not take it");
-    assert_eq!(room.interrupts(), [REMINDER], "one toast waits for the end of the quiet hours");
+    assert_eq!(room.will_toast(), [REMINDER], "one toast waits for the end of the quiet hours");
+}
+
+/// R5-M1: a brief the store keeps in the inbox must not take the reminder that is still waiting to
+/// toast. The reminder is posted at T-10 and not yet shown (a call, do-not-disturb, the next poll).
+fn the_reminder_is_still_the_meetings_toast(room: &Room, why: &str) {
+    let (reminder, _) = room.card(REMINDER).unwrap();
+    assert!(!reminder.dismissed, "{why}: the waiting reminder is not dismissed");
+    assert_eq!(room.will_toast(), [REMINDER], "{why}: one card will still toast");
+    let (_, brief) = room.card(BRIEF).unwrap();
+    assert_eq!(brief.granted, Attention::Inbox, "{why}");
+    assert_eq!(room.cards_up().iter().filter(|id| id.starts_with("cal-")).count(), 2, "{why}: two cards, one toast");
+    assert!(brief.clamped.iter().any(|c| c == "supersedes"), "{why}: the store says it did not replace it");
+}
+
+#[test]
+fn a_brief_the_budget_turns_down_leaves_the_waiting_reminder_its_toast() {
+    let mut room = Room::new();
+    room.spend_the_budget(10);
+    room.tick(10);
+    room.brief(10);
+    assert_eq!(room.card(BRIEF).unwrap().1.grant_reason, GrantReason::BudgetSpent);
+    the_reminder_is_still_the_meetings_toast(&room, "budget spent");
+}
+
+#[test]
+fn a_brief_held_to_the_inbox_by_the_calendar_setting_or_quiet_initiative_leaves_the_waiting_reminder() {
+    for (setting, quiet, expect) in [
+        (FamilySetting::InboxOnly, false, GrantReason::FamilyInboxOnly),
+        (FamilySetting::On, true, GrantReason::QuietInitiative),
+    ] {
+        let mut room = Room::new();
+        room.store
+            .set_initiative(|s| {
+                s.quiet = quiet;
+                s.set(&Family::Calendar, setting)
+            })
+            .unwrap();
+        room.tick(10);
+        room.brief(10);
+        assert_eq!(room.card(BRIEF).unwrap().1.grant_reason, expect);
+        the_reminder_is_still_the_meetings_toast(&room, &format!("{setting:?} quiet={quiet}"));
+    }
+}
+
+/// Quiet hours on the store's clock: the reminder is held to their end, and the brief, which is
+/// asked to stay in the inbox, does not take it. Neither the test nor the store reads the machine's
+/// clock, so this holds at any hour in any time zone.
+#[test]
+fn quiet_hours_on_the_stores_clock_leave_the_held_reminder_to_toast_when_they_end() {
+    let mut room = Room::new();
+    room.quiet_around(10);
+    room.tick(10);
+    let (_, held) = room.card(REMINDER).unwrap();
+    assert_eq!(held.granted, Attention::Inbox);
+    assert!(held.held_until.is_some(), "held to toast when quiet hours end");
+    room.brief(10);
+    let (reminder, still) = room.card(REMINDER).unwrap();
+    assert!(!reminder.dismissed, "the held reminder is not dismissed");
+    assert!(still.held_until.is_some());
+    assert_eq!(room.will_toast(), [REMINDER], "one toast");
+    assert_eq!(room.cards_up().len(), 2, "two cards, one toast");
 }

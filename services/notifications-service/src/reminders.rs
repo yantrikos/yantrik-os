@@ -31,7 +31,7 @@
 //!   when under `EARLY_MIN_LEFT` remains, and for an event whose own lead is already
 //!   `EARLY_MIN_LEFT` or more.
 //!
-//! Both go through [`Store::add_os_notice`], filed under the desktop's own harness id, so they meet
+//! Both go through [`Store::add_os_notice_at`], filed under the desktop's own harness id, so they meet
 //! the same grant decision, quiet hours and controls as a mind's notice. Ids are deterministic
 //! (`cal-reminder:<event>:<start>`, `cal-early:<event>:<start>`), so a restart that announces again
 //! is answered as a duplicate, and the reminder names the early card in `supersedes`: one card per
@@ -135,7 +135,7 @@ fn tick<Tz: TimeZone>(store: &Store, dir: &Path, sent: &mut Sent, now: DateTime<
         if due.kind == Kind::Reminder && crate::brief_notice::toasted(store, &notice_id(Kind::Early, &due.id, &due.start)) {
             notice["attention"] = "inbox".into();
         }
-        let answer = store.add_os_notice(NAME, notice);
+        let answer = store.add_os_notice_at(NAME, notice, now.with_timezone(&Utc));
         if answer["stored"] == true {
             tracing::info!(id = %due.id, kind = due.kind.as_str(), duplicate = answer["duplicate"] == true, "announced an event");
         } else if answer["refused"].is_string() {
@@ -1149,9 +1149,9 @@ mod tests {
     #[test]
     fn quiet_hours_hold_both() {
         let (store, dir, cal) = calendar();
-        // The grant reads the machine's clock: quiet from an hour before now to an hour after.
-        let hour = chrono::Timelike::hour(&Local::now()) as u8;
-        let quiet = QuietHours { start: (hour + 23) % 24, end: (hour + 1) % 24 };
+        // The grant reads the tick's own clock: quiet from an hour before it to two after.
+        let hour = chrono::Timelike::hour(&nine_am().with_timezone(&Local)) as u8;
+        let quiet = QuietHours { start: (hour + 23) % 24, end: (hour + 2) % 24 };
         store.set_initiative(|s| { s.quiet_hours = Some(quiet); Ok(()) }).unwrap();
         let now = nine_am();
         write(&cal, &placed("dentist", "Dentist", &at(now, 60), "Elm St"));
