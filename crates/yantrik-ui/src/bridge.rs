@@ -381,6 +381,8 @@ pub struct CompanionBridge {
     memory_db: String,
     /// The credential vault's own thread (`vault_lane`): vault calls never queue behind a turn.
     vault_lane: crate::vault_lane::VaultLane,
+    /// The meeting brief's own clock (`brief_tick`): it never waits on a turn.
+    brief_tick: crate::brief_tick::BriefTick,
 }
 
 /// A companion you can use from another thread.
@@ -736,6 +738,7 @@ impl CompanionBridge {
         let decisions_w = decisions.clone();
         let memory_db = config.yantrikdb.db_path.clone();
         let vault_lane = crate::vault_lane::VaultLane::start(&memory_db);
+        let brief_tick = crate::brief_tick::BriefTick::start(memory_db.clone(), config.user_name.clone());
         let self_tx = cmd_tx.clone();
         let board_w = board.clone();
         let worker_handle = std::thread::spawn(move || {
@@ -756,6 +759,7 @@ impl CompanionBridge {
             private: AtomicBool::new(private),
             memory_db,
             vault_lane,
+            brief_tick,
         }
     }
 
@@ -973,6 +977,7 @@ impl CompanionBridge {
 
     /// Rename the user at runtime (updates config + companion).
     pub fn rename_user(&self, name: String) {
+        self.brief_tick.rename(&name);
         let _ = self.cmd_tx.send(CompanionCommand::RenameUser { name });
     }
 
@@ -2170,8 +2175,10 @@ fn worker_loop(
 
                 // Meeting briefs: the OS's own preparation, ten minutes before a meeting with other
                 // people in it. Deterministic and local (no model, no network); off means nothing
-                // is read at all. The shell draws what is published here.
-                if !companion.briefs_unavailable {
+                // is read at all. The shell draws what is published here. A plain store is ticked
+                // by the brief's own clock (`brief_tick`), so a long turn cannot stop it; only an
+                // encrypted store, which that clock cannot open, is ticked here.
+                if crate::brief_tick::worker_ticks(companion.briefs_unavailable, crate::brief_tick::ticks_here()) {
                     crate::wire::meeting_brief::publish(yantrik_companion::meeting_brief::local::tick_local(
                         &companion.db.conn(),
                         &companion.config.user_name,
@@ -2462,8 +2469,8 @@ fn worker_loop(
                             instruction = %instruction,
                             "Executing research urge"
                         );
-                        let resp = companion.handle_message(&instruction);
-                        let response_text = resp.message.trim().to_string();
+                        let resp = crate::worker_guard::guarded("EXECUTE urge", || companion.handle_message(&instruction));
+                        let response_text = resp.map(|r| r.message.trim().to_string()).unwrap_or_default();
                         if !response_text.is_empty() && !is_nothing_response(&response_text) {
                             let msg = yantrik_companion::types::ProactiveMessage {
                                 text: response_text,
@@ -2498,7 +2505,7 @@ fn worker_loop(
 
                 // Only run proactive engine if EXECUTE didn't already produce a message
                 if !execute_produced_message {
-                    companion.check_proactive();
+                    crate::worker_guard::guarded("proactive check", || companion.check_proactive());
                 }
 
                 // Deliver proactive message — Synthesis Gate + focus state + per-key cooldown
@@ -2852,7 +2859,10 @@ fn worker_loop(
                         new_steps,
                     );
 
-                    let resp = companion.handle_message(&task_prompt);
+                    // A panic in this turn leaves the task for the next think to try again.
+                    let Some(resp) = crate::worker_guard::guarded("queued task", || companion.handle_message(&task_prompt)) else {
+                        continue;
+                    };
                     let response_text = resp.message.trim().to_string();
 
                     // Check if task was completed
@@ -3514,6 +3524,7 @@ impl CompanionBridge {
             private: AtomicBool::new(false),
             memory_db: memory_db.to_string(),
             vault_lane: crate::vault_lane::VaultLane::start(memory_db),
+            brief_tick: crate::brief_tick::BriefTick::idle(String::new()),
         }
     }
 

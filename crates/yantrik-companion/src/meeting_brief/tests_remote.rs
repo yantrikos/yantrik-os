@@ -11,7 +11,7 @@ use yantrik_ipc_contracts::calendar::{CalendarEvent, CreateEventParams, EventsPa
 
 use super::files::{FileRoots, FileSource};
 use super::model::Row;
-use super::local::tick_with;
+use super::local::{tick_fresh_with, tick_with};
 use super::notes::{NoteHit, NoteSource};
 use super::remote::Fetcher;
 use super::tests::{attendee, db, event, maya_email_row, now, ME};
@@ -304,4 +304,53 @@ fn a_folder_that_never_answers_costs_the_files_of_a_brief_and_nothing_else() {
     assert!(calendar.calls.load(Ordering::SeqCst) >= calls + 2, "the calendar is still asked every tick");
     assert!(fetcher.snapshot().events().is_some(), "and its answer is fresh");
     drop(release);
+}
+
+/// A calendar the test edits between ticks.
+struct Editable(Mutex<Vec<CalendarEvent>>);
+
+impl CalendarBackend for Editable {
+    fn list(&self, _: &EventsParams) -> Result<Vec<CalendarEvent>, String> {
+        Ok(self.0.lock().expect("events").clone())
+    }
+    fn get(&self, _: &str) -> Result<CalendarEvent, String> {
+        Err("not used".into())
+    }
+    fn create(&self, _: &CreateEventParams) -> Result<CalendarEvent, String> {
+        Err("not used".into())
+    }
+    fn update(&self, _: &UpdateEventParams) -> Result<CalendarEvent, String> {
+        Err("not used".into())
+    }
+    fn delete(&self, _: &str) -> Result<(), String> {
+        Err("not used".into())
+    }
+    fn upsert_remote(&self, _: &UpsertRemoteEventParams) -> Result<CalendarEvent, String> {
+        Err("not used".into())
+    }
+}
+
+#[test]
+fn a_change_to_the_calendar_reaches_the_card_on_the_very_next_tick() {
+    let conn = db();
+    let n = now();
+    maya_email_row(&conn, n);
+    let calendar = Arc::new(Editable(Mutex::new(orion(n, 10))));
+    let fetcher = Fetcher::spawn(calendar.clone(), Arc::new(SlowNotes(AtomicUsize::new(0))), Arc::new(FileRoots::default()));
+    let wait = Duration::from_secs(5);
+    // Notes are asked on the first tick and answer for the second: so the brief is made within two.
+    let mut cards = Vec::new();
+    for _ in 0..3 {
+        cards = tick_fresh_with(&conn, "Pat", &fetcher, n, Some(true), wait).cards;
+        if !cards.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(cards.len(), 1, "the brief was made");
+    // The event is called off. The very next tick, with no tick between to carry the news, ends the card.
+    let mut cancelled = orion(n, 10);
+    cancelled[0].title = "Cancelled: Orion launch".into();
+    *calendar.0.lock().expect("events") = cancelled;
+    let after = tick_fresh_with(&conn, "Pat", &fetcher, n, Some(true), wait);
+    assert!(after.cards.is_empty(), "the card outlived its event by a tick");
 }

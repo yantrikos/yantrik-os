@@ -169,16 +169,23 @@ if action == "seed":
             "VALUES (?, ?, ?, 0, 'pending', 0.9, 'manual', '\"Manual\"', 'demo-mb', '[]', NULL, ?, ?)",
             (promisor, promisee, action_text, now, now),
         )
-elif action == "unseed":
+elif action in ("reseed", "unseed"):
     # Each delete on its own: a machine that never cached mail has no emails table, and that is
     # not a reason to leave the promises behind. Only rows carrying the marker are matched.
-    for sql in (
-        "DELETE FROM emails WHERE message_id LIKE '<demo-mb-%'",
+    statements = [
+        # The two rows `seed` itself made, by their ids. NOT every `<demo-mb-%`: the mailbox the
+        # runner seeded (`seed-mailbox`, ids `<demo-mb-box-N@...>`) is cached by the companion
+        # under the same prefix, and `seed` must not wipe what the brief needs.
+        "DELETE FROM emails WHERE message_id IN ('<demo-mb-1@seed.test>', '<demo-mb-2@seed.test>')",
         "DELETE FROM email_accounts WHERE email = 'demo-mb-me@seed.test'",
         "DELETE FROM wm_commitments WHERE evidence_text = 'demo-mb'",
         # The brief made for the demo event, so seeding again makes a fresh one.
         "DELETE FROM prepared_items WHERE id LIKE 'meeting:demo-mb-event:%'",
-    ):
+    ]
+    if action == "unseed":
+        # Taking everything back also takes back the mailbox's cached copies.
+        statements.append("DELETE FROM emails WHERE message_id LIKE '<demo-mb-box-%'")
+    for sql in statements:
         try:
             con.execute(sql)
         except sqlite3.OperationalError:
@@ -332,7 +339,7 @@ case "${1:-}" in
       echo "$DOC_FILE exists and is not this script's; not overwriting it" >&2
       exit 1
     fi
-    db unseed >/dev/null
+    db reseed >/dev/null
     write_event "$minutes"
     mkdir -p "$NOTES_DIR" "$HOME/Documents"
     printf '# Orion launch notes (demo-mb)\n\nMet Maya Chen and Ravi Rao about the launch date.\n' > "$NOTE_FILE"

@@ -142,6 +142,31 @@ fn fetcher() -> &'static Fetcher {
     })
 }
 
+/// How long [`tick_fresh`] waits for the calendar's answer before it uses the one it has.
+const CALENDAR_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// [`tick_with`] for a caller that is not the companion's worker: the calendar is read first, so a
+/// change made since the last tick (an edit, a cancelled event) shows on this tick and not the
+/// next. The worker's own tick never waits for the calendar.
+pub fn tick_fresh_with(
+    conn: &Connection,
+    user_name: &str,
+    fetcher: &Fetcher,
+    now: chrono::NaiveDateTime,
+    enabled: Option<bool>,
+    wait: std::time::Duration,
+) -> Outcome {
+    if enabled == Some(true) {
+        fetcher.refresh_calendar(wait);
+    }
+    tick_with(conn, user_name, fetcher, now, enabled)
+}
+
+/// [`tick_fresh_with`] against the real stores, at the local time now.
+pub fn tick_fresh(conn: &Connection, user_name: &str, enabled: Option<bool>) -> Outcome {
+    tick_fresh_with(conn, user_name, fetcher(), chrono::Local::now().naive_local(), enabled, CALENDAR_WAIT)
+}
+
 /// The worker's tick against the real stores, at the local time now.
 pub fn tick_local(conn: &Connection, user_name: &str, enabled: Option<bool>) -> Outcome {
     let now = chrono::Local::now().naive_local();

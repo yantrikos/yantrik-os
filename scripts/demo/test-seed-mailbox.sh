@@ -28,6 +28,53 @@ if [ "$uid" = 0 ]; then uid="$(id -u nobody)"; gid="$(id -g nobody)"; fi
 chmod 755 "$work"  # the auth process reads the user file as dovecot's own user
 mkdir -p "$work/run" "$work/mail"
 printf 'box:{PLAIN}testpass-%s\nplain:{PLAIN}testpass-%s\n' "$$" "$$" > "$work/users"
+# Dovecot 2.4 (Debian 13) will not read a 2.3 file: it wants `dovecot_config_version` first and
+# spells the mail location, passdb, userdb and cleartext setting differently. 2.3 and earlier keep
+# the old file. The two files say the same thing: one imap listener on loopback, plaintext auth,
+# a passwd-file of two users, maildir under $work/mail/<user>, and a Sent folder made on demand.
+dovecot_version="$(dovecot --version 2>/dev/null | cut -d' ' -f1)"
+case "$dovecot_version" in
+  2.4*|2.[5-9]*|[3-9].*)
+cat > "$work/dovecot.conf" <<CONF
+dovecot_config_version = 2.4.0
+dovecot_storage_version = 2.4.0
+protocols = imap
+listen = 127.0.0.1
+base_dir = $work/run
+log_path = $work/dovecot.log
+ssl = no
+auth_allow_cleartext = yes
+auth_mechanisms = plain
+first_valid_uid = 0
+mail_driver = maildir
+mail_path = $work/mail/%{user}
+passdb passwd-file {
+  passwd_file_path = $work/users
+}
+userdb static {
+  fields {
+    uid = $uid
+    gid = $gid
+    home = $work/mail/%{user}
+  }
+}
+service imap-login {
+  inet_listener imap {
+    port = $port
+  }
+  inet_listener imaps {
+    port = 0
+  }
+}
+namespace inbox {
+  inbox = yes
+  mailbox Sent {
+    auto = create
+  }
+}
+CONF
+    ;;
+  *)
 cat > "$work/dovecot.conf" <<CONF
 protocols = imap
 listen = 127.0.0.1
@@ -61,6 +108,8 @@ namespace inbox {
   }
 }
 CONF
+    ;;
+esac
 [ "$(id -u)" != 0 ] || chown -R "$uid:$gid" "$work/mail" "$work/run"
 dovecot -c "$work/dovecot.conf" >"$work/start.log" 2>&1 </dev/null || { echo "dovecot would not start:"; cat "$work/start.log"; exit 1; }
 for _ in $(seq 50); do

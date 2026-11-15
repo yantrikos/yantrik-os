@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Duration as Span;
@@ -176,6 +176,8 @@ pub struct Fetcher {
     /// The file searches.
     walk: SyncSender<Vec<Vec<String>>>,
     shared: Arc<Mutex<Snapshot>>,
+    /// Signalled when the calendar's answer lands in `shared`.
+    calendar_in: Arc<Condvar>,
     /// Said once that a thread is gone, so a log is not filled every tick.
     told: AtomicBool,
 }
@@ -183,14 +185,19 @@ pub struct Fetcher {
 /// Answer one request into the snapshot. Nothing is held across a call, and the calendar's answer
 /// is kept before anything slower is asked: a notes search that takes a minute must not age the
 /// calendar past [`FRESH`] and stop every brief.
-fn refresh(shared: &Mutex<Snapshot>, backends: &Backends, request: Request) {
+fn refresh(shared: &Mutex<Snapshot>, calendar_in: &Condvar, backends: &Backends, request: Request) {
     let now = chrono::Local::now().naive_local();
     let params = EventsParams {
         start_date: now.format("%Y-%m-%dT%H:%M:%S").to_string(),
         end_date: (now + Span::hours(LOOK_AHEAD_HOURS)).format("%Y-%m-%dT%H:%M:%S").to_string(),
     };
+    // Stamped when the read began: an answer is no newer than the moment it was asked for.
+    let asked = Instant::now();
     match backends.calendar.list(&params) {
-        Ok(events) => shared.lock().unwrap_or_else(|e| e.into_inner()).events = Some((events, Instant::now())),
+        Ok(events) => {
+            shared.lock().unwrap_or_else(|e| e.into_inner()).events = Some((events, asked));
+            calendar_in.notify_all();
+        }
         Err(why) => tracing::debug!(error = %why, "meeting brief: the calendar did not answer"),
     }
     let reuse_notes: Vec<String> = {
@@ -257,16 +264,32 @@ impl Fetcher {
         let (ask, requests) = sync_channel::<Request>(1);
         let (to_walk, walks) = sync_channel::<Vec<Vec<String>>>(1);
         let shared = Arc::new(Mutex::new(Snapshot::default()));
-        let (asked, walked) = (shared.clone(), shared.clone());
+        let calendar_in = Arc::new(Condvar::new());
+        let (asked, walked, signal) = (shared.clone(), shared.clone(), calendar_in.clone());
         let backends = Backends { calendar, notes };
-        serve("fetch", requests, move |request| refresh(&asked, &backends, request));
+        serve("fetch", requests, move |request| refresh(&asked, &signal, &backends, request));
         serve("walk", walks, move |wanted| walk(&walked, files.as_ref(), wanted));
-        Self { ask, walk: to_walk, shared, told: AtomicBool::new(false) }
+        Self { ask, walk: to_walk, shared, calendar_in, told: AtomicBool::new(false) }
     }
 
     /// What was found so far. Never waits on a service.
     pub fn snapshot(&self) -> Snapshot {
         self.shared.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Read the calendar now and wait, for at most `within`, until the answer is in the snapshot.
+    /// For a caller that is not the companion's worker (the brief's own clock), so that what it
+    /// draws is what the calendar says now and not what it said a tick ago. A service that does
+    /// not answer in time costs `within` and nothing else: the snapshot it already holds is used.
+    pub fn refresh_calendar(&self, within: Duration) {
+        let asked = Instant::now();
+        if matches!(self.ask.try_send(Request::default()), Err(TrySendError::Disconnected(_))) {
+            return;
+        }
+        // An answer read before this call (one already in flight) does not count: only one whose
+        // read began after it does.
+        let held = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = self.calendar_in.wait_timeout_while(held, within, |s| !s.events.as_ref().is_some_and(|(_, at)| *at >= asked));
     }
 
     /// Ask for a refresh: the calendar once, and these searches. Never waits; a request made

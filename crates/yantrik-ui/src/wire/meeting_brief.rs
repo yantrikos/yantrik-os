@@ -249,12 +249,20 @@ impl BriefMessage {
     }
 }
 
+/// The name Notes knows a note by. The notes service names a note by its file without the `.md`
+/// (`notes.search`'s `id`); Notes opens a note by its title or by its whole file name, so a stem
+/// opens nothing ("No note is called ..."). The file name is exact: two notes with one title
+/// cannot be mixed up, and a note whose title is not its file name still opens.
+fn notes_file(id: &str) -> String {
+    if id.ends_with(".md") { id.to_string() } else { format!("{id}.md") }
+}
+
 /// What a row's button opens, once the notice inbox's own check has passed it.
 fn opening(open: &Open, home: &std::path::Path) -> Result<Opening, String> {
     let action = |kind: ActionKind, reference: &str| NoticeAction { label: "Open".into(), kind, reference: reference.into() };
     match open {
         Open::Message { account, folder, id } => Ok(Opening::Message(BriefMessage::new(account, folder, id))),
-        Open::Note { id } => notice_inbox::plan(&action(ActionKind::OpenNote, id), home),
+        Open::Note { id } => notice_inbox::plan(&action(ActionKind::OpenNote, &notes_file(id)), home),
         Open::File { path } => notice_inbox::plan(&action(ActionKind::OpenFile, path), home),
         Open::Event { id } => notice_inbox::plan(&action(ActionKind::OpenEvent, id), home),
     }
@@ -503,6 +511,11 @@ mod tests {
         assert!(matches!(opening(&Open::File { path: file.to_string_lossy().into() }, &home), Ok(Opening::File(_))));
         assert!(opening(&Open::File { path: "/etc/passwd".into() }, &home).is_err(), "not a file in the home folder");
         assert!(matches!(opening(&Open::Note { id: "note-1.md".into() }, &home), Ok(Opening::Note(_))));
+        // The notes service's id is the file without `.md`: Notes is handed the whole file name, for the
+        // seeded note and for one whose title is not its file name.
+        for (id, file) in [("demo-mb-orion-notes", "demo-mb-orion-notes.md"), ("note-0192ab", "note-0192ab.md"), ("note-1.md", "note-1.md")] {
+            assert_eq!(opening(&Open::Note { id: id.into() }, &home), Ok(Opening::Note(file.into())), "{id}");
+        }
         assert!(matches!(opening(&Open::Event { id: "e".into() }, &home), Ok(Opening::Event(_))));
         // The exact message, from the folder it is in: a subject names nothing here.
         assert_eq!(
