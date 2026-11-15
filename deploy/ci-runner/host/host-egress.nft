@@ -1,0 +1,40 @@
+# Host-side egress filter for the CI clones (#1252 review R3). Loaded on the node by the
+# controller before every clone (lib/host.sh), which refuses to clone if it is not in place.
+# It is the layer that does not depend on the CT's own root: a job that reaches root inside its
+# CT and flushes the CT's rules still meets this one.
+#
+# It matches ONLY frames that enter the bridge from a port named veth96*, which is the host side
+# of a clone in 9600-9699 (veth<ID>i0). Every other guest, CT 530 included, takes the first
+# rule and is untouched. `$resolvers` (the node's DNS servers), `$ownpub` (our own public
+# addresses) and `$gateway` (the DHCP server) are defined by the loader.
+#
+# A clone may: use ARP, ask DHCP for its lease, ask the node's resolvers for names, and send
+# IPv4 to the public internet. It may not send to private, CGNAT, link-local, multicast or
+# loopback addresses, to our own public addresses, to the node itself, or anything but IPv4.
+
+table bridge yantrik_ci
+delete table bridge yantrik_ci
+
+table bridge yantrik_ci {
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    iifname != "veth96*" accept
+    ether type arp accept
+    ether type != ip drop
+    ip daddr { 255.255.255.255, $gateway } udp sport 68 udp dport 67 accept
+    ip daddr $resolvers udp dport 53 accept
+    ip daddr $resolvers tcp dport 53 accept
+    ip daddr $ownpub counter drop
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10,
+               169.254.0.0/16, 224.0.0.0/4, 127.0.0.0/8 } counter drop
+    accept
+  }
+
+  # Frames for the node itself (its API, its ssh): a clone never talks to the node.
+  chain input {
+    type filter hook input priority filter; policy accept;
+    iifname != "veth96*" accept
+    ether type arp accept
+    counter drop
+  }
+}

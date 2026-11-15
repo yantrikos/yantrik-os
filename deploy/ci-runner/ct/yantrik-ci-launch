@@ -25,9 +25,11 @@ chown -R runner:runner /home/runner/actions-runner
 # process: `pct exec` leaves this process with no parent inside the container, and a job that
 # walks /proc up from itself to pid 1 (yantrik-agent-terminal's identity test) must reach init.
 # --wait --pipe keeps this script alive for the runner's life, forwards its output and exit
-# status. The service has no task limit of its own; the container's pids.max is the bound.
-exec systemd-run --quiet --wait --pipe --collect --service-type=exec \
-  -p User=runner -p WorkingDirectory=/home/runner/actions-runner -p TasksMax=infinity \
+# status. The service has no task limit of its own (the container's pids.max is the bound),
+# cannot gain privileges (NoNewPrivileges: no setuid binary raises it, review R3), and has a
+# fixed description so the command line, JIT config included, is not copied into unit metadata (R11).
+exec systemd-run --quiet --description=yantrik-ci-runner --wait --pipe --collect --service-type=exec \
+  -p User=runner -p WorkingDirectory=/home/runner/actions-runner -p TasksMax=infinity -p NoNewPrivileges=yes \
   --setenv=HOME=/home/runner --setenv=USER=runner --setenv=LOGNAME=runner \
   --setenv=SHELL=/bin/bash --setenv=LANG=C.UTF-8 \
   --setenv=RUSTUP_HOME=/opt/rust/rustup \

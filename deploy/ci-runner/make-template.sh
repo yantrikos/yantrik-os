@@ -20,7 +20,8 @@ HOSTNAME_CT=yantrik-ci-template
 SRC_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BUILD_CT=530 # the build host: read-only here, to learn the addresses a job must not reach
 STORAGE=local-lvm
-ROOTFS_GB=150
+ROOTFS_GB=80 # measured: a cold workspace build and the whole test run peak at 23 GB (#1252)
+OWN_PUBLIC=/etc/yantrik-ci/own-public-ips # our own public addresses, kept on the node
 CPUUNITS=50 # CT 530 and the VMs keep the default 100: the build host wins on CPU (review N4)
 PIDS_MAX=32768
 CORES=32
@@ -36,6 +37,8 @@ die() { printf 'make-template: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root on the Proxmox node"
 command -v pct > /dev/null || die "pct not found: this is not a Proxmox node"
 [ -f "$IMAGE" ] || die "missing image $IMAGE"
+grep -qvE '^[[:space:]]*(#|$)' "$OWN_PUBLIC" 2> /dev/null ||
+  die "list our own public addresses (the router's WAN address, any other), one per line, in $OWN_PUBLIC"
 
 # A CT id lives in the cluster-wide config tree; a clone anywhere in the range blocks us.
 ct_conf_exists() { compgen -G "/etc/pve/nodes/*/lxc/$1.conf" > /dev/null; }
@@ -98,6 +101,8 @@ apt-get install -y --no-install-recommends \
   cmake clang libclang-dev xz-utils zstd unzip procps nftables
 # Nothing may listen in a job's container, and nothing logs in to it (review N9).
 apt-get purge -y openssh-server > /dev/null 2>&1 || true
+# No sudo either: one more setuid binary the job could try (review R3).
+SUDO_FORCE_REMOVE=yes apt-get purge -y sudo > /dev/null 2>&1 || true
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
@@ -107,7 +112,6 @@ useradd --uid 1001 --create-home --home-dir /home/runner --shell /bin/bash runne
 passwd -l runner > /dev/null
 # No sudo, no groups beyond its own.
 if getent group sudo | grep -qw runner; then gpasswd -d runner sudo; fi
-if command -v sudo > /dev/null; then echo "note: sudo is installed; runner is not in sudoers"; fi
 
 # --- Rust, installed by root, read-only to everyone else -------------------------------
 export RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
@@ -157,6 +161,7 @@ say "installing the launcher, the egress filter and the job-started hook"
 push() { pct push "$TEMPLATE_ID" "$SRC_DIR/ct/$1" "$2" --perms "$3" --user 0 --group 0; }
 pct exec "$TEMPLATE_ID" -- mkdir -p /etc/yantrik-ci /usr/local/libexec
 push egress.nft /etc/yantrik-ci/egress.nft 644
+pct push "$TEMPLATE_ID" "$OWN_PUBLIC" /etc/yantrik-ci/own-public-ips --perms 644 --user 0 --group 0
 push yantrik-ci-egress /usr/local/sbin/yantrik-ci-egress 755
 push yantrik-ci-launch /usr/local/sbin/yantrik-ci-launch 755
 push yantrik-ci-job-started.sh /usr/local/libexec/yantrik-ci-job-started.sh 755
@@ -175,7 +180,7 @@ set -u
 fail=0
 check() { # check <label> <expected: ok|refused> <cmd...>
   local label=$1 want=$2; shift 2
-  if "$@" > /dev/null 2>&1; then got=ok; else got=refused; fi
+  if "$@" < /dev/null > /dev/null 2>&1; then got=ok; else got=refused; fi
   if [ "$got" = "$want" ]; then echo "PASS  $label ($got)"; else echo "FAIL  $label (wanted $want, got $got)"; fail=1; fi
 }
 as_runner() { runuser -u runner -- "$@"; }
@@ -186,7 +191,9 @@ check "runner cannot write /opt/rust/cargo/bin" refused as_runner touch /opt/rus
 check "runner cannot write /opt/actions-runner" refused as_runner touch /opt/actions-runner/x
 check "runner cannot overwrite run.sh" refused as_runner sh -c ': >> /opt/actions-runner/run.sh'
 check "runner is not root" ok sh -c '[ "$(runuser -u runner -- id -u)" = 1001 ]'
+check "sudo is not installed" refused command -v sudo
 check "runner has no sudo" refused as_runner sudo -n true
+check "unprivileged ports start at 1024 (runner cannot bind 68)" ok sh -c '[ "$(sysctl -n net.ipv4.ip_unprivileged_port_start)" = 1024 ]'
 check "runner cannot write the job-started hook" refused as_runner sh -c ': >> /usr/local/libexec/yantrik-ci-job-started.sh'
 check "runner cannot replace the hook" refused as_runner mv /usr/local/libexec/yantrik-ci-job-started.sh /usr/local/libexec/x
 check "runner cannot write the egress rules" refused as_runner sh -c ': >> /etc/yantrik-ci/egress.nft'
@@ -233,6 +240,17 @@ check "static.crates.io reachable" ok as_runner curl -m10 -sSfo /dev/null -r 0-0
 check "runner cannot list the rules" refused as_runner nft list ruleset
 check "runner cannot flush the rules" refused as_runner nft flush ruleset
 check "runner cannot reach the rules from a new namespace" refused as_runner unshare -Urn sh -c 'nft list ruleset && curl -m5 -s https://api.github.com/zen'
+check "runner cannot flush the CT's rules from a user namespace" refused as_runner unshare -Ur nft flush ruleset
+check "the CT's rules are still loaded after those attempts" ok sh -c 'nft list chain ip yantrik_ci output | grep -q "policy drop"'
+# Our own public addresses are dropped: hit each, then the drop rule's counter must have moved.
+for ip in $(grep -vE '^[[:space:]]*(#|$)' /etc/yantrik-ci/own-public-ips); do
+  as_runner curl -m3 -sk "https://$ip/" > /dev/null 2>&1
+done
+check "own public addresses are dropped (counter moved)" ok sh -c 'nft list chain ip yantrik_ci output | grep -qE "ip daddr .* counter packets [1-9][0-9]* .* drop"'
+# NoNewPrivileges, as the launcher sets it: no setuid binary raises runner; rootless bwrap still works.
+nnp() { systemd-run --quiet --wait --pipe --collect --service-type=exec -p User=runner -p NoNewPrivileges=yes "$@"; }
+check "the runner service has NoNewPrivs set" ok sh -c '[ "$(systemd-run --quiet --wait --pipe --collect -p User=runner -p NoNewPrivileges=yes sh -c "grep ^NoNewPrivs /proc/self/status | cut -f2")" = 1 ]'
+check "rootless bwrap works under NoNewPrivileges" ok nnp bwrap --unshare-all --unshare-user --ro-bind / / --dev /dev --proc /proc true
 rv=$(runuser -u runner -- bash -lc 'rustc --version' 2>&1 || true)
 case "$rv" in "rustc 1.92.0 "*) echo "PASS  rustc is 1.92.0 for a login shell";; *) echo "FAIL  rustc: $rv"; fail=1;; esac
 exit $fail

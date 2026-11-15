@@ -22,9 +22,23 @@ for _ in $(seq 1 60); do
 done
 [ -n "$ns" ] || { echo "yantrik-ci-egress: no resolver found" >&2; exit 1; }
 
+# Our own public addresses (the router's WAN address and any other of ours), baked in by
+# make-template.sh from the node's /etc/yantrik-ci/own-public-ips. Fail closed if there are none.
+own=$(grep -vE '^[[:space:]]*(#|$)' /etc/yantrik-ci/own-public-ips 2> /dev/null | paste -sd, - || true)
+[ -n "$own" ] || { echo "yantrik-ci-egress: /etc/yantrik-ci/own-public-ips is empty" >&2; exit 1; }
+
+# The DHCP client may send from port 68: root, and systemd-networkd's own user.
+dhcp="0"
+if nid=$(id -u systemd-network 2> /dev/null); then dhcp="0,$nid"; fi
+
 prelude=$(mktemp)
 trap 'rm -f "$prelude"' EXIT
-printf 'define resolvers = { %s }\ninclude "%s"\n' "${ns//,/, }" "$rules" > "$prelude"
+{
+  printf 'define resolvers = { %s }\n' "${ns//,/, }"
+  printf 'define ownpub = { %s }\n' "${own//,/, }"
+  printf 'define dhcpuids = { %s }\n' "${dhcp//,/, }"
+  printf 'include "%s"\n' "$rules"
+} > "$prelude"
 nft -f "$prelude"
 
 nft list chain ip yantrik_ci output | grep -q 'policy drop'
