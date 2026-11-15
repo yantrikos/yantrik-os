@@ -1,5 +1,14 @@
 name: CI
 
+# SCRATCH BRANCH, NOT FOR MERGE (#1252, review R1). This is the first real job for the throwaway
+# runner: does a workflow-level `env:` reach the job-started hook? Run it by hand:
+#   gh workflow run ci.yml --ref scratch/1234-hook-env-probe
+# and read "Set up job" in the `test` job's log. If `yantrik-probe-hook-env` is printed there, the
+# env reaches the hook (BASH_ENV is expanded by the bash that runs it) and the controller's
+# out-of-band check is the boundary; if it is not, the hook's environment is the runner's alone.
+# The probe command only echoes to stderr; it sources nothing. Everything but `test` is off, and
+# `test` does no build.
+
 # What this exists for.
 #
 # This repository has a growing set of tests whose whole job is to catch a class of mistake
@@ -25,6 +34,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # The probe. Expanded by any non-interactive bash that is started with this in its environment.
+  BASH_ENV: '$(echo yantrik-probe-hook-env >&2)'
   # A CI machine has no reason to build with debug info it will throw away.
   CARGO_PROFILE_DEV_DEBUG: 0
 
@@ -164,18 +175,18 @@ jobs:
       # bubblewrap baked in, root-owned, and the workshops root made. It is fresh for this job,
       # so there is no lock to take, no shared target dir and no temp dir to clean. The
       # compiler is checked rather than trusted: a branch may edit rust-toolchain.toml.
-      - name: Build and test on the throwaway runner
+      - name: Probe (no build)
         if: runner.environment == 'self-hosted'
         run: |
-          rustc --version | grep -q '^rustc 1.92.0 '
-          cargo build --workspace --locked -j 24
-          cargo test --workspace --locked -j 24 --no-fail-fast
+          echo "probe: runner $(id -un), $(rustc --version)"
+          echo "probe: BASH_ENV in a step's environment: ${BASH_ENV:+set}"
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check
   # failing every pull request on the day it lands. A lint family that has been fixed can
   # later be promoted to blocking; that is a later decision, not this job's.
   clippy:
+    if: false
     name: clippy
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -238,6 +249,7 @@ jobs:
   # fails only on what is new: what broke a rule on the day it landed is listed in
   # tools/xtask/architecture-baseline.txt, and that list may only shrink.
   architecture:
+    if: false
     name: architecture
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -266,6 +278,7 @@ jobs:
   # sources. It reports and does not enforce yet, as clippy did when it landed: the first runs
   # list what is there, and the job becomes blocking once that list is worked down.
   dependencies:
+    if: false
     name: dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -283,6 +296,7 @@ jobs:
           arguments: --workspace
 
   shell-scripts:
+    if: false
     name: shell scripts
     runs-on: ubuntu-24.04
     timeout-minutes: 25
