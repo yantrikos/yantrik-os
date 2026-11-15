@@ -2,6 +2,7 @@
 //! (design/capture-2026-10-15.md).
 //!
 //! - [`grab`] takes the pixels (grim), for this and for `control_screen`'s text reading alike.
+//! - [`reader`] keeps the text reader running between readings, and ends it when it must go.
 //! - [`shot`] is a screenshot: the clean frame, the file, the clipboard.
 //! - [`recorder`] is a recording: wf-recorder in a transient user unit, stopped cleanly.
 //! - [`names`], [`encoder`] and [`disk`] are the small rules: what a file is called, which
@@ -20,6 +21,7 @@ pub mod encoder;
 pub mod grab;
 pub mod names;
 pub mod notice;
+pub mod reader;
 pub mod recorder;
 pub mod shot;
 

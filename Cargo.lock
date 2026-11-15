@@ -11784,6 +11784,7 @@ dependencies = [
  "image",
  "ocrs",
  "rten",
+ "rten-imageproc",
  "serde_json",
 ]
 

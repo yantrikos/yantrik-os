@@ -13,5 +13,7 @@ path = "src/main.rs"
 # builds — rten 0.25 wants 1.94. The models are rten's format, shipped in share/ocr.
 ocrs = "=0.12.2"
 rten = "=0.24.0"
+# The engine's rectangle type, to hand it a line's own rectangle. The version rten 0.24 is built on.
+rten-imageproc = "=0.24.0"
 image = { version = "0.25", default-features = false, features = ["png", "pnm"] }
 serde_json = "1"

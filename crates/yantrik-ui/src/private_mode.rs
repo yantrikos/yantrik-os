@@ -90,6 +90,8 @@ pub fn enforce(on: bool, bridge: &Arc<CompanionBridge>) {
         }
         // The agents' commands, which run as the person, stop.
         crate::control_agent_terminal::shutdown();
+        // The text reader remembers what the lines it has read said. It goes, and that with it.
+        crate::capture::reader::forget();
     }
     let _ = std::thread::Builder::new().name("private-mode".into()).spawn(move || {
         if on {

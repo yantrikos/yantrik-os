@@ -213,6 +213,9 @@ pub fn engage(
     on_unlock: impl Fn(&App, &str, crate::lock::Secret) + Send + Clone + 'static,
 ) {
     WANTED.store(true, Ordering::SeqCst);
+    // Nothing is read while locked, and nothing that was read is kept across a lock: the text
+    // reader goes, and what it remembers of the screen with it.
+    crate::capture::reader::forget();
     if RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
