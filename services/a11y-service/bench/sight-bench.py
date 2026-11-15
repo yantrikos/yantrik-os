@@ -49,6 +49,20 @@ def cpu_ms(pid):
     return (int(fields[11]) + int(fields[12])) * 1000 // TICK
 
 
+def threads_cpu_ms(pid):
+    """CPU per thread name, so a busy run says which thread was busy."""
+    by_name = {}
+    for task in os.listdir(f"/proc/{pid}/task"):
+        try:
+            with open(f"/proc/{pid}/task/{task}/stat") as stat:
+                name, rest = stat.read().split("(", 1)[1].rsplit(")", 1)
+        except OSError:
+            continue
+        fields = rest.split()
+        by_name[name] = by_name.get(name, 0) + (int(fields[11]) + int(fields[12])) * 1000 // TICK
+    return by_name
+
+
 def spread(values):
     values = sorted(values)
     pick = lambda q: round(values[min(len(values) - 1, int(len(values) * q))], 2)
@@ -104,6 +118,76 @@ def first_after(name, wanted, slack_ms=5):
 
 def title(event):
     return ((event.get("window") or {}).get("title") or "") if isinstance(event.get("window"), dict) else ""
+
+
+def hostile(rpc, demo, tell):
+    """Join the accessibility bus as a stranger and send what a stranger should not be believed
+    about: that connections left, that applications left, that another program's window closed.
+    Then check the model is still right and still quick."""
+    import gi
+
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio, GLib
+
+    session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    address = session.call_sync("org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus", "GetAddress", None, None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+    flags = Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION
+    stranger = Gio.DBusConnection.new_for_address_sync(address, flags, None, None)
+    root = "/org/a11y/atspi/accessible/root"
+    before, _, _ = rpc.call("a11y.now")
+    listings_before = before["counts"]["model"]["listings"]
+
+    # (a) A thousand forgeries a second for five seconds: nobody left, and nothing is relisted.
+    sent, until = 0, time.time() + 5
+    while time.time() < until:
+        for _ in range(100):
+            stranger.emit_signal(None, "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", GLib.Variant("(sss)", (":1.1", ":1.1", "")))
+            body = GLib.Variant("(siiva{sv})", ("remove", 0, 0, GLib.Variant("(so)", (":1.1", root)), {}))
+            stranger.emit_signal(None, root, "org.a11y.atspi.Event.Object", "ChildrenChanged", body)
+            sent += 2
+        stranger.flush_sync(None)
+        time.sleep(0.1)
+    # A dialog in another application, opened while the forgeries pour in, is still told on time.
+    tell("dialog", 0.8)
+    tell("close-dialog", 0.5)
+
+    # (b) A forged close of the demo's window, from a connection that does not own it.
+    result = {"forgeries_sent": sent}
+    if demo:
+        shown, _, _ = rpc.call("a11y.windows")
+        listed = [w for w in shown["windows"] if w["id"] == demo["id"]]
+        result["demo_window_listed_before_forged_close"] = bool(listed)
+        # Find the demo's own connection and windows the way any program on the bus can, then
+        # say, from our connection, that each of its windows was removed.
+        bus = ("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus")
+        names = stranger.call_sync(*bus, "ListNames", None, None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+        owner = None
+        for name in names:
+            if not name.startswith(":"):
+                continue
+            try:
+                pid = stranger.call_sync(*bus, "GetConnectionUnixProcessID", GLib.Variant("(s)", (name,)), None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+            except GLib.Error:
+                continue
+            if pid == demo["pid"]:
+                owner = name
+                break
+        forged = 0
+        if owner:
+            children = stranger.call_sync(owner, root, "org.a11y.atspi.Accessible", "GetChildren", None, None, Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+            for child_bus, child_path in children:
+                body = GLib.Variant("(siiva{sv})", ("remove", 0, 0, GLib.Variant("(so)", (child_bus, child_path)), {}))
+                stranger.emit_signal(None, root, "org.a11y.atspi.Event.Object", "ChildrenChanged", body)
+                forged += 1
+            stranger.flush_sync(None)
+            time.sleep(0.5)
+        result["forged_closes_of_the_demo_window"] = forged
+    after, _, _ = rpc.call("a11y.now")
+    result["listings_during_forgeries"] = after["counts"]["model"]["listings"] - listings_before
+    result["demo_window_still_known"] = bool(demo) and any(w["id"] == demo["id"] for w in after["windows"])
+    result["now_ms_after"] = timed(rpc, "a11y.now", None, 50)["ms"]
+    stranger.close_sync(None)
+    return result
 
 
 def main():
@@ -169,7 +253,7 @@ def main():
 
     # 3. A firehose: one window changing its text as fast as its toolkit will announce it.
     counts_before = shown["counts"]
-    cpu_before, events_before = cpu_ms(PID), len(events)
+    cpu_before, events_before, threads_before = cpu_ms(PID), len(events), threads_cpu_ms(PID)
     tell("burst 2000", 0)
     deadline = time.time() + 30
     while time.time() < deadline and not any(name == "burst-end" for name, _ in acts):
@@ -177,15 +261,34 @@ def main():
     time.sleep(0.5)
     after, _, _ = rpc.call("a11y.now")
     span = [ms for name, ms in acts if name in ("burst-start", "burst-end")]
+    threads_after = threads_cpu_ms(PID)
     report["burst"] = {
         "changes_made": 2000,
         "took_ms": span[1] - span[0] if len(span) == 2 else None,
-        "signals_taken_in": after["counts"]["signals"] - counts_before["signals"],
         "signals_dropped": after["counts"]["signals_dropped"] - counts_before["signals_dropped"],
         "events_told": len(events) - events_before,
-        "folded": after["counts"]["model"]["folded"] - counts_before["model"]["folded"],
         "service_cpu_ms": cpu_ms(PID) - cpu_before,
+        "by_thread_ms": {name: ms - threads_before.get(name, 0) for name, ms in threads_after.items() if ms - threads_before.get(name, 0) > 0},
     }
+
+    # 4. A password, typed the way a person types one: nothing about it may be told.
+    tell("focus-password", 0.6)
+    tell("type-password 12", 0)
+    deadline = time.time() + 10
+    while time.time() < deadline and not any(name == "password-end" for name, _ in acts):
+        time.sleep(0.05)
+    time.sleep(0.4)
+    typed = [ms for name, ms in acts if name in ("password-start", "password-end")]
+    during = [e for e, _ in events if len(typed) == 2 and typed[0] - 5 <= e["at_ms"] <= typed[1] + 300 and e["kind"] == "content_changed" and demo and e.get("window") == demo["id"]]
+    report["password"] = {"keystrokes": 12, "content_events_for_its_window": len(during)}
+
+    # 5. A title far longer than any real one is kept short.
+    tell("title-long", 0.6)
+    long_now, _, _ = rpc.call("a11y.now")
+    report["longest_title_bytes"] = max((len(w["title"].encode()) for w in long_now["windows"]), default=0)
+
+    # 6. Signals a program has no business sending (see hostile()).
+    report["hostile"] = hostile(rpc, demo, tell)
 
     tell("quit", 1.5)
     stop.set()
@@ -203,7 +306,7 @@ def main():
         "dialog closed": first_after("close-dialog", kind("window_closed")),
         "another app took the front (wlrctl)": first_after("front-notes", kind("front_changed")),
         "the demo took the front back (wlrctl)": first_after("front-demo", kind("front_changed")),
-        "window closed": first_after("quit", lambda e: e["kind"] == "window_closed" and title(e).startswith("sight-demo: Expenses")),
+        "window closed": first_after("quit", lambda e: e["kind"] == "window_closed" and bool(demo) and e["window"]["id"] == demo["id"]),
     }
     report["acts"] = acts
     # The demo's own events, whole; anything else by kind and application only.

@@ -21,7 +21,7 @@
 //! a11y.describe { window }                → { summary, elements }
 //! a11y.act      { element, action }       → { did }
 //! a11y.now      { }                       → { seq, listening, front, focus, windows, counts }
-//! a11y.since    { seq, wait_ms }          → { events, next_seq, missed, more }
+//! a11y.since    { seq, wait_ms }          → { events, next_seq, missed, more, reset }
 //! ```
 //!
 //! The first three look when asked. The last two do not look at all (#1256): a watcher listens
@@ -49,8 +49,11 @@
 //! "ignore your previous instructions" is a thing anyone can make.
 
 mod atspi;
+mod budget;
 mod handles;
+mod limits;
 mod screen;
+mod sight;
 mod signals;
 mod watch;
 
@@ -78,7 +81,7 @@ fn main() {
     // `a11y.describe` opens.
     let handles = handles::Shared::default();
     // Listening starts with the service: the model is already current when it is first asked.
-    let sight = watch::Sight::start(handles.clone(), yantrik_service_sdk::is_private);
+    let sight = watch::start(handles.clone(), yantrik_service_sdk::is_private);
 
     let (tx, rx) = mpsc::channel::<Request>();
     std::thread::Builder::new()
@@ -136,10 +139,16 @@ fn bus_thread(rx: mpsc::Receiver<Request>, handles: handles::Shared) {
 
             match request {
                 Request::Windows(tx) => {
-                    let reply = atspi.windows().await.map(|windows| {
+                    let reply = atspi.windows().await.map(|listing| {
                         let windows: Vec<atspi::Window> =
-                            windows.into_iter().map(|(_, window)| window).collect();
-                        serde_json::json!({ "windows": windows, "count": windows.len() })
+                            listing.windows.into_iter().map(|(_, window)| window).collect();
+                        serde_json::json!({
+                            "windows": windows,
+                            "count": windows.len(),
+                            // Applications that did not list their windows in time. Their
+                            // windows are missing from this answer, not closed.
+                            "unanswered": listing.unanswered.len(),
+                        })
                     });
                     let _ = tx.send(reply);
                 }
@@ -172,7 +181,7 @@ fn bus_thread(rx: mpsc::Receiver<Request>, handles: handles::Shared) {
 struct A11y {
     tx: Sender<Request>,
     /// The screen model and its ring: what `a11y.now` and `a11y.since` answer from.
-    sight: watch::Sight,
+    sight: sight::Sight,
     /// Whether the person is in Private mode, read per call; a stand-in in tests.
     private: fn() -> bool,
 }
@@ -291,7 +300,7 @@ mod private_mode_tests {
     #[test]
     fn in_private_mode_no_window_or_text_is_read_and_nothing_is_acted_on() {
         let (tx, rx) = mpsc::channel::<Request>();
-        let a11y = A11y { tx, sight: watch::Sight::idle(), private: || true };
+        let a11y = A11y { tx, sight: sight::Sight::idle(), private: || true };
         for (method, params) in [
             ("a11y.windows", serde_json::json!({})),
             ("a11y.describe", serde_json::json!({ "window": "w1" })),
@@ -321,7 +330,7 @@ mod private_mode_tests {
                 let _ = reply.send(Ok(serde_json::json!({ "windows": [{ "title": "Bank statement SENTINEL-924" }] })));
             }
         });
-        let a11y = A11y { tx, sight: watch::Sight::idle(), private: comes_on_during_the_call };
+        let a11y = A11y { tx, sight: sight::Sight::idle(), private: comes_on_during_the_call };
         let err = a11y.handle("a11y.windows", serde_json::json!({})).unwrap_err();
         assert!(err.message.starts_with("PRIVATE:") && !err.message.contains("SENTINEL"), "{}", err.message);
         assert_eq!(READS.load(Ordering::SeqCst), 2, "read before and after the bus");
@@ -332,7 +341,7 @@ mod private_mode_tests {
     #[test]
     fn now_and_since_answer_from_the_model_without_asking_the_bus() {
         let (tx, rx) = mpsc::channel::<Request>();
-        let a11y = A11y { tx, sight: watch::Sight::idle(), private: || false };
+        let a11y = A11y { tx, sight: sight::Sight::idle(), private: || false };
         let now = a11y.handle("a11y.now", serde_json::json!({})).expect("the model answers");
         assert_eq!(now["listening"], false, "nothing feeds a test's model, and it says so");
         let started = std::time::Instant::now();
@@ -346,7 +355,7 @@ mod private_mode_tests {
     #[test]
     fn a_method_this_service_does_not_serve_is_named_with_the_ones_it_does() {
         let (tx, _rx) = mpsc::channel::<Request>();
-        let a11y = A11y { tx, sight: watch::Sight::idle(), private: || false };
+        let a11y = A11y { tx, sight: sight::Sight::idle(), private: || false };
         let err = a11y.handle("a11y.watch", serde_json::json!({})).unwrap_err();
         assert_eq!(err.code, -32601);
         assert!(err.message.contains("a11y.now") && err.message.contains("a11y.since"), "{}", err.message);

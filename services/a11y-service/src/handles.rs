@@ -10,6 +10,12 @@
 //! - **Shared, and bounded.** The watcher and the request thread hand out from the same table,
 //!   and the table forgets its oldest handles past [`CAPACITY`] instead of growing for as long as
 //!   the session lasts. A window the model still holds is pinned and never forgotten.
+//!
+//! A handle is never given to a second object: the counter only grows. What a handle cannot
+//! promise is that the *application* keeps one object at one path. Qt builds object paths from
+//! addresses, so if a window's close is lost and a new object takes the old address, the old
+//! handle resolves to the new object. That was true before this table too; a listing after a
+//! gap is what repairs it.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -48,6 +54,12 @@ impl Handles {
         self.by_reference.insert(reference, id.clone());
         self.order.push_back(id.clone());
         self.forget_past(CAPACITY);
+        // `forget` leaves an id in `order` until it reaches the front, which below the capacity
+        // it never does: without this, every window ever opened would leave one entry behind.
+        if self.order.len() > 2 * self.by_id.len() + 64 {
+            let by_id = &self.by_id;
+            self.order.retain(|id| by_id.contains_key(id));
+        }
         id
     }
 
@@ -68,7 +80,7 @@ impl Handles {
         if let Some(reference) = self.by_id.remove(id) {
             self.by_reference.remove(&reference);
         }
-        // `order` keeps the id until it reaches the front; `forget_past` skips ids that are gone.
+        // `order` keeps the id for now; `hand_out` sweeps the ones that are gone.
     }
 
     /// Forget the oldest handles until at most `capacity` are left, passing over pinned ones.
@@ -121,6 +133,19 @@ mod tests {
         assert_eq!(handles.hand_out(reference(1)), first, "listed twice, one handle");
         assert_ne!(handles.hand_out(reference(2)), first);
         assert_eq!(handles.resolve(&first), Some(reference(1)));
+    }
+
+    /// #1257 review, M6: every window ever opened used to leave one entry in `order`.
+    #[test]
+    fn opening_and_closing_windows_does_not_grow_the_table() {
+        let mut handles = Handles::default();
+        for n in 0..50_000 {
+            let id = handles.hand_out(reference(n));
+            handles.pin(&id);
+            handles.forget(&id);
+        }
+        assert!(handles.by_id.is_empty() && handles.by_reference.is_empty() && handles.pinned.is_empty());
+        assert!(handles.order.len() <= 66, "{} ids left behind", handles.order.len());
     }
 
     #[test]

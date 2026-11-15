@@ -27,7 +27,9 @@ class Demo(Gtk.Window):
         self.label = Gtk.Label(label="Merchant")
         self.entry = Gtk.Entry()
         self.button = Gtk.Button(label="Save")
-        for widget in (self.label, self.entry, self.button):
+        self.password = Gtk.Entry()
+        self.password.set_visibility(False)
+        for widget in (self.label, self.entry, self.password, self.button):
             box.pack_start(widget, False, False, 0)
         self.add(box)
         self.dialog = None
@@ -43,9 +45,27 @@ class Demo(Gtk.Window):
             stamp("burst-end")
         return False
 
+    def keystrokes(self, left):
+        # One character per 90 ms, the way a person types.
+        self.password.set_text(self.password.get_text() + "x")
+        if left > 1:
+            GLib.timeout_add(90, self.keystrokes, left - 1)
+        else:
+            stamp("password-end")
+        return False
+
     def do(self, line):
         command, _, arg = line.partition(" ")
-        if command == "title":
+        if command == "focus-password":
+            stamp("focus-password")
+            self.password.grab_focus()
+        elif command == "type-password":
+            stamp("password-start")
+            self.keystrokes(int(arg))
+        elif command == "title-long":
+            stamp("title-long")
+            self.set_title("sight-demo: " + "long " * 600)
+        elif command == "title":
             stamp("title")
             self.set_title(arg)
         elif command == "text":

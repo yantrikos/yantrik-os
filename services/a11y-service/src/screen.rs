@@ -13,20 +13,31 @@
 //! # What an event says, and what it does not
 //!
 //! An event says *that* something changed and *where*: which window, what kind of change. It
-//! never carries the changed text. A text-changed signal brings the typed characters with it and
-//! they are dropped at the door; whoever wants the content calls `a11y.describe`, which has its
-//! own rules.
+//! never carries the changed text, and it never says how many changes it stands for: one
+//! text-changed signal is one keystroke, so a count would be the length of whatever was typed.
+//! Changes in a focused password field are not told at all.
 //!
 //! # Not a transcript
 //!
 //! Accessibility is a firehose: a page load is thousands of signals. Changes inside a window are
 //! therefore told at most once per [`COALESCE`]: the first one at once, so a reader learns within
 //! milliseconds that the window is changing, and whatever follows inside the interval as one more
-//! event with a count.
+//! event.
+//!
+//! # Bounded
+//!
+//! Any program can announce any number of windows. The model keeps at most [`MAX_PER_CONNECTION`]
+//! for one connection and [`MAX_WINDOWS`] in all, and counts what it refused.
+//!
+//! # Private mode
+//!
+//! While the person is private the model still follows which windows exist, because it has to
+//! be right the moment they are not. It follows nothing else: no focus, no changes inside
+//! windows, nothing held to be told later ([`Screen::apply_quietly`]).
 //!
 //! Pure on purpose: no bus, no clock of its own, so every rule here has a test.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -38,9 +49,18 @@ pub const COALESCE: Duration = Duration::from_millis(150);
 /// between two windows is told as one change and not as two.
 pub const FRONT_GRACE: Duration = Duration::from_millis(60);
 
-/// Throttle records kept at most. Past this the oldest state is dropped wholesale: the cost is one
-/// change told a little early, never one withheld.
+/// Windows kept for one connection at most.
+pub const MAX_PER_CONNECTION: usize = 64;
+
+/// Windows kept in all at most.
+pub const MAX_WINDOWS: usize = 512;
+
+/// Throttle records kept at most. Past this the idle ones are dropped: the cost is one change
+/// told a little early, never one withheld.
 const MAX_THROTTLED: usize = 512;
+
+/// The role a toolkit gives a field whose text is hidden as it is typed.
+const PASSWORD: &str = "password text";
 
 /// An accessibility object: which connection, and where on it. Plain strings, so the model needs
 /// no bus types.
@@ -71,17 +91,21 @@ pub enum What {
 /// One thing the watcher learned, already resolved to windows.
 #[derive(Debug, Clone)]
 pub enum Fact {
-    /// Every window there is, from a walk of the registry. The model is reconciled to it.
-    Listing(Vec<(Key, WindowInfo)>),
+    /// Every window there is, from a walk of the registry. The model is reconciled to it, except
+    /// for the windows of `unanswered` connections: an application that did not answer in time
+    /// has not closed its windows.
+    Listing { windows: Vec<(Key, WindowInfo)>, unanswered: Vec<String> },
     Opened(Key, WindowInfo),
     Closed(Key),
     Activated(Key),
     Deactivated(Key),
     Renamed(Key, String),
-    /// The keyboard focus moved to an element (its role and name), in a window if one was found.
-    Focus { window: Option<Key>, role: String, name: String },
-    /// Something inside a window changed. `window` is `None` when only the application is known.
-    Touched { window: Option<Key>, app: String, what: What },
+    /// The keyboard focus moved to the element `source` (its role and name), in a window if one
+    /// was found.
+    Focus { source: Key, window: Option<Key>, role: String, name: String },
+    /// Something changed in the element `source`. `window` is `None` when only its application
+    /// is known.
+    Touched { source: Key, window: Option<Key>, app: String, what: What },
     /// Signals were lost, so the model may be wrong until the next `Listing`.
     Gap,
 }
@@ -98,9 +122,10 @@ pub enum Kind {
     FrontChanged { window: Option<WindowInfo> },
     /// The keyboard focus is on another element. `window` is the id of the window it is in.
     FocusMoved { window: Option<String>, role: String, name: String },
-    /// Something inside the window changed; `signals` is how many announcements this stands for.
-    ContentChanged { window: Option<String>, app: String, what: Vec<&'static str>, signals: u32 },
-    /// Announcements were lost. What follows is true again, but a reader should read `a11y.now`.
+    /// Something inside the window changed. One event stands for any number of changes.
+    ContentChanged { window: Option<String>, app: String, what: Vec<&'static str> },
+    /// The stream has a hole here: signals were lost, the bus went away, or the person was
+    /// private. What follows is true again, but a reader should read `a11y.now`.
     Gap,
 }
 
@@ -112,19 +137,17 @@ pub struct Focus {
     pub name: String,
 }
 
-/// Counted, never described: how much the model saw, told and folded away.
+/// Counted, never described. Nothing here moves once per keystroke.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Counts {
-    /// Announcements taken in.
-    pub facts: u64,
     /// Events told.
     pub told: u64,
-    /// Announcements folded into an event that stood for several.
-    pub folded: u64,
     /// Times the model was reconciled to a full listing.
     pub listings: u64,
-    /// Times announcements were lost.
+    /// Times the stream had a hole.
     pub gaps: u64,
+    /// Windows announced and not kept, because their connection or the model was full.
+    pub refused_windows: u64,
 }
 
 /// Changes inside one window (or one application) not yet told.
@@ -134,7 +157,6 @@ struct Held {
     children: bool,
     name: bool,
     renamed: bool,
-    signals: u32,
 }
 
 /// The throttle for one window or application: when it last spoke, and what it is holding.
@@ -151,47 +173,54 @@ enum Target {
     App(String),
 }
 
+/// What the model knows about one connection: how many windows it has, and its application.
+struct Connection {
+    windows: usize,
+    app: String,
+}
+
 #[derive(Default)]
 pub struct Screen {
-    windows: Vec<(Key, WindowInfo)>,
+    windows: HashMap<Key, WindowInfo>,
+    /// The windows in the order they were learned, which is the order they are listed in.
+    order: Vec<Key>,
+    connections: HashMap<String, Connection>,
     front: Option<Key>,
     /// Set when the front window lost the front and nothing has taken it yet.
     front_lost_at: Option<Instant>,
     focus: Option<Focus>,
+    /// The focused element itself, for the rules that depend on what it is.
+    focus_source: Option<Key>,
     throttles: HashMap<Target, Throttle>,
     counts: Counts,
 }
 
 impl Screen {
     pub fn knows(&self, key: &Key) -> bool {
-        self.windows.iter().any(|(k, _)| k == key)
+        self.windows.contains_key(key)
     }
 
-    fn info(&self, key: &Key) -> Option<&WindowInfo> {
-        self.windows.iter().find(|(k, _)| k == key).map(|(_, info)| info)
-    }
-
-    /// The name of the application on a connection, from any window of it that is known.
+    /// The name of the application on a connection, when the model has a window of it.
     pub fn app_on(&self, connection: &str) -> Option<&str> {
-        self.windows.iter().find(|((bus, _), _)| bus == connection).map(|(_, info)| info.app.as_str())
+        self.connections.get(connection).map(|c| c.app.as_str())
     }
 
     /// Whether any known window belongs to this connection.
     pub fn has_connection(&self, connection: &str) -> bool {
-        self.windows.iter().any(|((bus, _), _)| bus == connection)
+        self.connections.contains_key(connection)
     }
 
     /// Every window's key, for asking each one something.
     pub fn keys(&self) -> Vec<Key> {
-        self.windows.iter().map(|(key, _)| key.clone()).collect()
+        self.order.clone()
     }
 
     pub fn windows(&self) -> impl Iterator<Item = &WindowInfo> {
-        self.windows.iter().map(|(_, info)| info)
+        self.order.iter().filter_map(|key| self.windows.get(key))
     }
 
     pub fn front(&self) -> Option<&WindowInfo> {
-        self.front.as_ref().and_then(|key| self.info(key))
+        self.front.as_ref().and_then(|key| self.windows.get(key))
     }
 
     pub fn focus(&self) -> Option<&Focus> {
@@ -204,10 +233,9 @@ impl Screen {
 
     /// Take one fact in and say what a reader should be told at once.
     pub fn apply(&mut self, fact: Fact, now: Instant) -> Vec<Kind> {
-        self.counts.facts += 1;
         let mut out = Vec::new();
         match fact {
-            Fact::Listing(listing) => self.reconcile(listing, now, &mut out),
+            Fact::Listing { windows, unanswered } => self.reconcile(windows, &unanswered, now, &mut out),
             Fact::Opened(key, info) => self.open(key, info, &mut out),
             Fact::Closed(key) => self.close(&key, now, &mut out),
             Fact::Activated(key) => self.activate(key, &mut out),
@@ -217,24 +245,30 @@ impl Screen {
                 }
             }
             Fact::Renamed(key, title) => self.rename(key, title, now, &mut out),
-            Fact::Focus { window, role, name } => {
-                let focus = Focus { window: window.as_ref().and_then(|k| self.info(k)).map(|i| i.id.clone()), role, name };
+            Fact::Focus { source, window, role, name } => {
+                let focus = Focus { window: window.as_ref().and_then(|k| self.windows.get(k)).map(|i| i.id.clone()), role, name };
+                self.focus_source = Some(source);
                 if self.focus.as_ref() != Some(&focus) {
                     out.push(Kind::FocusMoved { window: focus.window.clone(), role: focus.role.clone(), name: focus.name.clone() });
                     self.focus = Some(focus);
                 }
             }
-            Fact::Touched { window, app, what } => {
-                // A window that has gone is not one to report on; its application still is.
-                let target = match window.filter(|key| self.knows(key)) {
-                    Some(key) => Target::Window(key),
-                    None => Target::App(app),
-                };
-                self.touch(target, now, &mut out, |held| match what {
-                    What::Text => held.text = true,
-                    What::Children => held.children = true,
-                    What::Name => held.name = true,
-                });
+            Fact::Touched { source, window, app, what } => {
+                // Typing in a password field is one text change per character. Neither that it
+                // happened nor when is anyone's to know (#1257 review, H5).
+                let secret = what == What::Text && self.focus_source.as_ref() == Some(&source) && self.focus.as_ref().is_some_and(|f| f.role == PASSWORD);
+                if !secret {
+                    // A window that has gone is not one to report on; its application still is.
+                    let target = match window.filter(|key| self.knows(key)) {
+                        Some(key) => Target::Window(key),
+                        None => Target::App(app),
+                    };
+                    self.touch(target, now, &mut out, |held| match what {
+                        What::Text => held.text = true,
+                        What::Children => held.children = true,
+                        What::Name => held.name = true,
+                    });
+                }
             }
             Fact::Gap => {
                 self.counts.gaps += 1;
@@ -243,6 +277,73 @@ impl Screen {
         }
         self.counts.told += out.len() as u64;
         out
+    }
+
+    /// Take one fact in while the person is private: follow which windows exist and which is
+    /// in front, and nothing else. Nothing is told, nothing is held, and the focus is forgotten.
+    ///
+    /// What comes back is only the windows that came and went, for the caller's own
+    /// bookkeeping (a window's handle lives as long as the window). It is not for telling.
+    pub fn apply_quietly(&mut self, fact: Fact, now: Instant) -> Vec<Kind> {
+        let mut unheard = Vec::new();
+        match fact {
+            Fact::Listing { windows, unanswered } => self.reconcile(windows, &unanswered, now, &mut unheard),
+            Fact::Opened(key, info) => self.open(key, info, &mut unheard),
+            Fact::Closed(key) => self.close(&key, now, &mut unheard),
+            Fact::Activated(key) => {
+                if self.knows(&key) {
+                    self.front = Some(key);
+                }
+            }
+            Fact::Deactivated(key) => {
+                if self.front.as_ref() == Some(&key) {
+                    self.front = None;
+                }
+            }
+            Fact::Renamed(key, title) => {
+                if let Some(info) = self.windows.get_mut(&key) {
+                    info.title = title;
+                }
+            }
+            Fact::Focus { .. } | Fact::Touched { .. } | Fact::Gap => {}
+        }
+        self.forget_held();
+        self.forget_focus();
+        unheard.retain(|kind| matches!(kind, Kind::WindowOpened { .. } | Kind::WindowClosed { .. }));
+        unheard
+    }
+
+    /// The person went private: whatever was waiting to be told is never told, and the focus is
+    /// not kept.
+    pub fn private_began(&mut self) {
+        self.forget_held();
+        self.forget_focus();
+    }
+
+    /// The person is no longer private. A reader that follows the stream has a hole where the
+    /// private time was, and is told so, so it reads the screen again instead of trusting a
+    /// picture from before.
+    pub fn private_ended(&mut self) -> Vec<Kind> {
+        self.forget_held();
+        self.forget_focus();
+        self.counts.gaps += 1;
+        self.counts.told += 1;
+        vec![Kind::Gap]
+    }
+
+    fn forget_held(&mut self) {
+        for throttle in self.throttles.values_mut() {
+            throttle.held = None;
+        }
+        // A front that was lost and not yet taken is settled now, without a word.
+        if self.front_lost_at.take().is_some() {
+            self.front = None;
+        }
+    }
+
+    fn forget_focus(&mut self) {
+        self.focus = None;
+        self.focus_source = None;
     }
 
     /// What became due by `now`: held changes whose interval has passed, and a front that was
@@ -283,25 +384,46 @@ impl Screen {
         if self.knows(&key) {
             return;
         }
+        let on_connection = self.connections.get(&key.0).map_or(0, |c| c.windows);
+        if on_connection >= MAX_PER_CONNECTION || self.windows.len() >= MAX_WINDOWS {
+            self.counts.refused_windows += 1;
+            return;
+        }
+        let connection = self.connections.entry(key.0.clone()).or_insert_with(|| Connection { windows: 0, app: info.app.clone() });
+        connection.windows += 1;
         out.push(Kind::WindowOpened { window: info.clone() });
-        self.windows.push((key, info));
+        self.order.push(key.clone());
+        self.windows.insert(key, info);
     }
 
     fn close(&mut self, key: &Key, now: Instant, out: &mut Vec<Kind>) {
-        let Some(at) = self.windows.iter().position(|(k, _)| k == key) else { return };
-        let (key, info) = self.windows.remove(at);
+        let Some(info) = self.windows.remove(key) else { return };
+        self.order.retain(|k| k != key);
         self.throttles.remove(&Target::Window(key.clone()));
-        if self.focus.as_ref().is_some_and(|f| f.window.as_deref() == Some(info.id.as_str())) {
-            self.focus = None;
+        let last_of_its_connection = match self.connections.get_mut(&key.0) {
+            Some(connection) if connection.windows > 1 => {
+                connection.windows -= 1;
+                false
+            }
+            _ => {
+                self.connections.remove(&key.0);
+                true
+            }
+        };
+        // Focus does not outlive its window, nor an application with no window left.
+        let in_this_window = self.focus.as_ref().is_some_and(|f| f.window.as_deref() == Some(info.id.as_str()));
+        let in_this_application = last_of_its_connection && self.focus_source.as_ref().is_some_and(|source| source.0 == key.0);
+        if in_this_window || in_this_application {
+            self.forget_focus();
         }
-        if self.front.as_ref() == Some(&key) && self.front_lost_at.is_none() {
+        if self.front.as_ref() == Some(key) && self.front_lost_at.is_none() {
             self.front_lost_at = Some(now);
         }
         out.push(Kind::WindowClosed { window: info });
     }
 
     fn activate(&mut self, key: Key, out: &mut Vec<Kind>) {
-        let Some(info) = self.info(&key).cloned() else { return };
+        let Some(info) = self.windows.get(&key).cloned() else { return };
         // Whatever takes the front ends the wait for a taker. The same window taking it back
         // inside the grace was never told as lost, so for a reader nothing changed.
         self.front_lost_at = None;
@@ -312,7 +434,7 @@ impl Screen {
     }
 
     fn rename(&mut self, key: Key, title: String, now: Instant, out: &mut Vec<Kind>) {
-        let Some((_, info)) = self.windows.iter_mut().find(|(k, _)| *k == key) else { return };
+        let Some(info) = self.windows.get_mut(&key) else { return };
         if info.title == title {
             return;
         }
@@ -329,25 +451,20 @@ impl Screen {
         }
         let quiet = self.throttles.get(&target).is_none_or(|t| t.held.is_none() && now.duration_since(t.last_told) >= COALESCE);
         if quiet {
-            let mut held = Held { signals: 1, ..Held::default() };
+            let mut held = Held::default();
             mark(&mut held);
             self.throttles.insert(target.clone(), Throttle { last_told: now, held: None });
             self.tell_held(&target, held, out);
             return;
         }
         let throttle = self.throttles.entry(target).or_insert(Throttle { last_told: now, held: None });
-        let held = throttle.held.get_or_insert_with(Held::default);
-        if held.signals > 0 {
-            self.counts.folded += 1;
-        }
-        held.signals += 1;
-        mark(held);
+        mark(throttle.held.get_or_insert_with(Held::default));
     }
 
     fn tell_held(&self, target: &Target, held: Held, out: &mut Vec<Kind>) {
         let (info, app) = match target {
             // A window that closed while its change was held has nothing left to report on.
-            Target::Window(key) => match self.info(key) {
+            Target::Window(key) => match self.windows.get(key) {
                 Some(info) => (Some(info), info.app.clone()),
                 None => return,
             },
@@ -361,22 +478,25 @@ impl Screen {
         let what: Vec<&'static str> =
             [(held.text, "text"), (held.children, "children"), (held.name, "name")].into_iter().filter(|(set, _)| *set).map(|(_, word)| word).collect();
         if !what.is_empty() {
-            out.push(Kind::ContentChanged { window: info.map(|i| i.id.clone()), app, what, signals: held.signals });
+            out.push(Kind::ContentChanged { window: info.map(|i| i.id.clone()), app, what });
         }
     }
 
     /// Make the model equal to a full listing, telling each difference.
-    fn reconcile(&mut self, listing: Vec<(Key, WindowInfo)>, now: Instant, out: &mut Vec<Kind>) {
+    fn reconcile(&mut self, listing: Vec<(Key, WindowInfo)>, unanswered: &[String], now: Instant, out: &mut Vec<Kind>) {
         self.counts.listings += 1;
-        let gone: Vec<Key> = self.windows.iter().filter(|(k, _)| !listing.iter().any(|(l, _)| l == k)).map(|(k, _)| k.clone()).collect();
+        let gone: Vec<Key> = {
+            let listed: HashSet<&Key> = listing.iter().map(|(key, _)| key).collect();
+            self.order.iter().filter(|key| !listed.contains(key) && !unanswered.contains(&key.0)).cloned().collect()
+        };
         for key in gone {
             self.close(&key, now, out);
         }
         for (key, info) in listing {
-            match self.info(&key).map(|known| known.title.clone()) {
+            match self.windows.get(&key).map(|known| known.title != info.title) {
                 None => self.open(key, info, out),
-                Some(title) if title != info.title => self.rename(key, info.title, now, out),
-                Some(_) => {}
+                Some(true) => self.rename(key, info.title, now, out),
+                Some(false) => {}
             }
         }
     }

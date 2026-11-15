@@ -30,12 +30,16 @@
 //! comes back is what someone would say if you asked them what was on screen.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use serde::Serialize;
+use zbus::proxy::CacheProperties;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 use zbus::{proxy, Connection};
 
 use crate::handles::{self, Reference};
+use crate::limits;
+use crate::signals::{is_root, BUS, OBJECT_EVENTS, REGISTRY, WINDOW_EVENTS};
 
 /// How deep to walk. Toolkit trees nest hard; past this the content is layout, not meaning.
 const MAX_DEPTH: usize = 12;
@@ -50,6 +54,13 @@ const MAX_VISITS: usize = 3000;
 /// Text longer than this is a document, not a label.
 const MAX_TEXT: usize = 400;
 
+/// The longest one application may take to list its own windows. One that is frozen costs a
+/// listing this much, and is reported as not having answered: it has not closed its windows.
+pub const APP_LIMIT: Duration = Duration::from_millis(400);
+
+/// Messages the connection may hold for a reader of everything that arrives on it.
+const QUEUED: usize = 256;
+
 #[proxy(interface = "org.a11y.Bus", default_service = "org.a11y.Bus", default_path = "/org/a11y/bus")]
 trait A11yBus {
     fn get_address(&self) -> zbus::Result<String>;
@@ -59,8 +70,6 @@ trait A11yBus {
 trait Accessible {
     fn get_children(&self) -> zbus::Result<Vec<Reference>>;
     fn get_role_name(&self) -> zbus::Result<String>;
-    /// The application an object belongs to: its root on the same connection.
-    fn get_application(&self) -> zbus::Result<Reference>;
     /// The object's states as a bit set, low word first.
     fn get_state(&self) -> zbus::Result<Vec<u32>>;
     #[zbus(property)]
@@ -105,6 +114,15 @@ pub struct Element {
     pub id: String,
 }
 
+/// What a walk of every application found.
+#[derive(Default)]
+pub struct Listing {
+    pub windows: Vec<(Reference, Window)>,
+    /// Connections that did not list their windows within [`APP_LIMIT`]. Their windows are not
+    /// in `windows`, and are not thereby closed.
+    pub unanswered: Vec<String>,
+}
+
 /// A connection to the accessibility bus.
 pub struct Atspi {
     conn: Connection,
@@ -134,6 +152,7 @@ impl Atspi {
 
         let conn = zbus::connection::Builder::address(address.as_str())
             .map_err(|e| format!("accessibility bus address {address:?} is not usable: {e}"))?
+            .max_queued(QUEUED)
             .build()
             .await
             .map_err(|e| format!("cannot connect to the accessibility bus: {e}"))?;
@@ -146,11 +165,16 @@ impl Atspi {
         &self.conn
     }
 
+    /// A proxy that reads each property when asked and keeps none. zbus's default caches
+    /// lazily, which on a proxy made for one question turns a single property read into three
+    /// round trips (a match rule added, every property fetched, the rule removed) and fetches
+    /// descriptions and help texts nobody asked for (#1257 review, M4).
     async fn accessible(&self, r: &Reference) -> Result<AccessibleProxy<'_>, String> {
         AccessibleProxy::builder(&self.conn)
             .destination(r.0.clone())
             .and_then(|b| b.path(r.1.clone()))
             .map_err(|e| e.to_string())?
+            .cache_properties(CacheProperties::No)
             .build()
             .await
             .map_err(|e| e.to_string())
@@ -169,7 +193,7 @@ impl Atspi {
     /// The registry's root has one child per application; each application's children are its
     /// windows. Anything that fails to answer is skipped rather than reported: an app that is
     /// shutting down mid-walk is normal, not news.
-    pub async fn windows(&self) -> Result<Vec<(Reference, Window)>, String> {
+    pub async fn windows(&self) -> Result<Listing, String> {
         let root: Reference = (
             "org.a11y.atspi.Registry".to_string(),
             ObjectPath::try_from("/org/a11y/atspi/accessible/root")
@@ -177,29 +201,52 @@ impl Atspi {
                 .into(),
         );
 
-        let apps = self.accessible(&root).await?.get_children().await.map_err(|e| e.to_string())?;
+        let registry = async { self.accessible(&root).await?.get_children().await.map_err(|e| e.to_string()) };
+        let apps = tokio::time::timeout(APP_LIMIT, registry)
+            .await
+            .map_err(|_| "the accessibility registry did not answer in time".to_string())??;
 
-        let mut windows = Vec::new();
+        // Each application under its own limit: one that is frozen costs the listing that long,
+        // not the listing itself (#1257 review, H3).
+        let mut listing = Listing::default();
         for app_ref in apps {
-            let Ok(app) = self.accessible(&app_ref).await else { continue };
-            let app_name = app.name().await.unwrap_or_default();
-            let pid = self.pid_of(&app_ref.0).await;
-            let Ok(children) = app.get_children().await else { continue };
-
-            for win_ref in children {
-                if let Some(window) = self.window_at(&win_ref, &app_name, pid).await {
-                    windows.push((win_ref, window));
+            match tokio::time::timeout(APP_LIMIT, self.windows_of(&app_ref)).await {
+                Ok(mut found) => listing.windows.append(&mut found),
+                Err(_) => {
+                    tracing::debug!(bus_name = %app_ref.0, "An application did not list its windows in time");
+                    listing.unanswered.push(app_ref.0);
                 }
             }
         }
-        Ok(windows)
+        Ok(listing)
+    }
+
+    /// The windows of one application. An application that fails to answer is skipped rather
+    /// than reported: one that is shutting down mid-walk is normal, not news.
+    async fn windows_of(&self, app_ref: &Reference) -> Vec<(Reference, Window)> {
+        let mut windows = Vec::new();
+        let Ok(app) = self.accessible(app_ref).await else { return windows };
+        let app_name = app.name().await.unwrap_or_default();
+        let pid = self.pid_of(&app_ref.0).await;
+        let Ok(children) = app.get_children().await else { return windows };
+        for win_ref in children {
+            if let Some(window) = self.window_at(&win_ref, &app_name, pid).await {
+                windows.push((win_ref, window));
+            }
+        }
+        windows
     }
 
     /// One window, from its own reference: what the watcher asks when a window announces itself.
-    /// `None` when it has already gone, which for a window that just flashed past is normal.
+    /// `None` when it has already gone, which for a window that just flashed past is normal, and
+    /// when it is not a window at all: a window is a child of its application's root, on its own
+    /// connection, and anything else that announces itself as one is not learned as one.
     pub async fn window(&self, win_ref: &Reference) -> Option<Window> {
-        let app_ref = self.accessible(win_ref).await.ok()?.get_application().await.ok()?;
-        let app_name = self.accessible(&app_ref).await.ok()?.name().await.unwrap_or_default();
+        let parent = self.accessible(win_ref).await.ok()?.parent().await.ok()?;
+        if parent.0 != win_ref.0 || !is_root(parent.1.as_str()) {
+            return None;
+        }
+        let app_name = self.accessible(&parent).await.ok()?.name().await.unwrap_or_default();
         let pid = self.pid_of(&win_ref.0).await;
         self.window_at(win_ref, &app_name, pid).await
     }
@@ -209,7 +256,32 @@ impl Atspi {
         let role = win.get_role_name().await.unwrap_or_else(|_| "window".into());
         let title = win.name().await.unwrap_or_default();
         let id = self.hand_out(win_ref.clone());
-        Some(Window { app: app_name.to_string(), title, role, pid, id })
+        Some(Window { app: limits::name(app_name), title: limits::name(&title), role: limits::role(&role), pid, id })
+    }
+
+    /// Ask the bus to deliver the three kinds of signal the watcher reads, and nothing else:
+    /// window events, object events, and the bus's own word on who left. A rule that asked for
+    /// every signal would also bring whatever any other listener had registered for.
+    pub async fn subscribe(&self) -> Result<(), String> {
+        let signal = || zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal);
+        let rules = [
+            signal().interface(WINDOW_EVENTS).map(|b| b.build()),
+            signal().interface(OBJECT_EVENTS).map(|b| b.build()),
+            signal().sender(BUS).and_then(|b| b.member("NameOwnerChanged")).map(|b| b.build()),
+        ];
+        let bus = zbus::fdo::DBusProxy::new(&self.conn).await.map_err(|e| e.to_string())?;
+        for rule in rules {
+            bus.add_match_rule(rule.map_err(|e| e.to_string())?).await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// The connection that is the registry now. Only it is believed about applications coming
+    /// and going.
+    pub async fn registry_owner(&self) -> Option<String> {
+        let bus = zbus::fdo::DBusProxy::new(&self.conn).await.ok()?;
+        let name = zbus::names::BusName::try_from(REGISTRY).ok()?;
+        bus.get_name_owner(name).await.ok().map(|owner| owner.to_string())
     }
 
     /// The process behind a connection, or 0 when the bus will not say.
@@ -236,12 +308,12 @@ impl Atspi {
     pub async fn role_and_name(&self, r: &Reference) -> Option<(String, String)> {
         let acc = self.accessible(r).await.ok()?;
         let role = acc.get_role_name().await.ok()?;
-        Some((role, acc.name().await.unwrap_or_default()))
+        Some((limits::role(&role), limits::name(&acc.name().await.unwrap_or_default())))
     }
 
     /// An object's name alone: a window's new title.
     pub async fn name_of(&self, r: &Reference) -> Option<String> {
-        self.accessible(r).await.ok()?.name().await.ok()
+        self.accessible(r).await.ok()?.name().await.ok().map(|name| limits::name(&name))
     }
 
     /// Whether a window says it is the active one.
@@ -306,8 +378,8 @@ impl Atspi {
             }
             let Ok(acc) = self.accessible(&node).await else { continue };
 
-            let role = acc.get_role_name().await.unwrap_or_default();
-            let name = acc.name().await.unwrap_or_default();
+            let role = limits::role(&acc.get_role_name().await.unwrap_or_default());
+            let name = limits::name(&acc.name().await.unwrap_or_default());
             let text = self.text_of(&node).await;
             let actions = self.actions_of(&node).await;
 
@@ -338,7 +410,7 @@ impl Atspi {
         let Ok(proxy) = TextProxy::builder(&self.conn)
             .destination(r.0.clone())
             .and_then(|b| b.path(r.1.clone()))
-            .map(|b| b.build())
+            .map(|b| b.cache_properties(CacheProperties::No).build())
         else {
             return String::new();
         };
@@ -460,56 +532,5 @@ fn untrusted(value: OwnedValue) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn el(role: &str, name: &str) -> Element {
-        Element {
-            role: role.into(),
-            name: name.into(),
-            text: String::new(),
-            actions: Vec::new(),
-            id: "x".into(),
-        }
-    }
-
-    #[test]
-    fn a_window_is_summarised_the_way_someone_would_say_it() {
-        let elements = vec![
-            el("dialog", "Expenses"),
-            el("label", "Merchant"),
-            el("text", ""),
-            el("text", ""),
-            el("push button", "Cancel"),
-            el("push button", "OK"),
-        ];
-        let s = summarise(&elements);
-        assert!(s.starts_with("Expenses"), "the lead should be what the window calls itself: {s}");
-        assert!(s.contains("2 push buttons"), "{s}");
-        assert!(s.contains("2 texts"), "{s}");
-    }
-
-    #[test]
-    fn scaffolding_is_not_counted() {
-        // Six nested panels is what a real zenity dialog looks like, and none of them is a thing
-        // a person would mention.
-        let mut elements = vec![el("dialog", "Expenses")];
-        elements.extend((0..6).map(|_| el("panel", "")));
-        let s = summarise(&elements);
-        assert!(!s.contains("panel"), "layout must not appear in the summary: {s}");
-    }
-
-    #[test]
-    fn an_empty_window_says_so_rather_than_inventing_content() {
-        assert_eq!(summarise(&[]), "an empty window");
-    }
-
-    #[test]
-    fn the_caps_are_small_enough_to_stay_a_glance() {
-        // The point of this over a screenshot is that it is cheap to read. A cap large enough to
-        // dump a document would give that away.
-        assert!(MAX_ELEMENTS <= 200);
-        assert!(MAX_TEXT <= 1000);
-        assert!(MAX_DEPTH <= 20);
-    }
-}
+#[path = "atspi_tests.rs"]
+mod tests;
