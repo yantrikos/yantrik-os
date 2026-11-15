@@ -78,7 +78,7 @@ const BEFORE: &[Golden] = &[
     // and Remove attachment are buttons, not actions.
     Golden {
         name: "forget_prepared",
-        risk: "standard",
+        risk: "sensitive",
         description: r#"Clear the draft that was prepared for a promise that has been forgotten"#,
         params: &[("commitment", true, r#""#)],
     },
