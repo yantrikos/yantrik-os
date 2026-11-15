@@ -32,6 +32,12 @@ PROTECTED = (
     ".mozilla", ".config/chromium", ".config/google-chrome", ".config/bravesoftware",
     ".var/app/com.google.chrome", ".var/app/org.chromium.chromium", ".var/app/com.brave.browser",
     "snap/chromium", "snap/firefox", ".thunderbird", ".config/evolution",
+    ".config/code/user/history", ".config/code/backups", ".config/vscodium/user/history",
+    ".config/vscodium/backups", ".config/code - oss/user/history", ".config/code - oss/backups",
+    ".var/app/com.visualstudio.code/config/code/user/history", ".zsh_history",
+    ".local/share/fish/fish_history", ".python_history", ".node_repl_history", ".psql_history",
+    ".mysql_history", ".viminfo", ".local/state/nvim/shada", ".local/share/recently-used.xbel",
+    ".emacs.d/auto-save-list",
 )
 
 # The most of the person's sockets the launcher is asked to fail to reach; more are not looked for.
