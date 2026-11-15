@@ -13,7 +13,15 @@ rm -rf "$RT"; mkdir -p "$RT"; chmod 700 "$RT"
 SESSION=/run/user/$(id -u)
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$SESSION/bus
 
-XDG_RUNTIME_DIR=$RT "$D/a11y-service" > "$D/service.log" 2>&1 &
+BIN=${1:-a11y-service}
+OUT=${2:-report.json}
+# The scratch service reads Private mode from a home of its own, so the bench can turn it on and
+# off without touching the person's.
+SCRATCH_HOME=$D/home
+rm -rf "$SCRATCH_HOME"; mkdir -p "$SCRATCH_HOME/.config/yantrik"
+export SIGHT_PRIVACY_FILE=$SCRATCH_HOME/.config/yantrik/privacy.json
+echo '{"private": false, "since": 0}' > "$SIGHT_PRIVACY_FILE"
+HOME=$SCRATCH_HOME XDG_RUNTIME_DIR=$RT "$D/$BIN" > "$D/service.log" 2>&1 &
 SVC=$!
 APPS=""
 cleanup() {
@@ -27,7 +35,7 @@ for _ in $(seq 1 50); do [ -S "$RT/yantrik/a11y.sock" ] && break; sleep 0.1; don
 sleep 2
 
 XDG_RUNTIME_DIR=$SESSION WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0} \
-  python3 "$D/sight-bench.py" "$RT/yantrik/a11y.sock" "$D/sight-demo-app.py" "$SVC" > "$D/report.json" 2> "$D/bench.err"
+  python3 "$D/sight-bench.py" "$RT/yantrik/a11y.sock" "$D/sight-demo-app.py" "$SVC" > "$D/$OUT" 2> "$D/bench.err"
 echo "bench rc=$?"
 
 kill "$SVC" 2>/dev/null; wait "$SVC" 2>/dev/null

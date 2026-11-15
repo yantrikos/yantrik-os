@@ -114,12 +114,31 @@ window. The verb was permitted; the consequence was consent. So:
    dialog opened within 100ms without polling, and a slow subscriber gets a gap marker rather than
    silence. Days.
 
-   *Built for foreign windows and our own apps' accessibility trees, 15 November 2026 (#1256):*
-   `a11y.now` answers from a model the service keeps current, and `a11y.since` waits on a ring of
-   changes. Measured on VM 520: a dialog opening is told 51 ms after the application shows it,
-   listening costs no CPU while the screen is still, and 4,000 signals from one window in 2.4 s
-   become 18 events. It does not share the run event spine yet, and the browser's own channel
-   (CDP) and our apps' `describe` do not feed it.
+   *Built for foreign windows and our own apps' accessibility trees, 15 November 2026 (#1256,
+   #1257):* `a11y.now` answers from a model the service keeps current, and `a11y.since` waits on
+   a ring of changes. Measured on VM 520: a dialog opening is told 12 ms after the application
+   shows it, listening costs no CPU while the screen is still, and 2,000 changes to one window
+   in two seconds are told as about a dozen events with no signal dropped. It does not share the
+   run event spine yet, and the browser's own channel (CDP) and our apps' `describe` do not feed
+   it.
+
+   **Decided with it:**
+   - *Who may read the stream.* The person's own programs only, as with `a11y.windows`: the
+     service's socket opens no mind door, and the companion has no tool for `a11y.now` or
+     `a11y.since`. A Mind is not given the stream until two things exist: a per-window consent
+     rule, and the secret-name filter of #1247 on every title and element name it carries. A
+     pushed timeline of focus names and titles is a different thing from a look someone asked
+     for, even where each carries the same words.
+   - *What it never says.* The text that changed; how many changes an event stands for (one
+     text-changed signal is one keystroke); anything about a focused password field; anything
+     from the time the person was private, which is told afterwards as one gap.
+   - *Who is believed.* Any program can join the accessibility bus. That a connection left is
+     believed only from the bus, that an application left only from the registry, and that a
+     window came or went only from the connection that owns it. Every question to an
+     application has a time limit and comes out of that application's own ration.
+   - *The name.* These two methods stay `a11y.now` and `a11y.since`: they are what the
+     accessibility bus knows. `screen.now` and `screen.since` are kept for the model that joins
+     this source with our apps' own `describe`, the browser and the compositor.
 5. **Roles and labels in our own UI.** No `.slint` file sets an accessible role today, so our apps
    publish names without roles. This is the same work as keyboard navigation and screen-reader
    support: one model, two consumers. *Done:* every interactive element in the shell and one app

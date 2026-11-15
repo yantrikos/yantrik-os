@@ -159,13 +159,14 @@ struct Watcher<'a> {
 impl Watcher<'_> {
     fn apply(&mut self, fact: Fact) {
         let mut screen = self.sight.screen();
-        let (told, private) = if self.private {
-            (screen.apply_quietly(fact, Instant::now()), true)
-        } else {
-            // Read afresh, not from the last look: an event told in the first moments of the
-            // private time must not be recorded.
-            (screen.apply(fact, Instant::now()), (self.privacy.read)())
-        };
+        let told = if self.private { screen.apply_quietly(fact, Instant::now()) } else { screen.apply(fact, Instant::now()) };
+        if told.is_empty() {
+            // Most facts in a burst tell nothing, and must not each cost a read of the file.
+            return;
+        }
+        // Read afresh, not from the last look: an event told in the first moments of the
+        // private time must not be recorded.
+        let private = self.private || (self.privacy.read)();
         self.tell(told, private);
     }
 

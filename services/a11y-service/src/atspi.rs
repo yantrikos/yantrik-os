@@ -70,6 +70,8 @@ trait A11yBus {
 trait Accessible {
     fn get_children(&self) -> zbus::Result<Vec<Reference>>;
     fn get_role_name(&self) -> zbus::Result<String>;
+    /// The interfaces the object implements, by their D-Bus names.
+    fn get_interfaces(&self) -> zbus::Result<Vec<String>>;
     /// The object's states as a bit set, low word first.
     fn get_state(&self) -> zbus::Result<Vec<u32>>;
     #[zbus(property)]
@@ -226,9 +228,9 @@ impl Atspi {
     async fn windows_of(&self, app_ref: &Reference) -> Vec<(Reference, Window)> {
         let mut windows = Vec::new();
         let Ok(app) = self.accessible(app_ref).await else { return windows };
-        let app_name = app.name().await.unwrap_or_default();
-        let pid = self.pid_of(&app_ref.0).await;
-        let Ok(children) = app.get_children().await else { return windows };
+        let (app_name, pid, children) = tokio::join!(app.name(), self.pid_of(&app_ref.0), app.get_children());
+        let app_name = app_name.unwrap_or_default();
+        let Ok(children) = children else { return windows };
         for win_ref in children {
             if let Some(window) = self.window_at(&win_ref, &app_name, pid).await {
                 windows.push((win_ref, window));
@@ -246,15 +248,16 @@ impl Atspi {
         if parent.0 != win_ref.0 || !is_root(parent.1.as_str()) {
             return None;
         }
-        let app_name = self.accessible(&parent).await.ok()?.name().await.unwrap_or_default();
-        let pid = self.pid_of(&win_ref.0).await;
-        self.window_at(win_ref, &app_name, pid).await
+        let app = self.accessible(&parent).await.ok()?;
+        let (app_name, pid, window) = tokio::join!(app.name(), self.pid_of(&win_ref.0), self.window_at(win_ref, "", 0));
+        window.map(|window| Window { app: limits::name(&app_name.unwrap_or_default()), pid, ..window })
     }
 
     async fn window_at(&self, win_ref: &Reference, app_name: &str, pid: u32) -> Option<Window> {
         let win = self.accessible(win_ref).await.ok()?;
-        let role = win.get_role_name().await.unwrap_or_else(|_| "window".into());
-        let title = win.name().await.unwrap_or_default();
+        let (role, title) = tokio::join!(win.get_role_name(), win.name());
+        let role = role.unwrap_or_else(|_| "window".into());
+        let title = title.unwrap_or_default();
         let id = self.hand_out(win_ref.clone());
         Some(Window { app: limits::name(app_name), title: limits::name(&title), role: limits::role(&role), pid, id })
     }
@@ -307,8 +310,8 @@ impl Atspi {
     /// An object's role and name: what a focus event needs to say where the focus went.
     pub async fn role_and_name(&self, r: &Reference) -> Option<(String, String)> {
         let acc = self.accessible(r).await.ok()?;
-        let role = acc.get_role_name().await.ok()?;
-        Some((limits::role(&role), limits::name(&acc.name().await.unwrap_or_default())))
+        let (role, name) = tokio::join!(acc.get_role_name(), acc.name());
+        Some((limits::role(&role.ok()?), limits::name(&name.unwrap_or_default())))
     }
 
     /// An object's name alone: a window's new title.
@@ -378,19 +381,27 @@ impl Atspi {
             }
             let Ok(acc) = self.accessible(&node).await else { continue };
 
-            let role = limits::role(&acc.get_role_name().await.unwrap_or_default());
-            let name = limits::name(&acc.name().await.unwrap_or_default());
-            let text = self.text_of(&node).await;
-            let actions = self.actions_of(&node).await;
+            // The node's own four answers are asked for together: the application still answers
+            // them in turn, but nobody waits a round trip between them.
+            let deeper = depth < MAX_DEPTH;
+            let (role, name, interfaces, children) =
+                tokio::join!(acc.get_role_name(), acc.name(), acc.get_interfaces(), async { if deeper { acc.get_children().await.ok() } else { None } });
+            let role = limits::role(&role.unwrap_or_default());
+            let name = limits::name(&name.unwrap_or_default());
+            // Text and actions are asked only of a node that says it has them. Most nodes have
+            // neither, and a toolkit asked for the text of a button logs the question as a
+            // fault of its own. A node that will not say what it implements is asked for both.
+            let has = |interface: &str| interfaces.as_ref().map_or(true, |list| list.iter().any(|i| i == interface));
+            let (text, actions) = tokio::join!(
+                async { if has("org.a11y.atspi.Text") { self.text_of(&node).await } else { String::new() } },
+                async { if has("org.a11y.atspi.Action") { self.actions_of(&node).await } else { Vec::new() } }
+            );
 
             // The filter that makes this readable. A panel with no name, no text and nothing to
             // do is scaffolding — six of them stack up before a zenity dialog reaches its first
             // label — and passing scaffolding to a model is the screenshot problem again.
             let worth_saying =
                 !name.is_empty() || !text.is_empty() || !actions.is_empty();
-
-            let children =
-                if depth < MAX_DEPTH { acc.get_children().await.ok() } else { None };
 
             if worth_saying {
                 let id = self.hand_out(node.clone());

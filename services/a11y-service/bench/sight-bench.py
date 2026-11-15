@@ -84,7 +84,12 @@ stop = threading.Event()
 def follow(seq):
     rpc = Rpc()
     while not stop.is_set():
-        page, _, _ = rpc.call("a11y.since", {"seq": seq, "wait_ms": 2000})
+        try:
+            page, _, _ = rpc.call("a11y.since", {"seq": seq, "wait_ms": 2000})
+        except RuntimeError:
+            # Refused while the person is private: keep the cursor and ask again.
+            time.sleep(0.1)
+            continue
         received = now_ms()
         for event in page["events"]:
             events.append((event, received))
@@ -190,6 +195,53 @@ def hostile(rpc, demo, tell):
     return result
 
 
+def private_time(rpc, tell, demo):
+    """Turn Private mode on for the service under test (its own file, not the person's), do
+    things in the demo window, turn it off, and check nothing of that time was kept."""
+    path = os.environ.get("SIGHT_PRIVACY_FILE")
+    if not path:
+        return None
+
+    def set_private(on):
+        with open(path + ".tmp", "w") as out:
+            json.dump({"private": on, "since": int(time.time())}, out)
+        os.replace(path + ".tmp", path)
+
+    before, _, _ = rpc.call("a11y.now")
+    set_private(True)
+    began = now_ms()
+    time.sleep(1.5)
+    refused = {}
+    for method, params in (("a11y.now", None), ("a11y.since", {"seq": 0}), ("a11y.windows", None)):
+        try:
+            rpc.call(method, params)
+            refused[method] = False
+        except RuntimeError as why:
+            refused[method] = "PRIVATE" in str(why)
+    tell("focus-entry", 0.3)
+    tell("text typed while private", 0.3)
+    tell("focus-button", 0.3)
+    tell("title sight-demo: PRIVATE-TITLE", 0.3)
+    tell("dialog", 0.6)
+    tell("close-dialog", 0.4)
+    tell("title sight-demo: afterwards", 0.08)
+    set_private(False)
+    ended = now_ms()
+    time.sleep(1.8)
+    after, _, _ = rpc.call("a11y.now")
+    inside = [e for e, _ in events if began <= e["at_ms"] <= ended]
+    later = [e for e, _ in events if e["at_ms"] > ended]
+    return {
+        "refused_while_private": refused,
+        "events_dated_in_the_private_time": len(inside),
+        "events_just_after": [e["kind"] for e in later[:4]],
+        "focus_after": after["focus"],
+        "dropped_private": after["counts"]["dropped_private"] - before["counts"]["dropped_private"],
+        "private_title_in_any_event_or_answer": any("PRIVATE-TITLE" in json.dumps(e) for e, _ in events) or "PRIVATE-TITLE" in json.dumps(after),
+        "title_after": next((w["title"] for w in after["windows"] if demo and w["id"] == demo["id"]), None),
+    }
+
+
 def main():
     report = {}
     rpc = Rpc()
@@ -226,7 +278,7 @@ def main():
     # The text field has the focus when the window opens, so the button goes first.
     tell("focus-button")
     tell("focus-entry")
-    tell("text Lunch at Rasa")
+    tell("text Lunch at Rasa SENTINEL-1256")
     tell("title sight-demo: Expenses (edited)")
     tell("dialog", 1.2)
     tell("close-dialog", 1.0)
@@ -290,6 +342,9 @@ def main():
     # 6. Signals a program has no business sending (see hostile()).
     report["hostile"] = hostile(rpc, demo, tell)
 
+    # 7. The private time leaves nothing behind.
+    report["private"] = private_time(rpc, tell, demo)
+
     tell("quit", 1.5)
     stop.set()
     reader.join(timeout=4)
@@ -308,6 +363,9 @@ def main():
         "the demo took the front back (wlrctl)": first_after("front-demo", kind("front_changed")),
         "window closed": first_after("quit", lambda e: e["kind"] == "window_closed" and bool(demo) and e["window"]["id"] == demo["id"]),
     }
+    # The typed text is in no event and in no answer of the model. (`a11y.describe` returns a
+    # field's text by design; that is the looking half, and is not what is checked here.)
+    report["typed_text_in_any_event"] = any("SENTINEL-1256" in json.dumps(e) for e, _ in events) or "SENTINEL-1256" in json.dumps(after)
     report["acts"] = acts
     # The demo's own events, whole; anything else by kind and application only.
     demo_ids = {e["window"]["id"] for e, _ in events if e["kind"] == "window_opened" and "sight-demo" in e["window"]["title"]}
