@@ -116,6 +116,13 @@ pub(crate) mod listed {
         PORTS.lock().unwrap().push(port);
     }
 
+    /// Take it back when the server that asked goes. The port is what the list is keyed on, and the
+    /// OS gives a freed one to the next `bind(0)`: a port left listed after its server shut down
+    /// would be handed to whichever server binds it next, listed or not.
+    pub(crate) fn deny(port: u16) {
+        PORTS.lock().unwrap().retain(|p| *p != port);
+    }
+
     pub(super) fn contains(port: u16) -> bool {
         PORTS.lock().unwrap().contains(&port)
     }

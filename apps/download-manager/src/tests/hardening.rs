@@ -67,6 +67,20 @@ fn an_agent_may_not_add_an_address_of_this_machine() {
     assert!(!downloads().join("history").exists());
 }
 
+/// What the test seam in `engine/fetch.rs` is keyed on: a port is open to an agent only while the
+/// server it was listed for is still up. A freed port goes to the next `bind(0)`, so a listing left
+/// behind with a server that has gone is inherited by whatever takes the port next — in a parallel
+/// run, usually another test's stand-in for one of this machine's own services, which is the one
+/// thing it must never let through.
+#[test]
+fn a_listed_port_goes_when_the_server_that_listed_it_goes() {
+    let own = Server::start(vec![]);
+    let url = own.url("/x");
+    assert!(crate::engine::literal_refusal(&url).is_none(), "an agent may reach a listed port");
+    drop(own);
+    assert!(crate::engine::literal_refusal(&url).is_some(), "{url} is a port with no server of its own");
+}
+
 #[test]
 fn an_agent_may_not_be_sent_to_this_machine_by_a_redirect() {
     let secret = Server::start_unlisted(vec![("/history", File::plain(b"SECRET-LOCAL-SERVICE-BODY".to_vec()))]);
