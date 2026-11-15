@@ -43,9 +43,24 @@ pub fn check_pathspec(repo: &str, file: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `out`, the answer of a git command in `repo` that names files (`status --short`, `--stat`,
-/// the files of a commit), without the lines that name a protected path.
+/// `out`, the answer of a git command in `repo` that names files (`status --short`, the files of
+/// a commit), without the lines that name a protected path.
 pub fn without_protected(repo: &str, out: &str) -> String {
+    let (kept, notice) = split_protected(repo, out, &[]);
+    format!("{kept}{notice}")
+}
+
+/// [`without_protected`] for a stat: `changed` are the paths the stat is about. A name that git
+/// cut from the left (`...tail`) is judged by the changed path it ends: its tail is no secret
+/// name by itself (review R3-3).
+pub fn without_protected_cut(repo: &str, out: &str, changed: &[String]) -> String {
+    let (kept, notice) = split_protected(repo, out, changed);
+    format!("{kept}{notice}")
+}
+
+/// [`without_protected_cut`] as the lines it keeps and, apart, the line that counts what it hid
+/// (empty when nothing was hidden), so a caller that cuts the answer short keeps the count.
+pub fn split_protected(repo: &str, out: &str, changed: &[String]) -> (String, String) {
     let mut kept = Vec::new();
     let mut hidden = 0;
     for line in out.lines() {
@@ -53,17 +68,25 @@ pub fn without_protected(repo: &str, out: &str) -> String {
         // Git quotes a path with a space, a `"`, a `\` or a non-ASCII character; match what it spells.
         let plain = super::git_quote::unquoted(line);
         let names = whole_renames(plain.rsplit_once(" | ").map_or(plain.as_str(), |(names, _)| names));
-        if crate::safe_command_listing::names_a_protected_entry(&names, repo) {
+        if crate::safe_command_listing::names_a_protected_entry(&names, repo) || cut_from_a_protected_path(&names, repo, changed) {
             hidden += 1;
         } else {
             kept.push(line);
         }
     }
-    let mut shown = kept.join("\n");
-    if hidden > 0 {
-        shown.push_str(&format!("\n({hidden} entries are not shown: each is, or is inside, a place or file the AI never reads)"));
-    }
-    shown
+    let notice = if hidden > 0 {
+        format!("\n({hidden} entries are not shown: each is, or is inside, a place or file the AI never reads)")
+    } else {
+        String::new()
+    };
+    (kept.join("\n"), notice)
+}
+
+/// Whether `names` (the left side of a stat line) starts with git's `...` and what follows ends a
+/// changed path that is protected.
+fn cut_from_a_protected_path(names: &str, repo: &str, changed: &[String]) -> bool {
+    let Some(tail) = names.trim().strip_prefix("...") else { return false };
+    changed.iter().any(|path| path.ends_with(tail) && is_protected(&Path::new(repo).join(path)))
 }
 
 /// A stat's `dir/{old => new}/f` as the two whole paths, `dir/old/f -> dir/new/f`; any other

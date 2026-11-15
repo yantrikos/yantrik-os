@@ -173,3 +173,52 @@ fn a_pathspec_git_cannot_list_is_not_diffed() {
     let refused = check_pathspec("/nonexistent-yantrik-1247-repo", "notes.md").unwrap_err();
     assert!(refused.contains("could not list") && !refused.contains(FAKE), "{refused}");
 }
+
+const GOOGLE_CLIENT: &str = "client_secret_123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com.json";
+
+/// Review R3-3: git cuts a long name from the left at its default width, and the tail
+/// (`...012-abc….json`) is no secret name. No part of Google's OAuth client file name is shown.
+#[test]
+fn a_long_secret_name_is_not_shortened_into_view_by_stat() {
+    let Some(r) = repo("stat-width") else { return };
+    let at = r.0.to_string_lossy().into_owned();
+    std::fs::write(r.0.join(GOOGLE_CLIENT), format!("{FAKE}\n")).unwrap();
+    git(&r.0, &["add", "-A"]);
+    let staged = call(&crate::git::GitDiffTool, serde_json::json!({ "path": at, "staged": true }));
+    assert!(!staged.contains("googleusercontent") && !staged.contains("012345") && !staged.contains(FAKE), "{staged}");
+    assert!(staged.contains("entries are not shown"), "{staged}");
+    git(&r.0, &["commit", "-qm", "oauth"]);
+    let shown = call(&crate::git::GitShowTool, serde_json::json!({ "path": at, "commit": "HEAD" }));
+    assert!(!shown.contains("googleusercontent") && !shown.contains("012345") && !shown.contains(FAKE), "{shown}");
+}
+
+/// Review R3-3, second line: a name git did cut is judged by the changed path it ends.
+#[test]
+fn a_name_cut_from_the_left_is_judged_by_the_path_it_ends() {
+    let cut = format!(" ...{} | 1 +\n a-readable-file.md | 1 +", &GOOGLE_CLIENT[30..]);
+    let shown = without_protected_cut("/home/ann/proj", &cut, &[GOOGLE_CLIENT.to_string(), "a-readable-file.md".to_string()]);
+    assert!(!shown.contains("googleusercontent") && shown.contains("a-readable-file.md"), "{shown}");
+    let unrelated = without_protected_cut("/home/ann/proj", &cut, &["docs/other.md".to_string()]);
+    assert!(unrelated.contains("googleusercontent"), "a tail that ends no protected path is shown: {unrelated}");
+}
+
+/// Review R3-4: the answer is cut after the names are filtered. 72 lines of 40 bytes, one of 30 and
+/// one of 17 put the start of the secret's line at byte 2990 of what git prints, so a cut at 3000 lands inside `A  zz/tokens.json`.
+#[test]
+fn a_secret_name_at_the_cut_is_hidden_whole() {
+    let Some(r) = repo("cut") else { return };
+    let at = r.0.to_string_lossy().into_owned();
+    std::fs::create_dir_all(r.0.join("many")).unwrap();
+    std::fs::create_dir_all(r.0.join("zz")).unwrap();
+    for i in 0..72 {
+        std::fs::write(r.0.join(format!("many/{i:027}.txt")), "x\n").unwrap();
+    }
+    for filler in [format!("many/{:017}.txt", 0), "many/0000.txt".to_string()] {
+        std::fs::write(r.0.join(filler), "x\n").unwrap();
+    }
+    std::fs::write(r.0.join("zz/tokens.json"), format!("{FAKE}\n")).unwrap();
+    git(&r.0, &["add", "-A"]);
+    let shown = call(&crate::git::GitStatusTool, serde_json::json!({ "path": at }));
+    assert!(!shown.contains("zz/") && !shown.contains(FAKE), "{shown}");
+    assert!(shown.contains("entries are not shown"), "{shown}");
+}

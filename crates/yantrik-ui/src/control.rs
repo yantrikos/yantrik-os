@@ -519,15 +519,9 @@ pub fn publish(
             // Held as a list, not just as the published array: the summary below asks it which
             // apps are standing open, because a window answers for its service's name.
             let windows = crate::windows::shell_windows();
-            let open: Vec<serde_json::Value> = windows
-                .iter()
-                .map(|w| {
-                    serde_json::json!({
-                        "title": w.title,
-                        "app": w.app_id,
-                    })
-                })
-                .collect();
+            // A foreign app's title can name a protected file; a mind gets its app's name instead.
+            let mind = crate::control_files_mind::a_mind_is_calling();
+            let open: Vec<serde_json::Value> = windows.iter().map(|w| crate::control_window_titles::row(w, mind)).collect();
 
             let service_model = ui.get_services();
             let services: Vec<serde_json::Value> = {
@@ -787,7 +781,7 @@ pub fn publish(
                 // itself (or one of its screens), false for an app window, null when the
                 // compositor could not say; `in_front` is that app window's title from `windows`.
                 .with("desktop_in_front", crate::windows::shell_in_front())
-                .with("in_front", crate::windows::in_front())
+                .with("in_front", crate::control_window_titles::in_front(crate::windows::in_front(), &windows, mind))
                 .with("failed_launches", serde_json::Value::Array(failed))
                 // Where the apps a mind opens are drawn (#239): whether minds open them in Mind
                 // View, whether it is up and on which display, what is in it, and why not if it

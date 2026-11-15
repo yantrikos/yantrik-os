@@ -2,6 +2,7 @@
 //! git_commit, git_show, git_stash, git_diff_file.
 //! Read-heavy: most operations are Safe. Clone/commit/stash write to disk.
 
+use super::git_run::{run_git, run_git_names, run_git_stat};
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, validate_write_path};
 
 pub fn register(reg: &mut ToolRegistry) {
@@ -14,41 +15,6 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(GitShowTool));
     reg.register(Box::new(GitStashTool));
     reg.register(Box::new(GitDiffFileTool));
-}
-
-/// [`run_git`] for a command that names files (`status`, `--stat`, `commit`, `stash`): a protected
-/// path is left out of what it prints (#1247).
-fn run_git_names(dir: &str, git_args: &[&str]) -> String {
-    super::git_secrets::without_protected(dir, &run_git(dir, git_args))
-}
-
-/// Run a git command in a validated directory.
-fn run_git(dir: &str, git_args: &[&str]) -> String {
-    // Where git really goes is checked first: a link or a .git file can lead into a workshop.
-    if let Err(e) = super::git_guard::vet(dir) {
-        return format!("Error: {e}");
-    }
-    match super::git_guard::command(dir)
-        .args(git_args)
-        .output()
-    {
-        Ok(o) if o.status.success() => {
-            let out = String::from_utf8_lossy(&o.stdout);
-            if out.trim().is_empty() {
-                "(no output)".to_string()
-            } else if out.len() > 3000 {
-                format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
-            } else {
-                out.to_string()
-            }
-        }
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            let out = String::from_utf8_lossy(&o.stdout);
-            format!("{} {}", out.trim(), err.trim())
-        }
-        Err(e) => format!("Error (git not available?): {e}"),
-    }
 }
 
 // ── Git Status ──
@@ -174,9 +140,9 @@ impl Tool for GitDiffTool {
         };
 
         if staged {
-            run_git_names(&expanded, &["diff", "--cached", "--stat"])
+            run_git_stat(&expanded, &["diff", "--cached"])
         } else {
-            run_git_names(&expanded, &["diff", "--stat"])
+            run_git_stat(&expanded, &["diff"])
         }
     }
 }
@@ -410,12 +376,7 @@ impl Tool for GitShowTool {
             return "Error: invalid commit ref (only alphanumeric, ^, ~ allowed)".to_string();
         }
 
-        let out = run_git_names(&expanded, &["show", "--stat", commit]);
-        if out.len() > 3000 {
-            format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
-        } else {
-            out
-        }
+        run_git_stat(&expanded, &["show", commit])
     }
 }
 
@@ -513,12 +474,7 @@ impl Tool for GitDiffFileTool {
         if let Err(e) = validate_path(&format!("{expanded}/{file}")).and_then(|_| super::git_secrets::check_pathspec(&expanded, file)) {
             return format!("Error: {e}");
         }
-        let out = run_git(&expanded, &["diff", "--no-renames", "--", file]);
-        if out.len() > 3000 {
-            format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
-        } else {
-            out
-        }
+        run_git(&expanded, &["diff", "--no-renames", "--", file])
     }
 }
 

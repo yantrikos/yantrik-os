@@ -32,6 +32,8 @@ mod tests;
 #[cfg(all(test, unix))]
 mod protected_tests;
 #[cfg(all(test, unix))]
+mod copy_form_tests;
+#[cfg(all(test, unix))]
 mod secret_tests;
 #[cfg(all(test, unix))]
 mod write_tests;

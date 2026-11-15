@@ -265,3 +265,25 @@ fn stderr_does_not_name_a_protected_path() {
     let fine = "find: '/home/ann/Documents/keynote.txt': Permission denied\n";
     assert_eq!(stderr_without_protected(fine), fine);
 }
+
+/// Review R3-1: Neovim's own swap and undo files, which hold the text of a file the person has
+/// open, are refused by `cat`, and `find` over their folder prints a count only.
+#[test]
+fn an_editors_swap_file_in_its_own_folder_is_refused_and_not_listed() {
+    let h = home("nvimswap");
+    let swap = put(&h, ".local/state/nvim/swap/%home%ann%backup%tokens.json.swp");
+    let undo = put(&h, ".local/state/nvim/undo/%home%ann%backup%tokens.json");
+    let emacs = put(&h, ".emacs.d/backups/!home!ann!backup!tokens.json~");
+    put(&h, ".local/state/nvim/swap/%home%ann%notes.md.swp");
+    for at in [&swap, &undo, &emacs] {
+        let refused = verdict(&format!("cat {at}"), &h.0).unwrap_err();
+        assert!(refused.contains("a place the AI never reads") && !refused.contains(FAKE), "{at}: {refused}");
+    }
+    assert_eq!(verdict(&format!("cat {}", h.0.join(".local/state/nvim/swap/%home%ann%notes.md.swp").display()), &h.0), Ok(()));
+    let argv = words(&format!("find {} -type f", h.0.join(".local/state").display())).unwrap();
+    let (out, _) = run(&argv).unwrap();
+    let shown = without_protected(&argv, &out);
+    assert!(shown.contains("notes.md.swp"), "{shown}");
+    assert!(!shown.contains("tokens") && !shown.contains(FAKE), "{shown}");
+    assert!(shown.contains("2 entries are not shown"), "{shown}");
+}
