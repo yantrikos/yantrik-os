@@ -47,3 +47,52 @@ fn the_front_window_title_is_hidden_like_its_row() {
     assert_eq!(in_front(Some("notes.md - gedit".to_string()), &windows, true).as_deref(), Some("notes.md - gedit"));
     assert_eq!(in_front(None, &windows, true), None);
 }
+
+/// Review M4: quotes of every kind, ellipses, full stops, dashes and the other ways a title sets a
+/// file's name beside other text, and a path into a protected place.
+#[test]
+fn a_title_that_sets_the_name_in_curly_quotes_or_a_sentence_is_hidden() {
+    for title in [
+        "“tokens.json” Properties", "Save changes to “tokens.json”?", "‘tokens.json’ - less", "«tokens.json»", "tokens.json… - Text Editor",
+        "Opening tokens.json.", "tokens.json–Mousepad", "deploy-2026-11-15T10:30:00.pem - gedit", "config (~/.aws) - VIM", "/home/ann/.ssh/known_hosts - nano",
+        "Delete “server (conflicted copy 2026-11-15 101530).pem”?", "backup:id_ed25519 - gedit",
+    ] {
+        let shown = row(&window_entry("gedit", title), true);
+        assert_eq!(shown["title_hidden"], true, "{title}");
+        assert!(!shown.to_string().contains("tokens") && !shown.to_string().contains(".aws") && !shown.to_string().contains("pem"), "{title}: {shown}");
+        assert_eq!(row(&window_entry("gedit", title), false)["title"], title, "the person sees it whole: {title}");
+    }
+    for title in ["“notes.md” Properties", "Opening notes.md.", "~/Documents - Files", "/home/ann/Documents/notes.md - nano", "id_rsa.pub… - gedit", "Budget – 2026 — Calc"] {
+        assert!(row(&window_entry("gedit", title), true).get("title_hidden").is_none(), "{title}");
+    }
+}
+
+/// Review M4, the switcher: a cell's title, and its name when it is the title, are hidden from a
+/// mind and whole for the person; and `described` asks who is calling.
+#[test]
+fn a_switcher_cell_hides_a_secret_title_from_a_mind() {
+    let name = "tokens.json - gedit";
+    let hidden = cell(name, name, "gedit", true);
+    assert_eq!(hidden["title_hidden"], true);
+    assert!(!hidden.to_string().contains("tokens"), "{hidden}");
+    assert_eq!(hidden["title"], app_display_name("gedit"));
+    assert_eq!(cell("gedit", name, "gedit", true)["title_hidden"], true);
+    let whole = cell(name, name, "gedit", false);
+    assert_eq!((whole["name"].as_str(), whole["title"].as_str()), (Some(name), Some(name)));
+    assert!(whole.get("title_hidden").is_none());
+    assert!(cell("Calendar", "notes.md - gedit", "gedit", true).get("title_hidden").is_none());
+    let switcher = include_str!("control_switcher.rs");
+    assert!(
+        switcher.contains("crate::control_window_titles::cell(&c.app_name, &c.title, &c.app_id, crate::control_files_mind::a_mind_is_calling())"),
+        "`described` asks who is calling"
+    );
+}
+
+/// Review L6: a notification's title for a mind, and the front window's wiring.
+#[test]
+fn a_notification_title_that_names_a_secret_is_hidden_from_a_mind() {
+    assert_eq!(notice_title("Download complete: tokens.json", true), ("a notification".to_string(), true));
+    assert_eq!(notice_title("Download complete: tokens.json", false), ("Download complete: tokens.json".to_string(), false));
+    assert_eq!(notice_title("Download complete: notes.md", true), ("Download complete: notes.md".to_string(), false));
+    assert!(include_str!("notifications.rs").contains("notice_title(&n.title, crate::control_files_mind::a_mind_is_calling())"));
+}
