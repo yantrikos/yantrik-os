@@ -39,6 +39,9 @@ pub mod firewall;
 pub mod foreign_ui;
 pub mod git;
 pub mod git_guard;
+pub mod git_quote;
+pub mod git_run;
+pub mod git_secrets;
 pub mod github;
 pub mod glob;
 pub mod grep;
@@ -53,6 +56,8 @@ pub mod package;
 pub mod pipe;
 /// What run_command may run, without a shell (#445).
 pub mod safe_command;
+/// What a `run_command` listing shows: protected entries filtered from its output (#1247).
+pub mod safe_command_listing;
 pub mod plugin;
 pub mod process;
 pub mod provider_keys;
@@ -147,5 +152,7 @@ pub(crate) fn register_builtin(reg: &mut ToolRegistry) {
 
 #[cfg(test)]
 mod capture_rule_tests;
+#[cfg(all(test, unix))]
+mod safe_command_secret_tests;
 #[cfg(test)]
 mod golden_tests;

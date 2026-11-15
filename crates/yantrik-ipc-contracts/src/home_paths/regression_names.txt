@@ -1,0 +1,559 @@
+# Every name and path a test of #1247 has asserted, one per line: `secret` (a name that is a
+# credential), `readable` (a decoy name), `protected` (a path), `open` (a decoy path) and `encoded` (an editor's copy that spells a protected
+# path into its name, which is a credential as a name and as a window title).
+secret	tokens.json
+secret	token.json
+secret	credentials.json
+secret	credentials
+secret	.credentials.json
+secret	auth.json
+secret	oauth_creds.json
+secret	client_secret.json
+secret	service_account.json
+secret	.env
+secret	.netrc
+secret	.pgpass
+secret	.git-credentials
+secret	.vault-token
+secret	.npmrc
+secret	.pypirc
+secret	id_rsa
+secret	id_dsa
+secret	id_ecdsa
+secret	id_ecdsa_sk
+secret	id_ed25519_sk
+secret	secring.gpg
+secret	pubring.kbx
+secret	trustdb.gpg
+secret	login.keyring
+secret	user.keystore
+secret	key4.db
+secret	logins.json
+secret	cookies.sqlite
+secret	cookies
+secret	login data
+secret	web data
+secret	application_default_credentials.json
+secret	access_tokens.db
+secret	credentials.db
+secret	kubeconfig
+secret	hosts.yml
+secret	.s3cfg
+secret	.boto
+secret	credentials.tfrc.json
+secret	.envrc
+secret	.my.cnf
+secret	.htpasswd
+secret	.authinfo
+secret	.authinfo.gpg
+secret	key3.db
+secret	signons.sqlite
+secret	local state
+secret	login data for account
+secret	cookies-journal
+secret	login data-journal
+secret	server.key
+secret	server.pem
+secret	server.p12
+secret	server.pfx
+secret	server.jks
+secret	server.keystore
+secret	server.kdbx
+secret	server.keyring
+secret	server.ovpn
+secret	server.gpg-key
+secret	server.ppk
+secret	server.p8
+secret	server.keytab
+secret	server.age
+secret	server.kdb
+secret	server.keychain
+secret	server.keychain-db
+secret	client_secret
+secret	client_secret_123.json
+secret	client_secret.bak
+secret	client_secret.local
+secret	service-account
+secret	service-account_123.json
+secret	service-account.bak
+secret	service-account.local
+secret	service_account
+secret	service_account_123.json
+secret	service_account.bak
+secret	service_account.local
+secret	.env.
+secret	.env._123.json
+secret	.env..bak
+secret	.env..local
+secret	id_rsa_123.json
+secret	id_rsa.bak
+secret	id_rsa.local
+secret	id_dsa_123.json
+secret	id_dsa.bak
+secret	id_dsa.local
+secret	id_ed25519
+secret	id_ed25519_123.json
+secret	id_ed25519.bak
+secret	id_ed25519.local
+secret	id_ecdsa_123.json
+secret	id_ecdsa.bak
+secret	id_ecdsa.local
+secret	putty.ppk
+secret	key.p8
+secret	service.keytab
+secret	backup.age
+secret	vault.kdb
+secret	login.keychain
+secret	login.keychain-db
+secret	Local State
+secret	Login Data For Account
+secret	Cookies-journal
+secret	Login Data-journal
+secret	tokens.json.bak
+secret	tokens (1).json
+secret	credentials.json.bak
+secret	auth.json.old
+secret	tokens.json.orig
+secret	tokens.json.backup
+secret	tokens.json.copy
+secret	tokens.json~
+secret	TOKENS (12).JSON
+secret	tokens (2).json.bak
+secret	.env.bak
+secret	kubeconfig.old
+secret	Local State.bak
+secret	.env.swp
+secret	.env.save
+secret	.netrc.2
+secret	.#.env
+secret	ID_RSA.bak
+secret	service-account-prod.json
+secret	.env.local
+secret	tokens.json.save
+secret	tokens.json.swp
+secret	tokens.json.swo
+secret	tokens.json.tmp
+secret	tokens.json.dpkg-old
+secret	tokens.json.dpkg-dist
+secret	tokens.json.rpmsave
+secret	tokens.json.rpmnew
+secret	tokens.json.prev
+secret	tokens.json.1
+secret	tokens.json.2
+secret	tokens.json.12
+secret	tokens.json.~1~
+secret	tokens.json.~12~
+secret	tokens.json.bak2
+secret	tokens.json.bak.1
+secret	tokens.json.bak.bak
+secret	tokens.json.SAVE
+secret	tokens.json (copy)
+secret	tokens.json (another copy)
+secret	tokens.json - Copy
+secret	tokens.json - copy (2)
+secret	.tokens.json.swp
+secret	.tokens.json.swo
+secret	#tokens.json#
+secret	.#tokens.json
+secret	tokens (copy).json
+secret	tokens (another copy).json
+secret	tokens (3rd copy).json
+secret	tokens (2nd copy).json
+secret	tokens (11th copy).json
+secret	tokens - Copy.json
+secret	tokens - Copy (2).json
+secret	tokens copy.json
+secret	tokens copy 2.json
+secret	tokens(1).json
+secret	Copy of tokens.json
+secret	Copy of tokens (2).json
+secret	tokens.json.bak (1)
+secret	server.pem.save
+secret	server.pem.swp
+secret	server.pem.swo
+secret	server.pem.tmp
+secret	server.pem.dpkg-old
+secret	server.pem.dpkg-dist
+secret	server.pem.rpmsave
+secret	server.pem.rpmnew
+secret	server.pem.prev
+secret	server.pem.1
+secret	server.pem.2
+secret	server.pem.12
+secret	server.pem.~1~
+secret	server.pem.~12~
+secret	server.pem.bak2
+secret	server.pem.bak.1
+secret	server.pem.bak.bak
+secret	server.pem.SAVE
+secret	server.pem (copy)
+secret	server.pem (another copy)
+secret	server.pem - Copy
+secret	server.pem - copy (2)
+secret	.server.pem.swp
+secret	.server.pem.swo
+secret	#server.pem#
+secret	.#server.pem
+secret	server (copy).pem
+secret	server (another copy).pem
+secret	server (3rd copy).pem
+secret	server (2nd copy).pem
+secret	server (11th copy).pem
+secret	server - Copy.pem
+secret	server - Copy (2).pem
+secret	server copy.pem
+secret	server copy 2.pem
+secret	server(1).pem
+secret	server (1).pem
+secret	Copy of server.pem
+secret	Copy of server (2).pem
+secret	server.pem.bak (1)
+secret	%home%ann%backup%tokens.json.swp
+secret	%home%ann%backup%tokens.json
+secret	%home%ann%.ssh%tokens.json.swp
+secret	!home!ann!backup!tokens.json~
+secret	.tokens.json.swn
+secret	.tokens.json.swm
+secret	.tokens.json.swa
+secret	.tokens.json.un~
+secret	tokens.json.un~
+secret	.tokens.json.kate-swp
+secret	tokens.json___jb_old___
+secret	tokens.json___jb_tmp___
+secret	%home%ann%tokens.json.un~
+secret	%home%ann%backup%server.pem.swp
+secret	%home%ann%backup%server.pem
+secret	%home%ann%.ssh%server.pem.swp
+secret	!home!ann!backup!server.pem~
+secret	.server.pem.swn
+secret	.server.pem.swm
+secret	.server.pem.swa
+secret	.server.pem.un~
+secret	server.pem.un~
+secret	.server.pem.kate-swp
+secret	server.pem___jb_old___
+secret	server.pem___jb_tmp___
+secret	%home%ann%server.pem.un~
+secret	%home%ann%backup%id_ed25519.swp
+secret	%home%ann%backup%id_ed25519
+secret	%home%ann%.ssh%id_ed25519.swp
+secret	!home!ann!backup!id_ed25519~
+secret	.id_ed25519.swn
+secret	.id_ed25519.swm
+secret	.id_ed25519.swa
+secret	.id_ed25519.un~
+secret	id_ed25519.un~
+secret	.id_ed25519.kate-swp
+secret	id_ed25519___jb_old___
+secret	id_ed25519___jb_tmp___
+secret	%home%ann%id_ed25519.un~
+secret	tokens.json.part
+secret	tokens.json.partial
+secret	tokens.json.crdownload
+secret	tokens.json.filepart
+secret	tokens.json.download
+secret	tokens.json.sav
+secret	tokens.json.bk
+secret	tokens.json~1
+secret	tokens.json~12
+secret	tokens.json.backup1
+secret	tokens.json.sync-conflict-20261115-123456-ABCDEFG
+secret	tokens (conflicted copy 2026-11-15).json
+secret	tokens (Ann's conflicted copy 2026-11-15).json
+secret	tokens (ann's conflicted copy).json
+secret	tokens.sync-conflict-20261115-123456-ABCDEFG.json
+secret	tokens 2.json
+secret	tokens 12.json
+secret	tokens.json.SYNC-CONFLICT-20261115-123456-ABCDEFG
+secret	server.pem.part
+secret	server.pem.partial
+secret	server.pem.crdownload
+secret	server.pem.filepart
+secret	server.pem.download
+secret	server.pem.sav
+secret	server.pem.bk
+secret	server.pem~1
+secret	server.pem~12
+secret	server.pem.backup1
+secret	server.pem.sync-conflict-20261115-123456-ABCDEFG
+secret	server (conflicted copy 2026-11-15).pem
+secret	server (Ann's conflicted copy 2026-11-15).pem
+secret	server (ann's conflicted copy).pem
+secret	server.sync-conflict-20261115-123456-ABCDEFG.pem
+secret	server 2.pem
+secret	server 12.pem
+secret	server.pem.SYNC-CONFLICT-20261115-123456-ABCDEFG
+secret	tokens.json:Zone.Identifier
+secret	server.pem:Zone.Identifier
+secret	.~lock.tokens.json#
+secret	.~lock.server.pem#
+secret	deploy-2026-11-15T10:30:00.pem
+secret	notes:server.pem
+secret	id_rsa%20old
+secret	.env%20prod
+secret	client_secret_1%2B.json
+secret	backup:id_ed25519
+secret	!home!ann!backup!id_rsa
+secret	tokens.json::$DATA
+secret	TOKENS.JSON:zone.identifier
+secret	tokens (conflicted copy 2026-11-15 101530).json
+secret	tokens (conflicted copy ann 2026-11-15 101530).json
+secret	server (conflicted copy 2026-11-15 101530).pem
+secret	tokens (copy 1).json
+secret	tokens (copy 12).json
+secret	server (copy 1).pem
+secret	tokens (case clash 1).json
+secret	tokens.json.trashinfo
+secret	server.pem.trashinfo
+secret	.tokens.json.svz
+secret	.tokens.json.sva
+secret	.tokens.json.suz
+secret	.tokens.json.saa
+secret	%home%ann%backup%tokens.json.svz
+secret	tokens.json.swn
+readable	id_ed25519.pub
+readable	id_rsa.pub
+readable	ID_ECDSA.PUB
+readable	notes-about-tokens.md
+readable	keynote.txt
+readable	tokens.md
+readable	environment.txt
+readable	monkey.txt
+readable	pemberton.txt
+readable	idea_rsa_notes.txt
+readable	notes copy.md
+readable	photo (copy).jpg
+readable	chapter.2.md
+readable	report.json.1.txt
+readable	copy of notes.md
+readable	swap.swp
+readable	notes.save
+readable	notes (another copy).md
+readable	notes - Copy.md
+readable	notes.~1~
+readable	#notes#
+readable	.#notes
+readable	.notes.swp
+readable	notes.dpkg-old
+readable	tokens.json.1.txt
+readable	tokens.json (copy).txt
+readable	copy of tokens-notes.md
+readable	tokens copy notes.json
+readable	tokens.2x
+readable	mytokens.json.2
+readable	tokens.json.bakx
+readable	tokens.json.2b
+readable	tokens.jsonn.save
+readable	notes.bak.md
+readable	old-tokens-notes.txt
+readable	tokens.md.bak
+readable	tokens (a).json
+readable	tokens ().json
+readable	tokens (1)x.json
+readable	id_rsa.pub.bak
+readable	id_dsa.pub
+readable	api.key.txt
+readable	notes (1).md
+readable	.bak
+readable	~
+readable	image.agent
+readable	hosts.yaml
+readable	state.json
+readable	local-state.md
+readable	report.gpg
+readable	public.asc
+readable	release.agekey.md
+readable	%home%ann%notes.md.swp
+readable	!home!ann!notes.md~
+readable	swap.swn
+readable	.notes.md.un~
+readable	notes.part
+readable	photo (conflicted copy 2026-11-15).jpg
+readable	chapter 2.md
+readable	notes.sync-conflict-20261115-123456-ABCDEFG.md
+readable	notes.md:Zone.Identifier
+readable	.~lock.notes.md#
+readable	notes.kate-swp
+readable	notes___jb_old___
+readable	notes.crdownload
+readable	notes~1
+readable	chapter 2
+readable	tokens.sync-conflict-2026-123456-ABCDEFG.md
+readable	tokens.json.swq
+readable	tokens.json.swpp
+readable	tokens.json.sync-conflict-20261115-123456-ABC
+readable	tokens (conflicted copy of nothing).md
+readable	notes.backup1
+readable	id_rsa.pub.part
+readable	100% done.md
+readable	credentials: how to rotate.md
+readable	cookies: chocolate chip.md
+readable	tokens.json: what it holds.md
+readable	login data: export notes.txt
+readable	photo (copy 1).jpg
+readable	notes (conflicted copy ann 2026-11-15 101530).md
+readable	notes-10:30:00.md
+readable	notes.trashinfo
+readable	notes.md.svz
+readable	credentials.svg
+readable	credentials.sql
+readable	credentials.sig
+readable	credentials.sha
+readable	credentials.srt
+readable	credentials.ssh
+readable	cookies.svg
+readable	cookies.sql
+readable	cookies.sig
+readable	kubeconfig.svg
+readable	kubeconfig.sig
+readable	cookies%20recipe.pdf
+readable	credentials%20how-to.md
+readable	cookies%2Fchocolate.md
+readable	%home%ann%documents%config.swp
+readable	tokens.json.svz
+readable	tokens.json.saa
+protected	/home/ann/.mozilla/firefox/x/places.sqlite
+protected	/home/ann/.config/chromium/Default/History
+protected	/home/ann/.config/google-chrome/Default/x
+protected	/home/ann/.config/BraveSoftware/Brave-Browser/x
+protected	/home/ann/.var/app/com.google.Chrome/config/x
+protected	/home/ann/.var/app/org.chromium.Chromium/x
+protected	/home/ann/.var/app/com.brave.Browser/x
+protected	/home/ann/snap/chromium/common/x
+protected	/home/ann/snap/firefox/common/x
+protected	/home/ann/.thunderbird/p/prefs.js
+protected	/home/ann/.config/evolution/sources/x
+protected	/home/ann/.gnupg/private-keys-v1.d/x.key
+protected	/home/ann/backup/private-keys-v1.d/abc
+protected	/home/ann/backup/private-keys-v1.d
+protected	/home/ann/.local/share/yantrik-mind/mind.db
+protected	/home/ann/.local/share/yantrik-mind/egress.key
+protected	/home/ann/.local/share/yantrik-mind/yantrik-memory.token
+protected	/home/ann/.config/yantrik-mind/console.token
+protected	/home/ann/.config/yantrik-mind.env
+protected	/home/ann/.aws/credentials
+protected	/home/ann/.git-credentials
+protected	/home/ann/.netrc
+protected	/home/ann/.config/gh/hosts.yml
+protected	/home/ann/.docker/config.json
+protected	/home/ann/.kube/config
+protected	/home/ann/.npmrc
+protected	/home/ann/.cargo/credentials.toml
+protected	/home/ann/.local/share/keyrings/login.keyring
+protected	/home/ann/.claude.json
+protected	/home/ann/.hermes/config.yaml
+protected	/home/ann/.ssh/id_ed25519
+protected	/home/ann/.config/labwc/rc.xml
+protected	/home/ann/.local/share/applications/a.desktop
+protected	/home/ann/.SSH/id_ed25519
+protected	/home/ann/.Config/Autostart/x.desktop
+protected	/home/ann/Memory.DB
+protected	/home/ann/Pictures/Screenshots/a.png
+protected	/home/ann/Videos/Recordings/a.mp4
+protected	/home/ann/.local/share/yantrik/snippets/snippets.json
+protected	/home/ann/.local/share/yantrik/snippets/export-1789862400.json
+protected	/home/ann/.local/state/yantrik/snippets/drafts/snippet-3.json
+protected	/home/ann/.local/share/yantrik/email/draft.json
+protected	/home/ann/.local/state/yantrik/email/drafts/composing.json
+protected	/home/ann/.local/state/yantrik/notes/drafts/note-today.json
+protected	/home/ann/.local/share/yantrik
+protected	/home/ann/.LOCAL/Share/Yantrik/x
+protected	/home/ann/.config/Code/User/History/-1a2b/AbCd.json
+protected	/home/ann/.config/Code/User/History/-1a2b/entries.json
+protected	/home/ann/.config/Code/Backups/ws1/file/9f8e
+protected	/home/ann/.config/VSCodium/User/History/-1a2b/AbCd.json
+protected	/home/ann/.config/VSCodium/Backups/ws1/file/9f8e
+protected	/home/ann/.config/Code - OSS/User/History/-1a2b/AbCd.json
+protected	/home/ann/.config/Code - OSS/Backups/ws1/file/9f8e
+protected	/home/ann/.var/app/com.visualstudio.code/config/Code/User/History/-1a2b/AbCd.json
+protected	/home/ann/.zsh_history
+protected	/home/ann/.local/share/fish/fish_history
+protected	/home/ann/.python_history
+protected	/home/ann/.node_repl_history
+protected	/home/ann/.psql_history
+protected	/home/ann/.mysql_history
+protected	/home/ann/.viminfo
+protected	/home/ann/.local/state/nvim/shada/main.shada
+protected	/home/ann/.local/share/recently-used.xbel
+protected	/home/ann/.emacs.d/auto-save-list/.saves-1234-host~
+protected	/home/ann/.local/share/Trash/info/tokens.json.trashinfo
+protected	/home/ann/.local/state/nvim/swap/%home%ann%.kube%config.swp
+protected	/home/ann/.local/state/nvim/undo/%home%ann%.kube%config
+protected	/home/ann/.local/state/nvim/swap/%home%ann%.docker%config.json.swp
+protected	/home/ann/.local/state/nvim/swap/%home%ann%.hermes%config.yaml.swp
+protected	/home/ann/.local/state/nvim/swap/%home%ann%.hermes%config.yaml.svz
+protected	/home/ann/.emacs.d/backups/!home!ann!.kube!config~
+protected	/home/ann/.emacs.d/backups/!home!ann!.kube!config.~3~
+protected	/home/ann/.local/state/nvim/swap/%HOME%ann%.Kube%Config.swp
+open	/home/ann/.aws-notes.txt
+open	/home/ann/.docker/other.json
+open	/home/ann/notes/.netrc-howto.md
+open	/home/ann/pictures/.pi-day.png
+open	/home/ann/.ssh-notes/a
+open	/home/ann/labwc/.config
+open	/home/ann/.config/labwc-themes/a
+open	/home/ann/.local/share/applications-old
+open	/home/ann/.SSH-notes
+open	/home/ann/Pictures/Screenshots-old/a.png
+open	/home/ann/Videos/film.mp4
+open	/home/ann/Recordings/a.mp4
+open	/home/ann/.local/share/yantrik-minds-old/x
+open	/home/ann/.local/share/yantrikos/x
+open	/home/ann/yantrik/notes.md
+open	/home/ann/.local/share/fonts/a.ttf
+open	/home/ann/.config/chromium-notes/x
+open	/home/ann/backup/private-keys-v1.d-notes.md
+open	/home/ann/.config/Code/User/settings.json
+open	/home/ann/.config/Code/User/keybindings.json
+open	/home/ann/.emacs.d/init.el
+open	/home/ann/.local/state/nvim/swap/%home%ann%notes.md.swp
+open	/home/ann/.local/state/nvim/swap/%home%ann%documents%config.swp
+open	/home/ann/.local/state/nvim/undo/%home%ann%documents%config
+open	/home/ann/.emacs.d/backups/!home!ann!documents!config~
+open	/home/ann/.emacs.d/backups/!home!ann!notes.md~
+secret	server.pem.bak
+secret	server.pem.old
+secret	server.pem.orig
+secret	server.pem.backup
+secret	server.pem.copy
+secret	server.pem~
+secret	tokens.json.old
+secret	TOKENS.JSON
+secret	client_secret_1.json
+secret	client_secret_123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com.json
+secret	clé.pem
+secret	egress.key
+secret	x.key
+secret	ABC.key
+secret	#id_ed25519#
+secret	.#id_ed25519
+secret	.id_ed25519.swp
+secret	.id_ed25519.swo
+secret	Copy of id_ed25519
+secret	id_ed25519.bak (1)
+secret	id_ed25519.SYNC-CONFLICT-20261115-123456-ABCDEFG
+encoded	%home%ann%.kube%config.swp
+encoded	%home%ann%.kube%config
+encoded	%home%ann%.docker%config.json.swp
+encoded	%home%ann%.hermes%config.yaml.swp
+encoded	%home%ann%.hermes%config.yaml.svz
+encoded	!home!ann!.kube!config~
+encoded	!home!ann!.kube!config.~3~
+encoded	%HOME%ann%.Kube%Config.swp
+encoded	#!home!ann!.kube!config#
+encoded	#!home!ann!.docker!config.json#
+encoded	#!home!ann!.hermes!config.yaml#
+encoded	#%home%ann%.kube%config#
+encoded	#!HOME!ann!.Kube!Config#
+protected	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!.kube!config#
+protected	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!.docker!config.json#
+protected	/home/ann/.cache/doom/autosave/#!home!ann!.hermes!config.yaml#
+protected	/home/ann/.cache/doom/autosave/#%home%ann%.kube%config#
+protected	/home/ann/backup/tokens.json
+protected	/home/ann/keys/id_ed25519
+protected	/home/ann/dotfiles/ssh/id_ed25519
+readable	#!home!ann!documents!notes.md#
+open	/home/ann/.emacs.d/.cache/auto-save/#!home!ann!documents!notes.md#
+secret	İİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİİ.pem.bak
+encoded	%home%ann%.config%code - oss%user%history%-1a2b%abcd.json.swp
+protected	/var/lib/yantrik/workshops/1000/hermes/shop

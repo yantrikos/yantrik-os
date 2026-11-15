@@ -2,6 +2,7 @@
 //! git_commit, git_show, git_stash, git_diff_file.
 //! Read-heavy: most operations are Safe. Clone/commit/stash write to disk.
 
+use super::git_run::{run_git, run_git_names, run_git_stat};
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, validate_path, validate_write_path};
 
 pub fn register(reg: &mut ToolRegistry) {
@@ -14,35 +15,6 @@ pub fn register(reg: &mut ToolRegistry) {
     reg.register(Box::new(GitShowTool));
     reg.register(Box::new(GitStashTool));
     reg.register(Box::new(GitDiffFileTool));
-}
-
-/// Run a git command in a validated directory.
-fn run_git(dir: &str, git_args: &[&str]) -> String {
-    // Where git really goes is checked first: a link or a .git file can lead into a workshop.
-    if let Err(e) = super::git_guard::vet(dir) {
-        return format!("Error: {e}");
-    }
-    match super::git_guard::command(dir)
-        .args(git_args)
-        .output()
-    {
-        Ok(o) if o.status.success() => {
-            let out = String::from_utf8_lossy(&o.stdout);
-            if out.trim().is_empty() {
-                "(no output)".to_string()
-            } else if out.len() > 3000 {
-                format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
-            } else {
-                out.to_string()
-            }
-        }
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            let out = String::from_utf8_lossy(&o.stdout);
-            format!("{} {}", out.trim(), err.trim())
-        }
-        Err(e) => format!("Error (git not available?): {e}"),
-    }
 }
 
 // ── Git Status ──
@@ -80,7 +52,7 @@ impl Tool for GitStatusTool {
             Ok(p) => p,
             Err(e) => return format!("Error: {e}"),
         };
-        run_git(&expanded, &["status", "--short", "--branch"])
+        run_git_names(&expanded, &["status", "--short", "--branch"])
     }
 }
 
@@ -168,9 +140,9 @@ impl Tool for GitDiffTool {
         };
 
         if staged {
-            run_git(&expanded, &["diff", "--cached", "--stat"])
+            run_git_stat(&expanded, &["diff", "--cached"])
         } else {
-            run_git(&expanded, &["diff", "--stat"])
+            run_git_stat(&expanded, &["diff"])
         }
     }
 }
@@ -356,7 +328,7 @@ impl Tool for GitCommitTool {
             }
         }
 
-        run_git(&expanded, &["commit", "-m", message])
+        run_git_names(&expanded, &["commit", "-m", message])
     }
 }
 
@@ -404,12 +376,13 @@ impl Tool for GitShowTool {
             return "Error: invalid commit ref (only alphanumeric, ^, ~ allowed)".to_string();
         }
 
-        let out = run_git(&expanded, &["show", "--stat", commit]);
-        if out.len() > 3000 {
-            format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
-        } else {
-            out
+        // `git show` prints the contents of a blob or a tree as it prints a commit's changes; a
+        // blob id of a protected file reads it with no name in sight. Only a commit is shown
+        // (review M2).
+        if !super::git_run::is_a_commit(&expanded, commit) {
+            return format!("Error: {commit} is not a commit");
         }
+        run_git_stat(&expanded, &["show", commit])
     }
 }
 
@@ -457,7 +430,7 @@ impl Tool for GitStashTool {
         };
 
         match action {
-            "push" | "pop" | "list" => run_git(&expanded, &["stash", action]),
+            "push" | "pop" | "list" => run_git_names(&expanded, &["stash", action]),
             _ => format!("Error: invalid stash action '{}' (use push, pop, or list)", action),
         }
     }
@@ -502,12 +475,12 @@ impl Tool for GitDiffFileTool {
             Err(e) => return format!("Error: {e}"),
         };
 
-        let out = run_git(&expanded, &["diff", "--", file]);
-        if out.len() > 3000 {
-            format!("{}...\n(truncated, {} chars)", &out[..out.floor_char_boundary(3000)], out.len())
-        } else {
-            out
+        // The repository was checked above; the file is checked as a path of its own, and as the
+        // names git would diff for it (#1247).
+        if let Err(e) = validate_path(&format!("{expanded}/{file}")).and_then(|_| super::git_secrets::check_pathspec(&expanded, file)) {
+            return format!("Error: {e}");
         }
+        run_git(&expanded, &["diff", "--no-renames", "--", file])
     }
 }
 

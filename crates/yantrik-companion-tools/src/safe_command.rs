@@ -34,16 +34,15 @@ pub const PROGRAMS: &[&str] = &[
 const READS_CONTENT: &[&str] = &["cat", "head", "tail", "grep", "sort", "diff", "wc", "file", "sha256sum", "md5sum"];
 
 /// Places a program that prints file contents is never given, beside the desktop's shared list
-/// (`BLOCKED_SEGMENTS`): the vendors' sign-in files, the Minds panel's account directories, and
-/// `/proc`, where `self/environ` is the environment with its keys.
+/// (`BLOCKED_SEGMENTS`, and the browser profiles and secret file names of `home_paths`): the
+/// vendors' sign-in files, the Minds panel's account directories, and `/proc`, where
+/// `self/environ` is the environment with its keys.
 const ALSO_PROTECTED: &[&str] = &[
     ".claude/.credentials.json", ".codex/auth.json", ".gemini/oauth_creds.json", ".qwen/oauth_creds.json",
     ".grok/auth.json", ".local/share/yantrik/accounts", ".netrc", ".git-credentials", ".docker/config.json",
     ".aws/credentials", ".kube/config", "/proc/", "/etc/shadow", "/etc/gshadow", "/etc/sudoers",
     ".config/gh/", ".npmrc", ".cargo/credentials", ".pgpass", ".pypirc", ".local/share/keyrings/",
-    ".password-store/", ".mozilla/", ".config/chromium/", ".config/google-chrome/", ".config/BraveSoftware/",
-    ".var/app/com.google.Chrome/", ".var/app/org.chromium.Chromium/", ".var/app/com.brave.Browser/",
-    "snap/chromium/", "snap/firefox/", "/sys/", "/dev/",
+    ".password-store/", "/sys/", "/dev/",
 ];
 
 /// Whether `path` is, or leads into, a place no content may be read from — as written, and again
@@ -161,7 +160,9 @@ struct Allowed {
 fn allowed(program: &str) -> Option<Allowed> {
     let a = |flags, valued, long, long_valued| Some(Allowed { flags, valued, long, long_valued });
     match program {
-        "ls" => a("alhrtSRdF1", "", &["--all", "--human-readable", "--reverse", "--recursive", "--directory", "--classify"], &[]),
+        // No -F or --classify: they print `*`, `/`, `@` after a name, and a listing filter that has to
+        // know every decoration is one that misses the next (#1247, review M2).
+        "ls" => a("alhrtSRd1", "", &["--all", "--human-readable", "--reverse", "--recursive", "--directory"], &[]),
         "cat" => a("nbEsAT", "", &["--number", "--show-all"], &[]),
         "head" | "tail" => a("q", "nc", &["--quiet"], &["--lines", "--bytes"]),
         "wc" => a("lwcmL", "", &["--lines", "--words", "--bytes", "--chars"], &[]),
@@ -183,7 +184,10 @@ fn allowed(program: &str) -> Option<Allowed> {
 /// `find`: the paths to look in, then only these tests, each with its one value. Nothing that
 /// runs, writes, deletes or reads a list of names from a file is here to be given.
 const FIND_TESTS: &[&str] = &["-name", "-iname", "-type", "-maxdepth", "-mindepth", "-size", "-mtime", "-mmin"];
-const FIND_ACTIONS: &[&str] = &["-print", "-print0"];
+/// Only `-print`, which ends each name with a newline, the one form the listing filter reads. Not
+/// `-print0`: its NUL-joined names are one "line" to a filter that splits on newlines, and the AI
+/// has no use for the form (#1247, review H1).
+const FIND_ACTIONS: &[&str] = &["-print"];
 
 /// Whether `argv` (already [`expand`]ed) may run, and why not. `home` is the person's home.
 pub fn check(argv: &[String], home: &str) -> Result<(), String> {
@@ -288,12 +292,16 @@ pub fn check(argv: &[String], home: &str) -> Result<(), String> {
             if *p != "-" && !std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false) {
                 return Err(format!("{program} reads regular files only here; {p} is not one"));
             }
+            // A file with a second name may be a protected file under another one (#1247, review M1).
+            if *p != "-" && std::fs::canonicalize(p).is_ok_and(|real| crate::has_second_name(&real)) {
+                return Err(format!("{program} may not read {p}: the file has a second name (a hard link), and the other name may be a place the AI never reads"));
+            }
         }
     }
     Ok(())
 }
 
-/// `find PATH... [TEST VALUE]... [-print|-print0]`, and nothing else.
+/// `find PATH... [TEST VALUE]... [-print]`, and nothing else.
 fn check_find(args: &[String]) -> Result<(), String> {
     let mut i = 0;
     while i < args.len() && !args[i].starts_with('-') {
@@ -310,6 +318,10 @@ fn check_find(args: &[String]) -> Result<(), String> {
             if i + 1 >= args.len() {
                 return Err(format!("find {w} needs a value"));
             }
+            // Looking for a secret by name is asking where it is kept (#1247).
+            if matches!(w, "-name" | "-iname") && yantrik_ipc_contracts::home_paths::pattern_asks_for_a_secret(&args[i + 1]) {
+                return Err(format!("find {w} {}: that name is a file the AI never reads, so it is not searched for", args[i + 1]));
+            }
             i += 2;
         } else if FIND_ACTIONS.contains(&w) {
             i += 1;
@@ -318,6 +330,21 @@ fn check_find(args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The most of stdout and of stderr `run` reads.
+const OUT_CAP: usize = 64 * 1024;
+const ERR_CAP: usize = 16 * 1024;
+
+/// `read`, which was read up to `cap` bytes, as whole lines: when it reached the cap, whatever
+/// follows its last newline is dropped, because a name cut in half is no name the filters know
+/// (review L4), and a line says so (review R5-L3). A pipe that ended before the cap is kept whole.
+fn whole_lines(mut read: Vec<u8>, cap: usize) -> Vec<u8> {
+    if read.len() >= cap {
+        read.truncate(read.iter().rposition(|&b| b == b'\n').map_or(0, |at| at + 1));
+        read.extend(format!("[output cut at {} KiB]\n", cap / 1024).bytes());
+    }
+    read
 }
 
 /// Run `argv`, directly, with a plain environment, no input and a time limit. Answers stdout and
@@ -338,12 +365,12 @@ pub fn run(argv: &[String]) -> Result<(String, String), String> {
     let mut err = child.stderr.take().unwrap();
     let reader = std::thread::spawn(move || {
         let mut o = Vec::new();
-        let _ = (&mut out).take(64 * 1024).read_to_end(&mut o);
+        let _ = (&mut out).take(OUT_CAP as u64).read_to_end(&mut o);
         o
     });
     let ereader = std::thread::spawn(move || {
         let mut e = Vec::new();
-        let _ = (&mut err).take(16 * 1024).read_to_end(&mut e);
+        let _ = (&mut err).take(ERR_CAP as u64).read_to_end(&mut e);
         e
     });
     let start = Instant::now();
@@ -359,8 +386,8 @@ pub fn run(argv: &[String]) -> Result<(String, String), String> {
             Err(e) => return Err(format!("Failed to run command: {e}")),
         }
     }
-    let o = reader.join().unwrap_or_default();
-    let e = ereader.join().unwrap_or_default();
+    let o = whole_lines(reader.join().unwrap_or_default(), OUT_CAP);
+    let e = whole_lines(ereader.join().unwrap_or_default(), ERR_CAP);
     Ok((String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned()))
 }
 
