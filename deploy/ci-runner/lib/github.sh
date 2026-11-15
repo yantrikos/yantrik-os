@@ -167,42 +167,69 @@ runner_busy() {
 
 # --- the job the runner took ----------------------------------------------------------------
 
-JOB_VERDICT=
-# check_job: find the job this runner took through the public API, which a workflow cannot
-# influence (R1: the hook alone could be bypassed through BASH_ENV). Returns 0 admitted,
-# 1 refused, 2 not found (yet). It requires ci.yml, the job `test`, an event that is a push, a
-# manual run or a pull request, and a head repository that is $REPO itself. Sets JOB_VERDICT.
-check_job() {
-  local runs rids rid jobs verdict
-  JOB_VERDICT=
-  api GET "repos/$REPO/actions/runs?status=in_progress&per_page=100" || return 2
+JOB_RUN="" JOB_WF="" JOB_NAME="" JOB_EVENT="" JOB_HEAD="" JOB_VERDICT=""
+
+# find_job QUERY: list runs with that query (`status=in_progress&per_page=100`, or the newest
+# `per_page=30`), then each run's jobs, and stop at the job whose runner_name is this runner. A
+# workflow cannot set runner_name. Sets JOB_RUN, JOB_WF, JOB_NAME, JOB_EVENT and JOB_HEAD. Returns
+# 0 found, 2 not found (or GitHub unreachable). Nothing from the API goes through the environment
+# or a command line (M1): the run list is reduced to four short fields per run, on stdin.
+find_job() {
+  local runs rid path event head jname
+  api GET "repos/$REPO/actions/runs?$1" || return 2
   [ "$API_CODE" = 200 ] || return 2
-  runs=$API_BODY
-  rids=$(json_get "' '.join(str(r['id']) for r in d.get('workflow_runs', []))" "$runs")
-  for rid in $rids; do
+  runs=$(json_get "'\n'.join('%s|%s|%s|%s' % (r['id'], r.get('path') or '', r.get('event') or '', (r.get('head_repository') or {}).get('full_name') or '') for r in d.get('workflow_runs', []))")
+  while IFS='|' read -r rid path event head; do
+    [[ $rid =~ ^[0-9]+$ ]] || continue
     api GET "repos/$REPO/actions/runs/$rid/jobs?per_page=100" || continue
     [ "$API_CODE" = 200 ] || continue
-    jobs=$API_BODY
-    verdict=$(RUNS_JSON=$runs RID=$rid RUNNER=$RUNNER_NAME REPO_FULL=$REPO python3 -c '
-import json, os, sys
-jobs = json.load(sys.stdin).get("jobs", [])
-mine = [j for j in jobs if j.get("runner_name") == os.environ["RUNNER"]]
-if not mine:
-    print("none"); sys.exit()
-run = next(r for r in json.loads(os.environ["RUNS_JSON"])["workflow_runs"] if str(r["id"]) == os.environ["RID"])
-path = (run.get("path") or "").split("@")[0]
-head = (run.get("head_repository") or {}).get("full_name")
-bad = []
-if path != ".github/workflows/ci.yml": bad.append("workflow " + path)
-if mine[0].get("name") != "test": bad.append("job " + str(mine[0].get("name")))
-if run.get("event") not in ("push", "workflow_dispatch", "pull_request"): bad.append("event " + str(run.get("event")))
-if head != os.environ["REPO_FULL"]: bad.append("head repository " + str(head))
-print("refuse: " + "; ".join(bad) if bad else "admit")
-' <<< "$jobs" 2> /dev/null) || verdict=none
-    case $verdict in
-      admit) JOB_VERDICT="run $rid"; return 0 ;;
-      refuse*) JOB_VERDICT="run $rid ${verdict#refuse: }"; return 1 ;;
-    esac
-  done
+    jname=$(json_get "next((chr(35) + (j.get('name') or '') for j in d.get('jobs', []) if j.get('runner_name') == '$RUNNER_NAME'), None)")
+    [ -n "$jname" ] || continue
+    JOB_RUN=$rid JOB_WF=${path%%@*} JOB_NAME=${jname#\#} JOB_EVENT=$event JOB_HEAD=$head
+    return 0
+  done <<< "$runs"
   return 2
+}
+
+# job_verdict: is the job found by find_job one this runner may take? It must be ci.yml's job
+# `test`, from a push, a manual run or a pull request, with a head repository that is $REPO itself.
+# Sets JOB_VERDICT to the reasons when it is not. Returns 0 admitted, 1 refused.
+job_verdict() {
+  local bad=()
+  [ "$JOB_WF" = ".github/workflows/ci.yml" ] || bad+=("workflow ${JOB_WF:-?}")
+  [ "$JOB_NAME" = test ] || bad+=("job ${JOB_NAME:-?}")
+  case $JOB_EVENT in push | workflow_dispatch | pull_request) ;; *) bad+=("event ${JOB_EVENT:-?}") ;; esac
+  [ "$JOB_HEAD" = "$REPO" ] || bad+=("head repository ${JOB_HEAD:-?}")
+  JOB_VERDICT=
+  [ "${#bad[@]}" -eq 0 ] || { local IFS=';'; JOB_VERDICT="${bad[*]}"; return 1; }
+  return 0
+}
+
+# job_audit_line: the audit record of a job, one line, for every job (M2).
+job_audit_line() {
+  printf 'audit: runner %s ran run %s: workflow %s, job %s, event %s, head %s' \
+    "$RUNNER_NAME" "$JOB_RUN" "${JOB_WF:-?}" "${JOB_NAME:-?}" "${JOB_EVENT:-?}" "${JOB_HEAD:-?}"
+}
+
+# check_job: while the job runs. Returns 0 admitted, 1 refused (JOB_VERDICT says why), 2 not
+# found yet.
+check_job() {
+  find_job "status=in_progress&per_page=100" || return 2
+  job_verdict
+}
+
+# audit_job: when the runner has exited with no verdict (a job shorter than a poll): look the job
+# up among the newest runs. Logs the audit line, and a loud one if the job was not allowed.
+# Returns 0 admitted or nothing to say, 1 if it was a job this runner must not have taken.
+audit_job() {
+  if ! find_job "per_page=30"; then
+    log "audit: runner $RUNNER_NAME: no job of this runner found among the newest runs"
+    return 0
+  fi
+  if job_verdict; then
+    log "$(job_audit_line) (admitted)"
+    return 0
+  fi
+  log "VIOLATION: $(job_audit_line): $JOB_VERDICT; it had already finished"
+  return 1
 }

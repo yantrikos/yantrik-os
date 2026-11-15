@@ -71,27 +71,22 @@ pool_ok() {
   return 1
 }
 
-# --- the host-side filter (R3) ---------------------------------------------------------------
+# --- the host-side filter (R3, H1) -----------------------------------------------------------
 
-# Load /usr/local/lib/yantrik-ci/host-egress.nft: a `table bridge yantrik_ci` that matches only
-# frames entering the bridge from a clone's port (veth96*). The node's DNS servers and its
-# default gateway are read here; our own public addresses come from /etc/yantrik-ci/own-public-ips.
-# Returns non-zero, and the caller refuses the clone, if any of it is missing.
-host_filter_load() {
-  local res gw own pre
-  res=$(awk '/^nameserver[ \t]/ {print $2}' /etc/resolv.conf | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | paste -sd, - | sed 's/,/, /g')
-  gw=$(ip -4 route show default | awk '{print $3; exit}')
-  own=$(grep -vE '^[[:space:]]*(#|$)' "$OWN_PUBLIC_FILE" 2> /dev/null | paste -sd, - | sed 's/,/, /g')
-  if [ -z "$res" ] || [ -z "$gw" ] || [ -z "$own" ]; then
-    log "host filter: need the node's resolvers (${res:-none}), gateway (${gw:-none}) and $OWN_PUBLIC_FILE (${own:-empty})"
-    return 1
-  fi
+# host_filter_render RESOLVERS GATEWAY NODEIP OWN: load host-egress.nft with those values (comma
+# lists, IPv4). Atomic: the table is replaced in one `nft -f`. The sets start empty; clones are
+# added by host_filter_add_clone.
+host_filter_render() {
+  local res=$1 gw=$2 nodeip=$3 own=$4 pre
   [ -f "$LIB_DIR/host-egress.nft" ] || { log "host filter: $LIB_DIR/host-egress.nft is missing"; return 1; }
+  trusted_path "$LIB_DIR/host-egress.nft" || return 1
   pre=$(mktemp "$RUN_DIR/hostnft.XXXXXX")
   {
-    printf 'define resolvers = { %s }\n' "$res"
-    printf 'define ownpub = { %s }\n' "$own"
+    printf 'define resolvers = { %s }\n' "${res//,/, }"
+    printf 'define ownpub = { %s }\n' "${own//,/, }"
     printf 'define gateway = %s\n' "$gw"
+    printf 'define nodeip = %s\n' "$nodeip"
+    printf 'define arpguard = { %s, %s, %s }\n' "$gw" "${res//,/, }" "$nodeip"
     printf 'include "%s/host-egress.nft"\n' "$LIB_DIR"
   } > "$pre"
   if ! nft -f "$pre" 2> /dev/null; then rm -f "$pre"; log "host filter: nft refused the ruleset"; return 1; fi
@@ -99,17 +94,68 @@ host_filter_load() {
   host_filter_ok
 }
 
-# Is the filter in place, and does it still drop what it should?
-host_filter_ok() {
-  local fwd inp
-  fwd=$(nft list chain bridge yantrik_ci forward 2> /dev/null) || { log "host filter: the table is not loaded"; return 1; }
-  inp=$(nft list chain bridge yantrik_ci input 2> /dev/null) || { log "host filter: the table is not loaded"; return 1; }
-  if grep -q 'iifname != "veth96\*" accept' <<< "$fwd" && grep -q 'ether type != ip drop' <<< "$fwd" &&
-    grep -q '192.168.0.0/16' <<< "$fwd" && grep -q 'counter packets [0-9]* bytes [0-9]* drop' <<< "$inp"; then
-    return 0
+# host_filter_load: the same with the node's own values: its DNS servers, default gateway, vmbr0
+# address, and our own public addresses from $OWN_PUBLIC_FILE. Returns non-zero, and the caller
+# refuses the clone, if any of it is missing or not root's alone.
+host_filter_load() {
+  local res gw nodeip own
+  trusted_path "$(dirname "$OWN_PUBLIC_FILE")" && trusted_path "$OWN_PUBLIC_FILE" || return 1
+  res=$(awk '/^nameserver[ \t]/ {print $2}' /etc/resolv.conf | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | paste -sd, -)
+  gw=$(ip -4 route show default | awk '{print $3; exit}')
+  nodeip=$(ip -4 -o addr show "${NODE_BRIDGE:-vmbr0}" | awk '{sub(/\/.*/, "", $4); print $4; exit}')
+  own=$(grep -vE '^[[:space:]]*(#|$)' "$OWN_PUBLIC_FILE" 2> /dev/null | paste -sd, -)
+  if [ -z "$res" ] || [ -z "$gw" ] || [ -z "$nodeip" ] || [ -z "$own" ]; then
+    log "host filter: need the node's resolvers (${res:-none}), gateway (${gw:-none}), address (${nodeip:-none}) and $OWN_PUBLIC_FILE (${own:-empty})"
+    return 1
   fi
-  log "host filter: the table is not what was loaded"
-  return 1
+  host_filter_render "$res" "$gw" "$nodeip" "$own"
+}
+
+# The host-side port name of a clone.
+clone_port() { printf 'veth%si0' "$1"; }
+
+# host_filter_add_clone ID: pin the clone's port and its own MAC (the hwaddr in its net0, from
+# `pct config`). Run after the clone exists and before `pct start`: the veth appears at start, so
+# there is no gap. Fails closed.
+host_filter_add_clone() {
+  local id=$1 mac port
+  mac=$(pct config "$id" 2> /dev/null | sed -n '/^net0:/s/.*hwaddr=\([0-9A-Fa-f:]\{17\}\).*/\1/p')
+  [[ $mac =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { log "CT $id: no MAC in its net0"; return 1; }
+  port=$(clone_port "$id")
+  if ! { nft add element bridge yantrik_ci clone_ports "{ $port }" 2> /dev/null &&
+    nft add element bridge yantrik_ci clone_ok "{ $port . $mac }" 2> /dev/null; }; then
+    log "host filter: cannot pin $port to $mac"
+    return 1
+  fi
+  host_filter_ok "$id"
+}
+
+host_filter_remove_clone() {
+  local id=$1 port mac
+  port=$(clone_port "$id")
+  mac=$(nft list set bridge yantrik_ci clone_ok 2> /dev/null | sed -n "s/.*\"$port\" \\. \\([0-9a-f:]\\{17\\}\\).*/\\1/p" | head -1)
+  [ -z "$mac" ] || nft delete element bridge yantrik_ci clone_ok "{ $port . $mac }" 2> /dev/null || true
+  nft delete element bridge yantrik_ci clone_ports "{ $port }" 2> /dev/null || true
+}
+
+# host_filter_ok [ID]: is the filter in place and still what was loaded; with an id, is that
+# clone pinned? Run before a clone and on every poll while it runs (M4): something on the node
+# (an `nft flush ruleset`, a restart of nftables.service) can remove the table.
+host_filter_ok() {
+  local fwd pre
+  fwd=$(nft list chain bridge yantrik_ci forward 2> /dev/null) || { log "host filter: the table is not loaded"; return 1; }
+  pre=$(nft list chain bridge yantrik_ci prerouting 2> /dev/null) || { log "host filter: the table is not loaded"; return 1; }
+  if ! { grep -q 'iifname != @clone_ports accept' <<< "$fwd" && grep -q 'ether type != ip drop' <<< "$fwd" &&
+    grep -qE '224.0.0.0/3|240.0.0.0/4' <<< "$fwd" && grep -q 'iifname . ether saddr != @clone_ok' <<< "$pre" &&
+    grep -q 'arp saddr ip' <<< "$pre"; }; then
+    log "host filter: the table is not what was loaded"
+    return 1
+  fi
+  if [ -n "${1:-}" ]; then
+    nft get element bridge yantrik_ci clone_ports "{ $(clone_port "$1") }" > /dev/null 2>&1 ||
+      { log "host filter: CT $1 is not pinned"; return 1; }
+  fi
+  return 0
 }
 
 # --- the node's OOM killer -----------------------------------------------------------------------
@@ -126,12 +172,15 @@ ct_oom_first() {
 
 # --- numbers at the end of a job -----------------------------------------------------------
 
-# ct_stats ID: disk used, the memory high-water mark and the oom counts, for the `done` line.
-# Needs the CT still running.
+# ct_stats ID: the memory high-water mark and the oom counts from the host's cgroup files, and the
+# disk the clone has written, from the thin pool (`lvs`). Nothing is run inside the CT: after the
+# runner has started, the CT is hostile and `pct exec` would attach host root to it (M3). Call it
+# before the stop, while the cgroup still exists.
 ct_stats() {
-  local id=$1 used peak oom cg=/sys/fs/cgroup/lxc/$1
-  used=$(timeout 20 pct exec "$id" -- df -BG --output=used / 2> /dev/null | tail -1 | tr -d ' ')
+  local id=$1 cg=/sys/fs/cgroup/lxc/$1 peak oom disk
   peak=$(awk '{printf "%d", $1 / 1048576}' "$cg/memory.peak" 2> /dev/null)
   oom=$(awk '$1 == "oom" || $1 == "oom_kill" {printf "%s=%s ", $1, $2}' "$cg/memory.events" 2> /dev/null)
-  printf 'disk used %s, memory.peak %s MiB, %s' "${used:-?}" "${peak:-?}" "${oom:-oom counts ?}"
+  disk=$(LC_ALL=C lvs --noheadings --nosuffix --units g -o lv_size,data_percent "${POOL%/*}/vm-$id-disk-0" 2> /dev/null |
+    awk '{printf "%.0fG of %.0fG", $1 * $2 / 100, $1}')
+  printf 'disk written %s, memory.peak %s MiB, %s' "${disk:-?}" "${peak:-?}" "${oom:-oom counts ?}"
 }

@@ -11,7 +11,7 @@ Release and nightly ISO builds (iso.yml: build, sign, publish) always run on Git
 GitHub's 16 GB runners lost the `test` job about half the time, with no log. Pranab decided
 (15 Nov) to run it on node2. The first attempt was one long-lived runner on the build host
 (CT 530); the security review of PR #1252 rejected that (round 1, comment 6888810312). Rounds 2
-(6889527314) and 3 (6891217309) found what the throwaway design still had to close.
+(6889527314), 3 (6891217309) and 4 (6892879091) found what the throwaway design still had to close.
 
 | Review id | Finding | Answer here |
 |---|---|---|
@@ -32,6 +32,9 @@ GitHub's 16 GB runners lost the `test` job about half the time, with no log. Pra
 | R4 | A job can fill the thin pool | Pool gate before every clone (free space at least rootfs + 20%, metadata below 80%); rootfs 80 GB, sized from the measured peak; `df` logged per job. |
 | R6 | The job's kernel surface | Not changed by this PR; see "Kernel". |
 | R7-R15 | Prune per cycle; fail closed on a widened group; DHCP rule; own public addresses; `--description`; recheck before recycling; re-armed sweep; netns proof; `self-hosted` label | All done, see the sections below. |
+| H1 (r4) | The host filter was L3 only: CT root could spoof its MAC, ARP the LAN, broadcast a rogue DHCP offer | `prerouting` chain before the bridge learns the MAC, per-clone pins, broadcast/reserved drops, DHCP rate limit (below); proved on an isolated bridge. |
+| M1-M4 (r4) | API body in the environment; slow job check; `pct exec` into a hostile CT; filter not re-checked | No API body in the environment or on a command line; 10 s poll, job looked up by `runner_name`, post-hoc audit; host-cgroup stats and `lvs`, `pct stop` first; `host_filter_ok` on every poll. |
+| L1-L5 (r4) | oom write fail-open; `veth96*`; unchecked libs; recycle on API error; table lingers | Fatal oom write and a `ci.yml` check; exact port set; run-time ownership checks; recycle only on a clear "not busy"; "Stop CI" removes the table. |
 | L1-L4 | token in `.git/config`, `head.repo.fork`, toolchain, stale comment | `persist-credentials: false`, `!head.repo.fork`, baked-in toolchain plus a `rustc` check, comment deleted. |
 
 ### Repository settings (checked by Y on 15 Nov)
@@ -92,34 +95,71 @@ loopback. Input drops everything but replies. The rules load before the `runner`
 they do not load and verify, no runner starts. Filtering is by address, not by name: "443 to the
 public internet" is the realistic limit.
 
-### The host-side filter (R3, R10)
+### The host-side filter (R3, R10, H1)
 
-`host/host-egress.nft` is a `table bridge yantrik_ci` that matches only frames entering `vmbr0` from
-a port named `veth96*`, the host side of a clone. Every other guest, CT 530 included, takes the
-first rule and is untouched (proved by `check-host-filter.sh`, which also reads CT 530 once,
-read-only). It lets a clone use ARP, DHCP, the node's resolvers and IPv4 to the public internet;
-it drops everything else: private, CGNAT, link-local, multicast and loopback destinations, our own
-public addresses (hairpin NAT would reach the router's admin page), frames for the node itself, and
-all non-IPv4 frames. The controller loads it before every clone. It does not depend on the CT's
-root: a job that flushes the CT's own rules still meets it. It uses no cluster firewall.
+`host/host-egress.nft` is a `table bridge yantrik_ci` that matches only frames entering a bridge from
+a port in its `clone_ports` set. The controller adds the running clone's exact port (`veth<ID>i0`) and
+its own MAC (the `hwaddr` of its `net0`, from `pct config`) after the clone exists and before
+`pct start`, and removes them when the CT ends, so the table matches nothing between jobs. Every other
+port, guest and CT 530 included, takes the first rule of each chain and is untouched. It uses no
+cluster firewall.
+
+- **`prerouting` (priority -200, before the bridge learns the source MAC):** a frame from a clone must
+  carry the clone's own MAC; an ARP sender must be that MAC; ARP that claims the gateway, the
+  resolvers or the node's `vmbr0` address is dropped; DHCP client requests are rate-limited (10 a
+  minute) here, where a frame is seen once. A limit in `forward` starves the real client, because a
+  broadcast is seen there once per port it floods to.
+- **`forward`:** ARP, DHCP (to the gateway or broadcast), and DNS to the node's resolvers pass; IPv6
+  and every non-IPv4 frame, private, CGNAT, link-local, multicast, loopback, broadcast and reserved
+  (`0.0.0.0/8`, `240.0.0.0/4`) destinations and our own public addresses (hairpin NAT would reach the
+  router's admin page) are dropped; the rest is the public internet.
+- **`input`:** frames for the node itself (its API, its ssh) are dropped, ARP excepted.
+
+The controller loads the table before every clone, pins the clone, and checks the table (and the pin)
+on every poll while the job runs; if it is gone (`nft flush ruleset`, a restart of `nftables.service`)
+it ends the CT. **Do not enable `nftables.service` on node2 with a `flush ruleset` configuration**
+(Debian's default `/etc/nftables.conf`): a restart removes the table, and the controller then ends the
+running job.
+
+`check-host-filter.sh` proves it, with the controller stopped. Phase 1, on `vmbr0`, L3 only: the node's
+API and any port, CT 530, the gateway and our own public addresses are refused; GitHub and DNS work;
+CT 530 is read once, read-only, and its port is not in the set. Phase 2 sends the spoofs on an isolated
+bridge `vmbr-yci-test` (no uplink, no other port, a dummy gateway in a netns), never on the real LAN: as
+CT root, with no CT rules, the clone takes the gateway's MAC, claims the gateway's address with ARP, and
+broadcasts a rogue DHCP offer. Each is run with the filter off (the attack works) and on (the gateway's
+entry stays on its own port in `bridge fdb`, the node's neighbour entry keeps the gateway's MAC, the
+offer never arrives, a real DHCP request still does). The bridge, netns, clone and table are removed at
+the end.
 
 ### The job check (R1)
 
 The hook is a bash script, and a non-interactive bash expands `BASH_ENV` before it runs the script;
 whether a workflow's `env:` reaches the hook process is unproven. So the controller does not rely on
-it. When GitHub reports the runner busy, the controller finds the runner's job through the public
-API (`runs?status=in_progress`, then each run's jobs, picking `runner_name == this runner`) and
-requires: workflow `.github/workflows/ci.yml`, job `test`, event `push`, `workflow_dispatch` or
-`pull_request`, and head repository `yantrikos/yantrik-os` itself. Anything else, or a job that
-cannot be found in two looks, ends the CT at once and is logged as `REFUSING the job`.
+it. Every 10 seconds it asks GitHub whether the runner is busy; once it is, it finds the runner's job
+through the public API (`runs?status=in_progress`, then each run's jobs, picking
+`runner_name == this runner`) and requires: workflow `.github/workflows/ci.yml`, job `test`, event
+`push`, `workflow_dispatch` or `pull_request`, and head repository `yantrikos/yantrik-os` itself.
+Anything else, or a job that cannot be found in two looks, ends the CT at once and is logged as
+`REFUSING the job`. Nothing from the API goes through the environment or a command line (a run list of
+10 or more runs is over the 128 KiB limit of one environment string): the run list is reduced to four
+short fields per run. If the runner exits before the first poll (a short job), the controller looks the
+job up afterwards among the newest runs. Every job leaves an `audit:` line with the run id, workflow,
+job, event and head repository, and a job that ran and should not have is logged as `VIOLATION`.
 
 **The `BASH_ENV` probe** is the first real job. Branch `scratch/1234-hook-env-probe` (not for merge)
 changes `ci.yml` so that `test` does no build and the workflow sets
 `BASH_ENV: '$(echo yantrik-probe-hook-env >&2)'`. Run it with
-`gh workflow run ci.yml --ref scratch/1234-hook-env-probe` and read "Set up job" in the log. If
-`yantrik-probe-hook-env` appears there, workflow env reaches the hook and the controller's check is
-the boundary; if not, the hook's environment is the runner's alone. Result: **not run yet**. Record
-it here. Until then, never approve a fork run whose diff touches `.github/`.
+`gh workflow run ci.yml --ref scratch/1234-hook-env-probe` and read "Set up job" in the log. The
+absence of `yantrik-probe-hook-env` proves something only if the same step also shows "A job started
+hook has been configured by the self-hosted runner administrator". Also confirm `job admitted` in
+`controller.log`. If the string appears, workflow env reaches the hook, nothing in a bash hook can stop
+it, and the controller's check is the only boundary. Result: **not run yet**. Record it here. Until
+then, never approve a fork run whose diff touches `.github/`.
+
+**The refusal drill** comes after it. Branch `scratch/1234-refusal-drill` (not for merge) renames the
+job to `test2` on the throwaway runner; run it with `gh workflow run ci.yml --ref scratch/1234-refusal-drill`.
+Expect the hook's `::error::yantrik-build refuses this job` and the controller's
+`REFUSING the job ... job test2` within one poll, and the CT gone. Result: **not run yet**.
 
 ### Capacity
 
@@ -205,12 +245,13 @@ A runner too old for GitHub tries to update itself and cannot; the job then fail
 controller backs off. Rebuilding is the fix. Moving Rust is a PR of its own and must change
 `RUST_VERSION` in `make-template.sh` and the `grep` in `ci.yml` with it.
 
-**Prove the host filter** (controller stopped): `bash /root/ci-runner/check-host-filter.sh`.
+**Prove the host filter** (controller stopped, no CT in 9600-9699): `bash /root/ci-runner/check-host-filter.sh 9698`.
 
 **Stop CI from using the host** (the `test` job then waits for a runner; switch its `runs-on` back to
 `ubuntu-24.04` if it must run meanwhile):
 
     systemctl disable --now yantrik-ci-controller
+    nft delete table bridge yantrik_ci      # the host filter lingers harmlessly otherwise
 
 **Read the logs**
 
@@ -219,8 +260,9 @@ controller backs off. Rebuilding is the fix. Moving Rust is a PR of its own and 
     ls /var/log/yantrik-ci/runs/                   # each runner's own output, 50 MB cap, 30 days
 
 One line per event: `cycle`, `cloned`, `running`, `took a job`, `job admitted` or `REFUSING`, and
-`done` with the CT id, the runner name, times, the job's exit code (124 is the limit) and
-`disk used, memory.peak, oom counts`. `pct list` shows the CT of a job in flight (9600-9699); there
+`audit` with the job, and `done` with the CT id, the runner name, times, the job's exit code (124 is
+the limit) and `disk written, memory.peak, oom counts` (read from the host's cgroup and the thin pool;
+nothing is run inside the CT after the runner has started). `pct list` shows the CT of a job in flight (9600-9699); there
 should be none when idle.
 
 ## Known limits

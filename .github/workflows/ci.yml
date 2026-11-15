@@ -168,6 +168,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: |
           rustc --version | grep -q '^rustc 1.92.0 '
+          test "$(cat /proc/self/oom_score_adj)" = 1000 # the controller made this CT the node's first OOM victim
           cargo build --workspace --locked -j 24
           cargo test --workspace --locked -j 24 --no-fail-fast
 

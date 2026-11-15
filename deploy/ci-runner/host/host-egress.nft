@@ -1,24 +1,43 @@
-# Host-side egress filter for the CI clones (#1252 review R3). Loaded on the node by the
-# controller before every clone (lib/host.sh), which refuses to clone if it is not in place.
-# It is the layer that does not depend on the CT's own root: a job that reaches root inside its
-# CT and flushes the CT's rules still meets this one.
+# Host-side egress filter for the CI clones (#1252 reviews R3, H1). Loaded on the node by the
+# controller before every clone (lib/host.sh), which refuses to clone if it is not in place. It is
+# the layer that does not depend on the CT's own root: a job that reaches root inside its CT and
+# flushes the CT's rules still meets this one, at L2 as well as L3.
 #
-# It matches ONLY frames that enter the bridge from a port named veth96*, which is the host side
-# of a clone in 9600-9699 (veth<ID>i0). Every other guest, CT 530 included, takes the first
-# rule and is untouched. `$resolvers` (the node's DNS servers), `$ownpub` (our own public
-# addresses) and `$gateway` (the DHCP server) are defined by the loader.
+# It matches ONLY frames entering a bridge from a port in `clone_ports`, which holds the exact host
+# side name of the running clone (veth<ID>i0) and nothing between jobs; every other port, guest and
+# CT 530 included, takes the first rule of each chain. `$resolvers`, `$ownpub`, `$gateway`, `$nodeip`
+# and `$arpguard` are defined by the loader. The controller adds the clone to `clone_ports` and to
+# `clone_ok` (its port and its own MAC, from `pct config`) after the clone and before `pct start`.
 #
-# A clone may: use ARP, ask DHCP for its lease, ask the node's resolvers for names, and send
-# IPv4 to the public internet. It may not send to private, CGNAT, link-local, multicast or
-# loopback addresses, to our own public addresses, to the node itself, or anything but IPv4.
+# A clone may: use ARP (as its own MAC, and never for the gateway, the resolvers or the node's
+# address), ask DHCP for its lease (at most a few times a minute), ask the node's resolvers for names, and send
+# IPv4 to the public internet. It may not: send with another MAC (which would poison the bridge's
+# forwarding table), send to private, CGNAT, link-local, multicast, loopback, broadcast or reserved
+# destinations, to our own public addresses, to the node itself, or anything but IPv4.
 
 table bridge yantrik_ci
 delete table bridge yantrik_ci
 
 table bridge yantrik_ci {
+  set clone_ports { type ifname; }
+  set clone_ok { type ifname . ether_addr; }
+
+  # Before the bridge learns the source MAC (br_handle_frame_finish runs after this hook).
+  chain prerouting {
+    type filter hook prerouting priority -200; policy accept;
+    iifname != @clone_ports accept
+    iifname . ether saddr != @clone_ok counter drop
+    ether type arp iifname . arp saddr ether != @clone_ok counter drop
+    ether type arp arp saddr ip $arpguard counter drop
+    # DHCP starvation: a client asks a few times a minute. The limit sits here, where a frame is seen
+    # once; in `forward` a broadcast is seen once per port it floods to, and a limit there starves
+    # the legitimate client too.
+    udp sport 68 udp dport 67 limit rate over 10/minute burst 5 packets counter drop
+  }
+
   chain forward {
     type filter hook forward priority filter; policy accept;
-    iifname != "veth96*" accept
+    iifname != @clone_ports accept
     ether type arp accept
     ether type != ip drop
     ip daddr { 255.255.255.255, $gateway } udp sport 68 udp dport 67 accept
@@ -26,14 +45,15 @@ table bridge yantrik_ci {
     ip daddr $resolvers tcp dport 53 accept
     ip daddr $ownpub counter drop
     ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10,
-               169.254.0.0/16, 224.0.0.0/4, 127.0.0.0/8 } counter drop
+               169.254.0.0/16, 224.0.0.0/4, 127.0.0.0/8,
+               255.255.255.255/32, 0.0.0.0/8, 240.0.0.0/4 } counter drop
     accept
   }
 
   # Frames for the node itself (its API, its ssh): a clone never talks to the node.
   chain input {
     type filter hook input priority filter; policy accept;
-    iifname != "veth96*" accept
+    iifname != @clone_ports accept
     ether type arp accept
     counter drop
   }
