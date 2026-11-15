@@ -36,6 +36,7 @@ cleanup() {
 trap cleanup EXIT
 sleep 1
 export YANTRIK_CI_API=http://127.0.0.1:8099 YANTRIK_CI_TOKEN_FILE=$T/token YANTRIK_CI_BACKOFF_MIN=5 YANTRIK_CI_POLL=5
+export YANTRIK_CI_MIN_MEM_KB=8388608 # the 40 GB gate is the node's business, not under test here (test 9 has its own floor)
 export YANTRIK_CI_CLONE_NET=$T/clone-net YANTRIK_CI_BRIDGE=$TB NODE_BRIDGE=$TB YANTRIK_CI_GATEWAY=10.77.0.1
 
 fails=0
