@@ -169,9 +169,9 @@ jobs:
           . "$HOME/.cargo/env"
           rustc --version
           # A fresh temp dir per run: the host's /tmp holds other users' leftover test files,
-          # and a test that reuses a fixed name there meets a folder it cannot write.
-          export TMPDIR="/build/ci-runner/tmp/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          rm -rf "$TMPDIR" && mkdir -p "$TMPDIR"
+          # and a test that reuses a fixed name there meets a folder it cannot write. It is kept
+          # short: tests bind Unix sockets inside it, and a socket path stops at 108 bytes.
+          export TMPDIR="$(mktemp -d /tmp/g.XXXX)"
           trap 'rm -rf "$TMPDIR"' EXIT
           flock -w 5400 /build/locks/yantrik-ui.lock bash -c '
             cargo build --workspace --locked -j 8 &&
