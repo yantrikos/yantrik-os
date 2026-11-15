@@ -32,11 +32,11 @@ jobs:
   test:
     name: test
     # #1234: GitHub's 16 GB runners kept losing this job mid-build with no log. A branch of this
-    # repository runs on the build host (`yantrik-build`, a runner of its own user and its own
-    # target dir, which queues behind the host's other builds on their shared lock). A pull
-    # request from a fork never does: it runs on GitHub's machine, so no outside code ever runs
-    # on the build host.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
+    # repository runs on `yantrik-build`: a throwaway container that exists for this one job
+    # and is destroyed after it (deploy/ci-runner/, which also says why it is not a standing
+    # runner). A pull request from a fork never does: it runs on GitHub's machine, so no
+    # outside code ever runs on the build host.
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.head.repo.fork)) && fromJSON('["self-hosted","yantrik-build"]') || 'ubuntu-24.04' }}
     # Compiling the test binaries one job at a time (below) took 29 to 40 minutes on the runs
     # measured for it, and a whole green run is then about 57 to 68 minutes (setup and Build
     # about 13, the compile up to 40, Test and the selftest about 15). 90 leaves a slow runner
@@ -45,6 +45,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # On the throwaway runner the job's token is not left in .git/config for the job's
+          # own steps to find. The hosted path is unchanged.
+          persist-credentials: ${{ runner.environment == 'github-hosted' }}
 
       # The engine is a git dependency pinned by revision in Cargo.toml, so there is nothing to
       # check out beside this repository any more. For a week this workflow cloned the engine's
@@ -90,9 +94,8 @@ jobs:
       # The version rust-toolchain.toml pins, the one the nightly ships with, not whatever
       # stable is today: `rustup toolchain install` with no name reads that file.
       - name: Rust toolchain
-        run: |
-          [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-          rustup toolchain install && rustc --version
+        if: runner.environment == 'github-hosted'
+        run: rustup toolchain install && rustc --version
 
       # Slint's macro expansion is the expensive part of this build, so a cache is the
       # difference between a check that runs on every push and one that gets turned off.
@@ -154,28 +157,16 @@ jobs:
           trap 'kill $! 2>/dev/null || true' EXIT
           cargo test --workspace --locked
 
-      # The kernel's direct set for the mind account is read from the person's policy by the
-      # proxy's own code (`yantrik-egress direct`). The updater's selftest runs it on real policy
-      # files here, where it has just been built.
-      # On the build host the whole build and test run under the host's one build lock
-      # (/build/locks/yantrik-ui.lock), so this job never compiles beside another build there:
-      # two at once is what took the host down on 27 and 28 Oct. The target dir is the runner's
-      # own and persists between runs. bubblewrap and the workshops root are set up on the host.
-      - name: Build and test on the build host
+      # The throwaway container (deploy/ci-runner/) has the toolchain, the native libraries and
+      # bubblewrap baked in, root-owned, and the workshops root made. It is fresh for this job,
+      # so there is no lock to take, no shared target dir and no temp dir to clean. The
+      # compiler is checked rather than trusted: a branch may edit rust-toolchain.toml.
+      - name: Build and test on the throwaway runner
         if: runner.environment == 'self-hosted'
-        env:
-          CARGO_TARGET_DIR: /build/ci-runner/target
         run: |
-          . "$HOME/.cargo/env"
-          rustc --version
-          # A fresh temp dir per run: the host's /tmp holds other users' leftover test files,
-          # and a test that reuses a fixed name there meets a folder it cannot write. It is kept
-          # short: tests bind Unix sockets inside it, and a socket path stops at 108 bytes.
-          export TMPDIR="$(mktemp -d /tmp/g.XXXX)"
-          trap 'rm -rf "$TMPDIR"' EXIT
-          flock -w 5400 /build/locks/yantrik-ui.lock bash -c '
-            cargo build --workspace --locked -j 8 &&
-            cargo test --workspace --locked -j 8 --no-fail-fast'
+          rustc --version | grep -q '^rustc 1.92.0 '
+          cargo build --workspace --locked -j 24
+          cargo test --workspace --locked -j 24 --no-fail-fast
 
   # The tree has never been linted, so this reports and does not enforce:
   # continue-on-error means the warnings show up on every pull request without the check

@@ -1,0 +1,21 @@
+[Unit]
+Description=Yantrik throwaway CI runner controller (#1234)
+Documentation=https://github.com/yantrikos/yantrik-os/tree/main/deploy/ci-runner
+After=network-online.target pve-cluster.service pve-guests.service
+Wants=network-online.target
+# No token, no start: the token is put there by hand (README.md, "Rotate the token").
+ConditionPathExists=/root/.yantrik-ci/token
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/yantrik-ci-controller
+Restart=always
+RestartSec=30
+# SIGTERM goes to the controller alone; it stops the runner's CT and destroys it, then exits.
+# Anything still left after the timeout is killed, and the next start destroys the CT.
+KillMode=mixed
+TimeoutStopSec=300
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
