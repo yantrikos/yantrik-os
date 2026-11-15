@@ -197,9 +197,15 @@ PY
 }
 
 # The test mailbox: three messages over IMAP APPEND, or the removal of exactly those. The server is
-# one the runner started on this machine's loopback; a host that is not a loopback address is
-# refused before a connection is made, so a person's own account cannot be reached by a mistake in
-# the environment. Only messages carrying the X-Demo-MB header are ever searched for or removed.
+# one the runner started on this machine's loopback, and the account is the runner's: it must hold
+# the folder `demo-mb-testbox`, which the runner makes when it makes the user. Loopback alone is not
+# "never the person's own account" (Proton Mail Bridge, DavMail and an `ssh -L` tunnel all put a
+# real mailbox on 127.0.0.1), so after login an account without that folder is refused before
+# anything is appended, searched for or removed. A host that is not a loopback address is refused
+# before a connection is made. Only messages carrying the X-Demo-MB header are ever searched for or
+# removed, by UID, and only those UIDs are expunged: a message somebody else flagged \Deleted and
+# has not expunged is not touched, which a plain EXPUNGE would destroy. That needs UIDPLUS; a
+# server without it is refused.
 mailbox() {
   need_python
   [ -n "${MB_IMAP_USER:-}" ] || { echo "no test mailbox: set MB_IMAP_USER (and MB_IMAP_PASS or MB_IMAP_PASS_FILE)" >&2; exit 1; }
@@ -222,7 +228,8 @@ try:
     found = {info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
 except OSError as e:
     fail(f"cannot resolve MB_IMAP_HOST: {e}")
-if not found or not all(ipaddress.ip_address(a.split('%')[0]).is_loopback for a in found):
+addresses = sorted(a.split('%')[0] for a in found)
+if not addresses or not all(ipaddress.ip_address(a).is_loopback for a in addresses):
     fail("MB_IMAP_HOST is not a loopback address; this seeds a test mailbox on this machine only, "
          "never a person's own account")
 
@@ -236,7 +243,8 @@ if not password:
     fail("no password: set MB_IMAP_PASS or MB_IMAP_PASS_FILE")
 
 try:
-    conn = (imaplib.IMAP4_SSL if secure else imaplib.IMAP4)(host, port)
+    # The address that passed the check, not the name resolved a second time.
+    conn = (imaplib.IMAP4_SSL if secure else imaplib.IMAP4)(addresses[0], port)
 except (OSError, imaplib.IMAP4.error) as e:
     fail(f"no IMAP server answers on {host}:{port} ({getattr(e, 'strerror', None) or e}); the runner starts one, this does not")
 try:
@@ -244,22 +252,38 @@ try:
 except imaplib.IMAP4.error:
     fail("the test mailbox refused the login")
 
+MARKER = "demo-mb-testbox"
+try:
+    kind, listed = conn.list('""', f'"{MARKER}"')
+    marked = kind == "OK" and any(listed)
+except imaplib.IMAP4.error:
+    marked = False
+if not marked:
+    fail(f"this account has no folder named {MARKER}, so it is not the runner's test account; "
+         "nothing was read or changed")
+kind, caps = conn.capability()
+if kind != "OK" or b"UIDPLUS" not in b" ".join(c for c in caps if c).upper().split():
+    fail("the server does not offer UIDPLUS, so this script's own messages cannot be expunged alone; "
+         "nothing was changed")
+
 def made(folder):
-    """The message numbers in `folder` this script made, by its header."""
+    """The UIDs in `folder` of the messages this script made, by its header."""
     if conn.select(f'"{folder}"')[0] != "OK":
         return []
-    kind, data = conn.search(None, "HEADER", "X-Demo-MB", "demo-mb")
+    kind, data = conn.uid("SEARCH", None, "HEADER", "X-Demo-MB", "demo-mb")
     return data[0].split() if kind == "OK" and data and data[0] else []
 
 def remove():
     gone = 0
     for folder in ("INBOX", "Sent"):
-        numbers = made(folder)
-        for n in numbers:
-            conn.store(n, "+FLAGS", "(\\Deleted)")
-        if numbers:
-            conn.expunge()
-        gone += len(numbers)
+        uids = made(folder)
+        if not uids:
+            continue
+        wanted = b",".join(uids).decode()
+        # Flag these UIDs and expunge these UIDs: never the folder's other \Deleted messages.
+        if conn.uid("STORE", wanted, "+FLAGS", "(\\Deleted)")[0] != "OK" or conn.uid("EXPUNGE", wanted)[0] != "OK":
+            fail(f"the test mailbox would not remove this script's messages from {folder}")
+        gone += len(uids)
     return gone
 
 def build(n, sender_name, sender, to_name, to, subject, age_days):

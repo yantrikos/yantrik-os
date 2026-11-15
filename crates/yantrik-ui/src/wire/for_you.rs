@@ -12,7 +12,7 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 use yantrik_ipc_contracts::notifications::notice::{self, FeedbackKind};
 use yantrik_ipc_contracts::notifications::{Notification, NOTICE_FEEDBACK, NOTICE_SHOWN};
 
-use super::notifications::{act, forward_to_app, resync, with_mirror, SILENT_SCREENS};
+use super::notifications::{act, resync, with_mirror, SILENT_SCREENS};
 use crate::notice_inbox::{self, Opening, Screen, Toast};
 use crate::{App, InboxState, NoticeCardData, ToastData};
 
@@ -277,10 +277,9 @@ fn open_event(ui: &App, card: &str, event: String, say: Say) {
             .and_then(|e| e["start"].as_str().map(|s| s.chars().take(10).collect::<String>()))
             .filter(|d| d.len() == 10);
         let _ = weak.upgrade_in_event_loop(move |ui| match found {
-            Some(date) => {
-                forward_to_app(&ui, "calendar", "show_date", Some(serde_json::json!({ "date": date })));
-                say(&ui, &card, "");
-            }
+            // Calendar's own answer comes back to the card's line: a Calendar that is stopped and
+            // cannot start says so, and the press is not counted as opened.
+            Some(date) => super::app_act::act(&ui, "calendar", "show_date", serde_json::json!({ "date": date }), &card, say),
             None => say(&ui, &card, "Not opened: Calendar does not know this event."),
         });
     });
@@ -289,4 +288,20 @@ fn open_event(ui: &App, card: &str, event: String, say: Say) {
 /// What `describe shell` says about the inbox.
 pub fn describe() -> serde_json::Value {
     with_mirror(|m| notice_inbox::describe(m.all(), chrono::Utc::now())).unwrap_or_else(|| serde_json::json!({ "count": 0, "unread": 0, "newest": [] }))
+}
+
+#[cfg(test)]
+mod open_event_tests {
+    /// "Open in Calendar" is fire-and-forget through `forward_to_app`, which answers nothing, and the
+    /// card was marked opened before Calendar had said a word. It goes through `app_act::act`,
+    /// which brings Calendar's own answer back to the card's line.
+    #[test]
+    fn open_in_calendar_waits_for_calendars_own_answer() {
+        let source = include_str!("for_you.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let body = code.split("fn open_event(").nth(1).expect("open_event").split("\n}\n").next().unwrap();
+        assert!(body.contains("app_act::act("), "{body}");
+        assert!(!body.contains("forward_to_app"), "{body}");
+        assert!(!code.contains("forward_to_app"), "no card press is fire-and-forget");
+    }
 }
