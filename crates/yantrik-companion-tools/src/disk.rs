@@ -160,7 +160,7 @@ impl Tool for DirSizeTool {
 
         // Total size
         let argv = ["du", "-h", "--max-depth", &depth.to_string(), &expanded].map(String::from);
-        match std::process::Command::new(&argv[0]).args(&argv[1..]).output() {
+        match std::process::Command::new(&argv[0]).args(&argv[1..]).output() { // fixed-program: du
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 // `du` ends with the folder asked about, which was validated: its line is the total.
