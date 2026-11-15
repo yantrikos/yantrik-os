@@ -89,6 +89,8 @@ never on a command line, in an environment variable, or in a log. (bash 5.1 and 
 small here-string through a pipe rather than a temporary file; PVE 8 and 9 have bash 5.2.)
 Logs hold no token and no JIT config.
 
+Release and nightly ISO builds (iso.yml: build, sign, publish) always run on GitHub-hosted runners. The self-hosted runners take only ci.yml's `test` job, and the job-started hook refuses everything else.
+
 ## Operations
 
 Run all of this as root on node2 (`192.168.4.152`).

@@ -206,6 +206,9 @@ printf '{"pull_request":{"head":{"repo":{"full_name":"evil/yantrik-os","fork":tr
 check "hook refuses a fork PR" refused hookrun $base GITHUB_EVENT_NAME=pull_request
 # shellcheck disable=SC2086
 check "hook refuses another workflow" refused hookrun GITHUB_REPOSITORY=yantrikos/yantrik-os GITHUB_WORKFLOW_REF=yantrikos/yantrik-os/.github/workflows/x.yml@refs/heads/main GITHUB_JOB=test GITHUB_EVENT_NAME=push
+check "hook refuses iso.yml (build, sign, publish stay on GitHub)" refused hookrun GITHUB_REPOSITORY=yantrikos/yantrik-os GITHUB_WORKFLOW_REF=yantrikos/yantrik-os/.github/workflows/iso.yml@refs/heads/main GITHUB_JOB=test GITHUB_EVENT_NAME=push
+check "hook refuses iso.yml's own job" refused hookrun GITHUB_REPOSITORY=yantrikos/yantrik-os GITHUB_WORKFLOW_REF=yantrikos/yantrik-os/.github/workflows/iso.yml@refs/heads/main GITHUB_JOB=build GITHUB_EVENT_NAME=workflow_dispatch
+check "hook refuses a scheduled run" refused hookrun $base GITHUB_EVENT_NAME=schedule
 # shellcheck disable=SC2086
 check "hook refuses another job" refused hookrun GITHUB_REPOSITORY=yantrikos/yantrik-os GITHUB_WORKFLOW_REF=yantrikos/yantrik-os/.github/workflows/ci.yml@refs/heads/main GITHUB_JOB=clippy GITHUB_EVENT_NAME=push
 # shellcheck disable=SC2086
