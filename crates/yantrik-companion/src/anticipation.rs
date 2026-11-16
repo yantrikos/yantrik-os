@@ -80,6 +80,8 @@ pub enum PreparedKind {
     DraftReply,
     /// Commitment status summary.
     CommitmentSummary,
+    /// A promised thing carried out: the files found and the email drafted with them attached. Never sent, and nothing opened for the person.
+    CommitmentPrep,
     /// Offline content bundle.
     OfflineBundle,
     /// Workspace suggestion.
@@ -95,6 +97,7 @@ impl PreparedKind {
             Self::StagedFiles => "staged_files",
             Self::DraftReply => "draft_reply",
             Self::CommitmentSummary => "commitment_summary",
+            Self::CommitmentPrep => "commitment_prep",
             Self::OfflineBundle => "offline_bundle",
             Self::WorkspaceSuggestion => "workspace_suggestion",
             Self::ContextSummary => "context_summary",
@@ -106,6 +109,7 @@ impl PreparedKind {
             "staged_files" => Self::StagedFiles,
             "draft_reply" => Self::DraftReply,
             "commitment_summary" => Self::CommitmentSummary,
+            "commitment_prep" => Self::CommitmentPrep,
             "offline_bundle" => Self::OfflineBundle,
             "workspace_suggestion" => Self::WorkspaceSuggestion,
             _ => Self::ContextSummary,
@@ -150,6 +154,10 @@ impl PrepOutcome {
 
 pub struct AnticipationEngine;
 
+/// The columns every query for a [`PreparedItem`] reads, in the order `row_to_item` takes them.
+const ITEM_COLUMNS: &str = "id, trigger_type, trigger_data, kind, description, data,
+                    relevant_at, expires_at, surfaced, outcome, created_at";
+
 impl AnticipationEngine {
     pub fn ensure_table(conn: &Connection) {
         conn.execute_batch(
@@ -173,12 +181,13 @@ impl AnticipationEngine {
         .expect("failed to create prepared_items table");
     }
 
-    /// Store a prepared item.
-    pub fn store(conn: &Connection, item: &PreparedItem) {
+    /// Store a prepared item. `false`, with the reason logged, when it was not stored: the caller
+    /// must not report an item that is not there.
+    pub fn store(conn: &Connection, item: &PreparedItem) -> bool {
         let trigger_data = serde_json::to_string(&item.trigger).unwrap_or_default();
         let data = serde_json::to_string(&item.data).unwrap_or_default();
 
-        let _ = conn.execute(
+        let stored = conn.execute(
             "INSERT OR REPLACE INTO prepared_items
              (id, trigger_type, trigger_data, kind, description, data, relevant_at, expires_at, surfaced, outcome, created_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
@@ -191,18 +200,27 @@ impl AnticipationEngine {
                 item.created_at,
             ],
         );
+        match stored {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(id = %item.id, error = %e, "Prepared item was not stored");
+                false
+            }
+        }
     }
 
     /// Get items that are currently relevant (relevant_at <= now < expires_at, not surfaced).
     pub fn get_relevant(conn: &Connection) -> Vec<PreparedItem> {
-        let now = now_ts();
-        let mut stmt = match conn.prepare(
-            "SELECT id, trigger_type, trigger_data, kind, description, data,
-                    relevant_at, expires_at, surfaced, outcome, created_at
-             FROM prepared_items
+        Self::get_relevant_at(conn, now_ts())
+    }
+
+    /// [`Self::get_relevant`] as of `now`.
+    pub fn get_relevant_at(conn: &Connection, now: f64) -> Vec<PreparedItem> {
+        let mut stmt = match conn.prepare(&format!(
+            "SELECT {ITEM_COLUMNS} FROM prepared_items
              WHERE relevant_at <= ?1 AND expires_at > ?1 AND surfaced = 0
              ORDER BY relevant_at ASC",
-        ) {
+        )) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -211,6 +229,26 @@ impl AnticipationEngine {
             .ok()
             .map(|rows| rows.flatten().collect())
             .unwrap_or_default()
+    }
+
+    /// The item prepared for this commitment, if one was: what keeps a commitment from being
+    /// prepared twice, whether or not the person has seen the first yet.
+    pub fn for_commitment(conn: &Connection, commitment_id: &str) -> Option<PreparedItem> {
+        let trigger = PreparationTrigger::CommitmentDeadline { commitment_id: commitment_id.to_string() };
+        let mut stmt = conn
+            .prepare(&format!("SELECT {ITEM_COLUMNS} FROM prepared_items WHERE trigger_type = ?1 AND trigger_data = ?2 LIMIT 1"))
+            .ok()?;
+        let trigger_data = serde_json::to_string(&trigger).ok()?;
+        stmt.query_row(params![trigger.type_tag(), trigger_data], Self::row_to_item).ok()
+    }
+
+    /// Remove the item prepared for this commitment: a commitment that is forgotten takes with it
+    /// what was prepared from it.
+    pub fn delete_for_commitment(conn: &Connection, commitment_id: &str) -> usize {
+        let trigger = PreparationTrigger::CommitmentDeadline { commitment_id: commitment_id.to_string() };
+        let data = serde_json::to_string(&trigger).unwrap_or_default();
+        conn.execute("DELETE FROM prepared_items WHERE trigger_type = ?1 AND trigger_data = ?2", params![trigger.type_tag(), data])
+            .unwrap_or(0)
     }
 
     /// Mark an item as surfaced.
@@ -315,7 +353,7 @@ impl AnticipationEngine {
     }
 }
 
-fn now_ts() -> f64 {
+pub(crate) fn now_ts() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

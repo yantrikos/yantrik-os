@@ -476,43 +476,82 @@ impl Tool for AppActionTool {
     }
 
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String {
-        let app = args["app"].as_str().unwrap_or("").trim();
-        let action = args["action"].as_str().unwrap_or("").trim();
-        if app.is_empty() || action.is_empty() {
-            return "Error: both `app` and `action` are required.".to_string();
-        }
-        let action_args = args.get("args").cloned().unwrap_or(serde_json::json!({}));
-        let expect = args.get("expect_revision").and_then(|v| v.as_str()).unwrap_or("").trim();
+        execute_on(&Desk::session(), ctx.max_permission, args)
+    }
 
-        // Ask the app what this action costs before doing it. `app_action` itself is Standard —
-        // enough to open a note — but an app may publish something that ends a process or deletes
-        // a file, and that must meet the configured cap on its own terms rather than ride in on
-        // the tool's. The app's dispatch decides again when the call arrives (see `beyond_cap`);
-        // the app's *state* can change in between too, which is what `expect_revision` is for.
-        // A Yantrik app that is not running is started with no window first, and the act waits for
-        // it; one that cannot run in time is dropped, never queued (#978 step 1).
-        if let Err(said) = crate::app_start::ensure(app, true) {
-            return said;
-        }
-        let mut purpose = String::new();
-        if let Ok(ref view) = describe(app) {
-            if let Some(refusal) = beyond_cap(view, app, action, ctx.max_permission) {
-                return refusal;
-            }
-            // The app's own sentence for the action, for the card if one has to go up.
-            purpose = published(view, action)
-                .and_then(|a| a.get("description").and_then(|d| d.as_str()))
-                .unwrap_or_default()
-                .to_string();
-        }
+    fn housekeeping(&self, _ctx: &ToolContext, args: &serde_json::Value) -> Option<String> {
+        housekeeping_on(&Desk::session(), args)
+    }
+}
 
-        match act_asking(&Desk::session(), app, action, &action_args, expect, &purpose) {
-            Ok(value) => describe_outcome(app, action, &value),
-            // The app's own refusals arrive here and already name what was wrong ("no note is
-            // open", "`open_note` needs argument `title`", "STALE: this app is at revision …"),
-            // and so does what became of a card; pass them through unedited.
-            Err(sentence) => sentence,
+/// What a model turn's `app_action` does: everything but the housekeeping action.
+fn execute_on(desk: &Desk, max_permission: PermissionLevel, args: &serde_json::Value) -> String {
+    if names(args) == (HOUSEKEEPING_APP, HOUSEKEEPING_ACTION) {
+        return HOUSEKEEPING_REFUSAL.to_string();
+    }
+    drive(desk, max_permission, args)
+}
+
+/// What the housekeeping door does: the one action only housekeeping may send, and nothing else,
+/// so the door cannot widen without someone changing this line. Email grades it `sensitive`, so
+/// the cap here is `Sensitive`: it is the companion's own upkeep, not a model's call.
+fn housekeeping_on(desk: &Desk, args: &serde_json::Value) -> Option<String> {
+    (names(args) == (HOUSEKEEPING_APP, HOUSEKEEPING_ACTION)).then(|| drive(desk, PermissionLevel::Sensitive, args))
+}
+
+/// An action only the companion's own housekeeping may send: clearing the draft Email prepared for
+/// a promise that closed. A model turn that reads an email could otherwise clear any draft.
+const HOUSEKEEPING_APP: &str = "email";
+const HOUSEKEEPING_ACTION: &str = "forget_prepared";
+const HOUSEKEEPING_REFUSAL: &str = "email.forget_prepared is done by the companion's own housekeeping, not by a turn.";
+
+/// What `app_action` does, for the companion's own upkeep: the same start, cap check and act,
+/// without the refusal a model turn meets, for the housekeeping action only. It is not a tool and
+/// is not offered to any model; `args` are `app_action`'s.
+pub fn housekeeping_act(args: &serde_json::Value) -> String {
+    housekeeping_on(&Desk::session(), args).unwrap_or_else(|| "Error: not a housekeeping action.".to_string())
+}
+
+fn names(args: &serde_json::Value) -> (&str, &str) {
+    (args["app"].as_str().unwrap_or("").trim(), args["action"].as_str().unwrap_or("").trim())
+}
+
+fn drive(desk: &Desk, max_permission: PermissionLevel, args: &serde_json::Value) -> String {
+    let (app, action) = names(args);
+    if app.is_empty() || action.is_empty() {
+        return "Error: both `app` and `action` are required.".to_string();
+    }
+    let action_args = args.get("args").cloned().unwrap_or(serde_json::json!({}));
+    let expect = args.get("expect_revision").and_then(|v| v.as_str()).unwrap_or("").trim();
+
+    // Ask the app what this action costs before doing it. `app_action` itself is Standard —
+    // enough to open a note — but an app may publish something that ends a process or deletes
+    // a file, and that must meet the configured cap on its own terms rather than ride in on
+    // the tool's. The app's dispatch decides again when the call arrives (see `beyond_cap`);
+    // the app's *state* can change in between too, which is what `expect_revision` is for.
+    // A Yantrik app that is not running is started with no window first, and the act waits for
+    // it; one that cannot run in time is dropped, never queued (#978 step 1).
+    if let Err(said) = crate::app_start::ensure(app, true) {
+        return said;
+    }
+    let mut purpose = String::new();
+    if let Ok(ref view) = describe(app) {
+        if let Some(refusal) = beyond_cap(view, app, action, max_permission) {
+            return refusal;
         }
+        // The app's own sentence for the action, for the card if one has to go up.
+        purpose = published(view, action)
+            .and_then(|a| a.get("description").and_then(|d| d.as_str()))
+            .unwrap_or_default()
+            .to_string();
+    }
+
+    match act_asking(desk, app, action, &action_args, expect, &purpose) {
+        Ok(value) => describe_outcome(app, action, &value),
+        // The app's own refusals arrive here and already name what was wrong ("no note is
+        // open", "`open_note` needs argument `title`", "STALE: this app is at revision …"),
+        // and so does what became of a card; pass them through unedited.
+        Err(sentence) => sentence,
     }
 }
 
@@ -1097,6 +1136,34 @@ pub(crate) mod tests {
         let err = act_asking(&desk, "notes", "nope", &serde_json::json!({}), "", "").unwrap_err();
         assert_eq!(err, "notes.nope failed: `nope` needs argument `id`");
         assert!(shell.lock().unwrap().is_empty(), "no card for a refusal a card cannot answer");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn housekeeping_passes_where_a_turn_is_refused() {
+        let dir = std::env::temp_dir().join(format!("yantrik-companion-hk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let email = fake(dir.join("app-email.sock"), |_| serde_json::json!({"result": {"accepted": true, "settled": true, "result": {"ok": true}}}));
+        let desk = Desk { dir: Some(dir), wait: Duration::from_millis(600), poll: Duration::from_millis(20) };
+        let args = serde_json::json!({"app": "email", "action": "forget_prepared", "args": {"commitment": "7"}});
+
+        // A model turn is refused, and Email is not asked.
+        assert_eq!(execute_on(&desk, PermissionLevel::Dangerous, &args), HOUSEKEEPING_REFUSAL);
+        assert!(email.lock().unwrap().is_empty(), "the refusal came before any call");
+        // The companion's own housekeeping reaches Email, whatever cap a turn runs under.
+        let said = housekeeping_on(&desk, &args).expect("the door is open for this action");
+        assert!(said.contains("email.forget_prepared"), "{said}");
+        assert_eq!(email.lock().unwrap().len(), 1, "one act reached Email");
+    }
+
+    #[test]
+    fn the_housekeeping_door_opens_for_no_other_action() {
+        let desk = Desk::session();
+        for other in [("notes", "purge"), ("email", "compose"), ("notes", "forget_prepared")] {
+            let args = serde_json::json!({"app": other.0, "action": other.1});
+            assert_eq!(housekeeping_on(&desk, &args), None, "{other:?}");
+        }
     }
 
     #[test]

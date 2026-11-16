@@ -38,6 +38,11 @@ fn answers(_app: &str) -> bool {
     false
 }
 
+/// Whether the app is running now: its surface answers. Nothing is started.
+pub fn is_running(app: &str) -> bool {
+    answers(app)
+}
+
 /// The shell's answer to `start_app` for `app`, if it gave one.
 fn ask(app: &str) -> Option<Value> {
     let client = SyncRpcClient::new(&yantrik_ipc_transport::server::RpcServer::default_address("app-shell"))

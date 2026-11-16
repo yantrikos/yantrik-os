@@ -10,7 +10,7 @@ use yantrik_ipc_contracts::email::EmailFolder;
 
 use crate::backend::MailService;
 use crate::files::Files;
-use crate::state::{Counted, Draft, MailState, MessageRow, Triage};
+use crate::state::{Counted, Draft, MailState, MessageRow, MindDraft, Triage};
 
 /// The parts of the model `render` draws separately. The composer's text, the search box and
 /// the setup fields are the window's own while the person types, so they are written only when
@@ -163,6 +163,20 @@ pub struct Composer {
     /// The draft file as it was last read or written: what Compose reopens. An error is a file
     /// that is there and could not be read, said when Compose is pressed.
     pub kept: Result<Option<Draft>, String>,
+    /// Files a Mind's `compose` attached to this draft, by path. The draft file and the window's
+    /// fields do not carry them, and the mail service cannot send them, so a draft that has any is
+    /// never sent from here: it is said, and nothing goes.
+    pub attachments: Vec<String>,
+    /// The draft a Mind made, in its own slot (`state::mind_draft`): never the person's kept
+    /// draft, and kept with its attachments across a restart. An error is a slot that is there
+    /// and could not be read.
+    pub mind: Result<Option<MindDraft>, String>,
+    /// The composer is showing the Mind's draft, so Cancel, Save, a send and the end of the app
+    /// go to its slot and never to the person's draft.
+    pub in_slot: bool,
+    /// The shelf copy a failed open left, with the draft it holds: older than the slot once the
+    /// slot is written again, and removed then (`update::mind_draft`).
+    pub left_on_shelf: Option<(std::path::PathBuf, MindDraft)>,
     /// What is being sent, while a send is in flight: the window says so, a second press cannot
     /// send the message twice, and an edit made meanwhile is told apart from what went.
     pub sending: Option<Draft>,
@@ -182,6 +196,8 @@ pub struct Composer {
     pub announce_unsent: Option<&'static str>,
     /// True while the draft file is being written or removed.
     pub writing: bool,
+    /// The write in flight is a save of the person's text (not a removal).
+    pub saving: bool,
     /// What to do to the draft file once the write in flight lands: only the latest.
     pub queued: Option<FileOp>,
 }
@@ -283,6 +299,14 @@ pub struct Search {
 }
 
 pub struct Model {
+    /// Started for an agent, with no window (`Boot::service`).
+    pub service: bool,
+    /// Started for an agent and nothing has needed the mailbox yet, so no look at the mail service
+    /// has been made and no IMAP or SMTP session opened. Only an intent in `needs_mailbox`, or the
+    /// person's arrival, ends it.
+    pub compose_only: bool,
+    /// The intent that needed the mailbox before it had been looked at: it runs once the look lands.
+    pub deferred: Option<crate::command::Command>,
     /// Drawn for a Mind (`Boot::for_mind`): the window masks mail (`crate::mind_view`).
     pub for_mind: bool,
     pub mail: Arc<dyn MailService>,
@@ -329,6 +353,9 @@ pub struct Model {
 impl Model {
     pub fn new(mail: Arc<dyn MailService>, mind: Arc<dyn Mind>, files: Files, kept: Result<Option<Draft>, String>) -> Model {
         Model {
+            service: false,
+            compose_only: false,
+            deferred: None,
             for_mind: false,
             mail,
             mind,
@@ -350,6 +377,10 @@ impl Model {
                 text: Draft::default(),
                 status: String::new(),
                 kept,
+                attachments: Vec::new(),
+                mind: Ok(None),
+                in_slot: false,
+                left_on_shelf: None,
                 sending: None,
                 unsent_at_start: None,
                 kept_unsure: false,
@@ -357,6 +388,7 @@ impl Model {
                 closed_during_send: false,
                 announce_unsent: None,
                 writing: false,
+                saving: false,
                 queued: None,
             },
             setup: Setup::default(),

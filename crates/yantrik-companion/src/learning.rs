@@ -161,6 +161,11 @@ pub fn extract_and_learn(
             None => continue,
         };
 
+        // The setting for getting promised things ready is the person's own: nothing is kept about it.
+        if crate::setting_words::memory_about_the_setting(&memory_text) {
+            continue;
+        }
+
         // Reject system event text that the LLM shouldn't be memorizing
         if SYSTEM_EVENT_PREFIXES.iter().any(|p| memory_text.starts_with(p)) {
             tracing::debug!(memory_text, "Rejecting system event from learning");
@@ -579,3 +584,6 @@ pub fn detect_humor_reaction(conn: &rusqlite::Connection, user_text: &str) {
         tracing::debug!("Humor success detected");
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -65,6 +65,10 @@ pub fn wire(cx: &Cx<Email>, ui: &EmailApp) {
         let draft = draft_on_screen(&save.ui());
         save.run(Command::SaveDraft(draft));
     });
+    // The prepared draft's own entry and buttons: a person's clicks, never intents.
+    ui.on_open_prepared(cx.cmd(|| Command::OpenPrepared));
+    ui.on_discard_prepared(cx.cmd(|| Command::DiscardPrepared));
+    ui.on_remove_attachment(cx.cmd(|| Command::RemoveAttachment));
     let edited = cx.clone();
     ui.on_edited(move || {
         let (text, query) = {

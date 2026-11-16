@@ -1,0 +1,27 @@
+// The real email client with the composer open over a prepared draft that carries a file, for
+// verify-email-compose. The header alone in a pane of its own width did not test what the person
+// sees: the compose pane is what is left of the window after the 220px folder column and the 340px
+// list, so Send is measured in that pane.
+import { EmailClient, EmailWindow } from "email.slint";
+
+export component EmailComposeProbe inherits Window {
+    in property <length> canvas-width: 1280px;
+    in property <length> canvas-height: 800px;
+    width: root.canvas-width;
+    height: root.canvas-height;
+    in property <string> status: "";
+    out property <length> pane-right: client.compose-pane-right;
+    out property <length> buttons-right: client.compose-buttons-right;
+    // The least width the Email window can be made: the app sets its min-width from it.
+    out property <length> least-width: EmailWindow.least-width;
+    client := EmailClient {
+        width: root.width;
+        height: root.height;
+        // Without an account the client shows its setup screen and never lays out the compose pane.
+        has-account: true;
+        is-composing: true;
+        composing-prepared: true;
+        prepared-file: "/home/user/Documents/Q4-deck.ydeck";
+        email-draft-status: root.status;
+    }
+}

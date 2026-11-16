@@ -133,20 +133,19 @@ fn a_failed_send_from_an_emptied_composer_is_kept_and_not_offered_as_unknown() {
     assert_eq!(again.ui(|ui| ui.get_email_draft_status()), "Draft restored");
 }
 
-/// L10: `compose` replaces the text, so what it opens is not the message whose send may have
-/// gone, and Cancel does not mark it as one.
+/// L10, after #1184: a Mind's `compose` does not replace a draft of unknown outcome. It is the
+/// person's, so the compose is refused, and the draft and its mark are as they were.
 #[test]
-fn compose_over_a_draft_of_unknown_outcome_is_new_text() {
+fn compose_does_not_replace_a_draft_of_unknown_outcome() {
     let mail = with_inbox().answering("email.send_message", json!({}));
     let paths = closed_with_a_send_queued(&mail, "maybe went");
     let (app, _) = start_at(paths.clone(), &mail, FakeMind::new());
     quiet(&app);
-    act(&app, "compose", json!({ "to": "mom@example.com", "subject": "Sunday", "body": "Lunch?" })).unwrap();
-    assert_eq!(app.ui(|ui| ui.get_email_draft_status()), "Draft restored");
-    app.ui(|ui| ui.invoke_cancel_compose());
-    quiet(&app);
-    assert_eq!(state::load_draft(&draft_file(&paths)).unwrap().map(|d| d.body), Some("Lunch?".to_string()));
-    assert!(!files::is_unsure(&draft_file(&paths)), "new text is not marked");
+    let refused = act(&app, "compose", json!({ "to": "mom@example.com", "subject": "Sunday", "body": "Lunch?" })).unwrap_err();
+    assert!(refused.contains("unsent message of your own"), "{refused}");
+    app.ui(|ui| ui.invoke_compose_new());
+    assert_eq!(app.ui(|ui| ui.get_compose_body()), "maybe went");
+    assert!(files::is_unsure(&draft_file(&paths)), "the mark stays");
 }
 
 /// The writer builds `.part` from the path's own bytes, so a folder whose name is not UTF-8 is

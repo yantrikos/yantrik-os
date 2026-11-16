@@ -140,6 +140,31 @@ pub fn local(ui_weak: &slint::Weak<App>, app: &str, summary: &str, body: &str, u
     );
 }
 
+/// `describe shell`'s `toasts`: the toasts the shell holds (position and summary, newest first), and
+/// whether the shell's own screenshot is hiding them. Held and drawn are different things: a toast
+/// in `live` that a picture does not show is a picture taken while `hidden_for_capture`, or a
+/// stacking problem.
+///
+/// A toast's summary is somebody's message (a sender and a preview, a subject), so an agent reader
+/// gets only the count and the flag, as the neighbouring private fields are blanked for it.
+pub fn for_describe(ui: &App, agent_reading: bool) -> serde_json::Value {
+    let hiding = ui.global::<crate::CaptureState>().get_hiding();
+    LIVE.with(|live| describe_live(&live.borrow(), hiding, agent_reading))
+}
+
+fn describe_live(live: &[Live], hiding: bool, agent_reading: bool) -> serde_json::Value {
+    if agent_reading {
+        return serde_json::json!({ "count": live.len(), "hidden_for_capture": hiding });
+    }
+    // A position, not the toast's id: a local toast's id is made of its text.
+    let held: Vec<serde_json::Value> = live
+        .iter()
+        .enumerate()
+        .map(|(i, t)| serde_json::json!({ "position": i + 1, "summary": t.data.summary.as_str() }))
+        .collect();
+    serde_json::json!({ "count": live.len(), "live": held, "hidden_for_capture": hiding })
+}
+
 /// Hand the first [`VISIBLE`] to Slint and count the rest.
 fn republish(ui: &App) {
     let (shown, overflow) = LIVE.with(|live| {
@@ -222,5 +247,31 @@ mod brief_tests {
         // A single unbroken run still gets cut, at the limit.
         let run = "x".repeat(300);
         assert_eq!(brief(&run).chars().count(), 97);
+    }
+}
+
+#[cfg(test)]
+mod describe_tests {
+    use super::*;
+
+    fn held(summary: &str) -> Live {
+        let data = ToastData { id: format!("local:mail:{summary}").into(), summary: summary.into(), ..Default::default() };
+        Live { data, expires_at: None }
+    }
+
+    #[test]
+    fn an_agent_reads_how_many_toasts_are_up_and_never_what_they_say() {
+        let live = [held("Maya's draft"), held("Maya: can you call me about the lawyer?")];
+        let seen = describe_live(&live, false, true);
+        assert_eq!(seen, serde_json::json!({ "count": 2, "hidden_for_capture": false }));
+        assert!(!seen.to_string().contains("Maya"), "{seen}");
+    }
+
+    #[test]
+    fn the_person_reads_each_toast_by_position_and_the_id_does_not_repeat_its_text() {
+        let seen = describe_live(&[held("Maya's draft")], true, false);
+        assert_eq!(seen["live"], serde_json::json!([{ "position": 1, "summary": "Maya's draft" }]));
+        assert_eq!(seen["hidden_for_capture"], true);
+        assert_eq!(seen.to_string().matches("Maya").count(), 1, "the text appears once: {seen}");
     }
 }

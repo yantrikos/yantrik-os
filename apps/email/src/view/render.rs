@@ -203,6 +203,12 @@ fn status(ui: &EmailApp, m: &Model) {
     ui.set_is_composing(m.composer.open);
     ui.set_is_sending(m.composer.sending.is_some());
     ui.set_email_draft_status(m.composer.status.clone().into());
+    // The prepared draft: its own entry, and the bar over the composer while it is open.
+    let slot = m.composer.mind.as_ref().ok().and_then(Option::as_ref);
+    let hide = |text: String| SharedString::from(shown_if_any(m.for_mind, &text).as_ref());
+    ui.set_prepared_label(hide(slot.map(state::MindDraft::label).unwrap_or_default()));
+    ui.set_composing_prepared(m.composer.open && m.composer.in_slot);
+    ui.set_prepared_file(hide(slot.map(state::MindDraft::file_names).unwrap_or_default()));
     ui.set_email_search_active(m.search.active);
     ui.set_email_search_count(m.search.count);
 }

@@ -101,6 +101,9 @@ pub(crate) fn hide_furniture() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = weak.upgrade_in_event_loop(move |ui| {
         ui.global::<CaptureState>().set_hiding(true);
+        // The journal says when the shell's own capture took the toasts off the screen, so a picture
+        // without one can be told from a toast that was never drawn (VM 520, bar 15).
+        tracing::info!("capture: toasts hidden while the shell takes its own picture");
         crate::wire::capture_bar::hide();
         let _ = tx.send(());
     });
@@ -111,7 +114,10 @@ pub(crate) fn hide_furniture() {
 /// Put the toasts back after the picture.
 pub(crate) fn restore_furniture() {
     let Some(weak) = ui() else { return };
-    let _ = weak.upgrade_in_event_loop(|ui| ui.global::<CaptureState>().set_hiding(false));
+    let _ = weak.upgrade_in_event_loop(|ui| {
+        ui.global::<CaptureState>().set_hiding(false);
+        tracing::info!("capture: toasts back after the shell's picture");
+    });
 }
 
 /// The lock callback, before the screen goes dark: a recording stops, cleanly.

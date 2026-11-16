@@ -9,6 +9,8 @@ import { YEmptyState } from "components/y_empty_state.slint";
 import { Icon, Icons } from "components/icon.slint";
 import { AppHeader } from "components/app_header.slint";
 import { AppColor, AppIdentity } from "components/app_color.slint";
+import { PreparedEntry, PreparedBar } from "email_prepared.slint";
+import { ComposeHeader } from "email_compose_header.slint";
 
 // ── Data Structures ──
 
@@ -80,6 +82,14 @@ export struct EmailAttachmentData {
     size-text: string,
     mime-type: string,
     is-downloaded: bool,
+}
+
+// The least width the Email window can be made. The compose pane is what is left of the window
+// after the 220px folder column and the 340px list, and Save Draft, Cancel and Send need 216px of it
+// plus the pane's padding: below this width Send leaves the window (tests/ui-preview,
+// verify-email-compose, measures it at this width).
+export global EmailWindow {
+    out property <length> least-width: 880px;
 }
 
 // ── Email Client Component ──
@@ -201,6 +211,14 @@ export component EmailClient inherits Rectangle {
     in property <[EmailAttachmentData]> email-attachments: [];
     in property <int> email-triage-view: 0;  // 0=all, 1=unread, 2=flagged
     in property <string> email-draft-status: "";  // "Draft saved" / "Draft restored" / ""
+    // Where the composer's last button ends and where the pane it is in ends, in this component's
+    // window coordinates, so a check can tell Send is inside the pane the person sees
+    // (tests/ui-preview, verify-email-compose). Read-only: the composer reports them as it is laid out.
+    out property <length> compose-buttons-right: 0px;
+    out property <length> compose-pane-right: 0px;
+    in property <string> prepared-label: "";  // "Draft Yantrik prepared for Maya", or "" when none
+    in property <bool> composing-prepared: false;  // the composer shows that draft
+    in property <string> prepared-file: "";  // the file it carries, or ""
     in property <string> email-ai-intent: "";  // "action-needed", "fyi", "meeting", "newsletter"
 
     // Callbacks — email operations
@@ -222,6 +240,9 @@ export component EmailClient inherits Rectangle {
     callback search-emails(string);
     callback sync-emails();
     callback cancel-compose();
+    callback open-prepared();
+    callback discard-prepared();
+    callback remove-attachment();
     callback add-account();              // open setup for an additional account
     callback cancel-setup();             // leave the setup form without saving
     callback toggle-thread-message(int); // collapse/expand a thread message
@@ -884,6 +905,7 @@ export component EmailClient inherits Rectangle {
                         clicked => { root.compose-new(); }
                     }
 
+                    PreparedEntry { label: root.prepared-label; opened => { root.open-prepared(); } }
                     Rectangle { height: Theme.sp-3; }
 
                     // Folder list with icons, active indicator, and badges
@@ -1402,61 +1424,22 @@ export component EmailClient inherits Rectangle {
                 if root.is-composing : VerticalLayout {
                     padding: Theme.sp-5;
                     spacing: Theme.sp-3;
+                    // The pane's right edge, in window coordinates, for the check on Send.
+                    changed width => { root.compose-pane-right = self.absolute-position.x + self.width; }
+                    changed absolute-position => { root.compose-pane-right = self.absolute-position.x + self.width; }
 
-                    // Header bar
-                    HorizontalLayout {
-                        alignment: space-between;
-
-                        HorizontalLayout {
-                            spacing: Theme.sp-2;
-                            alignment: start;
-
-                            Text {
-                                text: "New Message";
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-title-2;
-                                font-weight: Theme.fw-title-2;
-                                vertical-alignment: center;
-                            }
-
-                            // Draft autosave indicator
-                            if root.email-draft-status != "" : Text {
-                                text: root.email-draft-status;
-                                color: Theme.text-dim;
-                                font-size: Theme.fs-caption;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: Theme.sp-2;
-
-                            YButton {
-                                label: "Save Draft";
-                                variant: 1;
-                                size: 0;
-                                clicked => { root.save-draft(); }
-                            }
-
-                            YButton {
-                                label: "Cancel";
-                                variant: 1;
-                                size: 0;
-                                clicked => { root.cancel-compose(); }
-                            }
-
-                            YButton {
-                                label: root.is-sending ? "Sending…" : "Send"; disabled: root.is-sending; loading: root.is-sending;
-                                icon-path: Icons.send;
-                                variant: 0;
-                                clicked => {
-                                    root.send-email(root.compose-to, root.compose-cc, root.compose-bcc, root.compose-subject, root.compose-body);
-                                }
-                            }
-                        }
+                    // Header bar: the title and the three buttons, then the draft's status on its own row
+                    ComposeHeader {
+                        changed buttons-edge => { root.compose-buttons-right = self.buttons-edge; }
+                        status: root.email-draft-status;
+                        is-sending: root.is-sending;
+                        save-draft => { root.save-draft(); }
+                        cancel-compose => { root.cancel-compose(); }
+                        send => { root.send-email(root.compose-to, root.compose-cc, root.compose-bcc, root.compose-subject, root.compose-body); }
                     }
 
                     Rectangle { height: 1px; background: Theme.border-subtle; }
+                    if root.composing-prepared : PreparedBar { file: root.prepared-file; discard => { root.discard-prepared(); } remove-attachment => { root.remove-attachment(); } }
 
                     // To field
                     Rectangle {

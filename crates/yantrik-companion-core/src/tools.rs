@@ -24,6 +24,12 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool. Returns a result string fed back to the LLM.
     fn execute(&self, ctx: &ToolContext, args: &serde_json::Value) -> String;
+
+    /// What the companion's own housekeeping may ask of this tool and a model turn may not
+    /// (see [`ToolRegistry::execute_housekeeping`]). `None`, the default, means there is no such door.
+    fn housekeeping(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> Option<String> {
+        None
+    }
 }
 
 /// Shared context passed to every tool at execution time.
@@ -117,6 +123,27 @@ impl ToolRegistry {
             }
         }
         format!("Unknown tool: {name}")
+    }
+
+    /// The housekeeping door of a tool: the companion's own upkeep, never a model turn (a turn can
+    /// only reach [`Self::execute`]). The permission gate and the audit apply as they do there.
+    pub fn execute_housekeeping(&self, ctx: &ToolContext, name: &str, args: &serde_json::Value) -> String {
+        let Some(tool) = self.tools.iter().find(|t| t.name() == name) else {
+            return format!("Unknown tool: {name}");
+        };
+        if tool.permission() > ctx.max_permission {
+            let msg = format!("Permission denied: '{}' requires {} but max is {}", name, tool.permission(), ctx.max_permission);
+            tracing::warn!("{}", msg);
+            if !ctx.incognito {
+                audit_log(ctx.db, name, tool.category(), args, &msg);
+            }
+            return msg;
+        }
+        let result = tool.housekeeping(ctx, args).unwrap_or_else(|| format!("Unknown tool: {name}"));
+        if !ctx.incognito {
+            audit_log(ctx.db, name, tool.category(), args, &result);
+        }
+        result
     }
 
     /// Compact metadata listing for tool discovery.
