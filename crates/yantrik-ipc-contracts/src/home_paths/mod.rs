@@ -253,7 +253,17 @@ fn in_a_listed_place(path: &Path) -> bool {
     static LOWERED: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
     let places = LOWERED.get_or_init(|| PROTECTED.iter().map(|place| lowered(Path::new(place))).filter(|want| !want.is_empty()).collect());
     let parts = lowered(path);
-    places.iter().any(|want| parts.windows(want.len()).any(|w| w == want.as_slice()))
+    // The places by their first part, so a path is looked up by each of its parts instead of being
+    // laid against every place (a title is judged by thousands of paths).
+    static BY_FIRST: std::sync::OnceLock<std::collections::HashMap<&'static str, Vec<&'static [String]>>> = std::sync::OnceLock::new();
+    let by_first = BY_FIRST.get_or_init(|| {
+        let mut map: std::collections::HashMap<&'static str, Vec<&'static [String]>> = std::collections::HashMap::new();
+        for want in places.iter() {
+            map.entry(want[0].as_str()).or_default().push(want.as_slice());
+        }
+        map
+    });
+    parts.iter().enumerate().any(|(at, part)| by_first.get(part.as_str()).is_some_and(|wants| wants.iter().any(|want| parts[at..].starts_with(want))))
         || kept_places::in_a_harness_home(&parts)
         || kept_places::in_a_marked_copy(&parts, places)
         || kept_places::in_an_object_store(&parts)

@@ -708,9 +708,8 @@ AGENT_TOOLS = [
                        "your next turn. It runs as the person, so it is graded sensitive: in `ask` "
                        "mode the person sees a card with the command and allows it first. "
                        "It shares the host's network and loopback: it reaches the egress ports 7450 "
-                       "and 7451, the gateway on 7460 (with a token), the local model on 11434, "
-                       "Mind View's browser on 9223 (until jobs run as their own account) and anything "
-                       "the person runs. A job runs as the person's account and can change the "
+                       "and 7451, the gateway on 7460 (with a token), the local model on 11434 "
+                       "and anything the person runs. A job runs as the person's account and can change the "
                        "person's own files, startup files included; what those run later is in no "
                        "view (until jobs run as their own account, #1137 step 3).",
         "inputSchema": {
@@ -747,8 +746,8 @@ AGENT_TOOLS = [
                        "runtime folder, the bus and the Yantrik sockets are not in their view), "
                        "so use your own tool calls for the desktop. They share the host's network and "
                        "loopback: they reach the egress ports 7450 and 7451, the gateway on 7460 "
-                       "(with a token), the local model on 11434, Mind View's browser on 9223 "
-                       "(until jobs run as their own account) and anything the person runs. A job runs as the person's "
+                       "(with a token), the local model on 11434 "
+                       "and anything the person runs. A job runs as the person's "
                        "account and can change the person's own files, startup files included; what those run "
                        "later is in no view (until jobs run as their own account, #1137 step 3). A video or song shown with "
                        "workshop_show plays without sound for now. So a "

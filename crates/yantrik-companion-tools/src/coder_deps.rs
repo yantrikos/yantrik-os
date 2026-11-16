@@ -60,12 +60,11 @@ fn installer(language: &str) -> Option<(&'static str, &'static [&'static str])> 
     }
 }
 
-/// An install that is ready to run: the installer's name, the command, the names left out.
-pub type Planned = (&'static str, Command, Vec<String>);
-
 /// The install of `deps` for `language`, with the command that runs it in the outside view.
-/// `Ok(None)` when there is nothing to install; `Err` is the view's refusal.
-pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<Planned>, String> {
+/// `Ok(None)` when there is nothing to install; `Err` is the view's refusal. `Some` is an install
+/// that is ready to run: the installer's name, the command, the names left out. (The tuple is
+/// spelled out here and not behind a `type` alias: the reach scan refuses an alias of a `Command`.)
+pub fn plan(home: &Path, language: &str, deps: &[String]) -> Result<Option<(&'static str, Command, Vec<String>)>, String> {
     let Some((program, fixed)) = installer(language) else { return Ok(None) };
     let (plain, skipped) = vet(deps);
     if plain.is_empty() {

@@ -79,6 +79,28 @@ fn rows(table: &str, port: u16) -> Vec<Row> {
         .collect()
 }
 
+/// Every TCP socket in LISTEN state in `proc`'s tables (IPv4 and IPv6) as (port, socket inode),
+/// whatever its address or account.
+pub fn listening_in(proc: &Path) -> Vec<(u16, u64)> {
+    ["net/tcp", "net/tcp6"]
+        .iter()
+        .filter_map(|table| fs::read_to_string(proc.join(table)).ok())
+        .flat_map(|text| {
+            text.lines()
+                .skip(1)
+                .filter_map(|line| {
+                    let f: Vec<&str> = line.split_whitespace().collect();
+                    if f.get(3)? != &"0A" {
+                        return None;
+                    }
+                    let port = u16::from_str_radix(f.get(1)?.rsplit(':').next()?, 16).ok()?;
+                    Some((port, f.get(9)?.parse().ok()?))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The socket on 127.0.0.1:`port` and the processes holding it: (account, inode, pids).
 pub fn holders_in(proc: &Path, port: u16) -> Result<(u32, u64, Vec<u32>), Why> {
     let table = fs::read_to_string(proc.join("net/tcp")).map_err(|e| Why::Unclear(format!("the socket table {UNREADABLE} ({e})")))?;
@@ -238,7 +260,7 @@ pub(crate) mod tests {
     /// trailing NUL.
     fn shapes(profile: &Path) -> Vec<Vec<u8>> {
         let flag = format!("--user-data-dir={}", profile.display());
-        let words = ["/usr/lib/chromium/chromium", "--remote-debugging-port=9223", flag.as_str(), "about:blank"];
+        let words = ["/usr/lib/chromium/chromium", "--remote-debugging-port=9444", flag.as_str(), "about:blank"];
         vec![
             format!("{}\0", words.join("\0")).into_bytes(),
             words.join(" ").into_bytes(),
@@ -250,12 +272,12 @@ pub(crate) mod tests {
     fn mind_views_browser_is_known_by_what_it_owns_whatever_shape_its_command_line_has() {
         for (n, line) in shapes(Path::new("/x")).into_iter().enumerate() {
             let fake = Fake::new(&format!("mv{n}"));
-            fake.table(&[("0100007F:2407", 1000, 555)]);
+            fake.table(&[("0100007F:24E4", 1000, 555)]);
             fake.process(41, 555, &line);
             fake.takes(&fake.profiles.mind_view, 41);
-            let l = identify_in(&fake.proc(), 9223, &fake.profiles).unwrap();
+            let l = identify_in(&fake.proc(), 9444, &fake.profiles).unwrap();
             assert_eq!((l.place, l.uid, l.pids.clone()), (Place::MindView, 1000, vec![41]), "shape {n}");
-            assert!(mind_side_in(&fake.proc(), 9223, 1000, &fake.profiles).is_ok());
+            assert!(mind_side_in(&fake.proc(), 9444, 1000, &fake.profiles).is_ok());
         }
     }
 
@@ -265,10 +287,10 @@ pub(crate) mod tests {
     #[test]
     fn a_browser_with_a_useless_command_line_is_still_told_by_its_files() {
         let fake = Fake::new("blank");
-        fake.table(&[("0100007F:2407", 1000, 5)]);
+        fake.table(&[("0100007F:24E4", 1000, 5)]);
         fake.process(9, 5, b"chromium\0");
         fake.holds_lock(9, &fake.profiles.mind_view);
-        assert_eq!(identify_in(&fake.proc(), 9223, &fake.profiles).unwrap().place, Place::MindView);
+        assert_eq!(identify_in(&fake.proc(), 9444, &fake.profiles).unwrap().place, Place::MindView);
     }
 
     /// A process that rewrites its argv to claim Mind View's profile owns nothing, so it is not a
@@ -284,10 +306,10 @@ pub(crate) mod tests {
             assert!(mind_side_in(&liar.proc(), 9222, 1000, &liar.profiles).unwrap_err().contains("not a mind's own"));
         }
         let owner = Fake::new("owner");
-        owner.table(&[("0100007F:2407", 1000, 5)]);
+        owner.table(&[("0100007F:24E4", 1000, 5)]);
         owner.process(9, 5, b"chromium --user-data-dir=/home/p/.config/chromium");
         owner.takes(&owner.profiles.mind_view, 9);
-        assert_eq!(identify_in(&owner.proc(), 9223, &owner.profiles).unwrap().place, Place::MindView);
+        assert_eq!(identify_in(&owner.proc(), 9444, &owner.profiles).unwrap().place, Place::MindView);
     }
 
     #[test]
@@ -304,49 +326,49 @@ pub(crate) mod tests {
     #[test]
     fn another_account_nothing_and_the_unreadable_are_all_refusals() {
         let fake = Fake::new("x");
-        fake.table(&[("0100007F:2407", 1001, 5)]);
+        fake.table(&[("0100007F:24E4", 1001, 5)]);
         fake.process(3, 5, b"chromium");
         fake.takes(&fake.profiles.mind_view, 3);
-        assert!(mind_side_in(&fake.proc(), 9223, 1000, &fake.profiles).unwrap_err().contains("another account"));
+        assert!(mind_side_in(&fake.proc(), 9444, 1000, &fake.profiles).unwrap_err().contains("another account"));
         assert_eq!(identify_in(&fake.proc(), 9999, &fake.profiles), Err(Why::Nobody));
         // Listening, but the holder is not visible to this account.
-        fake.table(&[("0100007F:2407", 1000, 6)]);
-        assert!(matches!(identify_in(&fake.proc(), 9223, &fake.profiles), Err(Why::Unclear(_))));
+        fake.table(&[("0100007F:24E4", 1000, 6)]);
+        assert!(matches!(identify_in(&fake.proc(), 9444, &fake.profiles), Err(Why::Unclear(_))));
         // Visible, but the files it holds cannot be read.
-        fake.table(&[("0100007F:2407", 1000, 5)]);
+        fake.table(&[("0100007F:24E4", 1000, 5)]);
         fs::remove_file(fake.profiles.mind_view.join("SingletonLock")).unwrap();
         fs::remove_dir_all(fake.proc().join("3/fd")).unwrap_or(());
-        assert!(identify_in(&fake.proc(), 9223, &fake.profiles).is_err());
+        assert!(identify_in(&fake.proc(), 9444, &fake.profiles).is_err());
         // No table at all.
         fs::remove_file(fake.proc().join("net/tcp")).unwrap();
-        assert!(matches!(identify_in(&fake.proc(), 9223, &fake.profiles), Err(Why::Unclear(_))));
+        assert!(matches!(identify_in(&fake.proc(), 9444, &fake.profiles), Err(Why::Unclear(_))));
     }
 
     #[test]
     fn two_sockets_or_the_person_and_a_mind_on_one_socket_are_not_taken_for_the_persons() {
         let fake = Fake::new("two");
-        fake.table(&[("0100007F:2407", 1000, 1), ("0100007F:2407", 1000, 2)]);
+        fake.table(&[("0100007F:24E4", 1000, 1), ("0100007F:24E4", 1000, 2)]);
         fake.process(1, 1, b"chromium");
         fake.process(2, 2, b"chromium");
-        assert!(matches!(identify_in(&fake.proc(), 9223, &fake.profiles), Err(Why::Unclear(w)) if w.contains("two")));
+        assert!(matches!(identify_in(&fake.proc(), 9444, &fake.profiles), Err(Why::Unclear(w)) if w.contains("two")));
         // One socket shared by the person's process and Mind View's: it is Mind View's, so the
         // person's side refuses it and a mind's side accepts nothing of the person's.
-        fake.table(&[("0100007F:2407", 1000, 1)]);
+        fake.table(&[("0100007F:24E4", 1000, 1)]);
         fake.process(2, 1, b"chromium");
         fake.takes(&fake.profiles.mind_view, 2);
-        assert_eq!(identify_in(&fake.proc(), 9223, &fake.profiles).unwrap().place, Place::MindView);
+        assert_eq!(identify_in(&fake.proc(), 9444, &fake.profiles).unwrap().place, Place::MindView);
     }
 
     #[test]
     fn the_exact_address_beats_a_wildcard_one_as_the_kernel_does() {
         let fake = Fake::new("wild");
-        fake.table(&[("00000000:2407", 1000, 1), ("0100007F:2407", 1000, 2)]);
+        fake.table(&[("00000000:24E4", 1000, 1), ("0100007F:24E4", 1000, 2)]);
         fake.process(1, 1, b"chromium");
         fake.process(2, 2, b"chromium");
         fake.takes(&fake.profiles.mind_view, 2);
-        assert_eq!(identify_in(&fake.proc(), 9223, &fake.profiles).unwrap().place, Place::MindView);
+        assert_eq!(identify_in(&fake.proc(), 9444, &fake.profiles).unwrap().place, Place::MindView);
         // A wildcard alone still answers on loopback, and a process owning nothing is not a mind's.
-        fake.table(&[("00000000:2407", 1000, 1)]);
-        assert_eq!(identify_in(&fake.proc(), 9223, &fake.profiles).unwrap().place, Place::Person);
+        fake.table(&[("00000000:24E4", 1000, 1)]);
+        assert_eq!(identify_in(&fake.proc(), 9444, &fake.profiles).unwrap().place, Place::Person);
     }
 }

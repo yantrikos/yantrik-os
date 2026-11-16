@@ -57,3 +57,16 @@ fn a_walk_that_runs_out_of_time_says_its_total_is_partial() {
     assert!(whole.partial_note().is_none());
     assert!(cut.last().map(|(bytes, _)| *bytes) < full.last().map(|(bytes, _)| *bytes), "the cut walk counted less: {cut:?} / {full:?}");
 }
+
+/// The folder is read in this process (`disk_scan`), so a `$(…)` or a backtick in a name is only a name:
+/// nothing is started that could run it.
+#[test]
+fn a_command_substitution_in_a_folder_name_stays_a_name() {
+    let dir = std::env::temp_dir().join(format!("disk-inj-{}-$(touch INJECTED)`touch INJECTED`'q", std::process::id()));
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/a.txt"), vec![0u8; 5000]).unwrap();
+    let largest = crate::disk_scan::largest_items(&mut crate::disk_scan::Scan::new(&dir), &dir);
+    assert!(largest.iter().any(|(_, name)| name.contains("sub")), "{largest:?}");
+    assert!(!dir.join("INJECTED").exists() && !std::path::Path::new("INJECTED").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

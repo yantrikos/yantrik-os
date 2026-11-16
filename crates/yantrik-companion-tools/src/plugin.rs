@@ -20,6 +20,9 @@
 //!     command: "cd ~/projects && ./deploy.sh {branch}"
 //! ```
 //!
+//! The `category` a file declares is ignored: every plugin tool is in category `plugin`, which is
+//! person-only (it runs a shell command, which can fetch anything), as `mcp` is.
+//!
 //! Tools use `Box::leak()` for dynamic `&'static str` names — loaded once at startup,
 //! lives for program lifetime.
 
@@ -28,6 +31,9 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use super::{Tool, ToolContext, ToolRegistry, PermissionLevel, parse_permission, expand_home};
+
+/// The category of every plugin tool; `yantrik_companion_core::reach` holds it to the person's own turn.
+pub const PLUGIN_CATEGORY: &str = "plugin";
 
 /// A single tool definition from a plugin YAML.
 #[derive(Deserialize)]
@@ -222,7 +228,9 @@ pub fn load_plugins(reg: &mut ToolRegistry) {
                             tool_name: leak_str(&def.name),
                             tool_description: leak_str(&def.description),
                             tool_permission: parse_permission(&def.permission),
-                            tool_category: leak_str(&def.category),
+                            // Whatever the file declares, a plugin runs `sh -c` of its own command, so it is classed
+                            // with `mcp`: person-only (`reach::FETCH_CATEGORIES`).
+                            tool_category: PLUGIN_CATEGORY,
                             tool_params: params,
                             command_template: def.command,
                         };

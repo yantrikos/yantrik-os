@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""What was open before the surface connected, and the person's own browser (#1170 re-reviews: C, H, F).
+"""What was open before the surface connected, and the person's own browser (#1170 re-reviews: C, H; #1200).
 
     python3 tests/browser-core/test_preexisting.py
 
-Its own browser, own profile and own port: the shared bench's connection fences every window from
+Its own browser and profile, over its own pipe: the shared bench's connection fences every window from
 the moment it connects, so these are made while nothing is connected, as a restart of the surface
 or a lost connection leaves them. Skips without a browser, as test_live does.
 """
@@ -17,15 +17,13 @@ import unittest
 import zlib
 
 from test_live import Bench, chrome
-from test_screenshot import png_pixel
 from raw_cdp import Raw
-from yantrik_browser import cdp, driver as drv  # noqa: E402  (on the path once test_live is imported)
-
-RED = (255, 0, 0)
+from yantrik_browser import driver as drv  # noqa: E402  (on the path once test_live is imported)
 
 
 class Second(Bench):
-    """A browser of its own."""
+    """A browser of its own, which the service has not yet connected to."""
+    service_first = False
 
 
 def red_png(path, size=400):
@@ -55,7 +53,7 @@ class Preexisting(unittest.TestCase):
         self.addCleanup(self.stop)
         self.browser = Second.d.sides.fixed
         self.browser.close()               # nothing is connected: nothing fences what follows
-        self.raw = Raw(Second.cdp)
+        self.raw = Raw(Second.holder)
         self.addCleanup(self.raw.close)
 
     def stop(self):
@@ -69,23 +67,28 @@ class Preexisting(unittest.TestCase):
         time.sleep(1.0)
         return session
 
-    def popup_after_the_restart(self):
-        """The window the opener opened, as the surface finds it when it connects."""
+    def after_the_connection(self):
+        """What the surface finds when it connects: every page target that existed before it is
+        closed (adopt.py, #1200), the opener and any window it opened, so nothing drawn unfenced
+        stays on screen. Returns the driver and the pages left."""
         driver = drv.Driver(self.browser, judge=False, file_rule=False, home=lambda: self.home)
         self.browser.connect()
-        return driver, next(t for t in self.browser.pages() if t.opened_by)
+        return driver, [t for t in self.browser.pages()]
 
-    def test_a_window_open_before_the_connection_is_loaded_again_behind_the_fence(self):
+    def assertNothingOpenedBeforeSurvives(self, pages):
+        self.assertEqual([t for t in pages if t.opened_by], [], "a window opened before the connection stayed")
+        self.assertFalse([t for t in pages if "opener.html" in str(t.url)], "the opener stayed")
+
+    def test_a_window_open_before_the_connection_is_closed_when_it_connects(self):
         self.raw.evaluate(self.opener(), (
             "var x = window.open(''); x.document.write('<iframe src=\"file://%s/.ssh/key.html\" "
             "style=\"position:absolute;border:0;left:0;top:0;width:300px;height:300px\"></iframe>'); "
             "x.document.close()") % self.home, gesture=True)
         time.sleep(1.0)
-        driver, popup = self.popup_after_the_restart()
-        self.assertNotEqual(png_pixel(driver.screenshot(popup.id)["path"], 150, 150), RED, "it drew a hidden file")
-        self.assertTrue(popup.ready and not popup.born)
+        _, pages = self.after_the_connection()
+        self.assertNothingOpenedBeforeSurvives(pages)
 
-    def test_an_image_a_popup_loaded_while_the_connection_was_down_is_not_drawn_after_it(self):
+    def test_an_image_a_popup_loaded_while_the_connection_was_down_is_closed_when_it_connects(self):
         """H: an `about:blank` window, an `<img>` its opener put in it during the gap: no frame holds it."""
         session = self.opener()
         self.raw.evaluate(session, (
@@ -98,26 +101,8 @@ class Preexisting(unittest.TestCase):
             time.sleep(0.2)
         else:
             self.fail("the picture did not load in the window: the probe is broken")
-        driver, popup = self.popup_after_the_restart()
-        self.assertNotEqual(png_pixel(driver.screenshot(popup.id)["path"], 100, 100), RED, "it drew a hidden file")
-
-    def test_the_persons_browser_is_not_fenced_beyond_the_tabs_the_surface_drives(self):
-        """F: a window the person opens by hand, with the surface connected to their browser, loads
-        a folder, a PDF, a file outside the home: it is no Mind's page, and no agent reaches it."""
-        with open(os.path.join(self.outside, "notes.html"), "w") as f:
-            f.write("<p>OUTSIDE-OK</p>")
-        with open(os.path.join(self.outside, "doc.pdf"), "wb") as f:
-            f.write(b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
-        person = cdp.Browser(Second.cdp, held_at_start=False)
-        self.addCleanup(person.close)
-        drv.Driver(person, judge=False, home=lambda: self.home).tabs()       # `yos web tabs`: connected
-        self.assertTrue(person.alive)
-        target, session = self.raw.open()
-        for what in ("notes.html", "doc.pdf", ""):
-            refused = self.raw.call("Page.navigate", {"url": "file://%s/%s" % (self.outside, what)}, session)
-            self.assertNotIn("errorText", refused, "the person's own browser was refused file://…/%s" % what)
-        self.assertIn(target, [t["targetId"] for t in self.raw.call("Target.getTargets")["targetInfos"]],
-                      "a window of the person's was closed")
+        _, pages = self.after_the_connection()
+        self.assertNothingOpenedBeforeSurvives(pages)
 
 
 if __name__ == "__main__":

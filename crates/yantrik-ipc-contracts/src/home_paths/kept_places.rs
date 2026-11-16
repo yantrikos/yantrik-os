@@ -48,9 +48,15 @@ pub(super) fn in_a_marked_copy(parts: &[String], places: &[Vec<String>]) -> bool
     // A marker only removes text, so a copy holds the name it copies; and every marker has a dot, a
     // space, a bracket or another mark in it, so a part of letters and digits is no copy. Most parts
     // are neither, and a title is judged by thousands of them.
+    static SHORTEST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let shortest = *SHORTEST.get_or_init(|| places.iter().flatten().map(String::len).chain(HARNESS_HOMES.iter().map(|home| home.len())).min().unwrap_or(0));
     let may_copy = |part: &str| {
-        !part.bytes().all(|b| b.is_ascii_alphanumeric()) && !part.contains(['%', '!', ':', '#']) && (HARNESS_HOMES.iter().any(|home| part.contains(home)) || places.iter().flatten().any(|name| part.contains(name.as_str())))
+        part.len() >= shortest
+            && !part.bytes().all(|b| b.is_ascii_alphanumeric()) && !part.contains(['%', '!', ':', '#']) && (HARNESS_HOMES.iter().any(|home| part.contains(home)) || places.iter().flatten().any(|name| part.contains(name.as_str())))
     };
+    if !parts.iter().any(|part| may_copy(part)) {
+        return false;
+    }
     let copies: Vec<Vec<String>> = parts.iter().map(|part| if may_copy(part) { super::copy_marker::originals(part) } else { Vec::new() }).collect();
     if copies.iter().all(Vec::is_empty) {
         return false;
@@ -99,5 +105,5 @@ pub(super) fn in_an_object_store(parts: &[String]) -> bool {
 pub(super) fn is_a_kept_copy(part: &str) -> bool {
     // As an ending, or just before an extension: `before-yantrik-notes.md` and `why-yantrik-moved.txt`
     // are the person's own words, and are not copies (review R11-L5).
-    [".yantrik-moved", "before-yantrik"].iter().any(|mark| part.ends_with(mark) || part.contains(&format!("{mark}.")))
+    part.ends_with(".yantrik-moved") || part.ends_with("before-yantrik") || part.contains(".yantrik-moved.") || part.contains("before-yantrik.")
 }

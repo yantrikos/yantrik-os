@@ -12,7 +12,7 @@ fn desk(tag: &str, answer: &'static str) -> (Desk, Arc<Mutex<Vec<serde_json::Val
     let dir = std::env::temp_dir().join(format!("yantrik-companion-screen-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let heard = crate::app_ui::tests::fake(dir.join("app-shell.sock"), move |params| match params["action"].as_str() {
+    let heard = crate::app_ask::tests::fake(dir.join("app-shell.sock"), move |params| match params["action"].as_str() {
         Some("read_screen") if params["grant"].is_null() => {
             serde_json::json!({"error": {"code": -32602, "message": "GRANT: shell.read_screen is graded `sensitive` and this machine is in ask mode"}})
         }
