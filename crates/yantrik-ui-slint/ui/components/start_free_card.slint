@@ -139,13 +139,14 @@ export component HermesNote inherits Text {
 export component ScrollToTop inherits Rectangle {
     in property <bool> active;
     in-out property <length> viewport-y;
-    property <bool> done;
+    // True until the one reset has been done; a Timer that stops itself (it clears what its gate reads).
+    property <bool> armed: true;
     width: 0px;
     height: 0px;
-    changed active => { if !root.active { root.done = false; } }
+    changed active => { if !root.active { root.armed = true; } }
     Timer {
         interval: 80ms;
-        running: root.active && !root.done;
-        triggered => { root.viewport-y = 0px; root.done = true; }
+        running: root.active && root.armed;
+        triggered => { root.viewport-y = 0px; root.armed = false; }
     }
 }
