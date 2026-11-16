@@ -83,6 +83,12 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         assert!(r + 8 < width, "{width}x{height}: the button's right edge {r} is inside the window ({width})");
         assert!(t > 64, "{width}x{height}: the card sits under the page's top bar");
         first_run_widths.push(r - l);
+        // The line under "Look on your network" wraps (it did at 1024x768 and was drawn under the card):
+        // a longer one pushes the card down by the room it needs, so nothing on the page is overlapped.
+        ui.set_nearby_words("Asks the other computers on your network, on Ollama's and llama.cpp's usual ports, for a few seconds. ".repeat(3).trim().into());
+        let longer = bounds(&draw(w, width, height), fill, 0).ok_or("the card's button is gone when the line wraps")?;
+        ui.set_nearby_words("".into());
+        assert!(longer.1 >= t + 28, "{width}x{height}: the card did not make way for the wrapped line ({} vs {t})", longer.1);
         assert!((28..=44).contains(&(b - t + 1)), "{width}x{height}: that is one button's height, not something else filled the same ({})", b - t + 1);
         // Only the card's button is drawn in that fill: with no offer, nothing on the page is.
         let offers = ui.global::<StartFreeState>().get_offers();

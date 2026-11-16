@@ -753,23 +753,23 @@ export component FirstRunScreen inherits Rectangle {
                     // A model already running on the network is looked for only when the person
                     // says so: the look tries two ports on each address of this network, briefly.
                     // Above the cards, because what it finds is put first among them.
-                    if root.connect-mode == "" && root.nearby-status != "found" : VerticalLayout {
-                        spacing: 4px;
-                        HorizontalLayout {
-                            alignment: start;
-                            FrButton {
-                                link: true;
-                                label: "Look on your network for a model already running";
-                                enabled: root.nearby-status != "looking";
-                                clicked => { root.look-nearby(); }
+                    // Its height is its wrapped text's (a second line was drawn under the card, 1024x768).
+                    if root.connect-mode == "" && root.nearby-status != "found" : Rectangle {
+                        height: nearby-col.preferred-height;
+                        nearby-col := VerticalLayout {
+                            width: parent.width;
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: start;
+                                FrButton { link: true; label: "Look on your network for a model already running"; enabled: root.nearby-status != "looking"; clicked => { root.look-nearby(); } }
                             }
-                        }
-                        Text {
-                            text: root.nearby-words != "" ? root.nearby-words
-                                : "Asks the other computers on your network, on Ollama's and llama.cpp's usual ports, for a few seconds.";
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-body;
-                            wrap: word-wrap;
+                            Text {
+                                text: root.nearby-words != "" ? root.nearby-words
+                                    : "Asks the other computers on your network, on Ollama's and llama.cpp's usual ports, for a few seconds.";
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-body;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                     if root.connect-mode == "" && root.nearby-status == "found" : Text {
