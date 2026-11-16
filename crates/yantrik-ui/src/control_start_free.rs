@@ -42,7 +42,7 @@ mod tests {
     /// does for `installer_install`: so an agent's call is refused, whatever its mode or grant.
     #[test]
     fn an_agents_call_to_the_press_is_refused_twice_over() {
-        let action = &SOURCE[SOURCE.find("Action::new(\"start_free_press\"").expect("the action")..];
+        let action = &SOURCE[SOURCE.find("\"start_free_press\"").expect("the action")..];
         let action = &action[..action.find("#[cfg(test)]").unwrap_or(action.len())];
         assert!(action.contains(".risk(\"dangerous\")"), "graded above an agent's ceiling");
         assert!(action.contains("|_| Err(refusal())"), "and the handler runs nothing for any caller");
