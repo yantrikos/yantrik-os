@@ -11190,8 +11190,6 @@ dependencies = [
  "serde_json",
  "slint",
  "tracing",
- "tungstenite",
- "ureq 2.12.1",
  "yantrik-app",
  "yantrik-app-build",
  "yantrik-browser-ports",
@@ -11232,6 +11230,9 @@ dependencies = [
 [[package]]
 name = "yantrik-browser-ports"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "yantrik-calendar"
@@ -11290,12 +11291,14 @@ dependencies = [
  "libc",
  "mailparse",
  "native-tls",
+ "proc-macro2",
  "regex",
  "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
+ "syn 2.0.117",
  "tracing",
  "tungstenite",
  "ureq 2.12.1",
@@ -11353,6 +11356,7 @@ dependencies = [
  "serde",
  "serde_json",
  "yantrik-companion-core",
+ "yantrik-ipc-contracts",
 ]
 
 [[package]]
@@ -11362,11 +11366,13 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "html2text",
+ "proc-macro2",
  "regex",
  "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
+ "syn 2.0.117",
  "tracing",
  "tungstenite",
  "ureq 2.12.1",

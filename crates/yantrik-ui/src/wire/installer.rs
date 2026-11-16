@@ -296,18 +296,9 @@ fn prepare(ui: &App) {
         });
     });
 
-    // Timezone.
-    let weak = ui.as_weak();
-    std::thread::spawn(move || {
-        let zone = installer_locale::detect_timezone();
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(ui) = weak.upgrade() else { return };
-            // Not over one the person (or an agent) already typed.
-            if ui.get_onboard_timezone().is_empty() {
-                ui.set_onboard_timezone(zone.into());
-            }
-        });
-    });
+    // Timezone: UTC to start, and the person's to change on the Review screen. The installer
+    // runs with nobody at the keyboard on a live image too, so it asks the network nothing.
+    ui.set_onboard_timezone(installer_locale::FALLBACK_TIMEZONE.into());
 }
 
 /// Shared installer state collected across onboarding callbacks.
@@ -519,8 +510,8 @@ fn install_to_target(
         &format!("127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n"),
     )?;
 
-    // The clock, from the Review screen. Written here rather than left to the desktop's own
-    // geolocation, which only fills a machine still at UTC and only after the first login.
+    // The clock, from the Review screen (UTC unless the person changed it). Nothing sets it
+    // later: the desktop's IP geolocation is off until the person turns it on (#1171).
     progress(61, "Setting the timezone...");
     let zone = installer_locale::configure_target_timezone(
         mount_dir,

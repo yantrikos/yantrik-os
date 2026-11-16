@@ -22,6 +22,8 @@
 use std::sync::Mutex;
 
 use crate::Instinct;
+use yantrik_ipc_contracts::location_consent;
+use yantrik_ipc_contracts::weather::named_place;
 use yantrik_companion_core::types::{CompanionState, UrgeSpec};
 
 /// Keywords that indicate actionable weather worth alerting about.
@@ -118,7 +120,23 @@ impl Instinct for WeatherWatchInstinct {
         "weather_watch"
     }
 
-    fn evaluate(&self, _state: &CompanionState) -> Vec<UrgeSpec> {
+    fn evaluate(&self, state: &CompanionState) -> Vec<UrgeSpec> {
+        self.alerts(location_consent::allowed(), &state.user_location, fetch_weather)
+    }
+}
+
+impl WeatherWatchInstinct {
+    /// The check, with the permission, the place the person gave and the fetch handed in.
+    ///
+    /// A place the person named is fetched by name: wttr.in is told the city, as any website is
+    /// told what was asked of it. With no place, wttr.in would find the machine from its IP
+    /// address, so that form is not made until the person has turned location lookups on
+    /// (`location_consent`); with neither, the watch stays off.
+    fn alerts(&self, allowed: bool, given: &str, fetch: impl FnOnce(&str) -> Option<String>) -> Vec<UrgeSpec> {
+        let place = named_place(given);
+        if place.is_none() && !allowed {
+            return vec![];
+        }
         let now = now_ts();
 
         // Rate-limit weather API calls
@@ -136,7 +154,7 @@ impl Instinct for WeatherWatchInstinct {
         }
 
         // Fetch current weather
-        let weather = match fetch_weather() {
+        let weather = match fetch(place.as_deref().unwrap_or("")) {
             Some(w) => w,
             None => return vec![],
         };
@@ -189,9 +207,9 @@ impl Instinct for WeatherWatchInstinct {
     }
 }
 
-/// Fetch brief weather from wttr.in.
-fn fetch_weather() -> Option<String> {
-    let url = format!("https://wttr.in/?format={WTTR_FORMAT}");
+/// Fetch brief weather from wttr.in for `place`; empty means wherever the caller's address says.
+fn fetch_weather(place: &str) -> Option<String> {
+    let url = format!("https://wttr.in/{}?format={WTTR_FORMAT}", place.replace(' ', "+"));
     let url = url.as_str();
     let output = std::process::Command::new("curl")
         .args(["-fsSL", "--max-time", "5", "--connect-timeout", "3", url])
@@ -256,4 +274,40 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+#[cfg(test)]
+mod consent_tests {
+    use super::*;
+
+    /// A fresh machine with no place and no yes: the check ends before the fetch, so no request
+    /// reaches wttr.in and nothing is learned of the machine's address.
+    #[test]
+    fn nothing_is_fetched_with_no_place_and_no_yes() {
+        let watch = WeatherWatchInstinct::new();
+        assert!(watch.alerts(false, "", |_| panic!("the fetch must not run")).is_empty());
+        assert!(watch.alerts(false, "I think location is somewhere near Oslo, maybe", |_| panic!("not a place")).is_empty());
+    }
+
+    #[test]
+    fn a_place_the_person_gave_is_fetched_by_name_without_the_switch() {
+        let watch = WeatherWatchInstinct::new();
+        let mut asked = None;
+        let _ = watch.alerts(false, " Fayetteville, AR ", |p| {
+            asked = Some(p.to_string());
+            None
+        });
+        assert_eq!(asked.as_deref(), Some("Fayetteville, AR"));
+    }
+
+    #[test]
+    fn with_the_switch_on_and_no_place_the_check_fetches_by_address() {
+        let watch = WeatherWatchInstinct::new();
+        let mut asked = None;
+        let _ = watch.alerts(true, "", |p| {
+            asked = Some(p.to_string());
+            None
+        });
+        assert_eq!(asked.as_deref(), Some(""));
+    }
 }

@@ -54,6 +54,7 @@ pub mod dock;
 /// A launch by name for an app already open on the desktop raises its window instead.
 pub(crate) mod already_open;
 pub(crate) mod browser_launch;
+pub(crate) mod browser_offer;
 pub(crate) mod browser_peer;
 pub(crate) mod browser_holder;
 pub(crate) mod browser_pipe;
@@ -75,6 +76,7 @@ pub mod meeting_brief_notice;
 pub mod meeting_brief_press;
 // Settings → Minds → Initiative.
 pub mod initiative;
+pub mod research;
 mod power;
 pub mod screenshot;
 pub mod capture_bar;
@@ -187,6 +189,7 @@ pub fn wire_all(ui: &App, ctx: &AppContext) {
     for_you::wire(ui);
     meeting_brief::wire(ui, ctx);
     initiative::wire(ui);
+    research::wire(ui);
     skill_store::wire(ui, ctx);
     device_dashboard::wire(ui, ctx);
     permission_dashboard::wire(ui, ctx);

@@ -38,3 +38,6 @@ ureq = { workspace = true }
 # The real dispatch behind a fake socket, for the test that `app_action` cannot reach an action
 # only the shell's own press runs.
 yantrik-surface = { workspace = true }
+# `tests/app_actions_reach.rs` shares the parser in `yantrik-companion/tests/common/syntax.rs`.
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
