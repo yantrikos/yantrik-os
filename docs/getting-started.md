@@ -201,13 +201,16 @@ you have three shapes of answer:
 
    **With no account and no model of your own**, the first card on that page is **Start free, no
    account**. It is there when the image knows a free provider that needs no sign-up (today
-   OVHcloud AI Endpoints), and it says on its face what pressing it does: your messages, *and
-   what Yantrik remembers about you*, are sent to that provider. It is free and rate-limited
-   (a couple of requests a minute), so it can be slow or busy. Nothing is sent and nothing is
-   chosen until you press it; one press allows sharing with that provider, gives the companion
-   Yantrik models, picks the provider's model and asks whether it can answer. You can switch it
-   off in Settings → AI & Intelligence, and after "Not now" the same card is offered from the ask
-   bar's "Start free" beside "Add key".
+   OVHcloud AI Endpoints), and it says on its face what pressing it does:
+
+   > **What you type, and what your minds read on this computer, is sent to <provider>.** That includes your messages, what Yantrik remembers about you, files and pages a mind opens for you, the screen and clipboard when a mind looks at them, and the name of your network, your open apps and how the computer is doing (battery, memory, disk). It applies to every mind you give Yantrik models. No account is needed. It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings → AI & Intelligence.
+
+   Nothing is sent and nothing is chosen until you press it; one press allows sharing with that
+   provider, gives the companion Yantrik models, makes the provider's model the one pick for every
+   mind, and asks whether it can answer. Switching sharing off in Settings → AI & Intelligence → AI
+   accounts stops the sending; the card is offered again until you switch the free tier off on the
+   Free AI accounts card. After "Not now" the same card is offered from the ask bar's "Start free"
+   beside "Add key".
 3. **A separate agent that attaches to the desktop.** Yantrik Mind, Hermes, Pi, DeepSeek and
    OpenClaw all do this; the last four ship as source in [`harnesses/`](../harnesses/). The
    OS never holds your endpoint, model name or key — the harness dials in and keeps its own

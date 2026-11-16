@@ -99,6 +99,11 @@ fn before_the_press_nothing_is_written_and_no_provider_is_asked() {
     let shown = offers(&[a.clone()], &catalogue);
     assert_eq!(shown.len(), 1);
     let _ = super::describe(&shown, None);
+    // What the shell publishes for `describe shell`, and what the picker's label reads.
+    let described = super::for_describe();
+    assert_eq!(described["pressed"], false);
+    assert_eq!(described["offered"][0]["account"], "free-ovh");
+    let _ = crate::wire::ai_accounts_card::for_describe();
     let _steps = real(&a, "gpt-oss-120b", &s);
     assert_eq!(files(home.path()), (None, None, None), "no sharing, no pick, no Yantrik models");
     assert_eq!(consent::load(&consent::path()).sharing_for(&a), Sharing::Off, "every default stays as it is");
@@ -130,6 +135,19 @@ fn after_the_press_the_files_are_what_the_three_paths_leave_by_hand() {
     crate::picker::restore_picks(Default::default());
 }
 
+/// A press that goes wrong, from a start the test sets up; `last` is what the person had.
+fn failing_press(a: &Account, model: &str, s: &Stub) -> String {
+    let steps = Real::new(a.clone(), model.into(), Box::new(|| Ok(String::new())));
+    let Outcome::Failed(words) = press(&steps, "OVHcloud") else { panic!("the press did not fail") };
+    assert!(words.ends_with("Nothing was changed."), "{words}");
+    assert_eq!(s.hits.load(Ordering::SeqCst), 0, "the provider was never asked");
+    words
+}
+
+fn marker_bytes(home: &Path) -> Option<Vec<u8>> {
+    bytes(&provider_handoff::marker_path(home, provider_handoff::companion::ID))
+}
+
 #[test]
 fn a_step_that_fails_leaves_the_earlier_steps_undone_on_disk() {
     let home = Home::new("start-free-fails");
@@ -142,21 +160,89 @@ fn a_step_that_fails_leaves_the_earlier_steps_undone_on_disk() {
     std::fs::write(consent::path(), &had).expect("an earlier file");
 
     // Step 3 fails: the model is not one the catalogue lists.
-    let steps = Real::new(a.clone(), "free-ovh/not-a-model".into(), Box::new(|| Ok(String::new())));
-    let out = press(&steps, "OVHcloud");
-    let Outcome::Failed(words) = out else { panic!("{out:?}") };
-    assert!(words.starts_with("Choosing OVHcloud's model did not work:") && words.ends_with("Nothing was changed."), "{words}");
+    let words = failing_press(&a, "free-ovh/not-a-model", &s);
+    assert!(words.starts_with("Choosing OVHcloud's model did not work:"), "{words}");
     assert_eq!(bytes(&consent::path()), Some(had.clone()), "the person's sharing file is as it was");
     assert_eq!(without_token(&provider_handoff::companion::file(home.path())), None, "the companion is off Yantrik models again");
+    assert_eq!(marker_bytes(home.path()), None);
     assert_eq!(bytes(&crate::picker::choices::path()), None, "no pick was written");
-    assert_eq!(s.hits.load(Ordering::SeqCst), 0, "the provider was never asked");
 
-    // Step 1 fails: a local account has no such choice.
+    // Step 1 fails: a local account has no such choice. Nothing to undo, nothing touched.
     let mut local = a.clone();
     local.local = true;
-    let steps = Real::new(local, "free-ovh/gpt-oss-120b".into(), Box::new(|| Ok(String::new())));
-    let Outcome::Failed(words) = press(&steps, "OVHcloud") else { panic!("refused") };
+    let words = failing_press(&local, "free-ovh/gpt-oss-120b", &s);
     assert!(words.starts_with("Allowing sharing with OVHcloud did not work:"), "{words}");
     assert_eq!(bytes(&consent::path()), Some(had), "still as it was");
     assert_eq!(without_token(&provider_handoff::companion::file(home.path())), None);
+}
+
+/// The companion was on Yantrik models before the press: whatever fails, that choice stays, byte for byte.
+#[test]
+fn a_press_that_fails_never_takes_back_yantrik_models_the_person_already_gave() {
+    let home = Home::new("start-free-already");
+    crate::picker::restore_picks(Default::default());
+    let s = stub();
+    let (a, _) = world(&s);
+    consent::set_for_account(&consent::path(), &a, Sharing::Share).expect("sharing");
+    let plan = crate::wire::harness_provider::plan(provider_handoff::companion::ID, provider_handoff::GATEWAY_ID).expect("the plan");
+    provider_handoff::apply(home.path(), &plan).expect("Use Yantrik models");
+    let companion_file = bytes(&provider_handoff::companion::file(home.path()));
+    let marker = marker_bytes(home.path());
+    let token = serde_json::from_slice::<serde_json::Value>(companion_file.as_deref().expect("its file")).expect("json")["api_key"]
+        .as_str()
+        .expect("a token")
+        .to_string();
+    consent::save(&consent::path(), &consent::Consent::default()).expect("no choice yet, for the press to make");
+    let sharing = bytes(&consent::path());
+
+    // (i) Step 3 fails.
+    let words = failing_press(&a, "free-ovh/not-a-model", &s);
+    assert!(words.starts_with("Choosing OVHcloud's model did not work:"), "{words}");
+    // (ii) Step 2 would fail at its plan (nothing is listed): there is nothing to give, so it is not tried.
+    crate::ai_accounts::set_listing_for_test(vec![a.clone()], Catalogue::default());
+    let words = failing_press(&a, "free-ovh/gpt-oss-120b", &s);
+    assert!(words.starts_with("Choosing OVHcloud's model did not work:"), "{words}");
+
+    assert_eq!(bytes(&provider_handoff::companion::file(home.path())), companion_file, "its file, token and all");
+    assert_eq!(marker_bytes(home.path()), marker, "its marker");
+    assert!(crate::gateway::tokens().verify(&token).is_some(), "its token still opens the gateway");
+    assert!(provider_handoff::uses_gateway(home.path(), provider_handoff::companion::ID));
+    assert_eq!(bytes(&consent::path()), sharing, "the sharing choice of the press is undone");
+    provider_handoff::revert(home.path(), provider_handoff::companion::ID).expect("revert");
+}
+
+/// Nothing was given before, and the plan itself fails (nothing is listed to answer with).
+#[test]
+fn a_press_whose_plan_fails_writes_nothing_and_says_which_step() {
+    let home = Home::new("start-free-plan");
+    crate::picker::restore_picks(Default::default());
+    let s = stub();
+    let (a, _) = world(&s);
+    crate::ai_accounts::set_listing_for_test(vec![a.clone()], Catalogue::default());
+    let words = failing_press(&a, "free-ovh/gpt-oss-120b", &s);
+    assert!(words.starts_with("Giving Yantrik Companion Yantrik models did not work:"), "{words}");
+    assert_eq!(files(home.path()), (None, None, None));
+    assert_eq!(marker_bytes(home.path()), None);
+}
+
+/// `apply` writes the file and accepts a token before it writes its marker: a marker that cannot be
+/// written leaves a file and a token, which the failed press takes away again.
+#[test]
+fn a_press_whose_apply_fails_after_its_write_leaves_no_file_token_or_record() {
+    let home = Home::new("start-free-after-write");
+    crate::picker::restore_picks(Default::default());
+    let s = stub();
+    let (a, _) = world(&s);
+    // The marker's place is taken by a folder, so the last thing `apply` does cannot be done.
+    let marker = provider_handoff::marker_path(home.path(), provider_handoff::companion::ID);
+    std::fs::create_dir_all(&marker).expect("a folder where the marker goes");
+    let words = failing_press(&a, "free-ovh/gpt-oss-120b", &s);
+    assert!(words.starts_with("Giving Yantrik Companion Yantrik models did not work:"), "{words}");
+    assert_eq!(files(home.path()), (None, None, None), "no sharing, no pick, no companion file");
+    let left: Vec<String> = std::fs::read_dir(marker.parent().expect("the folder"))
+        .expect("the handoff folder")
+        .map(|e| e.expect("an entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, ["companion.json"], "only the folder the test put there: no progress record, no backup");
+    assert_eq!(crate::gateway::tokens().revoke(provider_handoff::companion::ID), Ok(false), "no token is left for the companion");
 }

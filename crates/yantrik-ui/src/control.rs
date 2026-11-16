@@ -902,10 +902,8 @@ pub fn publish(
                 // installed, or its config file was never written, or its unit is stopped. An
                 // agent asked to fix that needs the same list the Settings page draws.
                 .with("harnesses", crate::wire::harness::catalogue_for_describe())
-                // Settings → AI & Intelligence → AI accounts, as the card shows it (#673): each
-                // account, its models and whether personal things may go there. No key.
+                // Settings → AI & Intelligence → AI accounts, as the card shows it (#673): each account, its models and whether personal things may go there. No key.
                 .with("ai_accounts", crate::wire::ai_accounts_card::for_describe())
-                // "Start free, no account": the card as offered, its sentence, and whether it was pressed.
                 .with("start_free", crate::start_free::for_describe())
                 // Agents' commands running now, per agent: the job, its command, how long, and
                 // whether it seems to be waiting for input. See `control_agent_terminal`.
@@ -2259,9 +2257,7 @@ pub fn publish(
 
     // The installer and the updater keep their actions in their own modules: the riskiest things the
     // shell can be asked to do (one erases a disk, the other replaces every binary) are read together.
-    let surface = crate::control_installer::actions(surface, ui);
-    // The free card's press is a consent only the person gives: graded above an agent, and refused.
-    let surface = crate::control_start_free::actions(surface);
+    let surface = crate::control_start_free::actions(crate::control_installer::actions(surface, ui));
     let surface = crate::control_update::actions(surface, ui);
     let surface = crate::control_files::actions(surface, ui);
     // Reading a display's text from its pixels, for windows that publish nothing else (#257).

@@ -379,17 +379,12 @@ pub(crate) fn pick_model_for(mind: &str, model: &str) {
     save_choices();
 }
 
-/// The picks as they stand, to put back if a step after them fails.
-pub(crate) fn picks() -> Choices {
-    lock(&CHOICES).clone()
-}
-
-/// Put the picks back as [`picks`] gave them, here and on disk.
+/// Tests only: the picks back to `was`, here and on disk.
+#[cfg(test)]
 pub(crate) fn restore_picks(was: Choices) {
     let none = was == Choices::default();
     *lock(&CHOICES) = was;
     if none {
-        // Nothing was ever picked: the file goes too, not an empty one in its place.
         let _ = std::fs::remove_file(choices::path());
         yantrik_harness::host::detail::refresh_model_lines();
     } else {

@@ -532,7 +532,7 @@ export component FirstRunScreen inherits Rectangle {
         root.step == 1 ? "Welcome to Yantrik. " + root.welcome-line + " " + root.welcome-next + " Buttons: Make text bigger. Read this to me. "
             + (root.ask-name ? "What should your minds call you? You can leave this empty. " : "") + "Get started."
       : root.step == 2 ? "Who should do the thinking? Choose one. "
-            + (StartFreeState.offers.length > 0 && !root.in-installer ? "First: Start free, no account, with " + StartFreeState.offers[0].provider + ". " + StartFreeState.offers[0].sentence + " " : "")
+            + (StartFreeState.offers.length > 0 && !root.in-installer ? "First: Start free, no account, with " + StartFreeState.offers[0].provider + ". " + StartFreeState.offers[0].lead + " " + StartFreeState.offers[0].detail + " " : "")
             + (root.featured.length > 0 && root.featured[0].recommended != "" ? "First: " + root.featured[0].name + ", " + root.featured[0].line + ". " + root.featured[0].recommended + ". " : "")
             + (root.chosen-name == "" ? "" : root.chosen-name + " is chosen. ") + "Then connect it."
       : root.step == 3 ? root.share-sentence + " " + root.companion-note
@@ -750,15 +750,6 @@ export component FirstRunScreen inherits Rectangle {
                         font-size: Theme.fs-title-2;
                         wrap: word-wrap;
                     }
-                    // What choosing a model also downloads, drawn before the pick that starts it (and
-                    // after it, as the install's own words): the download starts only once the first
-                    // run has had this sentence on a screen (`default_mind::sentence_shown`).
-                    if root.default-mind-words != "" : Text {
-                        text: root.default-mind-words;
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-title-2;
-                        wrap: word-wrap;
-                    }
                     // A model already running on the network is looked for only when the person
                     // says so: the look tries two ports on each address of this network, briefly.
                     // Above the cards, because what it finds is put first among them.
@@ -788,17 +779,17 @@ export component FirstRunScreen inherits Rectangle {
                         wrap: word-wrap;
                     }
                     // Once a card is chosen, the list steps aside for connecting it, so the key field
-                    // is on screen; "Choose another" brings the list back.
-                    // "Start free, no account" leads, before the other cards: the keyless free
-                    // models the OS already has, pressed on purpose (nothing is sent before). Not
-                    // in the installer, whose choice is carried to the new machine, not made here.
+                    // is on screen; "Choose another" brings the list back. "Start free, no account"
+                    // leads (not in the installer, whose choice is carried, not made here); the
+                    // Hermes sentence is about the account cards after it, never the free card.
                     if root.connect-mode == "" && !root.in-installer : StartFreeCard { }
+                    if root.default-mind-words != "" : Text { text: root.default-mind-words; color: Theme.text-primary; font-size: Theme.fs-title-2; wrap: word-wrap; }
                     if root.connect-mode == "" : VerticalLayout {
                         spacing: 12px;
                         for p[i] in root.featured : FrProviderCard {
                             p: p;
                             selected: p.id == root.chosen-id;
-                            init => { if i == 0 && StartFreeState.offers.length == 0 { self.focus-me(); } }
+                            init => { if i == 0 { self.focus-me(); } }
                             chosen => { root.choose-provider(p.id); }
                         }
                     }

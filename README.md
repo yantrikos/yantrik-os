@@ -209,11 +209,13 @@ The image ships **no model and no mind**. You point it at one during first-run s
 | **Claude CLI** | Install the Claude Code CLI | Anthropic |
 
 **No key, no account, no GPU?** First-run setup leads with **Start free, no account**, when the
-image knows a free provider that needs no sign-up (today OVHcloud AI Endpoints). Pressing it
-sends your messages, **and what Yantrik remembers about you**, to that provider, and the card says
-so, with the provider's name, before you press. It is free and rate-limited (a couple of
-requests a minute), so it can be slow or busy. Nothing is sent, and nothing is chosen, until you
-press it; you can switch it off in Settings → AI & Intelligence. Every other card stays.
+image knows a free provider that needs no sign-up (today OVHcloud AI Endpoints). Nothing is sent,
+and nothing is chosen, until you press it, and the card says what pressing it does, with the
+provider's name, before you do:
+
+> **What you type, and what your minds read on this computer, is sent to <provider>.** That includes your messages, what Yantrik remembers about you, files and pages a mind opens for you, the screen and clipboard when a mind looks at them, and the name of your network, your open apps and how the computer is doing (battery, memory, disk). It applies to every mind you give Yantrik models. No account is needed. It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings → AI & Intelligence.
+
+Every other card stays.
 
 Or attach a separate agent, which keeps its own endpoint and credentials and dials in to the
 desktop — see [docs/harness.md](docs/harness.md).

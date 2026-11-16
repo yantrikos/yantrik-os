@@ -12,7 +12,8 @@ export struct StartFreeOffer {
     account: string,   // the catalogue's account id
     provider: string,  // "OVHcloud AI Endpoints"
     label: string,     // "No account needed"
-    sentence: string,  // what is sent, to whom, and that it is free and rate-limited
+    lead: string,      // the bold first line: what is sent, and to whom
+    detail: string,    // what that includes, that it is free and rate-limited, how to switch it off
     button: string,    // "Start free with <provider>"
 }
 
@@ -40,7 +41,7 @@ component OfferCard inherits Rectangle {
     border-width: 1px;
     border-color: Theme.border-default;
     accessible-role: groupbox;
-    accessible-label: "Start free, no account. " + root.o.provider + ". " + root.o.label + ". " + root.o.sentence;
+    accessible-label: "Start free, no account. " + root.o.provider + ". " + root.o.label + ". " + root.o.lead + " " + root.o.detail;
 
     col := VerticalLayout {
         padding: 16px;
@@ -73,7 +74,14 @@ component OfferCard inherits Rectangle {
             wrap: word-wrap;
         }
         Text {
-            text: root.o.sentence;
+            text: root.o.lead;
+            color: Theme.text-primary;
+            font-size: Theme.fs-title-2;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.o.detail;
             color: Theme.text-secondary;
             font-size: Theme.fs-title-2;
             wrap: word-wrap;

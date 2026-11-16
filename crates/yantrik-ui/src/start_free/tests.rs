@@ -52,18 +52,78 @@ fn the_card_names_the_provider_and_says_what_is_sent_on_its_face() {
     assert_eq!(card.label, LABEL);
     assert_eq!(card.label, "No account needed");
     assert_eq!(card.button, "Start free with OVHcloud AI Endpoints");
-    assert!(card.sentence.contains("OVHcloud AI Endpoints") && card.sentence.contains("sent to"), "{}", card.sentence);
-    assert_eq!(
-        card.sentence,
-        "Your messages, and what Yantrik remembers about you, are sent to OVHcloud AI Endpoints. No account is needed. \
-         It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings \u{2192} AI & Intelligence."
-    );
-    assert_eq!(sentence("X"), sentence("X"));
-    assert_eq!(card.model, "free-ovh/gpt-oss-120b");
-    // The sentence is a field of the card, not of a "show more": describe carries it, collapsed or not.
+    assert_eq!(card.lead, "What you type, and what your minds read on this computer, is sent to OVHcloud AI Endpoints.");
+    let all = format!("{} {}", card.lead, card.detail);
+    assert_eq!(all, sentence("OVHcloud AI Endpoints"), "the card, describe and the refusal take one text");
+    assert!(all.contains("sent to") && all.contains("free and rate-limited"), "{all}");
+    // The card has no "show more": the lead and the rest are both fields of the offer itself.
     let described = super::describe(&found, None);
-    assert_eq!(described["offered"][0]["sentence"], card.sentence.as_str());
+    assert_eq!(described["offered"][0]["sentence"], all.as_str());
     assert_eq!(described["pressed"], false);
+    assert_eq!(card.model, "free-ovh/gpt-oss-120b");
+}
+
+/// What the press grants: the consent is for every call a mind makes, and that is what a turn holds.
+#[test]
+fn the_sentence_names_each_kind_of_thing_a_mind_sends() {
+    let all = sentence("X").to_lowercase();
+    for word in [
+        "what you type", "your messages", "what yantrik remembers about you", "files", "pages", "the screen", "clipboard",
+        "name of your network", "open apps", "how the computer is doing", "every mind you give yantrik models",
+    ] {
+        assert!(all.contains(word), "the card does not say {word:?}: {all}");
+    }
+}
+
+/// A turn's system state, built with every reading filled in: the card has a word for each of its
+/// lines, so a new line in the prompt fails here until the card names it.
+#[test]
+fn every_line_of_a_companions_system_state_has_a_word_in_the_sentence() {
+    let snap = yantrik_os::SystemSnapshot {
+        battery_available: true,
+        battery_level: 50,
+        network_connected: true,
+        network_ssid: Some("Home".into()),
+        cpu_usage_percent: 12.0,
+        memory_used_bytes: 1 << 30,
+        memory_total_bytes: 4 << 30,
+        disk_total_bytes: 100 << 30,
+        disk_available_bytes: 50 << 30,
+        running_processes: vec![yantrik_os::ProcessInfo { name: "firefox".into(), pid: 1, cpu_percent: 1.0 }],
+        idle_seconds: 600,
+        user_idle: true,
+        ..Default::default()
+    };
+    let state = crate::system_context::format_system_context(&snap);
+    let all = sentence("X").to_lowercase();
+    let said_as = |label: &str| match label {
+        "Network" => Some("name of your network"),
+        "Apps" => Some("open apps"),
+        "Battery" | "CPU" | "RAM" | "Disk" | "User idle" => Some("how the computer is doing"),
+        _ => None,
+    };
+    let lines: Vec<&str> = state.lines().collect();
+    assert!(lines.len() >= 7, "every reading is in the state: {state}");
+    for line in lines {
+        let label = line.split(':').next().unwrap_or_default();
+        let word = said_as(label).unwrap_or_else(|| panic!("the turn carries {label:?} and the card has no word for it: add one to the sentence and to this table"));
+        assert!(all.contains(word), "{label}: {word:?} is not in the sentence");
+    }
+}
+
+/// The README and the docs hold the same text as the card (with `<provider>` for its name).
+#[test]
+fn the_readme_and_the_docs_say_what_the_card_says() {
+    let lead = super::offers::LEAD.replace("{p}", "<provider>");
+    for (name, doc) in [
+        ("README.md", include_str!("../../../../README.md")),
+        ("docs/getting-started.md", include_str!("../../../../docs/getting-started.md")),
+        ("docs/app-control.md", include_str!("../../../../docs/app-control.md")),
+    ] {
+        let doc = doc.replace("**", "");
+        assert!(doc.contains(&lead), "{name} does not carry the lead: {lead}");
+        assert!(doc.contains(super::offers::DETAIL), "{name} does not carry the rest");
+    }
 }
 
 #[test]
@@ -132,9 +192,6 @@ impl Steps for Stub {
     fn undo_models(&self) {
         self.log.borrow_mut().push("undo-give");
     }
-    fn undo_pick(&self) {
-        self.log.borrow_mut().push("undo-pick");
-    }
     fn check(&self) -> Result<String, String> {
         self.log.borrow_mut().push("check");
         self.check.clone()
@@ -150,11 +207,11 @@ fn the_press_goes_in_the_order_the_three_paths_go_and_ends_on_the_check() {
 }
 
 #[test]
-fn each_failed_step_is_said_with_why_and_leaves_the_earlier_steps_undone() {
+fn each_failed_step_is_said_with_why_and_undoes_only_the_steps_that_succeeded() {
     for (fail, expect_log, words) in [
-        ("allow", vec!["allow", "undo-allow"], "Allowing sharing with OVHcloud did not work: it broke. Nothing was changed."),
-        ("give", vec!["allow", "give", "undo-give", "undo-allow"], "Giving Yantrik Companion Yantrik models did not work: it broke. Nothing was changed."),
-        ("pick", vec!["allow", "give", "pick", "undo-pick", "undo-give", "undo-allow"], "Choosing OVHcloud's model did not work: it broke. Nothing was changed."),
+        ("allow", vec!["allow"], "Allowing sharing with OVHcloud did not work: it broke. Nothing was changed."),
+        ("give", vec!["allow", "give", "undo-allow"], "Giving Yantrik Companion Yantrik models did not work: it broke. Nothing was changed."),
+        ("pick", vec!["allow", "give", "pick", "undo-give", "undo-allow"], "Choosing OVHcloud's model did not work: it broke. Nothing was changed."),
     ] {
         let s = Stub::new(Some(fail));
         let out = press(&s, "OVHcloud");

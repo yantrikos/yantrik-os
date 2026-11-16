@@ -63,12 +63,14 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         account: "free-ovh".into(),
         provider: "OVHcloud AI Endpoints".into(),
         label: "No account needed".into(),
-        sentence: "Your messages, and what Yantrik remembers about you, are sent to OVHcloud AI Endpoints. No account is needed. \
-                   It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings \u{2192} AI & Intelligence."
+        lead: "What you type, and what your minds read on this computer, is sent to OVHcloud AI Endpoints.".into(),
+        detail: "That includes your messages, what Yantrik remembers about you, files and pages a mind opens for you, the screen and clipboard when a mind looks at them, and the name of your network, your open apps and how the computer is doing (battery, memory, disk). It applies to every mind you give Yantrik models. No account is needed. It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings \u{2192} AI & Intelligence."
             .into(),
         button: "Start free with OVHcloud AI Endpoints".into(),
     };
     ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![offer])));
+    // The Hermes sentence (default_mind::BEFORE_NEXT) is on this page before any choice: below the card.
+    ui.set_default_mind_words("Choosing an account's model also sets up Hermes, your mind: about 3 GB from GitHub and Python's package index.".into());
     ui.show()?;
     for (width, height) in [(1280u32, 800u32), (1024, 768)] {
         ui.set_win_w(width as f32);
@@ -81,6 +83,12 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         assert!(r + 8 < width, "{width}x{height}: the button's right edge {r} is inside the window ({width})");
         assert!(t > 64, "{width}x{height}: the card sits under the page's top bar");
         first_run_widths.push(r - l);
+        assert!((28..=44).contains(&(b - t + 1)), "{width}x{height}: that is one button's height, not something else filled the same ({})", b - t + 1);
+        // Only the card's button is drawn in that fill: with no offer, nothing on the page is.
+        let offers = ui.global::<StartFreeState>().get_offers();
+        ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(Vec::<StartFreeOffer>::new())));
+        assert!(bounds(&draw(w, width, height), fill, 0).is_none(), "{width}x{height}: something else on the page has the button's fill");
+        ui.global::<StartFreeState>().set_offers(offers);
     }
     assert_eq!(first_run_widths[0], first_run_widths[1], "the card's button is not narrowed or clipped at the smaller size");
 
@@ -108,9 +116,10 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
         ui.set_win_h(height as f32);
         let p = draw(w, width, height);
         save(&p, &still(&format!("minds-{width}x{height}")))?;
-        let (l, _, r, _) = bounds(&p, ui.get_button_fill(), 0).ok_or("Use Yantrik models is not on the page")?;
+        let (l, t, r, b) = bounds(&p, ui.get_button_fill(), 0).ok_or("Use Yantrik models is not on the page")?;
         assert!(r + 8 < width, "{width}x{height}: the button's right edge {r} is inside the window ({width})");
         minds_widths.push(r - l);
+        assert!((28..=44).contains(&(b - t + 1)), "{width}x{height}: one button's height");
         let (_, _, ink_right, _) = bounds(&p, ui.get_banner_ink(), 24).ok_or("the banner's words are not on the page")?;
         assert!(ink_right + 8 < width, "{width}x{height}: the banner's words end at {ink_right}, inside the window ({width})");
     }

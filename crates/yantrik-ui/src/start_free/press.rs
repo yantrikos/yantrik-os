@@ -28,14 +28,16 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// What each step does and undoes. The real one calls the existing functions (`real.rs`).
+/// What each step does and undoes. A step that fails puts back whatever it half wrote itself (only
+/// the second can: `apply` writes a file, then a token, then a marker); `undo_*` is for a step that
+/// succeeded, and undoes only what that step changed, never what was there before the press. The real
+/// one calls the existing functions (`real.rs`).
 pub trait Steps {
     fn allow_sharing(&self) -> Result<(), String>;
     fn give_models(&self) -> Result<(), String>;
     fn pick_model(&self) -> Result<(), String>;
     fn undo_sharing(&self);
     fn undo_models(&self);
-    fn undo_pick(&self);
     /// "Can it answer?": what the provider said, or why it did not.
     fn check(&self) -> Result<String, String>;
 }
@@ -64,16 +66,13 @@ pub fn answered_words(provider: &str, said: &str) -> String {
 
 pub fn press(steps: &dyn Steps, provider: &str) -> Outcome {
     if let Err(why) = steps.allow_sharing() {
-        steps.undo_sharing();
         return Outcome::Failed(failure_words(Step::Sharing, provider, &why));
     }
     if let Err(why) = steps.give_models() {
-        steps.undo_models();
         steps.undo_sharing();
         return Outcome::Failed(failure_words(Step::Models, provider, &why));
     }
     if let Err(why) = steps.pick_model() {
-        steps.undo_pick();
         steps.undo_models();
         steps.undo_sharing();
         return Outcome::Failed(failure_words(Step::Pick, provider, &why));

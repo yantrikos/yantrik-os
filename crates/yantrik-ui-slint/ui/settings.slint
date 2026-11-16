@@ -2907,21 +2907,12 @@ SettingRow{label:"About this device";description:"Detailed information about thi
                             wrap: word-wrap;
                         }
 
-                        // Wraps: a long sentence ("…allow sharing in AI & Intelligence → AI accounts…")
-                        // made the column wider than the window, and the buttons ran off its edge.
+                        // Wraps: its width pushed the buttons off the window's edge (#1167).
                         if root.harness-error != "" : Rectangle {
                             background: Theme.color-danger-dim;
                             border-radius: Theme.r-md;
                             height: error-text.preferred-height + 2 * Theme.sp-2;
-                            error-text := Text {
-                                x: Theme.sp-3;
-                                y: Theme.sp-2;
-                                width: parent.width - 2 * Theme.sp-3;
-                                text: root.harness-error;
-                                color: Theme.color-danger;
-                                font-size: Theme.fs-body;
-                                wrap: word-wrap;
-                            }
+                            error-text := Text { x: Theme.sp-3; y: Theme.sp-2; width: parent.width - 2 * Theme.sp-3; text: root.harness-error; color: Theme.color-danger; font-size: Theme.fs-body; wrap: word-wrap; }
                         }
 
                         if root.harness-notice != "" : Rectangle {

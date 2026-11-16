@@ -8,9 +8,13 @@
 
 use yantrik_app_runtime::control::{Action, App as ControlSurface};
 
-/// Said to any caller of the action.
-pub const REFUSAL: &str = "Start free, no account sends the person's messages, and what Yantrik remembers about them, to a provider. \
-    Only the person's own press on the card does that; an agent cannot.";
+/// Said to any caller of the action: what the press grants, in the card's own words.
+pub fn refusal() -> String {
+    format!(
+        "Start free, no account: {} Only the person's own press on the card does that; an agent cannot.",
+        crate::start_free::offers::lead("the provider the card names")
+    )
+}
 
 pub fn actions(surface: ControlSurface) -> ControlSurface {
     surface.action(
@@ -20,8 +24,8 @@ pub fn actions(surface: ControlSurface) -> ControlSurface {
              give the companion Yantrik models, and pick the provider's model. Refused to an agent; the person presses the card.",
         )
         .risk("dangerous")
-        .explain(|_| REFUSAL.to_string()),
-        |_| Err(REFUSAL.to_string()),
+        .explain(|_| refusal()),
+        |_| Err(refusal()),
     )
 }
 
@@ -41,16 +45,16 @@ mod tests {
         let action = &SOURCE[SOURCE.find("Action::new(\"start_free_press\"").expect("the action")..];
         let action = &action[..action.find("#[cfg(test)]").unwrap_or(action.len())];
         assert!(action.contains(".risk(\"dangerous\")"), "graded above an agent's ceiling");
-        assert!(action.contains("|_| Err(REFUSAL.to_string())"), "and the handler runs nothing for any caller");
+        assert!(action.contains("|_| Err(refusal())"), "and the handler runs nothing for any caller");
         assert!(!action.contains("press::press") && !action.contains("Real::new"), "no way to the press from here");
-        assert!(REFUSAL.contains("Only the person's own press"));
+        assert!(refusal().contains("Only the person's own press") && refusal().contains("what your minds read on this computer"));
     }
 
     /// The person's press is the card's button: a callback of the card, which starts the press.
     #[test]
     fn the_person_presses_the_card_and_the_surface_only_describes_it() {
         assert!(UI.contains("g.on_press(") && UI.contains("press::press(&steps, &offer.provider)"));
-        assert!(CONTROL.contains("crate::control_start_free::actions(surface)"));
+        assert!(CONTROL.contains("crate::control_start_free::actions(crate::control_installer::actions(surface, ui))"));
         assert!(CONTROL.contains(".with(\"start_free\", crate::start_free::for_describe())"));
     }
 }

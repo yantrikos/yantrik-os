@@ -1,0 +1,41 @@
+// The probes of verify-start-free (src/start_free_tests.rs), kept out of preview.slint: first-run's
+// "Who should do the thinking?" and Settings → Minds, at the size the window has.
+
+import { Theme } from "theme.slint";
+import { FirstRunScreen, FirstRunProvider } from "onboarding_first_run.slint";
+import { SettingsScreen, HarnessRowData } from "settings.slint";
+import { StartFreeState, StartFreeOffer } from "components/start_free_card.slint";
+export { StartFreeState, StartFreeOffer, HarnessRowData }
+
+// The free card leads; the offer comes from the test through StartFreeState, as it does from the
+// shell. `default-mind-words` is the Hermes sentence, drawn below the free card.
+export component StartFreePageProbe inherits Window {
+    in property <length> win-w: 1280px;
+    in property <length> win-h: 800px;
+    width: root.win-w; height: root.win-h;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    out property <color> button-fill: Theme.primary-fill;
+    in property <[FirstRunProvider]> featured;
+    in property <string> default-mind-words;
+    FirstRunScreen { width: 100%; height: 100%; step: 2; featured: root.featured; default-mind-words: root.default-mind-words; }
+}
+
+// Settings → Minds with the sharing banner up and one mind that can be given Yantrik models.
+export component MindsPageProbe inherits Window {
+    in property <length> win-w: 1280px;
+    in property <length> win-h: 800px;
+    width: root.win-w; height: root.win-h;
+    default-font-family: Theme.font-ui;
+    background: Theme.bg-deep;
+    out property <color> button-fill: Theme.primary-fill;
+    out property <color> banner-ink: Theme.color-danger;
+    in property <string> error;
+    in property <[HarnessRowData]> rows;
+    SettingsScreen {
+        width: 100%; height: 100%;
+        active-category: 8;
+        harness-error: root.error;
+        harness-rows: root.rows;
+    }
+}

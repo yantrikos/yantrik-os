@@ -23,7 +23,7 @@ mod tests_files;
 
 use std::sync::Mutex;
 
-pub use offers::{offers, Offer};
+pub use offers::{offers, sentence, Offer};
 
 /// What the press did, for `describe shell`: nothing is written to disk for this, the choice
 /// itself is on disk where the three existing paths keep it.
@@ -52,7 +52,7 @@ pub fn describe(offers: &[Offer], pressed: Option<&Pressed>) -> serde_json::Valu
             "account": o.account,
             "provider": o.provider,
             "label": o.label,
-            "sentence": o.sentence,
+            "sentence": sentence(&o.provider),
             "button": o.button,
         })).collect::<Vec<_>>(),
         "pressed": pressed.is_some(),

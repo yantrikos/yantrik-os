@@ -34,7 +34,8 @@ fn publish(ui: &App) {
             account: o.account.into(),
             provider: o.provider.into(),
             label: o.label.into(),
-            sentence: o.sentence.into(),
+            lead: o.lead.into(),
+            detail: o.detail.into(),
             button: o.button.into(),
         })
         .collect();
