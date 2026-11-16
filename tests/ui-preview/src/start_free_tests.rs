@@ -145,8 +145,10 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
 
     // ── The free card arrives after the account cards ──
     // The shell's first account listing can end seconds after the page shows. The account cards are drawn,
-    // the first one holds the focus, and the person has gone down the page; then the free card is offered.
-    // The page takes the focus itself and goes to its top, so the card's title is not under the top bar.
+    // the first one holds the focus, and the person has tabbed to "Not now", the last thing on the page and
+    // far below the fold with bigger text; then the free card is offered. The page takes the focus itself
+    // and goes to its top, so the card's title is not under the top bar. Either half alone does not hold:
+    // at its top with the focus still on "Not now", the next resize scrolls the page back down to it.
     let ui = StartFreePageProbe::new()?;
     ui.set_featured(ModelRc::new(VecModel::from(first_run_tests::featured_none_found())));
     ui.set_scale(1.5);
@@ -156,9 +158,13 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     ui.set_win_h(height as f32);
     let fill = ui.get_button_fill();
     assert!(bounds(&draw(w, width, height), fill, 0).is_none(), "no free card is drawn before one is offered");
-    for _ in 0..12 {
+    for _ in 0..20 {
+        if ui.get_focused_label() == "Not now" {
+            break;
+        }
         key(w, slint::platform::Key::Tab.into());
     }
+    assert_eq!(ui.get_focused_label(), "Not now", "Tab reaches the last button on the page");
     draw(w, width, height);
     ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![offer()])));
     // The window is never made taller than the page here: that alone would put the page back at its top.
@@ -169,6 +175,16 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     save(&late, &still("first-run-late-card-text-1.5"))?;
     let a = bounds(&late, fill, 0).ok_or("the late card's button is not in the window that ends just under it")?;
     assert_eq!(a.1, base.1, "a free card offered after the account cards: the page is not at its top (the card is at {}, not {})", a.1, base.1);
+    // And it stays there: the focus went to the page too. Every `draw` is a resize, and a focus left on
+    // "Not now" would have the next one scroll the page back down to it.
+    let a = bounds(&draw(w, width, snug), fill, 0).ok_or("after the late card, the next resize scrolled its button out of the window: the focus was left below the fold")?;
+    assert_eq!(a.1, base.1, "after the late card, the next resize moved the page from its top (the card is at {}, not {})", a.1, base.1);
+    // The look on the network then finds a model and the account cards are drawn again, a new one first.
+    // The page keeps the focus: the new first card, below the fold here, does not take it and pull the
+    // page down to itself.
+    ui.set_featured(ModelRc::new(VecModel::from(first_run_tests::featured())));
+    let a = bounds(&draw(w, width, snug), fill, 0).ok_or("the card's button left the window when the account cards were drawn again")?;
+    assert_eq!(a.1, base.1, "the account cards drawn again under a leading free card: the page is not at its top (the card is at {}, not {})", a.1, base.1);
 
     // ── Settings → Minds ──
     let ui = MindsPageProbe::new()?;

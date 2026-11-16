@@ -49,7 +49,7 @@ fn provider(id: &str, name: &str, line: &str, needs: &str, group: &str, placehol
 /// The cards as wire/onboarding.rs makes them for a person with no account: a model found on
 /// another computer first (never Recommended, and saying where conversations go), this
 /// computer's, the free one (Recommended), then the accounts.
-fn featured() -> Vec<FirstRunProvider> {
+pub(crate) fn featured() -> Vec<FirstRunProvider> {
     vec![
         FirstRunProvider {
             caution: "Your conversations go to that computer. Choose it only if it's yours.".into(),
@@ -224,7 +224,7 @@ pub fn run(w: &MinimalSoftwareWindow, output: &str) -> Result<(), Box<dyn std::e
     // Then the free card is offered above them, a moment after the page showed (as the shell's first
     // account listing does it): the page takes the focus, so nothing has a ring, and Space or Enter
     // on arrival neither presses the free card nor chooses a card the person is no longer looking at.
-    assert_eq!(ui.get_focused_label(), "", "an account card has the focus, and no button");
+    assert_eq!(ui.get_focused_label(), "", "no button has the focus");
     ui.global::<StartFreeState>().set_offers(ModelRc::new(VecModel::from(vec![super::start_free_tests::offer()])));
     render(w, width, height, &still("2-who-thinks"))?;
     ui.invoke_read();
