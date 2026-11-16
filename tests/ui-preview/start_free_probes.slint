@@ -1,7 +1,7 @@
 // The probes of verify-start-free (src/start_free_tests.rs), kept out of preview.slint: first-run's
 // "Who should do the thinking?" and Settings → Minds, at the size the window has.
 
-import { Theme } from "theme.slint";
+import { Theme, TextScale } from "theme.slint";
 import { FirstRunScreen, FirstRunProvider } from "onboarding_first_run.slint";
 import { SettingsScreen, HarnessRowData } from "settings.slint";
 import { StartFreeState, StartFreeOffer } from "components/start_free_card.slint";
@@ -19,6 +19,9 @@ export component StartFreePageProbe inherits Window {
     in property <[FirstRunProvider]> featured;
     in property <string> default-mind-words;
     in property <string> nearby-words;
+    // "Make text bigger" (TextScale), as the page's own button sets it.
+    in property <float> scale: 1.0;
+    changed scale => { TextScale.factor = root.scale; }
     FirstRunScreen { width: 100%; height: 100%; step: 2; featured: root.featured; default-mind-words: root.default-mind-words; nearby-words: root.nearby-words; }
 }
 

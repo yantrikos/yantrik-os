@@ -29,13 +29,18 @@ export global StartFreeState {
     callback retry();
 }
 
+// Every line is placed under the one before it and takes the height its text wraps to at the card's
+// width, so the card is as tall as its words whatever their length and the text size (a layout's
+// own height cannot be trusted to know how far wrapped text runs).
 component OfferFace inherits Rectangle {
     in property <StartFreeOffer> o;
-    in property <float> scale: 1.0;
     // Only the one pressed shows a result; the others stay as they were.
     property <bool> mine: StartFreeState.account == root.o.account;
     property <bool> busy: StartFreeState.status == "working";
-    height: col.preferred-height + 24px;
+    property <bool> has-words: root.mine && StartFreeState.words != "";
+    property <length> pad: 16px;
+    property <length> gap: 6px;
+    height: buttons.y + buttons.height + 12px;
     border-radius: Theme.r-lg;
     background: Theme.bg-card;
     border-width: 1px;
@@ -43,73 +48,71 @@ component OfferFace inherits Rectangle {
     accessible-role: groupbox;
     accessible-label: "Start free, no account. " + root.o.provider + ". " + root.o.label + ". " + root.o.lead + " " + root.o.detail;
 
-    col := VerticalLayout {
-        padding: 16px;
-        padding-top: 12px;
-        padding-bottom: 12px;
-        spacing: 6px;
-        HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: "Start free, no account";
-                color: Theme.text-primary;
-                font-size: Theme.fs-title-1;
-                font-weight: 600;
-                horizontal-stretch: 1;
-                wrap: word-wrap;
-            }
-            Text {
-                text: root.o.label;
-                color: Theme.accent;
-                font-size: Theme.fs-body;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
+    title := Text {
+        x: root.pad; y: 12px; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: "Start free, no account";
+        color: Theme.text-primary;
+        font-size: Theme.fs-title-1;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    tag := Text {
+        x: root.pad; y: title.y + title.height + 2px; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: root.o.label;
+        color: Theme.accent;
+        font-size: Theme.fs-body;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    provider := Text {
+        x: root.pad; y: tag.y + tag.height + root.gap; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: root.o.provider;
+        color: Theme.text-primary;
+        font-size: Theme.fs-title-2;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    lead := Text {
+        x: root.pad; y: provider.y + provider.height + root.gap; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: root.o.lead;
+        color: Theme.text-primary;
+        font-size: Theme.fs-title-2;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    detail := Text {
+        x: root.pad; y: lead.y + lead.height + root.gap; width: root.width - 2 * root.pad; height: self.preferred-height;
+        text: root.o.detail;
+        color: Theme.text-secondary;
+        font-size: Theme.fs-title-2;
+        wrap: word-wrap;
+    }
+    words := Text {
+        x: root.pad; y: detail.y + detail.height + root.gap; width: root.width - 2 * root.pad;
+        height: root.has-words ? self.preferred-height : 0px;
+        visible: root.has-words;
+        text: StartFreeState.words;
+        color: StartFreeState.status == "answered" ? Theme.color-success
+            : StartFreeState.status == "working" ? Theme.text-secondary : Theme.color-warning;
+        font-size: Theme.fs-title-2;
+        wrap: word-wrap;
+    }
+    buttons := HorizontalLayout {
+        x: root.pad; y: words.y + words.height + 10px; width: root.width - 2 * root.pad; height: 36px;
+        alignment: start;
+        spacing: 8px;
+        YButton {
+            variant: 0;
+            size: 2;
+            label: root.o.button;
+            disabled: root.busy || (root.mine && StartFreeState.status == "answered");
+            clicked => { StartFreeState.press(root.o.account); }
         }
-        Text {
-            text: root.o.provider;
-            color: Theme.text-primary;
-            font-size: Theme.fs-title-2;
-            font-weight: 600;
-            wrap: word-wrap;
-        }
-        Text {
-            text: root.o.lead;
-            color: Theme.text-primary;
-            font-size: Theme.fs-title-2;
-            font-weight: 600;
-            wrap: word-wrap;
-        }
-        Text {
-            text: root.o.detail;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-title-2;
-            wrap: word-wrap;
-        }
-        if root.mine && StartFreeState.words != "" : Text {
-            text: StartFreeState.words;
-            color: StartFreeState.status == "answered" ? Theme.color-success
-                : StartFreeState.status == "working" ? Theme.text-secondary : Theme.color-warning;
-            font-size: Theme.fs-title-2;
-            wrap: word-wrap;
-        }
-        HorizontalLayout {
-            alignment: start;
-            spacing: 8px;
-            padding-top: 4px;
-            YButton {
-                variant: 0;
-                size: 2;
-                label: root.o.button;
-                disabled: root.busy || (root.mine && StartFreeState.status == "answered");
-                clicked => { StartFreeState.press(root.o.account); }
-            }
-            if root.mine && StartFreeState.status == "unanswered" : YButton {
-                variant: 1;
-                size: 2;
-                label: "Try again";
-                clicked => { StartFreeState.retry(); }
-            }
+        if root.mine && StartFreeState.status == "unanswered" : YButton {
+            variant: 1;
+            size: 2;
+            label: "Try again";
+            clicked => { StartFreeState.retry(); }
         }
     }
 }
