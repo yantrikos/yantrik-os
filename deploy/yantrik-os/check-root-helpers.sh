@@ -97,7 +97,7 @@ for f in "${scripts[@]}"; do
     done < <(grep -oE 'usr/lib/yantrik/[A-Za-z0-9][A-Za-z0-9._-]*/?' <<< "$line")
   done < <(grep 'usr/lib/yantrik/' <<< "$code")
   # Forms that put a file at the top level without a literal name.
-  hits="$(grep -nE 'usr/lib/yantrik/\$|usr/lib/yantrik/["'\'']?([[:space:]]|$)|-t[ =]*["'\'']?[^ ]*usr/lib/yantrik["'\'']?|usr/lib/yantrik["'\'']?[[:space:]]*\\?$' <<< "$code" || true)"
+  hits="$(grep -nE 'usr/lib/yantrik/\$|usr/lib/yantrik/["'\'']?([[:space:]]|$)|-t[ =]*["'\'']?[^ ]*usr/lib/yantrik["'\'']?|usr/lib/yantrik["'\'']?([[:space:]]*\\?$|[[:space:]]*([0-9]?[<>]|[;&|)]))' <<< "$code" || true)"
   # `install -d` and mkdir make the directory, not a helper in it; naming it in a variable does not.
   hits="$(grep -vE 'install -d |install -[a-z]*d[a-z]* |mkdir ' <<< "$hits" | grep . || true)"
   [ -z "$hits" ] || bad "$(basename "$f") puts files in /usr/lib/yantrik without naming them: $(head -1 <<< "$hits") — name them in root-helpers.list, or mark the bundle copy with '# $MARK'"

@@ -369,6 +369,8 @@ jobs:
             "sed -i 's|^for h in \"\$ROOT/share/root-helpers/\"\\*.*|: # root-helpers:guard|' build-release.sh"
           negative "a second marked line hides a removal" \
             "echo 'rm -f \"\$ROOT/share/root-helpers/yantrik-mac-fans\" # root-helpers:guard' >> build-release.sh"
+          negative "an image copies into the directory and then handles the error" \
+            "echo 'sudo cp -r src/* \"\$ROOTFS/usr/lib/yantrik\" 2>/dev/null || true' >> build-debian-iso.sh"
 
       - name: cloud-init parses
         run: python3 -c "import yaml,sys; yaml.safe_load(open('deploy/yantrik-os/cloud-init/user-data.yaml')); print('user-data.yaml OK')"
