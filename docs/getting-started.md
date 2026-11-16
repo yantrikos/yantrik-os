@@ -11,10 +11,10 @@ resolves.
 
 Before anything else, what you are getting into: this is early software published on a
 **nightly** channel and nothing else. Things break. The audits of what does not work — app by
-app, screen by screen — are in [`design/`](../design/) in this repository, written down at
-the time rather than after somebody complained. Read
-[`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) for two apps that were
-taken out of the build for being drawings of apps.
+app, screen by screen — are in [`design/`](../design/) in this repository. Read
+[`design/shelved-2026-09-20.md`](../design/shelved-2026-09-20.md) for two apps (Music and
+ySheets) that were taken out of the build for being drawings of apps, and for how they came
+back.
 
 ---
 
@@ -42,15 +42,17 @@ sh install.sh               # prints the url, size and sha256 of the current ima
 sh install.sh --download    # also fetches it here and checks its sha256
 ```
 
-Piped straight into a shell with no flag it explains and does nothing else — it writes no
-file, installs nothing and wants no privilege. That is deliberate: an installer that runs the
-moment it is piped into `sh` is asking you to trust bytes you have not read.
+Piped straight into a shell with no flag it explains and does nothing else: it writes no
+file, installs nothing and wants no privilege. That is deliberate, so that nothing runs from a
+pipe before you have read it.
 
-The image is about **1.7 GiB**. If you want to keep the exact build you tested, keep the file:
-the `latest` name will mean the next build tomorrow.
+The image is about **1.85 GiB** as built (1,984,960,512 bytes for build
+`v0.1.0-2690-g92eec0bd`, 16 Nov 2026). The size changes from build to build; `bytes` in
+`latest.json` is the exact size of the build you are about to fetch. If you want to keep the
+exact build you tested, keep the file: the `latest` name will mean the next build tomorrow.
 
 **Verify the checksum before you boot it.** The point is not that someone is attacking you;
-it is that a 1.3 GiB download that ends at 98% gives you an image that boots halfway and
+it is that a download of nearly 2 GiB that ends at 98% gives you an image that boots halfway and
 fails in a way you will spend an afternoon on.
 
 Only the **nightly** channel has builds. `beta` and `stable` exist as names in the updater
@@ -69,8 +71,10 @@ QEMU by [`boottest.py`](../deploy/yantrik-os/boottest.py), which waits for the m
 reach its login on the serial console and answer for itself. An image that does not boot is
 not published. Nobody's laptop is in that path.
 
-That test is a BIOS boot under QEMU with a virtio display. The UEFI path is built and is not
-booted by CI; real hardware of any kind is not tested at all.
+That test is a BIOS boot under QEMU with a virtio display. The UEFI path is built and CI does
+not boot it, but it has been run by hand: the image installed and booted under UEFI firmware
+(OVMF) in a virtual machine. That is all that has been tried. Real hardware of any kind is not
+tested at all.
 
 ---
 
@@ -87,7 +91,7 @@ This is the recommended way to meet it, and it is what the project develops agai
 | RAM | 8 GB |
 | Disk | 32 GB |
 | GPU | none — virtio-gpu, software rendering through Mesa's llvmpipe |
-| Firmware | BIOS (SeaBIOS). The UEFI path is built into the image and is untested |
+| Firmware | BIOS (SeaBIOS) in CI and on the project's test VM. UEFI: installed and booted under UEFI firmware (OVMF) in a virtual machine |
 
 CI's automated boot test is smaller and still works: QEMU with **4 GB of RAM, 4 CPUs** and
 `-device virtio-vga`, KVM when the runner has `/dev/kvm` and plain emulation when it does
@@ -103,16 +107,17 @@ qemu-system-x86_64 -enable-kvm -m 4096 -smp 4 \
 
 VirtualBox ought to work — this is an ordinary Debian live ISO — but nobody here has checked
 it against a current build, so it is not on the list above. If you try it, say how it went.
-The settings this repository's own tools give it (configured, not measured):
+The one setting this repository gives it (configured, not measured):
 [`build-debian-iso.sh`](../deploy/yantrik-os/build-debian-iso.sh) says to import the ISO as
-boot media with **4 GB of RAM and EFI enabled**, and
-[`build-vbox-image.sh`](../deploy/yantrik-os/build-vbox-image.sh) creates its VM with the
-**VMSVGA** graphics controller and **128 MB** of video memory.
+boot media with **4 GB of RAM and EFI enabled**. (`build-vbox-image.sh` builds an Alpine-era VM
+and is history; no current path uses it.)
 
-On Proxmox, [`proxmox-deploy.sh`](../deploy/yantrik-os/proxmox-deploy.sh) provisions
-8 GB / 4 cores / a 24 GB disk, with **`vga: virtio`**. The virtio display is the one setting
-there that is not cosmetic: with Proxmox's default the machine boots, reports a healthy
-session, and shows a black screen forever, because there is no `/dev/dri` for labwc to find.
+On Proxmox, give the VM a **VirtIO display** (`vga: virtio`) and, for UEFI, an OVMF firmware
+with an EFI disk. The display is the setting that is not cosmetic: with Proxmox's default the
+machine boots, reports a healthy session, and shows a black screen forever, because there is no
+`/dev/dri` for labwc to find. (The repository's
+[`proxmox-deploy.sh`](../deploy/yantrik-os/proxmox-deploy.sh) is a different path: it turns a
+Debian cloud image into Yantrik OS on first boot, with 8 GB / 4 cores / a 24 GB disk.)
 
 ## 3. …or write it to a USB stick
 
@@ -131,14 +136,15 @@ them take the `.iso` exactly as downloaded — do not unpack it.
 
 ## 4. Boot it
 
-The boot menu has four entries:
+A boot menu shows for five seconds, then the default entry, **Install Yantrik OS**, boots. It has
+four entries:
 
 | Entry | What it does |
 |---|---|
 | **Install Yantrik OS** | Boots live *and* puts first-run setup into installer mode, so it offers to write to a disk at the end |
 | **Try Yantrik OS without installing** | Boots live. Nothing offers to touch a disk |
 | **Install Yantrik OS with safe graphics** | The same as the first, with `nomodeset` — use this if the screen stays black |
-| **Try Yantrik OS, showing every boot message** | No `quiet`, so the kernel and systemd say what they are doing (on the serial line too). This is the entry to boot from when you are filing a bug |
+| **Try Yantrik OS, showing every boot message** | No `quiet`, no `plymouth` splash and `nomodeset`, so the kernel and systemd say what they are doing. Every entry also writes to the serial line. This is the entry to boot from when you are filing a bug |
 
 Either way the machine boots to a live desktop first. Nothing is written to any disk until
 you tell the installer to erase one.
@@ -153,14 +159,63 @@ network:
 
 ### What you see first
 
-First-run setup, as a sequence of full-screen questions: your name, what you are interested
-in, where you are, a hardware scan, how the assistant should behave, and then **the AI
-provider**, which is the one that matters — see below. It ends on a summary of your answers;
-if you booted an "Install" entry, that last screen also picks the disk and offers to install
-to it.
+Setup happens in two parts, one on each side of the install. This is what a visitor following
+only the README saw on 16 Nov, in a virtual machine under UEFI firmware.
 
-Behind it is the shell: a status bar, a dock, and the Lens at the bottom, which is where you
-type to the mind.
+**The installer's pages come first** (the "Install" entries). One `grub.cfg` serves BIOS and
+EFI, so the five-second boot menu is drawn on both, then the Welcome page comes up. The visitor
+run did not see the menu, most likely because the countdown was missed.
+
+1. **Welcome**: the keyboard layout, and **Try it first** or **Install**.
+2. **About you**: your name, a username and a password. The computer's name is worked out from
+   the username and sits behind a small **More** link if you want to change it.
+3. **Where to install**: the disk, and **encryption, which is ticked by default** ("Encrypt with
+   my password"). With it ticked, the installed machine asks for the password at every start, on a
+   screen that shows your name; without it nobody can read the disk, you included: a forgotten
+   password means an unreadable disk. To turn it off, **untick it on this page**; the page then
+   says anyone who takes the disk out can read everything. Each disk is listed in general terms
+   (for example "3 partitions (vfat, ext4, crypto_LUKS)"), and in erase mode every disk carries
+   "Everything on the disk you choose will be erased."
+4. **Ready to install**: every answer and the disk together, before anything is written, with a
+   **Thinking** row (Choose or Change) where you can pick a model provider now. "Erase disk and
+   install" starts the install.
+
+Then it installs (about five minutes on the test VM; the page says "about five minutes") and
+restarts.
+
+**Take the installer disc out before the restart.** The last page says "The disc comes out as the
+computer restarts", but in a virtual machine it does not
+([#1165](https://github.com/yantrikos/yantrik-os/issues/1165)). Detach the ISO, and check the
+boot order. A machine that still has the ISO attached starts the installer's Welcome page again,
+which looks like the install looped. The install itself is fine. On real hardware with a USB
+stick, the page says to take it out once the screen goes dark.
+
+**First run comes after the restart**, on the installed machine's first boot, once you have
+entered the disk password (if you left encryption on). It has four pages, and it asks nothing
+about your interests or where you are. If you choose a provider on it there are five (a model on
+this computer skips the sharing page, so it stays at four). If you chose
+one in the installer's Thinking row there are three:
+
+1. **Welcome**: text size and read-aloud options, then Get started. On a boot that did not come
+   through the installer it also asks "What should your minds call you?".
+2. **Who should do the thinking?**: where the AI runs. See section 5 for what this page offers
+   today. "Not now" skips it.
+3. **Getting your minds ready**: a check of each mind. If you chose no model it says "Needs
+   attention: it is not set up to think yet".
+4. **Your minds**: one row per mind with what was seen, and "Add another mind".
+
+If you choose a provider, a page about what your minds share with it (a sentence naming the
+provider, ticked by default) comes after the provider page. The page's own sentence, "what they
+remember about you, and where you are", is narrower than what is sent
+([#1275](https://github.com/yantrikos/yantrik-os/issues/1275); see section 5). The 16 Nov run
+chose none, so it did not see that page; it is described here from the code. That page is skipped
+when you start with **Start free, no account** (below): the consent is on that card. The desktop
+works without a model.
+
+On the second page, the 16 Nov run found the page taller than the screen: wheel events sent to the
+virtual machine did not scroll it, and Tab did. That was not tried with a real mouse.
+
+Behind it is the shell: a status bar, a dock, and the Lens, which is where you type to the mind.
 
 The keys are the ones Windows, GNOME and Ubuntu agree on, so they are probably already in your
 fingers. The full set is in [`config/labwc/rc.xml`](../config/labwc/rc.xml); these are the ones
@@ -179,7 +234,7 @@ worth knowing on the first day:
 | `Print` | The capture bar: a screenshot or a recording, of a region or the whole screen |
 | `Shift`+`Print` / `Super`+`Shift`+`S` | Screenshot of a region you drag, into `~/Pictures/Screenshots` and the clipboard |
 | `Ctrl`+`Print` | Screenshot of the whole screen, to the clipboard only |
-| `Super`+`Shift`+`R` | Start or stop a screen recording (saved in `~/Videos/Recordings`) |
+| `Super`+`Shift`+`R` | Stops a screen recording that is running (saved in `~/Videos/Recordings`); with none running it opens the capture bar on Record |
 
 ---
 
@@ -189,40 +244,74 @@ worth knowing on the first day:
 people are most surprised by. The desktop is the desktop; what answers in it is something you
 point it at.
 
-The default configuration (`/opt/yantrik/config.yaml`) expects an OpenAI-compatible endpoint
-on `http://127.0.0.1:8341/v1` — loopback, because an address baked into a public image is an
-address every copy of that image would talk to. First-run setup is where you change it, and
-you have three shapes of answer:
+The default configuration (`/opt/yantrik/config.yaml`) has an empty `api_base_url`: it points at
+nothing, because an address baked into a public image is an address every copy of that image
+would talk to. Only a build made with `--with-llm` writes a loopback endpoint (port 8341) there.
+
+### What the first-run provider page offers today
+
+The "Who should do the thinking?" page leads with **Start free, no account**, when the image
+knows a free provider that needs no sign-up (today OVHcloud AI Endpoints). Nothing is sent, and
+nothing is chosen, until you press its button; the card says what pressing it does, with the
+provider's name, before you do:
+
+> **What you tell your minds, and what they read on this computer, is sent to the provider, also when a mind works on its own.** That includes your messages and name, the time, what Yantrik remembers about you (a place you saved too), files, pages, command output and any saved password a mind opens for you, the screen and clipboard when a mind looks at them, and your network's name, open apps, battery, processor, memory, disk and how long the computer has been idle. It applies to every mind on Yantrik models. It is free and rate-limited, so it can be slow or busy. Switch it off in Settings → AI & Intelligence.
+
+One press allows sharing with that provider, gives the companion Yantrik models, makes the
+provider's model the one pick for every mind, and asks whether it can answer. It does not set up
+Hermes (below). If the provider does not answer, the choice is kept, and the page offers "Try
+again" and the other cards. Switching sharing off in Settings → AI & Intelligence → AI accounts
+stops the sending; the card is offered again until you switch the free tier off on the Free AI
+accounts card.
+
+Every other card on the page needs an account: Groq ("free, fast open models, needs a free Groq
+account", marked Recommended), Claude, OpenAI, Google Gemini, DeepSeek, OpenRouter and NVIDIA NIM.
+"Show every provider" lists more, and "Advanced" takes an endpoint of your own. "Look on your
+network for a model already running" finds one only if you have one.
+
+If you choose "Not now", the next page says "Needs attention: it is not set up to think yet", and
+the desktop's ask bar says it does not know where the companion sends your words and offers "Add
+key", with a "Start free" chip beside it that opens the same card. The desktop still works.
+
+### The three shapes of answer
+
+Once you are past that page, you have three shapes of answer:
 
 1. **A model you run yourself.** Ollama or llama.cpp on the same machine or elsewhere on
    your LAN. Nothing leaves your network.
 2. **A provider you choose.** Any OpenAI-compatible endpoint, or the Claude CLI. What you
-   type goes to that provider, as it would from any other client.
-
-   **With no account and no model of your own**, the first card on that page is **Start free, no
-   account**. It is there when the image knows a free provider that needs no sign-up (today
-   OVHcloud AI Endpoints), and it says on its face what pressing it does:
-
-   > **What you type, and what your minds read on this computer, is sent to <provider>.** That includes your messages, what Yantrik remembers about you, files and pages a mind opens for you, the screen and clipboard when a mind looks at them, and the name of your network, your open apps and how the computer is doing (battery, memory, disk). It applies to every mind you give Yantrik models. No account is needed. It is free and rate-limited, so it can be slow or busy. You can switch it off in Settings → AI & Intelligence.
-
-   Nothing is sent and nothing is chosen until you press it; one press allows sharing with that
-   provider, gives the companion Yantrik models, makes the provider's model the one pick for every
-   mind, and asks whether it can answer. Switching sharing off in Settings → AI & Intelligence → AI
-   accounts stops the sending; the card is offered again until you switch the free tier off on the
-   Free AI accounts card. After "Not now" the same card is offered from the ask bar's "Start free"
-   beside "Add key".
+   type goes to it, and so does what the companion adds to each turn: memories, the computer's
+   state and tool results ([#1275](https://github.com/yantrikos/yantrik-os/issues/1275)). That is
+   more than most clients send.
 3. **A separate agent that attaches to the desktop.** Yantrik Mind, Hermes, Pi, DeepSeek and
    OpenClaw all do this; the last four ship as source in [`harnesses/`](../harnesses/). The
-   OS never holds your endpoint, model name or key — the harness dials in and keeps its own
-   configuration. See **[harness.md](harness.md)** for the protocol and how to write one.
+   OS does not hold the harness's endpoint, model name or key — the harness dials in and keeps its
+   own configuration (the one exception is "use a saved provider" in Settings, which copies a key
+   from the credential vault into that harness's settings, and can be reverted). See
+   **[harness.md](harness.md)** for the protocol and how to write one.
 
-Whichever you pick, the status bar says which mind is answering and whether it is local or
-cloud, with the provider or model named. That chip is not decoration: it is there so that
-"where is what I am typing going" is never a question you have to go and look up.
+Hermes, the default Mind, is set up after you choose one of the account cards' models (not after **Start free**). It downloads about 3 GB (from GitHub
+and Python's package index), so it needs the internet. Until it is ready the built-in Companion
+answers ([#1166](https://github.com/yantrikos/yantrik-os/issues/1166)). The provider page says
+"Choosing one of the cards below also sets up Hermes, your mind: about 3 GB from GitHub and
+Python's package index" before you choose, and it is not shown after Start free; the 16 Nov run
+chose none, so did not test the download.
+
+Whichever you pick, the desktop says which mind is answering: the Lens's conversation names it.
+The Minds panel, opened from the mind chip, shows "Answering: <mind>" and what it runs on, the
+provider and model, for instance "Ollama Cloud · deepseek-v4.1-flash". The Mind panel on the right
+edge (hidden until you pin it, for instance with `yos act shell set_mind_panel shape=pinned`)
+says "answering · <account> · <model>", as do, since PR #1162, the Lens line and the chat bubble.
+This tells you which provider a turn goes to. It does not list everything that goes with the
+turn (see above).
 
 ### How much it may do without asking
 
-Also in the status bar, to the left of the mind chip, is the **mode**:
+The **mode chip** is in the right-hand group of the top bar, to the left of the network and sound marks. It
+reads "Mind · " and a phrase: **Suggests only** (`plan`), **Asks first** (`ask`), **Acts within
+limits** (`auto`), or a bypass's own label with its countdown ("Full bypass · …"); a mind in
+private mode shows **Private**. Click it for the menu, which includes "See what it did without
+asking". The modes:
 
 | mode | the mind may… |
 |---|---|
@@ -230,14 +319,29 @@ Also in the status bar, to the left of the mind chip, is the **mode**:
 | `ask` | routine things run; sensitive ones put a card in front of you (the default) |
 | `auto` | sensitive things run; you are still asked about destructive ones, and once per session before it runs commands |
 | `bypass` | nothing is asked except before anything an app marks as impossible to undo, such as a purchase or a calendar delete — that still puts a card up — and once per session before running commands. Time-boxed, and never written to disk, so no machine boots into it |
-| `bypass_all` | "Full bypass": nothing is asked at all, those included, with one exception: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still puts a card up. The built-in assistant's own mail is not covered: in `bypass_all` it sends without one. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
+| `bypass_all` | "Full bypass": nothing is asked at all, those included, with two exceptions: once a mind connected to this desktop has read your private data, its command, hand-off to another mind, new web address or send of text off this machine still puts a card up; and the three actions that always ask (location lookups, background research, a problem report) still put one up. The built-in assistant's own mail is not covered: in `bypass_all` it sends without one. Time-boxed and never written to disk, like `bypass`; chosen on the same confirmation |
 
 A command — the Terminal's `run`, an agent's own terminal — can do anything you can, so it asks
 before it runs in `ask`, `auto` and `bypass`. Press **Allow for this session** on that card and
 the mind's commands after it run without asking until the shell restarts.
 
-Everything that ran without you being asked is written down in
-`~/.local/share/yantrik/mind-audit.jsonl` and readable from the mode menu.
+What a Mind or harness ran without a card is written down in
+`~/.local/share/yantrik/mind-audit.jsonl` and readable from the mode menu ("See what it did
+without asking"). (#1262: that log can stop writing.) The built-in companion's own tool calls
+are not in that file. They are recorded as `audit/tools` memories in YantrikDB, with a seven-day half-life
+(they fade from recall), at most 200 characters of each result kept, and not written in incognito. At the shipped setting the companion runs Safe, Standard and
+Sensitive tools with no card, shell commands and screen reads included. To restrict it, edit
+`tools.max_permission` in `/opt/yantrik/config.yaml`, then restart the session; the Settings
+control "Tool permission" sets the ceiling for Minds and harnesses and reaches the companion only
+through `app_action`. See
+[SECURITY.md](../SECURITY.md).
+
+### Stopping a mind
+
+The Lens has a **Stop** control (PR #1072), and typing **`/stop`** does the same: it is never
+queued as a message, it goes straight to the running turn and ends it, and closes any question the
+mind was waiting on. A Hermes run that is already working may carry on after the desktop has
+stopped waiting for it; Hermes honouring Stop is PR #1161 and is not merged.
 
 ---
 
@@ -247,16 +351,17 @@ Everything that ran without you being asked is written down in
 disk installer has not been through the boot test that the image itself has — treat it as the
 least-proven part of this.
 
-The target disk needs at least **6 GB** — one minimum, stated here, in the README's hardware
-table, and in the first-boot hardware scan, which a test holds together. The scan measures the
-whole size of the disk the picker has selected; it used to report the free space of the live
-session, which on a live USB describes the stick you booted from and not the disk you are
-about to install to.
+The target disk should be at least **6 GB**. That figure is stated here and in the README's
+hardware table, and a test holds the table to the first-boot hardware scan. Nothing refuses a
+whole disk under 6 GB, though. Installing beside another system enforces 20 GB, and nothing
+checks the firmware. The scan measures the whole size of the disk the picker has selected; it
+used to report the free space of the live session, which on a live USB describes the stick you
+booted from and not the disk you are about to install to.
 
-Two ways in, and they do the same work:
+Two ways in. They install the same system, but the text installer does not encrypt the disk:
 
-- **The graphical installer.** Boot the "Install Yantrik OS" entry and first-run setup ends
-  with the install screen — username, password, hostname, disk.
+- **The graphical installer.** Boot the "Install Yantrik OS" entry: the four pages described
+  under "What you see first" (welcome, you, disk and encryption, review).
 - **The text installer.** In a terminal in the live session:
 
   ```bash
@@ -272,14 +377,16 @@ Two ways in, and they do the same work:
   It is [`deploy/yantrik-os/yantrik-install.sh`](../deploy/yantrik-os/yantrik-install.sh) in
   this repository, installed into the image as `/opt/yantrik/bin/yantrik-install`.
 
-It asks for your name, a username, a password, a hostname and a timezone (guessed from the
-network, one keystroke to accept), then shows you every answer and the disk together and
+It asks for your name, a username, a password, a hostname and a timezone (asked, never guessed
+from the network; the default is the live system's zone, normally UTC), then shows you every answer and the disk together and
 waits for you to type `yes`. Then it partitions (GPT, EFI or BIOS depending on how you
 booted), copies the live filesystem to the disk, removes the live-boot packages, creates your
 account, installs GRUB and reboots.
 
-After that the machine boots straight to the desktop with no login screen and no display
-manager, and onboarding does not run again.
+After that the machine boots to the desktop with no display manager, and the shell starts
+locked: unlock it with your password. (If you left encryption on in the graphical installer, that password is also asked
+at the very start, to open the disk. The text installer never encrypts, so it asks for nothing there.) The first run described above happens once, on that first
+boot. The screen locks by itself after about five minutes idle.
 
 ---
 
@@ -300,8 +407,11 @@ build even though it is older than the one here), `--reboot` (instead of restart
 session) and `--no-restart`. `check` and `status` take `--porcelain`, which is what the
 desktop's About screen reads.
 
-What it does for you: the bundle is verified against the manifest's sha256 before a single
-file is replaced, the current binaries and shared files are backed up first, and if the new
+What it does for you: the update information is a signed file (ed25519; the public keys ship
+with the build and are scoped per channel), checked before any field of it is read — an
+unsigned, expired or older-serial file is refused and nothing is installed (`check` says
+"not signed by Yantrik" and exits 14). The bundle is then verified against the signed
+manifest's sha256 before a single file is replaced, the current binaries and shared files are backed up first, and if the new
 shell does not answer its control socket after the restart the update rolls itself back. The
 restart goes through the session unit rather than respawning the shell by hand, so the
 desktop comes back exactly as it does on boot.
