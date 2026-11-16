@@ -100,17 +100,17 @@ fn main() {
 }
 
 fn load_config(path: Option<PathBuf>) -> CompanionConfig {
-    let config = match path {
+    let config = match &path {
         Some(p) => {
             tracing::info!(path = %p.display(), "Loading config");
-            CompanionConfig::from_yaml(&p).expect("failed to load config")
+            CompanionConfig::from_yaml(p).expect("failed to load config")
         }
         None => {
             tracing::info!("Using default config");
             CompanionConfig::default()
         }
     };
-
+    yantrik_companion::background_research::init(config.background_research, path);
     // Propagate OAuth credentials from config to env vars (if not already set)
     if let Some(ref id) = config.connectors.google_client_id {
         if std::env::var("GOOGLE_CLIENT_ID").is_err() {
